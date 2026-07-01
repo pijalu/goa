@@ -308,6 +308,11 @@ type ToolEnabledConfig struct {
 	RequestReview bool `yaml:"request_review"`
 	SSHBash       bool `yaml:"ssh_bash"`
 	WebFetch      bool `yaml:"webfetch"`
+	// ClarifyDisabled, when true, removes the ask_user_question tool from the
+	// model's toolset. It is an inverted flag: the default (false/unset) leaves
+	// the tool ENABLED by default, matching the requested behavior. All other
+	// flags here are opt-IN; this one is opt-OUT.
+	ClarifyDisabled bool `yaml:"clarify_disabled"`
 	// set records which fields were explicitly present in YAML so deep merges
 	// can override earlier layers only for those keys.
 	set map[string]bool
@@ -348,6 +353,8 @@ func (t *ToolEnabledConfig) SetEnabled(name string, value bool) {
 		t.SSHBash = value
 	case "webfetch":
 		t.WebFetch = value
+	case "clarify_disabled":
+		t.ClarifyDisabled = value
 	default:
 		return
 	}
@@ -382,6 +389,9 @@ func (t *ToolEnabledConfig) ApplyTo(target *ToolEnabledConfig) {
 	}
 	if t.set["webfetch"] {
 		target.WebFetch = t.WebFetch
+	}
+	if t.set["clarify_disabled"] {
+		target.ClarifyDisabled = t.ClarifyDisabled
 	}
 	if target.set == nil {
 		target.set = make(map[string]bool)

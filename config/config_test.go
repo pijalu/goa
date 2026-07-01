@@ -1079,6 +1079,53 @@ func TestToolEnabledConfigSetEnabled(t *testing.T) {
 	}
 }
 
+// TestClarifyDefaultEnabled verifies the clarify tool is enabled by default
+// (ClarifyDisabled == false), unlike every other flag which is opt-IN.
+func TestClarifyDefaultEnabled(t *testing.T) {
+	cfg := &Config{}
+	if cfg.Tools.Enabled.ClarifyDisabled {
+		t.Error("ClarifyDisabled should be false by default (tool enabled by default)")
+	}
+}
+
+// TestClarifyDisabledRoundTrip verifies the clarify_disabled YAML key parses
+// and round-trips through the inverted flag.
+func TestClarifyDisabledRoundTrip(t *testing.T) {
+	y := `
+tools:
+  enabled:
+    clarify_disabled: true
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(y), &cfg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !cfg.Tools.Enabled.ClarifyDisabled {
+		t.Error("ClarifyDisabled should be true after parsing clarify_disabled: true")
+	}
+	if !cfg.Tools.Enabled.set["clarify_disabled"] {
+		t.Error("clarify_disabled key should be recorded as explicitly set")
+	}
+}
+
+// TestClarifyDisabledDeepMerge verifies the inverted flag survives a deep
+// merge only when explicitly set, without clobbering unrelated flags.
+func TestClarifyDisabledDeepMerge(t *testing.T) {
+	base := &Config{}
+	base.Tools.Enabled.SetEnabled("memento", true) // unrelated opt-in flag
+
+	override := &Config{}
+	override.Tools.Enabled.SetEnabled("clarify_disabled", true)
+
+	base.DeepMerge(override)
+	if !base.Tools.Enabled.ClarifyDisabled {
+		t.Error("ClarifyDisabled should be overridden to true")
+	}
+	if !base.Tools.Enabled.Memento {
+		t.Error("Memento should remain true (not clobbered by clarify merge)")
+	}
+}
+
 func TestResolvePlanFilePath_DefaultUsesProjectDir(t *testing.T) {
 	base := t.TempDir()
 	cfg := Config{}
