@@ -35,6 +35,7 @@ type BGProcess struct {
 	Stdin     io.WriteCloser
 	done      chan struct{}
 	exitCode  atomic.Int32 // valid after done is closed
+	scannerWg sync.WaitGroup // tracks output scanner goroutines
 }
 
 // ringBuffer is a circular buffer for process output.
@@ -253,13 +254,26 @@ func (t *BGExecTool) start(p bgExecParams) (string, error) {
 	}
 
 	// Start output readers
-	go t.readOutput(proc, stdout, proc.Stdout)
-	go t.readOutput(proc, stderr, proc.Stderr)
+	proc.scannerWg.Add(2)
+	go func() {
+		defer proc.scannerWg.Done()
+		t.readOutput(proc, stdout, proc.Stdout)
+	}()
+	go func() {
+		defer proc.scannerWg.Done()
+		t.readOutput(proc, stderr, proc.Stderr)
+	}()
 
 	// Wait in background
 	go func() {
 		proc.Cmd.Wait()
 		proc.exitCode.Store(int32(proc.Cmd.ProcessState.ExitCode()))
+		// Wait for scanner goroutines to finish writing to ring buffers before
+		// signalling done. cmd.Wait() closes the pipes but does not wait for
+		// pipe readers to complete, so without this synchronisation a reader of
+		// the ring buffer (e.g. a test waiting on done) may observe the last
+		// line(s) missing.
+		proc.scannerWg.Wait()
 		close(proc.done)
 	}()
 
