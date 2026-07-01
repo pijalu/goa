@@ -150,6 +150,12 @@ type Context struct {
 	// /export to collect an issue description without opening a modal prompt.
 	RequestMainInput func(prompt string, onSubmit func(text string))
 
+	// ClarifyFunc renders a ClarifyCard in the conversation viewport and routes
+	// the answer through the main input line (editor title set to the question).
+	// It BLOCKS until the user answers or cancels. ok==false means cancelled.
+	// Used by the ask_user_question tool.
+	ClarifyFunc func(card *tui.ClarifyCard) (answer string, ok bool)
+
 	// WorktreeManager manages git worktrees for sandboxed operations.
 	WorktreeManager *internal.WorktreeManager
 
@@ -399,6 +405,16 @@ func (c Context) ShowInput(prompt, current string, onSubmit func(value string, o
 	} else if onSubmit != nil {
 		onSubmit("", false)
 	}
+}
+
+// Clarify displays a ClarifyCard in the conversation and blocks until the user
+// answers via the main input line. It returns the answer and ok==false when
+// the user cancels (or no host callback is configured).
+func (c Context) Clarify(card *tui.ClarifyCard) (string, bool) {
+	if c.ClarifyFunc == nil {
+		return "", false
+	}
+	return c.ClarifyFunc(card)
 }
 
 // Flash sends a transient flash message to the chat/status area.

@@ -203,6 +203,16 @@ func (cv *ChatViewport) AddComponent(comp Component) {
 	cv.Append(MessageEntry{Data: MessageData{Type: -1}, View: comp})
 }
 
+// AddClarifyCard appends a clarification card (from the ask_user_question tool)
+// into the conversation viewport. The card is display-only; the answer is
+// captured on the main input line by the host.
+func (cv *ChatViewport) AddClarifyCard(card *ClarifyCard) {
+	if card == nil {
+		return
+	}
+	cv.Append(MessageEntry{Data: MessageData{Type: -1}, View: card})
+}
+
 // AddToolExecution adds an interactive ToolExecutionComponent and returns it.
 func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionComponent {
 	tc := NewToolExecution(name, FormatToolArgs(name, argsJSON))

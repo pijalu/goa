@@ -65,6 +65,9 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		RequestMainInput: func(prompt string, onSubmit func(string)) {
 			app.requestMainInput(prompt, onSubmit)
 		},
+		ClarifyFunc: func(card *tui.ClarifyCard) (string, bool) {
+			return app.clarify(card)
+		},
 		SubmitToAgent: func(text string) {
 			subs.chat.AddUserMessage(text)
 			subs.tuiEngine.RequestRender()

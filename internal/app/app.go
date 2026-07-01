@@ -20,6 +20,7 @@ import (
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/skills"
+	"github.com/pijalu/goa/tui"
 )
 
 // App owns the application's runtime state and event routing.
@@ -227,6 +228,46 @@ func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), o
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
+}
+
+// clarify renders a ClarifyCard in the conversation and blocks until the user
+// answers on the main input line. It is the host backend for the
+// ask_user_question tool (core.Context.ClarifyFunc). Because tool execution
+// happens off the commandLoop, ALL state mutations (card append, pendingInput
+// registration, title set) are routed through app.apply so the commandLoop
+// remains the sole mutator. The blocking happens here on the tool goroutine.
+func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
+	type result struct{ text string; ok bool }
+	resCh := make(chan result, 1)
+
+	a.apply(func() {
+		if a.subs.chat != nil {
+			a.subs.chat.AddClarifyCard(card)
+		}
+		prompt := card.Question()
+		if t := card.Title(); t != "" {
+			if prompt == "" {
+				prompt = t
+			} else {
+				prompt = t + ": " + prompt
+			}
+		}
+		// Seed the editor empty so the previous message text doesn't linger.
+		if inp := a.subs.getInput(); inp != nil {
+			inp.SetText("")
+		}
+		a.requestMainInputWithCancel(prompt, func(text string) {
+			resCh <- result{text, true}
+		}, func() {
+			resCh <- result{"", false}
+		}, true)
+		if a.subs.tuiEngine != nil {
+			a.subs.tuiEngine.RequestRender()
+		}
+	})
+
+	r := <-resCh
+	return r.text, r.ok
 }
 
 // clearMainInputRequest clears any pending main-input request and restores the
