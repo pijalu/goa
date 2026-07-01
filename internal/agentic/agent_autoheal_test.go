@@ -1,7 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-//
-// Copyright (C) 2026 Pierre Poissinger
-
 package agentic
 
 import (
@@ -46,6 +42,51 @@ func TestAutoHealToolCalls(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("terminal tool was not executed via auto-heal")
+	}
+}
+
+func TestAutoHealToolCalls_EmitsDecodingProgress(t *testing.T) {
+	events := []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "I will call the terminal tool.\n<tool_call>{"},
+		{Type: provider.EventTextDelta, Delta: `"name":"terminal","arguments":{"command":"echo hello"}}`},
+		{Type: provider.EventTextDelta, Delta: `</tool_call>`},
+	}
+	p := registerTestProvider("autoheal-progress", events)
+	mdl := testModel(p.api)
+
+	tool := &autoHealMockTool{
+		name: "terminal",
+		exec: func(input string) (string, error) { return "hello", nil },
+	}
+
+	agent := NewAgent(Config{
+		Model:             mdl,
+		SystemPrompt:      "test",
+		Tools:             []Tool{tool},
+		AutoHealToolCalls: true,
+	})
+
+	var progress []string
+	agent.AddObserver(OutputObserverFunc(func(ev OutputEvent) {
+		if ev.Type == EventProgress && ev.Text != "" {
+			progress = append(progress, ev.Text)
+		}
+	}))
+
+	_, err := agent.RunAndCollect(context.Background(), "run echo")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	found := false
+	for _, text := range progress {
+		if strings.Contains(text, "Decoding tool calls") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected progress event with 'Decoding tool calls', got %q", progress)
 	}
 }
 

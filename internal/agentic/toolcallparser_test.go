@@ -61,6 +61,15 @@ func TestStripToolMarkup(t *testing.T) {
 	}
 }
 
+func TestStripToolMarkup_PreservesLeadingAndTrailingSpaces(t *testing.T) {
+	content := `  Hello <tool_call>{"name":"x"}</tool_call> world  `
+	got := stripToolMarkup(content, true)
+	want := "  Hello  world  "
+	if got != want {
+		t.Errorf("stripToolMarkup = %q, want %q", got, want)
+	}
+}
+
 func TestHasToolSignal(t *testing.T) {
 	if !hasToolSignal(`foo <tool_call>{`) {
 		t.Error("expected signal for tool_call")

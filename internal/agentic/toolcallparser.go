@@ -56,9 +56,6 @@ func stripToolMarkup(text string, final bool) string {
 	for _, p := range pats {
 		text = p.ReplaceAllString(text, "")
 	}
-	if final {
-		return strings.TrimSpace(text)
-	}
 	return text
 }
 

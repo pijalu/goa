@@ -1413,6 +1413,11 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		return false
 	}
 
+	a.emitEvent(OutputEvent{
+		Type: EventProgress,
+		Text: "Decoding tool calls...",
+	})
+
 	calls := parseToolCallsFromText(combined, 0, true)
 	if len(calls) == 0 {
 		return false
