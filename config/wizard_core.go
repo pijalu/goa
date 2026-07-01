@@ -30,6 +30,7 @@ func RunSetupWizard(projectDir string, loader *CascadeLoader) (*WizardResult, er
 
 	done := make(chan *WizardResult, 1)
 	w := newWizardComponent(cfg, loader, projectDir, done)
+	w.tui = engine
 	engine.AddChild(w)
 	engine.SetFocus(w)
 	w.initDefaults()
@@ -125,6 +126,7 @@ type wizardComponent struct {
 	config     *Config
 	loader     *CascadeLoader
 	projectDir string
+	tui        *tui.TUI
 	done       chan<- *WizardResult
 	state      wizardState
 	cancelled  bool

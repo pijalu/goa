@@ -269,13 +269,13 @@ func (w *wizardComponent) advanceFromEndpoint() {
 	w.commitTextInput()
 	s := w.currentSlot()
 	s.endpoint = w.editor.Text()
-	w.inputMode = "apikey"
 	w.editor.Clear()
 	if w.state == stateCompanionProviderEndpoint {
 		w.state = stateCompanionProviderKey
 	} else {
 		w.state = stateProviderKey
 	}
+	w.startKeyInput(s)
 }
 
 func (w *wizardComponent) advanceFromKey() {
@@ -289,6 +289,34 @@ func (w *wizardComponent) advanceFromKey() {
 	}
 	w.inputMode = ""
 	w.editor.Clear()
+}
+
+func (w *wizardComponent) startKeyInput(s *modelSlot) {
+	if w.tui == nil {
+		return
+	}
+	ch := w.tui.ShowInput(fmt.Sprintf("API key for %s:", s.providerName), s.apiKey)
+	go func() {
+		result := <-ch
+		if result == "" {
+			return
+		}
+		w.tui.Apply(func() {
+			// Find the current slot again (the pointer might be stale if the wizard
+			// was restarted or companion was added during the wait).
+			cs := w.currentSlot()
+			cs.apiKey = result
+			w.editor.Clear()
+			w.inputMode = ""
+			// Advance to test state
+			if w.state == stateCompanionProviderKey {
+				w.state = stateCompanionProviderTest
+			} else {
+				w.state = stateProviderTest
+			}
+			w.fetchAvailableModels(cs)
+		})
+	}()
 }
 
 func (w *wizardComponent) advanceFromTest() {
@@ -306,6 +334,47 @@ func (w *wizardComponent) advanceFromTest() {
 	} else {
 		w.initModelSetup("")
 	}
+}
+
+func (w *wizardComponent) startEndpointInput(s *modelSlot) {
+	if w.tui == nil {
+		return
+	}
+	ch := w.tui.ShowInput("API endpoint URL:", s.endpoint)
+	go func() {
+		result := <-ch
+		if result == "" {
+			return
+		}
+		w.tui.Apply(func() {
+			cs := w.currentSlot()
+			cs.endpoint = result
+			if cs.selectedPresetIndex < 0 {
+				cs.providerID = DeriveProviderID(result)
+				cs.providerName = deriveProviderName(result)
+			}
+			w.editor.Clear()
+			w.inputMode = ""
+			// Determine if API key is needed
+			presets := PresetProviders()
+			needsKey := cs.selectedPresetIndex >= 0 && cs.selectedPresetIndex < len(presets) && presets[cs.selectedPresetIndex].NeedsAPIKey
+			if needsKey {
+				if w.state == stateCompanionProviderEndpoint {
+					w.state = stateCompanionProviderKey
+				} else {
+					w.state = stateProviderKey
+				}
+				w.startKeyInput(cs)
+			} else {
+				if w.state == stateCompanionProviderEndpoint {
+					w.state = stateCompanionProviderTest
+				} else {
+					w.state = stateProviderTest
+				}
+				w.fetchAvailableModels(cs)
+			}
+		})
+	}()
 }
 
 func (w *wizardComponent) advanceFromModelSelect() {
@@ -362,12 +431,14 @@ func (w *wizardComponent) advanceCompanionFromProviderType() {
 	switch {
 	case s.selectedPresetIndex == -1:
 		w.state = stateCompanionProviderEndpoint
-		w.inputMode = "endpoint"
+		w.inputMode = ""
 		w.editor.Clear()
+		w.startEndpointInput(s)
 	case s.selectedPresetIndex >= 0 && s.selectedPresetIndex < len(presets) && presets[s.selectedPresetIndex].NeedsAPIKey:
 		w.state = stateCompanionProviderKey
-		w.inputMode = "apikey"
+		w.inputMode = ""
 		w.editor.Clear()
+		w.startKeyInput(s)
 	default:
 		w.state = stateCompanionProviderTest
 		w.inputMode = ""
@@ -391,12 +462,14 @@ func (w *wizardComponent) advanceFromProviderType() {
 	switch {
 	case w.main.selectedPresetIndex == -1:
 		w.state = stateProviderEndpoint
-		w.inputMode = "endpoint"
+		w.inputMode = ""
 		w.editor.Clear()
+		w.startEndpointInput(&w.main)
 	case w.main.selectedPresetIndex >= 0 && w.main.selectedPresetIndex < len(presets) && presets[w.main.selectedPresetIndex].NeedsAPIKey:
 		w.state = stateProviderKey
-		w.inputMode = "apikey"
+		w.inputMode = ""
 		w.editor.Clear()
+		w.startKeyInput(&w.main)
 	default:
 		w.state = stateProviderTest
 		w.inputMode = ""
@@ -976,27 +1049,38 @@ func (w *wizardComponent) renderProviderType(width int) []string {
 }
 
 func (w *wizardComponent) renderProviderEndpoint(width int) []string {
-	disp := ansi.Faint + "(type here)" + ansi.Reset
-	if w.editor.Text() != "" {
-		disp = ansi.RenderWithCursor(w.editor.Text(), w.editor.Cursor())
-	}
 	var lines []string
 	lines = append(lines, w.renderHeader("Provider Endpoint", w.stepForState(w.state), 9)...)
-	lines = append(lines, "  Enter the API endpoint URL:", "", "> "+disp, "")
+	if w.inputMode != "endpoint" {
+		lines = append(lines, "  Enter the API endpoint URL:", "  (enter in the input line at the bottom)")
+	} else {
+		disp := ansi.Faint + "(type here)" + ansi.Reset
+		if w.editor.Text() != "" {
+			disp = ansi.RenderWithCursor(w.editor.Text(), w.editor.Cursor())
+		}
+		lines = append(lines, "", "> "+disp, "")
+	}
 	lines = append(lines, ansi.Faint+"  [Enter] Confirm  [Esc] Back"+ansi.Reset)
 	return lines
 }
 
 func (w *wizardComponent) renderProviderKey(width int) []string {
 	s := w.currentSlot()
-	disp := ansi.Faint + "(paste key)" + ansi.Reset
-	if w.editor.Text() != "" {
-		masked := strings.Repeat("*", len([]rune(w.editor.Text())))
-		disp = ansi.RenderWithCursor(masked, w.editor.Cursor())
-	}
 	var lines []string
 	lines = append(lines, w.renderHeader("API Key", w.stepForState(w.state), 9)...)
-	lines = append(lines, fmt.Sprintf("  API key for %s:", s.providerName), "", "> "+disp, "")
+	if w.inputMode != "apikey" {
+		// Using TUI's input overlay. Show a simple instruction.
+		lines = append(lines, fmt.Sprintf("  API key for %s:", s.providerName))
+		lines = append(lines, "  (enter in the input line at the bottom)")
+	} else {
+		// Fallback: embedded editor mode (used when ShowInput is unavailable).
+		disp := ansi.Faint + "(paste key)" + ansi.Reset
+		if w.editor.Text() != "" {
+			masked := strings.Repeat("*", len([]rune(w.editor.Text())))
+			disp = ansi.RenderWithCursor(masked, w.editor.Cursor())
+		}
+		lines = append(lines, "", "> "+disp, "")
+	}
 	lines = append(lines, ansi.Faint+"  [Enter] Confirm  [Esc] Back"+ansi.Reset)
 	return lines
 }
