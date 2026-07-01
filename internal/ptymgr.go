@@ -6,7 +6,6 @@ package internal
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -108,11 +107,9 @@ func (pm *PTYManager) readOutput(s *PTYSession) {
 		}
 		n, err := s.PTY.Read(buf)
 		if err != nil {
-			if err != io.EOF {
-				s.mu.Lock()
-				s.running = false
-				s.mu.Unlock()
-			}
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
 			return
 		}
 		if n > 0 {
@@ -196,6 +193,13 @@ collect:
 		return result, nil
 	}
 	return "", nil
+}
+
+// IsRunning returns whether the PTY session's process is still running.
+func (s *PTYSession) IsRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
 }
 
 // Resize changes the PTY dimensions.

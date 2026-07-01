@@ -35,13 +35,23 @@ func TestPTYManager_Start_StartsCommand(t *testing.T) {
 	if session.ID != "test1" {
 		t.Errorf("session.ID = %q, want %q", session.ID, "test1")
 	}
-	if !session.running {
-		t.Error("session should be running after Start")
-	}
 	// Give output time to arrive
 	time.Sleep(100 * time.Millisecond)
 	if session.Buffer.Len() == 0 {
 		t.Error("session should have output after command runs")
+	}
+}
+
+func TestPTYManager_Start_ReportsRunning(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	session, err := mgr.Start("running-test", "sleep 60", 80, 24)
+	if err != nil {
+		t.Fatalf("Start should succeed: %v", err)
+	}
+	if !session.IsRunning() {
+		t.Error("session should be running after Start")
 	}
 }
 
@@ -219,7 +229,7 @@ func TestPTYManager_List_ShowsSessionDetails(t *testing.T) {
 	mgr := NewPTYManager()
 	defer mgr.Cleanup()
 
-	mgr.Start("list-test", "echo data", 80, 24)
+	mgr.Start("list-test", "sleep 60", 80, 24)
 	time.Sleep(50 * time.Millisecond)
 
 	sessions := mgr.List()
@@ -240,6 +250,28 @@ func TestPTYManager_List_ShowsSessionDetails(t *testing.T) {
 	}
 	if !found {
 		t.Error("Session list-test not found in listing")
+	}
+}
+
+func TestPTYManager_List_FinishedSessionMarkedStopped(t *testing.T) {
+	mgr := NewPTYManager()
+	defer mgr.Cleanup()
+
+	mgr.Start("finished-test", "echo done", 80, 24)
+	time.Sleep(200 * time.Millisecond)
+
+	sessions := mgr.List()
+	found := false
+	for _, s := range sessions {
+		if s.ID == "finished-test" {
+			found = true
+			if s.Running {
+				t.Error("Finished session should be marked as stopped")
+			}
+		}
+	}
+	if !found {
+		t.Error("Session finished-test not found in listing")
 	}
 }
 
