@@ -83,7 +83,7 @@ func PresetProviders() []ProviderPreset {
 		},
 		{
 			ID:           "opencode-go",
-			Name:         "OpenCode Zen Go",
+			Name:         "OpenCode Go",
 			Endpoint:     "https://opencode.ai/zen/go/v1",
 			DefaultModel: "deepseek-v4-flash",
 			NeedsAPIKey:  true,
