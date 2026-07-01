@@ -54,13 +54,23 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 			}()
 		},
 		ShowInputFunc: func(prompt, current string, onSubmit func(string, bool)) {
-			ch := subs.tuiEngine.ShowInput(prompt, current)
-			go func() {
-				value := <-ch
+			// Input discipline (docs/TUI.md): route ALL text input through the main
+			// input line (with the editor title set to the prompt) rather than a
+			// throwaway overlay Input. This preserves the (value, ok) contract:
+			// non-empty submit => ok=true; cancel (empty/Ctrl+C) => ok=false.
+			// The callbacks run later on the commandLoop, so no apply() wrapper.
+			if inp := subs.getInput(); inp != nil {
+				inp.SetText(current)
+			}
+			app.requestMainInputWithCancel(prompt, func(text string) {
 				if onSubmit != nil {
-					app.apply(func() { onSubmit(value, value != "") })
+					onSubmit(text, true)
 				}
-			}()
+			}, func() {
+				if onSubmit != nil {
+					onSubmit("", false)
+				}
+			}, true)
 		},
 		RequestMainInput: func(prompt string, onSubmit func(string)) {
 			app.requestMainInput(prompt, onSubmit)

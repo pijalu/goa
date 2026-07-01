@@ -235,17 +235,11 @@ func modelSelectorLess(items []tui.SelectorItem, active string) func(i, j int) b
 }
 
 func (a *App) promptCustomModel() {
-	subs := a.subs
-	if subs.tuiEngine == nil {
-		return
-	}
-	ch := subs.tuiEngine.ShowInput("Enter custom model name:", "")
-	go func() {
-		selected := <-ch
+	a.requestMainInput("Enter custom model name:", func(selected string) {
 		if selected != "" {
-			a.apply(func() { a.applyModelSelection(selected) })
+			a.applyModelSelection(selected)
 		}
-	}()
+	})
 }
 
 func (a *App) applyModelSelection(selected string) {
