@@ -6,6 +6,8 @@ Copyright (C) 2026 Pierre Poissinger
 
 # ⟡ Goa — Terminal-native AI Coding Agent
 
+🌐 **Website:** <https://pijalu.github.io/goa/> (source in [`web/`](web/), deployed via GitHub Pages)
+
 Goa is a terminal-native AI coding agent with **full LLM transparency**, **multi-agent collaboration**, and an ANSI TUI engine (inspired by pi / OpenCode / kimi-code). It uses the merged **Agent SDK** in `internal/agentic/` to orchestrate conversations with any OpenAI-compatible LLM provider (OpenAI, llama.cpp, LM Studio, Ollama) and exposes a powerful tool system for interacting with your codebase.
 
 > **Status:** Active development. See `bugs.md` for current issues.

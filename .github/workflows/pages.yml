@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+name: pages
+
+# Deploys the project landing page (web/) to GitHub Pages.
+# The page source lives under web/ — NOT in the repo root — per the
+# "Input/repo layout" decision. Repo Settings → Pages → Source must be set
+# to "GitHub Actions" (one-time manual setting; see README).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent Pages deployment.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
