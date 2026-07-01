@@ -18,6 +18,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 	"github.com/pijalu/goa/internal/perms"
 	"github.com/pijalu/goa/internal/toolaccess"
 )
@@ -143,6 +144,15 @@ type Agent struct {
 	// even if the model issued some, ending the turn after the results are
 	// appended to history.
 	stopBatchAfterThis bool
+
+	// overflowRecoveryAttempted tracks whether an overflow-triggered
+	// context compression + stream retry has already been attempted in
+	// the current turn. Prevents infinite retry loops when compression
+	// cannot free enough space. Reset at the start of each turn in
+	// prepareTurn.
+	overflowRecoveryAttempted bool
+
+
 
 	// lastAssistantHash and assistantRepeatCount detect assistant-message
 	// loops where the model emits the same text/thinking across consecutive
@@ -1054,6 +1064,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.lastCallKey = ""
 	a.consecutiveCount = 0
 	a.streamLoopDetected = false
+	a.overflowRecoveryAttempted = false
 	a.mu.Unlock()
 
 	if err := a.maybeCompress(ctx); err != nil {
@@ -1083,6 +1094,19 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 
 	if errors.Is(streamErr, context.Canceled) {
 		return true, streamErr
+	}
+
+	// Overflow guard: only one compress+retry per turn.  If compression
+	// cannot free enough space, the second overflow kills the turn with
+	// a clear error instead of retrying into an infinite loop.
+	if isContextLengthError(streamErr) {
+		if a.overflowRecoveryAttempted {
+			a.cfg.Logger.Log(Error, "Overflow recovery failed after compress+retry — giving up")
+			a.emitEvent(OutputEvent{Type: EventProgress, Text: "Context overflow recovery failed — compress+retry cycle exhausted. The conversation is too long for this model's context window."})
+			return true, fmt.Errorf("context overflow: compression freed insufficient space after retry; try a larger context window model or reset the session")
+		}
+		a.overflowRecoveryAttempted = true
+		a.cfg.Logger.Log(Info, "Overflow recovery: compressing context and retrying once")
 	}
 
 	a.cfg.Logger.Log(Warn, "stream error, retrying: %v", streamErr)
@@ -1388,6 +1412,7 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 		// to send back to the model, so the turn ends here.
 		hadRealExecution := a.executeBufferedToolCalls(ctx)
 		a.emitTurnStats()
+		a.checkSilentOverflow()
 		a.emitEvent(OutputEvent{Type: EventEnd})
 		if a.stopBatchAfterThis {
 			a.stopBatchAfterThis = false
@@ -1412,7 +1437,17 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 	}
 	a.recordGenDuration()
 	toolCallsEncountered := a.completeStreamTurn(ctx)
-	return toolCallsEncountered, stream.Err()
+	if err := stream.Err(); err != nil {
+		// When the stream terminates with an error (for example an HTTP 400
+		// from LM Studio with context_length_exceeded) before producing any
+		// SSE events, the stream has no events — consumeStream runs zero
+		// iterations and falls through to finishStreamTurn. call
+		// handleContextError here so context compression can fire and free
+		// space before the caller retries.
+		a.handleContextError(err)
+		return toolCallsEncountered, err
+	}
+	return toolCallsEncountered, nil
 }
 
 // resolveStreamError extracts the error from a stream error event.
@@ -1441,6 +1476,7 @@ func (a *Agent) finalizeStreamTurn() {
 	// Emit token/context stats before EventEnd so consumers can log/use them
 	// when the turn officially completes.
 	a.emitTurnStats()
+	a.checkSilentOverflow()
 	a.emitEvent(OutputEvent{Type: EventEnd})
 }
 
@@ -2738,6 +2774,28 @@ func widenBoundaryForChains(history []Message, boundary int) int {
 	return boundary
 }
 
+// checkSilentOverflow detects providers that silently accept an oversized
+// prompt and return a successful response instead of an error (e.g. z.ai,
+// Xiaomi MiMo-style truncation).  When the estimated context usage exceeds
+// the configured window, it schedules compression for the next turn.
+func (a *Agent) checkSilentOverflow() {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens == 0 {
+		return
+	}
+	stats := a.computeContextStats()
+	if stats.UsagePercent < 95 {
+		return
+	}
+	a.cfg.Logger.Log(Warn, "Silent overflow detected: %d%% usage (%d / %d tokens)",
+		stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
+	a.emitEvent(OutputEvent{
+		Type:         EventContextStats,
+		ContextStats: &stats,
+		Text:         "warning: context usage ≥ 95% without provider error — proactive compression will fire on next turn",
+	})
+}
+
 // handleContextError checks if the error is a context-length error and, if
 // OnContextError is enabled, applies tool elision compression as fallback.
 func (a *Agent) handleContextError(err error) {
@@ -2754,11 +2812,19 @@ func (a *Agent) handleContextError(err error) {
 }
 
 // isContextLengthError reports whether the error indicates the LLM's context
-// window was exceeded.
+// window was exceeded. It uses both structured classification (checking
+// ProviderError.IsContextOverflow via hooks.IsContextOverflow) and string
+// matching so that all provider error formats are recognised.
 func isContextLengthError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Structured check first — catches ProviderError where the hook
+	// pipeline already classified IsContextOverflow=true.
+	if hooks.IsContextOverflow(err) {
+		return true
+	}
+	// Fallback string matching for errors not wrapped as ProviderError.
 	msg := strings.ToLower(err.Error())
 	patterns := []string{
 		"context_length_exceeded",

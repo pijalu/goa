@@ -44,6 +44,7 @@ type Defaults struct {
 type ErrorRules struct {
 	RetryableStatuses       []int    `json:"retryable_statuses,omitempty"`
 	ContextOverflowPatterns []string `json:"context_overflow_patterns,omitempty"`
+	NonOverflowPatterns     []string `json:"non_overflow_patterns,omitempty"`
 	RetryAfterHeader        string   `json:"retry_after_header,omitempty"`
 	RetryAfterMsHeader      string   `json:"retry_after_ms_header,omitempty"`
 	RetryOnceStatuses       []int    `json:"retry_once_statuses,omitempty"`

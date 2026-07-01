@@ -5,7 +5,9 @@
 package hooks
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
@@ -48,12 +50,27 @@ type ErrorContext struct {
 }
 
 // ToError returns a structured provider error.
+// When Err is nil but the error context has classification fields set
+// (IsContextOverflow, IsRateLimit, IsRetryable) or a non-empty Body,
+// it synthesises an error from the body text so that the classification
+// is not silently lost. Without this, HTTP-level errors (for example
+// LM Studio returning 400 with context_length_exceeded) close the
+// stream with a nil error, and the agent never triggers compression.
 func (c *ErrorContext) ToError() error {
-	if c.Err == nil {
-		return nil
+	err := c.Err
+	if err == nil {
+		if c.Body != "" || c.IsContextOverflow || c.IsRateLimit || c.IsRetryable || c.StatusCode != 0 {
+			body := strings.TrimSpace(c.Body)
+			if body == "" {
+				body = fmt.Sprintf("provider error (HTTP %d)", c.StatusCode)
+			}
+			err = fmt.Errorf("%s", body)
+		} else {
+			return nil
+		}
 	}
 	return &ProviderError{
-		Err:               c.Err,
+		Err:               err,
 		IsRetryable:       c.IsRetryable,
 		IsContextOverflow: c.IsContextOverflow,
 		IsRateLimit:       c.IsRateLimit,

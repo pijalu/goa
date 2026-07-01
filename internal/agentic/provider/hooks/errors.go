@@ -7,6 +7,7 @@ package hooks
 import (
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -47,7 +48,15 @@ func (h *ErrorHook) ApplyError(ctx *ErrorContext) error {
 		body += " " + strings.ToLower(ctx.Err.Error())
 	}
 
-	ctx.IsContextOverflow = isContextOverflow(body, h.profile.ErrorRules.ContextOverflowPatterns)
+	// Check non-overflow patterns FIRST — these suppress overflow detection
+	// for errors like Bedrock "Throttling error: Too many tokens" that
+	// would otherwise falsely trigger.
+	if isNonOverflow(body, h.profile.ErrorRules.NonOverflowPatterns) {
+		ctx.IsContextOverflow = false
+	} else {
+		ctx.IsContextOverflow = isContextOverflow(body, h.profile.ErrorRules.ContextOverflowPatterns)
+	}
+
 	ctx.IsRateLimit = ctx.StatusCode == http.StatusTooManyRequests || containsAny(body, rateLimitPatterns)
 	ctx.IsRetryable = ctx.IsRateLimit || ctx.IsContextOverflow || isRetryableStatus(ctx.StatusCode, h.profile.ErrorRules.RetryableStatuses)
 
@@ -101,8 +110,31 @@ var defaultContextOverflowPatterns = []string{
 	"sequence length",
 	"model's context window",
 	"exceeds the maximum",
+	"context size",           // catches llama.cpp "max context size" / "available context size"
 	"context size limit",
+	"exceed_context",         // catches llama.cpp type field "exceed_context_size_error"
 	"too long",
+}
+
+// defaultContextOverflowRegexes catches patterns that substring matching
+// would miss due to boundary characters (e.g. "tokens) exceeds" vs.
+// "tokens exceed").  Each regex is checked before the substring list.
+var defaultContextOverflowRegexes = []*regexp.Regexp{
+	regexp.MustCompile(`input\s*\(\d+\s*tokens\)\s*(?:is\s+longer|exceeds)`),           // Together AI, llama.ccp
+	regexp.MustCompile(`exceeds\s+the\s+(?:available\s+)?context\s+size`),                    // llama.ccp exact
+	regexp.MustCompile(`input\s+token\s+count.*exceeds\s+the\s+maximum`),                      // Google Gemini
+	regexp.MustCompile(`exceeds\s+(?:the\s+)?(?:model'?s\s+)?maximum\s+context\s+length`),      // OpenAI, LiteLLM
+}
+
+// defaultNonOverflowPatterns are patterns that, when present in an error,
+// suppress context-overflow classification.  This prevents false positives
+// from providers whose non-overflow errors happen to contain overflow-like
+// substrings (e.g. Bedrock "Throttling error: Too many tokens" contains
+// "too many tokens" which matches defaultContextOverflowPatterns).
+var defaultNonOverflowPatterns = []string{
+	"throttling error",    // AWS Bedrock throttling
+	"rate limit",          // HTTP 429 rate limiting
+	"too many requests",   // HTTP 429 style
 }
 
 var rateLimitPatterns = []string{
@@ -112,7 +144,27 @@ var rateLimitPatterns = []string{
 }
 
 func isContextOverflow(body string, custom []string) bool {
+	// Check regex-based patterns first — these catch boundary conditions
+	// that substring matching would miss.
+	for _, re := range defaultContextOverflowRegexes {
+		if re.MatchString(body) {
+			return true
+		}
+	}
+	// Fallback substring matching for literal patterns.
 	for _, p := range append(defaultContextOverflowPatterns, custom...) {
+		if p != "" && strings.Contains(body, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isNonOverflow returns true when the body matches a known non-overflow
+// pattern, indicating that overflow classification should be suppressed
+// even if the body also matches an overflow pattern.
+func isNonOverflow(body string, custom []string) bool {
+	for _, p := range append(defaultNonOverflowPatterns, custom...) {
 		if p != "" && strings.Contains(body, strings.ToLower(p)) {
 			return true
 		}

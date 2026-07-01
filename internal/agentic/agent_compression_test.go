@@ -548,9 +548,11 @@ func TestIsContextLengthError(t *testing.T) {
 		{"context window exceeded", true}, // "context window"
 		{"context_length_exceeded", true}, // exact
 		{"max_tokens", true},              // exact
-		// Patterns only the dead isContextError knew about — no longer detected.
-		{"prompt is too long", false},
-		{"input length exceeded", false},
+		// Patterns recognised by hooks.IsContextOverflow (which we now delegate to
+		// before string matching). These are also legitimate context overflow
+		// indicators from various providers.
+		{"prompt is too long", true},
+		{"input length exceeded", true},
 		{"reduce the length", false},
 		{"random error", false},
 		{"", false},

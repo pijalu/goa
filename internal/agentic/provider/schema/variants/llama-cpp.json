@@ -1,6 +1,6 @@
 {
-  "id": "lm-studio",
-  "match": { "api": "openai-completions", "provider": "lm-studio" },
+  "id": "llama-cpp",
+  "match": { "api": "openai-completions", "provider": "llama-cpp" },
   "defaults": { "temperature": 0.7, "max_tokens": 4096 },
   "compat": {
     "supports_store": false,
@@ -22,7 +22,8 @@
   "error_rules": {
     "retryable_statuses": [429, 500, 502, 503, 504],
     "context_overflow_patterns": [
-      "greater than the context length"
+      "exceeds the available context size",
+      "larger than the max context size"
     ]
   }
 }

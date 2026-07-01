@@ -226,6 +226,9 @@ func mergeErrorRules(e *ErrorRules, o ErrorRules) {
 	if len(o.ContextOverflowPatterns) > 0 {
 		e.ContextOverflowPatterns = o.ContextOverflowPatterns
 	}
+	if len(o.NonOverflowPatterns) > 0 {
+		e.NonOverflowPatterns = o.NonOverflowPatterns
+	}
 }
 
 func setIfNonEmpty(dst *string, value string) {
