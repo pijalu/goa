@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+id: implement-feature
+name: Implement Feature
+description: Plan, implement, and review a feature using team collaboration
+stages:
+  - id: plan
+    name: Plan
+    agent: planner
+    prompt: plan.md
+
+  - id: implement
+    name: Implement
+    agent: coder
+    prompt: implement.md
+
+  - id: review
+    name: Review
+    agent: reviewer
+    prompt: review.md

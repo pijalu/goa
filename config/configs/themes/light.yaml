@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+# Goa Light Theme (GitHub-light inspired)
+name: "light"
+colors:
+  thinking_border:
+    hex: "#d0d7de"
+  thinking_text:
+    hex: "#656d76"
+    italic: true
+  thinking_pane_bg:
+    hex: "#ffffff"
+  tool_running:
+    hex: "#9a6700"
+  tool_success:
+    hex: "#1a7f37"
+  tool_error:
+    hex: "#cf222e"
+  token_prompt:
+    hex: "#0969da"
+  token_thinking:
+    hex: "#8250df"
+  token_completion:
+    hex: "#1a7f37"
+  token_warning:
+    hex: "#9a6700"
+  token_critical:
+    hex: "#cf222e"
+  finish_stop:
+    hex: "#1a7f37"
+  finish_tool_calls:
+    hex: "#9a6700"
+  finish_length:
+    hex: "#cf222e"
+  user_msg:
+    hex: "#1f2328"
+  assistant_msg:
+    hex: "#1f2328"
+  system_msg:
+    hex: "#656d76"
+  status_bar_bg:
+    hex: "#f6f8fa"
+  status_bar_fg:
+    hex: "#656d76"
+  chat_bg:
+    hex: "#ffffff"
+  sidebar_bg:
+    hex: "#f6f8fa"
+  log_bg:
+    hex: "#ffffff"
+  input_bg:
+    hex: "#f6f8fa"
+  border_default:
+    hex: "#d0d7de"
+  border_focused:
+    hex: "#0969da"
+  selection_bg:
+    hex: "#0969da"
+    bold: true
+  goa_panel_bg:
+    hex: "#f6f8fa"
+  goa_panel_border:
+    hex: "#d0d7de"

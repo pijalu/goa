@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+id: goa-wizard
+name: Goa Wizard
+version: 0.1.0
+description: Ralph-loop development wizard — plan/review → code/review → test → compare
+entry: plugin.js
+goa_min_version: "0.1.0"

@@ -1,0 +1,206 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+# Goa default configuration
+# This is the embedded default — user configs in ~/.goa/config.yaml,
+# .goa/config.yaml, and .goa/config.local.yaml override these values.
+
+active_provider: ""
+active_model: ""
+
+mode:
+  default:
+    major: "coder"
+    skills: []
+  defaults: {}
+
+execution:
+  mode: "solo"
+  retries: 2
+  token_warning: 70
+  token_critical: 90
+  loop_warning: 3
+  loop_interrupt: 5
+  activity_timeout: "30s"
+  error_threshold: 0.5
+  worktree_mode: "multi_agent"
+  auto_save_model: true
+  max_tool_repeat: 1
+  # Hard per-turn cap on tool calls. Set generously: real coding tasks (read,
+  # search, edit, run tests, iterate) routinely need dozens. True infinite
+  # loops are caught separately by loop_warning/loop_interrupt above, so this
+  # is only a backstop against runaway agents.
+  max_tool_calls: 50
+  # Local models (LM Studio, Ollama, etc.) sometimes emit tool calls as XML
+  # markup inside content or reasoning streams instead of native tool_calls.
+  # Auto-heal extracts and executes these malformed calls so the turn keeps
+  # progressing.
+  auto_heal_tool_calls: true
+
+providers: []
+
+models: []
+
+context_compression:
+  enabled: true
+  # 0 means "auto": use the active model's advertised context window.
+  max_tokens: 0
+  threshold_percent: 80
+  # Primary strategy: micro compaction after 1h idle.
+  # On context-length errors, tool elision is applied as fallback.
+  on_context_error: true
+  strategy: "micro"
+  preserve_recent_turns: 4
+  micro_compaction:
+    keep_recent_messages: 20
+    min_content_tokens: 100
+    cache_miss_threshold: "1h"
+    truncated_marker: "[Old tool result content cleared]"
+    min_context_ratio: 0.5
+
+telegram:
+  enabled: true
+
+multi_agent:
+  enabled: false
+  pattern: "pair"
+  max_companion_cycles: 2
+  companion_provider: ""
+  companion_model: ""
+  planner_model: ""
+  coder_model: ""
+  message_timeout: "120s"
+  show_inter_agent_messages: true
+
+memory:
+  enabled: true
+  dir: ".goa/memory"
+  auto_summarize: true
+  dream:
+    enabled: false
+    auto: false
+    interval: "7d"
+    min_sessions: 5
+    model: ""
+    provider: ""
+    max_tokens: 8192
+    temperature: 0.2
+    output_dir: ".goa/memory.dream"
+    consolidated_dir: ".goa/memory.consolidated"
+    apply_after_review: false
+
+skills:
+  dirs:
+    - ".goa/skills"
+  embedded: true
+
+tools:
+  bash:
+    blocked_commands:
+      - "rm -rf /"
+      - "rm -rf ~"
+      - "sudo rm"
+      - ":(){ :|:& };:"  # fork bomb
+      - "mkfs"
+      - "dd if=/dev/zero"
+    allowed_commands: []
+    env_mask_patterns:
+      - "*KEY*"
+      - "*TOKEN*"
+      - "*SECRET*"
+      - "*PASSWORD*"
+    compress_output:  # null = auto-detect based on provider (local=on, remote=off)
+    jail: false
+  ssh:
+    hosts: []
+  edit:
+    allow_fuzz_on_edits: true
+    fuzzy_match: true
+  write:
+    fuzzy_match: true
+  read_file:
+    fuzzy_match: true
+  webfetch:
+    enabled: true
+    max_lines_default: 250
+    max_lines_hard: 4096
+    max_total_bytes: 20971520
+    timeout_seconds: 30
+    user_agent: "Goa/1.0 (+https://github.com/pijalu/goa)"
+    max_redirects: 5
+    allowed_schemes:
+      - "https"
+      - "http"
+    blocked_hosts: []
+    cache:
+      enabled: true
+      dir: ""
+      ttl_hours: 24
+      max_entries: 1000
+      max_bytes: 524288000
+      cleanup_interval_hours: 24
+    summary:
+      enabled: false
+      sub_agent_role: "companion"
+      max_input_lines: 1000
+      default_prompt: |
+        Summarize the following web page in 3-5 concise paragraphs. Preserve key facts, names, numbers, and any URLs that are central to the content.
+  enabled:
+    bg_exec: true
+    delegate_to: false
+    memento: false
+    pty_exec: false
+    request_review: false
+    ssh_bash: false
+    webfetch: true
+  search:
+    threads: 4
+    max_results: 30
+    exclude:
+      - ".git"
+      - "vendor"
+      - "node_modules"
+      - "dist"
+      - ".next"
+      - "build"
+
+tui:
+  theme: "dark"
+  layout: "default"
+  show_timestamps: false
+  modeline:
+    left:
+      - "app-badge"
+      - "mode-badge"
+      - "current-file"
+    right:
+      - "token-bar"
+      - "activity"
+      - "help-hint"
+  transparency:
+    show_thinking: true
+    show_streaming: true
+    show_tool_calls: true
+    show_token_stats: true
+    show_logs: false
+    thinking_pane_position: "side"
+    highlight_tool_input: true
+    thinking_collapsed: false
+
+plugins:
+  dirs:
+    - ".goa/plugins"
+    - "$HOME/.goa/plugins"
+  enabled: ["*"]
+
+completion:
+  min_usage_threshold: 10
+  max_most_used: 3
+
+prompts:
+  dir: ".goa/prompts"
+
+logging:
+  level: "info"
+  file: ""

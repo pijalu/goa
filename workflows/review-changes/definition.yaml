@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+id: review-changes
+name: Review Changes
+description: Review uncommitted changes for quality and issues
+stages:
+  - id: review
+    name: Review
+    agent: reviewer
+    prompt: review.md

@@ -1,0 +1,38 @@
+# ── Build artifacts ──────────────────────────────────────────────────────
+/goa
+dist/
+coverage.out
+coverage.html
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# ── Session / runtime data ───────────────────────────────────────────────
+.goa/
+sessions/
+memory/.goa/
+testgoa/
+
+# ── IDE / editor ─────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ── Logs / temp ──────────────────────────────────────────────────────────
+*.log
+/tmp/
+tmp/
+
+# ── Local development / replace directives ──────────────────────────────
+/agentic/
+stuffs/
+
+# ── PTY reproduction tooling output ─────────────────────────────────────
+__pycache__/
+*.pyc
+/repro-out/

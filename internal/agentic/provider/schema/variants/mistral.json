@@ -1,0 +1,25 @@
+{
+  "id": "mistral",
+  "match": { "api": "mistral-conversations", "provider": "mistral" },
+  "defaults": { "temperature": 0.7, "max_tokens": 8192 },
+  "compat": {
+    "supports_store": false,
+    "max_tokens_field": "max_tokens",
+    "thinking_format": "none",
+    "supports_prompt_cache": false,
+    "stream_includes_usage": true
+  },
+  "auth": {
+    "method": "api_key",
+    "env_vars": ["MISTRAL_API_KEY"],
+    "header": "Authorization",
+    "prefix": "Bearer "
+  },
+  "cache_policy": { "mode": "none", "breakpoint_cap": 0, "affinity_header": "x-affinity" },
+  "tool_compat": {
+    "tool_call_id_rules": { "max_length": 9, "alphabet": "[a-zA-Z0-9]", "hash_based": true },
+    "schema_sanitizer": "openai",
+    "supports_parallel_tool_calls": true
+  },
+  "error_rules": { "retryable_statuses": [429, 500, 502, 503, 504] }
+}

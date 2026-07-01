@@ -1,0 +1,1330 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package core
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/agentic"
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/internal/perms"
+	"github.com/pijalu/goa/multiagent"
+	"github.com/pijalu/goa/prompts"
+)
+
+// TurnTokenUsage holds per-turn token usage breakdown.
+type TurnTokenUsage struct {
+	PromptN         int     // input tokens
+	PredictedN      int     // output tokens
+	CacheRead       int     // cache read tokens
+	CacheWrite      int     // cache creation tokens
+	SpeedTokPerSec  float64 // output token/s
+	CostUSD         float64 // estimated cost in USD
+	ContextEstimate int     // estimated context usage at turn end
+	ContextMax      int     // max context window
+}
+
+// TurnRecord holds data for one agent turn.
+type TurnRecord struct {
+	Number             int
+	RequestJSON        string // serialized conversation history sent to the LLM
+	ResponseJSON       string // serialized assistant response content
+	TokensUsed         int
+	TokenUsage         TurnTokenUsage // detailed token breakdown
+	Timing             TurnTiming
+	ToolCalls          []TurnToolCall   // tool calls made during this turn
+	ToolResults        []TurnToolResult // tool results received during this turn
+	UserInput          string           // the user message that started this turn
+	Thinking           []string         // thinking blocks emitted by the model
+	AssistantResponses []string         // assistant content blocks emitted by the model
+}
+
+// TurnToolCall records a tool call made during a turn.
+type TurnToolCall struct {
+	Name   string
+	Input  string
+	CallID string
+}
+
+// TurnToolResult records a tool result received during a turn.
+type TurnToolResult struct {
+	CallID string
+	Name   string
+	Result string
+}
+
+// TurnTiming holds timing metrics for a turn.
+type TurnTiming struct {
+	TTFT   float64 // time to first token in seconds
+	Total  float64 // total turn duration in seconds
+	Phases map[string]float64
+}
+
+// AgentManager manages the lifecycle of the LLM agent session. It is a thin
+// facade over focused collaborators: TurnRecorder, ModeManager,
+// CompanionCoordinator, AgentDrivenGate, and SteeringQueue.
+type AgentManager struct {
+	cfg            *config.Config
+	activeAgent    *agentic.Agent
+	events         chan agentic.OutputEvent
+	sessionStore   *SessionStore // event recording store
+	stateStore     *StateStore   // persisted mode state store
+	loopDetector   *LoopDetector
+	eventsOut      *event.Bus
+	logger         *agentic.Logger
+	mu             sync.Mutex
+	cancel         context.CancelFunc
+	cancelGen      int
+	running        bool
+	lastUserInput  string
+	systemPrompt   string
+	agentBus       *agentic.AgentBus
+	mainConnector  *agentic.CommConnector
+	foregroundOrch *multiagent.ForegroundOrchestrator
+	// forwardInternalEvents controls whether OnEvent also writes to the
+	// internal am.events channel. The TUI consumes events from eventsOut.Agent
+	// and never reads am.events, so leaving this false prevents the agent from
+	// blocking once the 100-slot internal buffer fills. Headless/ACP consumers
+	// that call Events() must set this to true.
+	forwardInternalEvents bool
+
+	turnRecorder         *TurnRecorder
+	modeMgr              *ModeManager
+	modeRegistry         *ModeRegistry
+	pendingMajor         *internal.MajorMode
+	pendingThinkingLevel *string
+	companion            *CompanionCoordinator
+	agentDriven          *AgentDrivenGate
+	steering             *SteeringQueue
+	companionBuf         strings.Builder
+	goalStateProvider    agentic.GoalStateProvider
+	postTurnHook         func()
+	lifecycleRegistry    LifecycleRegistry
+	projectDir           string
+	confirmTool          func(ctx context.Context, toolName, input string) (bool, error)
+
+	baseSystemPrompt       string
+	companionReviewEnabled bool
+	companionReviewSet     bool
+
+	// disableToolBudget is a session-level flag that disables the per-turn
+	// tool-call budget check. When set, the agent allows unlimited tool calls
+	// per turn. Not persisted — resets on restart.
+	disableToolBudget bool
+}
+
+// NewAgentManager creates a new agent manager.
+func NewAgentManager(cfg *config.Config, sessionStore *SessionStore, loopDetector *LoopDetector, sessionState *SessionState, eventsOut *event.Bus, projectDir string) *AgentManager {
+	agentDriven := NewAgentDrivenGate()
+	am := &AgentManager{
+		cfg:          cfg,
+		events:       make(chan agentic.OutputEvent, 100),
+		sessionStore: sessionStore,
+		loopDetector: loopDetector,
+		eventsOut:    eventsOut,
+		agentBus:     agentic.NewAgentBus(),
+		agentDriven:  agentDriven,
+		turnRecorder: NewTurnRecorder(),
+		modeMgr:      NewModeManager(sessionState, agentDriven),
+		companion:    NewCompanionCoordinator(),
+		steering:     NewSteeringQueue(),
+		projectDir:   projectDir,
+	}
+
+	return am
+}
+
+// StartSession creates a new agent session.
+func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprovider.StreamOptions, systemPrompt string, tools []agentic.Tool, cfg *config.Config) (<-chan agentic.OutputEvent, error) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	if am.activeAgent != nil {
+		return nil, fmt.Errorf("session already active")
+	}
+
+	tools = am.toolsWithBus(tools)
+	am.baseSystemPrompt = systemPrompt
+	finalPrompt := am.augmentSystemPrompt(systemPrompt)
+	if am.sessionStore != nil {
+		sessionID := am.sessionStore.StartSession()
+		if sessionID != "" {
+			opts.SessionID = sessionID
+		}
+	}
+
+	agent := agentic.NewAgent(am.buildAgenticConfig(mdl, opts, finalPrompt, tools, cfg))
+
+	am.systemPrompt = finalPrompt
+	agent.AddObserver(am)
+
+	am.wireMainAgent(agent)
+
+	am.activeAgent = agent
+	am.dispatchLifecycle("start", map[string]any{
+		"model":    mdl.ID,
+		"provider": am.cfg.ActiveProvider,
+	})
+	return am.events, nil
+}
+
+func (am *AgentManager) toolsWithBus(tools []agentic.Tool) []agentic.Tool {
+	if am.agentBus == nil {
+		return tools
+	}
+	result := make([]agentic.Tool, len(tools), len(tools)+1)
+	copy(result, tools)
+	result = append(result, &agentic.SendMessageTool{
+		Bus:      am.agentBus,
+		FromName: "main",
+	})
+	return result
+}
+
+func (am *AgentManager) wireMainAgent(agent *agentic.Agent) {
+	if am.agentBus == nil {
+		return
+	}
+	am.agentBus.Unregister("main")
+	inbox, err := am.agentBus.Register("main")
+	if err != nil {
+		am.emitFlash("Failed to register main agent on bus: " + err.Error())
+		return
+	}
+	am.mainConnector = agentic.NewCommConnector(agent, inbox)
+}
+
+// AgentBus returns the shared agent communication bus.
+func (am *AgentManager) AgentBus() *agentic.AgentBus {
+	return am.agentBus
+}
+
+// SetGoalStateProvider sets the provider used to inject goal context into the
+// system prompt. Call before StartSession.
+func (am *AgentManager) SetGoalStateProvider(p agentic.GoalStateProvider) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.goalStateProvider = p
+}
+
+// LifecycleRegistry is the minimal interface AgentManager needs to dispatch
+// plugin lifecycle events.
+type LifecycleRegistry interface {
+	Dispatch(hookType string, payload map[string]any)
+}
+
+// SetForwardInternalEvents enables or disables forwarding of agent events to
+// the internal am.events channel returned by Events(). The TUI does not read
+// this channel, so the default (false) avoids blocking the agent when the
+// internal buffer fills. Headless mode and ACP consumers must call this with
+// true before starting a session.
+func (am *AgentManager) SetForwardInternalEvents(enabled bool) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.forwardInternalEvents = enabled
+}
+
+// SetLifecycleRegistry wires the plugin lifecycle registry. Passing nil disables
+// lifecycle dispatch.
+// SetConfirmTool sets the callback used to approve tool calls that require
+// user confirmation in ask/confirm autonomy modes.
+func (am *AgentManager) SetConfirmTool(fn func(ctx context.Context, toolName, input string) (bool, error)) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.confirmTool = fn
+}
+
+func (am *AgentManager) SetLifecycleRegistry(r LifecycleRegistry) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.lifecycleRegistry = r
+}
+
+func (am *AgentManager) dispatchLifecycle(hookType string, payload map[string]any) {
+	if am.lifecycleRegistry == nil {
+		return
+	}
+	am.lifecycleRegistry.Dispatch(hookType, payload)
+}
+
+// SetPostTurnHook registers a callback invoked after each user turn completes.
+// The callback runs in the same goroutine that ran the turn.
+func (am *AgentManager) SetPostTurnHook(hook func()) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.postTurnHook != nil {
+		old := am.postTurnHook
+		am.postTurnHook = func() {
+			old()
+			hook()
+		}
+		return
+	}
+	am.postTurnHook = hook
+}
+
+func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agenticprovider.StreamOptions, systemPrompt string, tools []agentic.Tool, cfg *config.Config) agentic.Config {
+	logger := am.logger
+	if logger == nil {
+		logger = agentic.NewLogger(agentic.Info)
+	}
+	agenticCfg := agentic.Config{
+		Model:                    mdl,
+		APIKey:                   opts.APIKey,
+		StreamOptions:            opts,
+		SystemPrompt:             systemPrompt,
+		Tools:                    tools,
+		Logger:                   logger,
+		MaxToolRepeatTotal:       cfg.Execution.MaxToolRepeatTotal,
+		MaxToolRepeatConsecutive: cfg.Execution.MaxToolRepeatConsecutive,
+		MaxToolCalls:             cfg.Execution.MaxToolCalls,
+		MaxStreamRounds:          cfg.Execution.MaxStreamRounds,
+		DisableToolBudget:        am.disableToolBudget || cfg.Execution.DisableToolBudget,
+		ToolCallLimitResetWindow: cfg.Execution.ToolCallLimitResetWindow,
+		AutoHealToolCalls:        cfg.Execution.AutoHealToolCalls,
+		ReasoningEffort:          agentic.ReasoningEffort(cfg.GetReasoningEffort()),
+		ToolResultAsUser:         cfg.GetToolResultAsUser(),
+		SkillExecutionMode:       agentic.SkillExecutionMode(cfg.Skills.ExecutionMode),
+		GoalStateProvider:        am.goalStateProvider,
+		ProjectDir:               am.projectDir,
+		GetAutonomy:              func() internal.AutonomyLevel { return am.CurrentMode().Autonomy },
+		GetGuardConfig: func() perms.GuardConfig {
+			if am.modeRegistry == nil {
+				return perms.GuardConfig{}
+			}
+			spec, err := am.modeRegistry.Resolve(am.CurrentMode().Major)
+			if err != nil {
+				return perms.GuardConfig{}
+			}
+			return spec.Guard
+		},
+		ThinkingStallWarn: time.Duration(cfg.Execution.ThinkingStallWarnSeconds) * time.Second,
+		ThinkingStallStop: time.Duration(cfg.Execution.ThinkingStallStopSeconds) * time.Second,
+		ConfirmTool:       am.confirmTool,
+	}
+	compressionCfg := am.buildCompressionConfig(cfg, mdl.ContextWindow)
+	if compressionCfg.MaxTokens > 0 {
+		agenticCfg.ContextCompression = compressionCfg
+	}
+	if level := am.modeMgr.GetThinkingLevel(); level != "" {
+		agenticCfg.ReasoningEffort = agentic.ReasoningEffort(level)
+	}
+	return agenticCfg
+}
+
+// SetDisableToolBudget toggles the session-level tool-call budget check.
+// When disabled, the agent allows unlimited tool calls per turn.
+// This flag is NOT persisted — it resets on application restart.
+// Call with false to re-enable the budget check using the configured limit.
+func (am *AgentManager) SetDisableToolBudget(disabled bool) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.disableToolBudget = disabled
+}
+
+func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelContextWindow int) agentic.ContextCompressionConfig {
+	maxTokens := cfg.ContextCompression.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = modelContextWindow
+	}
+	if maxTokens == 0 {
+		return agentic.ContextCompressionConfig{}
+	}
+
+	return agentic.ContextCompressionConfig{
+		MaxTokens:           maxTokens,
+		ThresholdPercent:    compressionThreshold(cfg),
+		OnContextError:      cfg.ContextCompression.OnContextError,
+		Strategy:            compressionStrategy(cfg),
+		PreserveRecentTurns: cfg.ContextCompression.PreserveRecentTurns,
+		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
+	}
+}
+
+func compressionThreshold(cfg *config.Config) int {
+	if cfg.ContextCompression.ThresholdPercent > 0 {
+		return cfg.ContextCompression.ThresholdPercent
+	}
+	if cfg.Execution.TokenCritical > 0 {
+		return cfg.Execution.TokenCritical
+	}
+	return 90
+}
+
+func compressionStrategy(cfg *config.Config) agentic.CompressionStrategy {
+	if s := agentic.CompressionStrategy(cfg.ContextCompression.Strategy); s != "" {
+		return s
+	}
+	return agentic.CompressionToolElision
+}
+
+func buildMicroCompactionConfig(m config.MicroCompactionSettings) agentic.MicroCompactionConfig {
+	microCfg := agentic.DefaultMicroCompactionConfig
+	if m.KeepRecentMessages > 0 {
+		microCfg.KeepRecentMessages = m.KeepRecentMessages
+	}
+	if m.MinContentTokens > 0 {
+		microCfg.MinContentTokens = m.MinContentTokens
+	}
+	if m.MinContextRatio > 0 {
+		microCfg.MinContextRatio = m.MinContextRatio
+	}
+	if m.TruncatedMarker != "" {
+		microCfg.TruncatedMarker = m.TruncatedMarker
+	}
+	if d := m.CacheMissThreshold; d != "" {
+		if dur, err := time.ParseDuration(d); err == nil {
+			microCfg.CacheMissThreshold = dur
+		}
+	}
+	return microCfg
+}
+
+// SendUserInput sends a user message to the active agent.
+func (am *AgentManager) SendUserInput(input string) error {
+	return am.SendUserInputWithImages(input, nil)
+}
+
+// SendUserInputWithImages sends a user message with optional image attachments.
+func (am *AgentManager) SendUserInputWithImages(input string, images []string) error {
+	am.mu.Lock()
+	am.lastUserInput = input
+	agent := am.activeAgent
+	alreadyRunning := am.running
+	am.mu.Unlock()
+
+	if orch := am.foregroundOrchestrator(); orch != nil {
+		orch.ResetCompanionCount()
+	}
+
+	if agent == nil {
+		return fmt.Errorf("no active session")
+	}
+
+	am.turnRecorder.ResetTurn(time.Now())
+
+	if alreadyRunning {
+		am.steering.Append(input)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancelGen++
+	gen := am.cancelGen
+	am.running = true
+	am.cancel = cancel
+	am.mu.Unlock()
+
+	go am.runAgentTurn(ctx, cancel, gen, agent, input, images)
+	return nil
+}
+
+func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelFunc, gen int, agent *agentic.Agent, input string, images []string) {
+	defer func() {
+		cancel()
+		am.mu.Lock()
+		if am.cancelGen == gen {
+			am.cancel = nil
+		}
+		am.running = false
+		am.mu.Unlock()
+	}()
+
+	am.applyPendingMajorMode()
+	am.applyPendingThinkingLevel()
+
+	var err error
+	if len(images) > 0 {
+		err = agent.RunWithImages(ctx, input, images)
+	} else {
+		err = agent.Run(ctx, input)
+	}
+	if err != nil {
+		ev := agentic.OutputEvent{Type: agentic.EventEnd}
+		if errors.Is(err, context.Canceled) {
+			// User-initiated cancellation (Escape/Ctrl+C) is not a connection
+			// error; mark it so the UI can stop gracefully and keep the
+			// conversation resumable from the user's last message.
+			ev.Metadata = map[string]string{"cancelled": "true"}
+		} else {
+			ev.Text = err.Error()
+		}
+		// EventEnd must always reach the UI so the turn is marked complete; do
+		// not drop it under load (CORE-BUG-3). Block (backpressure) instead.
+		am.events <- ev
+		am.emitAgentEvent(ev)
+	}
+	if am.postTurnHook != nil {
+		am.postTurnHook()
+	}
+}
+
+// StopSession stops the active agent session.
+func (am *AgentManager) StopSession() error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	if am.activeAgent == nil {
+		return nil
+	}
+
+	if am.cancel != nil {
+		am.cancel()
+		am.cancel = nil
+	}
+
+	if am.mainConnector != nil {
+		am.mainConnector.Stop()
+		am.mainConnector = nil
+	}
+	if am.agentBus != nil {
+		am.agentBus.Unregister("main")
+	}
+
+	am.activeAgent = nil
+	am.dispatchLifecycle("shutdown", map[string]any{})
+	return nil
+}
+
+// Interrupt cancels the current agent turn.
+func (am *AgentManager) Interrupt() error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.cancel != nil {
+		am.cancel()
+		am.cancel = nil
+	}
+	return nil
+}
+
+// CurrentAgent returns the active agent.
+func (am *AgentManager) CurrentAgent() *agentic.Agent {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.activeAgent
+}
+
+// IsRunning reports whether a user turn is currently in progress.
+func (am *AgentManager) IsRunning() bool {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.running
+}
+
+// LastUserInput returns the last user message.
+func (am *AgentManager) LastUserInput() string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.lastUserInput
+}
+
+// SetLastUserInputForTest is exported only for tests in dependent packages
+// that need to simulate a conversation having started.
+func (am *AgentManager) SetLastUserInputForTest(input string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.lastUserInput = input
+}
+
+// SystemPrompt returns the current system prompt.
+func (am *AgentManager) SystemPrompt() string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.systemPrompt
+}
+
+// augmentSystemPrompt combines the base prompt with optional companion review
+// and agent-driven additions. The additions are kept in a deterministic order
+// so the resulting prompt always reflects the latest status.
+func (am *AgentManager) augmentSystemPrompt(base string) string {
+	parts := []string{base}
+	if am.companionReviewSet {
+		if am.companionReviewEnabled {
+			if p, err := prompts.LoadCompanionReviewEnabledPrompt(); err == nil && p != "" {
+				parts = append(parts, p)
+			}
+		} else {
+			if p, err := prompts.LoadCompanionReviewDisabledPrompt(); err == nil && p != "" {
+				parts = append(parts, p)
+			}
+		}
+	}
+	if am.modeMgr.AgentDrivenEnabled() {
+		if p := am.modeMgr.AgentDrivenPrompt(); p != "" {
+			parts = append(parts, p)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// InjectCompanionReview updates the system prompt to reflect whether companion
+// review is enabled. When a session is active, it replaces any previous
+// companion-review system message in the conversation history with a single
+// message containing the latest status.
+func (am *AgentManager) InjectCompanionReview(enabled bool) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	am.companionReviewEnabled = enabled
+	am.companionReviewSet = true
+	am.systemPrompt = am.augmentSystemPrompt(am.baseSystemPrompt)
+
+	if am.activeAgent == nil {
+		return nil
+	}
+
+	var prompt string
+	var err error
+	if enabled {
+		prompt, err = prompts.LoadCompanionReviewEnabledPrompt()
+	} else {
+		prompt, err = prompts.LoadCompanionReviewDisabledPrompt()
+	}
+	if err != nil {
+		return fmt.Errorf("load companion review prompt: %w", err)
+	}
+
+	history := am.activeAgent.GetHistory()
+	history = filterCompanionReviewMessages(history)
+	history = append(history, agentic.Message{
+		Type:    agentic.Content,
+		Role:    agentic.System,
+		Content: prompt,
+	})
+	am.activeAgent.SetHistory(history)
+	return nil
+}
+
+// filterCompanionReviewMessages removes system messages that were injected to
+// communicate companion review status. Only the latest status is kept.
+func filterCompanionReviewMessages(history []agentic.Message) []agentic.Message {
+	out := make([]agentic.Message, 0, len(history))
+	for _, m := range history {
+		if m.Role == agentic.System && strings.HasPrefix(m.Content, "Companion review is") {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// Events returns the event channel for TUI consumption.
+func (am *AgentManager) Events() <-chan agentic.OutputEvent {
+	return am.events
+}
+
+// SetLogger configures the agentic SDK logger.
+func (am *AgentManager) SetLogger(logger *agentic.Logger) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.logger = logger
+	if am.sessionStore != nil {
+		am.sessionStore.SetLogger(logger)
+	}
+}
+
+// TriggerCompression manually triggers context compression.
+func (am *AgentManager) TriggerCompression(ctx context.Context) error {
+	return am.TriggerCompressionWith(ctx, "", true)
+}
+
+// TriggerCompressionWith manually triggers context compression using the
+// given strategy. An empty strategy falls back to the configured one.
+// When force is true, internal per-strategy thresholds are bypassed.
+func (am *AgentManager) TriggerCompressionWith(ctx context.Context, strategy string, force bool) error {
+	am.mu.Lock()
+	agent := am.activeAgent
+	am.mu.Unlock()
+	if agent == nil {
+		return fmt.Errorf("no active agent session")
+	}
+	return agent.MaybeCompressWith(ctx, agentic.CompressionStrategy(strategy), force)
+}
+
+// SetActiveAgentForTest binds a prebuilt agent to the manager. Test-only:
+// production code must go through StartSession so the agent is wired with
+// observers, tools, mode state, and session persistence.
+func (am *AgentManager) SetActiveAgentForTest(agent *agentic.Agent) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.activeAgent = agent
+}
+
+// SetTools updates the tools available to the active agent. Changes take
+// effect on the next turn without restarting the session.
+func (am *AgentManager) SetTools(tools []agentic.Tool) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return fmt.Errorf("no active agent session")
+	}
+	am.activeAgent.SetTools(am.toolsWithBus(tools))
+	return nil
+}
+
+// SetModeRegistry sets the ModeRegistry used for resolving mode definitions.
+// Must be set before StartSession or SetMode for mode prompt injection to work.
+func (am *AgentManager) SetModeRegistry(reg *ModeRegistry) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.modeRegistry = reg
+}
+
+// injectModePrompt injects the body of the given mode as a system message
+// so the agent's role instructions update to match the new mode.
+// Caller must NOT hold am.mu.
+func (am *AgentManager) injectModePrompt(major internal.MajorMode) {
+	if am.modeRegistry == nil || am.activeAgent == nil {
+		return
+	}
+	body := am.modeRegistry.SystemPrompt(major)
+	if body == "" {
+		return
+	}
+	msg := fmt.Sprintf("You have switched to %s mode. Your new instructions:\n\n%s", major, body)
+	am.activeAgent.InjectSystemMessage(msg)
+}
+
+// InjectSystemMessage appends a system message to the active agent's history.
+// It returns an error if no agent session is active.
+func (am *AgentManager) InjectSystemMessage(content string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return fmt.Errorf("no active agent session")
+	}
+	am.activeAgent.InjectSystemMessage(content)
+	return nil
+}
+
+// SetModel replaces the active agent's model for subsequent turns.
+func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent != nil {
+		am.activeAgent.SetModel(mdl)
+	}
+}
+
+// SetStreamOptions replaces the active agent's stream options for subsequent turns.
+// This updates the API key, headers, timeout, and other provider settings so the
+// new provider's credentials are used on the next turn.
+func (am *AgentManager) SetStreamOptions(opts agenticprovider.StreamOptions) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent != nil {
+		am.activeAgent.SetStreamOptions(opts)
+	}
+}
+
+// ActiveModel returns the active agent's model, or an empty model if none.
+func (am *AgentManager) ActiveModel() agenticprovider.Model {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return agenticprovider.Model{}
+	}
+	return am.activeAgent.Model()
+}
+
+// TurnHistory returns all completed turns.
+func (am *AgentManager) TurnHistory() []TurnRecord {
+	return am.turnRecorder.TurnHistory()
+}
+
+// LastTurn returns the most recent completed turn.
+func (am *AgentManager) LastTurn() *TurnRecord {
+	return am.turnRecorder.LastTurn()
+}
+
+// OnEvent implements agentic.OutputObserver.
+func (am *AgentManager) OnEvent(event agentic.OutputEvent) {
+	am.logEvent(event)
+	am.recordContentEvent(event)
+	am.forwardEvent(event)
+	am.handleTypedEvent(event)
+}
+
+func (am *AgentManager) recordContentEvent(event agentic.OutputEvent) {
+	if event.Type != agentic.EventContent {
+		return
+	}
+	switch event.Role {
+	case agentic.User:
+		am.turnRecorder.RecordUserInput(event.Text)
+	case agentic.Assistant:
+		if event.State == agentic.StateThinking {
+			am.turnRecorder.RecordThinkingDelta(event.Text)
+		} else {
+			am.turnRecorder.RecordAssistantDelta(event.Text)
+		}
+	}
+	if am.isCompanionContent(event) {
+		am.companionBuf.WriteString(event.Text)
+	}
+}
+
+func (am *AgentManager) isCompanionContent(event agentic.OutputEvent) bool {
+	return event.Type == agentic.EventContent &&
+		event.Role == agentic.Assistant &&
+		event.Text != "" &&
+		event.State != agentic.StateThinking
+}
+
+func (am *AgentManager) forwardEvent(event agentic.OutputEvent) {
+	// Only write to the internal events channel when a consumer has opted in
+	// (headless/ACP). The TUI consumes events from eventsOut.Agent and never
+	// reads am.events; writing to an undrained buffered channel would block
+	// forever once the 100-slot buffer fills, stalling the agent mid-stream.
+	if am.forwardInternalEvents {
+		am.events <- event
+	}
+	// The TUI-bound bus must never drop events; block with backpressure so
+	// every delta and EventEnd reaches the renderer.
+	am.emitAgentEvent(event)
+	if am.sessionStore != nil {
+		am.sessionStore.WriteEvent(event)
+	}
+}
+
+func (am *AgentManager) handleTypedEvent(event agentic.OutputEvent) {
+	switch event.Type {
+	case agentic.EventToolCall:
+		am.handleToolCallEvent(event)
+	case agentic.EventToolResult:
+		am.handleToolResultEvent(event)
+	case agentic.EventTokenStats:
+		am.handleTokenStatsEvent(event)
+	case agentic.EventContextStats:
+		am.handleContextStatsEvent(event)
+	case agentic.EventEnd:
+		am.finalizeTurn()
+	}
+}
+
+func (am *AgentManager) handleToolCallEvent(event agentic.OutputEvent) {
+	am.turnRecorder.RecordToolCall(event.ToolName, event.ToolInput, event.ToolCallID)
+	am.dispatchLifecycle("tool_call", map[string]any{
+		"tool":    event.ToolName,
+		"input":   event.ToolInput,
+		"call_id": event.ToolCallID,
+	})
+	if am.loopDetector != nil {
+		lvl := am.loopDetector.RecordToolCall(event.ToolName, event.ToolInput)
+		am.handleLoopWarning(lvl)
+	}
+	if orch := am.foregroundOrchestrator(); orch != nil {
+		orch.ResetCompanionCount()
+	}
+}
+
+func (am *AgentManager) handleToolResultEvent(event agentic.OutputEvent) {
+	am.turnRecorder.RecordToolResult(event.ToolCallID, event.ToolName, event.ToolResult)
+	am.dispatchLifecycle("tool_done", map[string]any{
+		"tool":    event.ToolName,
+		"call_id": event.ToolCallID,
+		"result":  event.ToolResult,
+	})
+	if am.loopDetector != nil {
+		am.loopDetector.RecordToolResult(isToolResultError(event.ToolResult))
+	}
+}
+
+func (am *AgentManager) handleTokenStatsEvent(event agentic.OutputEvent) {
+	if event.Timings == nil {
+		return
+	}
+	ctxEstimate, ctxMax := 0, 0
+	if event.ContextStats != nil {
+		ctxEstimate = event.ContextStats.EstimatedTokens
+		ctxMax = event.ContextStats.MaxTokens
+	}
+	am.turnRecorder.RecordTokenStats(
+		event.Timings.PromptN,
+		event.Timings.PredictedN,
+		event.Timings.CacheReadTokens,
+		event.Timings.CacheWriteTokens,
+		event.Timings.PredictedPerSecond,
+		0, // cost computed at display time
+		ctxEstimate, ctxMax,
+	)
+}
+
+func (am *AgentManager) handleContextStatsEvent(event agentic.OutputEvent) {
+	if event.ContextStats == nil {
+		return
+	}
+	// Update only context stats without overwriting token data.
+	am.turnRecorder.RecordContextStats(
+		event.ContextStats.EstimatedTokens,
+		event.ContextStats.MaxTokens,
+	)
+}
+
+func (am *AgentManager) finalizeTurn() {
+	am.mu.Lock()
+	agent := am.activeAgent
+	am.mu.Unlock()
+
+	am.turnRecorder.FinalizeTurn(agent)
+
+	pending := am.steering.Flush()
+	mainOutput := am.companionBuf.String()
+	am.companionBuf.Reset()
+
+	am.companion.RunPostTurn(mainOutput, am.emitFlash)
+
+	if len(pending) > 0 {
+		merged := strings.Join(pending, "\n")
+		if err := am.SendUserInput(merged); err != nil {
+			am.emitFlash("Failed to send steering input: " + err.Error())
+		}
+	}
+}
+
+func (am *AgentManager) logEvent(event agentic.OutputEvent) {
+	am.mu.Lock()
+	logger := am.logger
+	am.mu.Unlock()
+	if logger == nil || !logger.Enabled(agentic.Debug) {
+		return
+	}
+
+	parts := []string{string(event.Type)}
+	if event.State != 0 {
+		parts = append(parts, "state="+event.State.String())
+	}
+	if event.Role != "" {
+		parts = append(parts, "role="+string(event.Role))
+	}
+	if event.ToolName != "" {
+		parts = append(parts, "tool="+event.ToolName)
+	}
+	if event.ToolInput != "" {
+		parts = append(parts, "input="+event.ToolInput)
+	}
+	if event.ToolCallID != "" {
+		parts = append(parts, "call_id="+event.ToolCallID)
+	}
+	if event.ToolResult != "" {
+		parts = append(parts, "result="+event.ToolResult)
+	}
+	if event.Text != "" {
+		parts = append(parts, "text="+event.Text)
+	}
+	logger.Log(agentic.Debug, "[agent event] %s", strings.Join(parts, " "))
+}
+
+// EmitEvent sends a chat flash message.
+func (am *AgentManager) EmitEvent(text string) {
+	am.emitFlash(text)
+}
+
+// SetForegroundOrchestrator sets the orchestrator. Guarded by am.mu because
+// the field is read from the observer goroutine during a turn; an unlocked
+// write here raced with handleToolCallEvent/SendUserInput reads (CORE-BUG-2).
+func (am *AgentManager) SetForegroundOrchestrator(orch *multiagent.ForegroundOrchestrator) {
+	am.mu.Lock()
+	am.foregroundOrch = orch
+	am.mu.Unlock()
+	am.companion.SetForegroundOrchestrator(orch)
+}
+
+// SetStateStore sets the state store for persisting mode changes. Guarded by
+// am.mu: the field is read concurrently from SetInputHistory/GetInputHistory/
+// persistState while a turn is driving (CORE-BUG-2).
+func (am *AgentManager) SetStateStore(ss *StateStore) {
+	am.mu.Lock()
+	am.stateStore = ss
+	am.mu.Unlock()
+	am.modeMgr.SetStateStore(ss)
+}
+
+// foregroundOrchestrator returns the current foreground orchestrator snapshot
+// under am.mu. Callers must not assume the pointer stays valid beyond the call;
+// they should only invoke stateless methods on it.
+func (am *AgentManager) foregroundOrchestrator() *multiagent.ForegroundOrchestrator {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.foregroundOrch
+}
+
+// stateStoreRef returns the current state store snapshot under am.mu.
+func (am *AgentManager) stateStoreRef() *StateStore {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.stateStore
+}
+
+// SetInputHistory persists the input history to the state store.
+func (am *AgentManager) SetInputHistory(history []string) error {
+	ss := am.stateStoreRef()
+	if ss == nil {
+		return nil
+	}
+	snap, err := ss.Load()
+	if err != nil {
+		return err
+	}
+	snap.InputHistory = history
+	return ss.Save(snap)
+}
+
+// GetInputHistory loads the input history from the state store.
+func (am *AgentManager) GetInputHistory() []string {
+	ss := am.stateStoreRef()
+	if ss == nil {
+		return nil
+	}
+	snap, err := ss.Load()
+	if err != nil {
+		return nil
+	}
+	return snap.InputHistory
+}
+
+// SetAgentDrivenEnabled sets whether agent-driven tools are enabled.
+func (am *AgentManager) SetAgentDrivenEnabled(enabled bool) error {
+	if err := am.modeMgr.SetAgentDrivenEnabled(enabled); err != nil {
+		am.emitFlash("Failed to load agent-driven prompt: " + err.Error())
+	}
+	if err := am.persistState(); err != nil {
+		return fmt.Errorf("failed to save agent-driven state: %w", err)
+	}
+	return nil
+}
+
+// AgentDrivenEnabled returns whether agent-driven tools are active.
+func (am *AgentManager) AgentDrivenEnabled() bool {
+	return am.modeMgr.AgentDrivenEnabled()
+}
+
+// AgentDrivenPrompt returns the current agent-driven system prompt addition.
+func (am *AgentManager) AgentDrivenPrompt() string {
+	return am.modeMgr.AgentDrivenPrompt()
+}
+
+// SetAgentDrivenChangeCallback registers a callback invoked when the
+// agent-driven enabled state changes.
+func (am *AgentManager) SetAgentDrivenChangeCallback(cb func(bool)) {
+	am.agentDriven.SetChangeCallback(cb)
+}
+
+// CurrentMode returns the current ModeState.
+func (am *AgentManager) CurrentMode() internal.ModeState {
+	return am.modeMgr.CurrentMode()
+}
+
+// SetMode replaces the current mode. If a session is active, the new mode's
+// system prompt is queued for injection at the start of the next turn; a chat
+// bubble notifies the user immediately.
+func (am *AgentManager) SetMode(ms internal.ModeState) internal.ModeState {
+	old := am.CurrentMode()
+	if info := am.modeMgr.SetMode(ms); info != nil {
+		am.emitModeChange(info.OldMode, info.NewMode, info.Source)
+		am.emitModeChangeFlash(info.OldMode, info.NewMode)
+		am.dispatchLifecycle("mode_enter", map[string]any{
+			"old_mode": string(old.Major),
+			"new_mode": string(info.NewMode.Major),
+			"autonomy": string(info.NewMode.Autonomy),
+			"source":   info.Source,
+		})
+		am.queueMajorModePrompt(ms.Major)
+	}
+	if err := am.persistState(); err != nil {
+		am.emitFlash("Failed to save mode state: " + err.Error())
+	}
+	return ms
+}
+
+// PushMode saves current and activates a new mode.
+func (am *AgentManager) PushMode(ms internal.ModeState, source string) internal.ModeState {
+	old := am.CurrentMode()
+	info := am.modeMgr.PushMode(ms, source)
+	if info != nil {
+		am.emitModeChange(info.OldMode, info.NewMode, info.Source)
+		am.emitModeChangeFlash(info.OldMode, info.NewMode)
+		am.dispatchLifecycle("mode_enter", map[string]any{
+			"old_mode": string(old.Major),
+			"new_mode": string(info.NewMode.Major),
+			"autonomy": string(info.NewMode.Autonomy),
+			"source":   info.Source,
+		})
+		am.queueMajorModePrompt(info.NewMode.Major)
+	}
+	if err := am.persistState(); err != nil {
+		am.emitFlash("Failed to save mode state: " + err.Error())
+	}
+	if info == nil {
+		return ms
+	}
+	return info.OldMode
+}
+
+// PopMode restores the previous mode from the stack and emits event.
+func (am *AgentManager) PopMode() internal.ModeState {
+	old := am.CurrentMode()
+	info := am.modeMgr.PopMode()
+	if info != nil {
+		am.emitModeChange(info.OldMode, info.NewMode, info.Source)
+		am.emitModeChangeFlash(info.OldMode, info.NewMode)
+		am.dispatchLifecycle("mode_enter", map[string]any{
+			"old_mode": string(old.Major),
+			"new_mode": string(info.NewMode.Major),
+			"autonomy": string(info.NewMode.Autonomy),
+			"source":   info.Source,
+		})
+		am.queueMajorModePrompt(info.NewMode.Major)
+	}
+	if err := am.persistState(); err != nil {
+		am.emitFlash("Failed to save mode state: " + err.Error())
+	}
+	if info == nil {
+		return internal.ModeState{}
+	}
+	return info.NewMode
+}
+
+// PreviousMode returns the mode before the last push.
+func (am *AgentManager) PreviousMode() *internal.ModeState {
+	return am.modeMgr.PreviousMode()
+}
+
+// Source returns the source of the current pushed mode.
+func (am *AgentManager) Source() string {
+	return am.modeMgr.Source()
+}
+
+// SetCompanionAgent stores the companion agent.
+func (am *AgentManager) SetCompanionAgent(a *agentic.Agent) {
+	am.companion.SetCompanionAgent(a, am.agentBus)
+}
+
+// SetMinorMode enables or disables a minor mode and persists the change.
+func (am *AgentManager) SetMinorMode(mode string, enabled bool) error {
+	orch := am.foregroundOrchestrator()
+	if orch == nil {
+		return fmt.Errorf("no orchestrator available")
+	}
+	switch mode {
+	case "companion":
+		if enabled {
+			orch.SetMode(multiagent.WorkflowAgentDriven)
+		} else {
+			orch.SetMode(multiagent.WorkflowInactive)
+		}
+		if err := am.modeMgr.SetAgentDrivenEnabled(enabled); err != nil {
+			return fmt.Errorf("failed to sync agent-driven state: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown minor mode: %q", mode)
+	}
+	activeMode := ""
+	if enabled {
+		activeMode = mode
+	}
+	am.modeMgr.SetCurrentMinorMode(activeMode)
+
+	if err := am.persistState(); err != nil {
+		return fmt.Errorf("failed to save minor mode: %w", err)
+	}
+	am.emitMinorMode(activeMode)
+	return nil
+}
+
+// SetThinkingLevel sets the reasoning effort level, persists it, and queues
+// the change for the active agent session. The new level takes effect on the
+// next turn so the current turn is not interrupted.
+func (am *AgentManager) SetThinkingLevel(level string) error {
+	am.modeMgr.SetThinkingLevel(level)
+	am.queueThinkingLevel(level)
+	if err := am.persistState(); err != nil {
+		return fmt.Errorf("failed to save thinking level: %w", err)
+	}
+	am.emitThinkingLevel(level)
+	return nil
+}
+
+func (am *AgentManager) queueThinkingLevel(level string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return
+	}
+	am.pendingThinkingLevel = &level
+}
+
+// applyPendingThinkingLevel applies any queued thinking-level change to the
+// active agent before a new turn begins.
+func (am *AgentManager) applyPendingThinkingLevel() {
+	am.mu.Lock()
+	pending := am.pendingThinkingLevel
+	am.pendingThinkingLevel = nil
+	am.mu.Unlock()
+	if pending != nil && am.activeAgent != nil {
+		am.activeAgent.SetReasoningEffort(agentic.ReasoningEffort(*pending))
+	}
+}
+
+// GetThinkingLevel returns the current thinking level.
+func (am *AgentManager) GetThinkingLevel() string {
+	return am.modeMgr.GetThinkingLevel()
+}
+
+func (am *AgentManager) persistState() error {
+	ss := am.stateStoreRef()
+	if ss == nil {
+		return nil
+	}
+	snap := SessionStateSnapshot{
+		ModeState:          am.modeMgr.CurrentMode(),
+		MinorMode:          am.modeMgr.CurrentMinorMode(),
+		AgentDrivenEnabled: am.modeMgr.AgentDrivenEnabled(),
+		ThinkingLevel:      am.modeMgr.GetThinkingLevel(),
+	}
+	if hist := MarshalCompanionHistory(am.companion.Agent()); len(hist) > 0 {
+		snap.CompanionHistory = hist
+	}
+	return ss.Save(snap)
+}
+
+func (am *AgentManager) emitAgentEvent(ev agentic.OutputEvent) {
+	if am.eventsOut == nil {
+		return
+	}
+	am.eventsOut.Agent <- event.AgentEvent{Event: ev}
+}
+
+func (am *AgentManager) emitFlash(text string) {
+	if am.eventsOut == nil {
+		return
+	}
+	select {
+	case am.eventsOut.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
+	default:
+	}
+}
+
+func (am *AgentManager) emitModeChange(old, new internal.ModeState, source string) {
+	if am.eventsOut == nil {
+		return
+	}
+	select {
+	case am.eventsOut.Footer <- event.FooterEvent{ModeChange: &event.ModeChange{OldMode: old, NewMode: new, Source: source}}:
+	default:
+	}
+}
+
+func (am *AgentManager) emitModeChangeFlash(old, new internal.ModeState) {
+	if am.eventsOut == nil {
+		return
+	}
+	am.mu.Lock()
+	active := am.activeAgent != nil
+	am.mu.Unlock()
+	if !active {
+		return
+	}
+	var text string
+	switch {
+	case old.Major != new.Major:
+		text = fmt.Sprintf("Mode: %s", new.Major)
+	case old.Autonomy != new.Autonomy:
+		text = fmt.Sprintf("Autonomy: %s", new.Autonomy)
+	default:
+		return
+	}
+	select {
+	case am.eventsOut.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
+	default:
+	}
+}
+
+func (am *AgentManager) queueMajorModePrompt(major internal.MajorMode) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return
+	}
+	am.pendingMajor = &major
+}
+
+// applyPendingMajorMode injects any queued mode prompt before a new turn.
+func (am *AgentManager) applyPendingMajorMode() {
+	am.mu.Lock()
+	pending := am.pendingMajor
+	am.pendingMajor = nil
+	am.mu.Unlock()
+	if pending != nil {
+		am.injectModePrompt(*pending)
+	}
+}
+
+func (am *AgentManager) emitMinorMode(mode string) {
+	if am.eventsOut == nil {
+		return
+	}
+	select {
+	case am.eventsOut.Footer <- event.FooterEvent{MinorMode: &event.MinorMode{Mode: mode}}:
+	default:
+	}
+}
+
+func (am *AgentManager) emitThinkingLevel(level string) {
+	if am.eventsOut == nil {
+		return
+	}
+	select {
+	case am.eventsOut.Footer <- event.FooterEvent{ThinkingLevel: &event.ThinkingLevel{Level: level}}:
+	default:
+	}
+}
+
+// handleLoopWarning processes a loop detector warning level and takes action.
+func (am *AgentManager) handleLoopWarning(lvl LoopWarningLevel) {
+	if lvl <= LoopOK {
+		return
+	}
+	switch lvl {
+	case LoopWarning:
+		am.logEventF("loop detector: warning (tool repeat)")
+		am.emitFlash("[goa-system: warning] Tool call repeated — consider completing the task.")
+	case LoopCritical:
+		// STUB-2: previously this branch only logged/ flashed a "will be paused"
+		// message without actually pausing. A critical loop must act, so interrupt
+		// the turn (same effect as LoopInterrupt) rather than promising a pause
+		// that never happens.
+		am.logEventF("loop detector: critical — cancelling turn")
+		am.emitFlash("[goa-system: critical] Agent looping — cancelling turn.")
+		am.Interrupt()
+	case LoopInterrupt:
+		am.logEventF("loop detector: interrupt — cancelling turn")
+		am.emitFlash("[goa-system: interrupt] Tool call loop detected — cancelling turn.")
+		am.Interrupt()
+	}
+}
+
+func (am *AgentManager) logEventF(format string, args ...interface{}) {
+	am.mu.Lock()
+	logger := am.logger
+	am.mu.Unlock()
+	if logger != nil && logger.Enabled(agentic.Warn) {
+		logger.Log(agentic.Warn, format, args...)
+	}
+}
+
+// isToolResultError returns true when a tool result indicates an execution error.
+func isToolResultError(result string) bool {
+	return result == "" || strings.HasPrefix(result, "Error:")
+}

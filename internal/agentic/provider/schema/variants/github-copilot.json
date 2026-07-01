@@ -1,0 +1,25 @@
+{
+  "id": "github-copilot",
+  "match": { "api": "openai-completions", "provider": "github" },
+  "defaults": { "temperature": 1.0, "max_tokens": 4096 },
+  "compat": {
+    "supports_store": false,
+    "max_tokens_field": "max_tokens",
+    "thinking_format": "openai",
+    "supports_prompt_cache": false,
+    "stream_includes_usage": true
+  },
+  "auth": {
+    "method": "oauth",
+    "env_vars": ["GITHUB_TOKEN"],
+    "header": "Authorization",
+    "prefix": "token "
+  },
+  "cache_policy": { "mode": "none", "breakpoint_cap": 0 },
+  "tool_compat": {
+    "tool_call_id_rules": { "max_length": 40, "alphabet": "[a-zA-Z0-9_-]" },
+    "schema_sanitizer": "openai",
+    "supports_parallel_tool_calls": true
+  },
+  "error_rules": { "retryable_statuses": [429, 500, 502, 503, 504] }
+}

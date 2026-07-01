@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copyright (C) 2026 Pierre Poissinger
+
+# Goa Dark Theme (GitHub-dark inspired)
+name: "dark"
+colors:
+  thinking_border:
+    hex: "#30363d"
+  thinking_text:
+    hex: "#8b949e"
+    italic: true
+  thinking_pane_bg:
+    hex: "#0d1117"
+  tool_running:
+    hex: "#d29922"
+  tool_success:
+    hex: "#3fb950"
+  tool_error:
+    hex: "#f85149"
+  token_prompt:
+    hex: "#1f6feb"
+  token_thinking:
+    hex: "#8957e5"
+  token_completion:
+    hex: "#3fb950"
+  token_warning:
+    hex: "#d29922"
+  token_critical:
+    hex: "#f85149"
+  finish_stop:
+    hex: "#3fb950"
+  finish_tool_calls:
+    hex: "#d29922"
+  finish_length:
+    hex: "#f85149"
+  user_msg:
+    hex: "#c9d1d9"
+  assistant_msg:
+    hex: "#c9d1d9"
+  system_msg:
+    hex: "#8b949e"
+  status_bar_bg:
+    hex: "#161b22"
+  status_bar_fg:
+    hex: "#8b949e"
+  chat_bg:
+    hex: "#0d1117"
+  sidebar_bg:
+    hex: "#161b22"
+  log_bg:
+    hex: "#0d1117"
+  input_bg:
+    hex: "#161b22"
+  border_default:
+    hex: "#30363d"
+  border_focused:
+    hex: "#1f6feb"
+  selection_bg:
+    hex: "#1f6feb"
+    bold: true
+  goa_panel_bg:
+    hex: "#11161d"
+  goa_panel_border:
+    hex: "#30363d"

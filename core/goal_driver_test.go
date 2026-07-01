@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package core
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/pijalu/goa/core/goal"
+)
+
+type fakeAgent struct {
+	errAfter int
+	runs     int
+}
+
+func (a *fakeAgent) Run(ctx context.Context, prompt string) error {
+	a.runs++
+	if a.errAfter > 0 && a.runs >= a.errAfter {
+		return errors.New("provider rate limit")
+	}
+	return nil
+}
+
+type fakeAgentThatCompletes struct {
+	mode *goal.GoalMode
+	runs atomic.Int32
+	done chan struct{}
+}
+
+func (a *fakeAgentThatCompletes) Run(ctx context.Context, prompt string) error {
+	if a.runs.Add(1) == 1 && a.done != nil {
+		close(a.done)
+	}
+	_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	return nil
+}
+
+func TestGoalDriver_Drive(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	agent := &fakeAgent{errAfter: 3}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	err := driver.Drive(context.Background())
+	if err == nil {
+		t.Fatal("expected error from agent")
+	}
+	if agent.runs != 3 {
+		t.Errorf("runs = %d", agent.runs)
+	}
+	if mode.GetGoal().Goal.Status != goal.GoalPaused {
+		t.Errorf("status = %q, want paused", mode.GetGoal().Goal.Status)
+	}
+}
+
+func TestGoalDriver_NoGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	agent := &fakeAgent{}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if agent.runs != 0 {
+		t.Errorf("runs = %d", agent.runs)
+	}
+}
+
+func TestGoalDriver_BudgetExceeded(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	limit := 1
+	mode.SetBudgetLimits(goal.GoalBudgetLimits{TurnBudget: &limit}, goal.GoalActorUser)
+	mode.IncrementTurn()
+
+	agent := &fakeAgent{}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if agent.runs != 0 {
+		t.Errorf("runs = %d", agent.runs)
+	}
+	if mode.GetGoal().Goal.Status != goal.GoalBlocked {
+		t.Errorf("status = %q", mode.GetGoal().Goal.Status)
+	}
+}
+
+func TestGoalDriver_ConcurrentDrive(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	agent := &fakeAgentThatCompletes{mode: mode}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = driver.Drive(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if got := agent.runs.Load(); got != 1 {
+		t.Errorf("runs = %d, want 1 (concurrent drives should be deduplicated)", got)
+	}
+}
+
+func TestGoalDriver_Drive_NilAgent(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	driver := &GoalDriver{Agent: nil, Mode: mode}
+
+	if err := driver.Drive(context.Background()); err == nil {
+		t.Fatal("expected error when agent is nil")
+	}
+}
+
+func TestGoalDriver_Start(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	done := make(chan struct{})
+	agent := &fakeAgentThatCompletes{mode: mode, done: done}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	driver.Start(context.Background())
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("driver did not start")
+	}
+
+	if got := agent.runs.Load(); got != 1 {
+		t.Errorf("runs = %d, want 1", got)
+	}
+}
+
+func TestMapDriverError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{context.Canceled, "Paused after interruption"},
+		{errors.New("rate limit hit"), PauseRateLimit},
+		{errors.New("auth failed"), PauseAuthError},
+		{errors.New("connection refused"), PauseConnError},
+		{errors.New("api error 500"), PauseAPIError},
+		{errors.New("model not configured"), PauseModelConfig},
+		{errors.New("boom"), PauseRuntimeError},
+	}
+	for _, tc := range cases {
+		if got := mapDriverError(tc.err); got != tc.want {
+			t.Errorf("mapDriverError(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}

@@ -1,0 +1,26 @@
+{
+  "id": "anthropic-base",
+  "match": { "api": "anthropic-messages", "provider": "anthropic" },
+  "defaults": { "temperature": 1.0, "max_tokens": 8192 },
+  "compat": {
+    "supports_store": false,
+    "max_tokens_field": "max_tokens",
+    "thinking_format": "thinking_content",
+    "supports_prompt_cache": true,
+    "stream_includes_usage": true,
+    "image_detail_supported": true
+  },
+  "auth": {
+    "method": "api_key",
+    "env_vars": ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"],
+    "header": "x-api-key",
+    "prefix": ""
+  },
+  "cache_policy": { "mode": "auto", "breakpoint_cap": 4, "ttl": "1h" },
+  "tool_compat": {
+    "tool_call_id_rules": { "max_length": 64, "alphabet": "[a-zA-Z0-9_-]" },
+    "schema_sanitizer": "none",
+    "supports_parallel_tool_calls": true
+  },
+  "error_rules": { "retryable_statuses": [429, 500, 502, 503, 504] }
+}
