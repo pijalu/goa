@@ -2834,7 +2834,15 @@ func (a *Agent) checkSilentOverflow() {
 }
 
 // handleContextError checks if the error is a context-length error and, if
-// OnContextError is enabled, applies tool elision compression as fallback.
+// OnContextError is enabled, applies the configured compression strategy
+// to free context space.  Unlike compressToolElision (which only elides
+// tool calls/results), this uses the full configured strategy — including
+// selective (message removal) and summarization — so text-heavy
+// conversations are handled too.
+//
+// When the configured strategy is tool_elision or micro (which may leave
+// text content untouched), it escalates to selective as a fallback so the
+// retry can make progress.
 func (a *Agent) handleContextError(err error) {
 	if !a.cfg.ContextCompression.OnContextError {
 		return
@@ -2842,10 +2850,57 @@ func (a *Agent) handleContextError(err error) {
 	if !isContextLengthError(err) {
 		return
 	}
+
+	strategy := CompressionStrategy(a.cfg.ContextCompression.Strategy)
 	if a.cfg.Logger != nil {
-		a.cfg.Logger.Log(Info, "Context length error — applying tool elision compression")
+		a.cfg.Logger.Log(Info, "Context length error — applying compression (strategy=%s)", strategy)
 	}
-	a.compressToolElision(false)
+
+	// Apply the configured strategy.  We pass force=true so the strategy
+	// runs even when internal thresholds aren't met (overflow is an emergency).
+	a.compressHistoryWithStrategy(string(strategy), true)
+
+	// If the configured strategy is tool_elision or micro and context is
+	// STILL over the hard ceiling, escalate to selective (remove old turns).
+	// This handles text-heavy conversations where eliding tool data leaves
+	// all user+assistant messages intact.
+	if strategy == "" || strategy == CompressionToolElision || strategy == CompressionMicro {
+		stats := a.computeContextStats()
+		maxTokens := a.effectiveMaxTokens()
+		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
+			if a.cfg.Logger != nil {
+				a.cfg.Logger.Log(Info, "Tool elision/micro freed insufficient space (%d/%d tokens) — escalating to selective",
+					stats.EstimatedTokens, maxTokens)
+			}
+			a.compressSelective()
+		}
+	}
+}
+
+// compressHistoryWithStrategy applies the named compression strategy
+// directly (empty = tool_elision).  The force parameter bypasses internal
+// per-strategy thresholds.
+func (a *Agent) compressHistoryWithStrategy(strategy string, force bool) {
+	// Build a temporary Ctx-free strategy dispatch.  The summarization
+	// strategy needs a real context, so we skip it here (it is not a
+	// useful emergency strategy anyway since it costs an LLM call).
+	switch CompressionStrategy(strategy) {
+	case CompressionSelective:
+		a.compressSelective()
+	case CompressionToolElision:
+		a.compressToolElision(force)
+	case CompressionMicro:
+		a.microCompactForced(force)
+	case CompressionHybrid:
+		a.compressToolElision(true)
+		stats := a.computeContextStats()
+		maxTokens := a.effectiveMaxTokens()
+		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
+			a.compressSelective()
+		}
+	default:
+		a.compressToolElision(force)
+	}
 }
 
 // isContextLengthError reports whether the error indicates the LLM's context
