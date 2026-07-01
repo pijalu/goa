@@ -916,47 +916,75 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := a.runStreamRound(ctx, round, model, opts, initCtx, &maxStreams); err != nil {
+		done, err := a.runStreamRound(ctx, round, model, opts, initCtx, &maxStreams)
+		if err != nil {
 			return err
+		}
+		if done {
+			return nil
 		}
 	}
 }
 
 // runStreamRound performs one LLM stream round, handling tool calls,
-// progress checks, and stream failures.
-func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context, maxStreams *int) error {
+// progress checks, and stream failures. It returns done=true when the turn
+// should end after this round (no further tool calls to process).
+func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context, maxStreams *int) (done bool, err error) {
 	stream, err := a.startStreamRound(ctx, round, model, opts, initCtx)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	toolCallEncountered, streamErr := a.consumeStream(ctx, stream)
 	if streamErr != nil {
 		if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
-			return retErr
+			if retErr != nil {
+				return false, retErr
+			}
+			// Retry succeeded and produced no further tool calls: turn is done.
+			return true, nil
 		}
-		return nil
+		return false, nil
 	}
 
 	if !toolCallEncountered {
-		return nil
+		return true, nil
 	}
 
-	result := a.checkStreamProgress(ctx, round, *maxStreams, model, opts)
-	if result < 0 {
-		return nil
+	// Check whether the tool-call round limit is reached and the model has stalled.
+	// If so, run the recovery stream (which injects a hint and does a final LLM
+	// call). The recovery stream is the last chance for this turn, so the turn
+	// ends when it returns.
+	if round >= *maxStreams-1 && a.hasStalled() {
+		if err := a.runRecoveryStream(ctx, model, opts, *maxStreams); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	*maxStreams = result
-	return nil
+
+	// Extend horizon if still making progress.
+	if round >= *maxStreams-1 {
+		next := *maxStreams + 50
+		a.cfg.Logger.Log(Warn, "Extending stream horizon from %d to %d (model making progress)", *maxStreams, next)
+		*maxStreams = next
+	}
+	return false, nil
 }
 
 // startStreamRound builds the provider context and opens a stream.
 // On round 0 it uses the initial context from prepareTurn; on subsequent
-// rounds it rebuilds from the updated history.
+// rounds it rebuilds from the updated history.  Resets per-round flags
+// (streamLoopDetected, contentBuf, thinkingBuf) so a previous round's
+// state doesn't poison the re-stream.
 func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context) (*provider.AssistantMessageEventStream, error) {
 	if round > 0 {
 		a.cfg.Logger.Log(Info, "Re-streaming after tool call (round %d)", round)
 		a.emitEvent(OutputEvent{Type: EventProgress, Text: "Sending request..."})
+		a.mu.Lock()
+		a.streamLoopDetected = false
+		a.contentBuf.Reset()
+		a.thinkingBuf.Reset()
+		a.mu.Unlock()
 		return provider.Stream(model, a.buildProviderContext(ctx), opts)
 	}
 	a.logProviderContext(initCtx, 0)
@@ -972,25 +1000,6 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 }
 
 
-
-// checkStreamProgress checks whether the model has stalled at the current
-// round limit. If so, runs the recovery stream. If still making progress,
-// extends the horizon. Returns the (possibly extended) maxStreams, or -1
-// if recovery completed and the caller should return nil.
-func (a *Agent) checkStreamProgress(ctx context.Context, round int, maxStreams int, model provider.Model, opts provider.StreamOptions) int {
-	if round < maxStreams-1 {
-		return maxStreams
-	}
-	if a.hasStalled() {
-		if err := a.runRecoveryStream(ctx, model, opts, maxStreams); err != nil {
-			a.cfg.Logger.Log(Error, "Recovery stream failed: %v", err)
-		}
-		return -1
-	}
-	next := maxStreams + 50
-	a.cfg.Logger.Log(Warn, "Extending stream horizon from %d to %d (model making progress)", maxStreams, next)
-	return next
-}
 
 // runRecoveryStream sends a clear system message to the LLM when the per-turn
 // stream round limit is reached, then performs one final stream so the model
@@ -1455,27 +1464,43 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 		a.mu.Unlock()
 	}
 	a.recordGenDuration()
-	toolCallsEncountered := a.completeStreamTurn(ctx)
-	if err := stream.Err(); err != nil {
-		// When the stream terminates with an error (for example an HTTP 400
-		// from LM Studio with context_length_exceeded) before producing any
-		// SSE events, the stream has no events — consumeStream runs zero
-		// iterations and falls through to finishStreamTurn. call
-		// handleContextError here so context compression can fire and free
-		// space before the caller retries.
+
+	// Check for context overflow BEFORE finalizing the turn.  If the stream
+	// terminated with a context-length error, we must NOT call finalizeStreamTurn
+	// because that would emit EventEnd (telling the UI the turn is done) and
+	// append partial content to history.  The retry would produce a second
+	// EventEnd, and the UI would see two turns — the duplicate response bug.
+	// Instead, skip finalization: let the error propagate to handleStreamFailure
+	// which will undo any partial assistant message, compress, and retry.
+	if err := stream.Err(); err != nil && isContextLengthError(err) {
 		a.handleContextError(err)
-		return toolCallsEncountered, err
+		return false, err
 	}
+
+	toolCallsEncountered := a.completeStreamTurn(ctx)
 	return toolCallsEncountered, nil
 }
 
 // resolveStreamError extracts the error from a stream error event.
 func (a *Agent) resolveStreamError(stream *provider.AssistantMessageEventStream, eventErr error) error {
-	a.finalizeStreamTurn()
-	if err := stream.Err(); err != nil {
-		a.cfg.Logger.Log(Error, "stream error: %v", err)
+	// Detect context overflow BEFORE finalizing the turn so the
+	// duplicate-EventEnd bug is avoided.  Check both eventErr and
+	// stream.Err() since the error may be in either location.
+	err := eventErr
+	if err == nil {
+		err = stream.Err()
+	}
+	if err != nil && isContextLengthError(err) {
 		a.handleContextError(err)
 		return err
+	}
+
+	a.finalizeStreamTurn()
+
+	if e := stream.Err(); e != nil {
+		a.cfg.Logger.Log(Error, "stream error: %v", e)
+		a.handleContextError(e)
+		return e
 	}
 	if eventErr != nil {
 		a.cfg.Logger.Log(Error, "stream error: %v", eventErr)

@@ -18,7 +18,8 @@ type testAPIProvider struct {
 	events []provider.AssistantMessageEvent
 	// usage, when non-nil, is attached to the terminal AssistantMessage result,
 	// simulating a provider that reports token usage (e.g. via stream_options).
-	usage *provider.Usage
+	usage     *provider.Usage
+	exhausted atomic.Bool
 }
 
 func (p *testAPIProvider) API() provider.Api {
@@ -27,7 +28,23 @@ func (p *testAPIProvider) API() provider.Api {
 
 func (p *testAPIProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
 	result := provider.NewAssistantMessageEventStream(64)
+	// On re-stream (tool calls encountered), push a plain text response
+	// instead of the predetermined tool-call events, to avoid infinite
+	// tool-call loops in tests.
+	extraRound := p.exhausted.Swap(true)
 	go func() {
+		if extraRound {
+			result.Push(provider.AssistantMessageEvent{
+				Type:  provider.EventTextDelta,
+				Delta: "Done processing tool calls.",
+			})
+			result.End(&provider.AssistantMessage{
+				Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "Done processing tool calls."}},
+				StopReason: provider.StopReasonEndTurn,
+				Usage:      p.usage,
+			})
+			return
+		}
 		for _, event := range p.events {
 			result.Push(event)
 		}

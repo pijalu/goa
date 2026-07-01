@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
 //go:embed *.md mode/*/*.md pair/*.md task/*.md pipeline/*.md tools/*.md
@@ -53,7 +55,11 @@ func LoadCompanionReviewEnabledPrompt() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("companion review enabled prompt not found: %w", err)
 	}
-	return string(data), nil
+	doc, err := embeddoc.ParseDocument(data)
+	if err != nil {
+		return "", fmt.Errorf("companion review enabled prompt invalid: %w", err)
+	}
+	return doc.Body, nil
 }
 
 // LoadCompanionReviewDisabledPrompt returns the system prompt addition used
@@ -63,7 +69,11 @@ func LoadCompanionReviewDisabledPrompt() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("companion review disabled prompt not found: %w", err)
 	}
-	return string(data), nil
+	doc, err := embeddoc.ParseDocument(data)
+	if err != nil {
+		return "", fmt.Errorf("companion review disabled prompt invalid: %w", err)
+	}
+	return doc.Body, nil
 }
 
 // EmbeddedFS returns the embedded filesystem for use by Registry.

@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -24,13 +23,14 @@ type Document struct {
 }
 
 // LoadText reads a plain-text file from an embedded filesystem and returns its
-// trimmed content. If the file is missing or empty, an empty string is returned.
+// trimmed content, skipping an optional leading HTML comment (e.g. SPDX
+// header). If the file is missing or empty, an empty string is returned.
 func LoadText(fs embed.FS, name string) string {
 	data, err := fs.ReadFile(name)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	return string(bytes.TrimSpace(stripLeadingComment(data)))
 }
 
 // LoadDocument reads a markdown file from an embedded filesystem and parses its
@@ -46,7 +46,8 @@ func LoadDocument(fs embed.FS, name string) (*Document, error) {
 
 // ParseDocument splits raw markdown data into frontmatter and body.
 func ParseDocument(data []byte) (*Document, error) {
-	trimmed := bytes.TrimSpace(data)
+	trimmed := bytes.TrimSpace(stripLeadingComment(data))
+
 	if !bytes.HasPrefix(trimmed, []byte("---")) {
 		return &Document{Frontmatter: make(map[string]any), Body: string(trimmed)}, nil
 	}
@@ -71,4 +72,19 @@ func ParseDocument(data []byte) (*Document, error) {
 	}
 
 	return &Document{Frontmatter: fm, Body: string(bodyBytes)}, nil
+}
+
+// stripLeadingComment removes an optional HTML comment block at the start of a
+// file. Embedded prompts include an SPDX license header wrapped in <!-- -->,
+// which should not be treated as document content.
+func stripLeadingComment(data []byte) []byte {
+	trimmed := bytes.TrimSpace(data)
+	for bytes.HasPrefix(trimmed, []byte("<!--")) {
+		endIdx := bytes.Index(trimmed, []byte("-->"))
+		if endIdx < 0 {
+			break
+		}
+		trimmed = bytes.TrimSpace(trimmed[endIdx+3:])
+	}
+	return trimmed
 }
