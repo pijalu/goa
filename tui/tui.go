@@ -6,12 +6,9 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -445,12 +442,13 @@ func (t *TUI) RequestRender() {
 	t.dirty.Store(true)
 }
 
+// listenResize reacts to terminal size changes by requesting a re-render.
+// The platform-specific signal source lives in resize_unix.go / resize_windows.go
+// (SIGWINCH is unavailable on Windows, where size changes are polled instead).
 func (t *TUI) listenResize() {
-	sig := make(chan os.Signal, 4)
-	signal.Notify(sig, syscall.SIGWINCH)
 	for {
 		select {
-		case <-sig:
+		case <-resizeEvents(t.done):
 			t.RequestRender()
 		case <-t.done:
 			return

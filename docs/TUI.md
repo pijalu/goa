@@ -186,6 +186,29 @@ context, the input title is presented first (on the editor top border) and the
 supporting goa text is shown as a panel immediately after, avoiding redundant
 or ambiguous bubbles.
 
+### Input discipline
+
+**All user text input must flow through the main input zone** (the persistent
+`Editor`), never through a throwaway overlay `Input`.
+
+1. Hosts capture input via `requestMainInput(prompt, onSubmit)` (or the
+   `core.Context.RequestMainInput` callback), which sets the editor **title**
+   (top border) to the prompt so the user always knows what is being asked.
+2. A **modal/card rendered inside the conversation viewport** may accompany the
+   prompt to display richer context (title, summary, options), but the *typing*
+   still happens in the main editor — the card itself never captures keys.
+3. When a default/seed value is needed, call `Editor.SetText(current)` *before*
+   registering the request (the review handlers in `events.go` use this idiom).
+4. Empty submit (or Ctrl+C) cancels the pending request; the request's
+   `onCancel` restores prior UI state.
+
+Rationale: the main editor carries history, kill-yank, autocomplete, undo, and
+the live title cue. Spawning a separate `Input` overlay (`ShowInput`) forfeits
+all of these and produces a second, inconsistent input region. The legacy
+`ShowInput`/`ShowInputFunc` overlay path is therefore **deprecated** for
+free-text capture and retained only as a transition shim; new code must not use
+it for user input.
+
 ### Autocomplete
 
 The Editor supports inline autocomplete via a `Completer` interface.
