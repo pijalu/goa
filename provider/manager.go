@@ -256,15 +256,17 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 
 	// Try the built-in model registry first.
 	if m := models.GetModel(modelName); m != nil {
-		mdl = applyRegistryOverrides(*m, *pCfg, mCfg)
+		mdl = mergeRegistryModel(*m, *pCfg, mCfg, modelName)
 	} else {
 		// Fallback: construct a minimal Model for custom/local providers.
 		mdl = buildFallbackModel(*pCfg, mCfg, modelName)
 	}
 
-	// Auto-detect context window for local providers if not configured explicitly.
-	if mCfg.ContextWindow <= 0 && mdl.ContextWindow <= 0 && isLocalProvider(pCfg.Endpoint) {
-		if nCtx := detectLocalContextWindow(pCfg.Endpoint, modelName, pCfg.APIKey); nCtx > 0 {
+	// Auto-detect the real loaded context window for local providers if the user
+	// hasn't set an explicit context_window. Override the registry default so
+	// LM Studio / llama.cpp loaded-context sizes are preferred.
+	if mCfg.ContextWindow <= 0 && isLocalProvider(pCfg.Endpoint) {
+		if nCtx := detectLocalContextWindow(*pCfg, modelName, pCfg.APIKey); nCtx > 0 {
 			mdl.ContextWindow = nCtx
 		}
 	}
@@ -272,22 +274,35 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 	return mdl, nil
 }
 
-// applyRegistryOverrides copies a registry model and applies config overrides.
-func applyRegistryOverrides(m agenticprovider.Model, pCfg config.ProviderConfig, mCfg config.ModelConfig) agenticprovider.Model {
-	mdl := m
-	if pCfg.Endpoint != "" {
-		if needsChatCompletionsSuffix(mdl.Api) {
-			mdl.BaseURL = ChatCompletionsEndpoint(pCfg.Endpoint)
-		} else {
-			mdl.BaseURL = pCfg.Endpoint
-		}
-	}
+// inferEffectiveProviderAPI returns the provider/api identity for a model,
+// letting the active provider config decide the wire protocol unless the model
+// config explicitly overrides it.
+func inferEffectiveProviderAPI(pCfg config.ProviderConfig, mCfg config.ModelConfig) (agenticprovider.Provider, agenticprovider.Api) {
+	prov, api := inferProviderIdentity(pCfg)
 	if mCfg.API != "" {
-		mdl.Api = agenticprovider.Api(mCfg.API)
+		api = agenticprovider.Api(mCfg.API)
 	}
 	if mCfg.Provider != "" {
-		mdl.Provider = agenticprovider.Provider(mCfg.Provider)
+		prov = agenticprovider.Provider(mCfg.Provider)
 	}
+	return prov, api
+}
+
+// setModelBaseURL sets BaseURL based on the resolved API and provider endpoint.
+func setModelBaseURL(mdl *agenticprovider.Model, endpoint string, api agenticprovider.Api) {
+	if endpoint == "" {
+		return
+	}
+	if needsChatCompletionsSuffix(api) {
+		mdl.BaseURL = ChatCompletionsEndpoint(endpoint)
+	} else {
+		mdl.BaseURL = endpoint
+	}
+}
+
+// applyModelConfigCapabilities applies model-level overrides from config onto
+// a registry model without replacing its built-in capabilities.
+func applyModelConfigCapabilities(mdl *agenticprovider.Model, mCfg config.ModelConfig, api agenticprovider.Api) {
 	if mCfg.Reasoning {
 		mdl.Reasoning = true
 	}
@@ -295,26 +310,115 @@ func applyRegistryOverrides(m agenticprovider.Model, pCfg config.ProviderConfig,
 		mdl.ThinkingBudgets = budgets
 	}
 	if mCfg.Compat != "" {
-		mdl.Compat = parseCompatJSON(mdl.Api, mCfg.Compat)
+		mdl.Compat = parseCompatJSON(api, mCfg.Compat)
 	}
-	// Merge Extra from provider config (preset or user-provided)
-	if len(pCfg.Extra) > 0 {
-		if mdl.Extra == nil {
-			mdl.Extra = make(map[string]any, len(pCfg.Extra))
-		}
-		for k, v := range pCfg.Extra {
-			mdl.Extra[k] = v
+	if mCfg.ContextWindow > 0 {
+		mdl.ContextWindow = mCfg.ContextWindow
+	}
+	if mCfg.MaxTokens > 0 {
+		mdl.MaxTokens = mCfg.MaxTokens
+	}
+	if len(mCfg.InputTypes) > 0 {
+		mdl.InputTypes = mCfg.InputTypes
+	}
+	if mCfg.ThinkingLevel != "" {
+		mdl.ThinkingLevelMap = defaultThinkingLevelMap()
+	}
+}
+
+// applyProviderExtra merges provider-level Extra metadata into the model.
+func applyProviderExtra(mdl *agenticprovider.Model, pCfg config.ProviderConfig) {
+	if len(pCfg.Extra) == 0 {
+		return
+	}
+	if mdl.Extra == nil {
+		mdl.Extra = make(map[string]any, len(pCfg.Extra))
+	}
+	for k, v := range pCfg.Extra {
+		mdl.Extra[k] = v
+	}
+}
+
+// knownProviderPrefixes lists provider names that users may prepend to a model
+// ID. When a model name like "google/gemma-4-e4b" is not found in the
+// registry, stripping the known provider prefix lets us match the bare model ID
+// (e.g., "gemma-4-e4b") and still use the active provider's endpoint.
+var knownProviderPrefixes = []string{
+	string(agenticprovider.ProviderOpenAI),
+	string(agenticprovider.ProviderAnthropic),
+	string(agenticprovider.ProviderGoogle),
+	string(agenticprovider.ProviderMistral),
+	string(agenticprovider.ProviderAWS),
+	string(agenticprovider.ProviderAzure),
+	string(agenticprovider.ProviderGitHub),
+	string(agenticprovider.ProviderTogether),
+	string(agenticprovider.ProviderFireworks),
+	string(agenticprovider.ProviderGroq),
+	string(agenticprovider.ProviderPerplexity),
+	string(agenticprovider.ProviderDeepSeek),
+	string(agenticprovider.ProviderOpenRouter),
+	string(agenticprovider.ProviderLMStudio),
+	string(agenticprovider.ProviderOllama),
+	string(agenticprovider.ProviderKimi),
+	string(agenticprovider.ProviderKimiCode),
+	string(agenticprovider.ProviderCustom),
+}
+
+// stripKnownProviderPrefix returns the part of name after a leading known
+// provider prefix. If the prefix is not a known provider, name is returned
+// unchanged.
+func stripKnownProviderPrefix(name string) string {
+	idx := strings.Index(name, "/")
+	if idx <= 0 {
+		return name
+	}
+	prefix := strings.ToLower(name[:idx])
+	for _, p := range knownProviderPrefixes {
+		if strings.ToLower(p) == prefix {
+			return name[idx+1:]
 		}
 	}
+	return name
+}
+
+// mergeRegistryModel combines a built-in registry model's capabilities with
+// the active provider's identity and endpoint. The original modelName is kept
+// as the ID so the API receives the exact name the user configured.
+func mergeRegistryModel(m agenticprovider.Model, pCfg config.ProviderConfig, mCfg config.ModelConfig, modelName string) agenticprovider.Model {
+	mdl := m
+	mdl.ID = modelName
+	mdl.Name = modelName
+
+	prov, api := inferEffectiveProviderAPI(pCfg, mCfg)
+	mdl.Provider = prov
+	mdl.Api = api
+
+	setModelBaseURL(&mdl, pCfg.Endpoint, api)
+	applyModelConfigCapabilities(&mdl, mCfg, api)
+	applyProviderExtra(&mdl, pCfg)
 	return mdl
 }
 
 // buildFallbackModel constructs a Model from provider/model config.
-// First tries prefix-based model lookup, then falls back to a minimal config.
+// First tries prefix-based model lookup, then checks for a provider-prefixed
+// known model (e.g., "google/gemma-4-e4b"), and finally falls back to a
+// minimal config.
 func buildFallbackModel(pCfg config.ProviderConfig, mCfg config.ModelConfig, modelName string) agenticprovider.Model {
 	// Try prefix-based lookup for known model families (e.g., "gpt-4o-" matches "gpt-4o").
 	if m := models.LookupByPrefix(modelName); m != nil {
-		return applyRegistryOverrides(*m, pCfg, mCfg)
+		return mergeRegistryModel(*m, pCfg, mCfg, modelName)
+	}
+
+	// Active model names sometimes carry a provider-family prefix that the
+	// built-in registry does not include (e.g., "google/gemma-4-e4b"). Strip a
+	// known provider prefix and try exact and prefix lookup again.
+	if stripped := stripKnownProviderPrefix(modelName); stripped != modelName {
+		if m := models.GetModel(stripped); m != nil {
+			return mergeRegistryModel(*m, pCfg, mCfg, modelName)
+		}
+		if m := models.LookupByPrefix(stripped); m != nil {
+			return mergeRegistryModel(*m, pCfg, mCfg, modelName)
+		}
 	}
 
 	prov, api := inferProviderIdentity(pCfg)
@@ -700,13 +804,59 @@ func isLocalProvider(endpoint string) bool {
 		strings.Contains(e, "localhost") || strings.Contains(e, "127.0.0.1")
 }
 
+// detectFromLMStudioModels queries LM Studio's /api/v0/models endpoint for the
+// loaded context length of the active model, falling back to max_context_length.
+func detectFromLMStudioModels(client *http.Client, baseURL *url.URL, modelName, apiKey string) int {
+	modelsURL := baseURL.ResolveReference(&url.URL{Path: "/api/v0/models"})
+	req, err := http.NewRequest("GET", modelsURL.String(), nil)
+	if err != nil {
+		return 0
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	body, _ := io.ReadAll(resp.Body)
+	type modelEntry struct {
+		ID                  string `json:"id"`
+		MaxContextLength    int    `json:"max_context_length"`
+		LoadedContextLength int    `json:"loaded_context_length"`
+	}
+	var result struct {
+		Data []modelEntry `json:"data"`
+	}
+	if json.Unmarshal(body, &result) != nil {
+		return 0
+	}
+	for _, m := range result.Data {
+		if m.ID == modelName {
+			if m.LoadedContextLength > 0 {
+				return m.LoadedContextLength
+			}
+			if m.MaxContextLength > 0 {
+				return m.MaxContextLength
+			}
+		}
+	}
+	return 0
+}
+
 // detectLocalContextWindow queries a local LLM provider to discover the context
-// window size. Uses the same detection order as agentic.DetectContextWindow:
-//  1. llama.cpp /props endpoint — reads default_generation_settings.n_ctx
-//  2. llama.cpp /v1/models endpoint — reads meta.n_ctx_train
+// window size. Uses the provider identity to pick the right strategy:
+//  1. LM Studio /api/v0/models — reads loaded_context_length / max_context_length
+//  2. llama.cpp /props endpoint — reads default_generation_settings.n_ctx
+//  3. llama.cpp /v1/models endpoint — reads meta.n_ctx (then meta.n_ctx_train)
 //
 // Returns 0 if detection fails or the provider doesn't expose this info.
-func detectLocalContextWindow(endpoint, modelName, apiKey string) int {
+func detectLocalContextWindow(pCfg config.ProviderConfig, modelName, apiKey string) int {
+	endpoint := pCfg.Endpoint
 	baseURL, err := url.Parse(endpoint)
 	if err != nil {
 		return 0
@@ -715,12 +865,17 @@ func detectLocalContextWindow(endpoint, modelName, apiKey string) int {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 
-	// 1. Try /props endpoint (llama.cpp) — reads n_ctx
+	// LM Studio exposes /api/v0/models with loaded_context_length.
+	if prov, _ := inferProviderIdentity(pCfg); prov == agenticprovider.ProviderLMStudio {
+		if nCtx := detectFromLMStudioModels(client, baseURL, modelName, apiKey); nCtx > 0 {
+			return nCtx
+		}
+	}
+
+	// llama.cpp exposes the loaded context via /props and /v1/models.
 	if nCtx := detectFromProps(client, baseURL, apiKey); nCtx > 0 {
 		return nCtx
 	}
-
-	// 2. Try /v1/models endpoint (OpenAI-compatible) — reads meta.n_ctx_train
 	if nCtx := detectFromModelMeta(client, baseURL, modelName, apiKey); nCtx > 0 {
 		return nCtx
 	}
@@ -787,6 +942,7 @@ func detectFromModelMeta(client *http.Client, baseURL *url.URL, modelName, apiKe
 	type modelEntry struct {
 		ID   string `json:"id"`
 		Meta struct {
+			NCtx      int `json:"n_ctx"`
 			NCtxTrain int `json:"n_ctx_train"`
 		} `json:"meta"`
 	}
@@ -797,8 +953,13 @@ func detectFromModelMeta(client *http.Client, baseURL *url.URL, modelName, apiKe
 		return 0
 	}
 	for _, m := range result.Data {
-		if m.ID == modelName && m.Meta.NCtxTrain > 0 {
-			return m.Meta.NCtxTrain
+		if m.ID == modelName {
+			if m.Meta.NCtx > 0 {
+				return m.Meta.NCtx
+			}
+			if m.Meta.NCtxTrain > 0 {
+				return m.Meta.NCtxTrain
+			}
 		}
 	}
 	return 0

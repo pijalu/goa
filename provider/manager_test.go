@@ -5,6 +5,10 @@
 package provider
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -306,6 +310,64 @@ func TestResolveActiveModel_ProviderIdentity(t *testing.T) {
 	}
 }
 
+func TestResolveActiveModel_KnownModelViaLocalProvider(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "lmstudio",
+		Providers: []config.ProviderConfig{
+			{ID: "lmstudio", Endpoint: "http://localhost:1234/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "gemma-4-e4b", ProviderID: "lmstudio", Model: "gemma-4-e4b"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel failed: %v", err)
+	}
+	if mdl.ID != "gemma-4-e4b" {
+		t.Errorf("Model.ID = %q, want %q", mdl.ID, "gemma-4-e4b")
+	}
+	if mdl.ContextWindow <= 0 {
+		t.Errorf("Model.ContextWindow = %d, want > 0", mdl.ContextWindow)
+	}
+	if mdl.Provider != agenticprovider.ProviderLMStudio {
+		t.Errorf("Model.Provider = %q, want %q", mdl.Provider, agenticprovider.ProviderLMStudio)
+	}
+	if mdl.Api != agenticprovider.ApiOpenAICompletions {
+		t.Errorf("Model.Api = %q, want %q", mdl.Api, agenticprovider.ApiOpenAICompletions)
+	}
+}
+
+func TestResolveActiveModel_PrefixedKnownModel(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "lmstudio",
+		Providers: []config.ProviderConfig{
+			{ID: "lmstudio", Endpoint: "http://localhost:1234/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "google/gemma-4-e4b", ProviderID: "lmstudio", Model: "google/gemma-4-e4b"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel failed: %v", err)
+	}
+	if mdl.ID != "google/gemma-4-e4b" {
+		t.Errorf("Model.ID = %q, want %q", mdl.ID, "google/gemma-4-e4b")
+	}
+	if mdl.ContextWindow <= 0 {
+		t.Errorf("Model.ContextWindow = %d, want > 0", mdl.ContextWindow)
+	}
+	if mdl.Provider != agenticprovider.ProviderLMStudio {
+		t.Errorf("Model.Provider = %q, want %q", mdl.Provider, agenticprovider.ProviderLMStudio)
+	}
+	if mdl.Api != agenticprovider.ApiOpenAICompletions {
+		t.Errorf("Model.Api = %q, want %q", mdl.Api, agenticprovider.ApiOpenAICompletions)
+	}
+}
+
 func TestBuildStreamOptions_AllFields(t *testing.T) {
 	temp := 0.7
 	cfg := buildAllFieldsConfig(temp)
@@ -569,5 +631,194 @@ func TestResolveActiveModel_ReasoningAndCompat(t *testing.T) {
 	}
 	if compat.ToolResultAsUser == nil || !*compat.ToolResultAsUser {
 		t.Errorf("Expected ToolResultAsUser=true")
+	}
+}
+
+func TestDetectFromLMStudioModels_LoadedContextLength(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "google/gemma-4-e4b", "max_context_length": 131072, "loaded_context_length": 8192},
+				{"id": "other-model", "max_context_length": 4096},
+			},
+		})
+	}))
+	defer server.Close()
+
+	baseURL, _ := url.Parse(server.URL)
+	nCtx := detectFromLMStudioModels(&http.Client{Timeout: 5 * time.Second}, baseURL, "google/gemma-4-e4b", "")
+	if nCtx != 8192 {
+		t.Errorf("detectFromLMStudioModels = %d, want 8192", nCtx)
+	}
+}
+
+func TestDetectFromLMStudioModels_FallsBackToMax(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "google/gemma-4-e4b", "max_context_length": 65536},
+			},
+		})
+	}))
+	defer server.Close()
+
+	baseURL, _ := url.Parse(server.URL)
+	nCtx := detectFromLMStudioModels(&http.Client{Timeout: 5 * time.Second}, baseURL, "google/gemma-4-e4b", "")
+	if nCtx != 65536 {
+		t.Errorf("detectFromLMStudioModels = %d, want 65536", nCtx)
+	}
+}
+
+func TestDetectFromLMStudioModels_ModelNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "other-model", "max_context_length": 4096},
+			},
+		})
+	}))
+	defer server.Close()
+
+	baseURL, _ := url.Parse(server.URL)
+	nCtx := detectFromLMStudioModels(&http.Client{Timeout: 5 * time.Second}, baseURL, "missing-model", "")
+	if nCtx != 0 {
+		t.Errorf("detectFromLMStudioModels = %d, want 0", nCtx)
+	}
+}
+
+func TestResolveActiveModel_DetectsLoadedContextFromLMStudio(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"id": "google/gemma-4-e4b", "max_context_length": 131072, "loaded_context_length": 8192},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	cfg := &config.Config{
+		ActiveProvider: "lmstudio",
+		Providers: []config.ProviderConfig{
+			{ID: "lmstudio", Endpoint: server.URL + "/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "google/gemma-4-e4b", ProviderID: "lmstudio", Model: "google/gemma-4-e4b"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel failed: %v", err)
+	}
+	if mdl.ContextWindow != 8192 {
+		t.Errorf("ContextWindow = %d, want 8192 (loaded context should override registry 131072)", mdl.ContextWindow)
+	}
+}
+
+func TestDetectLocalContextWindow_LMStudio(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "google/gemma-4-e4b", "max_context_length": 131072, "loaded_context_length": 8192},
+			},
+		})
+	}))
+	defer server.Close()
+
+	pCfg := config.ProviderConfig{ID: "lmstudio", Endpoint: server.URL + "/v1"}
+	nCtx := detectLocalContextWindow(pCfg, "google/gemma-4-e4b", "")
+	if nCtx != 8192 {
+		t.Errorf("detectLocalContextWindow = %d, want 8192", nCtx)
+	}
+}
+
+func TestDetectLocalContextWindow_NonLMStudio(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"id": "google/gemma-4-e4b", "max_context_length": 131072, "loaded_context_length": 8192},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	pCfg := config.ProviderConfig{ID: "ollama", Endpoint: server.URL + "/v1"}
+	nCtx := detectLocalContextWindow(pCfg, "google/gemma-4-e4b", "")
+	if nCtx != 0 {
+		t.Errorf("detectLocalContextWindow for non-LM-Studio = %d, want 0", nCtx)
+	}
+}
+
+func TestDetectFromModelMeta_LlamaCPP_LoadedContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "my-model", "meta": map[string]any{"n_ctx": 8192, "n_ctx_train": 131072}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	baseURL, _ := url.Parse(server.URL)
+	nCtx := detectFromModelMeta(&http.Client{Timeout: 5 * time.Second}, baseURL, "my-model", "")
+	if nCtx != 8192 {
+		t.Errorf("detectFromModelMeta = %d, want 8192", nCtx)
+	}
+}
+
+func TestDetectFromModelMeta_LlamaCPP_FallsBackToTrain(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "my-model", "meta": map[string]any{"n_ctx_train": 131072}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	baseURL, _ := url.Parse(server.URL)
+	nCtx := detectFromModelMeta(&http.Client{Timeout: 5 * time.Second}, baseURL, "my-model", "")
+	if nCtx != 131072 {
+		t.Errorf("detectFromModelMeta = %d, want 131072", nCtx)
 	}
 }
