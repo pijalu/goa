@@ -146,6 +146,18 @@ skills:
 
 # ── Tools ──────────────────────────────────────────────────────────
 tools:
+  # Optional tools toggles. Most are opt-IN (default false).
+  # `clarify_disabled` is the exception: it is opt-OUT (default false),
+  # so the ask_user_question tool is ENABLED by default.
+  enabled:
+    bg_exec: false            # background process execution
+    memento: false           # thinking artifacts
+    pty_exec: false          # PTY-backed command execution
+    ssh_bash: false          # remote shell execution
+    delegate_to: false       # multi-agent delegation
+    request_review: false    # multi-agent review requests
+    webfetch: false           # web fetching
+    clarify_disabled: false  # set true to remove the ask_user_question tool
   edit:
     allow_fuzz_on_edits: true        # DEFAULT: enabled
                                      # 3-tier fuzzy matching:

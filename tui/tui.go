@@ -766,6 +766,12 @@ func (t *TUI) ShowSelector(title string, items []SelectorItem, currentValue stri
 
 // ShowInput displays a single-line input prompt as an overlay.
 // The caller blocks on the returned channel until the user submits or cancels.
+//
+// Deprecated: this spawns a throwaway overlay Input that bypasses the main
+// input zone. New code must capture text via the main input line
+// (App.requestMainInput / core.Context.RequestMainInput) per the "Input
+// discipline" guideline in docs/TUI.md. Retained for tests and any external
+// callers; production code no longer invokes it.
 func (t *TUI) ShowInput(prompt, current string) <-chan string {
 	result := make(chan string, 1)
 	in := NewInput()

@@ -57,62 +57,14 @@ func (c *ClarifyCard) Render(width int) []string {
 	if width < 12 {
 		width = 12
 	}
-	borderHex := TheTheme.ColorHex("goa_panel_border")
-	if borderHex == "" {
-		borderHex = TheTheme.ColorHex("border_default")
-	}
-	bd := ansi.Fg(borderHex)
-	accentHex := TheTheme.ColorHex("accent")
-	if accentHex == "" {
-		accentHex = TheTheme.ColorHex("selection_fg")
-	}
-	ac := ansi.Fg(accentHex)
-	dim := ansi.Fg(TheTheme.ColorHex("system_msg"))
+	bd, ac, dim := cardColors()
 	reset := ansi.Reset
-
-	// Inner content width: width minus two borders minus 2 padding cols.
 	inner := width - 4
 	if inner < 2 {
 		inner = 2
 	}
 
-	var body []string
-	// Title bar (accent).
-	if c.title != "" {
-		for _, l := range ansi.Wrap("❓ "+c.title, inner) {
-			body = append(body, ac+l+reset)
-		}
-	}
-	// Summary (dim).
-	if c.summary != "" {
-		if len(body) > 0 {
-			body = append(body, "")
-		}
-		for _, l := range ansi.Wrap(c.summary, inner) {
-			body = append(body, dim+l+reset)
-		}
-	}
-	// Question (normal weight).
-	if c.question != "" {
-		if len(body) > 0 {
-			body = append(body, "")
-		}
-		for _, l := range ansi.Wrap(c.question, inner) {
-			body = append(body, l)
-		}
-	}
-	// Options (numbered).
-	if len(c.options) > 0 {
-		if len(body) > 0 {
-			body = append(body, "")
-		}
-		for i, opt := range c.options {
-			label := fmt.Sprintf("%d. %s", i+1, opt)
-			for _, l := range ansi.Wrap(label, inner) {
-				body = append(body, ac+l+reset)
-			}
-		}
-	}
+	body := c.renderBody(inner, ac, dim)
 	if len(body) == 0 {
 		body = []string{""}
 	}
@@ -127,3 +79,73 @@ func (c *ClarifyCard) Render(width int) []string {
 	lines = append(lines, padToWidthStyled(bot, width, ""))
 	return lines
 }
+
+// cardColors resolves the theme colors used by the card.
+func cardColors() (bd, ac, dim string) {
+	bd = TheTheme.ColorHex("goa_panel_border")
+	if bd == "" {
+		bd = TheTheme.ColorHex("border_default")
+	}
+	ac = TheTheme.ColorHex("accent")
+	if ac == "" {
+		ac = TheTheme.ColorHex("selection_fg")
+	}
+	dim = TheTheme.ColorHex("system_msg")
+	return bd, ac, dim
+}
+
+// renderBody builds the inner content lines for the card at the given width.
+func (c *ClarifyCard) renderBody(inner int, ac, dim string) []string {
+	reset := ansi.Reset
+	var body []string
+	body = c.appendSection(body, ansi.Wrap("❓ "+c.title, inner), ac+"%s"+reset, c.title != "")
+	body = c.appendSection(body, wrapStyled(c.summary, inner, dim+"%s"+reset), "%s", c.summary != "")
+	body = c.appendSection(body, ansi.Wrap(c.question, inner), "%s", c.question != "")
+	body = c.appendOptions(body, inner, ac, reset)
+	return body
+}
+
+// appendSection appends a (possibly empty) section, inserting a blank
+// separator before non-empty content. fmt is applied to each line.
+func (c *ClarifyCard) appendSection(body []string, lines []string, fmtStr string, nonEmpty bool) []string {
+	if !nonEmpty || len(lines) == 0 {
+		return body
+	}
+	if len(body) > 0 {
+		body = append(body, "")
+	}
+	for _, l := range lines {
+		body = append(body, sprintf(fmtStr, l))
+	}
+	return body
+}
+
+// appendOptions appends the numbered options list.
+func (c *ClarifyCard) appendOptions(body []string, inner int, ac, reset string) []string {
+	if len(c.options) == 0 {
+		return body
+	}
+	if len(body) > 0 {
+		body = append(body, "")
+	}
+	for i, opt := range c.options {
+		label := fmt.Sprintf("%d. %s", i+1, opt)
+		for _, l := range ansi.Wrap(label, inner) {
+			body = append(body, ac+l+reset)
+		}
+	}
+	return body
+}
+
+// wrapStyled wraps text and applies a printf-style style template to each line.
+func wrapStyled(text string, inner int, fmtStr string) []string {
+	wrapped := ansi.Wrap(text, inner)
+	out := make([]string, len(wrapped))
+	for i, l := range wrapped {
+		out[i] = sprintf(fmtStr, l)
+	}
+	return out
+}
+
+// sprintf is fmt.Sprintf localized to avoid name clashes.
+func sprintf(format string, a ...any) string { return fmt.Sprintf(format, a...) }

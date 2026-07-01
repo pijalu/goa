@@ -143,6 +143,11 @@ type Context struct {
 	// The onSubmit callback is invoked with the result when the user confirms
 	// or cancels. This is async-friendly: the caller returns immediately and
 	// onSubmit runs later.
+	//
+	// Note: the production host (internal/app) implements this by routing the
+	// prompt through the MAIN input line (requestMainInputWithCancel) per the
+	// "Input discipline" guideline — it does NOT open an overlay Input. The
+	// (value, ok) contract is preserved: ok==false on cancel.
 	ShowInputFunc func(prompt, current string, onSubmit func(value string, ok bool))
 
 	// RequestMainInput asks the host to capture the next user input from the

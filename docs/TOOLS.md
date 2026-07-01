@@ -329,6 +329,39 @@ Allows the LLM to invoke Goa commands programmatically.
 }
 ```
 
+### `ask_user_question` — Ask clarifying questions
+
+Lets the LLM ask the user one or more clarifying questions when requirements
+are ambiguous. Each question is shown as a card in the conversation
+(title / summary / question / numbered options) and answered through the
+**main input line**; the card never captures input. Registered by default;
+disable with `tools.enabled.clarify_disabled: true`.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `questions` | array | One or more questions; each asked separately (required) |
+| &nbsp;&nbsp;`question` | string | The question (required) |
+| &nbsp;&nbsp;`title` | string | Short label for the card / input title |
+| &nbsp;&nbsp;`summary` | string | Optional context |
+| &nbsp;&nbsp;`options` | string[] | Up to 6 choices (type number or text) |
+| &nbsp;&nbsp;`required` | bool | If true, cancellation is an error |
+| &nbsp;&nbsp;`allow_free_text` | bool | If false with options, restrict to listed options |
+
+**Example:**
+```json
+{
+  "questions": [
+    {
+      "title": "Target branch",
+      "summary": "Two release branches are active",
+      "question": "Which branch should I target?",
+      "options": ["main", "release-2.x"]
+    }
+  ]
+}
+```
+
 ## Documentable Tool Update
 
 To make a tool self-documenting, implement the `Documentable` interface:

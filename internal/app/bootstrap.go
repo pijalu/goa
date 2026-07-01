@@ -468,20 +468,18 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	// SmartSearch uses BM25 for relevance-ranked code search.
 	// It receives change notifications from edit/write tools for automatic
 	// index refresh.
-	if cfg.Tools.SmartSearch.Enabled || !cfg.Tools.SmartSearch.Enabled {
-		// SmartSearch is always registered (no opt-out toggle yet).
-		ss := &tools.SmartSearchTool{
-			WorktreeMgr:   wm,
-			ProjectDir:    projectDir,
-			MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
-			MinScore:      cfg.Tools.SmartSearch.MinScore,
-			ExcludeDirs:   cfg.Tools.SmartSearch.Exclude,
-			K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
-			B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
-			ChangeTracker: changeTracker,
-		}
-		reg.Register(ss)
+	// SmartSearch is always registered (no opt-out toggle yet).
+	ss := &tools.SmartSearchTool{
+		WorktreeMgr:   wm,
+		ProjectDir:    projectDir,
+		MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
+		MinScore:      cfg.Tools.SmartSearch.MinScore,
+		ExcludeDirs:   cfg.Tools.SmartSearch.Exclude,
+		K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
+		B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
+		ChangeTracker: changeTracker,
 	}
+	reg.Register(ss)
 }
 
 // defaultInt returns val if non-zero, otherwise defaultVal.
