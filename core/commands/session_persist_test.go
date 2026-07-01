@@ -95,11 +95,11 @@ func TestRestoreSession_Success(t *testing.T) {
 	es := &fakeEventSink{}
 	store := newSessionStore(nil)
 	store.AddEvents("my-session", []agentic.OutputEvent{
-		{Type: agentic.EventContent}, {Type: agentic.EventToolResult},
+		{Type: agentic.EventContent},
+		{Type: agentic.EventToolResult},
 	})
 
-	err := restoreSession(w, es, store, "my-session")
-	if err != nil {
+	if err := restoreSession(w, es, store, "my-session"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	text := w.Text()
@@ -109,9 +109,53 @@ func TestRestoreSession_Success(t *testing.T) {
 	if !strings.Contains(text, "2 events") {
 		t.Errorf("expected event count, got: %s", text)
 	}
-	if len(es.flashes) != 2 {
-		t.Errorf("expected 2 flashes, got %d: %v", len(es.flashes), es.flashes)
+	if !es.ClearCalled() {
+		t.Error("expected ClearChat to be called before replay")
 	}
+	if !es.InterruptCalled() {
+		t.Error("expected InterruptAgent to be called before replay")
+	}
+	flashes := es.Flashes()
+	if len(flashes) == 0 || !strings.Contains(flashes[0], "Restored session") {
+		t.Errorf("expected first 'Restored session' flash, got %q", flashes)
+	}
+}
+
+func TestRestoreSession_ReplaysEvents(t *testing.T) {
+	w := newWriter()
+	es := &fakeEventSink{}
+	store := newSessionStore(nil)
+	store.AddEvents("my-session", []agentic.OutputEvent{
+		{Type: agentic.EventContent},
+		{Type: agentic.EventToolResult},
+	})
+
+	if err := restoreSession(w, es, store, "my-session"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for len(es.Replayed()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	replayed := es.Replayed()
+	if len(replayed) != 2 {
+		t.Errorf("expected 2 replayed events, got %d", len(replayed))
+	}
+	for i, ev := range replayed {
+		if ev.Metadata["replay"] != "true" {
+			t.Errorf("event %d: expected replay metadata, got %v", i, ev.Metadata)
+		}
+	}
+
+	for time.Now().Before(deadline) {
+		flashes := es.Flashes()
+		if len(flashes) > 0 && strings.Contains(flashes[len(flashes)-1], "Loaded session") {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("expected final 'Loaded session' flash, got %q", es.Flashes())
 }
 
 func TestRestoreSession_LoadError(t *testing.T) {
@@ -168,8 +212,8 @@ func TestShowSessionPicker_DeleteCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(es.flashes) != 0 {
-		t.Errorf("expected no flashes on cancel, got: %v", es.flashes)
+	if len(es.Flashes()) != 0 {
+		t.Errorf("expected no flashes on cancel, got: %v", es.Flashes())
 	}
 }
 

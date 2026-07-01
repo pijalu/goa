@@ -16,8 +16,8 @@ Copyright (C) 2026 Pierre Poissinger
 6. Check code quality with each tool run separately (do not chain them with `;` or `&&`):
    - `go vet ./...`
    - `staticcheck ./...`
-   - `gocognit -over 15 ./...`
-   - `gocyclo -over 12 ./...`
+   - `gocognit -over 15 .`
+   - `gocyclo -over 12 .`
    - `go test -count=1 -race -cover ./...`
    Fix any new issues introduced by the change. Pre-existing warnings are acceptable only if they are unrelated to the change and explicitly noted.
 
@@ -33,4 +33,26 @@ If new items are added, restart the process.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 
+## Archive
+
+### Context size (fixed)
+**Problem:** On local providers (e.g. LM Studio), the real loaded context length (`loaded_context_length`) is only exposed after the model is loaded. `ResolveActiveModel` was querying `/api/v0/models` at startup, before the model was loaded, so it fell back to `max_context_length` (262144) instead of the actual loaded context (32768).
+
+**Fix plan:**
+1. Remove eager context-window detection from `ResolveActiveModel`.
+2. Add `ProviderManager.RefreshLocalContextWindow()` that calls the existing `detectLocalContextWindow()` on demand.
+3. Add `Agent.SetContextWindow(nCtx int)` so the runtime context window can be updated after detection.
+4. Add `AgentManager.SetContextWindowRefresher()` and a one-shot `maybeRefreshContextWindow()` hook on the first `EventStateChange` after a session starts.
+5. Wire the refresher in `internal/app/subsystems.go` to call `providerMgr.RefreshLocalContextWindow()`.
+6. The refresh runs asynchronously; when it returns, it updates the active agent's `ContextWindow` and emits an `EventContextStats` so the footer reflects the real loaded length.
+
+**Validation:**
+- `go vet ./...`
+- `staticcheck ./...` (no new warnings)
+- `gocognit -over 15 .`
+- `gocyclo -over 12 .`
+- `go test -count=1 -race -cover ./...`
+- New tests: `TestResolveActiveModel_NoEagerLocalContextDetection`, `TestAgentManager_RefreshContextWindow_OnFirstStateChange`, `TestSetContextWindow_UpdatesEffectiveMaxTokens`.
+
 # TODO
+

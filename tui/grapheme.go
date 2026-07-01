@@ -6,6 +6,7 @@ package tui
 
 import (
 	"github.com/rivo/uniseg"
+	"unicode/utf8"
 )
 
 // GraphemeHelper provides grapheme cluster-aware string operations.
@@ -119,4 +120,34 @@ func GraphemeAt(s string, pos int) string {
 		}
 	}
 	return ""
+}
+
+// RuneIndexToBytePos returns the byte offset in s that corresponds to the
+// given rune index. If runeIdx is greater than the number of runes in s, it
+// returns len(s).
+func RuneIndexToBytePos(s string, runeIdx int) int {
+	if runeIdx <= 0 {
+		return 0
+	}
+	count := 0
+	for i := range s {
+		if count == runeIdx {
+			return i
+		}
+		count++
+	}
+	return len(s)
+}
+
+// BytePosToRuneIndex returns the rune index in s that corresponds to the
+// given byte offset. If bytePos is greater than len(s), it returns the rune
+// count of s.
+func BytePosToRuneIndex(s string, bytePos int) int {
+	if bytePos <= 0 {
+		return 0
+	}
+	if bytePos >= len(s) {
+		return utf8.RuneCountInString(s)
+	}
+	return utf8.RuneCountInString(s[:bytePos])
 }

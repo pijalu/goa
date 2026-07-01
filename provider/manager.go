@@ -236,8 +236,10 @@ func (pm *ProviderManager) resolveModelName(cfg config.ProviderConfig) string {
 // Falls back to a minimal Model if the active model isn't in the built-in registry
 // (e.g., custom/local models). In that case, Provider and Api are inferred from
 // the active provider config's endpoint and preset mapping. Context window is taken
-// from the model config if set, or auto-detected for local providers (LM Studio,
-// llama.cpp) via their /props or /v1/models endpoints.
+// from the model config if set, otherwise the built-in registry default is used.
+// The real loaded context length for local providers (LM Studio, llama.cpp) is
+// refreshed after the model has loaded and the first tokens have been received;
+// see ProviderManager.RefreshLocalContextWindow.
 func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 	pCfg, modelName := pm.Active()
 	if pCfg == nil {
@@ -262,16 +264,23 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 		mdl = buildFallbackModel(*pCfg, mCfg, modelName)
 	}
 
-	// Auto-detect the real loaded context window for local providers if the user
-	// hasn't set an explicit context_window. Override the registry default so
-	// LM Studio / llama.cpp loaded-context sizes are preferred.
-	if mCfg.ContextWindow <= 0 && isLocalProvider(pCfg.Endpoint) {
-		if nCtx := detectLocalContextWindow(*pCfg, modelName, pCfg.APIKey); nCtx > 0 {
-			mdl.ContextWindow = nCtx
-		}
-	}
-
 	return mdl, nil
+}
+
+// RefreshLocalContextWindow re-detects the context window for the active local
+// provider/model. It is meant to be called after the model has loaded and the
+// first tokens have been received, so local servers can report the real loaded
+// context length (e.g. LM Studio's loaded_context_length). Returns 0 for remote
+// providers or when detection fails.
+func (pm *ProviderManager) RefreshLocalContextWindow() int {
+	pCfg, modelName := pm.Active()
+	if pCfg == nil || modelName == "" {
+		return 0
+	}
+	if !isLocalProvider(pCfg.Endpoint) {
+		return 0
+	}
+	return detectLocalContextWindow(*pCfg, modelName, pCfg.APIKey)
 }
 
 // inferEffectiveProviderAPI returns the provider/api identity for a model,
@@ -805,7 +814,8 @@ func isLocalProvider(endpoint string) bool {
 }
 
 // detectFromLMStudioModels queries LM Studio's /api/v0/models endpoint for the
-// loaded context length of the active model, falling back to max_context_length.
+// loaded context length of the active model, falling back to context_length
+// and then max_context_length.
 func detectFromLMStudioModels(client *http.Client, baseURL *url.URL, modelName, apiKey string) int {
 	modelsURL := baseURL.ResolveReference(&url.URL{Path: "/api/v0/models"})
 	req, err := http.NewRequest("GET", modelsURL.String(), nil)
@@ -828,6 +838,7 @@ func detectFromLMStudioModels(client *http.Client, baseURL *url.URL, modelName, 
 		ID                  string `json:"id"`
 		MaxContextLength    int    `json:"max_context_length"`
 		LoadedContextLength int    `json:"loaded_context_length"`
+		ContextLength       int    `json:"context_length"`
 	}
 	var result struct {
 		Data []modelEntry `json:"data"`
@@ -837,12 +848,17 @@ func detectFromLMStudioModels(client *http.Client, baseURL *url.URL, modelName, 
 	}
 	for _, m := range result.Data {
 		if m.ID == modelName {
-			if m.LoadedContextLength > 0 {
-				return m.LoadedContextLength
-			}
-			if m.MaxContextLength > 0 {
-				return m.MaxContextLength
-			}
+			return firstPositive(m.LoadedContextLength, m.ContextLength, m.MaxContextLength)
+		}
+	}
+	return 0
+}
+
+// firstPositive returns the first positive value from the provided arguments.
+func firstPositive(values ...int) int {
+	for _, v := range values {
+		if v > 0 {
+			return v
 		}
 	}
 	return 0
@@ -850,7 +866,7 @@ func detectFromLMStudioModels(client *http.Client, baseURL *url.URL, modelName, 
 
 // detectLocalContextWindow queries a local LLM provider to discover the context
 // window size. Uses the provider identity to pick the right strategy:
-//  1. LM Studio /api/v0/models — reads loaded_context_length / max_context_length
+//  1. LM Studio /api/v0/models — reads loaded_context_length, context_length, max_context_length
 //  2. llama.cpp /props endpoint — reads default_generation_settings.n_ctx
 //  3. llama.cpp /v1/models endpoint — reads meta.n_ctx (then meta.n_ctx_train)
 //

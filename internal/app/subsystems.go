@@ -121,6 +121,12 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	subs := initBaseSubsystems(cfg, projectDir)
 	agentBundle := initAgentBundle(cfg, projectDir)
 	agentBundle.agentMgr.SetLifecycleRegistry(subs.lifecycleRegistry)
+	agentBundle.agentMgr.SetContextWindowRefresher(func() int {
+		if subs.providerMgr == nil {
+			return 0
+		}
+		return subs.providerMgr.RefreshLocalContextWindow()
+	})
 	// Shared swarm state + task bus: created once so the /swarm command, the
 	// agent_swarm tool, the agent (sub-agent) tool, and the system-prompt
 	// reminder injector all observe the same state. Previously each was nil

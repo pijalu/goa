@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -85,6 +86,11 @@ type Agent struct {
 	// is handled. DeepSeek requires reasoning_content to be passed back.
 	thinkingBuf strings.Builder
 
+	// thinkingDisplayBuf accumulates thinking tokens that have not yet been
+	// displayed, suppressing raw tool-call XML that spans multiple deltas.
+	// Once the buffer contains no tool-like tags, it is flushed to the UI.
+	thinkingDisplayBuf strings.Builder
+
 	// contentBuf accumulates delta content tokens from the current assistant
 	// response so they can be included in the assistant message. Without this,
 	// content sent before a tool call (or in a text-only response) is lost.
@@ -107,6 +113,10 @@ type Agent struct {
 	// (first token → done), used to derive output speed when provider timings
 	// are unavailable.
 	genDuration time.Duration
+
+	// contextWindow mirrors cfg.Model.ContextWindow and is updated atomically so
+	// concurrent readers (e.g. effectiveMaxTokens) can read it without taking mu.
+	contextWindow atomic.Int64
 
 	// thinkingStall records when the current thinking-only phase started
 	// (zero value = not in a thinking stall). Used to detect models that
@@ -151,8 +161,6 @@ type Agent struct {
 	// cannot free enough space. Reset at the start of each turn in
 	// prepareTurn.
 	overflowRecoveryAttempted bool
-
-
 
 	// lastAssistantHash and assistantRepeatCount detect assistant-message
 	// loops where the model emits the same text/thinking across consecutive
@@ -379,12 +387,16 @@ func NewAgent(cfg Config) *Agent {
 	if cfg.ContextCompression.Strategy == CompressionMicro && cfg.ContextCompression.MicroCompaction == (MicroCompactionConfig{}) {
 		cfg.ContextCompression.MicroCompaction = DefaultMicroCompactionConfig
 	}
-	return &Agent{
+	a := &Agent{
 		cfg:           cfg,
 		reg:           NewToolRegistry(cfg.Tools),
 		Output:        make(chan Message, 10),
 		turnToolCalls: make(map[string]int),
 	}
+	if cfg.Model.ContextWindow > 0 {
+		a.contextWindow.Store(int64(cfg.Model.ContextWindow))
+	}
+	return a
 }
 
 // SetHistory replaces the conversation history.
@@ -419,6 +431,9 @@ func (a *Agent) SetModel(mdl provider.Model) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cfg.Model = mdl
+	if mdl.ContextWindow > 0 {
+		a.contextWindow.Store(int64(mdl.ContextWindow))
+	}
 }
 
 // SetContextCompression replaces the context compression configuration for
@@ -483,6 +498,19 @@ func (a *Agent) StreamOptions() provider.StreamOptions {
 // This updates the API key, headers, timeout, transport, and other provider
 // settings. Call after switching providers so the new provider's credentials
 // are used on the next turn.
+// SetContextWindow updates the model's advertised context window at runtime.
+// Used by the host to refresh the loaded context length for local providers
+// after the model has finished loading.
+func (a *Agent) SetContextWindow(nCtx int) {
+	if nCtx <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.Model.ContextWindow = nCtx
+	a.contextWindow.Store(int64(nCtx))
+}
+
 func (a *Agent) SetStreamOptions(opts provider.StreamOptions) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -993,6 +1021,7 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		a.streamLoopDetected = false
 		a.contentBuf.Reset()
 		a.thinkingBuf.Reset()
+		a.thinkingDisplayBuf.Reset()
 		a.mu.Unlock()
 		return provider.Stream(model, a.buildProviderContext(ctx), opts)
 	}
@@ -1007,8 +1036,6 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 	}
 	return 50
 }
-
-
 
 // runRecoveryStream sends a clear system message to the LLM when the per-turn
 // stream round limit is reached, then performs one final stream so the model
@@ -1091,6 +1118,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.turnToolCallCount = 0
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
+	a.thinkingDisplayBuf.Reset()
 	a.turnStatsEmitted = false
 	a.bufferedToolCalls = nil
 	a.bufferedToolCallCount = 0
@@ -1397,6 +1425,7 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 	strippedThinking := stripToolMarkup(thinking, true)
 	a.thinkingBuf.Reset()
 	a.thinkingBuf.WriteString(strippedThinking)
+	a.thinkingDisplayBuf.Reset()
 
 	controller := NewToolLoopController(a.reg.Schemas(), true)
 	for _, pc := range calls {
@@ -1572,14 +1601,33 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 		})
 	}
 
-	// Strip closed tool-call XML from the visible thinking stream. Local
+	// Strip tool-call XML from the visible thinking stream. Local
 	// models sometimes emit <tool_call> or <function=> markup inside
 	// reasoning_content; without this, raw XML is rendered in the thinking
 	// block. The raw thinking buffer is still accumulated for auto-heal.
-	cleanDelta := stripToolMarkup(event.Delta, false)
-	if cleanDelta != "" {
-		a.emitEvent(OutputEvent{Type: EventContent, State: StateThinking, Role: Assistant, Text: cleanDelta, IsDelta: true})
+	a.thinkingDisplayBuf.WriteString(event.Delta)
+	clean := stripToolMarkup(a.thinkingDisplayBuf.String(), true)
+	if clean != "" && !containsToolXMLTag(clean) {
+		a.emitEvent(OutputEvent{Type: EventContent, State: StateThinking, Role: Assistant, Text: clean, IsDelta: true})
+		a.thinkingDisplayBuf.Reset()
 	}
+}
+
+// containsToolXMLTag reports whether text still contains any raw tool-call XML
+// tag (open or close). It is used while streaming thinking text so that
+// multi-line tool-call markup that spans multiple deltas is suppressed until
+// the whole block is closed and stripped.
+func containsToolXMLTag(text string) bool {
+	for _, tag := range []string{
+		"<tool_call>", "</tool_call>",
+		"<function=", "</function>",
+		"<parameter=", "</parameter>",
+	} {
+		if strings.Contains(text, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // resetThinkingStall clears the thinking-stall tracking whenever the model
@@ -1991,6 +2039,7 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
+	a.thinkingDisplayBuf.Reset()
 
 	// If any call was executed for real, continue so the LLM sees results.
 	if len(realResults) > 0 {

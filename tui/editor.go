@@ -563,15 +563,19 @@ func (e *Editor) handleJumpMode(data string) bool {
 	}
 	if isPrintable(data) && !strings.HasPrefix(data, "\x1b") {
 		runes := []rune(data)
+		char := string(runes[0])
+		full := string(e.buf)
 		if e.jumpMode == "forward" {
-			targetStr := string(e.buf[e.pos:])
-			if idx := strings.Index(targetStr, string(runes[0])); idx >= 0 {
-				e.pos += idx + 1
+			bytePos := RuneIndexToBytePos(full, e.pos)
+			idx := strings.Index(full[bytePos:], char)
+			if idx >= 0 {
+				e.pos = BytePosToRuneIndex(full, bytePos+idx+len(char))
 			}
 		} else {
-			targetStr := string(e.buf[:e.pos])
-			if idx := strings.LastIndex(targetStr, string(runes[0])); idx >= 0 {
-				e.pos = idx + 1
+			bytePos := RuneIndexToBytePos(full, e.pos)
+			idx := strings.LastIndex(full[:bytePos], char)
+			if idx >= 0 {
+				e.pos = BytePosToRuneIndex(full, idx+len(char))
 			}
 		}
 		e.jumpMode = ""
@@ -718,9 +722,12 @@ func (e *Editor) backspace() {
 	}
 	e.pushUndo()
 	e.lastAction = ""
-	start := PrevGraphemeStart(string(e.buf), e.pos)
-	e.buf = append(e.buf[:start], e.buf[e.pos:]...)
-	e.pos = start
+	text := string(e.buf)
+	bytePos := RuneIndexToBytePos(text, e.pos)
+	startByte := PrevGraphemeStart(text, bytePos)
+	startRune := BytePosToRuneIndex(text, startByte)
+	e.buf = append(e.buf[:startRune], e.buf[e.pos:]...)
+	e.pos = startRune
 	e.clearPreferredCol()
 	e.updateAutoComp()
 }
@@ -731,8 +738,11 @@ func (e *Editor) deleteForward() {
 	}
 	e.pushUndo()
 	e.lastAction = ""
-	end := NextGraphemeEnd(string(e.buf), e.pos)
-	e.buf = append(e.buf[:e.pos], e.buf[end:]...)
+	text := string(e.buf)
+	bytePos := RuneIndexToBytePos(text, e.pos)
+	endByte := NextGraphemeEnd(text, bytePos)
+	endRune := BytePosToRuneIndex(text, endByte)
+	e.buf = append(e.buf[:e.pos], e.buf[endRune:]...)
 }
 
 func (e *Editor) moveLeft() {
@@ -754,11 +764,12 @@ func (e *Editor) moveRight() {
 // prevGraphemeOrMarker moves left by one grapheme cluster, but skips paste
 // markers entirely in one jump (they are treated as atomic single units).
 func (e *Editor) prevGraphemeOrMarker(s string, pos int) int {
-	prev := PrevGraphemeStart(s, pos)
+	bytePos := RuneIndexToBytePos(s, pos)
+	prev := PrevGraphemeStart(s, bytePos)
 	if markerStart, ok := findPasteMarkerStartBefore(s, prev); ok {
-		return markerStart
+		return BytePosToRuneIndex(s, markerStart)
 	}
-	return prev
+	return BytePosToRuneIndex(s, prev)
 }
 
 // findPasteMarkerStartBefore searches for a "[paste #...]" marker ending at prev.
@@ -784,15 +795,16 @@ func findPasteMarkerStartBefore(s string, prev int) (int, bool) {
 // nextGraphemeOrMarker moves right by one grapheme cluster, but skips paste
 // markers entirely in one jump.
 func (e *Editor) nextGraphemeOrMarker(s string, pos int) int {
-	next := NextGraphemeEnd(s, pos)
-	// If the text starting at pos is a paste marker, jump to after it
-	if pos < len(s) && strings.HasPrefix(s[pos:], "[paste #") {
-		endIdx := strings.IndexByte(s[pos:], ']')
+	bytePos := RuneIndexToBytePos(s, pos)
+	// If the text starting at bytePos is a paste marker, jump to after it
+	if pos < len(e.buf) && strings.HasPrefix(s[bytePos:], "[paste #") {
+		endIdx := strings.IndexByte(s[bytePos:], ']')
 		if endIdx >= 0 {
-			return pos + endIdx + 1
+			return BytePosToRuneIndex(s, bytePos+endIdx+1)
 		}
 	}
-	return next
+	next := NextGraphemeEnd(s, bytePos)
+	return BytePosToRuneIndex(s, next)
 }
 
 func (e *Editor) lineUp() {

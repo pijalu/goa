@@ -197,6 +197,16 @@ func TestEffectiveMaxTokens_PrefersCompressionConfig(t *testing.T) {
 	}
 }
 
+func TestSetContextWindow_UpdatesEffectiveMaxTokens(t *testing.T) {
+	a := NewAgent(Config{
+		Model: provider.Model{ContextWindow: 262144},
+	})
+	a.SetContextWindow(32768)
+	if got := a.effectiveMaxTokens(); got != 32768 {
+		t.Errorf("effectiveMaxTokens() after SetContextWindow = %d, want 32768", got)
+	}
+}
+
 func TestCheckContextLimit_AllowsLargeHistoryWithinModelWindow(t *testing.T) {
 	a := &Agent{
 		cfg: Config{

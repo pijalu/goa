@@ -15,6 +15,9 @@ func (a *Agent) effectiveMaxTokens() int {
 	if a.cfg.ContextCompression.MaxTokens > 0 {
 		return a.cfg.ContextCompression.MaxTokens
 	}
+	if cw := a.contextWindow.Load(); cw > 0 {
+		return int(cw)
+	}
 	if a.cfg.Model.ContextWindow > 0 {
 		return a.cfg.Model.ContextWindow
 	}

@@ -113,6 +113,8 @@ type AgentManager struct {
 	projectDir           string
 	confirmTool          func(ctx context.Context, toolName, input string) (bool, error)
 
+	contextWindowRefresher func() int
+	contextWindowRefreshed bool
 	baseSystemPrompt       string
 	companionReviewEnabled bool
 	companionReviewSet     bool
@@ -171,6 +173,7 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 	am.wireMainAgent(agent)
 
 	am.activeAgent = agent
+	am.contextWindowRefreshed = false
 	am.dispatchLifecycle("start", map[string]any{
 		"model":    mdl.ID,
 		"provider": am.cfg.ActiveProvider,
@@ -248,6 +251,18 @@ func (am *AgentManager) SetLifecycleRegistry(r LifecycleRegistry) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.lifecycleRegistry = r
+}
+
+// SetContextWindowRefresher sets a callback that re-detects the active local
+// model's loaded context window after the model has finished loading. The
+// callback is invoked once on the first state-change event after a new session
+// starts, so the context window used for compression and the footer reflects
+// the real loaded length (e.g. LM Studio's loaded_context_length) instead of
+// the static registry maximum.
+func (am *AgentManager) SetContextWindowRefresher(fn func() int) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.contextWindowRefresher = fn
 }
 
 func (am *AgentManager) dispatchLifecycle(hookType string, payload map[string]any) {
@@ -761,6 +776,52 @@ func (am *AgentManager) OnEvent(event agentic.OutputEvent) {
 	am.recordContentEvent(event)
 	am.forwardEvent(event)
 	am.handleTypedEvent(event)
+	am.maybeRefreshContextWindow(event)
+}
+
+// maybeRefreshContextWindow triggers a one-time refresh of the local model's
+// loaded context window on the first state-change event after a session starts.
+// Local servers only expose the real loaded length once the first request is
+// in flight, so we defer detection until we see the model begin generating.
+func (am *AgentManager) maybeRefreshContextWindow(event agentic.OutputEvent) {
+	if event.Type != agentic.EventStateChange {
+		return
+	}
+	switch event.State {
+	case agentic.StateThinking, agentic.StateContent, agentic.StateToolCall:
+	default:
+		return
+	}
+
+	am.mu.Lock()
+	if am.contextWindowRefreshed || am.contextWindowRefresher == nil || am.activeAgent == nil {
+		am.mu.Unlock()
+		return
+	}
+	am.contextWindowRefreshed = true
+	refresher := am.contextWindowRefresher
+	am.mu.Unlock()
+
+	go func() {
+		nCtx := refresher()
+		if nCtx <= 0 {
+			return
+		}
+		am.mu.Lock()
+		agent := am.activeAgent
+		am.mu.Unlock()
+		if agent == nil {
+			return
+		}
+		agent.SetContextWindow(nCtx)
+		am.emitAgentEvent(agentic.OutputEvent{
+			Type: agentic.EventContextStats,
+			ContextStats: &agentic.ContextStats{
+				MaxTokens: nCtx,
+				AutoMax:   true,
+			},
+		})
+	}()
 }
 
 func (am *AgentManager) recordContentEvent(event agentic.OutputEvent) {

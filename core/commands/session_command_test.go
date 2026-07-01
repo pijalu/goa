@@ -60,6 +60,20 @@ func TestSessionCommand_Run_SaveWithName(t *testing.T) {
 	}
 }
 
+func TestSessionCommand_Run_SaveEmpty(t *testing.T) {
+	cmd := &SessionCommand{}
+	store := core.NewSessionStore(t.TempDir())
+	store.StartSession()
+	ctx, buf := newSessionCmdCtx(store)
+
+	if err := cmd.Run(ctx, []string{"save", "empty"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(buf.String(), "is empty") {
+		t.Errorf("expected empty-session message, got: %s", buf.String())
+	}
+}
+
 func TestSessionCommand_Run_DeleteByName(t *testing.T) {
 	cmd := &SessionCommand{}
 	store := newSessionStore([]core.SessionInfo{{Name: "my-work", EventCount: 1}})

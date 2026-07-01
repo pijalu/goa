@@ -6,6 +6,7 @@ package commands
 
 import (
 	"archive/zip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -109,6 +110,10 @@ func saveCurrentSession(w core.OutputWriter, store core.SessionStoreAPI, args []
 		return nil
 	}
 	if err := store.SaveCurrent(name); err != nil {
+		if errors.Is(err, core.ErrEmptySession) {
+			writeFmt(w, "Session '%s' is empty — not saved.\n", name)
+			return nil
+		}
 		writeFmt(w, "Error saving session: %v\n", err)
 		return nil
 	}
@@ -149,9 +154,30 @@ func restoreSession(
 		return nil
 	}
 	writeFmt(w, "Restored session '%s' — %d events\n", name, len(events))
-	for _, ev := range events {
-		es.Flash(fmt.Sprintf("%s event", ev.Type))
+
+	replayer, ok := es.(core.AgentEventReplayer)
+	if !ok {
+		// Environments without replay support (tests, headless) fall back to
+		// a summary flash for each event.
+		for _, ev := range events {
+			es.Flash(fmt.Sprintf("%s event", ev.Type))
+		}
+		return nil
 	}
+
+	es.ClearChat()
+	es.InterruptAgent()
+	es.Flash(fmt.Sprintf("Restored session '%s' — %d events", name, len(events)))
+
+	// Replay events off the command goroutine so the UI event loop can drain
+	// the agent bus. Synchronous sends would deadlock when the command loop is
+	// also the only consumer of bus.Agent.
+	go func() {
+		for _, ev := range events {
+			replayer.ReplayAgentEvent(ev)
+		}
+		es.Flash(fmt.Sprintf("Loaded session: %s (%d events)", name, len(events)))
+	}()
 	return nil
 }
 

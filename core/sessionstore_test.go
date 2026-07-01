@@ -5,6 +5,7 @@
 package core
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -163,6 +164,30 @@ func TestSessionNoDir(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Errorf("Expected 0 sessions, got %d", len(sessions))
+	}
+}
+
+func TestSessionSaveCurrent_Empty(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+	ss.StartSession()
+	// No events written.
+
+	err := ss.SaveCurrent("empty-session")
+	if !errors.Is(err, ErrEmptySession) {
+		t.Fatalf("SaveCurrent empty session = %v, want ErrEmptySession", err)
+	}
+
+	// No file should be left behind.
+	sessionDir := filepath.Join(dir, "sessions")
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected no session files, got %d", len(entries))
 	}
 }
 

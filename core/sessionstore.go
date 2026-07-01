@@ -7,6 +7,7 @@ package core
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,10 @@ type SessionInfo struct {
 	TokenTotal   int       `json:"token_total"`
 	FirstMessage string    `json:"first_message,omitempty"`
 }
+
+// ErrEmptySession is returned by SaveCurrent when there is no conversation to
+// persist. Callers can surface a friendly message instead of creating a file.
+var ErrEmptySession = errors.New("session is empty")
 
 // SessionStore manages session persistence using JSONL format.
 // Sessions are stored in .goa/sessions/<timestamp>_<name>.jsonl.
@@ -261,7 +266,7 @@ func (s *SessionStore) SaveCurrent(name string) error {
 	}
 
 	if s.eventCount == 0 && s.tokenTotal == 0 {
-		// Empty session — close and discard the file
+		// Empty session — close and discard the file without creating a save.
 		filePath := s.writer.file.Name()
 		if err := s.writer.Close(); err != nil {
 			s.logError("close empty session writer", err)
@@ -269,7 +274,7 @@ func (s *SessionStore) SaveCurrent(name string) error {
 		os.Remove(filePath)
 		s.writer = nil
 		s.sessionID = ""
-		return nil
+		return ErrEmptySession
 	}
 
 	if err := s.writer.Close(); err != nil {

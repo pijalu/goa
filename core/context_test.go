@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/tui"
 )
@@ -64,6 +65,27 @@ func TestEventSink_Flash(t *testing.T) {
 		}
 	default:
 		t.Error("expected flash event on chat channel")
+	}
+}
+
+func TestAgentEventReplayer_ReplayAgentEvent(t *testing.T) {
+	bus := &event.Bus{
+		Agent: make(chan event.AgentEvent, 1),
+	}
+	ctx := Context{EventBus: bus}
+
+	ctx.ReplayAgentEvent(agentic.OutputEvent{Type: agentic.EventContent, Text: "hello"})
+
+	select {
+	case ev := <-bus.Agent:
+		if ev.Event.Metadata == nil || ev.Event.Metadata["replay"] != "true" {
+			t.Errorf("expected replay metadata, got %v", ev.Event.Metadata)
+		}
+		if ev.Event.Text != "hello" {
+			t.Errorf("expected text 'hello', got %q", ev.Event.Text)
+		}
+	default:
+		t.Error("expected agent event on agent channel")
 	}
 }
 

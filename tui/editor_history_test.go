@@ -103,3 +103,18 @@ func TestEditor_HistoryNavigation_DraftRestore(t *testing.T) {
 		t.Errorf("Down restore draft: got %q, want %q", got, want)
 	}
 }
+
+func TestEditor_HistoryNavigation_BackspaceWithMultibyte(t *testing.T) {
+	ed := NewEditor()
+	ed.SetFocused(true)
+	ed.SetHistory([]string{"hi👨‍👩‍👧x"})
+
+	ed.navigateHistory(-1)
+	if got, want := ed.Text(), "hi👨‍👩‍👧x"; got != want {
+		t.Fatalf("history recall: got %q, want %q", got, want)
+	}
+	ed.HandleInput(KeyBackspace)
+	if got, want := ed.Text(), "hi👨‍👩‍👧"; got != want {
+		t.Errorf("after backspace: got %q, want %q", got, want)
+	}
+}

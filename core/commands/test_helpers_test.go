@@ -7,6 +7,7 @@ package commands
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -79,15 +80,73 @@ func (p *recordingProviderManager) SetActive(providerID, model string) error {
 
 // fakeEventSink implements core.EventSink for testing.
 type fakeEventSink struct {
-	flashes []string
+	mu              sync.Mutex
+	flashes         []string
+	clearCalled     bool
+	interruptCalled bool
+	replayed        []agentic.OutputEvent
 }
 
-func (f *fakeEventSink) Flash(text string)                   { f.flashes = append(f.flashes, text) }
-func (f *fakeEventSink) FooterRefresh()                      {}
-func (f *fakeEventSink) StopRequest()                        {}
-func (f *fakeEventSink) ClearChat()                          {}
-func (f *fakeEventSink) NewSession()                         {}
+func (f *fakeEventSink) Flash(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.flashes = append(f.flashes, text)
+}
+
+func (f *fakeEventSink) FooterRefresh() {}
+func (f *fakeEventSink) StopRequest()   {}
+
+func (f *fakeEventSink) ClearChat() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearCalled = true
+}
+
+func (f *fakeEventSink) NewSession() {}
+func (f *fakeEventSink) InterruptAgent() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.interruptCalled = true
+}
 func (f *fakeEventSink) InterAgent(from, to, content string) {}
+
+func (f *fakeEventSink) ReplayAgentEvent(ev agentic.OutputEvent) {
+	if ev.Metadata == nil {
+		ev.Metadata = map[string]string{}
+	}
+	ev.Metadata["replay"] = "true"
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replayed = append(f.replayed, ev)
+}
+
+func (f *fakeEventSink) Flashes() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.flashes))
+	copy(out, f.flashes)
+	return out
+}
+
+func (f *fakeEventSink) ClearCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clearCalled
+}
+
+func (f *fakeEventSink) InterruptCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.interruptCalled
+}
+
+func (f *fakeEventSink) Replayed() []agentic.OutputEvent {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]agentic.OutputEvent, len(f.replayed))
+	copy(out, f.replayed)
+	return out
+}
 
 // fakeSelector implements core.Selector for testing.
 type fakeSelector struct {

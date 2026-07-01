@@ -634,6 +634,28 @@ func TestResolveActiveModel_ReasoningAndCompat(t *testing.T) {
 	}
 }
 
+func TestDetectFromLMStudioModels_ContextLengthAlias(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v0/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": "list",
+			"data": []map[string]any{
+				{"id": "qwen/qwen3.5-9b", "max_context_length": 262144, "context_length": 32768},
+			},
+		})
+	}))
+	defer server.Close()
+
+	baseURL, _ := url.Parse(server.URL)
+	nCtx := detectFromLMStudioModels(&http.Client{Timeout: 5 * time.Second}, baseURL, "qwen/qwen3.5-9b", "")
+	if nCtx != 32768 {
+		t.Errorf("detectFromLMStudioModels = %d, want 32768 (context_length alias)", nCtx)
+	}
+}
+
 func TestDetectFromLMStudioModels_LoadedContextLength(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v0/models" {
@@ -701,7 +723,7 @@ func TestDetectFromLMStudioModels_ModelNotFound(t *testing.T) {
 	}
 }
 
-func TestResolveActiveModel_DetectsLoadedContextFromLMStudio(t *testing.T) {
+func TestResolveActiveModel_NoEagerLocalContextDetection(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v0/models" {
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -730,8 +752,14 @@ func TestResolveActiveModel_DetectsLoadedContextFromLMStudio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveActiveModel failed: %v", err)
 	}
-	if mdl.ContextWindow != 8192 {
-		t.Errorf("ContextWindow = %d, want 8192 (loaded context should override registry 131072)", mdl.ContextWindow)
+	// ResolveActiveModel must not query the local provider before the model is
+	// loaded, so it keeps the registry default rather than the loaded length.
+	if mdl.ContextWindow != 131072 {
+		t.Errorf("ContextWindow = %d, want 131072 (no eager detection before model is loaded)", mdl.ContextWindow)
+	}
+	// RefreshLocalContextWindow is the deferred path used after first tokens.
+	if got := pm.RefreshLocalContextWindow(); got != 8192 {
+		t.Errorf("RefreshLocalContextWindow = %d, want 8192", got)
 	}
 }
 

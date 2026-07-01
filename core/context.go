@@ -244,10 +244,11 @@ type Context struct {
 
 // Compile-time assertions that Context implements the three role interfaces.
 var (
-	_ CommandEnv   = (*Context)(nil)
-	_ UIHost       = (*Context)(nil)
-	_ SessionEnv   = (*Context)(nil)
-	_ OutputWriter = (*Context)(nil)
+	_ CommandEnv         = (*Context)(nil)
+	_ UIHost             = (*Context)(nil)
+	_ SessionEnv         = (*Context)(nil)
+	_ OutputWriter       = (*Context)(nil)
+	_ AgentEventReplayer = (*Context)(nil)
 )
 
 // OutputWriter is the minimal interface for writing command output.
@@ -310,6 +311,13 @@ type ReloadHandler interface {
 	ReloadPlugins() error
 }
 
+// AgentEventReplayer sends an agent output event back through the UI agent
+// event bus so it can be rendered as if it arrived live. Used by session
+// restore to replay stored events into the chat viewport.
+type AgentEventReplayer interface {
+	ReplayAgentEvent(ev agentic.OutputEvent)
+}
+
 // EventSink sends UI events to the application event bus.
 // Commands use this to flash messages, refresh the footer, request control
 // actions, or update the chat viewport.
@@ -325,6 +333,9 @@ type EventSink interface {
 	// NewSession asks the application to stop the current agent session and
 	// start a fresh one, clearing both the chat viewport and all statistics.
 	NewSession()
+	// InterruptAgent cancels the current agent turn without stopping the
+	// session. Used by session restore to halt any in-flight reconnect loop.
+	InterruptAgent()
 	// InterAgent sends an agent-to-agent message to the chat viewport.
 	InterAgent(from, to, content string)
 }
@@ -400,6 +411,30 @@ func (c Context) Flash(text string) {
 	case c.EventBus.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
 	default:
 	}
+}
+
+// InterruptAgent cancels the current agent turn without stopping the session.
+// It is used by session restore to halt any in-flight reconnect loop before
+// replaying stored history.
+func (c Context) InterruptAgent() {
+	if c.AgentManager == nil {
+		return
+	}
+	_ = c.AgentManager.Interrupt()
+}
+
+// ReplayAgentEvent replays a stored agent output event into the UI agent
+// event bus, marking it as a replay so the renderer can show user messages
+// that would otherwise be suppressed as duplicates.
+func (c Context) ReplayAgentEvent(ev agentic.OutputEvent) {
+	if c.EventBus == nil || c.EventBus.Agent == nil {
+		return
+	}
+	if ev.Metadata == nil {
+		ev.Metadata = make(map[string]string)
+	}
+	ev.Metadata["replay"] = "true"
+	c.EventBus.Agent <- event.AgentEvent{Event: ev}
 }
 
 // FooterRefresh requests a full footer rebuild from the current config.

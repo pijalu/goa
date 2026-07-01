@@ -20,9 +20,9 @@ import (
 // Decoupled from content type so thinking segments break correctly on
 // any non-thinking event (tool call, tool result, content, idle, end).
 type streamState struct {
-	kind      tui.ConsoleItemType
-	text      strings.Builder
-	isActive  bool
+	kind     tui.ConsoleItemType
+	text     strings.Builder
+	isActive bool
 }
 
 func (s *streamState) begin(kind tui.ConsoleItemType) {
@@ -150,6 +150,9 @@ func (a *App) handleProgressEvent(ev *agentic.OutputEvent) {
 
 func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 	if ev.Role == agentic.User || ev.Role == agentic.System {
+		if ev.Role == agentic.User && ev.Text != "" && isReplay(ev) {
+			a.subs.chat.AddUserMessage(ev.Text)
+		}
 		return
 	}
 	if ev.State == agentic.StateThinking {
@@ -159,6 +162,14 @@ func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 	if ev.Text != "" {
 		a.handleAssistantContent(ev)
 	}
+}
+
+// isReplay reports whether ev is a restored session event, as opposed to a
+// live event. During replay, stored user content events are rendered so the
+// chat viewport reconstructs the full conversation; live user content is
+// already added by the submit handler and must stay suppressed.
+func isReplay(ev *agentic.OutputEvent) bool {
+	return ev.Metadata != nil && ev.Metadata["replay"] == "true"
 }
 
 func (a *App) handleThinkingContent(ev *agentic.OutputEvent) {
@@ -589,7 +600,6 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	return st
 }
 
-
 // applyPricing computes cost and pricing-related visibility flags for the
 // given session stats using the model identified by activeModelID.
 func applyPricing(st *sessionStats, cfg *config.Config, activeModelID string) {
@@ -703,7 +713,6 @@ func buildFooterStatParts(s sessionStats) []string {
 	}
 	return parts
 }
-
 
 func formatContextUsage(estimate, max int, autoMax bool) string {
 	if max <= 0 {

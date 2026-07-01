@@ -78,6 +78,37 @@ func TestInitialFooterData_ResolvesProvider(t *testing.T) {
 	}
 }
 
+func TestHandleStreamContent_ReplayUserMessage(t *testing.T) {
+	app := New(testSubsystems())
+	ev := &agentic.OutputEvent{
+		Type:     agentic.EventContent,
+		Role:     agentic.User,
+		Text:     "user replay",
+		Metadata: map[string]string{"replay": "true"},
+	}
+	app.handleStreamContent(ev)
+
+	if !containsRendered(app.subs.chat, "user replay") {
+		t.Errorf("expected replayed user message to be rendered")
+	}
+}
+
+func TestHandleStreamContent_LiveUserMessageIgnored(t *testing.T) {
+	app := New(testSubsystems())
+	app.subs.chat.AddUserMessage("existing")
+	ev := &agentic.OutputEvent{
+		Type: agentic.EventContent,
+		Role: agentic.User,
+		Text: "live user",
+	}
+	app.handleStreamContent(ev)
+
+	rendered := strings.Join(app.subs.chat.Render(80), "\n")
+	if strings.Contains(rendered, "live user") {
+		t.Errorf("expected live user content event to be suppressed")
+	}
+}
+
 func TestHandleStreamContent_CreatesThinkingBlock(t *testing.T) {
 	app := New(testSubsystems())
 	ev := &agentic.OutputEvent{

@@ -20,8 +20,8 @@ var (
 	paramCloseRE        = regexp.MustCompile(`\s*</parameter>\s*$`)
 
 	toolClosedPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`<tool_call>.*?</tool_call>`),
-		regexp.MustCompile(`<function=[\w-]+>.*?</function>`),
+		regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`),
+		regexp.MustCompile(`(?s)<function=[\w-]+>.*?</function>`),
 	}
 	toolAllPatterns = append([]*regexp.Regexp(nil), toolClosedPatterns...)
 
@@ -30,8 +30,8 @@ var (
 
 func init() {
 	toolAllPatterns = append(toolAllPatterns,
-		regexp.MustCompile(`<tool_call>.*$`),
-		regexp.MustCompile(`<function=[\w-]+>.*$`),
+		regexp.MustCompile(`(?s)<tool_call>.*$`),
+		regexp.MustCompile(`(?s)<function=[\w-]+>.*$`),
 	)
 }
 

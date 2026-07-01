@@ -491,8 +491,8 @@ func TestAgentManager_PushMode_EmitsEvent(t *testing.T) {
 func TestAgentManager_StartSession_ForwardsConfig(t *testing.T) {
 	cfg := &config.Config{
 		Execution: config.ExecutionConfig{
-			Mode:          internal.ExecutionYolo,
-			WorktreeMode:  internal.WorktreeAlways,
+			Mode:               internal.ExecutionYolo,
+			WorktreeMode:       internal.WorktreeAlways,
 			MaxToolRepeatTotal: 7,
 		},
 		Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline},
@@ -751,6 +751,45 @@ func TestAgentManager_InjectCompanionReview_ReplacesHistoryMessages(t *testing.T
 	}
 	if companionMsgs != 1 {
 		t.Errorf("expected exactly 1 companion review system message, got %d", companionMsgs)
+	}
+}
+
+func TestAgentManager_RefreshContextWindow_OnFirstStateChange(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	agent := agentic.NewAgent(agentic.Config{
+		Model: agenticprovider.Model{
+			ID:            "test",
+			Api:           agenticprovider.ApiOpenAICompletions,
+			Provider:      agenticprovider.ProviderLMStudio,
+			ContextWindow: 262144,
+		},
+	})
+	am.SetActiveAgentForTest(agent)
+
+	refreshed := make(chan int, 1)
+	am.SetContextWindowRefresher(func() int {
+		refreshed <- 32768
+		return 32768
+	})
+
+	am.OnEvent(agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateContent})
+
+	select {
+	case n := <-refreshed:
+		if n != 32768 {
+			t.Errorf("refresher returned %d, want 32768", n)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("context window refresher was not called after first state change")
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for agent.Model().ContextWindow != 32768 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if agent.Model().ContextWindow != 32768 {
+		t.Errorf("agent ContextWindow = %d, want 32768", agent.Model().ContextWindow)
 	}
 }
 
