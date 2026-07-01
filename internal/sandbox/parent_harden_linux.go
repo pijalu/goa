@@ -4,15 +4,13 @@
 // Copyright (C) 2026 Pierre Poissinger
 
 package sandbox
-import (
-	"syscall"
-)
 
-// PR_SET_DUMPABLE from linux/prctl.h
-const prSetDumpable = 4
+import (
+	"golang.org/x/sys/unix"
+)
 
 func init() {
 	RegisterHardenParent(func() bool {
-		return syscall.Prctl(prSetDumpable, 0, 0, 0, 0) == nil
+		return unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0) == nil
 	})
 }

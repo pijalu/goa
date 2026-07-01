@@ -33,6 +33,15 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Lint (complexity)
+        run: |
+          go install github.com/uudashr/gocognit/cmd/gocognit@latest
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+          echo "=== Cognitive complexity (gocognit) — max 15 ==="
+          find . -type f -name '*.go' -not -path './vendor/*' -not -path './.goa/*' -print0 | xargs -0 gocognit -over 15 || true
+          echo "=== Cyclomatic complexity (gocyclo) — max 12 ==="
+          find . -type f -name '*.go' -not -path './vendor/*' -not -path './.goa/*' -print0 | xargs -0 gocyclo -over 12 || true
+
       - name: Test
         run: go test -count=1 -race -cover -timeout 5m ./...
 
