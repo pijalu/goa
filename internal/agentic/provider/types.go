@@ -54,6 +54,8 @@ const (
 	ProviderOllama     = schema.ProviderOllama
 	ProviderKimi       = schema.ProviderKimi
 	ProviderKimiCode   = schema.ProviderKimiCode
+	ProviderOpenCode   = schema.ProviderOpenCode
+	ProviderOpenCodeGo = schema.ProviderOpenCodeGo
 	ProviderCustom     = schema.ProviderCustom
 
 	TransportSSE       = schema.TransportSSE

@@ -39,6 +39,8 @@ var providerEnvVars = map[Provider][]string{
 	ProviderPerplexity: {"PERPLEXITY_API_KEY"},
 	ProviderDeepSeek:   {"DEEPSEEK_API_KEY"},
 	ProviderOpenRouter: {"OPENROUTER_API_KEY"},
+	ProviderOpenCode:   {"OPENCODE_API_KEY"},
+	ProviderOpenCodeGo: {"OPENCODE_API_KEY"},
 }
 
 // localProviders need no API key.

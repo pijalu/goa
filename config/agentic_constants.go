@@ -25,6 +25,8 @@ const (
 	AgenticProviderOllama     = "ollama"
 	AgenticProviderKimi       = "kimi"
 	AgenticProviderKimiCode   = "kimi-code"
+	AgenticProviderOpenCode   = "opencode"
+	AgenticProviderOpenCodeGo = "opencode-go"
 	AgenticProviderCustom     = "custom"
 )
 
@@ -112,6 +114,8 @@ func ValidAgenticProviders() []string {
 		AgenticProviderOllama,
 		AgenticProviderKimi,
 		AgenticProviderKimiCode,
+		AgenticProviderOpenCode,
+		AgenticProviderOpenCodeGo,
 		AgenticProviderCustom,
 	}
 }

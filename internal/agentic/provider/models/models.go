@@ -362,6 +362,36 @@ var modelDefs = []provider.Model{
 			RequiresReasoningContentOnAssistantMessages: provider.BoolPtr(true),
 		},
 	},
+
+	// ── OpenCode Zen ──
+	{
+		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderOpenCode,
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.00000014, Output: 0.00000028, CacheRead: 0.0000028, CacheWrite: 0},
+		ThinkingFormat: provider.ThinkingFormatChunkedReasoning,
+		ThinkingLevelMap: provider.ThinkingLevelMap{
+			provider.ThinkingOff: "off", provider.ThinkingLow: "low",
+			provider.ThinkingMedium: "medium", provider.ThinkingHigh: "high",
+		},
+		Compat: provider.OpenAICompletionsCompat{
+			RequiresReasoningContentOnAssistantMessages: provider.BoolPtr(true),
+		},
+	},
+
+	// ── OpenCode Zen Go ──
+	{
+		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderOpenCodeGo,
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.00000014, Output: 0.00000028, CacheRead: 0.0000028, CacheWrite: 0},
+		ThinkingFormat: provider.ThinkingFormatChunkedReasoning,
+		ThinkingLevelMap: provider.ThinkingLevelMap{
+			provider.ThinkingOff: "off", provider.ThinkingLow: "low",
+			provider.ThinkingMedium: "medium", provider.ThinkingHigh: "high",
+		},
+		Compat: provider.OpenAICompletionsCompat{
+			RequiresReasoningContentOnAssistantMessages: provider.BoolPtr(true),
+		},
+	},
 }
 
 // BoolPtr returns a pointer to a bool, for use in compat structs.
