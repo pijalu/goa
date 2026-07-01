@@ -421,6 +421,15 @@ func (a *Agent) SetModel(mdl provider.Model) {
 	a.cfg.Model = mdl
 }
 
+// SetContextCompression replaces the context compression configuration for
+// subsequent turns. Used when the model changes mid-session so the context
+// ceiling tracks the new model's context window.
+func (a *Agent) SetContextCompression(cfg ContextCompressionConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.ContextCompression = cfg
+}
+
 // SetReasoningEffort replaces the reasoning-effort level for subsequent turns.
 func (a *Agent) SetReasoningEffort(effort ReasoningEffort) {
 	a.mu.Lock()

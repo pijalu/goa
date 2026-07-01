@@ -708,12 +708,19 @@ func (am *AgentManager) InjectSystemMessage(content string) error {
 	return nil
 }
 
-// SetModel replaces the active agent's model for subsequent turns.
+// SetModel replaces the active agent's model for subsequent turns and syncs
+// the context compression configuration so the new model's context window is
+// used for ceiling/compaction decisions.
 func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
-	if am.activeAgent != nil {
-		am.activeAgent.SetModel(mdl)
+	if am.activeAgent == nil {
+		return
+	}
+	am.activeAgent.SetModel(mdl)
+	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ContextWindow)
+	if compressionCfg.MaxTokens > 0 {
+		am.activeAgent.SetContextCompression(compressionCfg)
 	}
 }
 

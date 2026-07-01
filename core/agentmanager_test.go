@@ -823,6 +823,39 @@ func TestAgentManager_Interrupt_CancelsRunningTurn(t *testing.T) {
 	}, 100*time.Millisecond)
 }
 
+func TestAgentManager_SetModel_UpdatesContextCompression(t *testing.T) {
+	cfg := &config.Config{}
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(cfg, nil, nil, sessionState, tuiEvents, "")
+
+	mdl1 := agenticprovider.Model{
+		ID:            "model-1",
+		Api:           agenticprovider.ApiOpenAICompletions,
+		Provider:      agenticprovider.ProviderLMStudio,
+		ContextWindow: 131072,
+	}
+	if _, err := am.StartSession(mdl1, agenticprovider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if cs := am.CurrentAgent().ContextStats(); cs.MaxTokens != 131072 {
+		t.Fatalf("initial MaxTokens = %d, want 131072", cs.MaxTokens)
+	}
+
+	mdl2 := agenticprovider.Model{
+		ID:            "model-2",
+		Api:           agenticprovider.ApiOpenAICompletions,
+		Provider:      agenticprovider.ProviderLMStudio,
+		ContextWindow: 32768,
+	}
+	am.SetModel(mdl2)
+
+	if cs := am.CurrentAgent().ContextStats(); cs.MaxTokens != 32768 {
+		t.Errorf("after SetModel MaxTokens = %d, want 32768", cs.MaxTokens)
+	}
+}
+
 // TestAgentManager_BuildCompressionConfig_AutoFromModelWindow verifies that
 // when the user does not configure context compression, AgentManager still
 // derives a compression config from the model's advertised context window.
