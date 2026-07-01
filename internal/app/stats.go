@@ -362,6 +362,9 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	})
 	subs.footer.SetModelBusy(false)
 	subs.statusMsg.Clear()
+	if subs.tuiEngine != nil {
+		subs.tuiEngine.RequestRender()
+	}
 
 	// Log turn stats
 	a.logTurnStats(ev)
