@@ -905,72 +905,91 @@ func (a *Agent) withToolResultAsUser(model provider.Model, value bool) provider.
 func (a *Agent) processTurnWithStream(ctx context.Context) error {
 	a.cfg.Logger.Log(Debug, "Agent.processTurnWithStream started")
 
-	model, opts, pCtx := a.prepareTurn(ctx)
-
-	// After prepareTurn has run proactive compression and enforced the hard
-	// ceiling, check whether the context still exceeds the limit. Doing this
-	// here instead of in processTurn gives compression a chance to free space
-	// before we refuse to continue.
+	model, opts, initCtx := a.prepareTurn(ctx)
 	if err := a.checkContextLimit(); err != nil {
 		return err
 	}
 
-	// MaxStreamRounds caps the number of LLM stream rounds per turn
-	// before a progress check is performed. When the model is still making
-	// progress (calling different tools with different arguments), the
-	// horizon is extended by another block. Only when the model stalls
-	// (all tool calls are budget-exceeded, repeated, or looped) is the
-	// recovery hint injected. 0 uses the default of 50.
-	maxStreams := a.cfg.MaxStreamRounds
-	if maxStreams <= 0 {
-		maxStreams = 50
-	}
+	maxStreams := a.effectiveMaxStreamRounds()
 
 	for round := 0; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if round > 0 {
-			a.cfg.Logger.Log(Info, "Re-streaming after tool call (round %d)", round)
-			// Emit progress so the UI shows "Sending request..." during the gap
-			// between EventEnd (tool execution complete) and the next stream's
-			// first token.
-			a.emitEvent(OutputEvent{Type: EventProgress, Text: "Sending request..."})
-			pCtx = a.buildProviderContext(ctx)
+		if err := a.runStreamRound(ctx, round, model, opts, initCtx, &maxStreams); err != nil {
+			return err
 		}
-		a.logProviderContext(pCtx, round)
+	}
+}
 
-		stream, err := provider.Stream(model, pCtx, opts)
-		if err != nil {
-			return fmt.Errorf("stream: %w", err)
-		}
+// runStreamRound performs one LLM stream round, handling tool calls,
+// progress checks, and stream failures.
+func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context, maxStreams *int) error {
+	stream, err := a.startStreamRound(ctx, round, model, opts, initCtx)
+	if err != nil {
+		return err
+	}
 
-		toolCallEncountered, streamErr := a.consumeStream(ctx, stream)
-		if streamErr == nil {
-			if !toolCallEncountered {
-				return nil
-			}
-			// Check progress horizon after each round of tool calls.
-			// When the round limit is reached, check whether the model has
-			// stalled (all calls budget-exceeded or repeated). If still
-			// making progress, extend the horizon by another block.
-			if round >= maxStreams-1 {
-				if a.hasStalled() {
-					return a.runRecoveryStream(ctx, model, opts, maxStreams)
-				}
-				// Model is still making varied, productive tool calls.
-				// Extend the horizon and continue.
-				next := maxStreams + 50
-				a.cfg.Logger.Log(Warn, "Extending stream horizon from %d to %d (model making progress)", maxStreams, next)
-				maxStreams = next
-			}
-			continue
-		}
-
+	toolCallEncountered, streamErr := a.consumeStream(ctx, stream)
+	if streamErr != nil {
 		if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
 			return retErr
 		}
+		return nil
 	}
+
+	if !toolCallEncountered {
+		return nil
+	}
+
+	result := a.checkStreamProgress(ctx, round, *maxStreams, model, opts)
+	if result < 0 {
+		return nil
+	}
+	*maxStreams = result
+	return nil
+}
+
+// startStreamRound builds the provider context and opens a stream.
+// On round 0 it uses the initial context from prepareTurn; on subsequent
+// rounds it rebuilds from the updated history.
+func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context) (*provider.AssistantMessageEventStream, error) {
+	if round > 0 {
+		a.cfg.Logger.Log(Info, "Re-streaming after tool call (round %d)", round)
+		a.emitEvent(OutputEvent{Type: EventProgress, Text: "Sending request..."})
+		return provider.Stream(model, a.buildProviderContext(ctx), opts)
+	}
+	a.logProviderContext(initCtx, 0)
+	return provider.Stream(model, initCtx, opts)
+}
+
+// effectiveMaxStreamRounds returns the configured max stream rounds, defaulting to 50.
+func (a *Agent) effectiveMaxStreamRounds() int {
+	if a.cfg.MaxStreamRounds > 0 {
+		return a.cfg.MaxStreamRounds
+	}
+	return 50
+}
+
+
+
+// checkStreamProgress checks whether the model has stalled at the current
+// round limit. If so, runs the recovery stream. If still making progress,
+// extends the horizon. Returns the (possibly extended) maxStreams, or -1
+// if recovery completed and the caller should return nil.
+func (a *Agent) checkStreamProgress(ctx context.Context, round int, maxStreams int, model provider.Model, opts provider.StreamOptions) int {
+	if round < maxStreams-1 {
+		return maxStreams
+	}
+	if a.hasStalled() {
+		if err := a.runRecoveryStream(ctx, model, opts, maxStreams); err != nil {
+			a.cfg.Logger.Log(Error, "Recovery stream failed: %v", err)
+		}
+		return -1
+	}
+	next := maxStreams + 50
+	a.cfg.Logger.Log(Warn, "Extending stream horizon from %d to %d (model making progress)", maxStreams, next)
+	return next
 }
 
 // runRecoveryStream sends a clear system message to the LLM when the per-turn
@@ -1760,60 +1779,78 @@ func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 	totalCalls, budgetExceeded, repeatCount := a.recordToolCallInBudgetWindow(callKey)
 	a.mu.Unlock()
 
-	// 1. Total-repeat guardrail: counts ALL identical calls across the turn.
-	if a.cfg.MaxToolRepeatTotal > 0 {
-		a.mu.Lock()
-		a.turnToolCalls[callKey]++
-		count := a.turnToolCalls[callKey]
-		a.mu.Unlock()
-		if count > a.cfg.MaxToolRepeatTotal {
-			a.cfg.Logger.Log(Warn, "MaxToolRepeatTotal guardrail: tool call %q called %d times total this turn", tc.ToolName, count)
-			if tc.ToolCallID != "" {
-				a.budgetToolCalls[tc.ToolCallID] = toolLoopMessage
-			}
-			a.emitBudgetToolSkipped(tc, toolLoopMessage)
-			a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
-			return true
-		}
-	}
-
-	// 2. Budget and consecutive-repeat guardrails.
-	//    Priority: budget > consecutive-hard > consecutive-soft.
-	var skipMsg string
-	switch {
-	case budgetExceeded:
-		skipMsg = toolBudgetMessage
-	case a.cfg.MaxToolRepeatConsecutive > 0 && repeatCount >= a.cfg.MaxToolRepeatConsecutive:
-		skipMsg = toolLoopMessage
-	case repeatCount >= 2:
-		skipMsg = toolRepeatedMessage
-	}
-
-	if skipMsg != "" {
-		if tc.ToolCallID != "" {
-			a.budgetToolCalls[tc.ToolCallID] = skipMsg
-		}
-		switch {
-		case budgetExceeded:
-			a.cfg.Logger.Log(Warn, "Tool budget exceeded: %d/%d calls", totalCalls, a.cfg.MaxToolCalls)
-		case a.cfg.MaxToolRepeatConsecutive > 0 && repeatCount >= a.cfg.MaxToolRepeatConsecutive:
-			a.cfg.Logger.Log(Warn, "Hard loop: tool call %q repeated %d times consecutively; substituting hint", tc.ToolName, repeatCount)
-		default:
-			a.cfg.Logger.Log(Warn, "Soft repeat: tool call %q repeated %d times consecutively; substituting hint", tc.ToolName, repeatCount)
-		}
-		a.emitBudgetToolSkipped(tc, skipMsg)
-		a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
+	if a.checkTotalRepeatGuardrail(tc, callKey) {
 		return true
 	}
 
-	// First occurrence (or different call): emit tool call event for TUI
-	// immediately, then buffer for concurrent execution after stream ends.
+	if skipMsg := a.budgetOrRepeatSkipMessage(budgetExceeded, repeatCount); skipMsg != "" {
+		a.applyToolGuardrail(tc, callKey, skipMsg, budgetExceeded, repeatCount, totalCalls)
+		return true
+	}
+
+	// First occurrence: emit tool call event for TUI, then buffer.
 	a.emitEvent(OutputEvent{
 		Type: EventToolCall, State: StateToolCall,
 		ToolName: tc.ToolName, ToolInput: tc.ToolArguments, ToolCallID: tc.ToolCallID,
 	})
 	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
 	return true
+}
+
+// checkTotalRepeatGuardrail returns true and buffers the call (skipped)
+// when total identical calls exceed MaxToolRepeatTotal.
+func (a *Agent) checkTotalRepeatGuardrail(tc provider.ContentBlock, callKey string) bool {
+	if a.cfg.MaxToolRepeatTotal <= 0 {
+		return false
+	}
+	a.mu.Lock()
+	a.turnToolCalls[callKey]++
+	count := a.turnToolCalls[callKey]
+	a.mu.Unlock()
+	if count <= a.cfg.MaxToolRepeatTotal {
+		return false
+	}
+	a.cfg.Logger.Log(Warn, "MaxToolRepeatTotal guardrail: tool call %q called %d times total this turn", tc.ToolName, count)
+	a.applyToolBudgetSkip(tc, toolLoopMessage)
+	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
+	return true
+}
+
+// budgetOrRepeatSkipMessage returns the appropriate skip message based on
+// budget and consecutive-repeat status. Priority: budget > hard-loop > soft-repeat.
+func (a *Agent) budgetOrRepeatSkipMessage(budgetExceeded bool, repeatCount int) string {
+	switch {
+	case budgetExceeded:
+		return toolBudgetMessage
+	case a.cfg.MaxToolRepeatConsecutive > 0 && repeatCount >= a.cfg.MaxToolRepeatConsecutive:
+		return toolLoopMessage
+	case repeatCount >= 2:
+		return toolRepeatedMessage
+	default:
+		return ""
+	}
+}
+
+// applyToolGuardrail records the skip, logs, emits TUI event, and buffers.
+func (a *Agent) applyToolGuardrail(tc provider.ContentBlock, callKey, skipMsg string, budgetExceeded bool, repeatCount, totalCalls int) {
+	a.applyToolBudgetSkip(tc, skipMsg)
+	switch {
+	case budgetExceeded:
+		a.cfg.Logger.Log(Warn, "Tool budget exceeded: %d/%d calls", totalCalls, a.cfg.MaxToolCalls)
+	case a.cfg.MaxToolRepeatConsecutive > 0 && repeatCount >= a.cfg.MaxToolRepeatConsecutive:
+		a.cfg.Logger.Log(Warn, "Hard loop: tool call %q repeated %d times consecutively; substituting hint", tc.ToolName, repeatCount)
+	default:
+		a.cfg.Logger.Log(Warn, "Soft repeat: tool call %q repeated %d times consecutively; substituting hint", tc.ToolName, repeatCount)
+	}
+	a.emitBudgetToolSkipped(tc, skipMsg)
+	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
+}
+
+// applyToolBudgetSkip records a budget-skip message for the tool call ID.
+func (a *Agent) applyToolBudgetSkip(tc provider.ContentBlock, msg string) {
+	if tc.ToolCallID != "" {
+		a.budgetToolCalls[tc.ToolCallID] = msg
+	}
 }
 
 // recordToolCallInBudgetWindow tracks tool call budget and detects consecutive

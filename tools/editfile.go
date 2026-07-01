@@ -141,25 +141,23 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 			HintText: "Ensure your input is valid JSON with the required fields.",
 		}
 	}
-	path := p.Path
-	if path == "" {
+	if p.Path == "" {
 		return "", errMissingPath()
 	}
 
-	resolvedPath, originalPath, err := ResolveFileToolPath(t.WorktreeMgr, path)
+	resolvedPath, originalPath, err := ResolveFileToolPath(t.WorktreeMgr, p.Path)
 	if err != nil {
-		return "", t.errProtected(path)
+		return "", t.errProtected(p.Path)
 	}
 
-	// Primary path: search/replace via old_string/new_string
-	// This is what the LLM uses according to the tool schema.
-	// When AllowFuzz is true, uses 3-tier matching: exact → trailing whitespace → fuzzy.
-	// When AllowFuzz is false, uses exact match only.
 	if p.OldString != "" {
 		return t.searchReplace(resolvedPath, originalPath, p.OldString, p.NewString, t.AllowFuzz)
 	}
 
-	// Legacy path: operation-based editing (replace_lines, insert_after, etc.)
+	return t.editByOperation(resolvedPath, originalPath, p)
+}
+
+func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p editFileParams) (string, error) {
 	op := p.Operation
 	if op == "" {
 		return "", errMissingParam()
@@ -182,18 +180,7 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 
 	result, opErr := t.runOp(lines, EditOperation(op), ep)
 	if opErr != nil {
-		// Wrap operation errors with file path so the agent has context.
-		te, ok := opErr.(*internal.ToolError)
-		if ok {
-			te.Detail = fmt.Sprintf("[%s] %s: %s", path, op, te.Detail)
-		} else {
-			return "", &internal.ToolError{
-				Tool: "edit", Type: "operation_failed",
-				Detail:   fmt.Sprintf("[%s] %s: %v", path, op, opErr),
-				HintText: "Check the operation parameters and the file content.",
-			}
-		}
-		return "", opErr
+		return "", wrapEditOpError(opErr, p.Path, op)
 	}
 
 	if t.GitStager != nil {
@@ -202,7 +189,7 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 
 	output := strings.Join(result, "\n")
 	if err := os.WriteFile(targetPath, []byte(output), 0644); err != nil {
-		return "", t.errWrite(path, err)
+		return "", t.errWrite(p.Path, err)
 	}
 
 	if t.FileChangeNotifier != nil {
@@ -212,11 +199,24 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
 
-	resultMsg := fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", path, op, len(ep.newLines), diff)
+	resultMsg := fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, len(ep.newLines), diff)
 	if fuzzyNote != "" {
 		resultMsg = fuzzyNote + "\n" + resultMsg
 	}
 	return resultMsg, nil
+}
+
+func wrapEditOpError(opErr error, path, op string) error {
+	te, ok := opErr.(*internal.ToolError)
+	if ok {
+		te.Detail = fmt.Sprintf("[%s] %s: %s", path, op, te.Detail)
+		return te
+	}
+	return &internal.ToolError{
+		Tool: "edit", Type: "operation_failed",
+		Detail:   fmt.Sprintf("[%s] %s: %v", path, op, opErr),
+		HintText: "Check the operation parameters and the file content.",
+	}
 }
 
 func (t *EditFileTool) IsRetryable(err error) bool { return false }

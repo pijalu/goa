@@ -148,42 +148,42 @@ func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 	// Skills summary
 	skillList := subs.skillRegistry.List()
 	if len(skillList) > 0 {
-		// Account for both per-skill frontmatter inline flag and the global
-		// skills.execution_mode config. When global mode is "inline", skills
-		// not explicitly marked inline are "forced inline" — they run inline
-		// despite not declaring it themselves.
-		globalModeInline := subs.cfg != nil && subs.cfg.Skills.ExecutionMode == config.AgenticSkillModeInline
-
-		inlineCount := 0
-		forcedInlineCount := 0
-		subCount := 0
-		for _, s := range skillList {
-			if s.Inline {
-				inlineCount++
-			} else if globalModeInline {
-				forcedInlineCount++
-			} else {
-				subCount++
-			}
-		}
-
-		// Determine the effective global execution mode.
-		globalMode := "sub-agent"
-		if globalModeInline {
-			globalMode = "inline"
-		}
-
-		if forcedInlineCount > 0 {
-			chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d forced inline · global mode: %s). Use /skill to list.",
-				len(skillList), inlineCount, forcedInlineCount, globalMode))
-		} else {
-			chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · global mode: %s). Use /skill to list.",
-				len(skillList), inlineCount, subCount, globalMode))
-		}
-
+		showSkillBanner(subs, chat, skillList)
 	} else {
 		chat.AddSystemMessage("⟡ No skills loaded")
 	}
+}
+
+func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skills.SkillSummary) {
+	globalModeInline := subs.cfg != nil && subs.cfg.Skills.ExecutionMode == config.AgenticSkillModeInline
+
+	inlineCount, forcedInlineCount, subCount := countSkillModes(skillList, globalModeInline)
+
+	globalMode := "sub-agent"
+	if globalModeInline {
+		globalMode = "inline"
+	}
+
+	if forcedInlineCount > 0 {
+		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d forced inline · global mode: %s). Use /skill to list.",
+			len(skillList), inlineCount, forcedInlineCount, globalMode))
+	} else {
+		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · global mode: %s). Use /skill to list.",
+			len(skillList), inlineCount, subCount, globalMode))
+	}
+}
+
+func countSkillModes(skillList []skills.SkillSummary, globalModeInline bool) (inline, forcedInline, sub int) {
+	for _, s := range skillList {
+		if s.Inline {
+			inline++
+		} else if globalModeInline {
+			forcedInline++
+		} else {
+			sub++
+		}
+	}
+	return
 }
 
 func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {

@@ -280,7 +280,6 @@ func (b *Builder) Save(idx *Index) error {
 // first drains any pending change notifications (if a ChangeTracker is
 // configured), then detects remaining changes by comparing file metadata.
 func (b *Builder) BuildOrRefresh() (*Index, error) {
-	// Drain any pending change notifications from tools.
 	pendingChanges := b.drainChanges()
 
 	idx, err := b.Load()
@@ -288,33 +287,16 @@ func (b *Builder) BuildOrRefresh() (*Index, error) {
 		return nil, err
 	}
 
-	if idx != nil {
-		if len(pendingChanges) > 0 {
-			updated, err := b.refreshWithPending(idx, pendingChanges)
-			if err != nil {
-				return nil, err
-			}
-			if err := b.Save(updated); err != nil {
-				return nil, fmt.Errorf("save refreshed index: %w", err)
-			}
-			return updated, nil
-		}
-
-		updated, changed, err := b.refreshIncremental(idx)
-		if err != nil {
-			return nil, err
-		}
-		if !changed {
-			return idx, nil
-		}
-		if err := b.Save(updated); err != nil {
-			return nil, fmt.Errorf("save refreshed index: %w", err)
-		}
-		return updated, nil
+	if idx == nil {
+		return b.buildAndSave()
 	}
 
-	// No cached index — build from scratch with parallelism.
-	idx, err = b.buildFull()
+	return b.refreshOrBypass(idx, pendingChanges)
+}
+
+// buildAndSave builds the index from scratch and persists it.
+func (b *Builder) buildAndSave() (*Index, error) {
+	idx, err := b.buildFull()
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +304,42 @@ func (b *Builder) BuildOrRefresh() (*Index, error) {
 		return nil, fmt.Errorf("save new index: %w", err)
 	}
 	return idx, nil
+}
+
+// refreshOrBypass applies pending or incremental changes to an existing
+// index, or returns it unchanged when nothing needs refreshing.
+func (b *Builder) refreshOrBypass(idx *Index, pendingChanges []string) (*Index, error) {
+	if len(pendingChanges) > 0 {
+		return b.refreshWithPendingSave(idx, pendingChanges)
+	}
+	return b.refreshIncrementalSave(idx)
+}
+
+// refreshWithPendingSave refreshes using pending changes and persists.
+func (b *Builder) refreshWithPendingSave(idx *Index, pending []string) (*Index, error) {
+	updated, err := b.refreshWithPending(idx, pending)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.Save(updated); err != nil {
+		return nil, fmt.Errorf("save refreshed index: %w", err)
+	}
+	return updated, nil
+}
+
+// refreshIncrementalSave applies incremental refresh and persists.
+func (b *Builder) refreshIncrementalSave(idx *Index) (*Index, error) {
+	updated, changed, err := b.refreshIncremental(idx)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return idx, nil
+	}
+	if err := b.Save(updated); err != nil {
+		return nil, fmt.Errorf("save refreshed index: %w", err)
+	}
+	return updated, nil
 }
 
 // drainChanges returns pending change notifications, if a tracker is set.
@@ -471,25 +489,59 @@ func (b *Builder) tokenizeWorker(jobs <-chan tokenizeJob, results chan<- tokeniz
 // the minimal set of changes to the existing index. It returns (nil, false)
 // when nothing has changed.
 func (b *Builder) refreshIncremental(idx *Index) (*Index, bool, error) {
-	idx.mu.RLock()
-	oldFileMap := make(map[string]int, len(idx.Data.Files))
-	for i, f := range idx.Data.Files {
-		oldFileMap[f.Path] = i
-	}
-	oldTotal := idx.Data.TotalFiles
-	idx.mu.RUnlock()
+	oldFileMap, oldTotal := b.buildOldFileMap(idx)
 
-	currentPaths, err := b.collectFiles()
+	currentPaths, currentSet, err := b.collectFileChanges(idx, oldFileMap)
 	if err != nil {
 		return nil, false, err
 	}
 
-	// Classify changes.
-	var added, modified, removed []string
-	currentSet := make(map[string]bool, len(currentPaths))
+	added, modified, removed := b.classifyChanges(currentPaths, currentSet, idx, oldFileMap)
 
+	totalChanges := len(added) + len(modified) + len(removed)
+	if totalChanges == 0 {
+		return nil, false, nil
+	}
+
+	// If too many files changed relative to the corpus, do a full rebuild.
+	if totalChanges > oldTotal/2 && oldTotal > 100 {
+		idx, err := b.buildFull()
+		return idx, true, err
+	}
+
+	// Copy surviving old docs and tokenize new/modified files in parallel.
+	o := b.buildIncrementalIndex(idx, added, modified, oldFileMap, currentSet)
+	return o, true, nil
+}
+
+// buildOldFileMap extracts the file path→index mapping from the old index.
+func (b *Builder) buildOldFileMap(idx *Index) (map[string]int, int) {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	oldFileMap := make(map[string]int, len(idx.Data.Files))
+	for i, f := range idx.Data.Files {
+		oldFileMap[f.Path] = i
+	}
+	return oldFileMap, idx.Data.TotalFiles
+}
+
+// collectFileChanges gathers current file paths and builds the path set.
+func (b *Builder) collectFileChanges(idx *Index, oldFileMap map[string]int) ([]string, map[string]bool, error) {
+	currentPaths, err := b.collectFiles()
+	if err != nil {
+		return nil, nil, err
+	}
+	currentSet := make(map[string]bool, len(currentPaths))
 	for _, p := range currentPaths {
 		currentSet[p] = true
+	}
+	return currentPaths, currentSet, nil
+}
+
+// classifyChanges diffs the current fileset against the old index to find
+// added, modified, and removed files.
+func (b *Builder) classifyChanges(currentPaths []string, currentSet map[string]bool, idx *Index, oldFileMap map[string]int) (added, modified, removed []string) {
+	for _, p := range currentPaths {
 		if oldIdx, ok := oldFileMap[p]; ok {
 			oldMeta := idx.Data.Files[oldIdx]
 			info, err := os.Stat(p)
@@ -500,41 +552,28 @@ func (b *Builder) refreshIncremental(idx *Index) (*Index, bool, error) {
 			added = append(added, p)
 		}
 	}
-
 	for _, f := range idx.Data.Files {
 		if !currentSet[f.Path] {
 			removed = append(removed, f.Path)
 		}
 	}
+	return
+}
 
-	totalChanges := len(added) + len(modified) + len(removed)
-	if totalChanges == 0 {
-		return nil, false, nil
-	}
-
-	// If too many files changed relative to the corpus, do a full rebuild.
-	// The threshold avoids pathological incremental perf on massive changes
-	// (e.g., git checkout, branch switch).
-	if totalChanges > oldTotal/2 && oldTotal > 100 {
-		idx, err := b.buildFull()
-		return idx, true, err
-	}
-
-	// Apply incremental changes.
-	oldIdx := idx.okapi     // reuse existing scorer
+// buildIncrementalIndex constructs a new Index from surviving old docs plus
+// newly tokenised files. Returns the new Index.
+func (b *Builder) buildIncrementalIndex(idx *Index, added, modified []string, oldFileMap map[string]int, currentSet map[string]bool) *Index {
 	oldFiles := idx.Data.Files
-	oldDocLengths := oldIdx.DocLengths()
-	oldDocTerms := oldIdx.DocTerms()
+	oldDocLengths := idx.okapi.DocLengths()
+	oldDocTerms := idx.okapi.DocTerms()
 
-	// We'll build new slices. First, mark which old docs survive.
-	survivors := make([]bool, oldTotal)
+	// Mark surviving old docs.
+	survivors := make([]bool, len(oldFiles))
 	for i, f := range oldFiles {
-		if currentSet[f.Path] && !contains(modified, f.Path) {
-			survivors[i] = true
-		}
+		survivors[i] = currentSet[f.Path] && !contains(modified, f.Path)
 	}
 
-	// Count survivors for pre-allocation.
+	// Pre-allocate slices.
 	survivingCount := 0
 	for _, s := range survivors {
 		if s {
@@ -542,7 +581,6 @@ func (b *Builder) refreshIncremental(idx *Index) (*Index, bool, error) {
 		}
 	}
 	newTotal := survivingCount + len(added)
-
 	newFiles := make([]FileMeta, 0, newTotal)
 	newDocLengths := make([]int, 0, newTotal)
 	newDocTerms := make([]map[string]int, 0, newTotal)
@@ -557,78 +595,13 @@ func (b *Builder) refreshIncremental(idx *Index) (*Index, bool, error) {
 	}
 
 	// Tokenise added/modified files in parallel.
-	type changeJob struct {
-		path  string
-		isMod bool
-		oldID int // for modified files, the old docID
-	}
-	type changeResult struct {
-		path   string
-		meta   FileMeta
-		tokens []string
-		err    error
-		isMod  bool
-		oldID  int
-	}
+	allChanges := b.collectChanges(added, modified, oldFileMap)
+	b.tokenizeFileBatch(allChanges, &newFiles, &newDocLengths, &newDocTerms)
 
-	allChanges := make([]changeJob, 0, len(added)+len(modified))
-	for _, p := range added {
-		allChanges = append(allChanges, changeJob{path: p})
-	}
-	for _, p := range modified {
-		allChanges = append(allChanges, changeJob{path: p, isMod: true, oldID: oldFileMap[p]})
-	}
-
-	jobs := make(chan changeJob, len(allChanges))
-	results := make(chan changeResult, len(allChanges))
-
-	var wg sync.WaitGroup
-	for i := 0; i < b.workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := range jobs {
-				info, err := os.Stat(j.path)
-				if err != nil {
-					results <- changeResult{path: j.path, err: err}
-					continue
-				}
-				tokens, lines, err := b.tokenizeFile(j.path)
-				results <- changeResult{
-					path:   j.path,
-					meta:   FileMeta{Path: j.path, Size: info.Size(), ModTime: info.ModTime(), Lines: lines},
-					tokens: tokens,
-					err:    err,
-					isMod:  j.isMod,
-					oldID:  j.oldID,
-				}
-			}
-		}()
-	}
-	close(jobs)
-	wg.Wait()
-	close(results)
-
-	// Build a new Okapi from scratch with all data. Incremental BM25 update
-	// requires recalculating doc frequencies for all terms, which is
-	// effectively the same cost as rebuilding from the token data. By
-	// constructing new slices directly from collected data, we avoid
-	// copying from the old Okapi.
-
-	for r := range results {
-		if r.err != nil {
-			continue
-		}
-		newFiles = append(newFiles, r.meta)
-		newDocLengths = append(newDocLengths, len(r.tokens))
-		newDocTerms = append(newDocTerms, tokensToFreqs(r.tokens))
-	}
-
-	// Rebuild the Okapi scorer with complete data.
+	// Build fresh Okapi scorer.
 	o := NewOkapi(DefaultOkapiConfig())
 	o.SetDocData(newDocLengths, computeDocFreq(newDocTerms), newDocTerms)
 
-	// Update index time.
 	return NewIndex(IndexData{
 		Version:    IndexVersion,
 		IndexTime:  time.Now(),
@@ -638,7 +611,90 @@ func (b *Builder) refreshIncremental(idx *Index) (*Index, bool, error) {
 		DocLengths: o.DocLengths(),
 		DocFreq:    o.DocFreq(),
 		DocTerms:   o.DocTerms(),
-	}), true, nil
+	})
+}
+
+// collectChanges assembles the list of files to tokenise (added + modified)
+// into a slice of change descriptors.
+func (b *Builder) collectChanges(added, modified []string, oldFileMap map[string]int) []changeDescriptor {
+	total := len(added) + len(modified)
+	allChanges := make([]changeDescriptor, 0, total)
+	for _, p := range added {
+		allChanges = append(allChanges, changeDescriptor{path: p})
+	}
+	for _, p := range modified {
+		allChanges = append(allChanges, changeDescriptor{path: p, isMod: true, oldID: oldFileMap[p]})
+	}
+	return allChanges
+}
+
+// changeDescriptor describes a file to tokenise during incremental refresh.
+type changeDescriptor struct {
+	path  string
+	isMod bool
+	oldID int
+}
+
+// changeResult holds the tokenisation result for one file.
+type changeResult struct {
+	path   string
+	meta   FileMeta
+	tokens []string
+	err    error
+	isMod  bool
+	oldID  int
+}
+
+// tokenizeFileBatch tokenises all files concurrently and appends results
+// to the output slices.
+func (b *Builder) tokenizeFileBatch(changes []changeDescriptor, newFiles *[]FileMeta, newDocLengths *[]int, newDocTerms *[]map[string]int) {
+	jobs := make(chan changeDescriptor, len(changes))
+	results := make(chan changeResult, len(changes))
+
+	var wg sync.WaitGroup
+	for i := 0; i < b.workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				b.tokenizeOneFile(j, results)
+			}
+		}()
+	}
+	for _, ch := range changes {
+		jobs <- ch
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	for r := range results {
+		if r.err != nil {
+			continue
+		}
+		*newFiles = append(*newFiles, r.meta)
+		*newDocLengths = append(*newDocLengths, len(r.tokens))
+		*newDocTerms = append(*newDocTerms, tokensToFreqs(r.tokens))
+	}
+}
+
+// tokenizeOneFile stat's and tokenises a single file, sending the result
+// to the results channel.
+func (b *Builder) tokenizeOneFile(j changeDescriptor, results chan<- changeResult) {
+	info, err := os.Stat(j.path)
+	if err != nil {
+		results <- changeResult{path: j.path, err: err}
+		return
+	}
+	tokens, lines, err := b.tokenizeFile(j.path)
+	results <- changeResult{
+		path:   j.path,
+		meta:   FileMeta{Path: j.path, Size: info.Size(), ModTime: info.ModTime(), Lines: lines},
+		tokens: tokens,
+		err:    err,
+		isMod:  j.isMod,
+		oldID:  j.oldID,
+	}
 }
 
 // tokensToFreqs converts a token slice to a term-frequency map.
@@ -724,110 +780,16 @@ func countLines(text string) int {
 // them into the existing index. It collects metadata + tokens for each
 // pending file in parallel and applies updates to the existing Okapi scorer.
 func (b *Builder) refreshWithPending(idx *Index, pendingChanges []string) (*Index, error) {
-	// Tokenise pending changes in parallel.
-	type pendingJob struct {
-		path string
-	}
-	type pendingResult struct {
-		path   string
-		meta   FileMeta
-		tokens []string
-		err    error
+	// Tokenise pending changes using the shared batch infrastructure.
+	changes := make([]changeDescriptor, len(pendingChanges))
+	for i, p := range pendingChanges {
+		changes[i] = changeDescriptor{path: p}
 	}
 
-	jobs := make(chan pendingJob, len(pendingChanges))
-	results := make(chan pendingResult, len(pendingChanges))
-
-	var wg sync.WaitGroup
-	for i := 0; i < b.workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := range jobs {
-				info, err := os.Stat(j.path)
-				if err != nil {
-					results <- pendingResult{path: j.path, err: err}
-					continue
-				}
-				tokens, lines, err := b.tokenizeFile(j.path)
-				results <- pendingResult{
-					path: j.path,
-					meta: FileMeta{
-						Path:    j.path,
-						Size:    info.Size(),
-						ModTime: info.ModTime(),
-						Lines:   lines,
-					},
-					tokens: tokens,
-					err:    err,
-				}
-			}
-		}()
-	}
-	for _, p := range pendingChanges {
-		jobs <- pendingJob{path: p}
-	}
-	close(jobs)
-	wg.Wait()
-	close(results)
-
-	// Build a lookup of existing file index by path.
-	idx.mu.RLock()
-	oldFileByPath := make(map[string]int, len(idx.Data.Files))
-	for i, f := range idx.Data.Files {
-		oldFileByPath[f.Path] = i
-	}
-	oldOkapi := idx.okapi
-	oldFiles := idx.Data.Files
-	oldDocLengths := oldOkapi.DocLengths()
-	oldDocTerms := oldOkapi.DocTerms()
-	idx.mu.RUnlock()
-
-	// Determine which old files survive (not in pending changes).
-	surviving := make([]bool, len(oldFiles))
-	pendingSet := make(map[string]bool, len(pendingChanges))
-	for _, p := range pendingChanges {
-		pendingSet[p] = true
-	}
-	for i, f := range oldFiles {
-		if !pendingSet[f.Path] {
-			surviving[i] = true
-		}
-	}
-	survivingCount := 0
-	for _, s := range surviving {
-		if s {
-			survivingCount++
-		}
-	}
-
-	newTotal := survivingCount + len(pendingChanges)
-	newFiles := make([]FileMeta, 0, newTotal)
-	newDocLengths := make([]int, 0, newTotal)
-	newDocTerms := make([]map[string]int, 0, newTotal)
-
-	// Copy survivors.
-	for i, s := range surviving {
-		if s {
-			newFiles = append(newFiles, oldFiles[i])
-			newDocLengths = append(newDocLengths, oldDocLengths[i])
-			newDocTerms = append(newDocTerms, oldDocTerms[i])
-		}
-	}
-
-	// Add changed/new results.
-	for r := range results {
-		if r.err != nil {
-			continue
-		}
-		newFiles = append(newFiles, r.meta)
-		newDocLengths = append(newDocLengths, len(r.tokens))
-		newDocTerms = append(newDocTerms, tokensToFreqs(r.tokens))
-	}
+	newFiles, newDocLengths, newDocTerms := b.buildPendingIndex(idx, pendingChanges, changes)
 
 	o := NewOkapi(DefaultOkapiConfig())
 	o.SetDocData(newDocLengths, computeDocFreq(newDocTerms), newDocTerms)
-
 	return NewIndex(IndexData{
 		Version:    IndexVersion,
 		IndexTime:  time.Now(),
@@ -838,6 +800,56 @@ func (b *Builder) refreshWithPending(idx *Index, pendingChanges []string) (*Inde
 		DocFreq:    o.DocFreq(),
 		DocTerms:   o.DocTerms(),
 	}), nil
+}
+
+// buildPendingIndex tokenises pending files and merges survivors from the
+// old index with new results. Returns the three parallel slices.
+func (b *Builder) buildPendingIndex(idx *Index, pendingChanges []string, changes []changeDescriptor) ([]FileMeta, []int, []map[string]int) {
+	// Collect tokenisation results.
+	var newFiles []FileMeta
+	var newDocLengths []int
+	var newDocTerms []map[string]int
+	b.tokenizeFileBatch(changes, &newFiles, &newDocLengths, &newDocTerms)
+
+	// Build pending set for survivor check.
+	pendingSet := make(map[string]bool, len(pendingChanges))
+	for _, p := range pendingChanges {
+		pendingSet[p] = true
+	}
+
+	// Collect surviving old docs.
+	idx.mu.RLock()
+	oldFiles := idx.Data.Files
+	oldDocLengths := idx.okapi.DocLengths()
+	oldDocTerms := idx.okapi.DocTerms()
+	idx.mu.RUnlock()
+
+	// Count survivors for pre-allocation.
+	survivingCount := 0
+	for _, f := range oldFiles {
+		if !pendingSet[f.Path] {
+			survivingCount++
+		}
+	}
+
+	newTotal := survivingCount + len(pendingChanges)
+	mergedFiles := make([]FileMeta, 0, newTotal)
+	mergedLengths := make([]int, 0, newTotal)
+	mergedTerms := make([]map[string]int, 0, newTotal)
+
+	// Copy survivors first, then new results.
+	for i, f := range oldFiles {
+		if !pendingSet[f.Path] {
+			mergedFiles = append(mergedFiles, f)
+			mergedLengths = append(mergedLengths, oldDocLengths[i])
+			mergedTerms = append(mergedTerms, oldDocTerms[i])
+		}
+	}
+	mergedFiles = append(mergedFiles, newFiles...)
+	mergedLengths = append(mergedLengths, newDocLengths...)
+	mergedTerms = append(mergedTerms, newDocTerms...)
+
+	return mergedFiles, mergedLengths, mergedTerms
 }
 
 // isIndexableFile reports whether a file should be included in the index

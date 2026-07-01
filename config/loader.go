@@ -472,37 +472,23 @@ func upsertModelConfig(cfg *Config, m ModelConfig) {
 	cfg.Models = append(cfg.Models, m)
 }
 
+// applyIntCLIOverride reads an integer from a CLI override key and, if
+// present and parseable, assigns it to the target pointer.
+func (cl *CascadeLoader) applyIntCLIOverride(key string, target *int) {
+	if v, ok := cl.cliOverrides[key]; ok && v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			*target = parsed
+		}
+	}
+}
+
 func (cl *CascadeLoader) applyExecutionCLIOverrides(cfg *Config) {
-	if repeat, ok := cl.cliOverrides["max_tool_repeat_total"]; ok && repeat != "" {
-		if v, err := strconv.Atoi(repeat); err == nil {
-			cfg.Execution.MaxToolRepeatTotal = v
-		}
-	}
-	if repeat, ok := cl.cliOverrides["max_tool_repeat"]; ok && repeat != "" {
-		if v, err := strconv.Atoi(repeat); err == nil {
-			cfg.Execution.MaxToolRepeatTotal = v
-		}
-	}
-	if consec, ok := cl.cliOverrides["max_tool_repeat_consecutive"]; ok && consec != "" {
-		if v, err := strconv.Atoi(consec); err == nil {
-			cfg.Execution.MaxToolRepeatConsecutive = v
-		}
-	}
-	if calls, ok := cl.cliOverrides["max_tool_calls"]; ok && calls != "" {
-		if v, err := strconv.Atoi(calls); err == nil {
-			cfg.Execution.MaxToolCalls = v
-		}
-	}
-	if rounds, ok := cl.cliOverrides["max_stream_rounds"]; ok && rounds != "" {
-		if v, err := strconv.Atoi(rounds); err == nil {
-			cfg.Execution.MaxStreamRounds = v
-		}
-	}
-	if window, ok := cl.cliOverrides["tool_call_limit_reset_window"]; ok && window != "" {
-		if v, err := strconv.Atoi(window); err == nil {
-			cfg.Execution.ToolCallLimitResetWindow = v
-		}
-	}
+	cl.applyIntCLIOverride("max_tool_repeat_total", &cfg.Execution.MaxToolRepeatTotal)
+	cl.applyIntCLIOverride("max_tool_repeat", &cfg.Execution.MaxToolRepeatTotal)
+	cl.applyIntCLIOverride("max_tool_repeat_consecutive", &cfg.Execution.MaxToolRepeatConsecutive)
+	cl.applyIntCLIOverride("max_tool_calls", &cfg.Execution.MaxToolCalls)
+	cl.applyIntCLIOverride("max_stream_rounds", &cfg.Execution.MaxStreamRounds)
+	cl.applyIntCLIOverride("tool_call_limit_reset_window", &cfg.Execution.ToolCallLimitResetWindow)
 	cl.applyCompressionCLIOverride(cfg)
 }
 

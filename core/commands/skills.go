@@ -148,37 +148,37 @@ func runSkill(
 	}
 	task := strings.Join(args[1:], " ")
 
-	// Determine effective execution mode: skill frontmatter inline flag wins;
-	// otherwise fall back to the global config's skills.execution_mode.
-	isInline := effectiveInline(skill, ctx.Config)
+	if effectiveInline(skill, ctx.Config) {
+		return runSkillInline(ctx, skill, task, submitFunc, name)
+	}
 
-	if isInline {
-		// If the conversation hasn't started yet, load the skill into the
-		// active mode's skill stack so it becomes part of the system prompt
-		// instead of triggering an agent response.
-		if !conversationStarted(ctx) {
-			current := ctx.CurrentMode()
-			ctx.SetMode(current.AddSkill(name))
-			writeFmt(ctx, "Skill '%s' loaded into system prompt.\n", name)
-			return nil
-		}
+	return runSkillSubAgent(ctx, skill, task)
+}
 
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("[Skill: %s]\n%s\n", skill.Meta.Name, skill.Body))
-		if task != "" {
-			sb.WriteString(fmt.Sprintf("\nTask: %s\n", task))
-		} else {
-			sb.WriteString("\nApply the skill instructions to the current context.\n")
-		}
-		if submitFunc != nil {
-			submitFunc(sb.String())
-		} else {
-			writeStr(ctx, sb.String())
-		}
+func runSkillInline(ctx core.Context, skill *skills.Skill, task string, submitFunc func(string), name string) error {
+	if !conversationStarted(ctx) {
+		current := ctx.CurrentMode()
+		ctx.SetMode(current.AddSkill(name))
+		writeFmt(ctx, "Skill '%s' loaded into system prompt.\n", name)
 		return nil
 	}
 
-	// Sub-agent execution: spawn a sub-agent via AgentPool.
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[Skill: %s]\n%s\n", skill.Meta.Name, skill.Body))
+	if task != "" {
+		sb.WriteString(fmt.Sprintf("\nTask: %s\n", task))
+	} else {
+		sb.WriteString("\nApply the skill instructions to the current context.\n")
+	}
+	if submitFunc != nil {
+		submitFunc(sb.String())
+	} else {
+		writeStr(ctx, sb.String())
+	}
+	return nil
+}
+
+func runSkillSubAgent(ctx core.Context, skill *skills.Skill, task string) error {
 	writeFmt(ctx, "⟡ Running skill: %s\n", skill.Meta.Name)
 	writeFmt(ctx, "  Description: %s\n", skill.Meta.Description)
 	if task != "" {
@@ -191,7 +191,6 @@ func runSkill(
 		return nil
 	}
 
-	// Create a sub-agent with the skill body as its system prompt.
 	roleName := "skill-" + skill.Meta.Name
 	ctx.AgentPool.SetConfig(roleName, multiagent.AgentConfig{
 		SystemPrompt: skill.Body,

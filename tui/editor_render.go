@@ -553,18 +553,27 @@ func visualCursorInParagraph(para string, offset, width int) (line, col int) {
 		offset = len(runes)
 	}
 
-	// Build words with their rune positions in the paragraph
 	words := buildWordPositions(runes)
+	visLine, visCol := simulateWordWrap(runes, words, offset, width)
 
-	visLine := 0
-	visCol := 0
+	// Account for trailing spaces after the last word.
+	if len(words) > 0 {
+		lastWordEnd := words[len(words)-1].end
+		for j := lastWordEnd; j < len(runes); j++ {
+			if runes[j] == ' ' {
+				visCol++
+			}
+		}
+	}
+	return visLine, visCol
+}
 
-	// Simulate word wrapping, tracking visual position
+// simulateWordWrap walks through words to find the visual position of offset.
+func simulateWordWrap(runes []rune, words []wordInfo, offset, width int) (visLine, visCol int) {
 	for wi, w := range words {
 		ww := visibleWidth(string(runes[w.start:w.end]))
 
 		if ww > width {
-			// Long word: break character-by-character
 			found, l, c := processLongWord(runes, w, offset, visLine, visCol, width)
 			if found {
 				return l, c
@@ -573,26 +582,11 @@ func visualCursorInParagraph(para string, offset, width int) (line, col int) {
 			continue
 		}
 
-		// Normal word: check if cursor is at the space before or within it
 		found, l, c := processNormalWord(runes, words, wi, w, offset, visLine, visCol, width)
 		if found {
 			return l, c
 		}
 		visLine, visCol = l, c
-	}
-
-	// Cursor at end of paragraph.
-	// Account for trailing spaces after the last word — buildWordPositions
-	// skips all spaces, so trailing spaces between the last word end and the
-	// paragraph end must be counted manually. Without this, the cursor
-	// appears before the trailing space instead of after it.
-	if len(words) > 0 {
-		lastWordEnd := words[len(words)-1].end
-		for j := lastWordEnd; j < len(runes); j++ {
-			if runes[j] == ' ' {
-				visCol++
-			}
-		}
 	}
 	return visLine, visCol
 }
