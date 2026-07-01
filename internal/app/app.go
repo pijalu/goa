@@ -104,6 +104,10 @@ func (a *App) Run() bool {
 	a.promptProjectTrustIfNeeded(projectDir)
 
 	engine, chat, inp := a.buildTUI()
+	// Attach the interactive clarify host callback now that the App exists.
+	attachClarifyTool(subs.toolRegistry, func(title, summary, question string, options []string) (string, bool) {
+		return a.clarify(tui.NewClarifyCard(title, summary, question, options))
+	})
 	a.wireToolConfirmation(engine)
 	a.loadPersistedPathApprovals()
 	showStartupBanner(subs, chat)

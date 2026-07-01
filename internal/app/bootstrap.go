@@ -21,6 +21,7 @@ import (
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tools"
+	ask "github.com/pijalu/goa/tools/ask"
 	"github.com/pijalu/goa/tools/search/bm25"
 )
 
@@ -457,6 +458,12 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	if cfg.Tools.Enabled.Memento {
 		reg.Register(&tools.MementoTool{ProjectDir: projectDir, GlobalDir: cfg.ConfigDir})
 	}
+	// ask_user_question is enabled BY DEFAULT (inverted flag). The host
+	// callback (Clarify) is injected after the App is built — see
+	// internal/app attachClarifyTool.
+	if !cfg.Tools.Enabled.ClarifyDisabled {
+		reg.Register(&ask.AskUserQuestionTool{})
+	}
 
 	// SmartSearch uses BM25 for relevance-ranked code search.
 	// It receives change notifications from edit/write tools for automatic
@@ -557,6 +564,21 @@ func attachWebFetchSummarizer(reg *tools.ToolRegistry, pool tools.AgentPool) {
 	if t, ok := reg.Get("webfetch"); ok {
 		if wt, ok := t.(*tools.WebFetchTool); ok && wt.Summarizer != nil {
 			wt.Summarizer.Pool = pool
+		}
+	}
+}
+
+// attachClarifyTool injects the interactive host callback (the Clarify
+// function that renders a ClarifyCard and captures the answer on the main
+// input line) into the registered ask_user_question tool. Called from App.Run
+// once both the App and the tool registry exist.
+func attachClarifyTool(reg *tools.ToolRegistry, clarify ask.ClarifyFunc) {
+	if clarify == nil {
+		return
+	}
+	if t, ok := reg.Get("ask_user_question"); ok {
+		if at, ok := t.(*ask.AskUserQuestionTool); ok {
+			at.SetClarify(clarify)
 		}
 	}
 }
