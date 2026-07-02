@@ -31,38 +31,6 @@ func (m blockingContextTool) ExecuteContext(ctx context.Context, input string) (
 	return "", ctx.Err()
 }
 
-// contextToolCallProvider emits a single tool call.
-type contextToolCallProvider struct {
-	api provider.Api
-}
-
-func (p *contextToolCallProvider) API() provider.Api { return p.api }
-
-func (p *contextToolCallProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
-	result := provider.NewAssistantMessageEventStream(64)
-	go func() {
-		result.Push(provider.AssistantMessageEvent{
-			Type:         provider.EventToolCallEnd,
-			ContentIndex: 0,
-			ToolCall: &provider.ContentBlock{
-				Type:          provider.ContentBlockToolCall,
-				ToolCallID:    "call_ctx_1",
-				ToolName:      "blocker",
-				ToolArguments: `{}`,
-			},
-		})
-		result.End(&provider.AssistantMessage{
-			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "calling tool"}},
-			StopReason: provider.StopReasonEndTurn,
-		})
-	}()
-	return result, nil
-}
-
-func (p *contextToolCallProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
-	return p.Stream(model, ctx, provider.StreamOptions{})
-}
-
 // TestExecuteToolWithResult_ContextToolForwardsCtx verifies that when a tool
 // implements ContextTool, executeToolWithResult forwards the caller ctx and
 // returns ctx.Err() promptly when it is cancelled (instead of hanging).
