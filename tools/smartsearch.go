@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -38,9 +39,12 @@ type SmartSearchTool struct {
 
 	ChangeTracker *bm25.ChangeTracker
 
+	// indexMu serialises index build/refresh so concurrent calls do not race
+	// on the on-disk index or on the in-memory cached index.
+	indexMu sync.Mutex
+
 	// Cached index, rebuilt lazily on first call or after file changes.
-	index     *bm25.Index
-	indexPath string
+	index *bm25.Index
 }
 
 // Schema returns the tool schema for smartsearch.
@@ -130,7 +134,7 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 	}
 
 	// Ensure we have an index.
-	idx, err := t.getOrBuildIndex(rootPath)
+	idx, rebuilt, err := t.getOrBuildIndex(rootPath)
 	if err != nil {
 		return "", &internal.ToolError{
 			Tool: "smartsearch", Type: "index_error",
@@ -160,7 +164,8 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 	// Normalise scores for display.
 	normaliseResults(results)
 
-	return t.formatResults(results, p.Query, idx), nil
+	idxDir := bm25.IndexDir(rootPath)
+	return t.formatResults(results, p.Query, idx, rebuilt, idxDir), nil
 }
 
 // Execute implements agentic.Tool. Delegates to ExecuteContext.
@@ -195,11 +200,15 @@ func (t *SmartSearchTool) resolveRootPath(path string) string {
 }
 
 // getOrBuildIndex returns the cached index, building or refreshing it if
-// needed.
-func (t *SmartSearchTool) getOrBuildIndex(rootPath string) (*bm25.Index, error) {
+// needed. The returned boolean is true when the on-disk index was missing,
+// corrupted, or otherwise had to be rebuilt from scratch. In that case the
+// caller should surface a note to the user.
+func (t *SmartSearchTool) getOrBuildIndex(rootPath string) (*bm25.Index, bool, error) {
+	t.indexMu.Lock()
+	defer t.indexMu.Unlock()
+
 	// Determine the index directory.
 	idxDir := bm25.IndexDir(rootPath)
-	t.indexPath = idxDir
 
 	// Build the indexer with shared change tracker.
 	builder := bm25.NewBuilder(rootPath, idxDir, t.excludes())
@@ -208,12 +217,23 @@ func (t *SmartSearchTool) getOrBuildIndex(rootPath string) (*bm25.Index, error) 
 	}
 
 	idx, err := builder.BuildOrRefresh()
-	if err != nil {
-		return nil, err
+	if err == nil {
+		t.index = idx
+		return idx, false, nil
 	}
 
+	// Index issue: log it, remove the corrupted index, and rebuild from scratch.
+	idxPath := filepath.Join(idxDir, bm25.IndexFile)
+	if removeErr := os.Remove(idxPath); removeErr != nil && !os.IsNotExist(removeErr) {
+		return nil, false, fmt.Errorf("index corrupted (%v); failed to remove corrupted index at %q: %w", err, idxPath, removeErr)
+	}
+
+	idx, rebuildErr := builder.BuildOrRefresh()
+	if rebuildErr != nil {
+		return nil, false, fmt.Errorf("index corrupted (%v); rebuild failed: %w", err, rebuildErr)
+	}
 	t.index = idx
-	return idx, nil
+	return idx, true, nil
 }
 
 // excludes returns the default exclude directories combined with user config.
@@ -227,9 +247,15 @@ func (t *SmartSearchTool) excludes() []string {
 }
 
 // formatResults produces the output string for a set of ranked results.
-func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, query string, idx *bm25.Index) string {
+// If rebuilt is true, a leading note warns the user that the index had to be
+// rebuilt from scratch due to a detected issue. idxDir is the directory that
+// holds the on-disk index.
+func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, query string, idx *bm25.Index, rebuilt bool, idxDir string) string {
 	var buf bytes.Buffer
 
+	if rebuilt {
+		fmt.Fprintf(&buf, "[smartsearch: %q] — Index was missing or corrupted; rebuilt from scratch.\n", query)
+	}
 	fmt.Fprintf(&buf, "[smartsearch: %q] — %d results from %d indexed files (index age: %s)\n",
 		query, len(results), idx.FileCount(), formatDuration(idx.IndexAge()))
 
@@ -248,8 +274,8 @@ func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, query strin
 		fmt.Fprintf(&buf, "%d. [%.2f] %s  (%d lines)\n", i+1, r.Score, relPath, r.Lines)
 	}
 
-	if t.indexPath != "" {
-		fmt.Fprintf(&buf, "\n(Index: %s)", filepath.Join(t.indexPath, bm25.IndexFile))
+	if idxDir != "" {
+		fmt.Fprintf(&buf, "\n(Index: %s)", filepath.Join(idxDir, bm25.IndexFile))
 	}
 
 	return buf.String()

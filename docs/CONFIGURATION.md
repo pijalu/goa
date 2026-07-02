@@ -93,8 +93,10 @@ models:
 execution:
   mode: yolo                         # yolo | confirm | review
   retries: 3                         # Tool retry count
-  max_tool_repeat: 1                 # Max identical tool calls per turn
-  max_tool_calls: 6                  # Max total tool calls per turn (0 = unlimited)
+  max_tool_repeat_total: 0          # Max identical tool calls in the entire turn (0 = disabled)
+  max_tool_repeat_consecutive: 2    # Max consecutive identical tool calls (soft hint at 2, hard at limit)
+  max_tool_calls: 3                 # Max duplicate occurrences of the same call within the rolling window (0 = unlimited)
+  tool_call_limit_reset_window: 10  # Number of recent calls inspected for the duplicate-window limit above
   token_warning: 70                  # % of budget → warning
   token_critical: 85                 # % of budget → critical
   loop_warning: 5                    # Consecutive same-tool calls before warning
@@ -326,8 +328,10 @@ goa --endpoint http://localhost:1234/v1/chat/completions
 goa --api-key sk-...               # Override provider API key
 goa --temperature 0.7              # Override model temperature
 goa --max-tokens 4096              # Override model max output tokens
-goa --max-tool-repeat 5            # Override max identical tool calls per turn
-goa --max-tool-calls 10            # Override max total tool calls per turn
+goa --max-tool-repeat 5            # Override max identical tool calls in a turn
+goa --max-tool-repeat-consecutive 2  # Override max consecutive identical tool calls
+goa --max-tool-calls 10            # Override max duplicate calls in the rolling window
+goa --tool-call-limit-reset-window 20  # Override rolling-window size
 goa --skill-mode inline            # inline | subagent
 goa --reasoning                    # Enable model reasoning
 goa --thinking-level medium        # off | minimal | low | medium | high | xhigh

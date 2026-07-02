@@ -74,12 +74,12 @@ type Agent struct {
 	cancel     context.CancelFunc
 	emitState  OutputState // Track last emitted state for state change events
 
-	// Loop guardrail: tracks tool calls in the current turn to detect
-	// repeated identical calls (name + input), which indicates the model
-	// is not processing tool results correctly.
+	// Loop guardrail: tracks how many times each exact tool call (name + input)
+	// has been issued in the current turn. Used by MaxToolRepeatTotal.
 	turnToolCalls map[string]int
-	// turnToolCallCount is the total number of tool calls in the current
-	// turn, used to enforce a hard per-turn tool-call budget.
+	// turnToolCallCount is kept for metrics/logging only. It is no longer used
+	// as a hard per-turn budget cap; that cap is now based on duplicate counts
+	// within a rolling window.
 	turnToolCallCount int
 
 	// thinkingBuf accumulates delta thinking tokens from the current assistant
@@ -194,9 +194,9 @@ type Agent struct {
 	// machine logic.
 	bufferedToolCallCount int
 
-	// recentToolCalls tracks the last N tool-call keys used to decide whether
-	// the current call is a duplicate for the MaxToolCalls sliding-window
-	// budget. It is reset at the start of each turn.
+	// recentToolCalls tracks the last N tool-call keys used to detect
+	// duplicate tool calls within the rolling budget window (MaxToolCalls /
+	// ToolCallLimitResetWindow). It is reset at the start of each turn.
 	recentToolCalls []string
 }
 
@@ -325,13 +325,16 @@ type Config struct {
 	// MaxToolRepeatConsecutive is the maximum number of CONSECUTIVE identical
 	// tool calls allowed within a single turn. When a different tool or
 	// different arguments appears between calls, the consecutive counter resets.
-	// Default: 3 (soft-repeat at 2, hard-loop at 3+). Set to 0 to disable.
+	// Default: 2 (allow up to 2 consecutive calls; soft-repeat at 2, hard-loop
+	// at 3+). Set to 0 to disable.
 	MaxToolRepeatConsecutive int
-	// MaxToolCalls is the maximum total number of repeated tool calls allowed
-	// in a single turn. When exceeded, subsequent repeated tool calls receive a
-	// result telling the model to answer based on information already gathered.
-	// Unique calls (not seen in the last ToolCallLimitResetWindow calls) reset
-	// the counter. Default: 0 (no limit).
+	// MaxToolCalls is the maximum number of duplicate occurrences of the same
+	// tool call (same tool + same arguments) allowed within the rolling window
+	// of the last ToolCallLimitResetWindow calls. When the count exceeds this
+	// threshold, subsequent identical calls receive a synthetic loop-guardrail
+	// result telling the model to change approach or use the previous result.
+	// Unique calls in the window do not count toward this limit. Default: 0
+	// (no rolling-window duplicate guardrail).
 	MaxToolCalls int
 	// MaxStreamRounds is the maximum number of LLM stream rounds per turn.
 	// After this many rounds, if the model is still making tool calls, a
@@ -341,9 +344,10 @@ type Config struct {
 	// entirely, allowing unlimited tool calls per turn. Useful for sessions with
 	// many small tool calls. Set via config or session-level toggle.
 	DisableToolBudget bool
-	// ToolCallLimitResetWindow is the number of recent tool calls checked for
-	// duplicates when enforcing MaxToolCalls. A call not present in this window
-	// resets the counter. Default: 0 (use at most 15, at least 1).
+	// ToolCallLimitResetWindow is the size of the rolling window used to count
+	// duplicate tool calls for MaxToolCalls. A call that falls outside this
+	// window is no longer counted as a duplicate. Default: 0 (an effective
+	// default of max(3*MaxToolCalls, 10) is used).
 	ToolCallLimitResetWindow int
 	// ReasoningEffort controls the amount of reasoning the model performs.
 	// Values are provider-specific (e.g. "low"/"medium"/"high" for OpenAI,
@@ -1870,20 +1874,24 @@ func (a *Agent) emitBudgetToolSkipped(tc provider.ContentBlock, result string) {
 	})
 }
 
-// toolBudgetMessage is the synthetic tool result returned for calls that
-// exceed the per-turn budget. It tells the model to stop calling tools and
-// produce a final answer.
+// toolBudgetMessage is the synthetic tool result returned when an absolute
+// per-turn tool-call cap is configured and exceeded. It tells the model to stop
+// calling tools and produce a final answer. This is reserved for optional hard
+// safety limits; duplicate-window and consecutive-repeat guardrails use the
+// messages below instead.
 const toolBudgetMessage = "[goa-system] Tool call budget exceeded. Do not call more tools this turn. Answer based on the information you have already gathered."
 
 // toolLoopMessage is the synthetic tool result returned when the exact same
-// tool call is repeated too many times within the budget window. It warns the
-// model that progress has stalled and tells it to change approach.
+// tool call is repeated too many times consecutively or too many times within
+// the rolling budget window. It warns the model that progress has stalled and
+// tells it to change approach.
 const toolLoopMessage = "[goa-system] Loop guardrail: this exact tool call was repeated too many times without progress. Stop repeating it. Change your approach or produce a final answer."
 
 // toolRepeatedMessage is the synthetic tool result returned when the exact
-// same tool call (name + arguments) appears a second consecutive time within
-// the recent window. The tool is NOT re-executed; the LLM gets this hint so
-// it can use the previous result or change approach without stalling.
+// same tool call (name + arguments) appears a second time within the recent
+// window before any hard limit is reached. The tool is NOT re-executed; the LLM
+// gets this hint so it can use the previous result or change approach without
+// stalling.
 const toolRepeatedMessage = "[goa-system] This exact tool call (same tool with same arguments) was already executed this turn. Use the previous result instead of repeating the same call."
 
 // ToolBudgetResultPrefix is the prefix shared by every budget-exceeded tool
@@ -1926,21 +1934,20 @@ func (a *Agent) synthesizeAssistantBuffer() Message {
 
 // executeTool runs a tool with the given name and input, returning the result.
 // shouldBufferToolCall checks whether a tool call from the stream should be
-// buffered for concurrent execution. Returns false if the call should be
-// rejected entirely (loop guardrail triggered).
-//
-// Two independent guardrails apply:
+// buffered for concurrent execution. It applies three independent guardrails:
 //
 //  1. Total-repeat (turn-wide): counts ALL occurrences of the exact same
-//     tool+arguments across the entire turn (all streaming rounds). Controlled
-//     by MaxToolRepeatTotal. Exceeding this threshold produces a hard-loop
-//     guardrail message.
+//     tool+arguments across the entire turn. Controlled by MaxToolRepeatTotal.
 //
-//  2. Consecutive-repeat (immediate): counts CONSECUTIVE identical calls
-//     (same tool+args appearing back-to-back). If a different call appears
-//     in between, the counter resets to 1. Controlled by
-//     MaxToolRepeatConsecutive. The soft-repeat warning always fires at 2,
-//     and the hard-loop fires at MaxToolRepeatConsecutive.
+//  2. Consecutive-repeat: counts CONSECUTIVE identical calls (same tool+args
+//     back-to-back). Controlled by MaxToolRepeatConsecutive. A soft warning is
+//     emitted at the second consecutive call; a hard loop guard fires at the
+//     configured limit.
+//
+//  3. Rolling-window repeat: counts how many times the same call appears in
+//     the last ToolCallLimitResetWindow calls. Controlled by MaxToolCalls.
+//     A soft warning is emitted at the second duplicate; a hard loop guard
+//     fires at the configured limit.
 //
 // Tool calls are NEVER rejected entirely (return false) — every call gets
 // buffered, keeping the tool_call/tool_result pairing intact for strict
@@ -1952,15 +1959,15 @@ func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 
 	a.mu.Lock()
 	a.bufferedToolCallCount++
-	totalCalls, budgetExceeded, repeatCount := a.recordToolCallInBudgetWindow(callKey)
+	windowCount, consecutiveCount, windowExceeded, consecutiveExceeded := a.recordToolCallInBudgetWindow(callKey)
 	a.mu.Unlock()
 
 	if a.checkTotalRepeatGuardrail(tc, callKey) {
 		return true
 	}
 
-	if skipMsg := a.budgetOrRepeatSkipMessage(budgetExceeded, repeatCount); skipMsg != "" {
-		a.applyToolGuardrail(tc, callKey, skipMsg, budgetExceeded, repeatCount, totalCalls)
+	if skipMsg := a.budgetOrRepeatSkipMessage(windowCount, consecutiveCount); skipMsg != "" {
+		a.applyToolGuardrail(tc, callKey, skipMsg, windowExceeded, consecutiveExceeded, windowCount, consecutiveCount)
 		return true
 	}
 
@@ -1993,30 +2000,54 @@ func (a *Agent) checkTotalRepeatGuardrail(tc provider.ContentBlock, callKey stri
 }
 
 // budgetOrRepeatSkipMessage returns the appropriate skip message based on
-// budget and consecutive-repeat status. Priority: budget > hard-loop > soft-repeat.
-func (a *Agent) budgetOrRepeatSkipMessage(budgetExceeded bool, repeatCount int) string {
+// rolling-window and consecutive-repeat status. Priority: hard-loop > soft-repeat.
+// When no limit is exceeded but this is a second duplicate, the model gets a
+// soft nudge so it can use the previous result instead of repeating.
+func (a *Agent) budgetOrRepeatSkipMessage(windowCount, consecutiveCount int) string {
+	maxConsecutive := a.cfg.MaxToolRepeatConsecutive
+	maxWindow := a.cfg.MaxToolCalls
+
 	switch {
-	case budgetExceeded:
-		return toolBudgetMessage
-	case a.cfg.MaxToolRepeatConsecutive > 0 && repeatCount >= a.cfg.MaxToolRepeatConsecutive:
-		return toolLoopMessage
-	case repeatCount >= 2:
+	case maxConsecutive > 0 && consecutiveCount > maxConsecutive:
+		return fmt.Sprintf("[goa-system] Loop guardrail: this exact tool call was repeated %d consecutive times (limit: %d). Stop repeating the same call. Change your approach or produce a final answer.", consecutiveCount, maxConsecutive)
+	case maxWindow > 0 && windowCount > maxWindow:
+		windowSize := a.effectiveToolWindowSize()
+		return fmt.Sprintf("[goa-system] Loop guardrail: this exact tool call appeared %d times in the last %d calls (limit: %d). Stop repeating the same call. Use the previous result or change approach.", windowCount, windowSize, maxWindow)
+	case consecutiveCount >= 2 || windowCount >= 2:
 		return toolRepeatedMessage
 	default:
 		return ""
 	}
 }
 
-// applyToolGuardrail records the skip, logs, emits TUI event, and buffers.
-func (a *Agent) applyToolGuardrail(tc provider.ContentBlock, callKey, skipMsg string, budgetExceeded bool, repeatCount, totalCalls int) {
+// effectiveToolWindowSize returns the configured ToolCallLimitResetWindow, or a
+// reasonable default derived from MaxToolCalls when it is unset.
+func (a *Agent) effectiveToolWindowSize() int {
+	window := a.cfg.ToolCallLimitResetWindow
+	if window > 0 {
+		return window
+	}
+	window = a.cfg.MaxToolCalls * 3
+	if window < 10 {
+		window = 10
+	}
+	if window > 50 {
+		window = 50
+	}
+	return window
+}
+
+// applyToolGuardrail records the skip, logs, emits a TUI event, and buffers
+// the call so the model still sees the hint in the tool result.
+func (a *Agent) applyToolGuardrail(tc provider.ContentBlock, callKey, skipMsg string, windowExceeded, consecutiveExceeded bool, windowCount, consecutiveCount int) {
 	a.applyToolBudgetSkip(tc, skipMsg)
 	switch {
-	case budgetExceeded:
-		a.cfg.Logger.Log(Warn, "Tool budget exceeded: %d/%d calls", totalCalls, a.cfg.MaxToolCalls)
-	case a.cfg.MaxToolRepeatConsecutive > 0 && repeatCount >= a.cfg.MaxToolRepeatConsecutive:
-		a.cfg.Logger.Log(Warn, "Hard loop: tool call %q repeated %d times consecutively; substituting hint", tc.ToolName, repeatCount)
+	case consecutiveExceeded:
+		a.cfg.Logger.Log(Warn, "Hard loop: tool call %q repeated %d times consecutively (limit: %d); substituting hint", tc.ToolName, consecutiveCount, a.cfg.MaxToolRepeatConsecutive)
+	case windowExceeded:
+		a.cfg.Logger.Log(Warn, "Rolling-window loop: tool call %q appeared %d times in the last %d calls (limit: %d); substituting hint", tc.ToolName, windowCount, a.effectiveToolWindowSize(), a.cfg.MaxToolCalls)
 	default:
-		a.cfg.Logger.Log(Warn, "Soft repeat: tool call %q repeated %d times consecutively; substituting hint", tc.ToolName, repeatCount)
+		a.cfg.Logger.Log(Warn, "Soft repeat: tool call %q repeated %d time(s) in window / %d time(s) consecutively; substituting hint", tc.ToolName, windowCount, consecutiveCount)
 	}
 	a.emitBudgetToolSkipped(tc, skipMsg)
 	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
@@ -2029,61 +2060,57 @@ func (a *Agent) applyToolBudgetSkip(tc provider.ContentBlock, msg string) {
 	}
 }
 
-// recordToolCallInBudgetWindow tracks tool call budget and detects consecutive
-// duplicate tool calls (same name + same arguments). It must be called with
-// a.mu held.
+// recordToolCallInBudgetWindow tracks the rolling-window duplicate count and
+// consecutive duplicate count for a tool call. It must be called with a.mu held.
 //
-// The repeat counter counts CONSECUTIVE identical calls: if the current call
-// key matches the immediately previous call (lastCallKey), the counter
-// increments. If the call is different from the previous one, the counter
-// resets to 1. This prevents flagging legitimate alternation between
-// different tools/files while catching stuck-in-a-loop scenarios.
+// The consecutive counter increments when the current call matches the
+// immediately previous call; otherwise it resets to 1. This catches stuck loops
+// where the model repeats the same call back-to-back.
 //
-// A sliding window of the last ToolCallLimitResetWindow (or MaxToolCalls/10)
-// calls is maintained for diagnostic purposes (the window itself is not used
-// for the consecutive count). The total tool call count across the entire turn
-// (turnToolCallCount) is tracked for budget enforcement.
-func (a *Agent) recordToolCallInBudgetWindow(callKey string) (totalCalls int, budgetExceeded bool, repeatCount int) {
-	if a.cfg.MaxToolCalls <= 0 || a.cfg.DisableToolBudget {
-		return 0, false, 0
+// The rolling-window counter counts how many times the current call key appears
+// in the last ToolCallLimitResetWindow calls (or an effective default window
+// when the config is unset). This catches duplicates that are spaced out by a
+// few different calls.
+//
+// Returns (windowCount, consecutiveCount, windowExceeded, consecutiveExceeded).
+func (a *Agent) recordToolCallInBudgetWindow(callKey string) (windowCount, consecutiveCount int, windowExceeded, consecutiveExceeded bool) {
+	if a.cfg.DisableToolBudget {
+		return 0, 0, false, false
 	}
 
-	window := a.cfg.ToolCallLimitResetWindow
-	if window <= 0 {
-		window = a.cfg.MaxToolCalls / 10
-		if window < 1 {
-			window = 1
-		}
-		if window > 15 {
-			window = 15
-		}
-	}
+	window := a.effectiveToolWindowSize()
 
-	// Increment global turn counter.
-	a.turnToolCallCount++
-	totalCalls = a.turnToolCallCount
-
-	// Check total budget across the entire turn.
-	if totalCalls > a.cfg.MaxToolCalls {
-		budgetExceeded = true
-	}
-
-	// Consecutive-duplicate tracking: same key as the immediate previous call.
+	// Consecutive-duplicate tracking.
 	if a.lastCallKey == callKey {
 		a.consecutiveCount++
 	} else {
 		a.consecutiveCount = 1
 	}
 	a.lastCallKey = callKey
-	repeatCount = a.consecutiveCount
+	consecutiveCount = a.consecutiveCount
 
-	// Maintain sliding window for diagnostic/reference (not used for counting).
+	// Maintain rolling window of recent call keys.
 	a.recentToolCalls = append(a.recentToolCalls, callKey)
 	if len(a.recentToolCalls) > window {
 		a.recentToolCalls = a.recentToolCalls[len(a.recentToolCalls)-window:]
 	}
 
-	return totalCalls, budgetExceeded, repeatCount
+	// Count occurrences of the current call key within the window.
+	for _, k := range a.recentToolCalls {
+		if k == callKey {
+			windowCount++
+		}
+	}
+
+	// Check limits.
+	if a.cfg.MaxToolRepeatConsecutive > 0 && consecutiveCount > a.cfg.MaxToolRepeatConsecutive {
+		consecutiveExceeded = true
+	}
+	if a.cfg.MaxToolCalls > 0 && windowCount > a.cfg.MaxToolCalls {
+		windowExceeded = true
+	}
+
+	return windowCount, consecutiveCount, windowExceeded, consecutiveExceeded
 }
 
 // BufferedToolCallCount returns the number of tool calls buffered for the
@@ -2141,9 +2168,9 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 	}
 
 	// All calls were synthetic (budget-skipped or loop-skipped).
-	// Budget-exceeded means the turn should end (LLM told to stop calling
-	// tools). Loop-guard and soft-repeat still need the LLM to see the
-	// hint and get a chance to respond.
+	// Duplicate guardrails return hints so the model can change approach;
+	// only an absolute budget-exceeded message (toolBudgetMessage) should end
+	// the turn. Loop/hint messages keep the turn alive so the LLM can respond.
 	for _, tc := range tcs {
 		if msg := a.budgetToolCalls[tc.ToolCallID]; msg == toolBudgetMessage {
 			return false

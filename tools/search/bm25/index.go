@@ -22,6 +22,10 @@ const IndexVersion = 1
 // IndexFile is the name of the serialised index inside the index directory.
 const IndexFile = "index.gob"
 
+// indexSaveMu serialises index writes to the same process so concurrent
+// builders do not race on the same temp/dst file paths.
+var indexSaveMu sync.Mutex
+
 // --- Change tracking ---
 
 // ChangeTracker accumulates file paths that have been modified and need
@@ -241,14 +245,18 @@ func (b *Builder) Load() (*Index, error) {
 }
 
 // Save persists the index to the index directory using an atomic write
-// (write to temp, rename).
+// (write to a unique temp file, rename). The temp file name is unique per
+// invocation to avoid collisions when multiple builders/threads save concurrently.
 func (b *Builder) Save(idx *Index) error {
+	indexSaveMu.Lock()
+	defer indexSaveMu.Unlock()
+
 	if err := os.MkdirAll(b.indexDir, 0755); err != nil {
 		return fmt.Errorf("create index dir: %w", err)
 	}
 
 	path := filepath.Join(b.indexDir, IndexFile)
-	tmp := path + ".tmp"
+	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
 
 	f, err := os.Create(tmp)
 	if err != nil {

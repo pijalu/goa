@@ -773,50 +773,8 @@ func TestAgent_BuildProviderContext_IncludesToolCalls(t *testing.T) {
 	}
 }
 
-// toolCountingProvider emits a tool call on the first N streams and then
-// a text response, allowing tests to exercise the per-turn tool-call budget.
-type toolCountingProvider struct {
-	api     provider.Api
-	mu      sync.Mutex
-	streams int
-}
-
-func (p *toolCountingProvider) API() provider.Api { return p.api }
-
-func (p *toolCountingProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
-	p.mu.Lock()
-	p.streams++
-	callID := fmt.Sprintf("call_%d", p.streams)
-	p.mu.Unlock()
-
-	result := provider.NewAssistantMessageEventStream(64)
-	go func() {
-		result.Push(provider.AssistantMessageEvent{
-			Type:         provider.EventToolCallEnd,
-			ContentIndex: 0,
-			ToolCall: &provider.ContentBlock{
-				Type:          provider.ContentBlockToolCall,
-				ToolCallID:    callID,
-				ToolName:      "mock_tool",
-				ToolArguments: `{"arg":"value"}`,
-			},
-		})
-		result.End(&provider.AssistantMessage{
-			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "done"}},
-			StopReason: provider.StopReasonEndTurn,
-		})
-	}()
-	return result, nil
-}
-
-func (p *toolCountingProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
-	return p.Stream(model, ctx, provider.StreamOptions{})
-}
-
-func TestAgent_MaxToolCalls_BlocksAdditionalCalls(t *testing.T) {
-	p := &toolCountingProvider{api: provider.Api(fmt.Sprintf("test-max-tool-calls-%d", testProviderCounter.Add(1)))}
-	provider.RegisterApiProvider(p)
-
+func TestAgent_ToolBudget_DifferentCallsNotBlocked(t *testing.T) {
+	p := registerUniqueArgToolProvider(5)
 	agent := NewAgent(Config{
 		Model:        testModel(p.API()),
 		SystemPrompt: "test",
@@ -825,48 +783,148 @@ func TestAgent_MaxToolCalls_BlocksAdditionalCalls(t *testing.T) {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal:       0, // allow repeated identical calls
+		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:             2,
+		MaxToolCalls:             3,
+		ToolCallLimitResetWindow: 10,
 	})
 
-	obs := &mockEventObserver{}
-	agent.AddObserver(obs)
-	go func() {
-		for range agent.Output {
-		}
-	}()
+	obs := runAgentCollectingEvents(t, agent, "call tools")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := agent.Run(ctx, "call tools"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-
-	var toolResults []OutputEvent
+	var realResults, guardResults int
 	for _, e := range obs.Events() {
-		if e.Type == EventToolResult {
-			toolResults = append(toolResults, e)
+		if e.Type != EventToolResult {
+			continue
+		}
+		if strings.Contains(e.Text, "Loop guardrail") || strings.Contains(e.Text, "already executed") {
+			guardResults++
+		} else {
+			realResults++
 		}
 	}
+	if realResults != 5 {
+		t.Errorf("expected 5 real executions for 5 different calls, got %d (guards=%d)", realResults, guardResults)
+	}
+	if guardResults != 0 {
+		t.Errorf("expected 0 guard results for different calls, got %d", guardResults)
+	}
+}
 
-	if len(toolResults) < 3 {
-		t.Fatalf("expected at least 3 tool results (1 executed + 1 repeat + 1 budget exceeded), got %d", len(toolResults))
+// TestAgent_ToolBudget_RollingWindowDuplicate verifies that repeating the same
+// tool call within the rolling window triggers the duplicate guard after the
+// configured limit, and that the LLM receives a clear hint in the tool result.
+func TestAgent_ToolBudget_RollingWindowDuplicate(t *testing.T) {
+	totalCalls := 4
+	maxCalls := 3
+
+	p := registerBatchToolProvider(totalCalls)
+	agent := newAgentWithMockTool(p.API(), maxCalls)
+	obs := runAgentCollectingEvents(t, agent, "call tools")
+
+	var realResults, softResults, hardResults int
+	for _, e := range obs.Events() {
+		if e.Type != EventToolResult {
+			continue
+		}
+		switch {
+		case strings.Contains(e.Text, "already executed"):
+			softResults++
+		case strings.Contains(e.Text, "Loop guardrail"):
+			hardResults++
+		default:
+			realResults++
+		}
+	}
+	if realResults != 1 {
+		t.Errorf("expected 1 real execution, got %d (soft=%d hard=%d)", realResults, softResults, hardResults)
+	}
+	if softResults != 2 {
+		t.Errorf("expected 2 soft-repeat results, got %d", softResults)
+	}
+	if hardResults != 1 {
+		t.Errorf("expected 1 hard-loop result (4th duplicate), got %d", hardResults)
 	}
 
-	// First result is a real execution.
-	if toolResults[0].Text != "mock result" {
-		t.Errorf("expected first result to be real execution, got %q", toolResults[0].Text)
-	}
+	history := copyAgentHistory(agent)
+	assertSingleAssistantWithTools(t, history, totalCalls)
+	assertAllToolResultsPresent(t, history, totalCalls)
+	assertToolEventCounts(t, obs.Events(), totalCalls)
+	assertToolGuardResult(t, history)
+}
 
-	// Second result should be the repeat message (2nd consecutive same call).
-	if !strings.Contains(toolResults[1].Text, "already executed") {
-		t.Errorf("expected second result to mention 'already executed', got %q", toolResults[1].Text)
-	}
+// TestAgent_ToolBudget_ConsecutiveDuplicate verifies that the consecutive-repeat
+// guard fires independently of the rolling-window guard.
+func TestAgent_ToolBudget_ConsecutiveDuplicate(t *testing.T) {
+	totalCalls := 4
+	p := registerBatchToolProvider(totalCalls)
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		Tools: []Tool{mockTool{
+			name:   "mock_tool",
+			schema: ToolSchema{Name: "mock_tool", Description: "test"},
+		}},
+		MaxToolRepeatTotal:       0,
+		MaxToolRepeatConsecutive: 2,
+		MaxToolCalls:             0, // disable rolling-window guard
+	})
+	obs := runAgentCollectingEvents(t, agent, "call tools")
 
-	// Third result should be the budget-exceeded message.
-	if !strings.Contains(toolResults[2].Text, "budget exceeded") {
-		t.Errorf("expected third result to mention budget exceeded, got %q", toolResults[2].Text)
+	var realResults, softResults, hardResults int
+	for _, e := range obs.Events() {
+		if e.Type != EventToolResult {
+			continue
+		}
+		switch {
+		case strings.Contains(e.Text, "already executed"):
+			softResults++
+		case strings.Contains(e.Text, "Loop guardrail"):
+			hardResults++
+		default:
+			realResults++
+		}
+	}
+	// With MaxToolRepeatConsecutive=2 and identical calls:
+	// call 1: executed
+	// call 2: soft repeat (2nd consecutive call)
+	// call 3: hard loop (3rd consecutive call)
+	// call 4: hard loop
+	if realResults != 1 {
+		t.Errorf("expected 1 real execution, got %d (soft=%d hard=%d)", realResults, softResults, hardResults)
+	}
+	if softResults != 1 {
+		t.Errorf("expected 1 soft-repeat result with limit=2, got %d", softResults)
+	}
+	if hardResults != 2 {
+		t.Errorf("expected 2 hard-loop results, got %d", hardResults)
+	}
+}
+
+// TestAgent_ToolBudget_LLMReceivesHintAndContinues verifies that when a
+// duplicate guard fires, the model receives the hint as a tool result and the
+// turn continues (the second provider stream returns text).
+func TestAgent_ToolBudget_LLMReceivesHintAndContinues(t *testing.T) {
+	totalCalls := 3
+	maxCalls := 2
+
+	p := registerBatchToolProvider(totalCalls)
+	agent := newAgentWithMockTool(p.API(), maxCalls)
+	runAgentCollectingEvents(t, agent, "call tools")
+
+	history := copyAgentHistory(agent)
+	assertToolGuardResult(t, history)
+
+	// The turn should have continued after the guard: there must be at least
+	// one text-only assistant response following the tool results.
+	var textResponses int
+	for _, msg := range history {
+		if msg.Role == Assistant && len(msg.ToolCalls) == 0 && msg.Content != "" {
+			textResponses++
+		}
+	}
+	if textResponses == 0 {
+		t.Errorf("expected the turn to continue with a text response after the guard")
 	}
 }
 
@@ -944,13 +1002,33 @@ func TestAgent_MaxToolCalls_MidBatch_LeavesSingleAssistantMessage(t *testing.T) 
 	history := copyAgentHistory(agent)
 	assertSingleAssistantWithTools(t, history, totalCalls)
 	assertAllToolResultsPresent(t, history, totalCalls)
-	assertBudgetToolResult(t, history)
+	assertToolGuardResult(t, history)
 	assertToolEventCounts(t, obs.Events(), totalCalls)
+
+	// Under the duplicate-window semantics, only the first identical call is
+	// executed; the remaining three are guardrail hints.
+	var realResults, guardResults int
+	for _, msg := range history {
+		if msg.Role != ToolRole {
+			continue
+		}
+		if strings.Contains(msg.Content, "Loop guardrail") || strings.Contains(msg.Content, "already executed") {
+			guardResults++
+		} else {
+			realResults++
+		}
+	}
+	if realResults != 1 {
+		t.Errorf("expected 1 real result, got %d (guards=%d)", realResults, guardResults)
+	}
+	if guardResults != 3 {
+		t.Errorf("expected 3 guard results, got %d", guardResults)
+	}
 }
 
 // TestAgent_DisableToolBudget_AllowsUnlimitedCalls verifies that setting
-// DisableToolBudget to true prevents budget-exceeded messages even when
-// the number of tool calls exceeds MaxToolCalls.
+// DisableToolBudget to true prevents duplicate-window and consecutive-repeat
+// guardrail messages.
 func TestAgent_DisableToolBudget_AllowsUnlimitedCalls(t *testing.T) {
 	totalCalls := 4
 	maxCalls := 2 // Low limit, but DisableToolBudget should override
@@ -970,29 +1048,27 @@ func TestAgent_DisableToolBudget_AllowsUnlimitedCalls(t *testing.T) {
 		DisableToolBudget:        true,
 	})
 
-	obs := &mockEventObserver{}
-	agent.AddObserver(obs)
-	go func() {
-		for range agent.Output {
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := agent.Run(ctx, "call tools"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
+	obs := runAgentCollectingEvents(t, agent, "call tools")
 
 	history := copyAgentHistory(agent)
 
-	// All tool results should be present (none should be budget-exceeded).
 	assertAllToolResultsPresent(t, history, totalCalls)
 
-	// Verify NO budget-exceeded messages appeared in tool results.
+	// Verify NO guardrail messages appeared in tool results.
 	for _, msg := range history {
-		if msg.Role == ToolRole && strings.Contains(msg.Content, "budget exceeded") {
-			t.Errorf("unexpected budget-exceeded tool result with DisableToolBudget=true: %q", msg.Content)
+		if msg.Role == ToolRole && (strings.Contains(msg.Content, "Loop guardrail") || strings.Contains(msg.Content, "already executed") || strings.Contains(msg.Content, "budget exceeded")) {
+			t.Errorf("unexpected guardrail tool result with DisableToolBudget=true: %q", msg.Content)
 		}
+	}
+
+	var realResults int
+	for _, e := range obs.Events() {
+		if e.Type == EventToolResult && !strings.Contains(e.Text, "Loop guardrail") && !strings.Contains(e.Text, "already executed") && !strings.Contains(e.Text, "budget exceeded") {
+			realResults++
+		}
+	}
+	if realResults != totalCalls {
+		t.Errorf("expected %d real executions with DisableToolBudget=true, got %d", totalCalls, realResults)
 	}
 }
 
@@ -1081,13 +1157,13 @@ func assertAllToolResultsPresent(t *testing.T, history []Message, totalCalls int
 	}
 }
 
-func assertBudgetToolResult(t *testing.T, history []Message) {
+func assertToolGuardResult(t *testing.T, history []Message) {
 	for _, msg := range history {
-		if msg.Role == ToolRole && strings.Contains(msg.Content, "budget exceeded") {
+		if msg.Role == ToolRole && (strings.Contains(msg.Content, "Loop guardrail") || strings.Contains(msg.Content, "already executed")) {
 			return
 		}
 	}
-	t.Errorf("expected a tool result with budget message in history")
+	t.Errorf("expected a tool result with a loop-guard or repeat hint in history")
 	for i, m := range history {
 		t.Logf("  [%d] %s: %.60s (tool_calls=%d)", i, m.Role, m.Content, len(m.ToolCalls))
 	}
@@ -1186,62 +1262,46 @@ func TestAgent_ToolCallLimitResetsOnUniqueCall(t *testing.T) {
 		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0,
 		MaxToolCalls:             3,
+		ToolCallLimitResetWindow: 10,
 	})
 
 	obs := runAgentCollectingEvents(t, agent, "call tools")
 
-	var realResults int
-	var budgetResults int
+	var realResults, guardResults int
 	for _, e := range obs.Events() {
 		if e.Type != EventToolResult {
 			continue
 		}
-		if strings.Contains(e.Text, "budget exceeded") {
-			budgetResults++
+		if strings.Contains(e.Text, "Loop guardrail") || strings.Contains(e.Text, "already executed") {
+			guardResults++
 		} else {
 			realResults++
 		}
 	}
-	// With MaxToolCalls=3 and 5 unique calls: calls 1-3 execute (global
-	// budget), call 4 is budget-exceeded and ends the turn.
-	if realResults != 3 {
-		t.Errorf("expected 3 real executions (budget=3), got %d (budget=%d)", realResults, budgetResults)
+	// With MaxToolCalls=3 and 5 unique calls, no call repeats within the
+	// window, so all calls execute and no guard fires.
+	if realResults != 5 {
+		t.Errorf("expected 5 real executions for unique calls, got %d (guards=%d)", realResults, guardResults)
 	}
-	if budgetResults != 1 {
-		t.Errorf("expected 1 budget result, got %d", budgetResults)
+	if guardResults != 0 {
+		t.Errorf("expected 0 guard results for unique calls, got %d", guardResults)
 	}
 }
 
 func TestAgent_ToolCallLimitEnforcedOnRepeatedCall(t *testing.T) {
-	p := &toolCountingProvider{
-		api:     provider.Api(fmt.Sprintf("test-repeated-budget-%d", testProviderCounter.Add(1))),
-		streams: 0,
-	}
-	provider.RegisterApiProvider(p)
+	totalCalls := 4
+	maxCalls := 3
 
-	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "test",
-		Logger:       NewLogger(Error),
-		Tools: []Tool{mockTool{
-			name:   "mock_tool",
-			schema: ToolSchema{Name: "mock_tool", Description: "test"},
-		}},
-		MaxToolRepeatTotal:       0,
-		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:             3,
-	})
-
+	p := registerBatchToolProvider(totalCalls)
+	agent := newAgentWithMockTool(p.API(), maxCalls)
 	obs := runAgentCollectingEvents(t, agent, "call tools")
 
-	var realResults, repeatResults, loopResults, budgetResults int
+	var realResults, repeatResults, loopResults int
 	for _, e := range obs.Events() {
 		if e.Type != EventToolResult {
 			continue
 		}
 		switch {
-		case strings.Contains(e.Text, "budget exceeded"):
-			budgetResults++
 		case strings.Contains(e.Text, "already executed"):
 			repeatResults++
 		case strings.Contains(e.Text, "Loop guardrail"):
@@ -1251,15 +1311,18 @@ func TestAgent_ToolCallLimitEnforcedOnRepeatedCall(t *testing.T) {
 		}
 	}
 	// With MaxToolCalls=3 and identical calls:
-	// call 1: executed (repeatCount=1)
-	// call 2: soft-repeat (toolRepeatedMessage)
-	// call 3: hard loop (repeatCount=3, toolLoopMessage)
-	// call 4: budget exceeded (totalCalls=4 > MaxToolCalls=3), ends turn
+	// call 1: executed
+	// call 2: soft-repeat (already executed)
+	// call 3: soft-repeat (still within limit)
+	// call 4: hard loop (4th duplicate in window)
 	if realResults != 1 {
-		t.Errorf("expected 1 real execution, got %d (repeat=%d loop=%d budget=%d)", realResults, repeatResults, loopResults, budgetResults)
+		t.Errorf("expected 1 real execution, got %d (repeat=%d loop=%d)", realResults, repeatResults, loopResults)
 	}
-	if budgetResults != 1 {
-		t.Errorf("expected 1 budget result, got %d", budgetResults)
+	if repeatResults != 2 {
+		t.Errorf("expected 2 soft-repeat results, got %d", repeatResults)
+	}
+	if loopResults != 1 {
+		t.Errorf("expected 1 hard-loop result, got %d", loopResults)
 	}
 }
 
@@ -1276,65 +1339,49 @@ func TestAgent_ToolCallLimit_WindowCustom(t *testing.T) {
 		ToolCallLimitResetWindow: 5,
 	})
 
-	// The custom window is honored: all unique calls execute.
+	// The custom window is honored: all unique calls execute, no duplicates.
 	obs := runAgentCollectingEvents(t, agent, "call tools")
 
-	var realResults int
-	var budgetResults int
+	var realResults, guardResults int
 	for _, e := range obs.Events() {
 		if e.Type != EventToolResult {
 			continue
 		}
-		if strings.Contains(e.Text, "budget exceeded") {
-			budgetResults++
+		if strings.Contains(e.Text, "Loop guardrail") || strings.Contains(e.Text, "already executed") {
+			guardResults++
 		} else {
 			realResults++
 		}
 	}
 	if realResults != 5 {
-		t.Errorf("expected 5 real executions, got %d (budget=%d)", realResults, budgetResults)
+		t.Errorf("expected 5 real executions, got %d (guards=%d)", realResults, guardResults)
 	}
-	if budgetResults != 0 {
-		t.Errorf("expected 0 budget results, got %d", budgetResults)
+	if guardResults != 0 {
+		t.Errorf("expected 0 guard results for unique calls, got %d", guardResults)
 	}
 }
 
-func TestAgent_ToolCallLimit_BudgetMessageReturnedToLLM(t *testing.T) {
-	p := &toolCountingProvider{
-		api:     provider.Api(fmt.Sprintf("test-budget-history-%d", testProviderCounter.Add(1))),
-		streams: 0,
-	}
-	provider.RegisterApiProvider(p)
+func TestAgent_ToolBudget_GuardResultReturnedToLLM(t *testing.T) {
+	totalCalls := 3
+	maxCalls := 2
 
-	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "test",
-		Logger:       NewLogger(Error),
-		Tools: []Tool{mockTool{
-			name:   "mock_tool",
-			schema: ToolSchema{Name: "mock_tool", Description: "test"},
-		}},
-		MaxToolRepeatTotal:       0,
-		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:             2,
-	})
-
+	p := registerBatchToolProvider(totalCalls)
+	agent := newAgentWithMockTool(p.API(), maxCalls)
 	runAgentCollectingEvents(t, agent, "call tools")
 
 	history := copyAgentHistory(agent)
-	assertBudgetToolResult(t, history)
+	assertToolGuardResult(t, history)
 
-	// Ensure the budget result is a ToolRole message, not an error returned
-	// by Run.
+	// Ensure the guard result is a ToolRole message, not an error returned by Run.
 	var found bool
 	for _, msg := range history {
-		if msg.Role == ToolRole && strings.Contains(msg.Content, ToolBudgetResultPrefix) {
+		if msg.Role == ToolRole && (strings.Contains(msg.Content, "Loop guardrail") || strings.Contains(msg.Content, "already executed")) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected a ToolRole message containing %q in history", ToolBudgetResultPrefix)
+		t.Errorf("expected a ToolRole message containing a guardrail hint in history")
 	}
 }
 
@@ -1699,15 +1746,12 @@ func TestAgent_ToolCallRounds_NotLimitedToThree(t *testing.T) {
 }
 
 // TestAgent_ExactToolRepeatGuard_5Percent triggers the consecutive-repeat
-// guardrail. With MaxToolRepeatConsecutive=3, the third consecutive identical
+// guardrail. With MaxToolRepeatConsecutive=3, the fourth consecutive identical
 // call is rejected with a loop hint while preserving the assistant message
 // structure.
 func TestAgent_ExactToolRepeatGuard_5Percent(t *testing.T) {
-	p := &toolCountingProvider{
-		api:     provider.Api(fmt.Sprintf("test-exact-repeat-%d", testProviderCounter.Add(1))),
-		streams: 0,
-	}
-	provider.RegisterApiProvider(p)
+	totalCalls := 4
+	p := registerBatchToolProvider(totalCalls)
 
 	agent := NewAgent(Config{
 		Model:        testModel(p.API()),
@@ -1718,8 +1762,8 @@ func TestAgent_ExactToolRepeatGuard_5Percent(t *testing.T) {
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
 		MaxToolRepeatTotal:       0, // disable total-repeat guardrail
-		MaxToolRepeatConsecutive: 3, // stop after 3 consecutive identical calls
-		MaxToolCalls:             20,
+		MaxToolRepeatConsecutive: 3, // allow up to 3 consecutive identical calls
+		MaxToolCalls:             0, // disable rolling-window guardrail
 	})
 
 	obs := runAgentCollectingEvents(t, agent, "call tools")
@@ -1734,8 +1778,6 @@ func TestAgent_ExactToolRepeatGuard_5Percent(t *testing.T) {
 			loopResults++
 		case strings.Contains(e.Text, "already executed"):
 			repeatResults++
-		case strings.Contains(e.Text, "budget exceeded"):
-			// budget guard is separate
 		default:
 			realResults++
 		}
@@ -1743,8 +1785,11 @@ func TestAgent_ExactToolRepeatGuard_5Percent(t *testing.T) {
 	if realResults != 1 {
 		t.Errorf("expected 1 real execution before loop guardrail, got %d (repeat=%d loop=%d)", realResults, repeatResults, loopResults)
 	}
-	if loopResults < 1 {
-		t.Errorf("expected at least 1 loop-guard tool result, got %d", loopResults)
+	if repeatResults != 2 {
+		t.Errorf("expected 2 soft-repeat results at 2nd and 3rd consecutive calls, got %d", repeatResults)
+	}
+	if loopResults != 1 {
+		t.Errorf("expected 1 hard-loop result at 4th consecutive call, got %d", loopResults)
 	}
 }
 

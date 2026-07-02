@@ -26,12 +26,20 @@ execution:
   error_threshold: 0.5
   worktree_mode: "multi_agent"
   auto_save_model: true
-  max_tool_repeat: 1
-  # Hard per-turn cap on tool calls. Set generously: real coding tasks (read,
-  # search, edit, run tests, iterate) routinely need dozens. True infinite
-  # loops are caught separately by loop_warning/loop_interrupt above, so this
-  # is only a backstop against runaway agents.
-  max_tool_calls: 50
+  max_tool_repeat_total: 0
+  # Maximum number of CONSECUTIVE identical tool calls (same tool + same args)
+  # before a hard loop guard fires. A soft "already executed" hint is emitted
+  # at the second consecutive call. Keep this low: 2 means the second repeat is
+  # blocked, 3 means two repeats are allowed.
+  max_tool_repeat_consecutive: 2
+  # Maximum number of duplicate occurrences of the SAME tool call within the
+  # rolling window below. Different tool calls do NOT count toward this limit.
+  # Set generously for real coding tasks; it only catches repeated identical
+  # calls, not a high volume of distinct calls.
+  max_tool_calls: 3
+  # Number of recent tool calls inspected for the duplicate-window limit above.
+  # A call outside this window is no longer counted as a duplicate.
+  tool_call_limit_reset_window: 10
   # Local models (LM Studio, Ollama, etc.) sometimes emit tool calls as XML
   # markup inside content or reasoning streams instead of native tool_calls.
   # Auto-heal extracts and executes these malformed calls so the turn keeps
