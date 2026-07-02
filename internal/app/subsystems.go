@@ -115,6 +115,25 @@ type subsystems struct {
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
 
+// effectiveModeState returns the live session mode — the value restored from
+// state.json on startup or changed at runtime via /mode — falling back to the
+// configured default when no session is active. Every UI surface (footer,
+// prompt, status) must read the live mode rather than the static config
+// default, otherwise a mode change that was persisted to state.json is
+// invisible after a restart (the footer would keep showing the config's
+// mode.default.major instead of the restored runtime mode).
+func (s *subsystems) effectiveModeState() internal.ModeState {
+	if s != nil && s.agentMgr != nil {
+		if m := s.agentMgr.CurrentMode(); !m.IsZero() {
+			return m
+		}
+	}
+	if s != nil && s.cfg != nil {
+		return s.cfg.DefaultModeState()
+	}
+	return internal.ModeState{}
+}
+
 // InitSubsystems wires together all of Goa's subsystems from a loaded config
 // and runtime options.
 func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, opts RuntimeOptions) *subsystems {
@@ -143,6 +162,12 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	skillBundle.modeRegistry = modeRegistry
 	agentBundle.agentMgr.SetModeRegistry(modeRegistry)
 	populateModeDefaults(cfg, modeRegistry)
+
+	// The bash tool's Jail flag is initialised from the config default during
+	// tool registration (which runs before state.json is loaded). Re-apply it
+	// from the restored runtime autonomy so a persisted SOLO session keeps the
+	// jail enabled after a restart.
+	makeJailSetter(subs.toolRegistry)(agentBundle.agentMgr.CurrentMode().Autonomy == internal.AutonomySolo)
 
 	var agentPool *multiagent.AgentPool
 	var foregroundOrch *multiagent.ForegroundOrchestrator

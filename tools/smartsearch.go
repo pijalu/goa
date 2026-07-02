@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -52,7 +53,8 @@ func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name: "smartsearch",
 		Description: "Search for relevant code files using BM25 relevance ranking. " +
-			"Accepts natural language queries and returns ranked file paths with relevance scores. " +
+			"Accepts natural language queries and returns ranked file paths with relevance scores " +
+			"and the matching source lines so you can act on the results. " +
 			"Builds and maintains a persistent index under .goa/smartsearch/. " +
 			"Best for finding code by what it does (e.g. \"authentication middleware\", \"HTTP handler for users\"), " +
 			"rather than by an exact pattern. For exact pattern matching, use the search tool instead.",
@@ -164,8 +166,14 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 	// Normalise scores for display.
 	normaliseResults(results)
 
+	// Enrich each ranked candidate (most-relevant first) with the matching
+	// source lines, mirroring the search tool's output so the agent can act on
+	// the results rather than only seeing file paths.
+	terms := extractQueryTerms(p.Query)
+	matches := buildMatchingLines(results, terms, maxResults)
+
 	idxDir := bm25.IndexDir(rootPath)
-	return t.formatResults(results, p.Query, idx, rebuilt, idxDir), nil
+	return t.formatResults(results, matches, p.Query, idx, rebuilt, idxDir), nil
 }
 
 // Execute implements agentic.Tool. Delegates to ExecuteContext.
@@ -246,11 +254,122 @@ func (t *SmartSearchTool) excludes() []string {
 	return defaults
 }
 
+// smartLineMatch is a single matching source line for a candidate file.
+type smartLineMatch struct {
+	Num  int
+	Text string
+}
+
+// extractQueryTerms returns deduplicated, lowercased significant terms from a
+// natural-language query, using the same code tokenizer the index uses so the
+// grep stage looks for the same units BM25 ranked on.
+func extractQueryTerms(query string) []string {
+	toks := bm25.NewCodeTokenizer().Tokenize(query)
+	seen := make(map[string]bool, len(toks))
+	out := make([]string, 0, len(toks))
+	for _, t := range toks {
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+// smartMatchBudget caps how many matching lines are surfaced overall so the
+// result stays bounded regardless of corpus size.
+const smartMatchBudget = 30
+
+// linesPerCandidate bounds how many matching lines a single file contributes.
+const linesPerCandidate = 3
+
+// buildMatchingLines greps each ranked candidate (highest score first) for the
+// query terms and returns the matching source lines per file path. It walks
+// results in relevance order and stops once the overall line budget is spent,
+// so the most relevant hits are always shown.
+func buildMatchingLines(results []bm25.SearchResult, terms []string, maxResults int) map[string][]smartLineMatch {
+	if len(terms) == 0 {
+		return nil
+	}
+	pattern := buildTermsRegex(terms)
+	if pattern == "" {
+		return nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil
+	}
+
+	budget := smartMatchBudget
+	if maxResults > 0 && maxResults*linesPerCandidate < budget {
+		budget = maxResults * linesPerCandidate
+	}
+
+	out := make(map[string][]smartLineMatch, len(results))
+	for _, r := range results {
+		if budget <= 0 {
+			break
+		}
+		lines := grepFile(r.Path, re, linesPerCandidate, &budget)
+		if len(lines) > 0 {
+			out[r.Path] = lines
+		}
+	}
+	return out
+}
+
+// buildTermsRegex turns a list of terms into a case-insensitive alternation
+// regex such as "(?i)(foo|bar)". Returns an empty string when there is nothing
+// to match.
+func buildTermsRegex(terms []string) string {
+	var sb strings.Builder
+	sb.WriteString("(?i)(")
+	for i, t := range terms {
+		if t == "" {
+			continue
+		}
+		if sb.Len() > len("(?i)(") {
+			sb.WriteByte('|')
+		}
+		sb.WriteString(regexp.QuoteMeta(t))
+		_ = i
+	}
+	sb.WriteByte(')')
+	if sb.Len() <= len("(?i)()") {
+		return ""
+	}
+	return sb.String()
+}
+
+// grepFile reads path and returns up to maxLines lines matching re, decrementing
+// the shared *budget for each line returned. The budget bounds total output.
+func grepFile(path string, re *regexp.Regexp, maxLines int, budget *int) []smartLineMatch {
+	data, err := os.ReadFile(path)
+	if err != nil || isBinary(data) {
+		return nil
+	}
+	var matches []smartLineMatch
+	num := 1
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if re.MatchString(line) {
+			matches = append(matches, smartLineMatch{Num: num, Text: line})
+			*budget--
+			if len(matches) >= maxLines || *budget <= 0 {
+				return matches
+			}
+		}
+		num++
+	}
+	return matches
+}
+
 // formatResults produces the output string for a set of ranked results.
-// If rebuilt is true, a leading note warns the user that the index had to be
-// rebuilt from scratch due to a detected issue. idxDir is the directory that
-// holds the on-disk index.
-func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, query string, idx *bm25.Index, rebuilt bool, idxDir string) string {
+// matches carries the matching source lines keyed by absolute path. If rebuilt
+// is true, a leading note warns the user that the index had to be rebuilt from
+// scratch due to a detected issue. idxDir is the directory that holds the
+// on-disk index.
+func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, matches map[string][]smartLineMatch, query string, idx *bm25.Index, rebuilt bool, idxDir string) string {
 	var buf bytes.Buffer
 
 	if rebuilt {
@@ -272,6 +391,13 @@ func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, query strin
 			}
 		}
 		fmt.Fprintf(&buf, "%d. [%.2f] %s  (%d lines)\n", i+1, r.Score, relPath, r.Lines)
+		for _, m := range matches[r.Path] {
+			content := strings.TrimSpace(m.Text)
+			if len(content) > 140 {
+				content = content[:140] + "…"
+			}
+			fmt.Fprintf(&buf, "    %d: %s\n", m.Num, content)
+		}
 	}
 
 	if idxDir != "" {

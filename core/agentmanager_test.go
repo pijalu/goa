@@ -754,7 +754,7 @@ func TestAgentManager_InjectCompanionReview_ReplacesHistoryMessages(t *testing.T
 	}
 }
 
-func TestAgentManager_RefreshContextWindow_OnFirstStateChange(t *testing.T) {
+func TestAgentManager_RefreshContextWindow_OnFirstAssistantDelta(t *testing.T) {
 	cfg := &config.Config{}
 	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
 	agent := agentic.NewAgent(agentic.Config{
@@ -773,7 +773,17 @@ func TestAgentManager_RefreshContextWindow_OnFirstStateChange(t *testing.T) {
 		return 32768
 	})
 
+	// A bare state-change (start of generation) must NOT trigger the refresh —
+	// the model may still be loading and would report max_context_length.
 	am.OnEvent(agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateContent})
+	select {
+	case <-refreshed:
+		t.Fatal("refresher fired on state change; should only fire on first assistant delta")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The first assistant content delta is the reliable "model loaded" signal.
+	am.OnEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, Text: "Hello"})
 
 	select {
 	case n := <-refreshed:
@@ -781,7 +791,7 @@ func TestAgentManager_RefreshContextWindow_OnFirstStateChange(t *testing.T) {
 			t.Errorf("refresher returned %d, want 32768", n)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("context window refresher was not called after first state change")
+		t.Fatal("context window refresher was not called after first assistant delta")
 	}
 
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -790,6 +800,14 @@ func TestAgentManager_RefreshContextWindow_OnFirstStateChange(t *testing.T) {
 	}
 	if agent.Model().ContextWindow != 32768 {
 		t.Errorf("agent ContextWindow = %d, want 32768", agent.Model().ContextWindow)
+	}
+
+	// A second delta must not re-trigger (one-shot).
+	am.OnEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, Text: " world"})
+	select {
+	case <-refreshed:
+		t.Fatal("refresher fired a second time; should be one-shot")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -942,6 +960,45 @@ func TestAgentManager_BuildCompressionConfig_ExplicitWins(t *testing.T) {
 }
 
 // TestAgentManager_HandleLoopWarningCriticalInterrupts guards STUB-2: the
+// TestAgentManager_ThinkingLoopInterrupts verifies that a thinking/reasoning
+// loop cancels the in-flight turn, mirroring the tool-loop interrupt path. This
+// reproduces the failure captured in bugs.md where the assistant repeated the
+// same reasoning paragraph many times with no loop protection firing.
+func TestAgentManager_ThinkingLoopInterrupts(t *testing.T) {
+	cfg := &config.Config{}
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	am := NewAgentManager(cfg, nil, ld, NewSessionState(internal.ModeState{}), nil, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancel
+	am.running = true
+	am.mu.Unlock()
+
+	line := "I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime."
+	// Default interrupt threshold is 6 identical significant lines.
+	for i := 0; i < 6; i++ {
+		lvl := ld.RecordThinkingDelta(line + "\n")
+		am.handleThinkingLoopWarning(lvl)
+	}
+
+	if ctx.Err() == nil {
+		t.Fatal("thinking loop did not cancel the in-flight turn context")
+	}
+
+	// Sanity: a non-looping turn must not interrupt.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancel2
+	am.running = true
+	am.mu.Unlock()
+	am.handleThinkingLoopWarning(LoopOK)
+	if ctx2.Err() != nil {
+		t.Error("LoopOK unexpectedly cancelled the turn")
+	}
+	cancel2()
+}
+
 // LoopCritical branch previously only flashed "will be paused" without pausing.
 // It must now actually cancel the in-flight turn.
 func TestAgentManager_HandleLoopWarningCriticalInterrupts(t *testing.T) {

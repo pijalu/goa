@@ -82,6 +82,33 @@ func TestCompositor_CursorPositionsHardwareCursor(t *testing.T) {
 	}
 }
 
+// TestCompositor_CursorClampedAtFullWidth verifies that a cursor column equal
+// to the terminal width (the end of a completely filled line) is clamped to
+// the last column instead of forcing the hardware cursor to wrap to the next
+// physical line. This is the "cursor jumps to the next line at end of line"
+// failure mode.
+func TestCompositor_CursorClampedAtFullWidth(t *testing.T) {
+	term := &fakeTerminal{w: 20, h: 10}
+	comp := NewCompositor(term)
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "base", Kind: LayerBase, Rect: Rect{X: 0, Y: 9, W: 20, H: 1},
+				Content: []string{"12345678901234567890"}}, // exactly width (20) chars
+		},
+		Cursor: &CursorPos{Row: 9, Col: 20}, // one past the last visible cell
+	}
+	comp.Render(scene)
+
+	emu := newScreenEmulator(10, 20)
+	for _, w := range term.writes {
+		emu.Process(w)
+	}
+	if emu.col != 19 {
+		t.Errorf("hardware cursor col = %d, want 19 (clamped to last column, not wrapping)", emu.col)
+	}
+}
+
 // TestScene_AgentFrame_NoANSI verifies the AgentView strips ANSI and reports
 // the visible viewport + structured layers for AI tooling.
 func TestScene_AgentFrame_NoANSI(t *testing.T) {

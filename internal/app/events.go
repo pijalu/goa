@@ -254,8 +254,8 @@ func (a *App) refreshFooterFromConfig() {
 	data := tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		CompanionModel:         companionModelDisplay(subs),
 		Provider:               subs.cfg.ActiveProvider,
 		ThinkingLevel:          mainThinkingLevel(subs),
@@ -527,7 +527,7 @@ func (a *App) handleModeChangeEvent(e *event.ModeChange) {
 	subs := a.subs
 	profileName := string(e.NewMode.Major)
 	if profileName == "" {
-		profileName = subs.cfg.ActiveMajor()
+		profileName = string(subs.effectiveModeState().Major)
 	}
 	subs.statusMsg.Clear()
 	subs.footer.SetData(tui.FooterData{
@@ -585,7 +585,7 @@ func (a *App) handleWorkflowStatusEvent(e *event.WorkflowStatus) {
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Mode:                   subs.footer.Data().Mode,
-		Profile:                subs.cfg.ActiveMajor(),
+		Profile:                string(subs.effectiveModeState().Major),
 		Model:                  activeModelDisplay(subs),
 		MinorMode:              subs.footer.Data().MinorMode,
 		WorkflowActive:         e.Step < e.TotalSteps,

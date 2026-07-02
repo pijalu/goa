@@ -100,3 +100,51 @@ func TestSmartSearchTool_ConcurrentCallsDoNotCorruptIndex(t *testing.T) {
 		}
 	}
 }
+
+// TestSmartSearchTool_ReturnsMatchingLines verifies that smartsearch surfaces
+// the matching source lines (like the normal search tool) so the agent can act
+// on results, not just file paths. The most-relevant candidate is grepped first.
+func TestSmartSearchTool_ReturnsMatchingLines(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "auth.go"),
+		[]byte("package main\n\nfunc authenticateUser(token string) error {\n\treturn nil\n}\n"), 0644); err != nil {
+		t.Fatalf("write auth.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.go"),
+		[]byte("package main\n\nfunc unrelated() {}\n"), 0644); err != nil {
+		t.Fatalf("write other.go: %v", err)
+	}
+
+	tool := &SmartSearchTool{ProjectDir: dir}
+	res, err := tool.Execute(`{"query": "authenticate user"}`)
+	if err != nil {
+		t.Fatalf("smartsearch: %v", err)
+	}
+	if !strings.Contains(res, "auth.go") {
+		t.Fatalf("expected auth.go in results: %s", res)
+	}
+	// The matching line must be surfaced with its line number and content.
+	if !strings.Contains(res, "authenticateUser") {
+		t.Errorf("expected matching line content in results: %s", res)
+	}
+	// The "3:" prefix indicates line-numbered output, mirroring the search tool.
+	if !strings.Contains(res, "3: ") {
+		t.Errorf("expected a line-numbered match (\"3: ...\"), got: %s", res)
+	}
+}
+
+// TestExtractQueryTerms_DedupesAndFilters confirms query term extraction uses
+// the code tokenizer and deduplicates.
+func TestExtractQueryTerms_DedupesAndFilters(t *testing.T) {
+	terms := extractQueryTerms("User user authentication")
+	seen := map[string]bool{}
+	for _, term := range terms {
+		if seen[term] {
+			t.Errorf("duplicate term: %q", term)
+		}
+		seen[term] = true
+	}
+	if !seen["user"] || !seen["authentication"] {
+		t.Errorf("expected user+authentication, got %v", terms)
+	}
+}

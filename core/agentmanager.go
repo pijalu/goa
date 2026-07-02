@@ -780,16 +780,15 @@ func (am *AgentManager) OnEvent(event agentic.OutputEvent) {
 }
 
 // maybeRefreshContextWindow triggers a one-time refresh of the local model's
-// loaded context window on the first state-change event after a session starts.
-// Local servers only expose the real loaded length once the first request is
-// in flight, so we defer detection until we see the model begin generating.
+// loaded context window on the first assistant content delta of a session.
+// Local servers (LM Studio, llama.cpp) only report the real loaded length once
+// the model is actually producing output: querying earlier — e.g. on the
+// state-change that merely marks the start of generation — races with model
+// loading and yields the configured max_context_length instead of the real
+// loaded_context_length. The first response delta is the strongest signal that
+// the model is fully loaded, so we defer detection until we see it.
 func (am *AgentManager) maybeRefreshContextWindow(event agentic.OutputEvent) {
-	if event.Type != agentic.EventStateChange {
-		return
-	}
-	switch event.State {
-	case agentic.StateThinking, agentic.StateContent, agentic.StateToolCall:
-	default:
+	if event.Type != agentic.EventContent || event.Role != agentic.Assistant || event.Text == "" {
 		return
 	}
 
@@ -834,6 +833,10 @@ func (am *AgentManager) recordContentEvent(event agentic.OutputEvent) {
 	case agentic.Assistant:
 		if event.State == agentic.StateThinking {
 			am.turnRecorder.RecordThinkingDelta(event.Text)
+			if am.loopDetector != nil {
+				lvl := am.loopDetector.RecordThinkingDelta(event.Text)
+				am.handleThinkingLoopWarning(lvl)
+			}
 		} else {
 			am.turnRecorder.RecordAssistantDelta(event.Text)
 		}
@@ -946,6 +949,9 @@ func (am *AgentManager) finalizeTurn() {
 	am.mu.Unlock()
 
 	am.turnRecorder.FinalizeTurn(agent)
+	if am.loopDetector != nil {
+		am.loopDetector.ResetThinking()
+	}
 
 	pending := am.steering.Flush()
 	mainOutput := am.companionBuf.String()
@@ -1356,6 +1362,26 @@ func (am *AgentManager) emitThinkingLevel(level string) {
 	select {
 	case am.eventsOut.Footer <- event.FooterEvent{ThinkingLevel: &event.ThinkingLevel{Level: level}}:
 	default:
+	}
+}
+
+// handleThinkingLoopWarning acts on a thinking/reasoning loop detected by
+// RecordThinkingDelta. Unlike tool loops, repeated reasoning is only flashed
+// at the warning level (models sometimes restate a plan) but still interrupts
+// at the interrupt level — an assistant stuck emitting the identical paragraph
+// will otherwise burn the whole context window.
+func (am *AgentManager) handleThinkingLoopWarning(lvl LoopWarningLevel) {
+	if lvl <= LoopOK {
+		return
+	}
+	switch lvl {
+	case LoopWarning:
+		am.logEventF("loop detector: warning (thinking repeat)")
+		am.emitFlash("[goa-system: warning] Reasoning is repeating — the model may be stuck in a thinking loop.")
+	case LoopCritical, LoopInterrupt:
+		am.logEventF("loop detector: interrupt — thinking loop detected, cancelling turn")
+		am.emitFlash("[goa-system: interrupt] Thinking loop detected — cancelling turn.")
+		am.Interrupt()
 	}
 }
 

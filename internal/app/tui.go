@@ -167,10 +167,11 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.F
 func (a *App) initialFooterData() tui.FooterData {
 	subs := a.subs
 	cfg := subs.cfg
+	mode := subs.effectiveModeState()
 	return tui.FooterData{
 		Workdir:                subs.projectDir,
-		Profile:                cfg.ActiveMajor(),
-		Mode:                   string(cfg.DefaultModeState().Autonomy),
+		Profile:                string(mode.Major),
+		Mode:                   string(mode.Autonomy),
 		Model:                  activeModelDisplay(subs),
 		Provider:               cfg.ActiveProvider,
 		CompanionModel:         companionModelDisplay(subs),

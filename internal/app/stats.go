@@ -360,8 +360,8 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Stats:                  formatFooterStats(stats),
 		Activity:               "",
 		MainActivity:           "",
@@ -449,8 +449,8 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Activity:               activity,
 		MainActivity:           mainActivity,
 		CompanionModel:         companionModelDisplay(subs),
@@ -534,8 +534,8 @@ func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {
 		subs.footer.SetData(tui.FooterData{
 			Workdir:                subs.projectDir,
 			Model:                  activeModelDisplay(subs),
-			Profile:                subs.cfg.ActiveMajor(),
-			Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+			Profile:                string(subs.effectiveModeState().Major),
+			Mode:                   string(subs.effectiveModeState().Autonomy),
 			Activity:               "wait",
 			MainActivity:           label,
 			CompanionModel:         companionModelDisplay(subs),
@@ -585,8 +585,8 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Stats:                  formatFooterStats(stats),
 		CompanionModel:         companionModelDisplay(subs),
 		Provider:               subs.cfg.ActiveProvider,

@@ -198,8 +198,8 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),
 		Provider:               providerCfg.ID,
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})

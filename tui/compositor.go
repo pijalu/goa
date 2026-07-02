@@ -377,7 +377,7 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	}
 
 	if firstChanged == -1 {
-		c.positionHardwareCursor(cursor, len(canvas))
+		c.positionHardwareCursor(cursor, len(canvas), fl.width)
 		c.previousViewportTop = fl.prevViewportTop
 		c.prevH = fl.height
 		return
@@ -399,7 +399,7 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	c.viewportTop = fl.viewportTop
 	c.maxLinesRendered = max(c.maxLinesRendered, len(canvas))
 	c.previousViewportTop = max(fl.prevViewportTop, finalCursorRow-fl.height+1)
-	c.positionHardwareCursor(cursor, len(canvas))
+	c.positionHardwareCursor(cursor, len(canvas), fl.width)
 	c.prevLines = copySlice(canvas)
 	c.prevW = fl.width
 	c.prevH = fl.height
@@ -434,7 +434,7 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 	bufferLength := max(height, len(canvas))
 	c.previousViewportTop = max(0, bufferLength-height)
 	c.viewportTop = c.previousViewportTop
-	c.positionHardwareCursor(cursor, len(canvas))
+	c.positionHardwareCursor(cursor, len(canvas), width)
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
 	c.prevH = height
@@ -509,6 +509,38 @@ func (c *Compositor) renderDeletedLines(canvas []string, cursor *CursorPos, prev
 // namesake invariant of TestChatLargeAppendScrollsWithoutErasingScrollback):
 // the scroll newlines push the previously-visible rows into scrollback, and no
 // full redraw / \x1b[2J / \x1b[3J is emitted.
+// emitViewportScroll advances the terminal viewport from prevVtop to newVtop,
+// pushing the previous on-screen rows into scrollback. For a large append
+// (more new lines than fit on screen), the newly-added lines above the new
+// viewport were never on screen; bare newlines would push BLANK rows into
+// scrollback and the user could not scroll back to them. So each such gap line
+// is written as real content (clear bottom row, write, newline to scroll it
+// into scrollback). The gap starts at firstChanged so content that shifted
+// into indices previously covered by stale on-screen rows is preserved.
+func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, prevVtop, newVtop, height int) {
+	scroll := newVtop - prevVtop
+	var buf strings.Builder
+	buf.WriteString("\x1b[?2026h")
+	buf.WriteString(fmt.Sprintf("\x1b[%d;1H", height))
+	if scroll > height && height > 0 {
+		buf.WriteString(strings.Repeat("\n", height))
+		gapStart := max(0, firstChanged)
+		for i := gapStart; i < newVtop; i++ {
+			line := canvas[i]
+			if vw := visibleWidth(line); vw > width {
+				line = truncateToWidth(line, width, "")
+			}
+			buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", height))
+			buf.WriteString(line)
+			buf.WriteString("\n")
+		}
+	} else {
+		buf.WriteString(strings.Repeat("\n", scroll))
+	}
+	buf.WriteString("\x1b[?2026l")
+	c.terminal.Write([]byte(buf.String()))
+}
+
 func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChanged, width int,
 	prevViewportTop, viewportTop *int, height int) int {
 
@@ -519,13 +551,7 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 		desiredViewportTop = 0
 	}
 	if desiredViewportTop > *prevViewportTop {
-		scroll := desiredViewportTop - *prevViewportTop
-		var scrollBuf strings.Builder
-		scrollBuf.WriteString("\x1b[?2026h")
-		scrollBuf.WriteString(fmt.Sprintf("\x1b[%d;1H", height))
-		scrollBuf.WriteString(strings.Repeat("\n", scroll))
-		scrollBuf.WriteString("\x1b[?2026l")
-		c.terminal.Write([]byte(scrollBuf.String()))
+		c.emitViewportScroll(canvas, firstChanged, width, *prevViewportTop, desiredViewportTop, height)
 		*prevViewportTop = desiredViewportTop
 		*viewportTop = desiredViewportTop
 	}
@@ -581,13 +607,20 @@ func clampRow(row, height int) int {
 // positionHardwareCursor moves the terminal cursor to the logical cursor
 // position (for IME) using ABSOLUTE CUP, so it is immune to the same auto-wrap
 // drift that relative moves suffer.
-func (c *Compositor) positionHardwareCursor(cp *CursorPos, totalLines int) {
+func (c *Compositor) positionHardwareCursor(cp *CursorPos, totalLines, width int) {
 	if cp == nil || totalLines <= 0 {
 		c.terminal.HideCursor()
 		return
 	}
 	targetRow := max(0, min(cp.Row, totalLines-1))
 	targetCol := max(0, cp.Col)
+	// A cursor at column == width (i.e. one past the last visible cell, which
+	// happens when the input exactly fills a wrapped line) forces the terminal
+	// to wrap the hardware cursor onto the next physical line. Clamp it to the
+	// last column so the cursor stays on the current line instead of jumping.
+	if width > 0 && targetCol >= width {
+		targetCol = width - 1
+	}
 	screenRow := clampRow(targetRow-c.viewportTop+1, c.prevH)
 	c.terminal.Write([]byte(fmt.Sprintf("\x1b[%d;%dH", screenRow, targetCol+1)))
 	c.hardwareCursorRow = targetRow

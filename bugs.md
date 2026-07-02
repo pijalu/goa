@@ -90,80 +90,100 @@ If new items are added, restart the process.
 - `go test -count=1 -race -cover ./...`
 - New tests: `TestResolveActiveModel_NoEagerLocalContextDetection`, `TestAgentManager_RefreshContextWindow_OnFirstStateChange`, `TestSetContextWindow_UpdatesEffectiveMaxTokens`.
 
-# TODO
+### Change of profile is not saved (fixed)
+**Problem:** Changing the mode (e.g. coder → coding-posture) was not reflected after a restart — the footer reverted to the config default (`coder`) even though `state.json` correctly held the persisted mode.
 
-## Change of profile is not saved
-Changing the mode to coder to coding-posture is not saved: 
-1/ Change the mode to coding-posture.
-2/ Exit the application.
-3/ Restart the application: Back to coder mode.
+**Root cause:** The startup path (`initAgentBundle`) correctly restored the mode from `.goa/state.json` into the live session state, but *every UI surface* (footer, prompt, status, submit/send handlers, workflow handler) read the static config default via `cfg.ActiveMajor()` / `cfg.DefaultModeState()` instead of the live `agentMgr.CurrentMode()`. So the restored mode was invisible. A secondary gap: the bash tool's `Jail` flag is initialised from the config default during tool registration (which runs before `state.json` is loaded), so a persisted SOLO session did not re-enable the jail on restart.
 
-The mode change must be saved
+**Fix plan:**
+1. Add `subsystems.effectiveModeState()` returning the live session mode (falling back to config when no session is active).
+2. Replace every `cfg.ActiveMajor()` / `cfg.DefaultModeState()` read in footer/prompt/status builders (`tui.go`, `stats.go`, `submithandler.go`, `prompt.go`, `events.go`) with the live mode.
+3. Re-apply the bash jail from the restored autonomy after the mode registry is wired in `InitSubsystems`.
 
-## Local mode size
-The local model max tokens size should be based on loaded_context_length on LMstudio, on loaded model (state	"loaded") - this means the information can only be used after the model is loaded/after end of the first turn.
-Make sure this is correctly done as the tool currently show max_context_length, which can only be the default (and unlikely) value on local providers.
+**Validation:**
+- `go vet ./...`
+- `staticcheck ./...` (only pre-existing warnings)
+- `gocognit -over 15 .` / `gocyclo -over 12 .` (no new violations in edited files)
+- `go test -count=1 -race -cover ./internal/app/ ./core/commands/`
+- New tests: `TestEffectiveModeState_PrefersLiveSessionMode`, `TestEffectiveModeState_FallsBackToConfig`, `TestInitAgentBundle_RestoresModeFromStateJSON`, `TestInitAgentBundle_FallsBackToConfigWhenNoState`.
+- End-to-end PTY restart against the real project (state.json=coding-posture): footer now shows `coding-posture │ SOLO` (was `coder`).
 
-Validate if llama.cpp server is using the same paradigm as LMstudio provider and in all case, follow the same logic for all local: Only report context after receiving the first delta from the first response.
+### Local mode size (fixed)
+**Problem:** The local model's effective max-tokens size was based on `max_context_length` (the unlikely configured max, e.g. 262144) instead of the real `loaded_context_length` (e.g. 32768). The detection raced with model loading: it was triggered on the state-change that merely marks the *start* of generation, before the model had finished loading, so LM Studio still reported `max_context_length`.
 
-## Cursor input line position
-The cursor input line position is often incorrect - especially at end of line where it will jump to the next line.
+**Root cause:** `AgentManager.maybeRefreshContextWindow` fired on `EventStateChange` (start of generation) rather than on actual model output, and `loaded_context_length` is only reliable once the model is producing tokens.
 
-## First long input
-After start and typing a long input creating a scroll will not be correctly rendered - there will not be any scroll possible outside of the terminal window.
+**Fix plan:**
+1. Trigger the one-shot local context refresh on the **first assistant content delta** of a session (`EventContent`, `Role == Assistant`, non-empty text) — the strongest signal that the model is fully loaded and generating. Bare state-change events no longer trigger it.
+2. Confirm LM Studio (`loaded_context_length`), llama.cpp `/props` (`default_generation_settings.n_ctx`), and llama.cpp `/v1/models` (`meta.n_ctx`) all report the *loaded* context — they do, so the same "report only after the first delta" logic applies uniformly to all local providers.
 
-## Loop catching in thinking
-The UI show important loop in thinking but there were no clear warning on thinking loops where it was expected to trigger the loop protection:
-```
-▾ thinking...
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime (isMobileDevice,
-  ▏setMobileScreenThreshold) and some extra localStorage handling. Let me now examine the component files in pbl/presto2 to compare with
-  ▏what exists in gf/presto2.
-  ▏
-  ▏I can see the main.ts files are very
-```
+**Validation:**
+- `go build ./...`, `go test -count=1 -race ./core/ ./provider/`.
+- Updated test `TestAgentManager_RefreshContextWindow_OnFirstAssistantDelta`: asserts a state-change does NOT fire the refresh, the first assistant delta DOES, and it is one-shot.
 
-Full log: /Users/muaddib/dev/lnb/.goa/exports/goa-export-20260702-073119.zip (9 entries, 104399 bytes)
+### Cursor input line position (fixed)
+**Problem:** The cursor input line position was often incorrect — especially at end of line, where it jumped to the next physical line.
 
-## Scroll
-Scroll content is not always correctly populated, especially during streaming, possibly when there are issues with the server or network. The scrolling back should be smooth and complete at all time.
+**Root cause:** goa renders the editor full-width and drives the hardware cursor via a zero-width marker. When the cursor sat at the end of a completely full wrapped line, its column equalled the terminal width, so the CUP sequence positioned it one column past the last cell and the terminal wrapped it onto the next line. (pi, by contrast, uses a *visible* highlighted cursor with horizontal padding, so its cursor never reaches the edge.)
+
+**Fix plan:**
+1. Add a `width` argument to `Compositor.positionHardwareCursor`.
+2. Clamp the cursor column to `width-1` when it would equal `width`, so the hardware cursor stays on the current line (sitting on the last glyph) instead of wrapping.
+
+**Validation:**
+- `go vet ./tui/`, `staticcheck ./tui/`, `gocognit`/`gocyclo` (no new violations).
+- `go test -count=1 -race ./tui/`.
+- New test `TestCompositor_CursorClampedAtFullWidth` (cursor col==width is clamped to width-1).
+- Reference cross-checked against `../pi`'s editor (visible-cursor + padding design).
+
+### First long input / Scroll (fixed)
+**Problem:** When a single large append exceeded the viewport (e.g. a long first input or a big tool/output block), the lines that scrolled past the top were never written to the terminal, so they were missing from scrollback and the user could not scroll back to them. (opencode avoids this entirely by delegating rendering to a library `CliRenderer`.)
+
+**Root cause:** `Compositor.writeDifferential` advanced the viewport by emitting bare `\n` newlines, which push only the previously-visible rows into scrollback. For a large append, the newly-added lines above the new viewport were never on screen, so the bare newlines pushed BLANK rows into scrollback — the gap content was lost.
+
+**Fix plan:**
+1. Extract the scroll emission into `Compositor.emitViewportScroll` (keeps `writeDifferential` within the complexity budget).
+2. When the viewport advance exceeds one screen (`scroll > height`), after scrolling the previous viewport into scrollback, write every newly-added line above the new viewport (`canvas[firstChanged:newVtop]`) as real content (clear bottom row, write, newline to scroll it into scrollback) so the full transcript is recoverable. Starting at `firstChanged` preserves content that shifted into indices previously covered by stale on-screen rows.
+3. The existing "large append must not erase scrollback" invariant (`TestChatLargeAppendScrollsWithoutErasingScrollback`) is preserved — no `\x1b[2J`/`\x1b[3J` is emitted on this path.
+
+**Validation:**
+- `go vet ./tui/`, `staticcheck ./tui/`, `gocognit`/`gocyclo` (no new violations after extracting the helper).
+- `go test -count=1 -race ./tui/` (all existing scroll/scrollback tests pass).
+- New regression test `TestChatLargeAppend_PopulatesScrollbackWithAllLines`: an early line that scrolled off must be present in emulated scrollback.
+- Real-terminal (PTY) check: a 40-paragraph long input renders all 40 paragraphs into the terminal stream (visible + scrollback), where previously the middle content was absent.
+
+### Loop catching in thinking (fixed)
+**Problem:** The UI showed an obvious thinking loop (the assistant re-emitted the same reasoning paragraph 11+ times in a single turn) but the loop protection never fired.
+
+**Root cause:** `LoopDetector` only tracked *tool-call* repeats (`RecordToolCall`). A thinking/reasoning loop invokes no tool, so it was invisible to the detector and would burn the entire context window.
+
+**Fix plan:**
+1. Add thinking-loop tracking to `LoopDetector`: accumulate streamed reasoning, hash each complete newline-terminated line, and count repetitions of significant lines (len ≥ `minThinkLineLen`=40, so short bullets/separators do not false-positive).
+2. Add `RecordThinkingDelta(text)` returning `LoopWarning`/`LoopInterrupt` based on the highest line repeat count (defaults warn 4 / interrupt 6, configurable via `LoopDetectorConfig`).
+3. Add `ResetThinking()` and call it from `AgentManager.finalizeTurn()` so each turn is evaluated independently.
+4. Wire `RecordThinkingDelta` into `recordContentEvent` for thinking deltas, routed through a new `handleThinkingLoopWarning` that flashes a warning but interrupts (cancels the turn) at the interrupt level.
+
+**Validation:**
+- `go vet ./core/...`, `staticcheck ./core/...` (no new warnings), `gocognit`/`gocyclo` (no new violations).
+- `go test -count=1 -race ./core/`.
+- New tests: `TestLoopDetector_ThinkingLoop_DetectsRepeatedParagraph`, `TestLoopDetector_ThinkingLoop_IgnoresShortLines`, `TestLoopDetector_ThinkingLoop_StreamedAcrossDeltas`, `TestLoopDetector_ResetThinking_ClearsAccumulation`, `TestAgentManager_ThinkingLoopInterrupts`.
+
+### SmartSearch should return matching lines of code (fixed)
+**Problem:** SmartSearch returned ranked file candidates but not the matching lines of code, so the agent could not act on the results the way it can with normal `/search`.
+
+**Root cause:** `formatResults` only printed `N. [score] path (lines)` — no source lines were ever read or shown.
+
+**Fix plan:**
+1. Tokenise the natural-language query with the same `bm25.CodeTokenizer` the index uses (`extractQueryTerms`), so the grep stage looks for the same units BM25 ranked on.
+2. For each ranked candidate (highest score first) build a case-insensitive alternation regex of the query terms and grep the file (`buildMatchingLines` / `grepFile`), bounded by `linesPerCandidate` (3) and an overall `smartMatchBudget` (30).
+3. Render the matches as `    <line>: <content>` under each result, mirroring the search tool's `formatFileContentLines`.
+4. Update the tool description to advertise matching lines.
+
+**Validation:**
+- `go vet ./tools/`, `staticcheck ./tools/` (no new warnings), `gocognit`/`gocyclo` (no new violations).
+- `go test -count=1 -race ./tools/`.
+- New tests: `TestSmartSearchTool_ReturnsMatchingLines`, `TestExtractQueryTerms_DedupesAndFilters`.
+- Real output verified by running the tool against this repo (query "loop detector thinking repeat"): ranked files now show numbered matching lines.
+
+### Scroll during streaming (fixed — see "First long input / Scroll" above)
+The core symptom (scroll content not correctly populated) shared the same root cause as the large-append gap: newly-added lines above the viewport were never written, so scrollback was incomplete. The `emitViewportScroll` gap-content fix addresses it. Incremental line-by-line streaming already used the small-scroll differential path (no gap, no scrollback erase), and the large-append path no longer drops content. The pre-existing `TestChatLargeAppendScrollsWithoutErasingScrollback` invariant (no `\x1b[3J` scrollback wipe on appends) is preserved, so retries/re-renders during streaming do not erase history.

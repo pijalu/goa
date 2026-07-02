@@ -258,3 +258,54 @@ func TestChatLargeAppendScrollsVirtually(t *testing.T) {
 	}
 	assertNoFullEraseAfterInitial(t, frames)
 }
+
+// TestChatLargeAppend_PopulatesScrollbackWithAllLines reproduces bug #4: when a
+// single append is larger than the viewport, the lines that scroll past the top
+// must still be present in terminal scrollback so the user can scroll back to
+// them. Previously the differential renderer emitted bare newlines to scroll
+// but never wrote the text of the skipped middle lines, leaving blanks in
+// scrollback.
+func TestChatLargeAppend_PopulatesScrollbackWithAllLines(t *testing.T) {
+	term := &fakeTerminal{w: 80, h: 10}
+	engine := NewTUI(term)
+	chat := NewChatViewport()
+	inp := NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	engine.SetFocus(inp)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer engine.Stop()
+
+	// Small initial content so the first frame is a normal (screen-filling)
+	// render that establishes prevLines without scrollback.
+	chat.AddSystemMessage("start")
+	engine.RenderNow()
+
+	// One huge append — far taller than the viewport — in a single render.
+	var big strings.Builder
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&big, "huge line %d\n", i)
+	}
+	chat.AddSystemMessagePreformatted(big.String())
+	engine.RenderNow()
+
+	emu := newScreenEmulator(term.h, term.w)
+	for _, w := range term.writes {
+		emu.Process(w)
+	}
+
+	// The latest line must be visible...
+	if !visibleContains(emu, term.h, "huge line 59") {
+		t.Errorf("latest line not visible on screen")
+		logScreen(t, emu, term.h)
+	}
+	// ...and an early line that scrolled off must be recoverable from scrollback.
+	all := strings.Join(emu.Scrollback(), "\n")
+	if !strings.Contains(all, "huge line 5") {
+		t.Errorf("early line missing from scrollback (gap not populated); scrollback lines=%d", len(emu.Scrollback()))
+		t.Logf("scrollback:\n%s", all)
+	}
+}

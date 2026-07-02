@@ -250,8 +250,8 @@ func (a *App) showSendingStatus(modelName string) {
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  modelStr,
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		Activity:               "send",
 		MainActivity:           "Sending request...",
 		CompanionModel:         companionModelDisplay(subs),
@@ -272,8 +272,8 @@ func (a *App) handleSendError(err error) {
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),
-		Profile:                subs.cfg.ActiveMajor(),
-		Mode:                   string(subs.cfg.DefaultModeState().Autonomy),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
 		CompanionModel:         companionModelDisplay(subs),
 		Provider:               subs.cfg.ActiveProvider,
 		ThinkingLevel:          mainThinkingLevel(subs),
