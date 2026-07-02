@@ -57,6 +57,13 @@ type WorktreeResolver interface {
 	ProjectDir() string
 }
 
+// LoopHints supplies tool-loop-controller metadata so the controller does not
+// need to special-case the "terminal" name: raw arguments heal under
+// "command", and the TUI shows "Running: <command>" while a call is in flight.
+func (t *TerminalTool) LoopHints() agentic.ToolLoopHints {
+	return agentic.ToolLoopHints{HealArg: "command", Status: commandRunStatus}
+}
+
 // Schema returns the tool schema for terminal.
 func (t *TerminalTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{

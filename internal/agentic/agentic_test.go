@@ -386,3 +386,64 @@ func repeatString(s string, n int) string {
 	}
 	return b.String()
 }
+
+// TestToolRegistry_Schemas_Cached verifies that Schemas() is computed once and
+// cached (returns the same slice on subsequent calls). This is the contract the
+// agent relies on: it calls Schemas() every stream round and retry.
+func TestToolRegistry_Schemas_Cached(t *testing.T) {
+	registry := NewToolRegistry([]Tool{
+		mockTool{name: "alpha", schema: ToolSchema{Name: "alpha"}},
+		mockTool{name: "beta", schema: ToolSchema{Name: "beta"}},
+	})
+
+	first := registry.Schemas()
+	second := registry.Schemas()
+	if len(first) != 2 {
+		t.Fatalf("expected 2 schemas, got %d", len(first))
+	}
+	// Same backing array => cached, not recomputed/reallocated each call.
+	if cap(first) != cap(second) || &first[0] != &second[0] {
+		t.Error("Schemas() should return the cached slice on repeated calls")
+	}
+}
+
+// loopAnnotatedTool is a test Tool that supplies loop-controller metadata.
+type loopAnnotatedTool struct {
+	mockTool
+	hints ToolLoopHints
+}
+
+func (l loopAnnotatedTool) LoopHints() ToolLoopHints { return l.hints }
+
+// TestToolRegistry_LoopHints_CollectsFromLoopAnnotated verifies the registry
+// discovers LoopAnnotated tools and caches the result (wiring for the
+// name-agnostic ToolLoopController).
+func TestToolRegistry_LoopHints_CollectsFromLoopAnnotated(t *testing.T) {
+	status := func(string) string { return "custom-status" }
+	registry := NewToolRegistry([]Tool{
+		mockTool{name: "plain", schema: ToolSchema{Name: "plain"}},
+		loopAnnotatedTool{
+			mockTool: mockTool{name: "special", schema: ToolSchema{Name: "special"}},
+			hints:    ToolLoopHints{OneShot: true, HealArg: "code", Status: status},
+		},
+	})
+
+	hints := registry.LoopHints()
+	if len(hints) != 1 {
+		t.Fatalf("expected 1 annotated tool, got %d", len(hints))
+	}
+	got, ok := hints["special"]
+	if !ok {
+		t.Fatal("missing hints for annotated tool 'special'")
+	}
+	if !got.OneShot || got.HealArg != "code" || got.Status == nil {
+		t.Errorf("unexpected hints: %+v", got)
+	}
+	if _, present := hints["plain"]; present {
+		t.Error("non-annotated tool should not appear in hints")
+	}
+	// Cached: second call returns the same map instance.
+	if registry.LoopHints() == nil || len(registry.LoopHints()) != 1 {
+		t.Error("LoopHints should be cached and stable")
+	}
+}

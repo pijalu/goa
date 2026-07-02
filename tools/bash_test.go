@@ -655,3 +655,28 @@ func TestBashTool_CompressionResolver_OutputCompressorsDisabled(t *testing.T) {
 		t.Errorf("compression should be disabled when OutputCompressors.Enabled=false, got: %q", result)
 	}
 }
+
+// TestBashTool_LoopHints verifies bash supplies the loop-controller metadata
+// the controller used to hardcode by name (heal arg "command" and a
+// "Running: <command>" status line).
+func TestBashTool_LoopHints(t *testing.T) {
+	tt := &BashTool{}
+	h := tt.LoopHints()
+	if h.HealArg != "command" {
+		t.Errorf("HealArg = %q, want \"command\"", h.HealArg)
+	}
+	if h.Status == nil {
+		t.Fatal("Status func must be set")
+	}
+	if got := h.Status(`{"command":"ls -la"}`); got != "Running: ls -la" {
+		t.Errorf("status = %q, want \"Running: ls -la\"", got)
+	}
+	if got := h.Status(`{}`); got != "Running command..." {
+		t.Errorf("empty-command status = %q, want \"Running command...\"", got)
+	}
+	// Long commands are truncated.
+	long := strings.Repeat("x", 100)
+	if got := h.Status(`{"command":"` + long + `"}`); !strings.HasSuffix(got, "...") || len(got) > len("Running: ")+60 {
+		t.Errorf("long-command status not truncated: %q", got)
+	}
+}

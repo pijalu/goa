@@ -58,6 +58,15 @@ func TestCompressOutput_GitDiff_ShowsChangedLines(t *testing.T) {
 	if !strings.Contains(out, "-line3") {
 		t.Errorf("Compressed diff should contain removed lines. Got: %q", out)
 	}
+	// Regression: the file path and hunk header must survive compression.
+	// The old copy(result, summary) prepend silently dropped the first file's
+	// path (--- file.go) and the first @@ hunk header.
+	if !strings.Contains(out, "file.go") {
+		t.Errorf("Compressed diff must retain the file path. Got: %q", out)
+	}
+	if !strings.Contains(out, "@@") {
+		t.Errorf("Compressed diff must retain the hunk header. Got: %q", out)
+	}
 }
 
 func TestCompressOutput_GitStatus_CompactFormat(t *testing.T) {

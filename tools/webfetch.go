@@ -17,6 +17,7 @@ import (
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/netutil"
+	"github.com/pijalu/goa/internal/toolaccess"
 	"github.com/pijalu/goa/internal/turndown"
 )
 
@@ -136,8 +137,18 @@ type webfetchParams struct {
 	Prompt    string `json:"prompt"`
 }
 
-// Execute runs the webfetch tool.
+// Execute runs the webfetch tool. It delegates to ExecuteContext with a
+// background context so callers that invoke the tool directly (outside the
+// agent, which prefers ContextTool) still work.
 func (t *WebFetchTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+// ExecuteContext runs the webfetch tool bound to the caller's context. The
+// agent prefers ContextTool and forwards its turn context, so a user Stop() /
+// turn cancellation propagates into the HTTP fetch and summarizer calls
+// instead of being masked by an internal context.Background().
+func (t *WebFetchTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	p, err := t.parseParams(input)
 	if err != nil {
 		return "", err
@@ -149,9 +160,9 @@ func (t *WebFetchTool) Execute(input string) (string, error) {
 
 	switch p.Action {
 	case "", "fetch":
-		return t.fetch(p)
+		return t.fetch(ctx, p)
 	case "summarize":
-		return t.summarize(p)
+		return t.summarize(ctx, p)
 	default:
 		return "", &internal.ToolError{
 			Tool: "webfetch", Type: "unknown_action",
@@ -231,8 +242,11 @@ func (t *WebFetchTool) validateURL(raw string) error {
 	return nil
 }
 
-func (t *WebFetchTool) fetch(p webfetchParams) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), t.timeout())
+func (t *WebFetchTool) fetch(ctx context.Context, p webfetchParams) (string, error) {
+	// Derive the fetch deadline from the caller's context so the agent's turn
+	// cancellation (Stop) interrupts an in-flight request; the previous
+	// context.Background() defeated cancellation entirely.
+	ctx, cancel := context.WithTimeout(ctx, t.timeout())
 	defer cancel()
 
 	if entry, ok, err := t.Cache.Get(ctx, p.URL); err == nil && ok {
@@ -284,7 +298,7 @@ func (t *WebFetchTool) fetch(p webfetchParams) (string, error) {
 	return t.renderEntry(p.URL, []byte(markdown), p, meta), nil
 }
 
-func (t *WebFetchTool) summarize(p webfetchParams) (string, error) {
+func (t *WebFetchTool) summarize(ctx context.Context, p webfetchParams) (string, error) {
 	if !t.summaryEnabled() {
 		return "", &internal.ToolError{
 			Tool: "webfetch", Type: "summarize_disabled",
@@ -293,7 +307,6 @@ func (t *WebFetchTool) summarize(p webfetchParams) (string, error) {
 		}
 	}
 
-	ctx := context.Background()
 	entry, ok, err := t.Cache.Get(ctx, p.URL)
 	if err != nil {
 		return "", t.cacheError(err)
@@ -391,6 +404,12 @@ func (t *WebFetchTool) Examples() []string {
 func (t *WebFetchTool) Access(input string) ToolAccess {
 	return ToolAccess{}
 }
+
+// Compile-time interface checks.
+var (
+	_ agentic.ContextTool = (*WebFetchTool)(nil)
+	_ toolaccess.Accessor = (*WebFetchTool)(nil)
+)
 
 // defaultCacheDir returns the default cache directory under the project.
 func defaultCacheDir(projectDir string) string {

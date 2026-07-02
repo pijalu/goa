@@ -53,6 +53,13 @@ const (
 	MaxBashTimeoutS = 5 * 60
 )
 
+// LoopHints supplies tool-loop-controller metadata so the controller does not
+// need to special-case the "bash" name: raw arguments heal under "command",
+// and the TUI shows "Running: <command>" while a call is in flight.
+func (t *BashTool) LoopHints() agentic.ToolLoopHints {
+	return agentic.ToolLoopHints{HealArg: "command", Status: commandRunStatus}
+}
+
 // Schema returns the tool schema for bash.
 func (t *BashTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{

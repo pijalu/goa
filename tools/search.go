@@ -440,7 +440,11 @@ func (t *SearchTool) formatResults(results []searchResult, pattern string, maxRe
 		filesShown++
 		fmt.Fprintf(&buf, "%s: %d matches\n", g.path, g.matches)
 		formatFileLineNums(&buf, g, showing)
-		totalShown += formatFileContentLines(&buf, g, maxResults, showing, &totalShown)
+		// formatFileContentLines advances totalShown via the pointer for the
+		// maxResults guard; do not also add its return value — that double-counts
+		// and inflates the "showing N" summary while prematurely truncating later
+		// files once the doubled counter reaches maxResults.
+		formatFileContentLines(&buf, g, maxResults, showing, &totalShown)
 	}
 
 	remaining := len(results) - countLinesShown(groups, showing)
@@ -525,8 +529,7 @@ func formatFileLineNums(buf *bytes.Buffer, g *fileGroup, showing int) {
 	}
 }
 
-func formatFileContentLines(buf *bytes.Buffer, g *fileGroup, maxResults, showing int, totalShown *int) int {
-	count := 0
+func formatFileContentLines(buf *bytes.Buffer, g *fileGroup, maxResults, showing int, totalShown *int) {
 	for i, r := range g.lines {
 		if *totalShown >= maxResults || (showing > 0 && i >= showing) {
 			break
@@ -537,9 +540,7 @@ func formatFileContentLines(buf *bytes.Buffer, g *fileGroup, maxResults, showing
 		}
 		fmt.Fprintf(buf, "  %d: %s\n", r.LineNum, content)
 		(*totalShown)++
-		count++
 	}
-	return count
 }
 
 func countLinesShown(groups []*fileGroup, showing int) int {

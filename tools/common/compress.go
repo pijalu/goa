@@ -74,9 +74,12 @@ func compressGitDiff(output string) (string, bool) {
 	if fileCount == 0 {
 		return output, false
 	}
-	summary := formatCompressHeader("git diff", result, fileCount, len(result))
-	copy(result, summary)
-	return strings.Join(result, "\n"), true
+	// Prepend the header. The previous implementation used copy(result, summary),
+	// which OVERWRITES the first entries of result (the first file's path header
+	// and first hunk line) instead of prepending. append(header, result...) keeps
+	// every scanned line, matching every other compressor in this file.
+	header := formatCompressHeader("git diff", result, fileCount, len(result))
+	return strings.Join(append(header, result...), "\n"), true
 }
 
 func scanGitDiff(output string) ([]string, int) {

@@ -34,19 +34,24 @@ type ToolCallDecision struct {
 }
 
 // ToolLoopController maintains per-response state for tool loops.
+//
+// Per-tool behavior (one-shot suppression, auto-heal argument key, status
+// text) is supplied via the hints map, populated by the caller from tools
+// implementing LoopAnnotated. The controller itself is name-agnostic.
 type ToolLoopController struct {
 	allowedToolNames    map[string]bool
 	autoHeal            bool
+	hints               map[string]ToolLoopHints
 	successfulKeys      map[string]bool
 	completedOneShot    map[string]bool
 	duplicateNoopCounts map[string]int
 	duplicateNoopLimit  int
 	forceFinalAnswer    bool
-	oneShotTools        map[string]bool
 }
 
 // NewToolLoopController creates a controller for a single assistant response.
-func NewToolLoopController(tools []ToolSchema, autoHeal bool) *ToolLoopController {
+// hints may be nil when no tool supplies LoopAnnotated metadata.
+func NewToolLoopController(tools []ToolSchema, hints map[string]ToolLoopHints, autoHeal bool) *ToolLoopController {
 	allowed := make(map[string]bool, len(tools))
 	for _, t := range tools {
 		allowed[t.Name] = true
@@ -54,14 +59,20 @@ func NewToolLoopController(tools []ToolSchema, autoHeal bool) *ToolLoopControlle
 	return &ToolLoopController{
 		allowedToolNames:    allowed,
 		autoHeal:            autoHeal,
+		hints:               hints,
 		successfulKeys:      make(map[string]bool),
 		completedOneShot:    make(map[string]bool),
 		duplicateNoopCounts: make(map[string]int),
 		duplicateNoopLimit:  2,
-		oneShotTools: map[string]bool{
-			"render_html": true,
-		},
 	}
+}
+
+// hintFor returns the LoopAnnotated metadata for a tool, or the zero value.
+func (c *ToolLoopController) hintFor(name string) ToolLoopHints {
+	if c.hints == nil {
+		return ToolLoopHints{}
+	}
+	return c.hints[name]
 }
 
 // PrepareCall classifies a parsed tool call before execution.
@@ -71,7 +82,7 @@ func (c *ToolLoopController) PrepareCall(name, arguments, callID string) ToolCal
 	action := ActionExecute
 	noop := ""
 
-	if c.oneShotTools[name] && c.completedOneShot[name] {
+	if hint := c.hintFor(name); hint.OneShot && c.completedOneShot[name] {
 		action = ActionRenderHTMLRepeat
 		noop = renderHTMLRepeatNudge
 	} else if len(c.allowedToolNames) > 0 && !c.allowedToolNames[name] {
@@ -89,7 +100,7 @@ func (c *ToolLoopController) PrepareCall(name, arguments, callID string) ToolCal
 		ToolCallID: callID,
 		Key:        key,
 		Healed:     healed,
-		StatusText: statusForTool(name, coerced),
+		StatusText: c.statusFor(name, coerced),
 		NoopResult: noop,
 	}
 }
@@ -98,7 +109,7 @@ func (c *ToolLoopController) PrepareCall(name, arguments, callID string) ToolCal
 func (c *ToolLoopController) RecordResult(decision ToolCallDecision, result string, isError bool) {
 	if !isError {
 		c.successfulKeys[decision.Key] = true
-		if c.oneShotTools[decision.ToolName] {
+		if c.hintFor(decision.ToolName).OneShot {
 			c.completedOneShot[decision.ToolName] = true
 		}
 	}
@@ -128,7 +139,8 @@ func (c *ToolLoopController) ActiveTools(tools []ToolSchema) []ToolSchema {
 	}
 	out := make([]ToolSchema, 0, len(tools))
 	for _, t := range tools {
-		if c.completedOneShot[t.Name] {
+		// Skip one-shot tools that already completed this response.
+		if c.hintFor(t.Name).OneShot && c.completedOneShot[t.Name] {
 			continue
 		}
 		out = append(out, t)
@@ -157,33 +169,34 @@ func (c *ToolLoopController) coerceArguments(toolName, raw string) (string, bool
 			return s, false
 		}
 		if c.autoHeal {
-			return wrapRawArgument(toolName, s), true
+			return c.wrapRawArgument(toolName, s), true
 		}
 		return trimmed, false
 	}
 
 	if c.autoHeal {
-		return wrapRawArgument(toolName, trimmed), true
+		return c.wrapRawArgument(toolName, trimmed), true
 	}
 	return trimmed, false
 }
 
-func wrapRawArgument(toolName, raw string) string {
-	key := canonicalHealArg(toolName)
+// healArgFor returns the argument key a tool wants when wrapping a raw
+// (non-JSON) argument during auto-heal. It comes from the tool's LoopAnnotated
+// hint, falling back to "query". This replaces the old per-name switch.
+func (c *ToolLoopController) healArgFor(toolName string) string {
+	if h := c.hintFor(toolName); h.HealArg != "" {
+		return h.HealArg
+	}
+	return "query"
+}
+
+// wrapRawArgument wraps a raw argument into a JSON object under the tool's
+// canonical heal key.
+func (c *ToolLoopController) wrapRawArgument(toolName, raw string) string {
+	key := c.healArgFor(toolName)
 	m := map[string]string{key: raw}
 	b, _ := json.Marshal(m)
 	return string(b)
-}
-
-func canonicalHealArg(toolName string) string {
-	switch toolName {
-	case "terminal", "bash":
-		return "command"
-	case "render_html":
-		return "code"
-	default:
-		return "query"
-	}
 }
 
 func canonicalToolCallKey(name, arguments string) string {
@@ -204,37 +217,17 @@ func canonicalToolCallKey(name, arguments string) string {
 	return fmt.Sprintf("%s:%s", name, string(b))
 }
 
-func statusForTool(toolName, arguments string) string {
-	switch toolName {
-	case "terminal", "bash":
-		cmd := extractArg(arguments, "command")
-		if len(cmd) > 60 {
-			cmd = cmd[:57] + "..."
+// statusFor returns the TUI status line for an in-flight call. It prefers a
+// tool-supplied status function from the LoopAnnotated hint, falling back to a
+// generic "Calling: <name>". This replaces the old per-name switch (which also
+// special-cased the non-existent "web_search" tool).
+func (c *ToolLoopController) statusFor(name, arguments string) string {
+	if h := c.hintFor(name); h.Status != nil {
+		if s := h.Status(arguments); s != "" {
+			return s
 		}
-		if cmd == "" {
-			return "Running command..."
-		}
-		return fmt.Sprintf("Running: %s", cmd)
-	case "web_search":
-		q := extractArg(arguments, "query")
-		if q == "" {
-			return "Searching..."
-		}
-		return fmt.Sprintf("Searching: %s", q)
-	default:
-		return fmt.Sprintf("Calling: %s", toolName)
 	}
-}
-
-func extractArg(argsJSON, key string) string {
-	var m map[string]any
-	if err := json.Unmarshal([]byte(argsJSON), &m); err != nil {
-		return ""
-	}
-	if s, ok := m[key].(string); ok {
-		return s
-	}
-	return ""
+	return fmt.Sprintf("Calling: %s", name)
 }
 
 func startsWithChar(s string, ch byte) bool {

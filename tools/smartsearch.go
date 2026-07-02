@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -446,13 +447,8 @@ func filterByGlob(results []bm25.SearchResult, glob string) []bm25.SearchResult 
 }
 
 // formatDuration formats a duration for human display.
-func formatDuration(d interface{}) string {
-	switch v := d.(type) {
-	case string:
-		return v
-	default:
-		return fmt.Sprintf("%v", d)
-	}
+func formatDuration(d time.Duration) string {
+	return d.String()
 }
 
 // --- Documentation ---

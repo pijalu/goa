@@ -68,3 +68,31 @@ type BaseTool struct{}
 
 // IsRetryable returns false by default — most tool errors are deterministic.
 func (BaseTool) IsRetryable(err error) bool { return false }
+
+// ToolLoopHints carries tool-supplied metadata used by the tool-loop
+// controller (ToolLoopController). Tools implement the optional LoopAnnotated
+// interface to provide these hints so the controller never needs to hardcode
+// tool names (e.g. "bash", "terminal", "render_html"). The zero value is a
+// safe default: not one-shot, heal arg falls back to "query", default status.
+type ToolLoopHints struct {
+	// OneShot reports that repeat calls within a single assistant response are
+	// suppressed after the first one succeeds (e.g. a render/preview tool).
+	OneShot bool
+	// HealArg is the argument key used when wrapping a raw (non-JSON) argument
+	// into an object during auto-heal. Empty falls back to "query".
+	HealArg string
+	// Status returns a short, human-readable status line shown to the TUI for
+	// an in-flight call with the given arguments. Return "" to use the
+	// controller's default ("Calling: <name>").
+	Status func(arguments string) string
+}
+
+// LoopAnnotated is an optional interface a Tool may implement to influence how
+// the tool-loop controller treats its calls. It keeps the controller free of
+// per-tool special cases: to add one-shot behavior, a custom heal key, or a
+// custom status line, implement this interface on the tool instead of editing
+// the controller's switches (Open/Closed Principle).
+type LoopAnnotated interface {
+	Tool
+	LoopHints() ToolLoopHints
+}

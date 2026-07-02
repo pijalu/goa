@@ -331,3 +331,41 @@ func TestSearchTool_Execute_WithDotRoot(t *testing.T) {
 		t.Errorf("Expected search results from . root, got: %q", result)
 	}
 }
+
+// TestSearchTool_TotalShownCountIsAccurate is a regression test for the
+// double-counting bug where formatFileContentLines incremented *totalShown via
+// the pointer AND returned the count which the caller added back. That inflated
+// the "showing N" summary and prematurely truncated later files.
+func TestSearchTool_TotalShownCountIsAccurate(t *testing.T) {
+	dir := t.TempDir()
+	// Two files, two matches each. With maxResults limiting total lines, the
+	// reported "showing N" must equal the actual number of "  <n>: ..." lines.
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("MARK x\nMARK y\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("MARK z\nMARK w\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{WorktreeMgr: nil, Threads: 2, MaxResults: 50}
+	out, err := tool.Execute(`{"pattern": "MARK", "path": "` + dir + `", "glob": "*.go", "showing": 1}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+
+	// Count actual content lines emitted (format "  <num>: <matched-text>").
+	// Each file shows at most `showing`=1 content line => 2 lines total.
+	// We count the matched text occurrences in content lines: file headers
+	// ("a.go: 2 matches") and (+more) summaries do not contain ": MARK".
+	contentLines := strings.Count(out, ": MARK")
+	if contentLines != 2 {
+		t.Errorf("expected exactly 2 shown content lines (showing=1 per file), got %d:\n%s", contentLines, out)
+	}
+	// The reported "showing N" must match the actual emitted count, not be doubled.
+	if !strings.Contains(out, "showing 2") {
+		t.Errorf("expected summary \"showing 2\", got:\n%s", out)
+	}
+	if strings.Contains(out, "showing 4") {
+		t.Errorf("double-counted summary detected (showing 4). Output:\n%s", out)
+	}
+}

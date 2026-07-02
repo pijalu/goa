@@ -221,3 +221,57 @@ func TestCheckContextLimit_AllowsLargeHistoryWithinModelWindow(t *testing.T) {
 		t.Errorf("checkContextLimit() = %v, want nil for history well under 1M window", err)
 	}
 }
+
+// TestEnforceContextCeiling_KeepsSystemAndFittingTail verifies the O(n)
+// rewrite retains the system prompt plus the most-recent contiguous tail that
+// fits under the hard ceiling, dropping oldest non-system messages first.
+func TestEnforceContextCeiling_KeepsSystemAndFittingTail(t *testing.T) {
+	// estimateTokens counts ascii chars as asciiCount/4, so 200 chars => 50 tokens.
+	mk := func(role Role, n int) Message {
+		return Message{Type: Content, Role: role, Content: strings.Repeat("x", n)}
+	}
+	a := &Agent{
+		cfg: Config{Model: provider.Model{ContextWindow: 100}}, // hardCeiling = 95 tokens
+		history: []Message{
+			mk(System, 4),   // ~1 token, index 0 — must always be retained
+			mk(User, 200),   // ~50 tokens (oldest non-system; dropped first)
+			mk(User, 200),   // ~50 tokens
+			mk(User, 200),   // ~50 tokens (newest; retained)
+		},
+	}
+	a.enforceContextCeiling()
+
+	if len(a.history) != 2 {
+		t.Fatalf("expected system + 1 retained tail message, got %d messages", len(a.history))
+	}
+	if a.history[0].Role != System {
+		t.Errorf("index 0 must remain the system prompt, got role %s", a.history[0].Role)
+	}
+	if a.history[1].Role != User || len(a.history[1].Content) != 200 {
+		t.Errorf("retained tail must be the newest user message, got role=%s len=%d",
+			a.history[1].Role, len(a.history[1].Content))
+	}
+}
+
+// TestEnforceContextCeiling_NoopWhenUnderCeiling verifies it leaves history
+// untouched when usage is already within budget.
+func TestEnforceContextCeiling_NoopWhenUnderCeiling(t *testing.T) {
+	before := []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: "hi"},
+		{Type: Content, Role: Assistant, Content: "hello"},
+	}
+	a := &Agent{
+		cfg:     Config{Model: provider.Model{ContextWindow: 1_000_000}},
+		history: before,
+	}
+	a.enforceContextCeiling()
+	if len(a.history) != len(before) {
+		t.Fatalf("history must be unchanged when under ceiling: got %d want %d", len(a.history), len(before))
+	}
+	for i := range before {
+		if a.history[i].Role != before[i].Role || a.history[i].Content != before[i].Content {
+			t.Errorf("history mutated at index %d", i)
+		}
+	}
+}

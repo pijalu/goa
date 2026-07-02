@@ -1505,7 +1505,7 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 	a.thinkingBuf.WriteString(strippedThinking)
 	a.thinkingDisplayBuf.Reset()
 
-	controller := NewToolLoopController(a.reg.Schemas(), true)
+	controller := NewToolLoopController(a.reg.Schemas(), a.reg.LoopHints(), true)
 	for _, pc := range calls {
 		decision := controller.PrepareCall(pc.name, pc.arguments, pc.id)
 		switch decision.Action {

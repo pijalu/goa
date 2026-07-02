@@ -701,3 +701,52 @@ func TestWebFetch_RenderEntry_TTLZeroShows24hDefault(t *testing.T) {
 		t.Errorf("expected footer to show 24h default ttl: %q", out)
 	}
 }
+
+// TestWebFetchExecuteContext_RespectsCancellation verifies that the caller's
+// context propagates into the HTTP fetch. With a pre-cancelled context the
+// fetch (which blocks on ctx.Done()) must return promptly instead of waiting
+// for the 30s timeout — the regression was fetch using context.Background().
+func TestWebFetchExecuteContext_RespectsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	cache := NewWebFetchCache(
+		filepath.Join(dir, ".goa", "cache", "webfetch"),
+		1*time.Hour, 10, 1024*1024, 1*time.Hour,
+		&fakeSessionProvider{id: "session-cancel"},
+	)
+	defer cache.Close()
+
+	fetcher := fetchFunc(func(ctx context.Context, url string) (*netutil.Response, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	tool := &WebFetchTool{
+		Fetcher: fetcher,
+		Cache:   cache,
+		Config: WebFetchConfig{
+			MaxLinesDefault: 10,
+			MaxLinesHard:    100,
+			MaxTotalBytes:   1 << 20,
+			AllowedSchemes:  []string{"https", "http"},
+			TimeoutSeconds:  30,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := tool.ExecuteContext(ctx, `{"url":"https://example.com"}`)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error when the caller context is cancelled")
+		}
+	case <-time.After(2 * time.Second):
+		// With context.Background() this would hang until the 30s timeout.
+		t.Fatal("ExecuteContext did not return promptly on cancelled context; ctx not propagated")
+	}
+}

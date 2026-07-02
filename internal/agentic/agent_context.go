@@ -38,16 +38,52 @@ func (a *Agent) enforceContextCeiling() {
 	const hardCeilingPercent = 95
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 
-	for estimateTokensFromHistory(a.history) > hardCeiling && len(a.history) > 1 {
-		// Never drop the initial system prompt (index 0).
-		removed := a.history[1]
-		a.history = append(a.history[:1], a.history[2:]...)
+	hist := a.history
+	if len(hist) <= 1 {
+		return
+	}
+
+	// Compute each message's token cost once. The previous implementation
+	// removed the oldest non-system message one at a time, re-estimating the
+	// whole history (O(n)) and shifting the slice (O(n)) per iteration, making
+	// the last-resort safety net O(n^2) on long sessions exactly when it runs.
+	tok := make([]int, len(hist))
+	total := 0
+	for i := range hist {
+		tok[i] = messageTokenCount(&hist[i])
+		total += tok[i]
+	}
+	if total <= hardCeiling {
+		return
+	}
+
+	// Keep the system prompt (index 0) plus the most-recent contiguous tail
+	// whose tokens fit under the ceiling. Find the smallest cut k in [1, n]
+	// such that tok[0] + sum(tok[k:]) <= hardCeiling. This produces the same
+	// retained set as dropping oldest messages one at a time, but in one pass.
+	system := tok[0]
+	nonSystem := total - system // sum(tok[1:])
+	cut := len(hist)            // fall-back: keep only the system prompt
+	droppedTokens := 0
+	for k := 1; k < len(hist); k++ {
+		keptHere := system + (nonSystem - droppedTokens) // tok[0] + sum(tok[k:])
+		if keptHere <= hardCeiling {
+			cut = k
+			break
+		}
+		droppedTokens += tok[k]
+	}
+
+	for _, m := range hist[1:cut] {
 		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Warn, "Context ceiling enforced: dropped %s message (len=%d)", removed.Role, len(removed.Content))
+			a.cfg.Logger.Log(Warn, "Context ceiling enforced: dropped %s message (len=%d)", m.Role, len(m.Content))
 		}
 	}
 
-	if estimateTokensFromHistory(a.history) > hardCeiling {
+	kept := append(hist[:1:1], hist[cut:]...)
+	a.history = kept
+
+	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > hardCeiling {
 		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history exceeds %d tokens", hardCeiling)
 	}
 }
