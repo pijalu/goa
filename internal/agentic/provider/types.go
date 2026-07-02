@@ -25,6 +25,7 @@ type Role = schema.Role
 type StopReason = schema.StopReason
 type ContentBlockType = schema.ContentBlockType
 type EventType = schema.EventType
+type HTTPResponseError = schema.HTTPResponseError
 
 const (
 	ApiOpenAICompletions    = schema.ApiOpenAICompletions

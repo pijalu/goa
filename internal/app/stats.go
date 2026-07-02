@@ -153,6 +153,10 @@ func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 		if ev.Role == agentic.User && ev.Text != "" && isReplay(ev) {
 			a.subs.chat.AddUserMessage(ev.Text)
 		}
+		if ev.Role == agentic.System && ev.Text != "" && isSystemNotification(ev) {
+			a.endCurrentStream()
+			a.subs.chat.AddSystemMessage(ev.Text)
+		}
 		return
 	}
 	if ev.State == agentic.StateThinking {
@@ -162,6 +166,12 @@ func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 	if ev.Text != "" {
 		a.handleAssistantContent(ev)
 	}
+}
+
+// isSystemNotification reports whether ev is a UI-only system message (e.g.
+// a retry notification) that should be rendered as a chat bubble.
+func isSystemNotification(ev *agentic.OutputEvent) bool {
+	return ev.Metadata != nil && ev.Metadata["category"] == "system-notification"
 }
 
 // isReplay reports whether ev is a restored session event, as opposed to a

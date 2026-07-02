@@ -52,3 +52,6 @@ type errResponse struct {
 func (e *errResponse) Error() string {
 	return fmt.Sprintf("LLM endpoint returned %d: %s", e.Status, e.Body)
 }
+
+func (e *errResponse) StatusCode() int    { return e.Status }
+func (e *errResponse) ResponseBody() string { return e.Body }

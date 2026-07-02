@@ -109,6 +109,37 @@ func TestHandleStreamContent_LiveUserMessageIgnored(t *testing.T) {
 	}
 }
 
+func TestHandleStreamContent_SystemNotificationRendersBubble(t *testing.T) {
+	app := New(testSubsystems())
+	ev := &agentic.OutputEvent{
+		Type:     agentic.EventContent,
+		Role:     agentic.System,
+		Text:     "Error: 503 - Inference is temporarily unavailable (failover_exhausted) - retrying",
+		Metadata: map[string]string{"category": "system-notification"},
+	}
+	app.handleStreamContent(ev)
+
+	rendered := strings.Join(app.subs.chat.Render(80), "\n")
+	if !strings.Contains(rendered, "Error: 503") {
+		t.Errorf("expected system notification to be rendered as chat bubble, got:\n%s", rendered)
+	}
+}
+
+func TestHandleStreamContent_SystemPromptSuppressed(t *testing.T) {
+	app := New(testSubsystems())
+	ev := &agentic.OutputEvent{
+		Type: agentic.EventContent,
+		Role: agentic.System,
+		Text: "You are a helpful assistant.",
+	}
+	app.handleStreamContent(ev)
+
+	rendered := strings.Join(app.subs.chat.Render(80), "\n")
+	if strings.Contains(rendered, "You are a helpful assistant") {
+		t.Errorf("expected plain system prompt content to be suppressed")
+	}
+}
+
 func TestHandleStreamContent_CreatesThinkingBlock(t *testing.T) {
 	app := New(testSubsystems())
 	ev := &agentic.OutputEvent{

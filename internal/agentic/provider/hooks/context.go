@@ -58,9 +58,9 @@ type ErrorContext struct {
 // stream with a nil error, and the agent never triggers compression.
 func (c *ErrorContext) ToError() error {
 	err := c.Err
+	body := strings.TrimSpace(c.Body)
 	if err == nil {
-		if c.Body != "" || c.IsContextOverflow || c.IsRateLimit || c.IsRetryable || c.StatusCode != 0 {
-			body := strings.TrimSpace(c.Body)
+		if body != "" || c.IsContextOverflow || c.IsRateLimit || c.IsRetryable || c.StatusCode != 0 {
 			if body == "" {
 				body = fmt.Sprintf("provider error (HTTP %d)", c.StatusCode)
 			}
@@ -76,6 +76,8 @@ func (c *ErrorContext) ToError() error {
 		IsRateLimit:       c.IsRateLimit,
 		RetryAfter:        c.RetryAfter,
 		RetryAfterMs:      c.RetryAfterMs,
+		statusCode:        c.StatusCode,
+		responseBody:      body,
 	}
 }
 
@@ -87,6 +89,8 @@ type ProviderError struct {
 	IsRateLimit       bool
 	RetryAfter        int
 	RetryAfterMs      int
+	statusCode        int
+	responseBody      string
 }
 
 func (e *ProviderError) Error() string {
@@ -96,3 +100,10 @@ func (e *ProviderError) Error() string {
 func (e *ProviderError) Unwrap() error {
 	return e.Err
 }
+
+// StatusCode returns the HTTP status code that produced the error, or 0 if
+// the error was not HTTP-related.
+func (e *ProviderError) StatusCode() int { return e.statusCode }
+
+// ResponseBody returns the raw response body associated with the error.
+func (e *ProviderError) ResponseBody() string { return e.responseBody }

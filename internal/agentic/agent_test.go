@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
 
 // mockEventObserver captures all events for assertions.
@@ -1950,6 +1951,97 @@ func TestAgent_RetriesStreamError(t *testing.T) {
 	}
 	if !containsContent(contents, "Recovered") {
 		t.Errorf("expected recovered assistant content, got %q", contents)
+	}
+}
+
+func TestAgent_RetriesStreamError_EmitsSystemNotification(t *testing.T) {
+	p := registerFlakyTestProvider(1, []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered"},
+	})
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var notifications []OutputEvent
+	for _, e := range obs.Events() {
+		if e.Type == EventContent && e.Role == System && e.Metadata != nil && e.Metadata["category"] == "system-notification" {
+			notifications = append(notifications, e)
+		}
+	}
+	if len(notifications) != 1 {
+		t.Fatalf("expected 1 system notification, got %d", len(notifications))
+	}
+	if !strings.Contains(notifications[0].Text, "retrying") {
+		t.Errorf("expected notification to mention retrying, got %q", notifications[0].Text)
+	}
+}
+
+// testResponseError is a test double for provider.HTTPResponseError.
+type testResponseError struct {
+	status int
+	body   string
+}
+
+func (e *testResponseError) Error() string       { return fmt.Sprintf("test error %d", e.status) }
+func (e *testResponseError) StatusCode() int       { return e.status }
+func (e *testResponseError) ResponseBody() string  { return e.body }
+
+func TestFormatRetryMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "openai-style error body",
+			err: &testResponseError{
+				status: 503,
+				body:   `{"error":{"message":"Inference is temporarily unavailable","type":"server_error","code":"failover_exhausted"}}`,
+			},
+			want: "Error: 503 - Inference is temporarily unavailable (failover_exhausted) - retrying",
+		},
+		{
+			name: "plain http error",
+			err: &testResponseError{status: 500, body: "internal server error"},
+			want: "Error: 500 - internal server error - retrying",
+		},
+		{
+			name: "provider error from hooks",
+			err: (&hooks.ErrorContext{
+				StatusCode: 503,
+				Body:       `{"error":{"message":"Inference is temporarily unavailable","code":"failover_exhausted"}}`,
+			}).ToError(),
+			want: "Error: 503 - Inference is temporarily unavailable (failover_exhausted) - retrying",
+		},
+		{
+			name: "generic error",
+			err:  fmt.Errorf("SSE stream ended prematurely"),
+			want: "Error: SSE stream ended prematurely - retrying",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatRetryMessage(tc.err)
+			if got != tc.want {
+				t.Errorf("formatRetryMessage() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

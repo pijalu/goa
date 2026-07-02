@@ -9,6 +9,7 @@ package agentic
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1162,6 +1163,38 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	return model, opts, pCtx
 }
 
+// formatRetryMessage turns a stream error into a concise user-facing
+// message that includes the HTTP status, provider message, and error code
+// when available.
+func formatRetryMessage(err error) string {
+	var respErr provider.HTTPResponseError
+	if errors.As(err, &respErr) {
+		status := respErr.StatusCode()
+		body := respErr.ResponseBody()
+		var parsed struct {
+			Error struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+				Type    string `json:"type"`
+			} `json:"error"`
+		}
+		msg := ""
+		code := ""
+		if json.Unmarshal([]byte(body), &parsed) == nil && parsed.Error.Message != "" {
+			msg = parsed.Error.Message
+			code = parsed.Error.Code
+		}
+		if msg == "" {
+			msg = body
+		}
+		if code != "" {
+			return fmt.Sprintf("Error: %d - %s (%s) - retrying", status, msg, code)
+		}
+		return fmt.Sprintf("Error: %d - %s - retrying", status, msg)
+	}
+	return fmt.Sprintf("Error: %s - retrying", err.Error())
+}
+
 // handleStreamFailure handles a stream error, retrying when appropriate.
 // Returns true if the failure was fully handled (caller should return retErr).
 func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model provider.Model, opts provider.StreamOptions) (handled bool, retErr error) {
@@ -1192,6 +1225,15 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	}
 
 	a.cfg.Logger.Log(Warn, "stream error, retrying: %v", streamErr)
+
+	// Surface the failure as a system chat bubble so the user can see the
+	// retry in the conversation history, not just a transient status message.
+	a.emitEvent(OutputEvent{
+		Type:     EventContent,
+		Role:     System,
+		Text:     formatRetryMessage(streamErr),
+		Metadata: map[string]string{"category": "system-notification"},
+	})
 
 	toolCallEncountered, retried := a.retryStream(ctx, streamErr, model, opts)
 	if retried {
