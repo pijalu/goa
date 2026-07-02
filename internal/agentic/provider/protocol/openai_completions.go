@@ -491,7 +491,7 @@ func parseOpenAIStream(body io.Reader, stream *schema.AssistantMessageEventStrea
 	acc := newStreamAccum(stream)
 	var decodeErr error
 
-	transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
+	if err := transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
 		// OpenAI-compatible servers terminate SSE streams with a [DONE] marker.
 		// Treat it as a graceful end-of-stream instead of a JSON parse error.
 		if strings.TrimSpace(ev.Data) == "[DONE]" {
@@ -506,7 +506,13 @@ func parseOpenAIStream(body io.Reader, stream *schema.AssistantMessageEventStrea
 			acc.dispatchMessage(m)
 		}
 		return true
-	})
+	}); err != nil {
+		// Surface I/O failures (idle timeout, connection drop, oversized line)
+		// as a stream error so the agent retries instead of finalizing a
+		// truncated/empty turn silently.
+		stream.CloseWithError(fmt.Errorf("sse stream read failed: %w", err))
+		return
+	}
 
 	if decodeErr != nil {
 		stream.CloseWithError(fmt.Errorf("chunk decode failed: %w", decodeErr))

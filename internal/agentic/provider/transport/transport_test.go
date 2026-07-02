@@ -115,11 +115,119 @@ data: {"text":" world"}
 
 `
 	var events []SSEEvent
-	ParseSSE(io.NopCloser(strings.NewReader(input)), func(e SSEEvent) bool {
+	err := ParseSSE(io.NopCloser(strings.NewReader(input)), func(e SSEEvent) bool {
 		events = append(events, e)
 		return true
 	})
+	require.NoError(t, err)
 	require.Len(t, events, 2)
 	assert.Equal(t, "delta", events[0].Event)
 	assert.Equal(t, `{"text":"hello"}`, events[0].Data)
+}
+
+// errReader returns (0, err) on every Read, simulating a connection that died
+// mid-stream (e.g. an idle-timeout firing ErrStreamIdle).
+type errReader struct{ err error }
+
+func (e *errReader) Read(p []byte) (int, error) { return 0, e.err }
+
+// TestParseSSE_PropagatesReadError is the regression test for the silent-
+// failure bug: a read error (idle timeout, connection drop) MUST be returned,
+// not swallowed. Previously ParseSSE ignored scanner.Err() and the openai-
+// completions parser finalized the turn as if the model had finished cleanly,
+// ending with no content, no tool calls, and no retry.
+func TestParseSSE_PropagatesReadError(t *testing.T) {
+	sentinel := io.ErrClosedPipe
+	err := ParseSSE(&errReader{err: sentinel}, func(SSEEvent) bool { return true })
+	assert.ErrorIs(t, err, sentinel)
+}
+
+// TestParseSSE_LargeLine verifies the buffer was raised past the 64KB default
+// so a large SSE data line (big tool argument / content chunk) is not silently
+// truncated with bufio.ErrTooLong.
+func TestParseSSE_LargeLine(t *testing.T) {
+	big := strings.Repeat("x", 200*1024) // 200KB, well over the 64KB default
+	input := "data: " + big + "\n\n"
+	var got string
+	err := ParseSSE(strings.NewReader(input), func(e SSEEvent) bool {
+		got = e.Data
+		return true
+	})
+	require.NoError(t, err)
+	assert.Len(t, got, 200*1024)
+}
+
+// TestHTTPRequestSummaryTracing verifies that the HTTP log captures a
+// redaction-safe request summary, the request-body tail, and the response
+// tail (carrying finish_reason) — the three pieces needed to confirm whether
+// a tool result was sent back to the model.
+func TestHTTPRequestSummaryTracing(t *testing.T) {
+	// Response is an SSE stream whose finish_reason lives at the END.
+	stream := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(stream))
+	}))
+	defer server.Close()
+
+	log := NewHTTPLog(4)
+	tr := &HTTPTransport{Client: server.Client(), Log: log}
+
+	// Request body ends with a tool result (the scenario we must be able to
+	// detect: "tool result was sent back").
+	reqBody := []byte(`{"model":"deepseek-v4-flash","stream":true,` +
+		`"messages":[` +
+		`{"role":"system","content":"sys"},` +
+		`{"role":"user","content":"hi"},` +
+		`{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"name":"read"}}]},` +
+		`{"role":"tool","tool_call_id":"c1","content":"file contents"}` +
+		`]}`)
+
+	resp, err := tr.Do(context.Background(), &TransportRequest{
+		Method: "POST",
+		URL:    server.URL,
+		Body:   reqBody,
+	})
+	require.NoError(t, err)
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	entries := log.Snapshot()
+	require.Len(t, entries, 1)
+	e := entries[0]
+
+	require.NotNil(t, e.RequestSummary)
+	assert.Equal(t, "deepseek-v4-flash", e.RequestSummary.Model)
+	assert.True(t, e.RequestSummary.Stream)
+	assert.Equal(t, 4, e.RequestSummary.MessageCount)
+	assert.Equal(t, "tool", e.RequestSummary.LastRole)
+	assert.True(t, e.RequestSummary.LastIsToolResult, "last message should be a tool result")
+	assert.Equal(t, 1, e.RequestSummary.ToolCallBlocks)
+	assert.Equal(t, 1, e.RequestSummary.ToolResultBlocks)
+
+	// Request body tail captured (truncated to last N bytes).
+	assert.Contains(t, e.RequestBody, "file contents")
+
+	// Response tail captured and finish_reason extracted from the END.
+	assert.Contains(t, e.ResponseTail, "finish_reason")
+	assert.Equal(t, "length", e.FinishReason)
+}
+
+func TestSummarizeRequestBodyMalformed(t *testing.T) {
+	s := summarizeRequestBody([]byte("not json"))
+	assert.Equal(t, 0, s.MessageCount)
+	assert.Nil(t, requestSummaryPtr(nil))
+}
+
+func TestRollingTail(t *testing.T) {
+	tail := &rollingTail{cap: 8}
+	tail.write([]byte("0123456789ABCDEF")) // 16 bytes, >> cap
+	assert.Equal(t, "89ABCDEF", string(tail.bytes()))
+}
+
+func TestTruncateTail(t *testing.T) {
+	assert.Equal(t, "short", truncateTail("short", 10))
+	assert.Equal(t, "...56789", truncateTail("0123456789", 5))
 }

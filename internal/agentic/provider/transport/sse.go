@@ -16,9 +16,22 @@ type SSEEvent struct {
 	Data  string
 }
 
-// ParseSSE reads Server-Sent Events from r and yields parsed events.
-func ParseSSE(r io.Reader, yield func(SSEEvent) bool) {
+// sseMaxLineBytes is the maximum size of a single SSE line. The bufio.Scanner
+// default of 64KB is too small for LLM streams where one `data:` line can carry
+// a large tool-call argument, a big content/reasoning chunk, or a batched
+// server flush. 1MB matches the provider-level ParseSSE and avoids a silent
+// bufio.ErrTooLong truncation.
+const sseMaxLineBytes = 1024 * 1024
+
+// ParseSSE reads Server-Sent Events from r and yields parsed events. It returns
+// the scanner error (if any) so callers can surface I/O failures — such as an
+// idle-timeout (ErrStreamIdle) or a connection drop — instead of treating them
+// as a clean end-of-stream. Silently ignoring the error here previously caused
+// stalled/truncated LLM streams to finalize as if the model had finished,
+// ending the turn with no content, no tool calls, and no retry.
+func ParseSSE(r io.Reader, yield func(SSEEvent) bool) error {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), sseMaxLineBytes)
 	var current SSEEvent
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -29,6 +42,7 @@ func ParseSSE(r io.Reader, yield func(SSEEvent) bool) {
 		current = parseSSELine(current, line)
 	}
 	emitIfNonEmpty(current, yield)
+	return scanner.Err()
 }
 
 func parseSSELine(current SSEEvent, line string) SSEEvent {

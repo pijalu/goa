@@ -83,6 +83,9 @@ func (l *Logger) Log(lv Level, msg string, args ...interface{}) {
 			l.logger.Println("[" + levelStr + "] " + msg)
 		}
 	}
+	// Always capture to the global ring so diagnostics are available even
+	// when no file logger is configured or the level filters this line out.
+	captureToRing(lv, msg, args...)
 }
 
 func levelString(lv Level) string {
@@ -100,4 +103,9 @@ func levelString(lv Level) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// String returns the human-readable name of the level.
+func (lv Level) String() string {
+	return levelString(lv)
 }

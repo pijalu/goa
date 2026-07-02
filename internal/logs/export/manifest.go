@@ -27,6 +27,7 @@ type FilePaths struct {
 	Issue         string `json:"issue,omitempty"`
 	Session       string `json:"session,omitempty"`
 	Readme        string `json:"readme,omitempty"`
+	Trace         string `json:"trace,omitempty"`
 }
 
 // Manifest is the structured metadata for a diagnostic bundle.
@@ -114,6 +115,7 @@ func buildFilePaths(present []string) FilePaths {
 		"config/local.yaml":    func(p string) { files.LocalConfig = p },
 		"prompts/mode":         func(p string) { files.Modes = p },
 		"system/info.json":     func(p string) { files.SystemInfo = p },
+		"diagnostics/trace.json": func(p string) { files.Trace = p },
 		"issue.md":             func(p string) { files.Issue = p },
 		"session.md":           func(p string) { files.Session = p },
 		"README.md":            func(p string) { files.Readme = p },

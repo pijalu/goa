@@ -204,7 +204,7 @@ type responsesEventContext struct {
 func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStream) {
 	defer closeIfCloser(body)
 	ctx := &responsesEventContext{stream: stream}
-	transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
+	if err := transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
 		var event struct {
 			Type string `json:"type"`
 		}
@@ -221,7 +221,10 @@ func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStrea
 			handleResponsesCompleted(ctx, ev.Data)
 		}
 		return true
-	})
+	}); err != nil {
+		stream.CloseWithError(fmt.Errorf("sse stream read failed: %w", err))
+		return
+	}
 	if ctx.decodeErr != nil {
 		stream.CloseWithError(fmt.Errorf("responses chunk decode failed: %w", ctx.decodeErr))
 		return

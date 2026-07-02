@@ -17,6 +17,7 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
 
@@ -127,6 +128,11 @@ func collectArtifacts(zb *ZipBuilder, ctx core.Context, opts BuildOptions) (pres
 	if keyLogPath != "" && keyLogPath != agentLogPath {
 		collector.addFile(keyLogPath, "logs/keys.log", RedactText)
 	}
+	// Always-on in-memory agent log ring. This is present even when file
+	// logging is disabled (logging.file unset), guaranteeing the provider-context
+	// trace (per-round message roles, tool result presence, stream errors) is
+	// available to diagnose issues such as a tool result never being sent back.
+	collector.addBytes("logs/agent.log", renderAgentLogRing())
 
 	// Configs (redacted).
 	collector.addFile(filepath.Join(opts.ProjectDir, ".goa", "config.yaml"), "config/project.yaml", RedactYAML)
@@ -140,7 +146,13 @@ func collectArtifacts(zb *ZipBuilder, ctx core.Context, opts BuildOptions) (pres
 	collector.addJSON(buildSystemInfo(ctx, opts), "system/info.json")
 
 	// HTTP request/response log (captures last N LLM API calls).
-	collector.addJSONLog(transport.GlobalHTTPLog.Snapshot(), "logs/http.jsonl")
+	httpEntries := transport.GlobalHTTPLog.Snapshot()
+	collector.addJSONLog(httpEntries, "logs/http.jsonl")
+
+	// Agent-friendly derived trace: compact per-request timeline + anomaly
+	// flags (e.g. tool result not forwarded, finish_reason=length). Lets a
+	// reader diagnose a silent stop in one read instead of scanning events.
+	collector.addJSON(buildLLMTrace(httpEntries), "diagnostics/trace.json")
 
 	// Issue description.
 	if issue := strings.TrimSpace(opts.IssueDescription); issue != "" {
@@ -325,6 +337,27 @@ func resolveSessionPath(ctx core.Context, opts BuildOptions) string {
 		}
 	}
 	return filepath.Join(opts.ProjectDir, ".goa", "sessions", id+".jsonl")
+}
+
+// renderAgentLogRing formats the always-on in-memory agent log ring as text
+// for inclusion in diagnostic exports. Returns nil bytes when the ring is
+// empty, which the collector records as a missing file.
+func renderAgentLogRing() []byte {
+	lines := agentic.AgentLogSnapshot()
+	if len(lines) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	for _, ln := range lines {
+		b.WriteString(ln.Time.Format("2006-01-02 15:04:05.000"))
+		b.WriteByte(' ')
+		b.WriteByte('[')
+		b.WriteString(ln.Level.String())
+		b.WriteString("] ")
+		b.WriteString(ln.Message)
+		b.WriteByte('\n')
+	}
+	return []byte(b.String())
 }
 
 func resolveAgentLogPath(ctx core.Context, opts BuildOptions) string {

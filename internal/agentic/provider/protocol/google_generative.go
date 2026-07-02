@@ -178,7 +178,7 @@ func parseGoogleSSE(body io.Reader, stream *schema.AssistantMessageEventStream) 
 	defer closeIfCloser(body)
 	gacc := &googleStreamAcc{stream: stream}
 	var lastErr error
-	transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
+	if err := transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
 		candidates, cErr := parseGoogleResponse([]byte(ev.Data))
 		if cErr != nil {
 			lastErr = cErr
@@ -188,7 +188,10 @@ func parseGoogleSSE(body io.Reader, stream *schema.AssistantMessageEventStream) 
 			gacc.processCandidate(candidates[0])
 		}
 		return true
-	})
+	}); err != nil {
+		stream.CloseWithError(fmt.Errorf("sse stream read failed: %w", err))
+		return
+	}
 	if lastErr != nil {
 		stream.CloseWithError(fmt.Errorf("google chunk decode failed: %w", lastErr))
 		return

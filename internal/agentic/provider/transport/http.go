@@ -7,9 +7,11 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,16 +23,45 @@ const HTTPLogCapacity = 20
 // HTTPLogCaptureBytes is the maximum bytes of response body to capture per entry.
 const HTTPLogCaptureBytes = 4096
 
+// HTTPLogTailBytes is the maximum bytes of the response tail (end of stream)
+// to capture. SSE finish_reason/usage chunks arrive at the end of the stream,
+// so capturing only the head hides them. The tail guarantees they are visible.
+const HTTPLogTailBytes = 4096
+
+// HTTPLogRequestBytes is the maximum bytes of the request body tail to capture.
+// The tail (not the head) carries the most recent messages — including tool
+// results — which is what diagnostics need to confirm a tool result was sent.
+const HTTPLogRequestBytes = 2048
+
+// RequestSummary is an agent-friendly, redaction-safe summary of an LLM
+// request body. It captures the message-role sequence and tool-call/tool-result
+// counts without echoing potentially large or sensitive conversation content,
+// so a reader can immediately verify whether a tool result was included in the
+// request sent to the model.
+type RequestSummary struct {
+	Model            string   `json:"model,omitempty"`
+	Stream           bool     `json:"stream,omitempty"`
+	MessageCount     int      `json:"messageCount"`
+	Roles            []string `json:"roles,omitempty"`       // tail of the role sequence (last 16)
+	ToolCallBlocks   int      `json:"toolCallBlocks"`        // assistant messages carrying tool_calls
+	ToolResultBlocks int      `json:"toolResultBlocks"`      // tool-role messages (tool results sent back)
+	LastRole         string   `json:"lastRole,omitempty"`
+	LastIsToolResult bool     `json:"lastIsToolResult"`      // last message is a tool result being sent back
+}
+
 // HTTPLogEntry records a single HTTP request/response transaction.
 type HTTPLogEntry struct {
-	Timestamp       string            `json:"timestamp"`
-	Method          string            `json:"method"`
-	URL             string            `json:"url"`
-	StatusCode      int               `json:"statusCode,omitempty"`
-	DurationMs      int64             `json:"durationMs"`
-	Error           string            `json:"error,omitempty"`
-	RequestBody     string            `json:"requestBody,omitempty"`
-	ResponseBody    string            `json:"responseBody,omitempty"`
+	Timestamp       string          `json:"timestamp"`
+	Method          string          `json:"method"`
+	URL             string          `json:"url"`
+	StatusCode      int             `json:"statusCode,omitempty"`
+	DurationMs      int64           `json:"durationMs"`
+	Error           string          `json:"error,omitempty"`
+	RequestSummary  *RequestSummary `json:"requestSummary,omitempty"`
+	RequestBody     string          `json:"requestBody,omitempty"`  // truncated tail of the request body
+	ResponseBody    string          `json:"responseBody,omitempty"` // head of the response stream
+	ResponseTail    string          `json:"responseTail,omitempty"` // tail of the response stream (finish_reason/usage)
+	FinishReason    string          `json:"finishReason,omitempty"`
 	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
 }
 
@@ -91,35 +122,132 @@ func (l *HTTPLog) Clear() {
 // GlobalHTTPLog is the global HTTP transaction log used by the default transport.
 var GlobalHTTPLog = NewHTTPLog(HTTPLogCapacity)
 
-// captureBody wraps an io.ReadCloser to peek at the first N bytes without
-// consuming the underlying stream.
+// captureBody wraps an io.ReadCloser to peek at the head (first N bytes) and
+// tail (last M bytes) of a streaming response without consuming it. The tail
+// is essential for SSE streams where finish_reason/usage arrive at EOF.
 type captureBody struct {
-	r     io.ReadCloser
-	buf   *bytes.Buffer
-	limit int
-	done  bool
+	r         io.ReadCloser
+	head      *bytes.Buffer
+	tail      *rollingTail
+	headLimit int
+	headDone  bool
 }
 
 func (c *captureBody) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	if !c.done && n > 0 {
-		remaining := c.limit - c.buf.Len()
-		if remaining > 0 {
-			if n <= remaining {
-				c.buf.Write(p[:n])
-			} else {
-				c.buf.Write(p[:remaining])
+	if n > 0 {
+		if !c.headDone {
+			remaining := c.headLimit - c.head.Len()
+			if remaining > 0 {
+				if n <= remaining {
+					c.head.Write(p[:n])
+				} else {
+					c.head.Write(p[:remaining])
+				}
+			}
+			if c.head.Len() >= c.headLimit {
+				c.headDone = true
 			}
 		}
-		if c.buf.Len() >= c.limit {
-			c.done = true
-		}
+		c.tail.write(p[:n])
 	}
 	return n, err
 }
 
 func (c *captureBody) Close() error {
 	return c.r.Close()
+}
+
+// rollingTail keeps the last N bytes written to it, bounding memory to 2*N.
+type rollingTail struct {
+	buf bytes.Buffer
+	cap int
+}
+
+func (t *rollingTail) write(p []byte) {
+	t.buf.Write(p)
+	if t.buf.Len() > t.cap*2 {
+		data := t.buf.Bytes()
+		keep := make([]byte, t.cap)
+		copy(keep, data[len(data)-t.cap:])
+		t.buf.Reset()
+		t.buf.Write(keep)
+	}
+}
+
+func (t *rollingTail) bytes() []byte {
+	data := t.buf.Bytes()
+	if len(data) > t.cap {
+		return data[len(data)-t.cap:]
+	}
+	return data
+}
+
+// summarizeRequestBody parses an LLM request body (OpenAI-completions shape)
+// into a redaction-safe summary. Unknown body shapes yield a partial summary.
+func summarizeRequestBody(body []byte) RequestSummary {
+	s := RequestSummary{}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return s
+	}
+	if m, ok := raw["model"].(string); ok {
+		s.Model = m
+	}
+	if st, ok := raw["stream"].(bool); ok {
+		s.Stream = st
+	}
+	msgs, _ := raw["messages"].([]any)
+	s.MessageCount = len(msgs)
+	roles := make([]string, 0, len(msgs))
+	for _, mi := range msgs {
+		m, ok := mi.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		roles = append(roles, role)
+		switch role {
+		case "tool":
+			s.ToolResultBlocks++
+		case "assistant":
+			if tcs, ok := m["tool_calls"].([]any); ok && len(tcs) > 0 {
+				s.ToolCallBlocks++
+			}
+		}
+	}
+	if len(roles) > 0 {
+		s.LastRole = roles[len(roles)-1]
+		s.LastIsToolResult = s.LastRole == "tool"
+		start := 0
+		if len(roles) > 16 {
+			start = len(roles) - 16
+		}
+		s.Roles = roles[start:]
+	}
+	return s
+}
+
+// truncateTail returns the last n bytes of s, with an ellipsis marker when
+// truncated. Used to keep the request-body tail small for diagnostics.
+func truncateTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "..." + s[len(s)-n:]
+}
+
+// extractFinishReason scans captured SSE text for the last finish_reason value.
+// It is intentionally tolerant: it operates on raw captured bytes rather than
+// a full SSE parse, since the transport must not depend on provider semantics.
+var finishReasonRe = regexp.MustCompile(`"finish_reason"\s*:\s*"([^"]+)"`)
+
+func extractFinishReason(captured string) string {
+	matches := finishReasonRe.FindAllStringSubmatch(captured, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[len(matches)-1][1]
 }
 
 // HTTPTransport executes HTTP requests.
@@ -163,11 +291,13 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
 		entry := HTTPLogEntry{
-			Timestamp:  start.Format(time.RFC3339Nano),
-			Method:     req.Method,
-			URL:        req.URL,
-			DurationMs: time.Since(start).Milliseconds(),
-			Error:      err.Error(),
+			Timestamp:      start.Format(time.RFC3339Nano),
+			Method:         req.Method,
+			URL:            req.URL,
+			DurationMs:     time.Since(start).Milliseconds(),
+			Error:          err.Error(),
+			RequestSummary: requestSummaryPtr(req.Body),
+			RequestBody:    truncateTail(string(req.Body), HTTPLogRequestBytes),
 		}
 		log := t.Log
 		if log == nil {
@@ -194,14 +324,18 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 		StatusCode:      httpResp.StatusCode,
 		DurationMs:      time.Since(start).Milliseconds(),
 		ResponseHeaders: headers,
+		RequestSummary:  requestSummaryPtr(req.Body),
+		RequestBody:     truncateTail(string(req.Body), HTTPLogRequestBytes),
 	}
 
-	// Wrap the response body to capture the first N bytes as they are read
-	// (lazy capture — does not consume the stream eagerly).
+	// Wrap the response body to capture the head and tail as bytes are read
+	// (lazy capture — does not consume the stream eagerly). The tail preserves
+	// finish_reason/usage which arrive at the end of the SSE stream.
 	capBody := &captureBody{
-		r:     httpResp.Body,
-		buf:   new(bytes.Buffer),
-		limit: HTTPLogCaptureBytes,
+		r:         httpResp.Body,
+		head:      new(bytes.Buffer),
+		tail:      &rollingTail{cap: HTTPLogTailBytes},
+		headLimit: HTTPLogCaptureBytes,
 	}
 
 	respBody := io.ReadCloser(capBody)
@@ -247,18 +381,53 @@ func (b *logOnCloseBody) Read(p []byte) (int, error) {
 
 func (b *logOnCloseBody) finalize() {
 	b.once.Do(func() {
-		if b.capture != nil && b.capture.buf.Len() > 0 {
-			b.entry.ResponseBody = strings.TrimSuffix(b.capture.buf.String(), "\n")
-			if len(b.entry.ResponseBody) > HTTPLogCaptureBytes {
-				b.entry.ResponseBody = b.entry.ResponseBody[:HTTPLogCaptureBytes] + "..."
-			}
-		}
+		b.applyCapture()
 		l := b.log
 		if l == nil {
 			l = GlobalHTTPLog
 		}
 		l.Add(*b.entry)
 	})
+}
+
+// applyCapture transfers the buffered head/tail (and extracted finish_reason)
+// into the log entry. Called exactly once when the stream is fully consumed.
+func (b *logOnCloseBody) applyCapture() {
+	if b.capture == nil {
+		return
+	}
+	if b.capture.head.Len() > 0 {
+		head := strings.TrimSuffix(b.capture.head.String(), "\n")
+		if len(head) > HTTPLogCaptureBytes {
+			head = head[:HTTPLogCaptureBytes] + "..."
+		}
+		b.entry.ResponseBody = head
+	}
+	if b.capture.tail == nil {
+		return
+	}
+	tail := strings.TrimSuffix(string(b.capture.tail.bytes()), "\n")
+	if len(tail) > HTTPLogTailBytes {
+		tail = "..." + tail[len(tail)-HTTPLogTailBytes:]
+	}
+	b.entry.ResponseTail = tail
+	// finish_reason lives at the end of the stream; scan the tail.
+	if fr := extractFinishReason(tail); fr != "" {
+		b.entry.FinishReason = fr
+	}
+}
+
+// requestSummaryPtr returns a pointer to the request summary for body, or nil
+// when the body cannot be summarized (non-JSON or empty).
+func requestSummaryPtr(body []byte) *RequestSummary {
+	if len(body) == 0 {
+		return nil
+	}
+	s := summarizeRequestBody(body)
+	if s.MessageCount == 0 {
+		return nil
+	}
+	return &s
 }
 
 // cancelOnCloseReader wraps an io.ReadCloser and cancels the provided context
