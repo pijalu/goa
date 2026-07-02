@@ -68,15 +68,34 @@ func (s *ToolScheduler) Add(task *ToolCallTask) {
 	}
 	s.tasks = append(s.tasks, st)
 
-	// Watch for context cancellation to unblock pending tasks.
-	// Uses sync.Once so that only one goroutine (this watcher or the
-	// execution goroutine) closes st.done and sets st.result.
+	s.mu.Lock()
+	blocked := s.isBlockedLocked(task)
+	if blocked {
+		s.pending = append(s.pending, st)
+		s.mu.Unlock()
+		// Only pending tasks need a cancellation watcher: a blocked task
+		// would otherwise wait for its conflicting active tasks to drain,
+		// so without a watcher it could not fail fast on cancellation.
+		// Tasks that start immediately are cancelled via their execution
+		// goroutine (which receives s.ctx), so they need no extra watcher.
+		s.watchCancellation(st)
+		return
+	}
+	s.mu.Unlock()
+	s.start(st)
+}
+
+// watchCancellation fails a task fast when the scheduler context is
+// cancelled before the task gets a chance to run. Uses sync.Once so that
+// only one goroutine (this watcher or the execution goroutine) closes
+// st.done and sets st.result.
+func (s *ToolScheduler) watchCancellation(st *scheduledTask) {
 	go func() {
 		select {
 		case <-s.ctx.Done():
 			st.once.Do(func() {
 				st.result = ToolCallResult{
-					Name: task.Name, CallID: task.CallID,
+					Name: st.Name, CallID: st.CallID,
 					Err: s.ctx.Err(),
 				}
 				close(st.done)
@@ -84,16 +103,6 @@ func (s *ToolScheduler) Add(task *ToolCallTask) {
 		case <-st.done:
 		}
 	}()
-
-	s.mu.Lock()
-	blocked := s.isBlockedLocked(task)
-	if blocked {
-		s.pending = append(s.pending, st)
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
-	s.start(st)
 }
 
 // isBlockedLocked reports whether task conflicts, assuming the mutex is held.
