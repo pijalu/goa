@@ -1,125 +1,96 @@
-# TODO — Remaining items from agentic optimization pass
+# TODO — agentic optimization pass
 
-This file tracks findings identified during the agentic optimization / SOLID review
-that were **not** fixed in the current pass. Each item is categorized by type and
-has a clear suggestion for a future change.
-
----
-
-## 🔵 Structural (recommended next)
-
-### 1. Split `internal/agentic/agent.go` — 3150 lines, 136 methods
-
-**Problem**: Classic god-object. `Agent` struct (~30 fields) and its 136 methods
-mix compression logic, streaming, budget tracking, guardrails, history management,
-event emission, observer management, tool execution, context stats, turn lifecycle,
-and migration helpers into one file.
-
-**Suggestion**:
-- Extract `compression.go` — `compact`, `compressHybrid`, `compressToolElision`,
-  `compressSelective`, `microCompactForced`, `MaybeCompress`, `maybeCompress`,
-  `compressHistory`, `checkContextLimit`, etc.
-- Extract `streaming.go` — `processTurnWithStream`, `consumeStream`,
-  `handleStreamEvent`, `handleTextDelta`, `handleThinkingDelta`,
-  `checkStreamLoop`, stream-loop detection helpers.
-- Extract `budget.go` — `shouldBufferToolCall`, `checkTotalRepeatGuardrail`,
-  `budgetOrRepeatSkipMessage`, `recordToolCallInBudgetWindow`,
-  `effectiveToolWindowSize`, `applyToolGuardrail`, `applyToolBudgetSkip`.
-- Extract `events.go` — `emitEvent`, `emitMessage`, `emitEndEvent`,
-  `emitToolCallEvent`, `emitContentMessage`, `emitToolResult`,
-  `emitThinking`, `emitStatelessEvents`.
+All items from the agentic optimization / SOLID review have been resolved.
+This file is retained for history; each entry below records what was done
+and the commit that closed it.
 
 ---
 
-### 2. Remove duplicate `ToolRegistry` — `internal/agentic/` vs `tools/`
+## ✅ Structural
 
-**Problem**: Two `ToolRegistry` types with overlapping APIs:
-- `internal/agentic/tool_registry.go` — `NewToolRegistry`, `Get`, `Schemas`, `LoopHints`
-- `tools/registry.go` — `ToolRegistry`, `Register`, `Get`, `All`, `Schemas`,
-  plus `Documentable` / `ToolGroup` support
+### 1. Split `internal/agentic/agent.go` — was 3150 lines
 
-The agent holds the agentic one; the app holds the tools one and must feed `All()`
-into `Config.Tools`, then `Agent` re-wraps in its own registry: two registries, two
-`Schemas()` sort paths, double maintenance.
+The god-object has been decomposed into focused, same-package files (all
+under the 1000-line hard limit):
 
-**Suggestion**: Make `tools.ToolRegistry` the single implementation; have agentic
-depend on a minimal `ToolLookup` interface (Dependency Inversion) instead of owning
-a parallel registry.
+- `agent_events.go` — output-event emission (`emit*`).
+- `agent_budget.go` — tool-call budget + repeat guardrails.
+- `agent_streaming.go` — stream-round drivers, event consumption, loop
+  detection, and stream-recovery/provider-context.
+- `agent_compression.go` — context-compression machinery.
+- `agent_context_stats.go` — context-usage stats + token estimation.
+- `agent_tools.go` — tool-call scheduling/execution + content-block helpers.
+- `agent_migrate.go` — provider message/schema migration.
+- `agent_turn_stats.go` — generation timing, turn stats, history helpers.
 
----
+`agent.go` is now 904 lines (was 3150). Pure relocations; no behavior change.
 
-### 3. `toolcallparser.go` — 4 concerns mixed, one file, no types
+### 2. Remove duplicate `ToolRegistry`
 
-**Problem**: JSON tool-call parsing, function-style parsing, brace balancing/
-string-state handling, and parameter finalization are all free functions sharing
-`content`/`indices`. The `insideOpenParameter` helper re-scans `content[:pos]`
-with `FindAllStringIndex` for every function start — O(n²) in content length.
+Dependency Inversion applied: `agentic` now defines a minimal `ToolLookup`
+interface (`Get`/`Schemas`/`LoopHints`) and the `Agent` depends on it
+instead of the concrete `*ToolRegistry`. `agentic.ToolRegistry` remains the
+canonical immutable, caching implementation (used by the agent and the MCP
+publisher). The dead duplicate sort path (`tools.ToolRegistry.Schemas`,
+never called in production) was removed.
 
-**Suggestion**: Introduce a `toolCallScanner` struct holding `content` + a cursor;
-expose `nextJSONCall()` / `nextFunctionCall()`. Removes the repeated
-`funcStarts` juggling and the O(n²) insideOpenParameter. Follows the pattern
-the project already uses in `observer/xmlstream/state.go`.
+### 3. `toolcallparser.go` — cursor-based scanner
 
----
-
-## 🟠 Correctness / correctness-adjacent
-
-### 4. `BashTool` / `TerminalTool` also ignore turn ctx (like webfetch did)
-
-**Problem**: Like webfetch before A4, `bash.go` (line 156) waits on
-`time.After(timeout)` only — no `ctx.Done()` select — and `exec.Command`
-is used instead of `exec.CommandContext`. Agent `Stop()` cannot interrupt a
-running shell command; the child process tree lives until the bash timeout.
-
-**Suggestion**: Implement `ContextTool` on `BashTool` and `TerminalTool`.
-In the timeout select, add `case <-ctx.Done():` and kill the process tree.
-For bash, use `exec.CommandContext` or signal the process group. (Requires
-OS-specific handling — see `bash_unix.go` / `bash_windows.go`.)
-
-### 5. Pre-existing dead test scaffolding — U1000 in `agent_context_test.go`
-
-**Problem**: The type `contextToolCallProvider` (and its methods `API`, `Stream`,
-`StreamSimple`) are defined but never referenced. Present at HEAD before the
-current changes. Staticcheck flags U1000.
-
-**Suggestion**: Remove the unused type and methods. Verify no test depends on
-them (they aren't referenced by any test function). Safe cleanup.
+Replaced the free-function orchestration (with precomputed `funcStarts` and
+the O(n²) `insideOpenParameter` rescan) with a `toolCallScanner` struct
+holding `content` + a forward cursor, exposing `nextJSONCall`/
+`nextFunctionCall`. Because the cursor advances through consumed parameter
+values, a nested `<function=` token inside a value is absorbed and never
+treated as a top-level boundary.
 
 ---
 
-## ⚪ Optimization / Performance
+## ✅ Correctness
 
-### 6. `ToolScheduler` spawns one watcher goroutine per task
+### 4. `BashTool` / `TerminalTool` now respect the turn ctx
 
-**Problem**: `tool_scheduler.go:83-99` spawns a cancellation watcher goroutine
-for **every** task including ones that start immediately, effectively doubling
-goroutines for the common all-independent case.
+Both implement `ContextTool` (`ExecuteContext`). `BashTool`'s run select
+now includes `<-ctx.Done()` and kills the process tree; `TerminalTool`
+threads `ctx` into `sandbox.Run` via `RunOpts.Cancel`. A cancelled turn is
+surfaced as a `cancelled` tool error. Tests verify a 30s `sleep` is
+interrupted in ~0.3s on cancellation.
 
-**Suggestion**: Only spawn the cancellation watcher for tasks added to `pending`;
-for immediately-started tasks, rely on the execution goroutine + a single
-per-scheduler ctx watcher.
+### 5. Dead test scaffolding removed
 
-### 7. `formatCompressHeader` has unused parameters
-
-**Problem**: `tools/common/compress.go:356` accepts `(cmd string, lines []string,
-a, b int)` but ignore `lines`, `a`, `b`. Every caller passes meaningless values
-for these parameters (often the same values used later for `strings.Join`).
-
-**Suggestion**: Remove the unused parameters. The function only uses `cmd`. Update
-all callers (they already pass values solely to satisfy the signature).
+The unused `contextToolCallProvider` type and methods (U1000) were removed
+from `agent_context_test.go`.
 
 ---
 
-## 📝 General technical debt
+## ✅ Performance
 
-### 8. `agent.go` line limits
+### 6. `ToolScheduler` watcher goroutines
 
-Several files in the repo exceed the 500-line soft target and two exceed the
-1000-line hard max (see `find ... wc -l | sort -rn`). The most impactful split
-is `agent.go` (3150 lines). Other large files worth splitting:
-- `core/commands/config.go` (2015)
-- `config/config.go` (1460)
-- `config/wizard_render.go` (1429)
-- `core/agentmanager.go` (1424)
-- `internal/app/headless.go` (1118)
-- `tui/editor.go` (1058)
+`Add` now registers the cancellation watcher only for tasks added to
+`pending` (blocked). Immediately-started tasks rely on their execution
+goroutine (which already receives `s.ctx`), halving goroutines in the common
+all-independent case.
+
+### 7. `formatCompressHeader` unused parameters
+
+Reduced from `(cmd, lines, a, b)` to `(cmd)`; all call sites updated.
+
+---
+
+## ✅ General technical debt — file size limits
+
+All production Go files now respect the 1000-line hard max. The following
+were split (each a pure same-package relocation, behavior unchanged):
+
+| File (was) | Now | Extracted into |
+|---|---|---|
+| `core/commands/config.go` (2015) | 958 | `config_completion.go`, `config_models.go`, `config_compression.go`, `config_cli.go` |
+| `config/config.go` (1460) | 806 | `config_validate.go`, `config_merge.go` |
+| `config/wizard_render.go` (1429) | 955 | `wizard_render_views.go` |
+| `core/agentmanager.go` (1424) | 995 | `agentmanager_lifecycle.go`, `agentmanager_events.go` |
+| `internal/app/headless.go` (1118) | 782 | `headless_renderers.go` |
+| `tui/editor.go` (1058) | 750 | `editor_input.go` |
+| `internal/agentic/provider/protocol/openai_completions.go` (1052) | 837 | `openai_completions_timings.go` |
+
+Gates verified: `go vet ./...`, `go test -count=1 -race ./...` (64 packages,
+all passing), and `find ... > 1000 lines` returns no production files.
