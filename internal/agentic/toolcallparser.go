@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//
-// Copyright (C) 2026 Pierre Poissinger
 
 package agentic
 
@@ -14,7 +12,7 @@ import (
 var (
 	toolCallJSONStartRE = regexp.MustCompile(`<tool_call>\s*\{`)
 	functionStartRE     = regexp.MustCompile(`<function=([\w-]+)>\s*`)
-	toolCallEndTagRE    = regexp.MustCompile(`\s*</tool_call>\s*`)
+	toolCallEndTagRE    = regexp.MustCompile(`\s*</tool_call>\s*$`)
 	functionCloseRE     = regexp.MustCompile(`\s*</function>\s*$`)
 	paramStartRE        = regexp.MustCompile(`<parameter=([\w-]+)>\s*`)
 	paramCloseRE        = regexp.MustCompile(`\s*</parameter>\s*$`)
@@ -70,24 +68,143 @@ type parsedToolCall struct {
 // It handles <tool_call>{json}</tool_call> and <function=name><parameter=k>v.
 // When allowIncomplete is true, missing closing tags are tolerated.
 func parseToolCallsFromText(content string, idOffset int, allowIncomplete bool) []parsedToolCall {
-	calls := parseJSONToolCalls(content, idOffset, allowIncomplete)
-	if len(calls) > 0 {
+	sc := &toolCallScanner{
+		content:         content,
+		idOffset:        idOffset,
+		allowIncomplete: allowIncomplete,
+	}
+	if calls := sc.allJSONCalls(); len(calls) > 0 {
 		return calls
 	}
-	return parseFunctionToolCalls(content, idOffset, allowIncomplete)
+	// Reset the cursor + emitted counter before scanning the function form.
+	sc.pos = 0
+	sc.emitted = 0
+	return sc.allFunctionCalls()
 }
 
-func parseJSONToolCalls(content string, idOffset int, allowIncomplete bool) []parsedToolCall {
+// toolCallScanner parses tool-call XML from a content buffer with a single
+// forward cursor. Advancing the cursor past each consumed call means a
+// <function= or <parameter= token embedded inside a parameter value is
+// consumed as part of that value and never mistaken for a top-level marker —
+// which removes the repeated full-buffer rescans (and the O(n²)
+// insideOpenParameter check) of a pure find-all-then-filter approach.
+type toolCallScanner struct {
+	content         string
+	pos             int // cursor into content
+	idOffset        int // base for synthesized call ids
+	emitted         int // calls emitted so far (for id assignment)
+	allowIncomplete bool
+}
+
+func (sc *toolCallScanner) nextID() string {
+	id := fmt.Sprintf("call_%d", sc.idOffset+sc.emitted)
+	sc.emitted++
+	return id
+}
+
+// allJSONCalls extracts every <tool_call>{json}</tool_call> block.
+func (sc *toolCallScanner) allJSONCalls() []parsedToolCall {
 	var calls []parsedToolCall
-	for _, m := range toolCallJSONStartRE.FindAllStringIndex(content, -1) {
-		pc, ok := extractJSONToolCall(content, m[1]-1, allowIncomplete)
+	for {
+		pc, ok := sc.nextJSONCall()
 		if !ok {
-			continue
+			return calls
 		}
-		pc.id = fmt.Sprintf("call_%d", idOffset+len(calls))
 		calls = append(calls, pc)
 	}
-	return calls
+}
+
+func (sc *toolCallScanner) nextJSONCall() (parsedToolCall, bool) {
+	for {
+		rel := toolCallJSONStartRE.FindStringIndex(sc.content[sc.pos:])
+		if rel == nil {
+			return parsedToolCall{}, false
+		}
+		braceStart := sc.pos + rel[1] - 1
+		// Advance past this opening tag so a failed extraction cannot rematch.
+		sc.pos += rel[1]
+		pc, ok := extractJSONToolCall(sc.content, braceStart, sc.allowIncomplete)
+		if ok {
+			pc.id = sc.nextID()
+			return pc, true
+		}
+	}
+}
+
+// allFunctionCalls extracts every <function=name>...</function> block.
+func (sc *toolCallScanner) allFunctionCalls() []parsedToolCall {
+	var calls []parsedToolCall
+	for {
+		pc, ok := sc.nextFunctionCall()
+		if !ok {
+			return calls
+		}
+		calls = append(calls, pc)
+	}
+}
+
+func (sc *toolCallScanner) nextFunctionCall() (parsedToolCall, bool) {
+	for {
+		rel := functionStartRE.FindStringSubmatchIndex(sc.content[sc.pos:])
+		if rel == nil {
+			return parsedToolCall{}, false
+		}
+		nameStart := sc.pos + rel[2]
+		nameEnd := sc.pos + rel[3]
+		bodyStart := sc.pos + rel[1]
+		name := sc.content[nameStart:nameEnd]
+
+		args, end, ok := sc.parseFunctionBody(bodyStart)
+		if !ok {
+			// Not a valid call at this tag; advance past it and keep scanning.
+			sc.pos = bodyStart
+			continue
+		}
+		sc.pos = end
+		return parsedToolCall{id: sc.nextID(), name: name, arguments: args}, true
+	}
+}
+
+// parseFunctionBody scans the body of a function call starting at bodyStart,
+// returning the JSON arguments and the absolute cursor position one past the
+// consumed body. Because the cursor only moves forward through consumed
+// parameter values, a nested <function= token inside a value is absorbed and
+// never treated as a top-level boundary.
+func (sc *toolCallScanner) parseFunctionBody(bodyStart int) (args string, end int, ok bool) {
+	if !sc.allowIncomplete {
+		// A complete call must own a </function> close. The body is the text
+		// before it; the cursor lands just past the close.
+		closeRel := strings.Index(sc.content[bodyStart:], "</function>")
+		if closeRel < 0 {
+			return "", 0, false
+		}
+		body := sc.content[bodyStart : bodyStart+closeRel]
+		end = bodyStart + closeRel + len("</function>")
+		parsed, ok := parseFunctionParameters(body, false)
+		if !ok {
+			return "", 0, false
+		}
+		return parsed, end, true
+	}
+
+	// Incomplete (streaming): bound the body at the next top-level <function=
+	// start (or a trailing </tool_call>) so a subsequent call is not swallowed;
+	// otherwise run to end of content. Then strip any partial </function>.
+	bodyEnd := len(sc.content)
+	if m := functionStartRE.FindStringIndex(sc.content[bodyStart:]); m != nil {
+		bodyEnd = bodyStart + m[0]
+	}
+	if m := toolCallEndTagRE.FindStringIndex(sc.content[bodyStart:]); m != nil {
+		if c := bodyStart + m[0]; c < bodyEnd {
+			bodyEnd = c
+		}
+	}
+	body := functionCloseRE.ReplaceAllString(sc.content[bodyStart:bodyEnd], "")
+	parsed, ok := parseFunctionParameters(body, true)
+	if !ok {
+		return "", 0, false
+	}
+	return parsed, bodyEnd, true
 }
 
 func extractJSONToolCall(content string, start int, allowIncomplete bool) (parsedToolCall, bool) {
@@ -111,61 +228,6 @@ func extractJSONToolCall(content string, start int, allowIncomplete bool) (parse
 		name:      name,
 		arguments: marshalArgs(obj["arguments"]),
 	}, true
-}
-
-func parseFunctionToolCalls(content string, idOffset int, allowIncomplete bool) []parsedToolCall {
-	var calls []parsedToolCall
-	funcStarts := functionStartRE.FindAllStringSubmatchIndex(content, -1)
-	for idx, fm := range funcStarts {
-		if insideOpenParameter(content, fm[0]) {
-			continue
-		}
-		pc, ok := extractFunctionToolCall(content, idx, funcStarts, allowIncomplete)
-		if !ok {
-			continue
-		}
-		pc.id = fmt.Sprintf("call_%d", idOffset+len(calls))
-		calls = append(calls, pc)
-	}
-	return calls
-}
-
-func extractFunctionToolCall(content string, idx int, funcStarts [][]int, allowIncomplete bool) (parsedToolCall, bool) {
-	fm := funcStarts[idx]
-	name := content[fm[2]:fm[3]]
-	body := extractFunctionBody(content, idx, funcStarts, allowIncomplete)
-	if body == "" {
-		return parsedToolCall{}, false
-	}
-	args, ok := parseFunctionParameters(body, allowIncomplete)
-	if !ok {
-		return parsedToolCall{}, false
-	}
-	return parsedToolCall{name: name, arguments: args}, true
-}
-
-func extractFunctionBody(content string, idx int, funcStarts [][]int, allowIncomplete bool) string {
-	fm := funcStarts[idx]
-	bodyStart := fm[1]
-	nextFunc := len(content)
-	if idx+1 < len(funcStarts) {
-		nextFunc = funcStarts[idx+1][0]
-	}
-	bodyEnd := nextFunc
-	if m := toolCallEndTagRE.FindStringIndex(content[bodyStart:]); m != nil {
-		if candidate := bodyStart + m[0]; candidate < bodyEnd {
-			bodyEnd = candidate
-		}
-	}
-	body := content[bodyStart:bodyEnd]
-	if !allowIncomplete {
-		closeIdx := strings.LastIndex(body, "</function>")
-		if closeIdx < 0 {
-			return ""
-		}
-		return body[:closeIdx]
-	}
-	return functionCloseRE.ReplaceAllString(body, "")
 }
 
 func marshalArgs(v any) string {
@@ -214,19 +276,6 @@ func updateStringState(s string, i int, ch byte, inString bool) (bool, int) {
 		return false, i
 	}
 	return true, i
-}
-
-func insideOpenParameter(content string, pos int) bool {
-	lastParamStart := -1
-	for _, m := range paramStartRE.FindAllStringIndex(content[:pos], -1) {
-		lastParamStart = m[0]
-	}
-	if lastParamStart < 0 {
-		return false
-	}
-	lastParamClose := strings.LastIndex(content[:pos], "</parameter>")
-	lastFuncClose := strings.LastIndex(content[:pos], "</function>")
-	return lastParamStart > maxInt(lastParamClose, lastFuncClose)
 }
 
 func parseFunctionParameters(body string, allowIncomplete bool) (string, bool) {
@@ -290,11 +339,4 @@ func finalizeParameterValue(val string, allowIncomplete bool) (string, bool) {
 		return strings.TrimSpace(val), true
 	}
 	return strings.TrimSpace(paramCloseRE.ReplaceAllString(val, "")), true
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
