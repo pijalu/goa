@@ -101,6 +101,15 @@ type Agent struct {
 	// turn end to avoid double-counting.
 	turnStatsEmitted bool
 
+	// turnStartHistoryLen records the length of the history at the start of
+	// the current user turn. It is used to identify assistant messages that
+	// belong to the current turn so that stream retries can undo only the
+	// partial/corrupted message from the failing round, not assistant messages
+	// from earlier rounds of the same turn. A negative value means the field
+	// has not been initialized (e.g. tests that call undoLastAssistantMessage
+	// directly), in which case the function falls back to the last user message.
+	turnStartHistoryLen int
+
 	// providerUsage stores the Usage from EventDone (stream_options.include_usage).
 	// When set, emitTurnStats uses these real token counts instead of estimates.
 	providerUsage *provider.Usage
@@ -392,6 +401,9 @@ func NewAgent(cfg Config) *Agent {
 		reg:           NewToolRegistry(cfg.Tools),
 		Output:        make(chan Message, 10),
 		turnToolCalls: make(map[string]int),
+		// Negative means "not initialized yet"; undoLastAssistantMessage falls
+		// back to the last user message in that case (e.g. direct test calls).
+		turnStartHistoryLen: -1,
 	}
 	if cfg.Model.ContextWindow > 0 {
 		a.contextWindow.Store(int64(cfg.Model.ContextWindow))
@@ -1018,10 +1030,7 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		a.cfg.Logger.Log(Info, "Re-streaming after tool call (round %d)", round)
 		a.emitEvent(OutputEvent{Type: EventProgress, Text: "Sending request..."})
 		a.mu.Lock()
-		a.streamLoopDetected = false
-		a.contentBuf.Reset()
-		a.thinkingBuf.Reset()
-		a.thinkingDisplayBuf.Reset()
+		a.resetStreamRoundState()
 		a.mu.Unlock()
 		return provider.Stream(model, a.buildProviderContext(ctx), opts)
 	}
@@ -1120,6 +1129,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.thinkingBuf.Reset()
 	a.thinkingDisplayBuf.Reset()
 	a.turnStatsEmitted = false
+	a.turnStartHistoryLen = len(a.history)
 	a.bufferedToolCalls = nil
 	a.bufferedToolCallCount = 0
 	a.budgetToolCalls = make(map[string]string)
@@ -1155,6 +1165,13 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 // handleStreamFailure handles a stream error, retrying when appropriate.
 // Returns true if the failure was fully handled (caller should return retErr).
 func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model provider.Model, opts provider.StreamOptions) (handled bool, retErr error) {
+	a.cfg.Logger.Log(Warn, "stream failure: %v", streamErr)
+	// Reset per-round buffers so a retry starts with a clean state. Then undo
+	// any assistant message that was appended in the failing round (if any).
+	// Hold mu for both operations since they share state.
+	a.mu.Lock()
+	a.resetStreamRoundState()
+	a.mu.Unlock()
 	a.undoLastAssistantMessage()
 
 	if errors.Is(streamErr, context.Canceled) {
@@ -1219,6 +1236,12 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 			a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
 			return toolCallEncountered, true
 		}
+		// Clean up after the failed retry so the next attempt (or error path)
+		// does not inherit partial tokens, buffered tool calls, or a spurious
+		// assistant message.
+		a.mu.Lock()
+		a.resetStreamRoundState()
+		a.mu.Unlock()
 		a.undoLastAssistantMessage()
 		a.cfg.Logger.Log(Warn, "retry attempt %d also failed: %v", retry+1, streamErr)
 	}
@@ -1307,25 +1330,29 @@ func extractTextFromBlocks(blocks []provider.ContentBlock) string {
 }
 
 // undoLastAssistantMessage removes the most recent assistant message that
-// was added after the last user message. Used after a stream error to retry
+// was added during the current turn. Used after a stream error to retry
 // without the partial/corrupted assistant turn polluting the context.
 //
-// Guarding by the last user message prevents a cancellation or retry from
-// deleting a previous turn's assistant message when the current stream never
-// produced one.
+// turnStartHistoryLen records the history length at the start of the user
+// turn, so this only removes assistant messages appended in the current
+// turn and preserves assistant messages from earlier turns (e.g. tool-call
+// rounds that completed successfully before the failing re-stream).
 func (a *Agent) undoLastAssistantMessage() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	lastUserIdx := -1
-	for i := len(a.history) - 1; i >= 0; i-- {
-		if a.history[i].Role == User {
-			lastUserIdx = i
-			break
+	start := a.turnStartHistoryLen
+	if start < 0 {
+		start = 0
+		for i := len(a.history) - 1; i >= 0; i-- {
+			if a.history[i].Role == User {
+				start = i + 1
+				break
+			}
 		}
 	}
 
-	for i := len(a.history) - 1; i > lastUserIdx; i-- {
+	for i := len(a.history) - 1; i >= start; i-- {
 		if a.history[i].Role == Assistant {
 			a.history = a.history[:i]
 			return
@@ -1499,6 +1526,25 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 
 // finishStreamTurn handles a stream that ended without an explicit EventDone.
 func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.AssistantMessageEventStream) (bool, error) {
+	// If the stream terminated with an error, surface it before finalizing.
+	// Context-length errors are handled with compression; other errors are
+	// passed to handleStreamFailure for retry.
+	if err := stream.Err(); err != nil {
+		a.recordGenDuration()
+		if isContextLengthError(err) {
+			// Check for context overflow BEFORE finalizing the turn.  If the stream
+			// terminated with a context-length error, we must NOT call finalizeStreamTurn
+			// because that would emit EventEnd (telling the UI the turn is done) and
+			// append partial content to history.  The retry would produce a second
+			// EventEnd, and the UI would see two turns — the duplicate response bug.
+			// Instead, skip finalization: let the error propagate to handleStreamFailure
+			// which will undo any partial assistant message, compress, and retry.
+			a.handleContextError(err)
+			return false, err
+		}
+		return false, err
+	}
+
 	// Extract provider Usage from the stream result (set by updateResultWithUsage
 	// after the usage chunk arrives from stream_options.include_usage).
 	if result := stream.Result(); result != nil && result.Usage != nil && !a.turnStatsEmitted {
@@ -1507,18 +1553,6 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 		a.mu.Unlock()
 	}
 	a.recordGenDuration()
-
-	// Check for context overflow BEFORE finalizing the turn.  If the stream
-	// terminated with a context-length error, we must NOT call finalizeStreamTurn
-	// because that would emit EventEnd (telling the UI the turn is done) and
-	// append partial content to history.  The retry would produce a second
-	// EventEnd, and the UI would see two turns — the duplicate response bug.
-	// Instead, skip finalization: let the error propagate to handleStreamFailure
-	// which will undo any partial assistant message, compress, and retry.
-	if err := stream.Err(); err != nil && isContextLengthError(err) {
-		a.handleContextError(err)
-		return false, err
-	}
 
 	toolCallsEncountered := a.completeStreamTurn(ctx)
 	return toolCallsEncountered, nil
@@ -1538,16 +1572,16 @@ func (a *Agent) resolveStreamError(stream *provider.AssistantMessageEventStream,
 		return err
 	}
 
-	a.finalizeStreamTurn()
-
+	// For non-context errors, return the error so handleStreamFailure can retry.
+	// Do NOT finalize the turn here: doing so would emit a spurious EventEnd and
+	// append a partial assistant message that would be left behind after the
+	// retry succeeds, producing duplicate responses in the UI.
 	if e := stream.Err(); e != nil {
 		a.cfg.Logger.Log(Error, "stream error: %v", e)
-		a.handleContextError(e)
 		return e
 	}
 	if eventErr != nil {
 		a.cfg.Logger.Log(Error, "stream error: %v", eventErr)
-		a.handleContextError(eventErr)
 		return eventErr
 	}
 	a.cfg.Logger.Log(Warn, "stream ended with error event but no error object")
@@ -1640,6 +1674,19 @@ func containsToolXMLTag(text string) bool {
 func (a *Agent) resetThinkingStall() {
 	a.thinkingStallStart = time.Time{}
 	a.thinkingStallWarned = false
+}
+
+// resetStreamRoundState clears per-round buffers and flags before a re-stream
+// or retry. This prevents a failed or truncated assistant response from
+// leaking partial tokens or buffered tool calls into the next attempt.
+func (a *Agent) resetStreamRoundState() {
+	a.contentBuf.Reset()
+	a.thinkingBuf.Reset()
+	a.thinkingDisplayBuf.Reset()
+	a.bufferedToolCalls = nil
+	a.bufferedToolCallCount = 0
+	a.streamLoopDetected = false
+	a.resetThinkingStall()
 }
 
 // checkStreamLoop detects immediate repetition of a suffix within the current
@@ -2424,6 +2471,7 @@ func (a *Agent) emitTurnStats() {
 
 	stats := a.computeContextStats()
 	a.emitEvent(OutputEvent{Type: EventContextStats, ContextStats: &stats})
+	a.turnStatsEmitted = true
 }
 
 func (a *Agent) copyHistory() []Message {

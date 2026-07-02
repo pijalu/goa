@@ -624,6 +624,11 @@ func friendlyConnectionHint(raw string) string {
 		return ""
 	}
 	switch {
+	case strings.Contains(raw, "SSE stream ended prematurely"),
+		strings.Contains(raw, "finish_reason"):
+		return "[connection error] The LLM stream ended unexpectedly before the response was complete.\n" +
+			"  • This may be a temporary server hiccup — goa will retry automatically\n" +
+			"  • If the problem persists, check your LLM server logs and network connection"
 	case strings.Contains(raw, "context deadline exceeded"),
 		strings.Contains(raw, "timeout"),
 		strings.Contains(raw, "Client.Timeout"):

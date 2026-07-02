@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,5 +167,53 @@ func TestStreamOpenAICompletions_ActiveStreamDoesNotTimeout(t *testing.T) {
 	}
 	if streamErr := stream.Err(); streamErr != nil {
 		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+}
+
+func TestStreamOpenAICompletions_PrematureEOFWithoutFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let\"}}]}\n\n")
+		// Connection closes without finish_reason or [DONE].
+	}))
+	defer server.Close()
+
+	model := provider.Model{
+		ID:      "test-model",
+		Api:     provider.ApiOpenAICompletions,
+		BaseURL: server.URL + "/v1/chat/completions",
+	}
+
+	stream, err := streamOpenAICompletions(model, provider.Context{}, provider.StreamOptions{}, provider.OpenAICompletionsCompat{})
+	if err != nil {
+		t.Fatalf("streamOpenAICompletions failed: %v", err)
+	}
+
+	var gotErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for event := range stream.Seq() {
+			if event.Type == provider.EventError {
+				gotErr = event.Error
+			}
+		}
+		if gotErr == nil {
+			gotErr = stream.Err()
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not terminate")
+	}
+
+	if gotErr == nil {
+		t.Fatal("expected premature EOF error, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "ended prematurely") {
+		t.Fatalf("expected premature EOF error, got %v", gotErr)
 	}
 }

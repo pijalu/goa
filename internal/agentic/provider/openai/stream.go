@@ -304,6 +304,7 @@ func parseOpenAIStream(body io.ReadCloser, stream *provider.AssistantMessageEven
 
 	acc := newStreamAccum(stream)
 	var decodeErr error
+	sawDone := false
 
 	err := provider.ParseSSE(body, func(chunk string) {
 		msgs, pErr := parseChunk(chunk)
@@ -314,7 +315,7 @@ func parseOpenAIStream(body io.ReadCloser, stream *provider.AssistantMessageEven
 		for _, m := range msgs {
 			acc.dispatchMessage(m)
 		}
-	})
+	}, func() { sawDone = true })
 
 	if err != nil {
 		stream.CloseWithError(fmt.Errorf("SSE parse error: %w", err))
@@ -322,6 +323,15 @@ func parseOpenAIStream(body io.ReadCloser, stream *provider.AssistantMessageEven
 	}
 	if decodeErr != nil {
 		stream.CloseWithError(fmt.Errorf("chunk decode failed: %w", decodeErr))
+		return
+	}
+	// SSE stream fully consumed ([DONE] or clean EOF). If the provider closed
+	// the connection without sending a finish_reason (or [DONE]) and we are
+	// not in the middle of a tool-call batch, treat it as a premature EOF so
+	// the agent retries and the UI surfaces an error instead of freezing on
+	// a partial response.
+	if acc.pendingStopReason == nil && len(acc.ToolAccums) == 0 && !sawDone {
+		stream.CloseWithError(fmt.Errorf("SSE stream ended prematurely: no finish_reason or [DONE] marker"))
 		return
 	}
 	// SSE stream fully consumed ([DONE] or clean EOF).

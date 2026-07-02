@@ -53,6 +53,64 @@ func textEventProvider(text string) *testAPIProvider {
 	})
 }
 
+// flakyTestProvider simulates a provider that fails a configurable number of
+// times with a stream error and then succeeds. Used to verify the agent retry
+// path.
+type flakyTestProvider struct {
+	api           provider.Api
+	mu            sync.Mutex
+	failures      int
+	successEvents []provider.AssistantMessageEvent
+}
+
+func (p *flakyTestProvider) API() provider.Api { return p.api }
+
+func (p *flakyTestProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	result := provider.NewAssistantMessageEventStream(64)
+	p.mu.Lock()
+	shouldFail := p.failures > 0
+	if shouldFail {
+		p.failures--
+	}
+	events := p.successEvents
+	p.mu.Unlock()
+
+	go func() {
+		if shouldFail {
+			result.Push(provider.AssistantMessageEvent{
+				Type:  provider.EventTextDelta,
+				Delta: "Let",
+			})
+			result.CloseWithError(fmt.Errorf("SSE stream ended prematurely: no finish_reason or [DONE] marker"))
+			return
+		}
+		for _, e := range events {
+			result.Push(e)
+		}
+		result.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "Recovered"}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return result, nil
+}
+
+func (p *flakyTestProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	base := provider.BuildSimpleOptions(model, opts)
+	return p.Stream(model, ctx, base)
+}
+
+func registerFlakyTestProvider(failures int, successEvents []provider.AssistantMessageEvent) *flakyTestProvider {
+	uniqueID := testProviderCounter.Add(1)
+	p := &flakyTestProvider{
+		api:           provider.Api(fmt.Sprintf("test-flaky-%d", uniqueID)),
+		failures:      failures,
+		successEvents: successEvents,
+	}
+	provider.RegisterApiProvider(p)
+	return p
+}
+
 func TestAgent_AddRemoveObserver(t *testing.T) {
 	agent := NewAgent(Config{
 		Model:        testModel("test-observer-api"),
@@ -898,9 +956,9 @@ func TestAgent_DisableToolBudget_AllowsUnlimitedCalls(t *testing.T) {
 
 	p := registerBatchToolProvider(totalCalls)
 	agent := NewAgent(Config{
-		Model:             testModel(p.API()),
-		SystemPrompt:      "test",
-		Logger:            NewLogger(Error),
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
 		Tools: []Tool{mockTool{
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
@@ -955,9 +1013,9 @@ func newAgentWithMockTool(api provider.Api, maxCalls int) *Agent {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal: 0,
+		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:  maxCalls,
+		MaxToolCalls:             maxCalls,
 	})
 }
 
@@ -1124,9 +1182,9 @@ func TestAgent_ToolCallLimitResetsOnUniqueCall(t *testing.T) {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal: 0,
+		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:  3,
+		MaxToolCalls:             3,
 	})
 
 	obs := runAgentCollectingEvents(t, agent, "call tools")
@@ -1168,9 +1226,9 @@ func TestAgent_ToolCallLimitEnforcedOnRepeatedCall(t *testing.T) {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal: 0,
+		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:  3,
+		MaxToolCalls:             3,
 	})
 
 	obs := runAgentCollectingEvents(t, agent, "call tools")
@@ -1211,8 +1269,8 @@ func TestAgent_ToolCallLimit_WindowCustom(t *testing.T) {
 		SystemPrompt:             "test",
 		Logger:                   NewLogger(Error),
 		Tools:                    []Tool{mockTool{name: "mock_tool", schema: ToolSchema{Name: "mock_tool", Description: "test"}}},
-		MaxToolRepeatTotal:            0,
-		MaxToolRepeatConsecutive:            0,
+		MaxToolRepeatTotal:       0,
+		MaxToolRepeatConsecutive: 0,
 		MaxToolCalls:             10,
 		ToolCallLimitResetWindow: 5,
 	})
@@ -1255,9 +1313,9 @@ func TestAgent_ToolCallLimit_BudgetMessageReturnedToLLM(t *testing.T) {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal: 0,
+		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0,
-		MaxToolCalls:  2,
+		MaxToolCalls:             2,
 	})
 
 	runAgentCollectingEvents(t, agent, "call tools")
@@ -1600,9 +1658,9 @@ func TestAgent_ToolCallRounds_NotLimitedToThree(t *testing.T) {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal: 0,
+		MaxToolRepeatTotal:       0,
 		MaxToolRepeatConsecutive: 0, // allow repeated identical calls
-		MaxToolCalls:  0, // no per-turn budget
+		MaxToolCalls:             0, // no per-turn budget
 	})
 
 	obs := &mockEventObserver{}
@@ -1658,9 +1716,9 @@ func TestAgent_ExactToolRepeatGuard_5Percent(t *testing.T) {
 			name:   "mock_tool",
 			schema: ToolSchema{Name: "mock_tool", Description: "test"},
 		}},
-		MaxToolRepeatTotal: 0, // disable total-repeat guardrail
+		MaxToolRepeatTotal:       0, // disable total-repeat guardrail
 		MaxToolRepeatConsecutive: 3, // stop after 3 consecutive identical calls
-		MaxToolCalls:  20,
+		MaxToolCalls:             20,
 	})
 
 	obs := runAgentCollectingEvents(t, agent, "call tools")
@@ -1852,6 +1910,82 @@ func TestAgent_UndoLastAssistantMessage_RemovesCurrentTurnAssistant(t *testing.T
 	if history[len(history)-1].Role != User {
 		t.Errorf("expected last message to be user after undo, got %v", history[len(history)-1].Role)
 	}
+}
+
+func TestAgent_RetriesStreamError(t *testing.T) {
+	p := registerFlakyTestProvider(1, []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered"},
+	})
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var contents []string
+	var endWithError bool
+	for _, e := range obs.Events() {
+		if e.Type == EventContent && e.Role == Assistant {
+			contents = append(contents, e.Text)
+		}
+		if e.Type == EventEnd && e.Text != "" {
+			endWithError = true
+		}
+	}
+	if endWithError {
+		t.Error("expected retry to succeed, but EventEnd carried an error")
+	}
+	if !containsContent(contents, "Recovered") {
+		t.Errorf("expected recovered assistant content, got %q", contents)
+	}
+}
+
+func TestAgent_StreamErrorRetriesExhausted(t *testing.T) {
+	p := registerFlakyTestProvider(3, []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Never reached"},
+	})
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+	})
+
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := agent.Run(ctx, "prompt")
+	if err == nil {
+		t.Fatal("expected error after retries exhausted, got nil")
+	}
+	if !strings.Contains(err.Error(), "LLM connection lost after retries") {
+		t.Errorf("expected retries-exhausted error, got %v", err)
+	}
+}
+
+func containsContent(contents []string, text string) bool {
+	for _, c := range contents {
+		if strings.Contains(c, text) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgent_ToolResultTooLarge_TruncatesWithNotice(t *testing.T) {

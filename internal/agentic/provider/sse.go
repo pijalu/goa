@@ -14,7 +14,10 @@ import (
 // It handles the "data: " prefix and stops when it encounters "[DONE]".
 // Returns nil on normal completion (either [DONE] or clean EOF), or the
 // scanner error if the stream was interrupted by an I/O error.
-func ParseSSE(r io.Reader, emit func(string)) error {
+// Optional done callbacks are invoked when the stream ends because of a
+// [DONE] marker, so callers can distinguish a clean end-of-stream sentinel
+// from a plain connection close.
+func ParseSSE(r io.Reader, emit func(string), done ...func()) error {
 	scanner := bufio.NewScanner(r)
 	// Increase buffer from default 64KB to 1MB to handle large SSE lines
 	// (e.g., long tool call arguments, large content chunks).
@@ -27,6 +30,9 @@ func ParseSSE(r io.Reader, emit func(string)) error {
 			payload := strings.TrimPrefix(line, "data: ")
 
 			if payload == "[DONE]" {
+				for _, d := range done {
+					d()
+				}
 				return nil
 			}
 
