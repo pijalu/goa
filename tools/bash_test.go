@@ -5,10 +5,12 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 )
@@ -678,5 +680,33 @@ func TestBashTool_LoopHints(t *testing.T) {
 	long := strings.Repeat("x", 100)
 	if got := h.Status(`{"command":"` + long + `"}`); !strings.HasSuffix(got, "...") || len(got) > len("Running: ")+60 {
 		t.Errorf("long-command status not truncated: %q", got)
+	}
+}
+
+// TestBashTool_ExecuteContext_CancelInterruptsLongCommand verifies that
+// cancelling the turn context kills the running process tree promptly
+// instead of waiting for the bash timeout. Before implementing ContextTool,
+// BashTool waited on time.After only and could not be interrupted by Stop().
+func TestBashTool_ExecuteContext_CancelInterruptsLongCommand(t *testing.T) {
+	tool := &BashTool{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := tool.ExecuteContext(ctx, `{"command":"sleep 30"}`)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected cancelled error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("expected cancelled error, got %v", err)
+	}
+	// Must return well before the 30s sleep / 60s default timeout.
+	if elapsed > 5*time.Second {
+		t.Errorf("cancellation did not interrupt promptly: elapsed=%v", elapsed)
 	}
 }

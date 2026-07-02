@@ -5,8 +5,10 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/sandbox"
@@ -70,5 +72,39 @@ func TestTerminalToolArgumentPositionSafe(t *testing.T) {
 	}
 	if !strings.Contains(out, "curl") {
 		t.Fatalf("output %q does not contain curl", out)
+	}
+}
+
+// TestTerminalTool_ExecuteContext_CancelInterruptsLongCommand verifies that
+// cancelling the turn context interrupts a running command via the sandbox's
+// Cancel context instead of waiting for the configured timeout.
+func TestTerminalTool_ExecuteContext_CancelInterruptsLongCommand(t *testing.T) {
+	mgr, err := sandbox.NewManager("", nil)
+	if err != nil {
+		t.Fatalf("sandbox manager: %v", err)
+	}
+	tool := &TerminalTool{
+		SandboxMgr:     mgr,
+		TimeoutSeconds: 60,
+		MaxOutputChars: 1000,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err = tool.ExecuteContext(ctx, `{"command":"sleep 30"}`)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected cancelled error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("expected cancelled error, got %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("cancellation did not interrupt promptly: elapsed=%v", elapsed)
 	}
 }

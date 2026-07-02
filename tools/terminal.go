@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -94,6 +95,13 @@ type terminalParams struct {
 
 // Execute runs the shell command with security checks.
 func (t *TerminalTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+// ExecuteContext runs the shell command with security checks, forwarding the
+// caller's context so a cancelled turn (Stop() / user cancellation) interrupts
+// the running subprocess instead of waiting for the timeout to elapse.
+func (t *TerminalTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	p, err := t.parseParams(input)
 	if err != nil {
 		return "", err
@@ -111,8 +119,8 @@ func (t *TerminalTool) Execute(input string) (string, error) {
 	timeout := t.timeout(p.Timeout)
 	maxOut := t.maxOutput()
 
-	res, duration, runErr := t.run(p.Command, workdir, env, timeout, maxOut)
-	return t.formatResult(p.Command, res, duration, runErr)
+	res, duration, runErr := t.run(ctx, p.Command, workdir, env, timeout, maxOut)
+	return t.formatResult(p.Command, res, duration, runErr, ctx)
 }
 
 func (t *TerminalTool) parseParams(input string) (terminalParams, error) {
@@ -150,7 +158,7 @@ func (t *TerminalTool) buildEnv(workdir string) map[string]string {
 	return b.BuildSafeEnv(workdir)
 }
 
-func (t *TerminalTool) run(command, workdir string, env map[string]string, timeout time.Duration, maxOut int) (sandbox.RunResult, time.Duration, error) {
+func (t *TerminalTool) run(ctx context.Context, command, workdir string, env map[string]string, timeout time.Duration, maxOut int) (sandbox.RunResult, time.Duration, error) {
 	start := time.Now()
 	res, runErr := sandbox.Run(sandbox.RunOpts{
 		Cmd:       getShellCmd(command),
@@ -158,15 +166,21 @@ func (t *TerminalTool) run(command, workdir string, env map[string]string, timeo
 		Env:       env,
 		Timeout:   timeout,
 		MaxOutput: maxOut,
+		Cancel:    ctx,
 	})
 	return res, time.Since(start), runErr
 }
 
-func (t *TerminalTool) formatResult(command string, res sandbox.RunResult, duration time.Duration, runErr error) (string, error) {
+func (t *TerminalTool) formatResult(command string, res sandbox.RunResult, duration time.Duration, runErr error, ctx context.Context) (string, error) {
 	output := t.maskOutput(res.Output)
 	output = t.applyCompression(command, output)
 	output = t.truncate(output)
 
+	// A cancelled turn takes precedence over timeout/exit-code reporting:
+	// surface the ctx error so the agent stops promptly.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", toolErr("terminal", "cancelled", fmt.Sprintf("Command cancelled: %v", ctxErr))
+	}
 	if runErr != nil && !res.TimedOut {
 		return "", toolErr("terminal", "exec_error", fmt.Sprintf("Execution error: %v", runErr))
 	}

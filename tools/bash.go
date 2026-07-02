@@ -6,6 +6,7 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -101,6 +102,13 @@ type bashParams struct {
 
 // Execute runs the shell command with security checks.
 func (t *BashTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+// ExecuteContext runs the shell command with security checks, forwarding the
+// caller's context so a cancelled turn (Stop() / user cancellation) kills the
+// running process tree instead of waiting for the timeout to elapse.
+func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	var p bashParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
 		return "", toolErr("bash", "invalid_input", fmt.Sprintf("Cannot parse parameters: %v", err))
@@ -121,7 +129,13 @@ func (t *BashTool) Execute(input string) (string, error) {
 		return "", err
 	}
 
-	output, duration, timedOut, err := t.runCommand(&p)
+	output, duration, timedOut, err := t.runCommand(ctx, &p)
+
+	// A cancelled turn takes precedence over the timeout/exit reporting so
+	// the agent stops promptly instead of emitting a timeout bubble.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", toolErr("bash", "cancelled", fmt.Sprintf("Command cancelled: %v", ctxErr))
+	}
 	if timedOut {
 		actualTimeout := normalizeBashTimeout(p.Timeout)
 		return "", toolErr("bash", "timeout", fmt.Sprintf("Command timed out after %ds", actualTimeout))
@@ -130,7 +144,7 @@ func (t *BashTool) Execute(input string) (string, error) {
 	return t.formatOutput(&p, output, err, duration)
 }
 
-func (t *BashTool) runCommand(p *bashParams) ([]byte, time.Duration, bool, error) {
+func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.Duration, bool, error) {
 	timeoutS := normalizeBashTimeout(p.Timeout)
 
 	cmd := newBashCommand(p.Command)
@@ -160,6 +174,11 @@ func (t *BashTool) runCommand(p *bashParams) ([]byte, time.Duration, bool, error
 		output := stdout.Bytes()
 		output = append(output, stderr.Bytes()...)
 		return output, time.Since(start), false, runErr
+	case <-ctx.Done():
+		// Turn cancellation: kill the whole process tree promptly so a stopped
+		// turn does not keep child processes alive until the bash timeout.
+		killBashProcessTree(cmd)
+		<-done
 	case <-time.After(time.Duration(timeoutS) * time.Second):
 		timedOut = true
 		killBashProcessTree(cmd)
