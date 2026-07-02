@@ -78,7 +78,7 @@ func compressGitDiff(output string) (string, bool) {
 	// which OVERWRITES the first entries of result (the first file's path header
 	// and first hunk line) instead of prepending. append(header, result...) keeps
 	// every scanned line, matching every other compressor in this file.
-	header := formatCompressHeader("git diff", result, fileCount, len(result))
+	header := formatCompressHeader("git diff")
 	return strings.Join(append(header, result...), "\n"), true
 }
 
@@ -145,7 +145,7 @@ func compressGitStatus(output string) (string, bool) {
 	}
 
 	var header []string
-	header = append(header, formatCompressHeader("git status", result, changed, untracked)...)
+	header = append(header, formatCompressHeader("git status")...)
 	if changed > 0 {
 		header = append(header, "Changed: "+pluralize(changed, "file"))
 	}
@@ -188,7 +188,7 @@ func compressGitLog(output string) (string, bool) {
 		return output, false
 	}
 
-	header := formatCompressHeader("git log", result, commitCount, 0)
+	header := formatCompressHeader("git log")
 	return strings.Join(append(header, result...), "\n"), true
 }
 
@@ -222,7 +222,7 @@ func compressLs(output string) (string, bool) {
 		return output, false
 	}
 
-	header := formatCompressHeader("ls", result, total, hidden)
+	header := formatCompressHeader("ls")
 	if hidden > 0 {
 		header = append(header, pluralize(hidden, "hidden file"))
 	}
@@ -268,7 +268,7 @@ func compressGrep(output string) (string, bool) {
 		totalMatches += c
 	}
 
-	header := formatCompressHeader("grep", result, fileCount, 0)
+	header := formatCompressHeader("grep")
 	header = append(header, pluralize(fileCount, "file")+" with "+pluralize(totalMatches, "match"))
 	return strings.Join(append(header, result...), "\n"), true
 }
@@ -298,7 +298,7 @@ func compressRead(output string) (string, bool) {
 		return output, false
 	}
 
-	header := formatCompressHeader("read", result, lineNum-1, 0)
+	header := formatCompressHeader("read")
 	return strings.Join(append(header, result...), "\n"), true
 }
 
@@ -339,7 +339,7 @@ func compressTestOutput(output string) (string, bool) {
 		return output, false
 	}
 
-	header := formatCompressHeader("test", result, passCount+failCount, 0)
+	header := formatCompressHeader("test")
 	header = append(header, pluralize(passCount, "passed")+", "+pluralize(failCount, "failed"))
 	return strings.Join(append(header, result...), "\n"), true
 }
@@ -356,7 +356,7 @@ func fmtLineNum(n int, line string) string {
 	return fmt.Sprintf("%5d  %s", n, line)
 }
 
-func formatCompressHeader(cmd string, lines []string, a, b int) []string {
+func formatCompressHeader(cmd string) []string {
 	return []string{
 		"",
 		"[compress: " + cmd + "]",
