@@ -4,6 +4,8 @@ package agentic
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -633,3 +635,223 @@ func streamHasRepeatedSuffix(text string, window, repeatsNeeded int) bool {
 // executeBufferedToolCalls. Mutating history here would produce two assistant
 // messages for a single turn and corrupt the tool_calls/tool_results pairing
 // (breaks strict OpenAI-style providers such as DeepSeek).
+
+func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.StreamOptions, provider.Context) {
+	a.mu.Lock()
+	a.turnToolCalls = make(map[string]int)
+	a.turnToolCallCount = 0
+	a.contentBuf.Reset()
+	a.thinkingBuf.Reset()
+	a.thinkingDisplayBuf.Reset()
+	a.turnStatsEmitted = false
+	a.turnStartHistoryLen = len(a.history)
+	a.bufferedToolCalls = nil
+	a.bufferedToolCallCount = 0
+	a.budgetToolCalls = make(map[string]string)
+	a.stopBatchAfterThis = false
+	a.providerUsage = nil
+	a.recentToolCalls = nil
+	a.lastCallKey = ""
+	a.consecutiveCount = 0
+	a.streamLoopDetected = false
+	a.overflowRecoveryAttempted = false
+	a.mu.Unlock()
+
+	if err := a.maybeCompress(ctx); err != nil {
+		a.cfg.Logger.Log(Error, "proactive compression failed: %v", err)
+	}
+	a.enforceContextCeiling()
+
+	pCtx := a.buildProviderContext(ctx)
+
+	model := a.cfg.Model
+	if a.cfg.ToolResultAsUser != nil {
+		model = a.withToolResultAsUser(model, *a.cfg.ToolResultAsUser)
+	}
+
+	opts := a.cfg.StreamOptions
+	if opts.APIKey == "" && a.cfg.APIKey != "" {
+		opts.APIKey = a.cfg.APIKey
+	}
+
+	return model, opts, pCtx
+}
+
+// formatRetryMessage turns a stream error into a concise user-facing
+// message that includes the HTTP status, provider message, and error code
+// when available.
+func formatRetryMessage(err error) string {
+	var respErr provider.HTTPResponseError
+	if errors.As(err, &respErr) {
+		status := respErr.StatusCode()
+		body := respErr.ResponseBody()
+		var parsed struct {
+			Error struct {
+				Message string `json:"message"`
+				Code    string `json:"code"`
+				Type    string `json:"type"`
+			} `json:"error"`
+		}
+		msg := ""
+		code := ""
+		if json.Unmarshal([]byte(body), &parsed) == nil && parsed.Error.Message != "" {
+			msg = parsed.Error.Message
+			code = parsed.Error.Code
+		}
+		if msg == "" {
+			msg = body
+		}
+		if code != "" {
+			return fmt.Sprintf("Error: %d - %s (%s) - retrying", status, msg, code)
+		}
+		return fmt.Sprintf("Error: %d - %s - retrying", status, msg)
+	}
+	return fmt.Sprintf("Error: %s - retrying", err.Error())
+}
+
+// handleStreamFailure handles a stream error, retrying when appropriate.
+// Returns true if the failure was fully handled (caller should return retErr).
+func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model provider.Model, opts provider.StreamOptions) (handled bool, retErr error) {
+	a.cfg.Logger.Log(Warn, "stream failure: %v", streamErr)
+	// Reset per-round buffers so a retry starts with a clean state. Then undo
+	// any assistant message that was appended in the failing round (if any).
+	// Hold mu for both operations since they share state.
+	a.mu.Lock()
+	a.resetStreamRoundState()
+	a.mu.Unlock()
+	a.undoLastAssistantMessage()
+
+	if errors.Is(streamErr, context.Canceled) {
+		return true, streamErr
+	}
+
+	// Overflow guard: only one compress+retry per turn.  If compression
+	// cannot free enough space, the second overflow kills the turn with
+	// a clear error instead of retrying into an infinite loop.
+	if isContextLengthError(streamErr) {
+		if a.overflowRecoveryAttempted {
+			a.cfg.Logger.Log(Error, "Overflow recovery failed after compress+retry — giving up")
+			a.emitEvent(OutputEvent{Type: EventProgress, Text: "Context overflow recovery failed — compress+retry cycle exhausted. The conversation is too long for this model's context window."})
+			return true, fmt.Errorf("context overflow: compression freed insufficient space after retry; try a larger context window model or reset the session")
+		}
+		a.overflowRecoveryAttempted = true
+		a.cfg.Logger.Log(Info, "Overflow recovery: compressing context and retrying once")
+	}
+
+	a.cfg.Logger.Log(Warn, "stream error, retrying: %v", streamErr)
+
+	// Surface the failure as a system chat bubble so the user can see the
+	// retry in the conversation history, not just a transient status message.
+	a.emitEvent(OutputEvent{
+		Type:     EventContent,
+		Role:     System,
+		Text:     formatRetryMessage(streamErr),
+		Metadata: map[string]string{"category": "system-notification"},
+	})
+
+	toolCallEncountered, retried := a.retryStream(ctx, streamErr, model, opts)
+	if retried {
+		if !toolCallEncountered {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+	if ctx.Err() != nil {
+		return true, ctx.Err()
+	}
+	return true, fmt.Errorf("LLM connection lost after retries: %w", streamErr)
+}
+
+// retryStream attempts to reconnect up to two times after a stream error.
+// Returns whether any retry succeeded and whether a tool call was encountered.
+// On context cancellation the function returns promptly instead of sleeping
+// through the full backoff window.
+func (a *Agent) retryStream(ctx context.Context, originalErr error, model provider.Model, opts provider.StreamOptions) (toolCallEncountered bool, retried bool) {
+	var streamErr error
+	for retry := 0; retry < 2; retry++ {
+		a.cfg.Logger.Log(Info, "retry attempt %d after stream error", retry+1)
+		a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d/2)...", retry+1)})
+
+		// Sleep with context awareness so Ctrl+C isn't ignored during backoff.
+		select {
+		case <-time.After(time.Duration(retry+1) * time.Second):
+		case <-ctx.Done():
+			return false, false
+		}
+
+		pCtx := a.buildProviderContext(ctx)
+		stream, err := provider.Stream(model, pCtx, opts)
+		if err != nil {
+			a.cfg.Logger.Log(Warn, "retry stream failed: %v", err)
+			continue
+		}
+		toolCallEncountered, streamErr = a.consumeStream(ctx, stream)
+		if streamErr == nil {
+			a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+			return toolCallEncountered, true
+		}
+		// Clean up after the failed retry so the next attempt (or error path)
+		// does not inherit partial tokens, buffered tool calls, or a spurious
+		// assistant message.
+		a.mu.Lock()
+		a.resetStreamRoundState()
+		a.mu.Unlock()
+		a.undoLastAssistantMessage()
+		a.cfg.Logger.Log(Warn, "retry attempt %d also failed: %v", retry+1, streamErr)
+	}
+	return false, false
+}
+
+func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
+	a.mu.Lock()
+	msgs := make([]provider.Message, 0, len(a.history))
+	for i, m := range a.history {
+		// Skip only the initial system prompt message; the provider context
+		// carries it separately via SystemPrompt. Later system messages (for
+		// example runtime tool-change notifications) must still be sent.
+		if i == 0 && a.cfg.SystemPrompt != "" && m.Role == System {
+			continue
+		}
+		msgs = append(msgs, migrateMessage(m))
+	}
+	a.mu.Unlock()
+
+	sp := a.cfg.SystemPrompt
+	if p := a.cfg.GoalStateProvider; p != nil {
+		if reminder := p.ActiveGoalReminder(); reminder != "" {
+			sp = reminder + "\n\n" + sp
+		}
+	}
+
+	return provider.Context{
+		Context:      ctx,
+		SystemPrompt: sp,
+		Messages:     msgs,
+		Tools:        migrateSchemas(a.reg.Schemas()),
+	}
+}
+
+// logProviderContext writes a concise summary of the context to the debug log.
+// This makes it possible to verify that tool calls and tool results are being
+// passed back to the LLM correctly.
+func (a *Agent) logProviderContext(ctx provider.Context, attempt int) {
+	a.cfg.Logger.Log(Debug, "Provider context (attempt %d): %d messages", attempt, len(ctx.Messages))
+	for i, m := range ctx.Messages {
+		a.logProviderMessage(i, m)
+	}
+}
+
+func (a *Agent) logProviderMessage(i int, m provider.Message) {
+	switch m.Role {
+	case provider.RoleAssistant:
+		toolCount := countToolCallBlocks(m.Content)
+		a.cfg.Logger.Log(Debug, "  [%d] assistant content=%q tool_calls=%d", i, extractTextFromBlocks(m.Content), toolCount)
+	case provider.RoleToolResult:
+		toolID, toolName := extractToolResultIdentity(m.Content)
+		a.cfg.Logger.Log(Debug, "  [%d] tool_result id=%s name=%s text_len=%d", i, toolID, toolName, len(extractTextFromBlocks(m.Content)))
+	case provider.RoleUser:
+		a.cfg.Logger.Log(Debug, "  [%d] user content_len=%d", i, len(extractTextFromBlocks(m.Content)))
+	}
+}
