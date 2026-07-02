@@ -109,18 +109,6 @@ func (r *ToolRegistry) AllDocumented() []DocumentedTool {
 	return result
 }
 
-// Schemas returns the ToolSchema for all registered tools in a stable,
-// alphabetical order. This ensures repeated requests with the same tools
-// produce identical payloads, which is required for prompt-cache hits.
-func (r *ToolRegistry) Schemas() []agentic.ToolSchema {
-	tools := r.All()
-	schemas := make([]agentic.ToolSchema, len(tools))
-	for i, t := range tools {
-		schemas[i] = t.Schema()
-	}
-	return schemas
-}
-
 // ConfigurableToolNames returns the names of tools whose registration can
 // be toggled at runtime through configuration.
 func ConfigurableToolNames() []string {

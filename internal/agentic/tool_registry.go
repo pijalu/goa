@@ -9,10 +9,27 @@ import (
 	"sync"
 )
 
+// ToolLookup is the abstraction the agent depends on for resolving tools by
+// name and producing stable, cache-friendly tool schemas. Depending on this
+// interface (rather than a concrete registry) follows Dependency Inversion:// the agent no longer owns a parallel registry type, and any implementor
+// (the canonical ToolRegistry below, or a mutable catalog in a higher layer)
+// can supply the agent's working set.
+type ToolLookup interface {
+	// Get retrieves a tool by name.
+	Get(name string) (Tool, bool)
+	// Schemas returns the schemas of all tools in a stable, alphabetical
+	// order suitable for prompt-cache hits.
+	Schemas() []ToolSchema
+	// LoopHints returns LoopAnnotated metadata for tools that supply it.
+	LoopHints() map[string]ToolLoopHints
+}
+
 // ToolRegistry manages the collection of tools available to an Agent.
 // It provides lookup by name and schema aggregation for LLM requests.
 // A ToolRegistry is immutable after construction (SetTools builds a fresh one),
 // so the computed schema list is cached after the first call.
+// It is the canonical ToolLookup implementation used by the agent and the MCP
+// publisher.
 type ToolRegistry struct {
 	tools    map[string]Tool
 	once     sync.Once
@@ -74,3 +91,7 @@ func (r *ToolRegistry) LoopHints() map[string]ToolLoopHints {
 	})
 	return r.cachedHints
 }
+
+// Compile-time assurance that ToolRegistry satisfies the ToolLookup
+// abstraction the agent depends on.
+var _ ToolLookup = (*ToolRegistry)(nil)

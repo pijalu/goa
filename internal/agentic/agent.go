@@ -59,7 +59,7 @@ const (
 //	agent.Run(ctx, "Hello!")
 type Agent struct {
 	cfg       Config
-	reg       *ToolRegistry
+	reg       ToolLookup
 	history   []Message
 	observers []observerEntry
 	// observerCounter is a per-agent source of unique observer ids used as

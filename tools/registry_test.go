@@ -95,33 +95,6 @@ func TestToolRegistryAllDocumented(t *testing.T) {
 	}
 }
 
-// TestToolRegistrySchemas verifies schema listing and stable ordering.
-func TestToolRegistrySchemas(t *testing.T) {
-	reg := NewToolRegistry()
-	reg.Register(&testTool{name: "one"})
-	reg.Register(&testTool{name: "two"})
-	reg.Register(&testTool{name: "alpha"})
-
-	schemas := reg.Schemas()
-	if len(schemas) != 3 {
-		t.Fatalf("Schemas = %d, want 3", len(schemas))
-	}
-	want := []string{"alpha", "one", "two"}
-	for i, wantName := range want {
-		if schemas[i].Name != wantName {
-			t.Errorf("Schemas[%d].Name = %q, want %q", i, schemas[i].Name, wantName)
-		}
-	}
-
-	// Repeated calls must produce the same order (deterministic, for prompt caching).
-	schemas2 := reg.Schemas()
-	for i := range schemas {
-		if schemas2[i].Name != schemas[i].Name {
-			t.Errorf("Schemas order changed between calls: %q vs %q", schemas2[i].Name, schemas[i].Name)
-		}
-	}
-}
-
 // TestToolRegistryUnregister verifies a tool can be removed at runtime.
 func TestToolRegistryUnregister(t *testing.T) {
 	reg := NewToolRegistry()
