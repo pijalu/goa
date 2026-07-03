@@ -365,6 +365,23 @@ func initGoalSystem(projectDir string, eventBus *event.Bus, agentMgr *core.Agent
 		Mode:  manager.Mode,
 		Agent: &agentManagerRunner{agentMgr: agentMgr},
 	}
+	// Wire goal token tracking: each token stats event reports cumulative
+	// tokens for the current turn; compute the delta and accrue to goal.
+	// Token totals are per-turn (reset between turns), so a smaller total
+	// signals a new turn — reset the accumulator.
+	var lastGoalTokens int
+	agentMgr.SetGoalTokenRecorder(func(total int) {
+		if total < lastGoalTokens {
+			lastGoalTokens = 0 // new turn started
+		}
+		if total > lastGoalTokens {
+			delta := total - lastGoalTokens
+			if _, err := manager.Mode.RecordTokenUsage(delta); err != nil {
+				agentMgr.EmitEvent("Failed to record goal tokens: " + err.Error())
+			}
+			lastGoalTokens = total
+		}
+	})
 	agentMgr.SetPostTurnHook(func() {
 		if active := manager.Mode.GetActiveGoal(); active != nil {
 			_ = driver.Drive(context.Background())

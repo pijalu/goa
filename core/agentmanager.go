@@ -113,6 +113,10 @@ type AgentManager struct {
 	projectDir           string
 	confirmTool          func(ctx context.Context, toolName, input string) (bool, error)
 
+	// goalTokenRecorder is called with the latest total token count for
+	// the active agent turn. Used by the goal system to track token budget.
+	goalTokenRecorder func(totalTokens int)
+
 	contextWindowRefresher func() int
 	contextWindowRefreshed bool
 	baseSystemPrompt       string

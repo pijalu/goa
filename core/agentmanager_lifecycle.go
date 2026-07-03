@@ -71,6 +71,15 @@ func (am *AgentManager) SetContextWindowRefresher(fn func() int) {
 	am.contextWindowRefresher = fn
 }
 
+// SetGoalTokenRecorder registers a callback invoked for each EventTokenStats
+// event with the cumulative token count for the current turn. Used by the
+// goal system to track token budget consumption. Passing nil disables.
+func (am *AgentManager) SetGoalTokenRecorder(fn func(totalTokens int)) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.goalTokenRecorder = fn
+}
+
 func (am *AgentManager) dispatchLifecycle(hookType string, payload map[string]any) {
 	if am.lifecycleRegistry == nil {
 		return

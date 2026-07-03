@@ -168,6 +168,10 @@ func (am *AgentManager) handleTokenStatsEvent(event agentic.OutputEvent) {
 		0, // cost computed at display time
 		ctxEstimate, ctxMax,
 	)
+	// Report cumulative token usage to the goal system.
+	if am.goalTokenRecorder != nil {
+		am.goalTokenRecorder(event.Timings.PromptN + event.Timings.PredictedN)
+	}
 }
 
 func (am *AgentManager) handleContextStatsEvent(event agentic.OutputEvent) {
