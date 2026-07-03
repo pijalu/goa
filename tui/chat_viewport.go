@@ -53,6 +53,14 @@ type ChatMessage struct {
 // MessageEntry (Data + View) through the Model.
 type ChatViewport struct {
 	*Conversation
+
+	// renderCache holds the concatenated output of the last Render call.
+	// Invalidated by any mutation to the conversation (Append, UpdateLast,
+	// RemoveLast) so that the next frame re-renders from scratch.
+	renderCache struct {
+		width int
+		lines []string
+	}
 }
 
 // NewChatViewport creates a ChatViewport backed by a fresh Conversation.
@@ -62,9 +70,14 @@ func NewChatViewport() *ChatViewport {
 
 // Render draws every entry's view. Viewport clipping is handled by the
 // Compositor handles viewport clipping.
+// The result is cached and reused on subsequent calls at the same width
+// until the conversation is mutated (Append, UpdateLast, RemoveLast).
 func (cv *ChatViewport) Render(width int) []string {
 	if width <= 0 {
 		return nil
+	}
+	if cv.renderCache.width == width && cv.renderCache.lines != nil {
+		return cv.renderCache.lines
 	}
 	var allLines []string
 	cv.ForEach(func(e MessageEntry) {
@@ -72,12 +85,16 @@ func (cv *ChatViewport) Render(width int) []string {
 			allLines = append(allLines, cl...)
 		}
 	})
+	cv.renderCache.width = width
+	cv.renderCache.lines = allLines
 	return allLines
 }
 
-// Invalidate propagates to every entry's view.
+// Invalidate propagates to every entry's view and clears the render cache.
 func (cv *ChatViewport) Invalidate() {
 	cv.ForEach(func(e MessageEntry) { e.View.Invalidate() })
+	cv.renderCache.width = 0
+	cv.renderCache.lines = nil
 }
 
 // HandleInput is a no-op: the chat viewport is never focused (input goes to the
@@ -86,8 +103,39 @@ func (cv *ChatViewport) HandleInput(string) {}
 
 // ── Generic Model delegates (composable primitives) ──
 
-// Append adds an entry to the conversation (single write path for Model+View).
-func (cv *ChatViewport) Append(e MessageEntry) int { return cv.Conversation.Append(e) }
+// Append adds an entry to the conversation (single write path for Model+View)
+// and invalidates the render cache.
+func (cv *ChatViewport) Append(e MessageEntry) int {
+	cv.invalidateCache()
+	return cv.Conversation.Append(e)
+}
+
+// UpdateLast applies fn to the most recent entry matching types and
+// invalidates the render cache.
+func (cv *ChatViewport) UpdateLast(types []ConsoleItemType, fn func(*MessageEntry)) bool {
+	if cv.Conversation.UpdateLast(types, fn) {
+		cv.invalidateCache()
+		return true
+	}
+	return false
+}
+
+// RemoveLast removes and returns the most recent entry matching types and
+// invalidates the render cache.
+func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool) {
+	if e, ok := cv.Conversation.RemoveLast(types); ok {
+		cv.invalidateCache()
+		return e, true
+	}
+	return MessageEntry{}, false
+}
+
+// invalidateCache clears the viewport-level render cache so the next
+// Render call rebuilds from scratch.
+func (cv *ChatViewport) invalidateCache() {
+	cv.renderCache.width = 0
+	cv.renderCache.lines = nil
+}
 
 // Snapshot returns the pure-data view of the conversation for agents/controllers.
 func (cv *ChatViewport) Snapshot() []MessageData { return cv.Conversation.Snapshot() }
@@ -217,6 +265,7 @@ func (cv *ChatViewport) AddClarifyCard(card *ClarifyCard) {
 func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionComponent {
 	tc := NewToolExecution(name, FormatToolArgs(name, argsJSON))
 	tc.SetArgsJSON(argsJSON)
+	tc.SetOnInvalidate(func() { cv.invalidateCache() })
 	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleToolCall, Text: name}, View: tc})
 	return tc
 }
@@ -225,7 +274,7 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 
 // RemoveLastMessage removes and returns the last message's view (any type).
 func (cv *ChatViewport) RemoveLastMessage() Component {
-	e, ok := cv.Conversation.RemoveLast(nil)
+	e, ok := cv.RemoveLast(nil) // use override that invalidates cache
 	if !ok {
 		return nil
 	}
@@ -235,7 +284,7 @@ func (cv *ChatViewport) RemoveLastMessage() Component {
 // RemoveLastMessageOfType removes the most recent message only if it matches one
 // of types. Used to clean up partial assistant/thinking blocks after cancel.
 func (cv *ChatViewport) RemoveLastMessageOfType(types ...ConsoleItemType) bool {
-	_, ok := cv.Conversation.RemoveLast(types)
+	_, ok := cv.RemoveLast(types) // use override that invalidates cache
 	return ok
 }
 

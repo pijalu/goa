@@ -20,6 +20,8 @@ type MessageData struct {
 // Conversation stores entries; agents/controllers read the Data, the renderer
 // reads the View. Keeping them paired in one entry (updated together through a
 // single write path) is what keeps Model and View in sync by construction.
+// MessageEntry pairs one message's data with its visual Component (the View).
+// The View owns the rendering logic; the Data is the semantic payload.
 type MessageEntry struct {
 	Data MessageData
 	View Component

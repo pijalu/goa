@@ -41,6 +41,10 @@ type ToolExecutionComponent struct {
 	isPartial bool
 	renderer  ToolRenderer
 	generic   genericRenderer
+
+	// onInvalidate is called when internal state changes (output, status,
+	// duration) so the owning ChatViewport can invalidate its render cache.
+	onInvalidate func()
 }
 
 // toolBox renders the tool header, body, and trailing blank with the
@@ -193,11 +197,21 @@ func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 	tc.Invalidate()
 }
 
+// SetOnInvalidate registers a callback invoked whenever the component's
+// internal state changes, allowing the owning viewport to invalidate its
+// render cache.
+func (tc *ToolExecutionComponent) SetOnInvalidate(fn func()) {
+	tc.onInvalidate = fn
+}
+
 // SetOutput sets the tool's output text.
 func (tc *ToolExecutionComponent) SetOutput(output string) {
 	tc.output = output
 	tc.updateBox()
 	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
 }
 
 // Status returns the current execution status.
@@ -213,6 +227,9 @@ func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
 	}
 	tc.updateBox()
 	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
 }
 
 // SetPartial marks the component as still streaming/running.
@@ -220,6 +237,9 @@ func (tc *ToolExecutionComponent) SetPartial(partial bool) {
 	tc.isPartial = partial
 	tc.updateBox()
 	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
 }
 
 // SetDuration sets the execution duration string (e.g., "0.04s").
@@ -227,6 +247,9 @@ func (tc *ToolExecutionComponent) SetDuration(d string) {
 	tc.duration = d
 	tc.updateBox()
 	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
 }
 
 // ── Rendering (delegated to Container which renders spacer + box children) ──
