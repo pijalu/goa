@@ -58,6 +58,8 @@ const (
 type sessionStats struct {
 	PromptN         int
 	PredictedN      int
+	CacheReadTotal  int
+	CacheWriteTotal int
 	SpeedTokPerSec  float64 // last turn output tok/s
 	ContextEstimate int
 	ContextMax      int
@@ -604,6 +606,8 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	st := sessionStats{
 		PromptN:         a.tokenPromptTotal,
 		PredictedN:      a.tokenPredictedTotal,
+		CacheReadTotal:  a.tokenCacheReadTotal,
+		CacheWriteTotal: a.tokenCacheWriteTotal,
 		SpeedTokPerSec:  a.lastTurnSpeed,
 		ContextEstimate: a.tokenSessionEstimate,
 		ContextMax:      a.tokenSessionMax,
@@ -719,6 +723,12 @@ func buildFooterStatParts(s sessionStats) []string {
 	}
 	if s.SpeedTokPerSec > 0 {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
+	}
+	// Cache hit percentage = CacheRead / (prompt + cache read + cache write).
+	if s.PromptN > 0 && s.CacheReadTotal > 0 {
+		total := s.PromptN + s.CacheReadTotal + s.CacheWriteTotal
+		pct := float64(s.CacheReadTotal) / float64(total) * 100
+		parts = append(parts, fmt.Sprintf("☕%.0f%%", pct))
 	}
 	if s.ToolCalls > 0 {
 		parts = append(parts, formatToolCallPart(s.ToolCalls, s.ToolCallLevel))

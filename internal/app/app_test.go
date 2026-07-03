@@ -482,6 +482,30 @@ func TestFormatFooterStats_NoToolCalls_OmitsTC(t *testing.T) {
 	}
 }
 
+func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
+	stats := formatFooterStats(sessionStats{
+		PromptN:         1000,
+		PredictedN:      500,
+		CacheReadTotal:  300,
+		CacheWriteTotal: 200,
+		ContextEstimate: 2000,
+		ContextMax:      10000,
+	})
+	// 300 / (1000+300+200) = 300/1500 = 20%
+	if !strings.Contains(stats, "☕20%") {
+		t.Errorf("expected cache hit 20%%, got %q", stats)
+	}
+	// Cache read without prompt > 0 should not display.
+	noPrompt := formatFooterStats(sessionStats{
+		PromptN:         0,
+		CacheReadTotal:  300,
+		CacheWriteTotal: 200,
+	})
+	if strings.Contains(noPrompt, "☕") {
+		t.Errorf("expected no cache hit display when PromptN is 0, got %q", noPrompt)
+	}
+}
+
 func TestLogTurnStats_UsesPerTurnCounts(t *testing.T) {
 	app := New(testSubsystems())
 	app.lastTurnPromptN = 100
