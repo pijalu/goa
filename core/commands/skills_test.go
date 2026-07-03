@@ -11,7 +11,9 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/skills"
+	"github.com/pijalu/goa/tools"
 )
 
 // testSkill helpers.
@@ -582,3 +584,61 @@ func TestSkillNameCompletions_SearchPrefix(t *testing.T) {
 		t.Errorf("expected show:test-gen only, got: %+v", comps)
 	}
 }
+
+func TestRunSkill_SubAgent_ViaRunSkillTool(t *testing.T) {
+	var buf strings.Builder
+	var submitted string
+	submitFunc := func(s string) { submitted = s }
+	reg := newSkillRegistry(map[string]*skills.Skill{
+		"golang-check": testSkill("golang-check", "Run static analysis checks", false, ""),
+	})
+	cfg := &config.Config{
+		Skills: config.SkillsConfig{
+			ExecutionMode: config.AgenticSkillModeSubAgent,
+		},
+	}
+	ctx := skillTestContextWithHistory(&buf)
+	ctx.Config = cfg
+	tool := &fakeTool{
+		name:   "run_skill",
+		result: "Found 2 issues.",
+	}
+	tr := tools.NewToolRegistry()
+	tr.Register(tool)
+	ctx.ToolRegistry = tr
+
+	err := runSkill(ctx, reg, submitFunc, []string{"golang-check", "src/"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tool.input == "" {
+		t.Fatal("expected run_skill tool to be called")
+	}
+	if submitted == "" {
+		t.Fatal("expected result to be submitted")
+	}
+	if !strings.Contains(submitted, "Found 2 issues.") {
+		t.Errorf("expected tool result in submission, got: %s", submitted)
+	}
+	if !strings.Contains(buf.String(), "via run_skill tool") {
+		t.Errorf("expected tool invocation message, got: %s", buf.String())
+	}
+}
+
+type fakeTool struct {
+	name   string
+	result string
+	err    error
+	input  string
+}
+
+func (f *fakeTool) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{Name: f.name}
+}
+
+func (f *fakeTool) Execute(input string) (string, error) {
+	f.input = input
+	return f.result, f.err
+}
+
+func (f *fakeTool) IsRetryable(err error) bool { return false }

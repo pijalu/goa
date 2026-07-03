@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/multiagent"
@@ -105,25 +107,88 @@ func (t *SkillRunnerTool) runSubAgent(skill *Skill, task string) (string, error)
 		return "", fmt.Errorf("sub-agent execution requires AgentPool (not configured)")
 	}
 
-	roleName := "skill-" + skill.Meta.Name
-	t.Pool.SetConfig(roleName, multiagent.AgentConfig{
-		SystemPrompt: skill.Body,
-	})
+	roleName := fmt.Sprintf("skill-%s-%d", skill.Meta.Name, time.Now().UnixNano())
+	allowedTools := t.resolveAllowedTools(skill)
+	systemPrompt, userPrompt := t.buildSubAgentPrompt(skill, task)
 
-	agent, err := t.Pool.GetOrCreate(roleName)
+	agent, err := t.Pool.CreateTaskAgent(roleName, multiagent.AgentConfig{
+		SystemPrompt:    systemPrompt,
+		AllowedTools:    allowedTools,
+		ReasoningEffort: agentic.ReasoningEffortOff,
+	})
 	if err != nil {
 		return "", fmt.Errorf("create skill sub-agent: %w", err)
 	}
+	defer t.Pool.Evict(roleName)
 
-	// TODO: thread the agent's run context through tool execution so this
-	// can be cancelled mid-flight. For now, context.Background() mirrors the
-	// previous behaviour.
-	result, err := agent.RunAndCollect(context.Background(), "Task: "+task)
+	result, err := agent.RunAndCollect(context.Background(), userPrompt)
 	if err != nil {
 		return "", fmt.Errorf("skill sub-agent failed: %w", err)
 	}
-
 	return result, nil
+}
+
+func (t *SkillRunnerTool) resolveAllowedTools(skill *Skill) []string {
+	all := t.Pool.ToolNames()
+	allowed := skill.Meta.Tools
+	if len(allowed) == 0 {
+		allowed = defaultSubAgentToolsFrom(all)
+	}
+	return excludeToolNames(allowed, "run_skill", "terminal")
+}
+
+func defaultSubAgentToolsFrom(all []string) []string {
+	candidates := map[string]bool{
+		"bash":     true,
+		"read":     true,
+		"edit":     true,
+		"write":    true,
+		"webfetch": true,
+	}
+	var out []string
+	for _, name := range all {
+		if candidates[name] {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func excludeToolNames(names []string, excluded ...string) []string {
+	ex := make(map[string]bool, len(excluded))
+	for _, e := range excluded {
+		ex[e] = true
+	}
+	var out []string
+	for _, n := range names {
+		if !ex[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func (t *SkillRunnerTool) buildSubAgentPrompt(skill *Skill, task string) (string, string) {
+	systemPrompt := "You are a skill executor. Execute the instructions in the user message and return the final output. Do not plan, summarize, or explain the instructions; perform the work immediately. Use the bash tool for shell commands. Return only the final output."
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("[Skill: %s]\n%s\n", skill.Meta.Name, skill.Body))
+	if subs := t.Registry.SubSkills(skill.Meta.Name); len(subs) > 0 {
+		b.WriteString("\n## Sub-skills\n")
+		for _, sub := range subs {
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, sub.Body))
+		}
+	}
+	if imports := t.Registry.ImportedSkills(skill.Meta.Name); len(imports) > 0 {
+		b.WriteString("\n## Imported skills\n")
+		for _, imp := range imports {
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, imp.Body))
+		}
+	}
+	if task == "" {
+		task = "Run the commands in the skill instructions and return the raw output. Do not plan or explain."
+	}
+	b.WriteString(fmt.Sprintf("\nTask: %s\n", task))
+	return systemPrompt, b.String()
 }
 
 // IsRetryable returns false — tool errors are deterministic.

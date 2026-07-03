@@ -48,6 +48,11 @@ type SkillRegistry interface {
 	IsInline(name string) bool
 	// SubSkills returns the sub-skills of a named skill.
 	SubSkills(name string) []*skills.Skill
+	// ImportedSkills returns the skills imported by a named skill for use
+	// inside its sub-agent.
+	ImportedSkills(name string) []*skills.Skill
+	// HasSubSkills reports whether the named skill has sub-skills.
+	HasSubSkills(name string) bool
 }
 
 // ProviderManager provides provider operations for commands.

@@ -54,6 +54,52 @@ func (s *Skill) SuggestedSkills() []string {
 	return s.Meta.Skills
 }
 
+// ImportedSkills returns the names of skills imported by this skill for use
+// inside its sub-agent.
+func (s *Skill) ImportedSkills() []string {
+	return s.Meta.Skills
+}
+
+// HasSubSkills reports whether the skill references sub-skills that must be
+// executed inside a sub-agent.
+func (s *Skill) HasSubSkills() bool {
+	return len(s.Meta.SubSkills) > 0
+}
+
+// IsInline returns true if the named skill is an inline skill.
+func (r *SkillRegistry) IsInline(name string) bool {
+	s, ok := r.skills[name]
+	return ok && s.Meta.Inline
+}
+
+// SubSkills returns the sub-skills registered for the named skill, or nil
+// if the skill has no sub-skills or is not found.
+func (r *SkillRegistry) SubSkills(name string) []*Skill {
+	return r.subSkills[name]
+}
+
+// ImportedSkills returns the skills imported by the named skill for use
+// inside its sub-agent, or nil if the skill is not found.
+func (r *SkillRegistry) ImportedSkills(name string) []*Skill {
+	s, ok := r.skills[name]
+	if !ok {
+		return nil
+	}
+	var out []*Skill
+	for _, impName := range s.Meta.Skills {
+		if imp, ok := r.skills[impName]; ok {
+			out = append(out, imp)
+		}
+	}
+	return out
+}
+
+// HasSubSkills reports whether the named skill has sub-skills, either from
+// frontmatter or from a skills/ subdirectory.
+func (r *SkillRegistry) HasSubSkills(name string) bool {
+	return r.hasAnySubSkill(name)
+}
+
 // SkillSummary is a lightweight skill description for listing.
 type SkillSummary struct {
 	Name             string
@@ -86,6 +132,7 @@ type TrustChecker interface {
 // filesystem directory tree — no manual registration needed.
 type SkillRegistry struct {
 	skills       map[string]*Skill
+	subSkills    map[string][]*Skill // parent skill name → sub-skills loaded from skills/ subdir
 	dirs         []string
 	embedFS      fs.FS        // optional embedded filesystem for built-in skills
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
@@ -96,8 +143,9 @@ type SkillRegistry struct {
 // NewSkillRegistry creates a registry that scans the given directories.
 func NewSkillRegistry(dirs []string) *SkillRegistry {
 	return &SkillRegistry{
-		skills: make(map[string]*Skill),
-		dirs:   dirs,
+		skills:    make(map[string]*Skill),
+		subSkills: make(map[string][]*Skill),
+		dirs:      dirs,
 	}
 }
 
@@ -183,10 +231,38 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		skill := parseSkill(name, string(data), "embedded", "embedded:/"+path)
 		if skill != nil {
 			r.skills[name] = skill
+			r.scanEmbeddedSubSkills(name, path)
 		}
 		return nil
 	})
 	return err
+}
+
+// scanEmbeddedSubSkills loads sub-skills from a skills/ subdirectory inside
+// the embedded parent skill directory.
+func (r *SkillRegistry) scanEmbeddedSubSkills(parentName, parentPath string) {
+	if r.embedFS == nil {
+		return
+	}
+	subDir := filepath.Join(filepath.Dir(parentPath), "skills")
+	entries, err := fs.ReadDir(r.embedFS, subDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillPath := filepath.Join(subDir, entry.Name(), "SKILL.md")
+		data, err := fs.ReadFile(r.embedFS, skillPath)
+		if err != nil {
+			continue
+		}
+		skill := parseSkill(entry.Name(), string(data), "embedded", "embedded:/"+skillPath)
+		if skill != nil {
+			r.subSkills[parentName] = append(r.subSkills[parentName], skill)
+		}
+	}
 }
 
 func (r *SkillRegistry) scanDir(dir, source string) error {
@@ -210,9 +286,39 @@ func (r *SkillRegistry) scanDir(dir, source string) error {
 		skill := parseSkill(name, string(data), source, skillPath)
 		if skill != nil {
 			r.skills[name] = skill
+			r.scanSubSkills(dir, name, source)
 		}
 	}
 	return nil
+}
+
+// scanSubSkills loads sub-skills from a skills/ subdirectory inside the
+// parent skill directory. Sub-skills are hidden from the main agent and are
+// only available to the sub-agent executing the parent skill.
+func (r *SkillRegistry) scanSubSkills(dir, parentName, source string) {
+	subDir := filepath.Join(dir, parentName, "skills")
+	entries, err := os.ReadDir(subDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		skillPath := filepath.Join(subDir, entry.Name(), "SKILL.md")
+		data, err := os.ReadFile(skillPath)
+		if err != nil {
+			continue
+		}
+		name := entry.Name()
+		if !r.isTrusted(name, skillPath, source) {
+			continue
+		}
+		skill := parseSkill(name, string(data), source, skillPath)
+		if skill != nil {
+			r.subSkills[parentName] = append(r.subSkills[parentName], skill)
+		}
+	}
 }
 
 // Get returns a skill by name.
@@ -231,38 +337,19 @@ func (r *SkillRegistry) List() []SkillSummary {
 			Inline:           s.Meta.Inline,
 			Category:         categoryOrDefault(s.Meta.Category),
 			FilePath:         s.FilePath,
-			RequiresSubAgent: s.HasSubSkills(),
+			RequiresSubAgent: r.hasAnySubSkill(s.Meta.Name),
 		})
 	}
 	return summaries
 }
 
-// HasSubSkills reports whether the skill references sub-skills that must be
-// executed inside a sub-agent.
-func (s *Skill) HasSubSkills() bool {
-	return len(s.Meta.SubSkills) > 0
-}
-
-// IsInline returns true if the named skill is an inline skill.
-func (r *SkillRegistry) IsInline(name string) bool {
-	s, ok := r.skills[name]
-	return ok && s.Meta.Inline
-}
-
-// SubSkills returns the sub-skills registered for the named skill, or nil
-// if the skill has no sub-skills or is not found.
-func (r *SkillRegistry) SubSkills(name string) []*Skill {
-	s, ok := r.skills[name]
-	if !ok {
-		return nil
+// hasAnySubSkill reports whether the named skill has sub-skills from either
+// frontmatter or a skills/ subdirectory.
+func (r *SkillRegistry) hasAnySubSkill(name string) bool {
+	if s, ok := r.skills[name]; ok && len(s.Meta.SubSkills) > 0 {
+		return true
 	}
-	var out []*Skill
-	for _, subName := range s.Meta.SubSkills {
-		if sub, ok := r.skills[subName]; ok {
-			out = append(out, sub)
-		}
-	}
-	return out
+	return len(r.subSkills[name]) > 0
 }
 
 // parseSkill parses a SKILL.md file with YAML frontmatter.

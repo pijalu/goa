@@ -5,6 +5,9 @@
 package skills
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -188,5 +191,121 @@ func TestSkillSuggestedSkills(t *testing.T) {
 	skills := skill.SuggestedSkills()
 	if len(skills) != 2 || skills[0] != "lint" {
 		t.Errorf("SuggestedSkills() = %v, want [lint document]", skills)
+	}
+}
+
+// TestSkillRegistrySubSkillsFromDirectory verifies that skills in a skills/
+// subdirectory are loaded as sub-skills for the parent skill.
+func TestSkillRegistrySubSkillsFromDirectory(t *testing.T) {
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	parentBody := `---
+name: parent
+description: Parent skill
+---
+# Parent
+`
+	if err := os.WriteFile(filepath.Join(parentDir, "SKILL.md"), []byte(parentBody), 0644); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+
+	subDir := filepath.Join(parentDir, "skills", "child")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	childBody := `---
+name: child
+description: Child skill
+---
+# Child
+`
+	if err := os.WriteFile(filepath.Join(subDir, "SKILL.md"), []byte(childBody), 0644); err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if !reg.HasSubSkills("parent") {
+		t.Error("expected parent to have sub-skills")
+	}
+	subs := reg.SubSkills("parent")
+	if len(subs) != 1 || subs[0].Meta.Name != "child" {
+		t.Errorf("SubSkills(parent) = %v, want [child]", subs)
+	}
+	for _, s := range reg.List() {
+		if s.Name == "child" {
+			t.Error("sub-skill should not appear in main skill list")
+		}
+	}
+}
+
+// TestSkillRegistryImportedSkills verifies that skills listed in the skills
+// frontmatter are returned as imported skills.
+func TestSkillRegistryImportedSkills(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"parent", "helper"} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		body := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n# %s\n", name, name, name)
+		if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(body), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	parentPath := filepath.Join(dir, "parent", "SKILL.md")
+	parentBody := `---
+name: parent
+description: Parent
+skills: [helper]
+---
+# Parent
+`
+	if err := os.WriteFile(parentPath, []byte(parentBody), 0644); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	imports := reg.ImportedSkills("parent")
+	if len(imports) != 1 || imports[0].Meta.Name != "helper" {
+		t.Errorf("ImportedSkills(parent) = %v, want [helper]", imports)
+	}
+}
+
+// TestSkillRegistryRequiresSubAgentForSubSkills verifies that a skill with
+// sub-skills is marked as requiring sub-agent execution.
+func TestSkillRegistryRequiresSubAgentForSubSkills(t *testing.T) {
+	dir := t.TempDir()
+	parentDir := filepath.Join(dir, "parent")
+	if err := os.MkdirAll(parentDir, 0755); err != nil {
+		t.Fatalf("mkdir parent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(parentDir, "SKILL.md"), []byte("---\nname: parent\ndescription: Parent\n---\n"), 0644); err != nil {
+		t.Fatalf("write parent: %v", err)
+	}
+	childDir := filepath.Join(parentDir, "skills", "child")
+	if err := os.MkdirAll(childDir, 0755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(childDir, "SKILL.md"), []byte("---\nname: child\ndescription: Child\n---\n"), 0644); err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, s := range reg.List() {
+		if s.Name == "parent" && !s.RequiresSubAgent {
+			t.Error("expected parent to require sub-agent")
+		}
 	}
 }

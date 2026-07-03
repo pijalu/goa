@@ -12,6 +12,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/skills"
 )
 
@@ -180,10 +181,43 @@ func runSkill(
 	}
 	task := strings.Join(args[1:], " ")
 
-	if skill.HasSubSkills() || skillExecutionMode(ctx.Config) == config.AgenticSkillModeSubAgent {
-		return runSkillSubAgent(ctx, reg, skill, task, submitFunc, name)
+	if reg.HasSubSkills(name) || skillExecutionMode(ctx.Config) == config.AgenticSkillModeSubAgent {
+		return runSkillViaTool(ctx, reg, skill, task, submitFunc, name)
 	}
 	return runSkillInline(ctx, skill, task, submitFunc, name)
+}
+
+// runSkillViaTool executes a skill by invoking the run_skill tool if it is
+// registered; otherwise it falls back to the SkillSubAgentRunner.
+func runSkillViaTool(ctx core.Context, reg core.SkillRegistry, skill *skills.Skill, task string, submitFunc func(string), name string) error {
+	if ctx.ToolRegistry != nil {
+		if tool, ok := ctx.ToolRegistry.Get("run_skill"); ok {
+			return executeRunSkillTool(ctx, tool, skill, task, submitFunc, name)
+		}
+	}
+	return runSkillSubAgent(ctx, reg, skill, task, submitFunc, name)
+}
+
+func executeRunSkillTool(ctx core.Context, tool agentic.Tool, skill *skills.Skill, task string, submitFunc func(string), name string) error {
+	if task == "" {
+		task = "Run the commands in the skill instructions and return the raw output. Do not plan or explain."
+	}
+	writeFmt(ctx, "Running skill '%s' via run_skill tool...\n", name)
+	input := fmt.Sprintf(`{"skill_name":%q,"task":%q}`, name, task)
+	result, err := tool.Execute(input)
+	if err != nil {
+		writeFmt(ctx, "Skill '%s' failed: %v\n", name, err)
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[Skill result: %s]\n%s\n", name, result))
+	if submitFunc != nil {
+		submitFunc(sb.String())
+		writeFmt(ctx, "Skill '%s' completed. Result sent to agent.\n", name)
+	} else {
+		writeStr(ctx, sb.String())
+	}
+	return nil
 }
 
 // skillExecutionMode returns the effective skill execution mode from config.
@@ -215,6 +249,12 @@ func runSkillSubAgent(ctx core.Context, reg core.SkillRegistry, skill *skills.Sk
 		b.WriteString("\n## Sub-skills\n")
 		for _, sub := range subs {
 			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, sub.Body))
+		}
+	}
+	if imports := reg.ImportedSkills(name); len(imports) > 0 {
+		b.WriteString("\n## Imported skills\n")
+		for _, imp := range imports {
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, imp.Body))
 		}
 	}
 	b.WriteString(fmt.Sprintf("\nTask: %s\n", task))
