@@ -10,7 +10,11 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/prompts"
+	"github.com/pijalu/goa/skills"
+	"github.com/pijalu/goa/tools"
 )
 
 func TestPopulateModeDefaults_LoadsFromRegistry(t *testing.T) {
@@ -41,5 +45,27 @@ func TestPopulateModeDefaults_PreservesExisting(t *testing.T) {
 
 	if cfg.Mode.Defaults[internal.MajorPlanner] != internal.AutonomySolo {
 		t.Errorf("existing planner default overwritten: got %q", cfg.Mode.Defaults[internal.MajorPlanner])
+	}
+}
+
+func TestRegisterSkillRunnerIfNeeded_RegistersForSubAgentMode(t *testing.T) {
+	skillReg := skills.NewSkillRegistry(nil)
+	skillReg.SetEmbeddedFS(skills.EmbeddedSkillsFS)
+	_ = skillReg.LoadAll()
+	pool := multiagent.NewAgentPool(provider.Model{}, provider.StreamOptions{}, nil)
+	promptReg := prompts.NewRegistry(prompts.EmbeddedFS())
+	toolReg := tools.NewToolRegistry()
+
+	cfg := &config.Config{Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeSubAgent}}
+	registerSkillRunnerIfNeeded(toolReg, skillReg, pool, promptReg, cfg)
+	if _, ok := toolReg.Get("run_skill"); !ok {
+		t.Error("expected run_skill tool to be registered in subagent mode")
+	}
+
+	toolReg2 := tools.NewToolRegistry()
+	cfg2 := &config.Config{Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline}}
+	registerSkillRunnerIfNeeded(toolReg2, skillReg, pool, promptReg, cfg2)
+	if _, ok := toolReg2.Get("run_skill"); ok {
+		t.Error("expected run_skill tool NOT to be registered in inline mode")
 	}
 }

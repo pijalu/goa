@@ -101,20 +101,28 @@ func RenderSkillToolResult(renderer PromptRenderer, skillName, mode, output stri
 }
 
 type safeSkill struct {
-	Name        string
-	Description string
-	Category    string
-	FilePath    string
+	Name         string
+	Description  string
+	Category     string
+	FilePath     string
+	ExecuteTool  string
+	RequiresSubAgent bool
 }
 
 func escapeSkills(skills []SkillSummary) []safeSkill {
 	out := make([]safeSkill, len(skills))
 	for i, s := range skills {
+		executeTool := "read"
+		if s.RequiresSubAgent || categoryOrDefault(s.Category) == SkillCategoryAction {
+			executeTool = "run_skill"
+		}
 		out[i] = safeSkill{
-			Name:        escapeXML(s.Name),
-			Description: escapeXML(s.Description),
-			Category:    escapeXML(s.Category),
-			FilePath:    escapeXML(s.FilePath),
+			Name:             escapeXML(s.Name),
+			Description:      escapeXML(s.Description),
+			Category:         escapeXML(s.Category),
+			FilePath:         escapeXML(s.FilePath),
+			ExecuteTool:      executeTool,
+			RequiresSubAgent: s.RequiresSubAgent,
 		}
 	}
 	return out

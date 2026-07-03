@@ -87,6 +87,10 @@ type subsystems struct {
 	statusMsg   *tui.StatusMsg
 	pendingMsgs *tui.StatusMsg
 
+	// Perf-load mode settings.
+	perfLoad         bool
+	perfLoadDuration time.Duration
+
 	// Active tool components for expand/collapse, keyed by ToolCallID so that
 	// concurrently-executing tool results update the correct component. The
 	// legacy single-slot field is kept as a fallback for events without an ID.
@@ -104,6 +108,10 @@ type subsystems struct {
 	// MemoryBudget limits the tokens injected from memory summaries. 0 means
 	// automatic (1024 tokens or 10% of context window, whichever is smaller).
 	MemoryBudget int
+
+	// ContextWindow overrides the active model's context window for budget
+	// calculations. It is set from local provider detection when available.
+	ContextWindow int
 
 	// Agent-driven tool instances (kept so toggles can update Enabled)
 	requestReviewTool *multiagent.RequestReviewTool
@@ -706,7 +714,7 @@ func restoreCompanionHistory(agent *agentic.Agent, rawHistory []json.RawMessage)
 }
 
 func registerSkillRunnerIfNeeded(toolRegistry *tools.ToolRegistry, skillRegistry *skills.SkillRegistry, pool *multiagent.AgentPool, promptReg *prompts.Registry, cfg *config.Config) {
-	if cfg.Skills.ExecutionMode != "sub-agent" {
+	if cfg.Skills.ExecutionMode != config.AgenticSkillModeSubAgent {
 		return
 	}
 	skillRunner := skills.NewSkillRunnerTool(skillRegistry, pool, promptReg)
@@ -798,6 +806,8 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		lifecycleRegistry: base.lifecycleRegistry,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,
+		perfLoad:          opts.PerfLoad,
+		perfLoadDuration:  opts.PerfLoadDuration,
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
