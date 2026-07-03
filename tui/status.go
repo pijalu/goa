@@ -74,9 +74,22 @@ func (s *StatusMsg) Text() string { return s.text }
 func (s *StatusMsg) SetTUI(t *TUI) { s.tui = t }
 
 // Show sets the status text and starts the spinner animation.
+// After Clear(), subsequent Show() calls are ignored until the
+// spinner has fully settled, preventing late events from re-starting
+// the spinner after the session has ended.
 func (s *StatusMsg) Show(text string) {
 	if s.text == text && s.spinning {
 		return
+	}
+	// If the spinner was cleared, don't restart it — a late event
+	// (e.g. EventProgress after EventEnd) would otherwise re-start
+	// the spinner after handleSessionEnd already cleared it.
+	if !s.spinning && s.text == "" && s.done != nil {
+		select {
+		case <-s.done:
+			return
+		default:
+		}
 	}
 	s.text = text
 	if !s.spinning {

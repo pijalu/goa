@@ -38,18 +38,15 @@ If new items are added, restart the process.
 ## Spinner not removed at end
 **Problem:** The spinner seems to be stuck at the bottom (not moving) after end of the conversation - likely a display artifact - moving the cursor in the input make it disappear.
 
-**Root cause hypothesis:** `handleSessionEnd` at `internal/app/stats.go:374` calls `subs.statusMsg.Clear()`, but the `Clear()` only sets `s.spinning = false` and stops the ticker. If a race exists between the ticker goroutine calling `tickFrame` on the command loop and the TUI render cycle (which reads `frameIdx` via `SpinnerText()`), the last frame may render the spinner character instead of the static `◆`. Alternatively, `IsVisible()` returns `true` as long as `s.text != ""`, and `Clear()` sets `s.text = ""` — but if something sets the status text again AFTER `handleSessionEnd`, the spinner would reappear.
+**Root cause hypothesis:** `handleSessionEnd` calls `subs.statusMsg.Clear()`, but late events (e.g. `EventStateChange` or `EventProgress` arriving after `EventEnd`) can call `Show()` again, re-starting the spinner. A more subtle variant: the compositor's differential render may leave stale terminal output in the status area when the StatusMsg layer is removed (text emptied) and no subsequent re-render overwrites it until user input triggers a frame.
 
-**Fix plan:**
-1. Add a guard in `handleSessionEnd` that also resets the footer activity to "" and explicitly sets `SetModelBusy(false)` (already done).
-2. Check if any other code path calls `statusMsg.Show()` after `handleSessionEnd` — e.g., `handleProgressEvent`, `handleStateChange` with a late state.
-3. Add a `done` channel check in `StatusMsg.Show()` to prevent re-starting the spinner after Clear.
-4. Inspect the render path: if `s.text != ""` but `s.spinning == false`, `Render` returns `"◆"` prefix — the fixed diamond, not a spinner frame. The diamond could be confused with a frozen spinner if the text lingers.
+**Fix applied:**
+1. Added guard in `StatusMsg.Show()`: after `Clear()`, the closed `done` channel prevents re-starting the spinner (`tui/status.go`).
+2. Already done: `handleSessionEnd` at `internal/app/stats.go` calls `Clear()` then `RequestRender()`.
 
 **Test approach:**
-- Unit test: verify that after `Clear()`, `SpinnerText()` returns `"◆"` (not a spinner frame).
-- Unit test: verify that `Show()` after `Clear()` restarts the spinner correctly.
-- Simulate: render a `StatusMsg` post-`Clear()` and confirm the prefix is `"◆"` not a frame character.
+- Unit test: verify that after `Clear()`, `Show()` is a no-op (spinner does not restart).
+- Unit test: render a `StatusMsg` post-`Clear()` and confirm `Render()` returns `nil`.
 
 **Validation:**
 - `go vet ./tui/ ./internal/app/`
@@ -57,30 +54,6 @@ If new items are added, restart the process.
 - `go test -count=1 -race ./tui/ ./internal/app/`
 - New tests as described above
 - PTY check: after conversation ends, the bottom line no longer shows a spinner frame
-
-## Tool call color
-**Problem:** Tool call colors show 60 in orange (`TC:60`) but there didn't seem to be duplication so it should stay in a normal color — color should only be applied in case of loop detection.
-
-**Root cause:** `handleToolResult` at `internal/app/stats.go:251-257` sets `toolCallWarningLevel` to `ToolCallWarning` for ANY `[goa-system]` tool result that is not "budget exceeded" — including informational hints like "this exact tool call was already executed this turn". The level is never reset between turns: once set to `ToolCallWarning`, it persists for the rest of the session. The actual issue is twofold:
-  1. Some `[goa-system]` hints are informational (e.g. `toolRepeatedMessage` — a soft hint about same args) and should NOT raise the warning color to orange
-  2. `toolCallWarningLevel` should be reset at the start of each turn, not persist across the session
-
-**Fix plan:**
-1. In `handleSessionEnd` (or a new `handleSessionStart`/`handleStateChange` for the first content state in a turn), reset `a.toolCallWarningLevel = ToolCallNormal`.
-2. Differentiate `[goa-system]` messages: budget-exceeded → `ToolCallStopped`, loop/interrupt → `ToolCallWarning`, informational hints (repeated call, truncated result) → keep `ToolCallNormal`.
-
-**Test approach:**
-- Unit test: verify `toolCallWarningLevel` resets to `ToolCallNormal` after `handleSessionEnd`.
-- Unit test: verify an informational `[goa-system]` result does NOT set `ToolCallWarning`.
-- Unit test: verify a loop-warning `[goa-system]` result DOES set `ToolCallWarning`.
-
-**Validation:**
-- `go vet ./internal/app/`
-- `staticcheck ./internal/app/`
-- `gocognit -over 15 .` (no new violations in edited files)
-- `gocyclo -over 12 .` (no new violations in edited files)
-- `go test -count=1 -race ./internal/app/`
-- New/updated tests as described above
 
 ## thinking loop false positive
 **Problem:** The loop detector emitted `⚡ [goa-system: warning] Reasoning is repeating — the model may be stuck in a thinking loop.` in session `goa-export-20260703-072830.zip` but the model was not actually in a repeat loop.
@@ -170,6 +143,22 @@ If new items are added, restart the process.
 - `gocyclo -over 12 .` (only pre-existing over-budget functions)
 - `go test -count=1 -race -cover ./...`
 - New tests: `TestBuilder_SaveUniqueTempNames`, `TestBuilder_LoadCorruptedIndexRebuiltFromScratch`, `TestSmartSearchTool_CorruptedIndexRebuilt`, `TestSmartSearchTool_ConcurrentCallsDoNotCorruptIndex`.
+
+### Tool call color (fixed)
+**Problem:** Tool call colors showed `TC:60` in orange even when there was no duplication — color should only be applied in case of actual loop detection.
+
+**Root cause:** `handleToolResult` at `internal/app/stats.go` set `toolCallWarningLevel` to `ToolCallWarning` for ANY `[goa-system]` tool result that was not "budget exceeded" — including informational hints like "this exact tool call was already executed this turn". The level was never reset between turns: once set to `ToolCallWarning`, it persisted for the rest of the session.
+
+**Fix applied:**
+1. Reset `toolCallWarningLevel = ToolCallNormal` at the start of each turn in `handleSessionEnd` so TC color is fresh each turn.
+2. Differentiated `[goa-system]` messages: "budget exceeded" → `ToolCallStopped` (red), "Loop guardrail" / "identical to the previous" → `ToolCallWarning` (orange), all other informational hints → `ToolCallNormal` (green).
+
+**Validation:**
+- `go vet ./internal/app/`
+- `staticcheck ./internal/app/` (no new warnings)
+- `gocognit -over 15 .` (no new violations)
+- `gocyclo -over 12 .` (no new violations)
+- `go test -count=1 -race ./internal/app/`
 
 ### Context size (fixed)
 **Problem:** On local providers (e.g. LM Studio), the real loaded context length (`loaded_context_length`) is only exposed after the model is loaded. `ResolveActiveModel` was querying `/api/v0/models` at startup, before the model was loaded, so it fell back to `max_context_length` (262144) instead of the actual loaded context (32768).

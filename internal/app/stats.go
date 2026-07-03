@@ -252,8 +252,11 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 		switch {
 		case strings.Contains(ev.Text, "budget exceeded"):
 			a.toolCallWarningLevel = maxToolCallLevel(a.toolCallWarningLevel, ToolCallStopped)
-		default:
+		case strings.Contains(ev.Text, "Loop guardrail"),
+			strings.Contains(ev.Text, "identical to the previous"):
 			a.toolCallWarningLevel = maxToolCallLevel(a.toolCallWarningLevel, ToolCallWarning)
+		// All other [goa-system] messages are informational (repeated call hint,
+		// round limit reached, truncated result) — keep ToolCallNormal.
 		}
 	}
 	a.statsMu.Unlock()
@@ -339,6 +342,7 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	a.sessionActive = false
 	a.toolResultsSeen = 0
 	a.turnCount++
+	a.toolCallWarningLevel = ToolCallNormal // reset per-turn so TC color doesn't persist across turns
 	stats := a.buildFooterStatsLocked()
 	a.statsMu.Unlock()
 
