@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/skills"
 )
@@ -208,6 +209,34 @@ func TestRunSkill_SubAgent(t *testing.T) {
 	}
 	if strings.Contains(text, "Skill body for review") {
 		t.Errorf("skill body should NOT be shown when running, got: %s", text)
+	}
+}
+
+func TestRunSkill_ActionSkill_UsesSubAgent_EvenWithInlineConfig(t *testing.T) {
+	var buf strings.Builder
+	reg := newSkillRegistry(map[string]*skills.Skill{
+		"golang-check": testSkill("golang-check", "Run static analysis checks", false, ""),
+	})
+
+	// Reproduce the user's scenario: execution_mode=inline in config
+	cfg := &config.Config{
+		Skills: config.SkillsConfig{
+			ExecutionMode: config.AgenticSkillModeInline,
+		},
+	}
+	ctx := skillTestContext(&buf)
+	ctx.Config = cfg
+
+	err := runSkill(ctx, reg, nil, []string{"golang-check"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := buf.String()
+	if strings.Contains(text, "loaded into system prompt") {
+		t.Errorf("action skill should NOT be loaded into system prompt with execution_mode=inline, got: %s", text)
+	}
+	if !strings.Contains(text, "Running skill: golang-check") {
+		t.Errorf("expected sub-agent execution for action skill, got: %s", text)
 	}
 }
 

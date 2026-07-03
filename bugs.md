@@ -33,6 +33,106 @@ If new items are added, restart the process.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 
+# TODO
+
+## Spinner not removed at end
+**Problem:** The spinner seems to be stuck at the bottom (not moving) after end of the conversation - likely a display artifact - moving the cursor in the input make it disappear.
+
+**Root cause hypothesis:** `handleSessionEnd` at `internal/app/stats.go:374` calls `subs.statusMsg.Clear()`, but the `Clear()` only sets `s.spinning = false` and stops the ticker. If a race exists between the ticker goroutine calling `tickFrame` on the command loop and the TUI render cycle (which reads `frameIdx` via `SpinnerText()`), the last frame may render the spinner character instead of the static `◆`. Alternatively, `IsVisible()` returns `true` as long as `s.text != ""`, and `Clear()` sets `s.text = ""` — but if something sets the status text again AFTER `handleSessionEnd`, the spinner would reappear.
+
+**Fix plan:**
+1. Add a guard in `handleSessionEnd` that also resets the footer activity to "" and explicitly sets `SetModelBusy(false)` (already done).
+2. Check if any other code path calls `statusMsg.Show()` after `handleSessionEnd` — e.g., `handleProgressEvent`, `handleStateChange` with a late state.
+3. Add a `done` channel check in `StatusMsg.Show()` to prevent re-starting the spinner after Clear.
+4. Inspect the render path: if `s.text != ""` but `s.spinning == false`, `Render` returns `"◆"` prefix — the fixed diamond, not a spinner frame. The diamond could be confused with a frozen spinner if the text lingers.
+
+**Test approach:**
+- Unit test: verify that after `Clear()`, `SpinnerText()` returns `"◆"` (not a spinner frame).
+- Unit test: verify that `Show()` after `Clear()` restarts the spinner correctly.
+- Simulate: render a `StatusMsg` post-`Clear()` and confirm the prefix is `"◆"` not a frame character.
+
+**Validation:**
+- `go vet ./tui/ ./internal/app/`
+- `staticcheck ./tui/ ./internal/app/`
+- `go test -count=1 -race ./tui/ ./internal/app/`
+- New tests as described above
+- PTY check: after conversation ends, the bottom line no longer shows a spinner frame
+
+## Tool call color
+**Problem:** Tool call colors show 60 in orange (`TC:60`) but there didn't seem to be duplication so it should stay in a normal color — color should only be applied in case of loop detection.
+
+**Root cause:** `handleToolResult` at `internal/app/stats.go:251-257` sets `toolCallWarningLevel` to `ToolCallWarning` for ANY `[goa-system]` tool result that is not "budget exceeded" — including informational hints like "this exact tool call was already executed this turn". The level is never reset between turns: once set to `ToolCallWarning`, it persists for the rest of the session. The actual issue is twofold:
+  1. Some `[goa-system]` hints are informational (e.g. `toolRepeatedMessage` — a soft hint about same args) and should NOT raise the warning color to orange
+  2. `toolCallWarningLevel` should be reset at the start of each turn, not persist across the session
+
+**Fix plan:**
+1. In `handleSessionEnd` (or a new `handleSessionStart`/`handleStateChange` for the first content state in a turn), reset `a.toolCallWarningLevel = ToolCallNormal`.
+2. Differentiate `[goa-system]` messages: budget-exceeded → `ToolCallStopped`, loop/interrupt → `ToolCallWarning`, informational hints (repeated call, truncated result) → keep `ToolCallNormal`.
+
+**Test approach:**
+- Unit test: verify `toolCallWarningLevel` resets to `ToolCallNormal` after `handleSessionEnd`.
+- Unit test: verify an informational `[goa-system]` result does NOT set `ToolCallWarning`.
+- Unit test: verify a loop-warning `[goa-system]` result DOES set `ToolCallWarning`.
+
+**Validation:**
+- `go vet ./internal/app/`
+- `staticcheck ./internal/app/`
+- `gocognit -over 15 .` (no new violations in edited files)
+- `gocyclo -over 12 .` (no new violations in edited files)
+- `go test -count=1 -race ./internal/app/`
+- New/updated tests as described above
+
+## thinking loop false positive
+**Problem:** The loop detector emitted `⚡ [goa-system: warning] Reasoning is repeating — the model may be stuck in a thinking loop.` in session `goa-export-20260703-072830.zip` but the model was not actually in a repeat loop.
+
+**Root cause hypothesis:** `RecordThinkingDelta` counts line repeats by hashing complete newline-terminated lines. A false positive can occur when:
+  1. The model emits long structured output (e.g., code blocks, JSON, XML) in the thinking pane, where structural elements repeat legitimately (same function signature, same field name).
+  2. Streaming causes partial lines that are < `minThinkLineLen` (40) to be skipped, but when the next chunk arrives, the accumulated line crosses the threshold and gets counted — potentially multiple times if it's split across deltas.
+  3. The `ThinkingLoopWarning` threshold is 4 — too low for certain thinking patterns (e.g. a model that iteratively refines code in the thinking pane, emitting the same function name 4+ times).
+
+**Fix plan:**
+1. Inspect the session export to determine whether the false positive was caused by (a) code-block structure repeating, (b) streaming split artifacts, or (c) a threshold too low for the model's thinking style.
+2. If (a) or (b): exclude lines that match code/JSON/XML structure patterns (heuristic: lines starting with common language keywords or brackets).
+3. If (c): increase the default `ThinkingLoopWarning` threshold from 4 to 6 (matching the interrupt threshold spread).
+
+**Test approach:**
+- Replay the session export through the loop detector to reproduce the false positive.
+- Unit test with a repeating code-structure pattern to verify the heuristic excludes structural repeats.
+- Unit test with streaming split lines to verify no double-count.
+
+**Validation:**
+- `go vet ./core/`
+- `staticcheck ./core/`
+- `gocognit -over 15 .` (no new violations)
+- `gocyclo -over 12 .` (no new violations)
+- `go test -count=1 -race ./core/`
+- New tests as described above
+- Verify the session export no longer triggers a false positive
+
+## Scroll after first message does not work
+**Problem:** After the first message in a new session, content above the current viewport is not available in scrollback — only blank lines appear. User cannot scroll back to see earlier content.
+
+**Root cause hypothesis:** The `Compositor.writeDifferential`/viewport advance code handles scrolling for large appends (fixed in the archived "First long input / Scroll" bug), but the first message in a session starts with an empty terminal. The initial content is written directly without a preceding scroll context. If the first message exceeds the viewport height, the content that scrolls off the top may never have been written as physical terminal lines — only as canvas rows. The `emitViewportScroll` fix assumed there was always a prior viewport state to scroll from, but on the very first render the viewport advances from row 0, so there's no previously-shown content to push into scrollback.
+
+**Fix plan:**
+1. In `Compositor.writeDifferential` (or `emitViewportScroll`), detect the initial-render case where the previous viewport top was 0 and no content has been scrolled yet.
+2. When advancing the viewport for the first time (firstEverRender or previous vtop was 0), write the scrolled-off canvas rows directly as terminal content rather than relying on bare `\n` newlines to push existing on-screen rows into scrollback — because there are no prior on-screen rows.
+3. Add a sentinel to `Compositor` tracking whether any scroll has occurred yet.
+
+**Test approach:**
+- Reproduce: render a first message that exceeds viewport height, capture the terminal output, check that the scrolled-off lines are present in the scrollback.
+- Unit test: `TestChatFirstMessage_ExceedsViewport_PopulatesScrollback` — verify the screen emulator's scrollback contains the early lines.
+- Unit test: `TestCompositor_FirstScroll_InitialRender` — verify that the first viewport advance writes rows into scrollback.
+
+**Validation:**
+- `go vet ./tui/`
+- `staticcheck ./tui/`
+- `gocognit -over 15 .` (no new violations in edited files)
+- `gocyclo -over 12 .` (no new violations in edited files)
+- `go test -count=1 -race ./tui/`
+- New tests as described above
+- PTY check: a long first message renders all lines accessible via scrollback
+
 ## Archive
 
 ### Tool call budget counted total calls instead of duplicates (fixed)
@@ -139,7 +239,8 @@ If new items are added, restart the process.
 ### First long input / Scroll (fixed)
 **Problem:** When a single large append exceeded the viewport (e.g. a long first input or a big tool/output block), the lines that scrolled past the top were never written to the terminal, so they were missing from scrollback and the user could not scroll back to them. (opencode avoids this entirely by delegating rendering to a library `CliRenderer`.)
 
-**Root cause:** `Compositor.writeDifferential` advanced the viewport by emitting bare `\n` newlines, which push only the previously-visible rows into scrollback. For a large append, the newly-added lines above the new viewport were never on screen, so the bare newlines pushed BLANK rows into scrollback — the gap content was lost.
+**Root cause:** `Compositor.writeDifferential` advanced the viewport by emitting bare `
+` newlines, which push only the previously-visible rows into scrollback. For a large append, the newly-added lines above the new viewport were never on screen, so the bare newlines pushed BLANK rows into scrollback — the gap content was lost.
 
 **Fix plan:**
 1. Extract the scroll emission into `Compositor.emitViewportScroll` (keeps `writeDifferential` within the complexity budget).

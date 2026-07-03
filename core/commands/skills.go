@@ -215,12 +215,26 @@ func runSkillSubAgent(ctx core.Context, skill *skills.Skill, task string) error 
 }
 
 // effectiveInline returns true when the skill should be executed inline.
-// The skill's own frontmatter inline flag takes precedence; if unset (false),
-// the global config skills.execution_mode is used as a fallback.
+// Action-category skills (the default for unset category) are never inlined —
+// they perform work and must be executed as sub-agents. For knowledge or
+// uncategorized skills, the skill's own frontmatter inline flag takes
+// precedence; if unset (false), the global config skills.execution_mode is
+// used as a fallback.
 func effectiveInline(skill *skills.Skill, cfg *config.Config) bool {
+	// Explicit inline flag always wins (e.g. telegram).
 	if skill.Meta.Inline {
 		return true
 	}
+	// Action-category skills (the default) are never inlined — they perform
+	// work and must be executed as sub-agents.
+	cat := skill.Meta.Category
+	if cat == "" {
+		cat = skills.SkillCategoryAction
+	}
+	if cat == skills.SkillCategoryAction {
+		return false
+	}
+	// Knowledge/category-less skills respect the global config fallback.
 	if cfg != nil && cfg.Skills.ExecutionMode == config.AgenticSkillModeInline {
 		return true
 	}
