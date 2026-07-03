@@ -427,7 +427,7 @@ func processLongWord(runes []rune, w wordInfo, offset, visLine, visCol, width in
 }
 
 // processNormalWord handles the cursor position within a normal (non-long) word
-// that fits within the line width. Returns (found, visLine, visCol, shouldContinue).
+// that fits within the line width. Returns (found, visLine, visCol).
 func processNormalWord(runes []rune, words []wordInfo, wi int, w wordInfo, offset, visLine, visCol, width int) (bool, int, int) {
 	ww := visibleWidth(string(runes[w.start:w.end]))
 	spaceWidth := 0

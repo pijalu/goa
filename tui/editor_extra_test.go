@@ -1042,3 +1042,89 @@ func TestEditor_CompletionItemsTruncatedToWidth(t *testing.T) {
 		}
 	}
 }
+
+// ── Benchmarks ──
+
+// BenchmarkEditorRender_1000Chars measures rendering performance for a
+// ~1000-char buffer (typical agent prompt input). The render loop target
+// is 16ms/frame (60fps), so each Render call should complete in <16ms.
+func BenchmarkEditorRender_1000Chars(b *testing.B) {
+	ed := NewEditor()
+	ed.SetFocused(true)
+	ed.SetMaxLines(10)
+
+	// Build a ~1000-char multiline buffer
+	var sb strings.Builder
+	for i := 0; i < 20; i++ {
+		sb.WriteString(fmt.Sprintf("line %d: this is some text with words that need wrapping and analysis\n", i))
+	}
+	text := sb.String()
+	if len(text) > 1000 {
+		text = text[:1000]
+	}
+	ed.SetText(text)
+	ed.pos = 500
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ed.Render(80)
+	}
+}
+
+// BenchmarkEditorComputeLayout_1000Chars isolates the layout computation
+// (wrapText + visualCursorPos) from the render overhead.
+func BenchmarkEditorComputeLayout_1000Chars(b *testing.B) {
+	ed := NewEditor()
+	ed.SetFocused(true)
+	ed.SetMaxLines(10)
+
+	var sb strings.Builder
+	for i := 0; i < 20; i++ {
+		sb.WriteString(fmt.Sprintf("line %d: this is some text with words that need wrapping and analysis\n", i))
+	}
+	text := sb.String()
+	if len(text) > 1000 {
+		text = text[:1000]
+	}
+	ed.SetText(text)
+	ed.pos = 500
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ed.computeLayout(80)
+	}
+}
+
+// BenchmarkVisualCursorPos_1000Chars isolates the visualCursorPos call.
+func BenchmarkVisualCursorPos_1000Chars(b *testing.B) {
+	var sb strings.Builder
+	for i := 0; i < 20; i++ {
+		sb.WriteString(fmt.Sprintf("line %d: this is some text with words that need wrapping and analysis\n", i))
+	}
+	text := sb.String()
+	if len(text) > 1000 {
+		text = text[:1000]
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		visualCursorPos(text, 500, 80)
+	}
+}
+
+// BenchmarkWrapText_1000Chars isolates the wrapText call.
+func BenchmarkWrapText_1000Chars(b *testing.B) {
+	var sb strings.Builder
+	for i := 0; i < 20; i++ {
+		sb.WriteString(fmt.Sprintf("line %d: this is some text with words that need wrapping and analysis\n", i))
+	}
+	text := sb.String()
+	if len(text) > 1000 {
+		text = text[:1000]
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		wrapText(text, 80)
+	}
+}
