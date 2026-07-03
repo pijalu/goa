@@ -119,9 +119,10 @@ func (r *SmartSearchRenderer) formatEmpty(header string) string {
 	return rToolTitle("smartsearch") + " " + rMuted(header)
 }
 
-// formatFileLines formats the numbered result lines.
+// formatFileLines formats the numbered result lines and their matching content.
 func (r *SmartSearchRenderer) formatFileLines(lines []string) []string {
-	// Filter to actual result lines (start with "N. [score] path").
+	// Filter to actual result lines (start with "N. [score] path") and
+	// pass through matching content lines (indented, "line: content").
 	var resultLines []string
 	type lineEntry struct {
 		rank    int
@@ -129,32 +130,41 @@ func (r *SmartSearchRenderer) formatFileLines(lines []string) []string {
 	}
 
 	rankRe := regexp.MustCompile(`^\s*(\d+)\.\s+\[([\d.]+)\]\s+(.+?)(?:\s+\((\d+) lines\))?$`)
+	contentRe := regexp.MustCompile(`^(\d+):\s+(.*)$`)
 	var entries []lineEntry
+	currentRank := 0
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		m := rankRe.FindStringSubmatch(trimmed)
-		if m == nil {
-			continue
-		}
-		rank, _ := strconv.Atoi(m[1])
-		score := m[2]
-		filePath := m[3]
-		filePath = shortenHome(filePath)
-		linesSuffix := ""
-		if m[4] != "" {
-			linesSuffix = rMuted(fmt.Sprintf(" (%s lines)", m[4]))
-		}
+		if m := rankRe.FindStringSubmatch(trimmed); m != nil {
+			currentRank, _ = strconv.Atoi(m[1])
+			score := m[2]
+			filePath := m[3]
+			filePath = shortenHome(filePath)
+			linesSuffix := ""
+			if m[4] != "" {
+				linesSuffix = rMuted(fmt.Sprintf(" (%s lines)", m[4]))
+			}
 
-		entry := fmt.Sprintf("  %s  %s%s",
-			rMuted(fmt.Sprintf("[%s]", score)),
-			rAccent(filePath),
-			linesSuffix,
-		)
-		entries = append(entries, lineEntry{rank: rank, content: entry})
+			entry := fmt.Sprintf("  %s  %s%s",
+				rMuted(fmt.Sprintf("[%s]", score)),
+				rAccent(filePath),
+				linesSuffix,
+			)
+			entries = append(entries, lineEntry{rank: currentRank, content: entry})
+		} else if cm := contentRe.FindStringSubmatch(trimmed); cm != nil {
+			// Matching content line — pass through with formatting.
+			lineNum := cm[1]
+			content := cm[2]
+			if len(content) > 80 {
+				content = content[:80] + "…"
+			}
+			matchEntry := fmt.Sprintf("  %s  %s", rMuted(lineNum), rToolOutput(content))
+			entries = append(entries, lineEntry{rank: currentRank, content: matchEntry})
+		}
 	}
 
 	sort.Slice(entries, func(i, j int) bool {

@@ -6,6 +6,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/tuirender"
 )
 
 // TestSmartSearchTool_CorruptedIndexRebuilt verifies that the smartsearch tool
@@ -146,5 +149,32 @@ func TestExtractQueryTerms_DedupesAndFilters(t *testing.T) {
 	}
 	if !seen["user"] || !seen["authentication"] {
 		t.Errorf("expected user+authentication, got %v", terms)
+	}
+}
+
+// TestSmartSearchRenderer_MatchingLines verifies that matching source lines
+// from the tool output are rendered by the SmartSearchRenderer.
+func TestSmartSearchRenderer_MatchingLines(t *testing.T) {
+	r := &SmartSearchRenderer{}
+	// Simulate the smartsearch tool output with matching lines.
+	output := `[smartsearch: "authenticate user"] — 1 results from 2 indexed files (index age: 0s)
+Score range: 1.00 – 1.00
+
+1. [1.00] auth.go  (5 lines)
+    3: func authenticateUser(token string) error {
+    4:     return nil
+`
+
+	result := r.RenderResult(output, tuirender.RenderContext{})
+	// Strip ANSI for assertion clarity.
+	clean := ansi.Strip(result)
+	if !strings.Contains(clean, "authenticateUser") {
+		t.Errorf("expected matching line content in rendered output:\n%s", clean)
+	}
+	if !strings.Contains(clean, "auth.go") {
+		t.Errorf("expected file header in rendered output:\n%s", clean)
+	}
+	if !strings.Contains(clean, "3  ") {
+		t.Errorf("expected line number in rendered output:\n%s", clean)
 	}
 }

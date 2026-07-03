@@ -261,19 +261,20 @@ If new items are added, restart the process.
 ### SmartSearch should return matching lines of code (fixed)
 **Problem:** SmartSearch returned ranked file candidates but not the matching lines of code, so the agent could not act on the results the way it can with normal `/search`.
 
-**Root cause:** `formatResults` only printed `N. [score] path (lines)` — no source lines were ever read or shown.
+**Root cause:** `formatResults` only printed `N. [score] path (lines)` — no source lines were ever read or shown. Additionally, the `SmartSearchRenderer.formatFileLines` regex only matched file-result lines and silently dropped the matching content lines.
 
-**Fix plan:**
+**Fix applied:**
 1. Tokenise the natural-language query with the same `bm25.CodeTokenizer` the index uses (`extractQueryTerms`), so the grep stage looks for the same units BM25 ranked on.
 2. For each ranked candidate (highest score first) build a case-insensitive alternation regex of the query terms and grep the file (`buildMatchingLines` / `grepFile`), bounded by `linesPerCandidate` (3) and an overall `smartMatchBudget` (30).
 3. Render the matches as `    <line>: <content>` under each result, mirroring the search tool's `formatFileContentLines`.
 4. Update the tool description to advertise matching lines.
+5. **Renderer fix:** Updated `SmartSearchRenderer.formatFileLines` to pass through matching content lines (indented `line: content` lines) with proper formatting, matching the search renderer's behavior.
 
 **Validation:**
 - `go vet ./tools/`, `staticcheck ./tools/` (no new warnings), `gocognit`/`gocyclo` (no new violations).
 - `go test -count=1 -race ./tools/`.
-- New tests: `TestSmartSearchTool_ReturnsMatchingLines`, `TestExtractQueryTerms_DedupesAndFilters`.
-- Real output verified by running the tool against this repo (query "loop detector thinking repeat"): ranked files now show numbered matching lines.
+- New tests: `TestSmartSearchTool_ReturnsMatchingLines`, `TestExtractQueryTerms_DedupesAndFilters`, `TestSmartSearchRenderer_MatchingLines`.
+- Real output verified by running the tool against this repo: ranked files now show numbered matching lines.
 
 ### Scroll during streaming (fixed — see "First long input / Scroll" above)
 The core symptom (scroll content not correctly populated) shared the same root cause as the large-append gap: newly-added lines above the viewport were never written, so scrollback was incomplete. The `emitViewportScroll` gap-content fix addresses it. Incremental line-by-line streaming already used the small-scroll differential path (no gap, no scrollback erase), and the large-append path no longer drops content. The pre-existing `TestChatLargeAppendScrollsWithoutErasingScrollback` invariant (no `\x1b[3J` scrollback wipe on appends) is preserved, so retries/re-renders during streaming do not erase history.
