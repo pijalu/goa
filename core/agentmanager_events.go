@@ -199,9 +199,9 @@ func (am *AgentManager) finalizeTurn() {
 
 	if len(pending) > 0 {
 		merged := strings.Join(pending, "\n")
-		if err := am.SendUserInput(merged); err != nil {
-			am.emitFlash("Failed to send steering input: " + err.Error())
-		}
+		am.mu.Lock()
+		am.pendingSteering = merged
+		am.mu.Unlock()
 	}
 }
 

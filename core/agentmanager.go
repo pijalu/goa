@@ -105,6 +105,7 @@ type AgentManager struct {
 	companion            *CompanionCoordinator
 	agentDriven          *AgentDrivenGate
 	steering             *SteeringQueue
+	pendingSteering      string // steering text saved during finalizeTurn, dispatched after am.running=false
 	companionBuf         strings.Builder
 	goalStateProvider    agentic.GoalStateProvider
 	postTurnHook         func()
@@ -254,7 +255,17 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 			am.cancel = nil
 		}
 		am.running = false
+		// Capture pending steering while holding the lock so finalizeTurn
+		// cannot overwrite it after we release.
+		pending := am.pendingSteering
+		am.pendingSteering = ""
 		am.mu.Unlock()
+
+		// Dispatch steering only after am.running is false, so the
+		// alreadyRunning check in SendUserInput does not re-queue.
+		if pending != "" {
+			_ = am.SendUserInput(pending)
+		}
 	}()
 
 	am.applyPendingMajorMode()
