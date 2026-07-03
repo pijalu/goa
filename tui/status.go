@@ -105,6 +105,10 @@ func (s *StatusMsg) Show(text string) {
 }
 
 // Clear hides the status and stops the spinner.
+// After Clear(), Show() resets s.done so the spinner can be re-used for
+// subsequent turns. Without this, the closed done channel would cause the
+// guard in Show() (checked after handleSessionEnd) to silently drop all
+// subsequent status updates.
 func (s *StatusMsg) Clear() {
 	s.text = ""
 	if s.spinning {
@@ -114,6 +118,7 @@ func (s *StatusMsg) Clear() {
 			s.ticker = nil
 		}
 		close(s.done)
+		s.done = nil // allow subsequent Show() calls to start a fresh spinner
 	}
 }
 

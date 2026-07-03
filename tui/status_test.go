@@ -197,6 +197,56 @@ func TestStatusMsg_ConcurrentShowClear(t *testing.T) {
 	})
 }
 
+// Regression test: Show must work after Clear to support multi-turn sessions.
+// After handleSessionEnd calls Clear(), subsequent turns call Show() to update
+// the status. The done-channel guard in Show() must not permanently disable the
+// spinner.
+func TestStatusMsg_ShowAfterClear(t *testing.T) {
+	defer resetSpinner()
+
+	SetSpinner(spinner.Definition{
+		Interval: 100,
+		Frames:   []string{"⠋", "⠙", "⠹"},
+	})
+	defer resetSpinner()
+
+	sm := NewStatusMsg()
+
+	// First turn
+	sm.Show("Thinking...")
+	if sm.Text() != "Thinking..." {
+		t.Fatalf("Show() failed to set text: got %q", sm.Text())
+	}
+	if !sm.IsVisible() {
+		t.Fatal("Show() did not make status visible")
+	}
+
+	// End of turn
+	sm.Clear()
+	if sm.IsVisible() {
+		t.Fatal("Clear() did not hide status")
+	}
+
+	// Second turn — must be able to show again
+	sm.Show("Waiting...")
+	if sm.Text() != "Waiting..." {
+		t.Fatalf("Show() after Clear() failed to set text: got %q", sm.Text())
+	}
+	if !sm.IsVisible() {
+		t.Fatal("Show() after Clear() did not make status visible")
+	}
+
+	lines := sm.Render(80)
+	if len(lines) < 2 {
+		t.Fatal("Render returned no lines for visible status after Clear+Show")
+	}
+	line := lines[1]
+	stripped := ansi.Strip(line)
+	if !strings.Contains(stripped, "Waiting...") {
+		t.Errorf("status line missing new text after Clear+Show: %q", stripped)
+	}
+}
+
 func TestStatusMsg_Render_NoSpinnerConfig(t *testing.T) {
 	SetSpinner(spinner.Definition{})
 	defer resetSpinner()

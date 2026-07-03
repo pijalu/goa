@@ -367,12 +367,10 @@ func buildWordPositions(runes []rune) []wordInfo {
 // cursorInCurrentParagraph checks if the cursor position falls within the
 // current paragraph content (as opposed to at the trailing newline or after).
 func cursorInCurrentParagraph(runePos, paraStart, paraLen int, hasNewline bool) bool {
-	// Strictly within content
-	if runePos < paraStart+paraLen {
-		return true
-	}
-	// At end of paragraph without a trailing newline (end of text)
-	if runePos == paraStart+paraLen && !hasNewline {
+	// Within content OR at the trailing newline position (end of line).
+	// The newline character logically belongs to the current line for
+	// visual cursor positioning, so <= is correct here.
+	if runePos <= paraStart+paraLen {
 		return true
 	}
 	return false

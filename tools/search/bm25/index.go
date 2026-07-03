@@ -739,6 +739,8 @@ func contains(strs []string, s string) bool {
 // --- File-level helpers ---
 
 // tokenizeFile reads a file, counts lines, and returns its tokens.
+// Comments are stripped before tokenization so documentation text does not
+// pollute the BM25 index with English words and non-identifying descriptions.
 func (b *Builder) tokenizeFile(path string) (tokens []string, lines int, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -751,6 +753,7 @@ func (b *Builder) tokenizeFile(path string) (tokens []string, lines int, err err
 	}
 
 	text := string(data)
+	text = stripComments(path, text)
 	lines = countLines(text)
 	tokens = b.tokenizer.Tokenize(text)
 	return tokens, lines, nil
