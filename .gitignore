@@ -36,3 +36,4 @@ stuffs/
 __pycache__/
 *.pyc
 /repro-out/
+goal-events.jsonl
