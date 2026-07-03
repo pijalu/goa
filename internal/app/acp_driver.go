@@ -42,6 +42,13 @@ func (d *acpAgentDriver) StartSession() error {
 	if err != nil {
 		return fmt.Errorf("failed to resolve model: %w", err)
 	}
+	// Local servers report the loaded context length once the model is loaded;
+	// refresh before building the system prompt so context budgets are based on
+	// the actual available context rather than the model's maximum.
+	if nCtx := d.subs.providerMgr.RefreshLocalContextWindow(); nCtx > 0 {
+		mdl.ContextWindow = nCtx
+		d.subs.ContextWindow = nCtx
+	}
 	streamOpts := d.subs.providerMgr.BuildStreamOptions()
 	systemPrompt := buildSystemPrompt(d.subs)
 	agenticTools := d.subs.toolRegistry.All()

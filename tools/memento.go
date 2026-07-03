@@ -34,7 +34,7 @@ type MementoTool struct {
 func (t *MementoTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "memento",
-		Description: "Persistent memory files in .goa/memory/ that survive across sessions.",
+		Description: "Persistent memory files.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

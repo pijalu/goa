@@ -268,6 +268,14 @@ func (f *fakeSkillRegistry) SubSkills(name string) []*skills.Skill {
 	return nil
 }
 
+func (f *fakeSkillRegistry) ImportedSkills(name string) []*skills.Skill {
+	return nil
+}
+
+func (f *fakeSkillRegistry) HasSubSkills(name string) bool {
+	return false
+}
+
 // fakeDocsProvider implements core.DocsProvider for testing.
 type fakeDocsProvider struct {
 	list    []core.DocInfo

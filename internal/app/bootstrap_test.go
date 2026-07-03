@@ -59,3 +59,21 @@ func TestAttachClarifyTool_NilSafe(t *testing.T) {
 	registerTools(reg, nil, nil, t.TempDir(), &config.Config{})
 	attachClarifyTool(reg, nil) // must not panic
 }
+
+func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tools.SmartSearch.Enabled = false
+
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), cfg)
+	if _, ok := reg.Get("smartsearch"); ok {
+		t.Fatal("smartsearch should NOT be registered when disabled")
+	}
+
+	cfg.Tools.SmartSearch.Enabled = true
+	reg = tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), cfg)
+	if _, ok := reg.Get("smartsearch"); !ok {
+		t.Fatal("smartsearch should be registered when enabled")
+	}
+}

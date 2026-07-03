@@ -309,3 +309,56 @@ func TestChatLargeAppend_PopulatesScrollbackWithAllLines(t *testing.T) {
 		t.Logf("scrollback:\n%s", all)
 	}
 }
+
+// TestChatFirstScroll_PopulatesScrollbackWithScrolledOffLines reproduces the
+// first-message scrollback bug: when the first scroll of a session is smaller
+// than the viewport height, bare newlines would push blank rows into
+// scrollback because the previous viewport was not yet full. The fix writes
+// every scrolled-off row directly on the first scroll.
+func TestChatFirstScroll_PopulatesScrollbackWithScrolledOffLines(t *testing.T) {
+	term := &fakeTerminal{w: 80, h: 10}
+	engine := NewTUI(term)
+	chat := NewChatViewport()
+	inp := NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	engine.SetFocus(inp)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer engine.Stop()
+
+	// Small initial content so the viewport is at the top and not yet full.
+	chat.AddSystemMessage("start")
+	engine.RenderNow()
+
+	// First message append: just large enough to exceed the viewport by a few
+	// lines. This triggers the small-scroll path in emitViewportScroll.
+	var msg strings.Builder
+	for i := 0; i < 15; i++ {
+		fmt.Fprintf(&msg, "first line %d\n", i)
+	}
+	chat.AddSystemMessagePreformatted(msg.String())
+	engine.RenderNow()
+
+	emu := newScreenEmulator(term.h, term.w)
+	for _, w := range term.writes {
+		emu.Process(w)
+	}
+
+	// The latest line must be visible...
+	if !visibleContains(emu, term.h, "first line 14") {
+		t.Errorf("latest line not visible on screen")
+		logScreen(t, emu, term.h)
+	}
+	// ...and an early line from the scrolled-off region must be in scrollback.
+	all := strings.Join(emu.Scrollback(), "\n")
+	if !strings.Contains(all, "first line 1") {
+		t.Errorf("early line missing from scrollback on first small scroll; scrollback lines=%d", len(emu.Scrollback()))
+		t.Logf("scrollback:\n%s", all)
+	}
+	if !strings.Contains(all, "start") {
+		t.Errorf("initial content missing from scrollback on first small scroll")
+	}
+}

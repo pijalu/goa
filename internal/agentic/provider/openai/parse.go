@@ -18,6 +18,9 @@ func parseChunk(chunk string) ([]agentic.Message, error) {
 	if err := json.Unmarshal([]byte(chunk), &raw); err != nil {
 		return nil, fmt.Errorf("decode openai chunk: %w", err)
 	}
+	if err := detectChunkError(raw); err != nil {
+		return nil, err
+	}
 	choices, ok := raw["choices"].([]interface{})
 	if !ok || len(choices) == 0 {
 		// Handle usage-only chunks (stream_options.include_usage final chunk).
@@ -51,6 +54,30 @@ func parseChunk(chunk string) ([]agentic.Message, error) {
 		out = append(out, finishReason...)
 	}
 	return out, nil
+}
+
+func detectChunkError(raw map[string]any) error {
+	errObj, ok := raw["error"]
+	if !ok || errObj == nil {
+		return nil
+	}
+	msg := "provider error"
+	if m, ok := raw["message"].(string); ok && m != "" {
+		msg = m
+	}
+	if m, ok := extractErrorMessage(errObj); ok && m != "" {
+		msg = m
+	}
+	return fmt.Errorf("LLM error: %s", msg)
+}
+
+func extractErrorMessage(errObj any) (string, bool) {
+	m, ok := errObj.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	msg, ok := m["message"].(string)
+	return msg, ok
 }
 
 func parseToolCalls(delta map[string]interface{}) []agentic.Message {

@@ -152,8 +152,10 @@ func (a *Agent) checkTotalRepeatGuardrail(tc provider.ContentBlock, callKey stri
 
 // budgetOrRepeatSkipMessage returns the appropriate skip message based on
 // rolling-window and consecutive-repeat status. Priority: hard-loop > soft-repeat.
-// When no limit is exceeded but this is a second duplicate, the model gets a
-// soft nudge so it can use the previous result instead of repeating.
+// The soft-repeat hint is only emitted for truly consecutive duplicates (the same
+// tool+arguments back-to-back). The rolling-window guard is reserved for the
+// hard-loop limit, so non-consecutive duplicates (e.g. A, B, A) are allowed
+// until they exceed the configured MaxToolCalls.
 func (a *Agent) budgetOrRepeatSkipMessage(windowCount, consecutiveCount int) string {
 	maxConsecutive := a.cfg.MaxToolRepeatConsecutive
 	maxWindow := a.cfg.MaxToolCalls
@@ -164,7 +166,7 @@ func (a *Agent) budgetOrRepeatSkipMessage(windowCount, consecutiveCount int) str
 	case maxWindow > 0 && windowCount > maxWindow:
 		windowSize := a.effectiveToolWindowSize()
 		return fmt.Sprintf("[goa-system] Loop guardrail: this exact tool call appeared %d times in the last %d calls (limit: %d). Stop repeating the same call. Use the previous result or change approach.", windowCount, windowSize, maxWindow)
-	case consecutiveCount >= 2 || windowCount >= 2:
+	case consecutiveCount >= 2:
 		return toolRepeatedMessage
 	default:
 		return ""

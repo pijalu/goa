@@ -36,7 +36,7 @@ type WriteFileTool struct {
 func (t *WriteFileTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "write",
-		Description: "Create a new file or completely overwrite an existing file with new content. Creates parent directories by default.",
+		Description: "Write a file.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

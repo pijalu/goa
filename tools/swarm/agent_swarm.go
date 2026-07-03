@@ -51,7 +51,7 @@ type agentSwarmInput struct {
 func (t *AgentSwarmTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "agent_swarm",
-		Description: "Spawn a swarm of sub-agents to process multiple items in parallel using one prompt template.",
+		Description: "Spawn parallel sub-agents.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

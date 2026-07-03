@@ -29,7 +29,7 @@ type planModeInput struct {
 func (t *PlanModeTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "plan_mode",
-		Description: "Enter or exit plan mode. In plan mode, write and edit are restricted to PLAN.md.",
+		Description: "Toggle plan mode.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

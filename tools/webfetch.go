@@ -80,7 +80,7 @@ func (t *WebFetchTool) Schema() agentic.ToolSchema {
 
 	return agentic.ToolSchema{
 		Name:        "webfetch",
-		Description: "Fetch a URL, convert the page to Markdown, and cache it for the session. Subsequent calls can read line ranges" + t.summaryDescription() + ".",
+		Description: "Fetch a URL as Markdown.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -118,13 +118,6 @@ func (t *WebFetchTool) Schema() agentic.ToolSchema {
 
 func (t *WebFetchTool) summaryEnabled() bool {
 	return t.Config.Summary.Enabled && t.HasModel
-}
-
-func (t *WebFetchTool) summaryDescription() string {
-	if t.summaryEnabled() {
-		return " and optionally summarize via a sub-agent"
-	}
-	return ""
 }
 
 // webfetchParams holds parsed tool input.

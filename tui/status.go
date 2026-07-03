@@ -50,6 +50,7 @@ type StatusMsg struct {
 	tui      *TUI
 	ticker   *time.Ticker
 	done     chan struct{}
+	cleared  bool
 }
 
 // NewStatusMsg creates a StatusMsg component.
@@ -74,9 +75,9 @@ func (s *StatusMsg) Text() string { return s.text }
 func (s *StatusMsg) SetTUI(t *TUI) { s.tui = t }
 
 // Show sets the status text and starts the spinner animation.
-// After Clear(), subsequent Show() calls are ignored until the
-// spinner has fully settled, preventing late events from re-starting
-// the spinner after the session has ended.
+// After Clear(), subsequent Show() calls are ignored until Reset() is called,
+// preventing late events (e.g. EventProgress after EventEnd) from re-starting
+// the spinner after handleSessionEnd already cleared it.
 func (s *StatusMsg) Show(text string) {
 	if s.text == text && s.spinning {
 		return
@@ -84,14 +85,11 @@ func (s *StatusMsg) Show(text string) {
 	// If the spinner was cleared, don't restart it — a late event
 	// (e.g. EventProgress after EventEnd) would otherwise re-start
 	// the spinner after handleSessionEnd already cleared it.
-	if !s.spinning && s.text == "" && s.done != nil {
-		select {
-		case <-s.done:
-			return
-		default:
-		}
+	if !s.spinning && s.text == "" && s.cleared {
+		return
 	}
 	s.text = text
+	s.cleared = false
 	if !s.spinning {
 		s.spinning = true
 		s.frameIdx = 0
@@ -105,10 +103,9 @@ func (s *StatusMsg) Show(text string) {
 }
 
 // Clear hides the status and stops the spinner.
-// After Clear(), Show() resets s.done so the spinner can be re-used for
-// subsequent turns. Without this, the closed done channel would cause the
-// guard in Show() (checked after handleSessionEnd) to silently drop all
-// subsequent status updates.
+// After Clear(), Show() is a no-op until Reset() is called, so late events
+// cannot re-start the spinner. Reset() must be called before the next turn
+// (e.g. from the submit handler) to allow status updates again.
 func (s *StatusMsg) Clear() {
 	s.text = ""
 	if s.spinning {
@@ -118,7 +115,23 @@ func (s *StatusMsg) Clear() {
 			s.ticker = nil
 		}
 		close(s.done)
-		s.done = nil // allow subsequent Show() calls to start a fresh spinner
+	}
+	s.cleared = true
+}
+
+// Reset clears the post-Clear() guard so that the next Show() can start a
+// fresh spinner. It must be called when a new turn begins.
+func (s *StatusMsg) Reset() {
+	if s.spinning {
+		return
+	}
+	s.cleared = false
+	if s.done != nil {
+		select {
+		case <-s.done:
+		default:
+		}
+		s.done = nil
 	}
 }
 

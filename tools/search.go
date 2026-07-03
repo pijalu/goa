@@ -41,7 +41,7 @@ type searchResult struct {
 func (t *SearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "search",
-		Description: "Search for a pattern in files within the project.",
+		Description: "Search files for a pattern.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

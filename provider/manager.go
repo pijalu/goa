@@ -804,6 +804,14 @@ func parsePositiveDuration(s string) time.Duration {
 	return d
 }
 
+func (pm *ProviderManager) IsLocalProvider() bool {
+	pCfg, _ := pm.Active()
+	if pCfg == nil {
+		return false
+	}
+	return isLocalProvider(pCfg.Endpoint)
+}
+
 // isLocalProvider returns true if the endpoint points to a local LLM server
 // (LM Studio, llama.cpp, Ollama) that may expose context window metadata.
 func isLocalProvider(endpoint string) bool {

@@ -46,6 +46,12 @@ type RuntimeOptions struct {
 	ExportOutput     string
 	ExportSession    string
 	IncludeGlobalLog bool
+	CPUProfile       string
+	MemProfile       string
+	TraceFile        string
+	PerfLoad         bool
+	PerfLoadDuration time.Duration
+	WithProfiling    bool
 }
 
 // Headless reports whether the user requested headless execution.
@@ -231,6 +237,12 @@ type runtimeFlagDefs struct {
 	exportOutput     *string
 	exportSession    *string
 	includeGlobalLog *bool
+	cpuProfile       *string
+	memProfile       *string
+	traceFile        *string
+	perfLoad         *bool
+	perfLoadDuration *time.Duration
+	withProfiling    *bool
 }
 
 func defineScalarFlags() scalarFlags {
@@ -270,6 +282,12 @@ func defineRuntimeFlags() runtimeFlagDefs {
 		exportOutput:     flag.String("export-output", "", "Output path for goa export"),
 		exportSession:    flag.String("export-session", "", "Session ID to export"),
 		includeGlobalLog: flag.Bool("include-global-log", false, "Include global log in export"),
+		cpuProfile:       flag.String("cpuprofile", "", "Write CPU profile to `file`"),
+		memProfile:       flag.String("memprofile", "", "Write memory profile to `file`"),
+		traceFile:        flag.String("trace", "", "Write execution trace to `file`"),
+		perfLoad:         flag.Bool("perf-load", false, "Run a synthetic TUI performance load instead of an agent turn"),
+		perfLoadDuration: flag.Duration("perf-load-duration", 30*time.Second, "Duration of the synthetic performance load"),
+		withProfiling:    flag.Bool("with-profiling", false, "Capture CPU, memory, and trace profiles after exit (default names unless overridden)"),
 	}
 }
 
@@ -294,6 +312,12 @@ func (r *runtimeFlagDefs) collectInto() RuntimeOptions {
 		ExportOutput:     *r.exportOutput,
 		ExportSession:    *r.exportSession,
 		IncludeGlobalLog: *r.includeGlobalLog,
+		CPUProfile:       *r.cpuProfile,
+		MemProfile:       *r.memProfile,
+		TraceFile:        *r.traceFile,
+		PerfLoad:         *r.perfLoad,
+		PerfLoadDuration: *r.perfLoadDuration,
+		WithProfiling:    *r.withProfiling,
 	}
 }
 
@@ -466,19 +490,20 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 
 	// SmartSearch uses BM25 for relevance-ranked code search.
 	// It receives change notifications from edit/write tools for automatic
-	// index refresh.
-	// SmartSearch is always registered (no opt-out toggle yet).
-	ss := &tools.SmartSearchTool{
-		WorktreeMgr:   wm,
-		ProjectDir:    projectDir,
-		MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
-		MinScore:      cfg.Tools.SmartSearch.MinScore,
-		ExcludeDirs:   cfg.Tools.SmartSearch.Exclude,
-		K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
-		B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
-		ChangeTracker: changeTracker,
+	// index refresh. Only registered when enabled in configuration.
+	if cfg.Tools.SmartSearch.Enabled {
+		ss := &tools.SmartSearchTool{
+			WorktreeMgr:   wm,
+			ProjectDir:    projectDir,
+			MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
+			MinScore:      cfg.Tools.SmartSearch.MinScore,
+			ExcludeDirs:   cfg.Tools.SmartSearch.Exclude,
+			K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
+			B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
+			ChangeTracker: changeTracker,
+		}
+		reg.Register(ss)
 	}
-	reg.Register(ss)
 }
 
 // defaultInt returns val if non-zero, otherwise defaultVal.

@@ -114,6 +114,28 @@ func TestLoopDetector_ThinkingLoop_IgnoresShortLines(t *testing.T) {
 	}
 }
 
+// TestLoopDetector_ThinkingLoop_IgnoresStructuralLines ensures that repeated
+// code/JSON/XML structural elements (function signatures, keywords, braces)
+// do not trigger false positives when the model iterates over code structure.
+func TestLoopDetector_ThinkingLoop_IgnoresStructuralLines(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	structuralLines := []string{
+		"func effectiveInline(skill *skills.Skill, cfg *config.Config) bool {\n",
+		"if skill.Meta.Category == \"\" {\n",
+		"    return false\n",
+		"}\n",
+		"{\"key\": \"value\"}\n",
+		"<xml>data</xml>\n",
+	}
+	for i := 0; i < 10; i++ {
+		for _, line := range structuralLines {
+			if lvl := ld.RecordThinkingDelta(line); lvl != LoopOK {
+				t.Fatalf("structural line %q triggered %d at iter %d, want LoopOK", line, lvl, i)
+			}
+		}
+	}
+}
+
 // TestLoopDetector_ThinkingLoop_StreamedAcrossDeltas verifies detection works
 // when a single line arrives split across several deltas (no newline until the
 // end) and when distinct reasoning lines do not accumulate.

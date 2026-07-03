@@ -438,3 +438,33 @@ func TestParseChunkMalformedSurfacesError(t *testing.T) {
 		t.Fatalf("expected descriptive decode error, got: %v", err)
 	}
 }
+
+func TestParseChunk_ErrorPayloadSurfacesError(t *testing.T) {
+	chunk := `{"error":{"message":"Context length exceeded"},"message":"Context length exceeded"}`
+	_, err := parseChunk(chunk)
+	if err == nil {
+		t.Fatal("expected error for error payload, got nil")
+	}
+	if !strings.Contains(err.Error(), "Context length exceeded") {
+		t.Fatalf("expected error to contain provider message, got: %v", err)
+	}
+}
+
+func TestParseOpenAIStream_ErrorEventSurfacesError(t *testing.T) {
+	body := io.NopCloser(strings.NewReader(
+		"event: error\n" +
+			"data: {\"error\":{\"message\":\"Context length exceeded\"},\"message\":\"Context length exceeded\"}\n\n",
+	))
+	stream := provider.NewAssistantMessageEventStream(16)
+	go parseOpenAIStream(body, stream)
+
+	for range stream.Seq() {
+	}
+	err := stream.Err()
+	if err == nil {
+		t.Fatal("expected stream error after error event, got nil")
+	}
+	if !strings.Contains(err.Error(), "Context length exceeded") {
+		t.Fatalf("expected error to contain provider message, got: %v", err)
+	}
+}

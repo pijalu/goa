@@ -273,30 +273,62 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 	}
 
 	if tc := a.lookupActiveTool(ev.ToolCallID); tc != nil {
-		tc.SetOutput(ev.Text)
-		tc.SetStatus(a.toolStatusFromResult(ev.Text))
-		tc.SetPartial(false)
-		a.clearToolBusy()
+		a.applyToolResultToWidget(tc, ev)
+		return
+	}
+	// Fallback: if the tool result did not carry a matching ID, update the
+	// oldest still-pending tool widget so the result is visible in the widget
+	// instead of appearing as a separate text entry.
+	if tc := a.findPendingTool(); tc != nil {
+		a.applyToolResultToWidget(tc, ev)
 		return
 	}
 	a.subs.chat.AddToolResult(ev.Text)
 	a.clearToolBusy()
 }
 
+// applyToolResultToWidget updates a single tool widget with the result text,
+// status, and final (non-partial) marker.
+func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
+	tc.SetOutput(ev.Text)
+	tc.SetStatus(a.toolStatusFromResult(ev.Text))
+	tc.SetPartial(false)
+	a.clearToolBusy()
+}
+
 // lookupActiveTool returns the in-flight tool component matching the given
-// ToolCallID, falling back to the legacy single-slot when the ID is empty.
-// The matched entry is removed so subsequent results do not overwrite it.
+// ToolCallID. The matched entry is removed so subsequent results do not
+// overwrite it. Non-empty IDs are only matched against the ID map; they do not
+// fall back to the legacy single-slot, which would update the wrong widget
+// when multiple tools are in flight.
 func (a *App) lookupActiveTool(callID string) *tui.ToolExecutionComponent {
-	if callID != "" && a.subs.activeTools != nil {
+	if callID != "" {
 		if tc, ok := a.subs.activeTools[callID]; ok {
 			delete(a.subs.activeTools, callID)
 			return tc
 		}
+		return nil
 	}
 	if a.subs.activeTool != nil {
 		tc := a.subs.activeTool
 		a.subs.activeTool = nil
 		return tc
+	}
+	return nil
+}
+
+// findPendingTool walks the chat entries from oldest to newest and returns the
+// first tool widget that has not yet been marked as success or error. This is
+// a best-effort fallback when the provider does not include ToolCallIDs.
+func (a *App) findPendingTool() *tui.ToolExecutionComponent {
+	for _, c := range a.subs.chat.Children() {
+		tc, ok := c.(*tui.ToolExecutionComponent)
+		if !ok {
+			continue
+		}
+		if tc.Status() != tui.ToolSuccess && tc.Status() != tui.ToolError {
+			return tc
+		}
 	}
 	return nil
 }
@@ -349,6 +381,9 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	a.statsMu.Unlock()
 
 	subs := a.subs
+	subs.activeTool = nil
+	subs.activeTools = nil
+
 	// Check if the event carries an error (agentmanager.go emits EventEnd with
 	// non-empty Text on stream/connection errors). Surface it to the user with
 	// a clear explanation and actionable hint. User-initiated cancellation is
@@ -728,7 +763,7 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.PromptN > 0 && s.CacheReadTotal > 0 {
 		total := s.PromptN + s.CacheReadTotal + s.CacheWriteTotal
 		pct := float64(s.CacheReadTotal) / float64(total) * 100
-		parts = append(parts, fmt.Sprintf("☕%.0f%%", pct))
+		parts = append(parts, fmt.Sprintf("CH%.1f%%", pct))
 	}
 	if s.ToolCalls > 0 {
 		parts = append(parts, formatToolCallPart(s.ToolCalls, s.ToolCallLevel))

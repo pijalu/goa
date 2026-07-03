@@ -67,10 +67,7 @@ type clarifyAnswer struct {
 func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name: "ask_user_question",
-		Description: "Ask the user one or more clarifying questions when requirements are " +
-			"ambiguous or underspecified. Each question is shown as a card (title/summary/" +
-			"question/options) and answered via the input line. Use this BEFORE starting " +
-			"uncertain work rather than guessing. Disabled when tools.enabled.clarify_disabled is true.",
+		Description: "Ask the user for clarification.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

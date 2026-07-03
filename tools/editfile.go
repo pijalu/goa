@@ -61,7 +61,7 @@ type EditFileTool struct {
 func (t *EditFileTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "edit",
-		Description: "Make targeted search/replace edits to existing files.",
+		Description: "Edit files by search/replace.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

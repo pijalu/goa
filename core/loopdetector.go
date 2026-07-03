@@ -7,6 +7,7 @@ package core
 import (
 	"crypto/sha256"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -162,6 +163,9 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 		if len(line) < minThinkLineLen {
 			continue
 		}
+		if isStructuralLine(line) {
+			continue
+		}
 		h := hashInput(line)
 		ld.thinkLineCounts[h]++
 		if c := ld.thinkLineCounts[h]; c > ld.thinkMaxRepeat {
@@ -228,6 +232,82 @@ func (ld *LoopDetector) Reset() {
 	ld.thinkLineCounts = make(map[string]int)
 	ld.thinkMaxRepeat = 0
 }
+
+// isStructuralLine reports whether a line looks like a code, JSON, or XML
+// structural element that legitimately repeats during reasoning (function
+// signatures/calls, keywords, braces, tags, assignments). Such lines are
+// excluded from thinking-loop counting to avoid false positives when the model
+// iterates over code structure.
+func isStructuralLine(line string) bool {
+	s := trimSpace(line)
+	if len(s) == 0 {
+		return false
+	}
+
+	// Structural punctuation at the start of a line.
+	switch s[0] {
+	case '{', '}', '[', ']', '(', ')', '<', '>', '"', '\'', '`', '/', '\\':
+		return true
+	}
+
+	// Common programming-language keywords at the start of a line.
+	keywords := []string{
+		"func ", "def ", "class ", "interface ", "struct ", "enum ", "union ", "typedef ",
+		"package ", "import ", "const ", "var ", "let ", "type ", "val ", "final ",
+		"public ", "private ", "protected ", "static ", "void ", "int ", "bool ", "string ",
+		"return ", "if ", "else ", "for ", "while ", "switch ", "case ", "default ", "break ", "continue ",
+		"try ", "catch ", "finally ", "throw ", "new ", "delete ", "async ", "await ",
+		"function ", "module ", "export ", "from ", "extends ", "implements ",
+		"namespace ", "using ", "include ", "require ", "end ", "do ", "begin ",
+	}
+	lower := strings.ToLower(s)
+	for _, kw := range keywords {
+		if strings.HasPrefix(lower, kw) {
+			return true
+		}
+	}
+
+	// Identifier followed by code syntax: function call, assignment, or
+	// type/key annotation (e.g. "writeFmt(...)", "x := 5", "key: value").
+	return startsWithIdentifierAndCode(s)
+}
+
+// startsWithIdentifierAndCode reports whether s starts with an identifier
+// (letter/underscore followed by word characters) immediately followed by a
+// structural code operator: '(', ':=', '=', or ':'.
+func startsWithIdentifierAndCode(s string) bool {
+	if len(s) == 0 || !isIdentStart(s[0]) {
+		return false
+	}
+	i := 1
+	for i < len(s) && isIdentCont(s[i]) {
+		i++
+	}
+	for i < len(s) && isSpace(s[i]) {
+		i++
+	}
+	if i >= len(s) {
+		return false
+	}
+	return isCodeOp(s[i], i+1 < len(s), s[i+1:])
+}
+
+// isCodeOp reports whether the byte at the end of an identifier introduces a
+// code construct: function call '(', key/type annotation ':', or assignment '='.
+func isCodeOp(b byte, hasRest bool, rest string) bool {
+	switch b {
+	case '(':
+		return true
+	case ':':
+		return hasRest && isSpace(rest[0])
+	case '=':
+		return !hasRest || rest[0] != '='
+	}
+	return false
+}
+
+func isIdentStart(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' }
+func isIdentCont(b byte) bool  { return isIdentStart(b) || (b >= '0' && b <= '9') }
 
 // hashInput creates a deterministic hash of the tool input for loop detection.
 func hashInput(input string) string {

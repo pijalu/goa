@@ -182,6 +182,9 @@ func TestBashJail_LooksLikePath(t *testing.T) {
 		{"wildcard", "*.go", ""},
 		{"tilde", "~/config", ""},
 		{"variable", "$HOME", ""},
+		{"double slash comment", "//", ""},
+		{"triple slash", "///", ""},
+		{"double slash with path", "//tmp", "//tmp"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -242,10 +245,46 @@ func TestBashJail_Subdir(t *testing.T) {
 	}
 }
 
-// TestBashJail_QuotedPaths_NoFalsePositive verifies that path-like tokens
-// inside shell quotes (single or double) are not flagged as paths. This
-// prevents false positives for grep patterns, echo strings, and other
-// non-path arguments that happen to start with /.
+// TestBashJail_SlashSlashComment_NoFalsePositive verifies that "//" tokens
+// inside a heredoc (e.g. Go comments) are not mistaken for absolute paths.
+// This was the root cause of false-positive jail_violation errors when the
+// agent generated commands that wrote code into the project.
+func TestBashJail_SlashSlashComment_NoFalsePositive(t *testing.T) {
+	dir := t.TempDir()
+	cmd := `cd ` + dir + ` && cat > repro_test.go << 'EOF'
+package repro
+
+import "testing"
+
+// This Go comment is a slash-slash token and is not a jail escape.
+func TestRepro(t *testing.T) {
+	t.Log("ok")
+}
+EOF
+go test -timeout 10s -count=1 -run TestRepro ./... -v`
+
+	if bashReferencesOutsidePath(cmd, dir) {
+		t.Errorf("bashReferencesOutsidePath(%q) = true, want false (// comment in heredoc must not be treated as outside path)", cmd)
+	}
+}
+
+// TestBashJail_RealAbsolutePaths_StillDetected makes sure the slash-only
+// refinement does not accidentally allow real absolute paths outside the
+// project.
+func TestBashJail_RealAbsolutePaths_StillDetected(t *testing.T) {
+	dir := t.TempDir()
+	for _, cmd := range []string{
+		"ls /tmp",
+		"cat /etc/passwd",
+		"cd /tmp && pwd",
+		"find /tmp -name '*.go'",
+	} {
+		if !bashReferencesOutsidePath(cmd, dir) {
+			t.Errorf("bashReferencesOutsidePath(%q) = false, want true", cmd)
+		}
+	}
+}
+
 func TestBashJail_QuotedPaths_NoFalsePositive(t *testing.T) {
 	dir := t.TempDir()
 

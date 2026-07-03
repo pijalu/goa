@@ -38,6 +38,49 @@ func TestAgentManager_TurnHistory_Empty(t *testing.T) {
 	}
 }
 
+// panicRunner is an agentRunner that panics, used to verify that a crash in
+// the agent turn is reported to the UI instead of silently stopping the agent.
+type panicRunner struct{}
+
+func (p *panicRunner) Run(ctx context.Context, input string) error {
+	panic("simulated agent panic")
+}
+
+func (p *panicRunner) RunWithImages(ctx context.Context, input string, images []string) error {
+	panic("simulated agent panic")
+}
+
+func TestAgentManager_TurnPanic_EmitsEndEvent(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		am.runAgentTurn(ctx, cancel, 1, &panicRunner{}, "hello", nil)
+	}()
+
+	select {
+	case ev := <-am.events:
+		if ev.Type != agentic.EventEnd {
+			t.Fatalf("expected EventEnd after panic, got %v", ev.Type)
+		}
+		if ev.Text == "" {
+			t.Fatal("expected EventEnd to carry error text after panic")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventEnd emitted after agent panic")
+	}
+
+	<-done
+	if am.IsRunning() {
+		t.Fatal("expected agent manager to stop running after panic")
+	}
+}
+
 func TestAgentManager_TurnHistory_ToolCallCapture(t *testing.T) {
 	cfg := &config.Config{}
 	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")

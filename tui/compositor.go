@@ -235,6 +235,7 @@ type Compositor struct {
 	maxLinesRendered    int
 	fullRedrawCount     int
 	clearOnShrink       bool
+	firstScrollDone     bool // true after the first viewport scroll; affects scrollback population
 }
 
 // NewCompositor creates a Compositor bound to a Terminal.
@@ -366,22 +367,72 @@ func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChang
 	return false
 }
 
-func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool)) {
-	firstChanged, lastChanged := firstLastDiff(c.prevLines, canvas)
-	appendedLines := len(canvas) > len(c.prevLines)
-	if appendedLines {
-		if firstChanged == -1 {
-			firstChanged = len(c.prevLines)
-		}
-		lastChanged = len(canvas) - 1
+func (c *Compositor) visibleRegionDiff(canvas []string, newVTop int, fl *frameLocals) (firstV, lastV int) {
+	firstV, lastV = -1, -1
+	height := fl.height
+	prevVTop := fl.prevViewportTop
+	prevLen := len(c.prevLines)
+	if height <= 0 {
+		return
+	}
+	if newVTop < 0 {
+		newVTop = 0
+	}
+	if prevVTop < 0 {
+		prevVTop = 0
 	}
 
-	if firstChanged == -1 {
+	prevStart := min(prevVTop, prevLen)
+	prevEnd := min(prevVTop+height, prevLen)
+	newStart := min(newVTop, len(canvas))
+	newEnd := min(newVTop+height, len(canvas))
+
+	prevVisible := c.prevLines[prevStart:prevEnd]
+	newVisible := canvas[newStart:newEnd]
+
+	scroll := newVTop - prevVTop
+	if scroll <= 0 {
+		// No downward scroll (or scrolled up): compare visible regions directly.
+		return firstLastDiff(prevVisible, newVisible)
+	}
+
+	// Downward scroll: old visible content shifts up by `scroll`; the bottom
+	// `scroll` rows are new. Compare the shifted overlap; anything beyond it
+	// is considered changed because the terminal will expose blank rows after
+	// the scroll.
+	if scroll >= len(newVisible) {
+		return 0, len(newVisible) - 1
+	}
+	shiftedOld := prevVisible[scroll:]
+	for i := 0; i < len(newVisible); i++ {
+		var oldLine string
+		if i < len(shiftedOld) {
+			oldLine = shiftedOld[i]
+		}
+		if newVisible[i] != oldLine {
+			if firstV < 0 {
+				firstV = i
+			}
+			lastV = i
+		}
+	}
+	return
+}
+
+func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool)) {
+	newVTop := max(0, len(canvas)-fl.height)
+	firstV, lastV := c.visibleRegionDiff(canvas, newVTop, fl)
+
+	if firstV < 0 {
 		c.positionHardwareCursor(cursor, len(canvas), fl.width)
-		c.previousViewportTop = fl.prevViewportTop
+		c.previousViewportTop = newVTop
 		c.prevH = fl.height
 		return
 	}
+
+	firstChanged := firstV + newVTop
+	lastChanged := lastV + newVTop
+
 	if firstChanged >= len(canvas) && len(c.prevLines) > len(canvas) {
 		if c.renderDeletedLines(canvas, cursor, fl.prevViewportTop, fl.height, fl.computeLineDiff, fullRender) {
 			return
@@ -434,10 +485,11 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 	bufferLength := max(height, len(canvas))
 	c.previousViewportTop = max(0, bufferLength-height)
 	c.viewportTop = c.previousViewportTop
+	c.firstScrollDone = len(canvas) > height
+	c.prevH = height
 	c.positionHardwareCursor(cursor, len(canvas), width)
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
-	c.prevH = height
 }
 
 func (c *Compositor) renderDeletedLines(canvas []string, cursor *CursorPos, prevViewportTop, height int,
@@ -517,28 +569,60 @@ func (c *Compositor) renderDeletedLines(canvas []string, cursor *CursorPos, prev
 // is written as real content (clear bottom row, write, newline to scroll it
 // into scrollback). The gap starts at firstChanged so content that shifted
 // into indices previously covered by stale on-screen rows is preserved.
+//
+// For the very first scroll of a session, the previous viewport is empty or
+// only partially filled, so bare newlines would push blank rows into
+// scrollback. On that first scroll we write every scrolled-off row directly
+// as content, ensuring the full transcript is recoverable.
 func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, prevVtop, newVtop, height int) {
 	scroll := newVtop - prevVtop
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
 	buf.WriteString(fmt.Sprintf("\x1b[%d;1H", height))
-	if scroll > height && height > 0 {
-		buf.WriteString(strings.Repeat("\n", height))
-		gapStart := max(0, firstChanged)
-		for i := gapStart; i < newVtop; i++ {
-			line := canvas[i]
-			if vw := visibleWidth(line); vw > width {
-				line = truncateToWidth(line, width, "")
-			}
-			buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", height))
-			buf.WriteString(line)
-			buf.WriteString("\n")
-		}
+	if !c.firstScrollDone {
+		emitFirstScroll(&buf, canvas, width)
+	} else if scroll > height && height > 0 {
+		emitLargeScroll(&buf, canvas, firstChanged, width, newVtop, height, prevVtop)
 	} else {
 		buf.WriteString(strings.Repeat("\n", scroll))
 	}
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
+	c.firstScrollDone = true
+}
+
+// emitFirstScroll writes the whole canvas from the top with \r\n so the
+// terminal naturally scrolls and populates scrollback. Used for the first
+// viewport advance of a session when there is no prior full viewport to push.
+func emitFirstScroll(buf *strings.Builder, canvas []string, width int) {
+	for i := 0; i < len(canvas); i++ {
+		line := canvas[i]
+		if vw := visibleWidth(line); vw > width {
+			line = truncateToWidth(line, width, "")
+		}
+		if i > 0 {
+			buf.WriteString("\r\n")
+		}
+		buf.WriteString(line)
+	}
+}
+
+// emitLargeScroll handles a viewport advance larger than one screen by
+// pushing the previous viewport into scrollback with bare newlines, then
+// writing each newly-added line above the new viewport as real content so
+// it too ends up in scrollback.
+func emitLargeScroll(buf *strings.Builder, canvas []string, firstChanged, width, newVtop, height, prevVtop int) {
+	buf.WriteString(strings.Repeat("\n", height))
+	gapStart := max(0, prevVtop+height)
+	for i := gapStart; i < newVtop; i++ {
+		line := canvas[i]
+		if vw := visibleWidth(line); vw > width {
+			line = truncateToWidth(line, width, "")
+		}
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", height))
+		buf.WriteString(line)
+		buf.WriteString("\n")
+	}
 }
 
 func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChanged, width int,

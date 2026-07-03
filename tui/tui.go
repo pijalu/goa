@@ -79,7 +79,11 @@ type TUI struct {
 	snapReq       chan chan<- *Scene // renderLoop requests a snapshot from commandLoop
 	loopsRunning  atomic.Bool
 	loopGoroutine atomic.Uint64 // commandLoop's goroutine ID; lets ApplySync detect re-entrancy
-	dirty         atomic.Bool
+
+	// dirtyChan signals the renderLoop that a new frame is needed. The channel
+	// is buffered so that only one pending signal is kept; the renderLoop
+	// throttles to a maximum of 60fps.
+	dirtyChan chan struct{}
 
 	// Async render scheduling
 	done chan struct{}
@@ -333,6 +337,7 @@ func (t *TUI) RunLoops() {
 	}
 	t.cmds = make(chan func(), 256)
 	t.snapReq = make(chan chan<- *Scene)
+	t.dirtyChan = make(chan struct{}, 1)
 	go t.commandLoop()
 	go t.renderLoop()
 	go t.listenResize()
@@ -361,26 +366,31 @@ func (t *TUI) commandLoop() {
 // to completion before the next command begins.
 func (t *TUI) applyCommand(cmd func()) {
 	cmd()
-	t.dirty.Store(true)
+	t.RequestRender()
 }
 
-// renderLoop is the SOLE terminal outputter. It throttles to ~60fps and, when
-// state is dirty, requests an immutable Scene snapshot from the commandLoop
-// and hands it to the Compositor. It never touches component state directly.
+// renderLoop is the SOLE terminal outputter. It waits for render requests
+// and, when one arrives, requests an immutable Scene snapshot from the
+// commandLoop and hands it to the Compositor. A 16ms throttle ensures the
+// terminal is updated at most 60 times per second (a ceiling, not a target),
+// so bursty state changes coalesce into a single frame.
 func (t *TUI) renderLoop() {
-	throttle := time.NewTicker(16 * time.Millisecond)
-	defer throttle.Stop()
 	for {
 		select {
-		case <-throttle.C:
-			if !t.dirty.Load() {
-				continue
+		case <-t.dirtyChan:
+			if t.stopped.Load() {
+				return
 			}
 			reply := make(chan *Scene, 1)
 			t.snapReq <- reply
 			scene := <-reply
-			t.dirty.Store(false)
 			t.compositor.Render(scene)
+			// Throttle to a maximum of ~60fps.
+			select {
+			case <-time.After(16 * time.Millisecond):
+			case <-t.done:
+				return
+			}
 		case <-t.done:
 			return
 		}
@@ -437,9 +447,15 @@ func (t *TUI) ApplySync(cmd func()) {
 }
 
 // RequestRender flags the renderLoop that state changed and a new frame is
-// due. Safe from any goroutine (atomic).
+// due. Safe from any goroutine (atomic/channel). The channel is buffered so a
+// burst of requests collapses into a single pending signal.
 func (t *TUI) RequestRender() {
-	t.dirty.Store(true)
+	if ch := t.dirtyChan; ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // listenResize reacts to terminal size changes by requesting a re-render.
@@ -924,12 +940,13 @@ func (t *TUI) buildScene(w, h int) *Scene {
 // focused editor, sets Scene.Cursor to its absolute (row, col) position, and
 // strips the marker. col is grapheme-aware (matches the terminal).
 func extractCursorMarker(scene *Scene) {
-	for li := range scene.Layers {
+	for li := len(scene.Layers) - 1; li >= 0; li-- {
 		l := &scene.Layers[li]
 		if l.Kind != LayerBase {
 			continue
 		}
-		for ri, line := range l.Content {
+		for ri := len(l.Content) - 1; ri >= 0; ri-- {
+			line := l.Content[ri]
 			idx := strings.Index(line, CURSOR_MARKER)
 			if idx < 0 {
 				continue

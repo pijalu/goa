@@ -69,6 +69,14 @@ type TurnTiming struct {
 	Phases map[string]float64
 }
 
+// agentRunner is the subset of *agentic.Agent used by runAgentTurn. Using an
+// interface makes the turn runner testable and keeps AgentManager decoupled
+// from the full agent surface.
+type agentRunner interface {
+	Run(ctx context.Context, input string) error
+	RunWithImages(ctx context.Context, input string, images []string) error
+}
+
 // AgentManager manages the lifecycle of the LLM agent session. It is a thin
 // facade over focused collaborators: TurnRecorder, ModeManager,
 // CompanionCoordinator, AgentDrivenGate, and SteeringQueue.
@@ -251,7 +259,8 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 	return nil
 }
 
-func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelFunc, gen int, agent *agentic.Agent, input string, images []string) {
+func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelFunc, gen int, runner agentRunner, input string, images []string) {
+	defer am.recoverTurnPanic()
 	defer func() {
 		cancel()
 		am.mu.Lock()
@@ -274,12 +283,36 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 
 	am.applyPendingMajorMode()
 	am.applyPendingThinkingLevel()
+	am.executeRunner(ctx, runner, input, images)
+	if am.postTurnHook != nil {
+		am.postTurnHook()
+	}
+}
 
+// recoverTurnPanic converts an agent-turn panic into an EventEnd so the UI
+// marks the turn complete and the user sees that the agent stopped.
+func (am *AgentManager) recoverTurnPanic() {
+	if r := recover(); r != nil {
+		if am.logger != nil {
+			am.logger.Log(agentic.Error, "agent turn panic: %v", r)
+		}
+		ev := agentic.OutputEvent{
+			Type: agentic.EventEnd,
+			Text: fmt.Sprintf("agent stopped unexpectedly: %v", r),
+		}
+		am.events <- ev
+		am.emitAgentEvent(ev)
+	}
+}
+
+// executeRunner runs the agent and emits an EventEnd on error. It is split
+// out of runAgentTurn to keep the turn lifecycle within the complexity budget.
+func (am *AgentManager) executeRunner(ctx context.Context, runner agentRunner, input string, images []string) {
 	var err error
 	if len(images) > 0 {
-		err = agent.RunWithImages(ctx, input, images)
+		err = runner.RunWithImages(ctx, input, images)
 	} else {
-		err = agent.Run(ctx, input)
+		err = runner.Run(ctx, input)
 	}
 	if err != nil {
 		ev := agentic.OutputEvent{Type: agentic.EventEnd}
@@ -295,9 +328,6 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 		// not drop it under load (CORE-BUG-3). Block (backpressure) instead.
 		am.events <- ev
 		am.emitAgentEvent(ev)
-	}
-	if am.postTurnHook != nil {
-		am.postTurnHook()
 	}
 }
 

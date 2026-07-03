@@ -34,7 +34,7 @@ type SSHBashTool struct {
 func (t *SSHBashTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "ssh_bash",
-		Description: "Execute a command on a remote host via SSH.",
+		Description: "Run a remote SSH command.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -65,7 +65,7 @@ func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 func (t *BashTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "bash",
-		Description: "Execute a shell command in the project sandbox. Use only when no other tool can achieve the goal.",
+		Description: "Run a shell command.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

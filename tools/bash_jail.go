@@ -123,7 +123,16 @@ func looksLikePath(s string) string {
 	if s == "." || s == ".." {
 		return s
 	}
-	if strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+	if strings.HasPrefix(s, "/") {
+		// A bare sequence of slashes (e.g. "//" comments in code snippets) is
+		// not a meaningful filesystem path and causes false positives when
+		// commands contain heredoc bodies. Ignore slash-only tokens.
+		if strings.IndexFunc(s, func(r rune) bool { return r != '/' }) < 0 {
+			return ""
+		}
+		return s
+	}
+	if strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
 		return s
 	}
 	return ""

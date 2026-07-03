@@ -33,7 +33,7 @@ type readMediaInput struct {
 func (t *ReadMediaFileTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "read_media_file",
-		Description: "Read an image or video file and return its content for vision-capable models.",
+		Description: "Read image/video content.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -69,7 +69,7 @@ func (t *TerminalTool) LoopHints() agentic.ToolLoopHints {
 func (t *TerminalTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "terminal",
-		Description: "Execute a shell command in the project sandbox. Use only when no other tool can achieve the goal.",
+		Description: "Run a command in a terminal.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

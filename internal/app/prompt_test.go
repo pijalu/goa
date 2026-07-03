@@ -16,6 +16,7 @@ import (
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/memory"
 	"github.com/pijalu/goa/prompts"
+	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
 )
@@ -164,14 +165,14 @@ func TestBuildMemorySectionRespectsBudget(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_IncludesActiveSkillBodies(t *testing.T) {
+func TestBuildSystemPrompt_IncludesActiveSkillListings(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, ".goa", "skills")
 	skillRoot := filepath.Join(skillsDir, "telegram")
 	if err := os.MkdirAll(skillRoot, 0755); err != nil {
 		t.Fatalf("create skill dir: %v", err)
 	}
-	skillContent := "---\nname: telegram\ninline: true\n---\nUse telegraphic style for all thinking and reasoning."
+	skillContent := "---\nname: telegram\ndescription: Use telegraphic style for all thinking and reasoning.\ninline: true\n---\nUse telegraphic style for all thinking and reasoning."
 	if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte(skillContent), 0644); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
@@ -195,21 +196,181 @@ func TestBuildSystemPrompt_IncludesActiveSkillBodies(t *testing.T) {
 	subs.skillRegistry = skillReg
 
 	got := buildSystemPrompt(subs)
-	if !strings.Contains(got, "<skills>") {
-		t.Errorf("missing <skills> section:\n%s", got)
+	if !strings.Contains(got, "<active_skills>") {
+		t.Errorf("missing <active_skills> section:\n%s", got)
+	}
+	if !strings.Contains(got, "<name>telegram</name>") {
+		t.Errorf("missing active skill name:\n%s", got)
 	}
 	if !strings.Contains(got, "Use telegraphic style") {
-		t.Errorf("missing active skill body:\n%s", got)
+		t.Errorf("missing active skill description:\n%s", got)
 	}
-	if !strings.Contains(got, `<skill name="telegram">`) {
-		t.Errorf("missing skill name tag:\n%s", got)
+	if !strings.Contains(got, "Load with the read tool") {
+		t.Errorf("missing read-tool guidance:\n%s", got)
+	}
+	if strings.Contains(got, "<skill name=\"telegram\">") {
+		t.Errorf("active skill should not be inlined as a full body:\n%s", got)
 	}
 }
 
 func TestBuildActiveSkillsSection_NoSkills(t *testing.T) {
 	subs := newTestSubsystems(t.TempDir())
-	if got := buildSystemPrompt(subs); strings.Contains(got, "<skills>") {
-		t.Errorf("<skills> should be omitted when no skills are active:\n%s", got)
+	if got := buildSystemPrompt(subs); strings.Contains(got, "<active_skills>") {
+		t.Errorf("<active_skills> should be omitted when no skills are active:\n%s", got)
+	}
+}
+
+func TestBuildSystemPrompt_SmallContextBudget(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{ConfigDir: dir}
+	ss := core.NewSessionState(internal.ModeState{Major: internal.MajorCoder, Autonomy: internal.AutonomySolo})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	agentMgr := core.NewAgentManager(cfg, nil, nil, ss, tuiEvents, "")
+
+	subs := newTestSubsystems(dir)
+	subs.cfg = cfg
+	subs.agentMgr = agentMgr
+	subs.contextFiles = []internal.ContextFile{
+		{Path: "AGENTS.md", Content: strings.Repeat("project rule line\n", 200)},
+	}
+	subs.ContextWindow = 8192
+
+	got := buildSystemPrompt(subs)
+	budget := systemPromptBudget(8192)
+	if len(got) > budget {
+		t.Errorf("system prompt length %d exceeds budget %d", len(got), budget)
+	}
+	// Mode and project context should remain.
+	if !strings.Contains(got, "<project_context>") {
+		t.Errorf("<project_context> should be kept for 8k context:\n%s", got)
+	}
+	if !strings.Contains(got, "coder agent") {
+		t.Errorf("mode prompt should be kept for 8k context:\n%s", got)
+	}
+	// Low-priority sections are dropped only when the budget is exhausted.
+	// The assertions above verify the budget is enforced; this test does not
+	// mandate which specific section is dropped because the budget is large
+	// enough to keep the compact sections in this minimal test.
+}
+
+func TestModelContextWindow_LocalProviderFallback(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "lmstudio",
+		ActiveModel:    "test",
+		Providers: []config.ProviderConfig{
+			{ID: "lmstudio", Endpoint: "http://localhost:1234/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "test", Provider: "lmstudio", Model: "test-model"},
+		},
+	}
+	pm := provider.NewProviderManager(cfg)
+	subs := newTestSubsystems(t.TempDir())
+	subs.providerMgr = pm
+
+	got := modelContextWindow(subs)
+	if got != 8192 {
+		t.Errorf("modelContextWindow for local provider = %d, want 8192 fallback", got)
+	}
+}
+
+func TestModelContextWindow_ResolvedContextWindow(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "lmstudio",
+		ActiveModel:    "test",
+		Providers: []config.ProviderConfig{
+			{ID: "lmstudio", Endpoint: "http://localhost:1234/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "test", Provider: "lmstudio", Model: "test-model", ContextWindow: 32768},
+		},
+	}
+	pm := provider.NewProviderManager(cfg)
+	subs := newTestSubsystems(t.TempDir())
+	subs.providerMgr = pm
+
+	got := modelContextWindow(subs)
+	if got != 32768 {
+		t.Errorf("modelContextWindow = %d, want 32768", got)
+	}
+}
+
+func TestModelContextWindow_Override(t *testing.T) {
+	subs := newTestSubsystems(t.TempDir())
+	subs.ContextWindow = 4096
+
+	got := modelContextWindow(subs)
+	if got != 4096 {
+		t.Errorf("modelContextWindow = %d, want 4096 override", got)
+	}
+}
+
+func TestBuildSystemPrompt_ContextWindowOverride(t *testing.T) {
+	subs := newTestSubsystems(t.TempDir())
+	// Without an override and no provider, budget is unlimited.
+	got := buildSystemPrompt(subs)
+	if len(got) == 0 {
+		t.Errorf("expected non-empty prompt when context window is unknown")
+	}
+
+	// With a small override, the budget should be enforced.
+	subs.ContextWindow = 8192
+	got = buildSystemPrompt(subs)
+	if len(got) > systemPromptBudget(8192) {
+		t.Errorf("prompt length %d exceeds budget %d with override", len(got), systemPromptBudget(8192))
+	}
+}
+
+func TestSystemPromptBudget_ConservativeAtAllSizes(t *testing.T) {
+	cases := []struct {
+		ctxWindow int
+		maxWant   int
+	}{
+		{8192, 6000},
+		{16384, 9000},
+		{32768, 14000},
+		{65536, 20000},
+		{128000, 30000},
+		{256000, 30000},
+	}
+	for _, tc := range cases {
+		got := systemPromptBudget(tc.ctxWindow)
+		if got > tc.maxWant {
+			t.Errorf("systemPromptBudget(%d) = %d, want <= %d", tc.ctxWindow, got, tc.maxWant)
+		}
+	}
+}
+
+func TestApplySystemPromptBudget_DropsLowPrioritySections(t *testing.T) {
+	parts := []string{
+		"mode prompt",        // highest priority
+		"project context",    // next
+		"memory",             // next
+		"active skills",      // next
+		"available skills",   // next
+		"self documentation", // lowest priority
+	}
+	budget := len(strings.Join(parts[:4], "\n\n")) + 5
+
+	got := applySystemPromptBudget(parts, budget)
+	if strings.Contains(got, "self documentation") {
+		t.Errorf("lowest-priority section should be dropped:\n%s", got)
+	}
+	if !strings.Contains(got, "mode prompt") {
+		t.Errorf("highest-priority section should be kept:\n%s", got)
+	}
+}
+
+func TestApplySystemPromptBudget_TruncatesHighestPriority(t *testing.T) {
+	parts := []string{"this is a very long mode prompt that exceeds the entire budget"}
+	budget := 20
+
+	got := applySystemPromptBudget(parts, budget)
+	if len(got) > budget+10 {
+		t.Errorf("highest-priority section should be truncated to fit budget, got length %d", len(got))
+	}
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected truncation marker:\n%s", got)
 	}
 }
 
@@ -290,8 +451,8 @@ func TestBuildSystemPrompt_IncludesSelfDocSection(t *testing.T) {
 	if !strings.Contains(got, "goa://docs/TOOLS.md") {
 		t.Errorf("missing goa://docs/TOOLS.md reference:\n%s", got)
 	}
-	if !strings.Contains(got, "To create or use user skills") {
-		t.Errorf("missing skills guidance:\n%s", got)
+	if !strings.Contains(got, "Read embedded docs") {
+		t.Errorf("missing read-tool guidance:\n%s", got)
 	}
 }
 
@@ -306,16 +467,7 @@ func TestBuildSelfDocSection_GeneratedFromEmbeddedDocs(t *testing.T) {
 	if !strings.Contains(section, "goa://docs/ARCHITECTURE.md") {
 		t.Errorf("missing ARCHITECTURE reference:\n%s", section)
 	}
-	if !strings.Contains(section, "To create or use user skills: read goa://docs/SKILLS.md") {
-		t.Errorf("missing explicit skills guidance:\n%s", section)
-	}
-	if !strings.Contains(section, "To build or load plugins: read goa://docs/PLUGINS.md") {
-		t.Errorf("missing explicit plugins guidance:\n%s", section)
-	}
-	if !strings.Contains(section, "To configure Goa") {
-		t.Errorf("missing explicit configuration guidance:\n%s", section)
-	}
-	if !strings.Contains(section, "To call tools and understand tool schemas") {
-		t.Errorf("missing explicit tools guidance:\n%s", section)
+	if !strings.Contains(section, "Read embedded docs with the read tool") {
+		t.Errorf("missing read-tool guidance:\n%s", section)
 	}
 }

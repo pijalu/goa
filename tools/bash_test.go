@@ -683,10 +683,24 @@ func TestBashTool_LoopHints(t *testing.T) {
 	}
 }
 
-// TestBashTool_ExecuteContext_CancelInterruptsLongCommand verifies that
-// cancelling the turn context kills the running process tree promptly
-// instead of waiting for the bash timeout. Before implementing ContextTool,
-// BashTool waited on time.After only and could not be interrupted by Stop().
+func TestBashTool_Jail_HeredocWithSlashSlashComment(t *testing.T) {
+	// The static jail checker previously treated bare "//" tokens (e.g. Go
+	// comments inside a heredoc) as absolute paths and rejected the command.
+	// This test runs the real BashTool with the jail enabled to verify the
+	// command is allowed and executes successfully.
+	dir := t.TempDir()
+	tool := &BashTool{ProjectDir: dir, Jail: true}
+	cmd := `{"command": "cd ` + dir + ` && cat > repro.go << 'EOF'\npackage repro\n// This Go comment is a slash-slash token.\nimport \"fmt\"\nfunc main() { fmt.Println(\"ok\") }\nEOF\ncat repro.go"}`
+
+	result, err := tool.Execute(cmd)
+	if err != nil {
+		t.Fatalf("heredoc with // comments should not trigger jail: %v", err)
+	}
+	if !strings.Contains(result, "This Go comment") {
+		t.Errorf("expected file content in output, got: %q", result)
+	}
+}
+
 func TestBashTool_ExecuteContext_CancelInterruptsLongCommand(t *testing.T) {
 	tool := &BashTool{}
 	ctx, cancel := context.WithCancel(context.Background())

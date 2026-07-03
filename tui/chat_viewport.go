@@ -51,12 +51,15 @@ type ChatMessage struct {
 //
 // Model and View stay in sync by construction: every mutator writes a single
 // MessageEntry (Data + View) through the Model.
+//
+// Render uses a per-entry cache so that only changed entries are re-rendered.
+// The total frame cache is updated incrementally when the last entry is the
+// only dirty one (the common streaming case), and rebuilt from the per-entry
+// caches when entries elsewhere change.
 type ChatViewport struct {
 	*Conversation
 
 	// renderCache holds the concatenated output of the last Render call.
-	// Invalidated by any mutation to the conversation (Append, UpdateLast,
-	// RemoveLast) so that the next frame re-renders from scratch.
 	renderCache struct {
 		width int
 		lines []string
@@ -68,33 +71,42 @@ func NewChatViewport() *ChatViewport {
 	return &ChatViewport{Conversation: NewConversation()}
 }
 
-// Render draws every entry's view. Viewport clipping is handled by the
-// Compositor handles viewport clipping.
-// The result is cached and reused on subsequent calls at the same width
-// until the conversation is mutated (Append, UpdateLast, RemoveLast).
+// Render draws every entry's view. Per-entry caches avoid re-rendering
+// unchanged entries; the total frame cache is updated incrementally when only
+// the last entry changed, which is the common case during streaming.
 func (cv *ChatViewport) Render(width int) []string {
 	if width <= 0 {
 		return nil
 	}
-	if cv.renderCache.width == width && cv.renderCache.lines != nil {
+	if width != cv.renderCache.width {
+		cv.resetRenderCaches(width)
+	}
+	dirty := cv.dirtyIndices()
+	if len(dirty) == 0 && cv.renderCache.lines != nil {
 		return cv.renderCache.lines
 	}
-	var allLines []string
-	cv.ForEach(func(e MessageEntry) {
-		if cl := e.View.Render(width); cl != nil {
-			allLines = append(allLines, cl...)
-		}
-	})
-	cv.renderCache.width = width
-	cv.renderCache.lines = allLines
-	return allLines
+	if cv.renderCache.lines == nil {
+		cv.fullRebuild(width)
+		return cv.renderCache.lines
+	}
+	if len(dirty) == 1 && dirty[0] == len(cv.entries)-1 {
+		cv.updateLastEntry(width)
+		return cv.renderCache.lines
+	}
+	cv.fullRebuild(width)
+	return cv.renderCache.lines
 }
 
-// Invalidate propagates to every entry's view and clears the render cache.
+// Invalidate propagates to every entry's view and clears the render caches.
 func (cv *ChatViewport) Invalidate() {
-	cv.ForEach(func(e MessageEntry) { e.View.Invalidate() })
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
+	for i := range cv.entries {
+		cv.entries[i].View.Invalidate()
+		cv.entries[i].renderedWidth = 0
+		cv.entries[i].renderedLines = nil
+		cv.entries[i].dirty = true
+	}
 }
 
 // HandleInput is a no-op: the chat viewport is never focused (input goes to the
@@ -103,39 +115,94 @@ func (cv *ChatViewport) HandleInput(string) {}
 
 // ── Generic Model delegates (composable primitives) ──
 
-// Append adds an entry to the conversation (single write path for Model+View)
-// and invalidates the render cache.
+// Append adds an entry to the conversation and marks the new entry dirty.
 func (cv *ChatViewport) Append(e MessageEntry) int {
-	cv.invalidateCache()
+	e.dirty = true
+	e.renderedWidth = 0
+	e.renderedLines = nil
 	return cv.Conversation.Append(e)
 }
 
-// UpdateLast applies fn to the most recent entry matching types and
-// invalidates the render cache.
+// UpdateLast applies fn to the most recent entry matching types and marks
+// that entry dirty so the next Render only re-renders the changed entry.
 func (cv *ChatViewport) UpdateLast(types []ConsoleItemType, fn func(*MessageEntry)) bool {
-	if cv.Conversation.UpdateLast(types, fn) {
-		cv.invalidateCache()
-		return true
+	wrapped := func(e *MessageEntry) {
+		fn(e)
+		e.dirty = true
 	}
-	return false
+	return cv.Conversation.UpdateLast(types, wrapped)
 }
 
-// RemoveLast removes and returns the most recent entry matching types and
-// invalidates the render cache.
+// RemoveLast removes the most recent entry matching types and clears the
+// frame cache so the next Render rebuilds it.
 func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool) {
 	if e, ok := cv.Conversation.RemoveLast(types); ok {
-		cv.invalidateCache()
+		cv.renderCache.width = 0
+		cv.renderCache.lines = nil
 		return e, true
 	}
 	return MessageEntry{}, false
 }
 
-// invalidateCache clears the viewport-level render cache so the next
-// Render call rebuilds from scratch.
-func (cv *ChatViewport) invalidateCache() {
-	cv.renderCache.width = 0
+// resetRenderCaches invalidates every entry's cache and clears the frame cache.
+func (cv *ChatViewport) resetRenderCaches(width int) {
+	cv.renderCache.width = width
 	cv.renderCache.lines = nil
+	for i := range cv.entries {
+		cv.entries[i].renderedWidth = 0
+		cv.entries[i].renderedLines = nil
+		cv.entries[i].dirty = true
+	}
 }
+
+// dirtyIndices returns the indices of entries that need to be re-rendered.
+func (cv *ChatViewport) dirtyIndices() []int {
+	var idx []int
+	for i := range cv.entries {
+		e := &cv.entries[i]
+		if e.renderedWidth != cv.renderCache.width || e.dirty || e.renderedLines == nil {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// fullRebuild re-renders all dirty entries and concatenates the per-entry
+// caches into the frame cache.
+func (cv *ChatViewport) fullRebuild(width int) {
+	cv.renderCache.width = width
+	cv.renderCache.lines = cv.renderCache.lines[:0]
+	for i := range cv.entries {
+		e := &cv.entries[i]
+		if e.renderedWidth != width || e.dirty || e.renderedLines == nil {
+			e.renderedLines = e.View.Render(width)
+			e.renderedWidth = width
+			e.dirty = false
+		}
+		cv.renderCache.lines = append(cv.renderCache.lines, e.renderedLines...)
+	}
+}
+
+// updateLastEntry re-renders the last entry and replaces its block in the
+// frame cache. This is the fast path for streaming appends and updates.
+func (cv *ChatViewport) updateLastEntry(width int) {
+	idx := len(cv.entries) - 1
+	e := &cv.entries[idx]
+	newLines := e.View.Render(width)
+
+	start := 0
+	for i := 0; i < idx; i++ {
+		start += len(cv.entries[i].renderedLines)
+	}
+	cv.renderCache.lines = cv.renderCache.lines[:start]
+	cv.renderCache.lines = append(cv.renderCache.lines, newLines...)
+
+	e.renderedLines = newLines
+	e.renderedWidth = width
+	e.dirty = false
+	cv.renderCache.width = width
+}
+
 
 // Snapshot returns the pure-data view of the conversation for agents/controllers.
 func (cv *ChatViewport) Snapshot() []MessageData { return cv.Conversation.Snapshot() }
@@ -261,11 +328,18 @@ func (cv *ChatViewport) AddClarifyCard(card *ClarifyCard) {
 	cv.Append(MessageEntry{Data: MessageData{Type: -1}, View: card})
 }
 
-// AddToolExecution adds an interactive ToolExecutionComponent and returns it.
+// AddToolExecution adds an interactive tool component and returns it.
 func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionComponent {
 	tc := NewToolExecution(name, FormatToolArgs(name, argsJSON))
 	tc.SetArgsJSON(argsJSON)
-	tc.SetOnInvalidate(func() { cv.invalidateCache() })
+	tc.SetOnInvalidate(func() {
+		for i := range cv.entries {
+			if cv.entries[i].View == tc {
+				cv.entries[i].dirty = true
+				return
+			}
+		}
+	})
 	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleToolCall, Text: name}, View: tc})
 	return tc
 }

@@ -357,6 +357,14 @@ func (h *HeadlessApp) startSession() error {
 		return fmt.Errorf("failed to resolve model: %w", err)
 	}
 
+	// Local servers report the loaded context length only once the model is
+	// loaded; refresh before building the system prompt so budgets and
+	// compression limits match the actual available context.
+	if nCtx := h.subs.providerMgr.RefreshLocalContextWindow(); nCtx > 0 {
+		mdl.ContextWindow = nCtx
+		h.subs.ContextWindow = nCtx
+	}
+
 	streamOpts := h.subs.providerMgr.BuildStreamOptions()
 	systemPrompt := buildSystemPrompt(h.subs)
 	agenticTools := h.subs.toolRegistry.All()

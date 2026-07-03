@@ -31,7 +31,7 @@ type ReadFileTool struct {
 func (t *ReadFileTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "read",
-		Description: "Read the contents of a file with optional start/end line range. Detects binary files and truncates large outputs.",
+		Description: "Read a file.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

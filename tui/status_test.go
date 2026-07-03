@@ -197,10 +197,9 @@ func TestStatusMsg_ConcurrentShowClear(t *testing.T) {
 	})
 }
 
-// Regression test: Show must work after Clear to support multi-turn sessions.
-// After handleSessionEnd calls Clear(), subsequent turns call Show() to update
-// the status. The done-channel guard in Show() must not permanently disable the
-// spinner.
+// Regression test: Show must work after Clear + Reset to support multi-turn
+// sessions. After handleSessionEnd calls Clear(), the next turn begins by
+// calling Reset() before Show(), so status updates can resume.
 func TestStatusMsg_ShowAfterClear(t *testing.T) {
 	defer resetSpinner()
 
@@ -227,23 +226,64 @@ func TestStatusMsg_ShowAfterClear(t *testing.T) {
 		t.Fatal("Clear() did not hide status")
 	}
 
-	// Second turn — must be able to show again
+	// Second turn — Reset() must be called before Show() can start a fresh spinner.
+	sm.Reset()
 	sm.Show("Waiting...")
 	if sm.Text() != "Waiting..." {
-		t.Fatalf("Show() after Clear() failed to set text: got %q", sm.Text())
+		t.Fatalf("Show() after Clear()+Reset() failed to set text: got %q", sm.Text())
 	}
 	if !sm.IsVisible() {
-		t.Fatal("Show() after Clear() did not make status visible")
+		t.Fatal("Show() after Clear()+Reset() did not make status visible")
 	}
 
 	lines := sm.Render(80)
 	if len(lines) < 2 {
-		t.Fatal("Render returned no lines for visible status after Clear+Show")
+		t.Fatal("Render returned no lines for visible status after Clear+Reset+Show")
 	}
 	line := lines[1]
 	stripped := ansi.Strip(line)
 	if !strings.Contains(stripped, "Waiting...") {
-		t.Errorf("status line missing new text after Clear+Show: %q", stripped)
+		t.Errorf("status line missing new text after Clear+Reset+Show: %q", stripped)
+	}
+}
+
+// TestStatusMsg_ShowAfterClearWithoutResetIsNoOp verifies that after Clear(),
+// Show() is a no-op until Reset() is called. This prevents late events
+// (e.g. EventProgress after EventEnd) from re-starting the spinner.
+func TestStatusMsg_ShowAfterClearWithoutResetIsNoOp(t *testing.T) {
+	defer resetSpinner()
+
+	sm := NewStatusMsg()
+
+	sm.Show("Thinking...")
+	if !sm.IsVisible() {
+		t.Fatal("Show() did not make status visible")
+	}
+
+	sm.Clear()
+	if sm.IsVisible() {
+		t.Fatal("Clear() did not hide status")
+	}
+	if sm.Render(80) != nil {
+		t.Error("Render() should return nil after Clear()")
+	}
+
+	sm.Show("Waiting...")
+	if sm.IsVisible() {
+		t.Error("Show() after Clear() without Reset() should not make status visible")
+	}
+	if sm.Text() != "" {
+		t.Errorf("Show() after Clear() without Reset() should leave text empty, got %q", sm.Text())
+	}
+	if sm.Render(80) != nil {
+		t.Error("Render() should return nil after Show() without Reset()")
+	}
+
+	// After Reset(), Show() works again.
+	sm.Reset()
+	sm.Show("Waiting...")
+	if !sm.IsVisible() {
+		t.Fatal("Show() after Reset() did not make status visible")
 	}
 }
 

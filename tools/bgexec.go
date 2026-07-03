@@ -107,7 +107,7 @@ func NewBGExecTool() *BGExecTool {
 func (t *BGExecTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "bg_exec",
-		Description: "Manage long-running background processes with pipe I/O.",
+		Description: "Manage background processes.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

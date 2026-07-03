@@ -118,6 +118,7 @@ On first run, Goa walks you through:
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development guide |
 | [bugs.md](bugs.md) | Known issues and roadmap |
 | [AGENTS.md](AGENTS.md) | AI agent coding guidelines |
+| [PROFILING.md](docs/PROFILING.md) | Performance profiling guide |
 
 ## Project Structure
 

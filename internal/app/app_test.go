@@ -307,6 +307,100 @@ func TestHandleToolResult_NonBashMarksSuccess(t *testing.T) {
 	}
 }
 
+func TestHandleToolResult_MultipleToolsWithIDs(t *testing.T) {
+	app := New(testSubsystems())
+	app.subs.statusMsg = tui.NewStatusMsg()
+	app.subs.footer = tui.NewFooter()
+
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "bash",
+		ToolInput:  `{"command":"echo a"}`,
+		ToolCallID: "c1",
+	})
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "bash",
+		ToolInput:  `{"command":"echo b"}`,
+		ToolCallID: "c2",
+	})
+
+	app.handleToolResult(&agentic.OutputEvent{
+		Type:       agentic.EventToolResult,
+		ToolCallID: "c1",
+		Text:       "result a",
+	})
+	app.handleToolResult(&agentic.OutputEvent{
+		Type:       agentic.EventToolResult,
+		ToolCallID: "c2",
+		Text:       "result b",
+	})
+
+	children := app.subs.chat.Children()
+	if len(children) != 2 {
+		t.Fatalf("expected 2 tool children, got %d", len(children))
+	}
+	tc1, ok := children[0].(*tui.ToolExecutionComponent)
+	if !ok {
+		t.Fatalf("expected first child to be ToolExecutionComponent, got %T", children[0])
+	}
+	tc2, ok := children[1].(*tui.ToolExecutionComponent)
+	if !ok {
+		t.Fatalf("expected second child to be ToolExecutionComponent, got %T", children[1])
+	}
+	if tc1.Status() != tui.ToolSuccess {
+		t.Errorf("expected tc1 status ToolSuccess, got %v", tc1.Status())
+	}
+	if tc2.Status() != tui.ToolSuccess {
+		t.Errorf("expected tc2 status ToolSuccess, got %v", tc2.Status())
+	}
+}
+
+func TestHandleToolResult_MultipleToolsWithoutIDs(t *testing.T) {
+	app := New(testSubsystems())
+	app.subs.statusMsg = tui.NewStatusMsg()
+	app.subs.footer = tui.NewFooter()
+
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:      agentic.EventToolCall,
+		ToolName:  "bash",
+		ToolInput: `{"command":"echo a"}`,
+	})
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:      agentic.EventToolCall,
+		ToolName:  "bash",
+		ToolInput: `{"command":"echo b"}`,
+	})
+
+	app.handleToolResult(&agentic.OutputEvent{
+		Type: agentic.EventToolResult,
+		Text: "result a",
+	})
+	app.handleToolResult(&agentic.OutputEvent{
+		Type: agentic.EventToolResult,
+		Text: "result b",
+	})
+
+	children := app.subs.chat.Children()
+	if len(children) != 2 {
+		t.Fatalf("expected 2 tool children, got %d", len(children))
+	}
+	tc1, ok := children[0].(*tui.ToolExecutionComponent)
+	if !ok {
+		t.Fatalf("expected first child to be ToolExecutionComponent, got %T", children[0])
+	}
+	tc2, ok := children[1].(*tui.ToolExecutionComponent)
+	if !ok {
+		t.Fatalf("expected second child to be ToolExecutionComponent, got %T", children[1])
+	}
+	if tc1.Status() != tui.ToolSuccess {
+		t.Errorf("expected tc1 status ToolSuccess, got %v", tc1.Status())
+	}
+	if tc2.Status() != tui.ToolSuccess {
+		t.Errorf("expected tc2 status ToolSuccess, got %v", tc2.Status())
+	}
+}
+
 func TestHandleSessionEnd_Cancelled_RemovesPartialAssistant(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.chat.AddUserMessage("user question")
@@ -492,7 +586,7 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		ContextMax:      10000,
 	})
 	// 300 / (1000+300+200) = 300/1500 = 20%
-	if !strings.Contains(stats, "☕20%") {
+	if !strings.Contains(stats, "CH20.0%") {
 		t.Errorf("expected cache hit 20%%, got %q", stats)
 	}
 	// Cache read without prompt > 0 should not display.
@@ -501,7 +595,7 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
 	})
-	if strings.Contains(noPrompt, "☕") {
+	if strings.Contains(noPrompt, "CH") {
 		t.Errorf("expected no cache hit display when PromptN is 0, got %q", noPrompt)
 	}
 }

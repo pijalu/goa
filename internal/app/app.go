@@ -111,7 +111,11 @@ func (a *App) Run() bool {
 	a.wireToolConfirmation(engine)
 	a.loadPersistedPathApprovals()
 	showStartupBanner(subs, chat)
-	startAgentSession(subs, chat)
+	if subs.perfLoad {
+		a.startPerfLoad()
+	} else {
+		startAgentSession(subs, chat)
+	}
 	engine.RenderNow()
 
 	done := a.setupEventHandlers(engine, chat, inp)
@@ -166,6 +170,14 @@ func runApp() bool {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	runtimeOpts = applyProfilingDefaults(runtimeOpts)
+	prof, err := startProfiling(runtimeOpts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer prof.stopProfiling()
+
 	loader := config.NewCascadeLoader(projectDir, cliFlags["config"], cliFlags)
 	cfg := LoadConfig(loader, projectDir)
 	subs := InitSubsystems(cfg, loader, projectDir, runtimeOpts)
@@ -188,6 +200,24 @@ func runApp() bool {
 	default:
 		return New(subs).Run()
 	}
+}
+
+// applyProfilingDefaults fills in default profile file names when the user
+// passes --with-profiling without explicit --cpuprofile / --memprofile / --trace.
+func applyProfilingDefaults(opts RuntimeOptions) RuntimeOptions {
+	if !opts.WithProfiling {
+		return opts
+	}
+	if opts.CPUProfile == "" {
+		opts.CPUProfile = "cpu.prof"
+	}
+	if opts.MemProfile == "" {
+		opts.MemProfile = "mem.prof"
+	}
+	if opts.TraceFile == "" {
+		opts.TraceFile = "trace.out"
+	}
+	return opts
 }
 
 func runACP(subs *subsystems) {

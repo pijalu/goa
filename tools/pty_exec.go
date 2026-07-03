@@ -37,7 +37,7 @@ type ptyParams struct {
 func (t *PTYExecTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "pty_exec",
-		Description: "Run a command in a pseudo-terminal for TTY-dependent apps (vim, htop, less, ssh).",
+		Description: "Run a command in a pseudo-terminal.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

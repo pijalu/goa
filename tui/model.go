@@ -25,6 +25,13 @@ type MessageData struct {
 type MessageEntry struct {
 	Data MessageData
 	View Component
+	// render cache: the ChatViewport owns these fields and invalidates them
+	// when the conversation is mutated. Storing the cache per entry lets the
+	// viewport re-render only the entries that changed instead of rebuilding
+	// the entire conversation on every streaming frame.
+	renderedWidth int
+	renderedLines []string
+	dirty         bool
 }
 
 // Conversation is the Model: the authoritative, generic store of the chat

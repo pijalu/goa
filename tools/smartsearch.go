@@ -53,12 +53,7 @@ type SmartSearchTool struct {
 func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name: "smartsearch",
-		Description: "Search for relevant code files using BM25 relevance ranking. " +
-			"Accepts natural language queries and returns ranked file paths with relevance scores " +
-			"and the matching source lines so you can act on the results. " +
-			"Builds and maintains a persistent index under .goa/smartsearch/. " +
-			"Best for finding code by what it does (e.g. \"authentication middleware\", \"HTTP handler for users\"), " +
-			"rather than by an exact pattern. For exact pattern matching, use the search tool instead.",
+		Description: "Search code by natural language.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

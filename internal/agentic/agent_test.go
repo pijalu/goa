@@ -901,6 +901,49 @@ func TestAgent_ToolBudget_ConsecutiveDuplicate(t *testing.T) {
 	}
 }
 
+// TestAgent_ToolBudget_NonConsecutiveDuplicateNotFlagged verifies that when
+// the same tool call is spaced out by a different call (A, B, A), the second
+// A is not treated as a soft duplicate. Only truly consecutive duplicates
+// should trigger the soft-repeat hint; the rolling window is reserved for the
+// hard-loop guard at the configured limit.
+func TestAgent_ToolBudget_NonConsecutiveDuplicateNotFlagged(t *testing.T) {
+	args := []string{"A", "B", "A"}
+	p := registerSequenceToolProvider(args)
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		Tools: []Tool{mockTool{
+			name:   "mock_tool",
+			schema: ToolSchema{Name: "mock_tool", Description: "test"},
+		}},
+		MaxToolRepeatTotal:       0,
+		MaxToolRepeatConsecutive: 0,
+		MaxToolCalls:             3,
+		ToolCallLimitResetWindow: 10,
+	})
+
+	obs := runAgentCollectingEvents(t, agent, "call tools")
+
+	var realResults, guardResults int
+	for _, e := range obs.Events() {
+		if e.Type != EventToolResult {
+			continue
+		}
+		if strings.Contains(e.Text, "Loop guardrail") || strings.Contains(e.Text, "already executed") {
+			guardResults++
+		} else {
+			realResults++
+		}
+	}
+	if realResults != 3 {
+		t.Errorf("expected 3 real executions for A,B,A, got %d (guards=%d)", realResults, guardResults)
+	}
+	if guardResults != 0 {
+		t.Errorf("expected 0 guard results for A,B,A, got %d", guardResults)
+	}
+}
+
 // TestAgent_ToolBudget_LLMReceivesHintAndContinues verifies that when a
 // duplicate guard fires, the model receives the hint as a tool result and the
 // turn continues (the second provider stream returns text).
@@ -1076,6 +1119,76 @@ func registerBatchToolProvider(totalCalls int) *batchToolProvider {
 	p := &batchToolProvider{
 		api:    provider.Api(fmt.Sprintf("test-mid-batch-budget-%d", testProviderCounter.Add(1))),
 		nCalls: totalCalls,
+	}
+	provider.RegisterApiProvider(p)
+	return p
+}
+
+// sequenceToolProvider emits a configurable sequence of tool-call arguments
+// on its first stream, then a plain text response on subsequent streams.
+// Used to verify duplicate detection when the same call is spaced out by
+// different calls.
+type sequenceToolProvider struct {
+	api      provider.Api
+	args     []string
+	attempts int
+}
+
+func (p *sequenceToolProvider) API() provider.Api { return p.api }
+
+func (p *sequenceToolProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.attempts++
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		if p.attempts == 1 {
+			for i, arg := range p.args {
+				result.Push(provider.AssistantMessageEvent{
+					Type:         provider.EventToolCallEnd,
+					ContentIndex: i,
+					ToolCall: &provider.ContentBlock{
+						Type:          provider.ContentBlockToolCall,
+						ToolCallID:    fmt.Sprintf("call_%d", i+1),
+						ToolName:      "mock_tool",
+						ToolArguments: fmt.Sprintf(`{"arg":%q}`, arg),
+					},
+				})
+			}
+			result.Push(provider.AssistantMessageEvent{
+				Type: provider.EventTextStart, ContentIndex: len(p.args),
+			})
+			result.Push(provider.AssistantMessageEvent{
+				Type: provider.EventTextDelta, ContentIndex: len(p.args), Delta: "final summary",
+			})
+			result.Push(provider.AssistantMessageEvent{
+				Type: provider.EventTextEnd, ContentIndex: len(p.args),
+			})
+		} else {
+			result.Push(provider.AssistantMessageEvent{
+				Type: provider.EventTextStart, ContentIndex: 0,
+			})
+			result.Push(provider.AssistantMessageEvent{
+				Type: provider.EventTextDelta, ContentIndex: 0, Delta: "ok finished",
+			})
+			result.Push(provider.AssistantMessageEvent{
+				Type: provider.EventTextEnd, ContentIndex: 0,
+			})
+		}
+		result.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "done"}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return result, nil
+}
+
+func (p *sequenceToolProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.StreamOptions{})
+}
+
+func registerSequenceToolProvider(args []string) *sequenceToolProvider {
+	p := &sequenceToolProvider{
+		api:  provider.Api(fmt.Sprintf("test-sequence-%d", testProviderCounter.Add(1))),
+		args: args,
 	}
 	provider.RegisterApiProvider(p)
 	return p

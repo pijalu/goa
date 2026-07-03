@@ -246,6 +246,7 @@ func (a *App) expandSkillInput(input string) string {
 func (a *App) showSendingStatus(modelName string) {
 	subs := a.subs
 	modelStr := modelDisplay(subs.cfg.ActiveProvider, modelName)
+	subs.statusMsg.Reset()
 	subs.statusMsg.Show("Sending request...")
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,

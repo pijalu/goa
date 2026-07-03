@@ -109,6 +109,61 @@ func TestCompositor_CursorClampedAtFullWidth(t *testing.T) {
 	}
 }
 
+// TestCompositor_CursorPositionOnFirstFrame verifies that the hardware cursor
+// is placed at the correct screen row even on the very first frame, before
+// the compositor has recorded a previous frame height.
+func TestCompositor_CursorPositionOnFirstFrame(t *testing.T) {
+	term := &fakeTerminal{w: 20, h: 10}
+	comp := NewCompositor(term)
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "base", Kind: LayerBase, Rect: Rect{X: 0, Y: 5, W: 20, H: 1},
+				Content: []string{"hello"}},
+		},
+		Cursor: &CursorPos{Row: 5, Col: 2},
+	}
+	comp.Render(scene)
+
+	emu := newTermEmulator(10, 20)
+	for _, w := range term.Writes() {
+		emu.Process(w)
+	}
+	if emu.row != 5 {
+		t.Errorf("hardware cursor row = %d, want 5 on first frame", emu.row)
+	}
+	if emu.col != 2 {
+		t.Errorf("hardware cursor col = %d, want 2 on first frame", emu.col)
+	}
+}
+
+// TestExtractCursorMarker_ReverseScanPrefersLastLayer verifies that the cursor
+// marker extraction scans base layers from back to front. This keeps the cost
+// bounded by the input layer instead of scanning the entire chat history, and
+// it prefers the focused input layer when earlier layers happen to contain the
+// marker sequence.
+func TestExtractCursorMarker_ReverseScanPrefersLastLayer(t *testing.T) {
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 1},
+				Content: []string{"chat" + CURSOR_MARKER}},
+			{Name: "input", Kind: LayerBase, Rect: Rect{X: 0, Y: 1, W: 20, H: 1},
+				Content: []string{"input" + CURSOR_MARKER}},
+		},
+	}
+	extractCursorMarker(scene)
+	if scene.Cursor == nil {
+		t.Fatal("cursor not extracted")
+	}
+	if scene.Cursor.Row != 1 {
+		t.Errorf("cursor row = %d, want 1 (last base layer)", scene.Cursor.Row)
+	}
+	if scene.Cursor.Col != 5 {
+		t.Errorf("cursor col = %d, want 5 (after 'input')", scene.Cursor.Col)
+	}
+}
+
 // TestScene_AgentFrame_NoANSI verifies the AgentView strips ANSI and reports
 // the visible viewport + structured layers for AI tooling.
 func TestScene_AgentFrame_NoANSI(t *testing.T) {
