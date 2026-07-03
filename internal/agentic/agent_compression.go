@@ -364,10 +364,21 @@ func (a *Agent) checkSilentOverflow() {
 // text content untouched), it escalates to selective as a fallback so the
 // retry can make progress.
 func (a *Agent) handleContextError(err error) {
-	if !a.cfg.ContextCompression.OnContextError {
+	if !isContextLengthError(err) {
 		return
 	}
-	if !isContextLengthError(err) {
+
+	if a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "Context length error detected: %v", err)
+	}
+	a.emitEvent(OutputEvent{
+		Type:     EventContent,
+		Role:     System,
+		Text:     fmt.Sprintf("Context length exceeded: %v. The conversation is too long for this model's context window.", err),
+		Metadata: map[string]string{"category": "system-notification"},
+	})
+
+	if !a.cfg.ContextCompression.OnContextError {
 		return
 	}
 

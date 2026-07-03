@@ -40,6 +40,7 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		AssistantText:          lastAssistantText(subs),
 		ForegroundOrchestrator: subs.foregroundOrch,
 		AgentPool:              subs.agentPool,
+		SkillSubAgentRunner:    &skillSubAgentRunner{pool: subs.agentPool},
 		WorkflowRegistry:       subs.workflowReg,
 		GoalManager:            subs.goalManager,
 		ReloadHandler:          &ReloadHandler{subs: subs},

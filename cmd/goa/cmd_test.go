@@ -16,8 +16,12 @@ import (
 	"github.com/pijalu/goa/provider"
 )
 
+var testCmdRegistry = core.NewCommandRegistry()
+
 func init() {
-	commands.RegisterAll(core.GlobalRegistry(), commands.CommandDependencies{})
+	if err := commands.RegisterAll(testCmdRegistry, commands.CommandDependencies{}); err != nil {
+		panic(err)
+	}
 }
 
 // These tests validate commands through the Go API directly.
@@ -37,7 +41,7 @@ func newTestContext() core.Context {
 
 func TestHelpCommand_ShowsCommands(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("help")
+	cmd, found := testCmdRegistry.Resolve("help")
 	if !found {
 		t.Fatal("help command not registered")
 	}
@@ -60,7 +64,7 @@ func TestHelpCommand_ShowsCommands(t *testing.T) {
 
 func TestHelpCommand_SpecificCommand_ShowsDetail(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("help")
+	cmd, found := testCmdRegistry.Resolve("help")
 	if !found {
 		t.Fatal("help command not registered")
 	}
@@ -83,7 +87,7 @@ func TestHelpCommand_SpecificCommand_ShowsDetail(t *testing.T) {
 
 func TestDocsCommand_ListsDocumentation(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("docs")
+	cmd, found := testCmdRegistry.Resolve("docs")
 	if !found {
 		t.Fatal("docs command not registered")
 	}
@@ -103,7 +107,7 @@ func TestDocsCommand_ListsDocumentation(t *testing.T) {
 
 func TestHelpCommand_ListsAllCommands(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("help")
+	cmd, found := testCmdRegistry.Resolve("help")
 	if !found {
 		t.Fatal("help command not registered")
 	}
@@ -125,7 +129,7 @@ func TestHelpCommand_ListsAllCommands(t *testing.T) {
 
 func TestModeCommand_NoArgs_ShowsHelp(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("mode")
+	cmd, found := testCmdRegistry.Resolve("mode")
 	if !found {
 		t.Fatal("mode command not registered")
 	}
@@ -145,7 +149,7 @@ func TestModeCommand_NoArgs_ShowsHelp(t *testing.T) {
 
 func TestVersionCommand_ShowsVersion(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("version")
+	cmd, found := testCmdRegistry.Resolve("version")
 	if !found {
 		t.Fatal("version command not registered")
 	}
@@ -165,7 +169,7 @@ func TestVersionCommand_ShowsVersion(t *testing.T) {
 
 func TestAutonomyCommand_ShowsStatus(t *testing.T) {
 	ctx := newTestContext()
-	cmd, found := core.GlobalRegistry().Resolve("autonomy")
+	cmd, found := testCmdRegistry.Resolve("autonomy")
 	if !found {
 		t.Fatal("autonomy command not registered")
 	}

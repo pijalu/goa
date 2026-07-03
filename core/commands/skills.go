@@ -12,7 +12,6 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
-	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/skills"
 )
 
@@ -91,23 +90,41 @@ func (c *SkillsCommand) Run(ctx core.Context, args []string) error {
 
 // listSkills displays all available skills.
 // Depends on OutputWriter + SkillRegistry.
-func listSkills(w core.OutputWriter, reg core.SkillRegistry) error {
-	if reg != nil {
-		skills := reg.List()
+func listSkills(ctx core.Context, reg core.SkillRegistry) error {
+	w := ctx
+	if reg == nil {
 		writeStr(w, "# Skills\n\n")
-		for _, s := range skills {
-				cat := s.Category
-				if cat == "" {
-					cat = "action"
-				}
-				icon := typeIcon(cat)
-				typ := ""
-				if s.Inline {
-					typ = " (inline)"
-				}
-				writeFmt(w, "- %s **%s** — %s%s\n", icon, s.Name, s.Description, typ)
+		writeStr(w, "- **refactor** — Refactor code for clarity and correctness\n")
+		writeStr(w, "- **test-gen** — Generate unit tests\n")
+		writeStr(w, "- **document** — Add GoDoc comments\n")
+		writeStr(w, "- **review** — Code review analysis\n")
+		writeStr(w, "- **explain** — Explain code in detail\n")
+		writeStr(w, "- **commit-msg** — Generate commit messages\n")
+		writeStr(w, "- **debug** — Debug analysis\n")
+		return nil
+	}
+	var summaries []skills.SkillSummary
+	if reg != nil {
+		summaries = reg.List()
+	}
+	if ctx.Config != nil && ctx.Config.Skills.ExecutionMode == config.AgenticSkillModeInline {
+		summaries = filterSkillsForMode(summaries, true)
+	}
+	if len(summaries) > 0 {
+		writeStr(w, "# Skills\n\n")
+		for _, s := range summaries {
+			cat := s.Category
+			if cat == "" {
+				cat = "action"
+			}
+			icon := typeIcon(cat)
+			typ := ""
+			if s.Inline {
+				typ = " (inline)"
+			}
+			writeFmt(w, "- %s **%s** — %s%s\n", icon, s.Name, s.Description, typ)
 		}
-		writeFmt(w, "\n%d skill(s). Use `/skill:run:<name>` to execute.\n", len(skills))
+		writeFmt(w, "\n%d skill(s). Use `/skill:run:<name>` to execute.\n", len(summaries))
 		return nil
 	}
 	writeStr(w, "# Skills\n\n")
@@ -119,6 +136,21 @@ func listSkills(w core.OutputWriter, reg core.SkillRegistry) error {
 	writeStr(w, "- **commit-msg** — Generate commit messages\n")
 	writeStr(w, "- **debug** — Debug analysis\n")
 	return nil
+}
+
+// filterSkillsForMode removes skills that require a sub-agent when the global
+// execution mode is inline.
+func filterSkillsForMode(summaries []skills.SkillSummary, inlineMode bool) []skills.SkillSummary {
+	if !inlineMode {
+		return summaries
+	}
+	filtered := make([]skills.SkillSummary, 0, len(summaries))
+	for _, s := range summaries {
+		if !s.RequiresSubAgent {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 // SkillRunCommand executes a skill.
@@ -148,15 +180,62 @@ func runSkill(
 	}
 	task := strings.Join(args[1:], " ")
 
-	if effectiveInline(skill, ctx.Config) {
-		return runSkillInline(ctx, skill, task, submitFunc, name)
+	if skill.HasSubSkills() || skillExecutionMode(ctx.Config) == config.AgenticSkillModeSubAgent {
+		return runSkillSubAgent(ctx, reg, skill, task, submitFunc, name)
 	}
+	return runSkillInline(ctx, skill, task, submitFunc, name)
+}
 
-	return runSkillSubAgent(ctx, skill, task)
+// skillExecutionMode returns the effective skill execution mode from config.
+// It defaults to inline when no config is present or the mode is empty.
+func skillExecutionMode(cfg *config.Config) string {
+	if cfg == nil {
+		return config.AgenticSkillModeInline
+	}
+	mode := cfg.Skills.ExecutionMode
+	if mode == "" {
+		return config.AgenticSkillModeInline
+	}
+	return mode
+}
+
+func runSkillSubAgent(ctx core.Context, reg core.SkillRegistry, skill *skills.Skill, task string, submitFunc func(string), name string) error {
+	if ctx.SkillSubAgentRunner == nil {
+		writeFmt(ctx, "Sub-agent execution is not available for skill '%s' (no runner configured).\n", name)
+		return nil
+	}
+	if task == "" {
+		task = "Run the commands in the skill instructions and return the raw output. Do not plan or explain."
+	}
+	writeFmt(ctx, "Running skill '%s' in sub-agent...\n", name)
+	systemPrompt := "You are a skill executor. Execute the instructions in the user message and return the final output. Do not plan, summarize, or explain the instructions; perform the work immediately. Use the bash tool for shell commands. Return only the final output."
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("[Skill: %s]\n%s\n", name, skill.Body))
+	if subs := reg.SubSkills(name); len(subs) > 0 {
+		b.WriteString("\n## Sub-skills\n")
+		for _, sub := range subs {
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, sub.Body))
+		}
+	}
+	b.WriteString(fmt.Sprintf("\nTask: %s\n", task))
+	result, err := ctx.SkillSubAgentRunner.Run(context.Background(), systemPrompt, b.String(), skill.Meta.Tools)
+	if err != nil {
+		writeFmt(ctx, "Skill '%s' failed: %v\n", name, err)
+		return nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("[Skill result: %s]\n%s\n", name, result))
+	if submitFunc != nil {
+		submitFunc(sb.String())
+		writeFmt(ctx, "Skill '%s' completed. Result sent to agent.\n", name)
+	} else {
+		writeStr(ctx, sb.String())
+	}
+	return nil
 }
 
 func runSkillInline(ctx core.Context, skill *skills.Skill, task string, submitFunc func(string), name string) error {
-	if !conversationStarted(ctx) {
+	if !conversationStarted(ctx) && shouldLoadIntoSystemPrompt(skill, ctx.Config) {
 		current := ctx.CurrentMode()
 		ctx.SetMode(current.AddSkill(name))
 		writeFmt(ctx, "Skill '%s' loaded into system prompt.\n", name)
@@ -172,61 +251,26 @@ func runSkillInline(ctx core.Context, skill *skills.Skill, task string, submitFu
 	}
 	if submitFunc != nil {
 		submitFunc(sb.String())
+		writeFmt(ctx, "Skill '%s' sent to agent.\n", name)
 	} else {
 		writeStr(ctx, sb.String())
 	}
 	return nil
 }
 
-func runSkillSubAgent(ctx core.Context, skill *skills.Skill, task string) error {
-	writeFmt(ctx, "⟡ Running skill: %s\n", skill.Meta.Name)
-	writeFmt(ctx, "  Description: %s\n", skill.Meta.Description)
-	if task != "" {
-		writeFmt(ctx, "  Task: %s\n", task)
-	}
-	writeStr(ctx, "\n")
-
-	if ctx.AgentPool == nil {
-		writeStr(ctx, "Sub-agent execution requires AgentPool (not configured).\n")
-		return nil
-	}
-
-	roleName := "skill-" + skill.Meta.Name
-	ctx.AgentPool.SetConfig(roleName, multiagent.AgentConfig{
-		SystemPrompt: skill.Body,
-	})
-
-	agent, err := ctx.AgentPool.GetOrCreate(roleName)
-	if err != nil {
-		writeFmt(ctx, "Error creating sub-agent: %v\n", err)
-		return nil
-	}
-
-	result, err := agent.RunAndCollect(context.Background(), "Task: "+task)
-	if err != nil {
-		writeFmt(ctx, "Skill sub-agent failed: %v\n", err)
-		return nil
-	}
-
-	writeStr(ctx, "── Skill Result ──────────────────────────────\n")
-	writeStr(ctx, result)
-	writeStr(ctx, "\n──────────────────────────────────────────────\n")
-	return nil
-}
-
-// effectiveInline returns true when the skill should be executed inline.
-// Action-category skills (the default for unset category) are never inlined —
-// they perform work and must be executed as sub-agents. For knowledge or
-// uncategorized skills, the skill's own frontmatter inline flag takes
-// precedence; if unset (false), the global config skills.execution_mode is
-// used as a fallback.
-func effectiveInline(skill *skills.Skill, cfg *config.Config) bool {
-	// Explicit inline flag always wins (e.g. telegram).
+// shouldLoadIntoSystemPrompt returns true for skills that should be injected
+// into the system prompt before the conversation starts. Action-category
+// skills are executed on demand as user messages, so they are never loaded
+// into the system prompt. Knowledge or explicitly inline skills are loaded
+// when the global config skills.execution_mode is inline (or the skill has
+// inline: true).
+func shouldLoadIntoSystemPrompt(skill *skills.Skill, cfg *config.Config) bool {
+	// Explicit inline flag always wins.
 	if skill.Meta.Inline {
 		return true
 	}
-	// Action-category skills (the default) are never inlined — they perform
-	// work and must be executed as sub-agents.
+	// Action-category skills (the default) are executed on demand as user
+	// messages, so they are never loaded into the system prompt.
 	cat := skill.Meta.Category
 	if cat == "" {
 		cat = skills.SkillCategoryAction
@@ -239,6 +283,16 @@ func effectiveInline(skill *skills.Skill, cfg *config.Config) bool {
 		return true
 	}
 	return false
+}
+
+func skillTypeLabel(skill *skills.Skill) string {
+	if skill.Meta.Inline {
+		return "inline"
+	}
+	if skill.Meta.Category == skills.SkillCategoryKnowledge {
+		return "knowledge"
+	}
+	return "action"
 }
 
 // typeIcon returns a single-character icon for the given skill category.
@@ -262,7 +316,7 @@ func showSkill(w core.OutputWriter, reg core.SkillRegistry, args []string) error
 		if s, ok := reg.Get(args[0]); ok {
 			writeFmt(w, "Skill: %s\n", s.Meta.Name)
 			writeFmt(w, "Description: %s\n", s.Meta.Description)
-			writeFmt(w, "Type: %s\n", map[bool]string{true: "inline", false: "sub-agent"}[s.Meta.Inline])
+			writeFmt(w, "Type: %s\n", skillTypeLabel(s))
 			writeFmt(w, "Mode: %s\n", s.Meta.Mode)
 			writeStr(w, "\n"+s.Body+"\n")
 			return nil

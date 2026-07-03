@@ -5,6 +5,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -188,6 +189,27 @@ func (f *fakeSessionStore) AddEvents(name string, events []agentic.OutputEvent) 
 	f.events[name] = events
 }
 
+// fakeSkillSubAgentRunner records calls and returns a configured result.
+type fakeSkillSubAgentRunner struct {
+	result string
+	err    error
+	calls  []fakeSkillSubAgentCall
+}
+
+type fakeSkillSubAgentCall struct {
+	systemPrompt string
+	task         string
+	allowedTools []string
+}
+
+func (f *fakeSkillSubAgentRunner) Run(ctx context.Context, systemPrompt, task string, allowedTools []string) (string, error) {
+	f.calls = append(f.calls, fakeSkillSubAgentCall{systemPrompt: systemPrompt, task: task, allowedTools: allowedTools})
+	return f.result, f.err
+}
+
+// Ensure fakeSkillSubAgentRunner implements core.SkillSubAgentRunner.
+var _ core.SkillSubAgentRunner = (*fakeSkillSubAgentRunner)(nil)
+
 // skillTestContext builds a minimal core.Context for testing skill commands.
 // It uses the given output buffer and starts with an empty turn history so
 // that inline skills are loaded into the system prompt rather than submitted
@@ -240,6 +262,10 @@ func (f *fakeSkillRegistry) List() []skills.SkillSummary {
 func (f *fakeSkillRegistry) IsInline(name string) bool {
 	s, ok := f.skills[name]
 	return ok && s.Meta.Inline
+}
+
+func (f *fakeSkillRegistry) SubSkills(name string) []*skills.Skill {
+	return nil
 }
 
 // fakeDocsProvider implements core.DocsProvider for testing.

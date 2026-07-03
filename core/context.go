@@ -5,6 +5,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -45,6 +46,8 @@ type SkillRegistry interface {
 	Get(name string) (*skills.Skill, bool)
 	List() []skills.SkillSummary
 	IsInline(name string) bool
+	// SubSkills returns the sub-skills of a named skill.
+	SubSkills(name string) []*skills.Skill
 }
 
 // ProviderManager provides provider operations for commands.
@@ -88,6 +91,13 @@ type SessionStoreAPI interface {
 	// instead of generating a new one. Used by session restore to preserve
 	// the original conversation identity across restores.
 	StartSessionWithID(id string) string
+}
+
+// SkillSubAgentRunner runs a skill in an isolated sub-agent and returns the
+// collected output. The slash command uses this when skills.execution_mode is
+// "subagent".
+type SkillSubAgentRunner interface {
+	Run(ctx context.Context, systemPrompt, task string, allowedTools []string) (string, error)
 }
 
 // DocsProvider provides access to embedded documentation.
@@ -180,6 +190,10 @@ type Context struct {
 
 	// AgentPool creates and caches sub-agents for the Agent tool and workflows.
 	AgentPool *multiagent.AgentPool
+
+	// SkillSubAgentRunner executes a skill in a sub-agent and returns the result.
+	// When nil, sub-agent execution is unavailable.
+	SkillSubAgentRunner SkillSubAgentRunner
 
 	// GoalManager manages coding goals.
 	GoalManager *GoalManager

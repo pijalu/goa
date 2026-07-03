@@ -91,7 +91,7 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		// new — shortcut for /session new
 		&NewCommand{},
 		// help
-		&HelpCommand{},
+		&HelpCommand{Registry: r},
 		&HotkeysCommand{},
 		&QuitCommand{},
 		// skills

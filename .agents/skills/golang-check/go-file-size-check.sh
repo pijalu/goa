@@ -6,7 +6,7 @@
 # go-file-size-check: enforce Go source file size limits
 set -euo pipefail
 
-ROOT="/Users/muaddib/dev/goa"
+ROOT="$(cd "$(dirname "$(go env GOMOD)")" 2>/dev/null && pwd || pwd)"
 HARD_LIMIT=1000
 SOFT_LIMIT=500
 HARD_VIOLATIONS=0

@@ -14,9 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
-// SkillMeta holds the parsed metadata from a skill's frontmatter.
 // SkillMeta holds the parsed metadata from a skill's frontmatter.
 type SkillMeta struct {
 	Name        string         `yaml:"name"`
@@ -30,6 +31,7 @@ type SkillMeta struct {
 	Temperature float64        `yaml:"temperature"`
 	Tools       []string       `yaml:"tools"`
 	Skills      []string       `yaml:"skills"`
+	SubSkills   []string       `yaml:"sub-skills"`
 	InputSchema map[string]any `yaml:"input-schema"`
 	Hidden      bool           `yaml:"hidden"`
 }
@@ -54,11 +56,12 @@ func (s *Skill) SuggestedSkills() []string {
 
 // SkillSummary is a lightweight skill description for listing.
 type SkillSummary struct {
-	Name        string
-	Description string
-	Inline      bool
-	Category    string
-	FilePath    string
+	Name             string
+	Description      string
+	Inline           bool
+	Category         string
+	FilePath         string
+	RequiresSubAgent bool
 }
 
 const (
@@ -223,20 +226,43 @@ func (r *SkillRegistry) List() []SkillSummary {
 	var summaries []SkillSummary
 	for _, s := range r.skills {
 		summaries = append(summaries, SkillSummary{
-			Name:        s.Meta.Name,
-			Description: s.Meta.Description,
-			Inline:      s.Meta.Inline,
-			Category:    categoryOrDefault(s.Meta.Category),
-			FilePath:    s.FilePath,
+			Name:             s.Meta.Name,
+			Description:      s.Meta.Description,
+			Inline:           s.Meta.Inline,
+			Category:         categoryOrDefault(s.Meta.Category),
+			FilePath:         s.FilePath,
+			RequiresSubAgent: s.HasSubSkills(),
 		})
 	}
 	return summaries
+}
+
+// HasSubSkills reports whether the skill references sub-skills that must be
+// executed inside a sub-agent.
+func (s *Skill) HasSubSkills() bool {
+	return len(s.Meta.SubSkills) > 0
 }
 
 // IsInline returns true if the named skill is an inline skill.
 func (r *SkillRegistry) IsInline(name string) bool {
 	s, ok := r.skills[name]
 	return ok && s.Meta.Inline
+}
+
+// SubSkills returns the sub-skills registered for the named skill, or nil
+// if the skill has no sub-skills or is not found.
+func (r *SkillRegistry) SubSkills(name string) []*Skill {
+	s, ok := r.skills[name]
+	if !ok {
+		return nil
+	}
+	var out []*Skill
+	for _, subName := range s.Meta.SubSkills {
+		if sub, ok := r.skills[subName]; ok {
+			out = append(out, sub)
+		}
+	}
+	return out
 }
 
 // parseSkill parses a SKILL.md file with YAML frontmatter.
@@ -252,12 +278,9 @@ func parseSkill(name, content, source, filePath string) *Skill {
 	if strings.HasPrefix(strings.TrimSpace(content), "---") {
 		parts := strings.SplitN(content, "---", 3)
 		if len(parts) == 3 {
-			// Parse frontmatter (simplified — YAML parsing in production)
-			frontmatter := strings.TrimSpace(parts[1])
-			for _, line := range strings.Split(frontmatter, "\n") {
-				applySkillMetaField(&meta, strings.TrimSpace(line))
+			if err := yaml.Unmarshal([]byte(parts[1]), &meta); err == nil {
+				body = strings.TrimSpace(parts[2])
 			}
-			body = strings.TrimSpace(parts[2])
 		}
 	}
 
@@ -267,31 +290,6 @@ func parseSkill(name, content, source, filePath string) *Skill {
 		Source:   source,
 		FilePath: filePath,
 	}
-}
-
-func applySkillMetaField(meta *SkillMeta, line string) {
-	switch {
-	case strings.HasPrefix(line, "name:"):
-		meta.Name = strings.TrimSpace(line[5:])
-	case strings.HasPrefix(line, "description:"):
-		meta.Description = strings.TrimSpace(line[12:])
-	case strings.HasPrefix(line, "mode:"):
-		meta.Mode = strings.TrimSpace(line[5:])
-	case strings.HasPrefix(line, "category:"):
-		meta.Category = strings.TrimSpace(line[9:])
-	case strings.HasPrefix(line, "command:"):
-		meta.Command = strings.TrimSpace(line[8:])
-	case strings.HasPrefix(line, "hidden:"):
-		meta.Hidden = parseBoolField(line, 7)
-	case strings.HasPrefix(line, "inline:"):
-		meta.Inline = parseBoolField(line, 7)
-	case strings.HasPrefix(line, "temperature:"):
-		fmt.Sscanf(line[12:], "%f", &meta.Temperature)
-	}
-}
-
-func parseBoolField(line string, prefixLen int) bool {
-	return strings.TrimSpace(line[prefixLen:]) == "true"
 }
 
 // categoryOrDefault returns the category if non-empty, otherwise "action".

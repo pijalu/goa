@@ -24,12 +24,22 @@ import (
 //  1. Mode system prompt (coder/planner/reviewer)
 //  2. AGENTS.md context files (wrapped in <project_context>)
 //  3. Long-term memory summaries (wrapped in <memory>)
-//  4. Available skills listing (wrapped in <available_skills>)
-//  5. Active skill bodies from the current mode's skill stack
+//  4. Active skill listings from the current mode's skill stack (name,
+//     description, location — not the full body)
+//  5. Available skills listing (wrapped in <available_skills>)
 //  6. Self-documentation links (goa:// references for the LLM)
 //  7. Agent-driven prompts (if enabled, added by agentmanager)
+//
+// The assembled prompt is bounded by a context-window-aware budget. Low-priority
+// sections are dropped or truncated first so the prompt stays within a safe
+// fraction of the model's context window, leaving room for tools and the
+// conversation. Context is expensive for every model, so the budget is kept as
+// small as possible regardless of how large the context window is.
 func buildSystemPrompt(subs *subsystems) string {
 	var parts []string
+
+	ctxWindow := modelContextWindow(subs)
+	budget := systemPromptBudget(ctxWindow)
 
 	// 1. Mode system prompt (base) — read from agent runtime state, not config
 	if body := modeSystemPrompt(subs); body != "" {
@@ -46,16 +56,17 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, memSection)
 	}
 
-	// 4. Available skills (all skills listed regardless of inline vs sub-agent)
-	if rendered := availableSkillsSection(subs); rendered != "" {
-		parts = append(parts, rendered)
+	// 4. Active skill listings from the current mode's skill stack.
+	// The full skill body is not inlined; the agent loads a skill via the read
+	// tool when the task matches it. This follows the pi approach and keeps the
+	// initial prompt small.
+	if activeSkills := buildActiveSkillsSection(subs, budget); activeSkills != "" {
+		parts = append(parts, activeSkills)
 	}
 
-	// 5. Active skill bodies from the current mode's skill stack.
-	// These are loaded before the conversation starts (e.g. /telegram) and
-	// become part of the system instructions rather than a user message.
-	if activeSkills := buildActiveSkillsSection(subs); activeSkills != "" {
-		parts = append(parts, activeSkills)
+	// 5. Available skills (all skills listed regardless of inline vs sub-agent)
+	if rendered := availableSkillsSection(subs); rendered != "" {
+		parts = append(parts, rendered)
 	}
 
 	// 6. Self-documentation links (single source of truth — generated from embedded docs)
@@ -63,7 +74,97 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, selfDoc)
 	}
 
+	prompt := strings.Join(parts, "\n\n")
+	if budget > 0 && len(prompt) > budget {
+		prompt = applySystemPromptBudget(parts, budget)
+	}
+	return prompt
+}
+
+// modelContextWindow returns the effective context window for the active model.
+// It prefers any runtime override, then the provider's resolved model. For
+// local providers whose loaded length is not yet known, it falls back to a
+// conservative default (8k) so the system prompt does not exceed a realistic
+// local-server context. A zero window disables the budget only for providers
+// whose context window cannot be inferred.
+func modelContextWindow(subs *subsystems) int {
+	if subs.ContextWindow > 0 {
+		return subs.ContextWindow
+	}
+	if subs.providerMgr == nil {
+		return 0
+	}
+	mdl, err := subs.providerMgr.ResolveActiveModel()
+	if err != nil {
+		return 0
+	}
+	if mdl.ContextWindow > 0 {
+		return mdl.ContextWindow
+	}
+	// Local servers often advertise the model max before the model is loaded;
+	// use a safe fallback so the prompt is budgeted for a typical loaded context.
+	if subs.providerMgr.IsLocalProvider() {
+		return 8192
+	}
+	return 0
+}
+
+// systemPromptBudget returns a character budget for the system prompt based on
+// the model's context window. A zero or negative window disables the budget.
+// The budget is intentionally conservative and capped: context is expensive for
+// every model, so the system prompt is kept as short as possible regardless of
+// how large the context window is.
+func systemPromptBudget(ctxWindow int) int {
+	if ctxWindow <= 0 {
+		return 0 // unlimited
+	}
+	const charsPerToken = 4
+	// Keep the system prompt small even on large models. Tools, the user
+	// message, and the assistant response consume the rest of the context.
+	switch {
+	case ctxWindow <= 8192:
+		// 8k context: keep the mode prompt, project context, and a compact
+		// active-skills list; drop available skills, self-doc, and excess memory.
+		return 6000
+	case ctxWindow <= 16384:
+		return 9000
+	case ctxWindow <= 32768:
+		return 14000
+	case ctxWindow <= 65536:
+		return 20000
+	default:
+		return min(ctxWindow*20/100*charsPerToken, 30000)
+	}
+}
+
+// applySystemPromptBudget trims the system prompt until it fits the budget.
+// Sections are dropped in order of lowest priority first (the last section
+// is dropped first). If even the highest-priority section exceeds the budget,
+// it is truncated with an ellipsis.
+func applySystemPromptBudget(parts []string, budget int) string {
+	for len(parts) > 1 && len(strings.Join(parts, "\n\n")) > budget {
+		parts = parts[:len(parts)-1]
+	}
+	if len(parts) == 1 && len(parts[0]) > budget {
+		parts[0] = truncateToBudget(parts[0], budget)
+	}
 	return strings.Join(parts, "\n\n")
+}
+
+// truncateToBudget truncates text to a target length, preferring to break at a
+// newline and appending a truncation marker.
+func truncateToBudget(text string, budget int) string {
+	if len(text) <= budget {
+		return text
+	}
+	if budget <= 50 {
+		return text[:max(0, budget)] + "…"
+	}
+	cutoff := budget - 50
+	if idx := strings.LastIndex(text[:cutoff], "\n"); idx > cutoff/2 {
+		cutoff = idx
+	}
+	return strings.TrimSpace(text[:cutoff]) + "\n\n[…additional instructions truncated]"
 }
 
 // modeSystemPrompt returns the system prompt for the active major mode.
@@ -103,13 +204,17 @@ func availableSkillsSection(subs *subsystems) string {
 	if len(skillSummaries) == 0 {
 		return ""
 	}
+	globalModeInline := subs.cfg != nil && subs.cfg.Skills.ExecutionMode == config.AgenticSkillModeInline
+	skillSummaries = filterSkillsForMode(skillSummaries, globalModeInline)
+	if len(skillSummaries) == 0 {
+		return ""
+	}
 	return skills.RenderAvailableSkills(subs.promptReg, skillSummaries)
 }
 
-// buildSelfDocSection returns a standalone <goa_documentation> section that
-// lists every embedded document and how to read it via the goa:// scheme.
-// Because it is generated from the docs package, it stays up to date when
-// documents are added, removed, or renamed.
+// buildSelfDocSection returns a minimal <goa_documentation> section that lists
+// every embedded document and how to read it via the goa:// scheme. It is
+// intentionally short because context is expensive for every model.
 func buildSelfDocSection() string {
 	docList, err := docs.List()
 	if err != nil || len(docList) == 0 {
@@ -118,19 +223,11 @@ func buildSelfDocSection() string {
 
 	var b strings.Builder
 	b.WriteString("<goa_documentation>\n")
-	b.WriteString("Goa embeds its own reference documentation. Read any document with the read tool using a goa:// URL.\n\n")
-	b.WriteString("How to use Goa documentation:\n")
-	b.WriteString("- To create or use user skills: read goa://docs/SKILLS.md\n")
-	b.WriteString("- To build or load plugins: read goa://docs/PLUGINS.md\n")
-	b.WriteString("- To configure Goa (profiles, providers, settings): read goa://docs/CONFIGURATION.md\n")
-	b.WriteString("- To call tools and understand tool schemas: read goa://docs/TOOLS.md\n")
-	b.WriteString("- To use slash commands and the command system: read goa://docs/COMMANDS.md\n\n")
-	b.WriteString("All available reference documents:\n")
+	b.WriteString("Read embedded docs with the read tool using goa:// URLs.\n")
 	for _, d := range docList {
-		fmt.Fprintf(&b, "- %s: read goa://%s (%s)\n", d.Name, d.Path, d.Description)
+		fmt.Fprintf(&b, "- %s: goa://%s\n", d.Name, d.Path)
 	}
-	b.WriteString("\nUse /docs in the chat to list documents or /docs:name to view one.")
-	b.WriteString("\n</goa_documentation>")
+	b.WriteString("</goa_documentation>")
 	return b.String()
 }
 
@@ -157,6 +254,7 @@ func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skills.SkillSummary) {
 	globalModeInline := subs.cfg != nil && subs.cfg.Skills.ExecutionMode == config.AgenticSkillModeInline
 
+	skillList = filterSkillsForMode(skillList, globalModeInline)
 	inlineCount, forcedInlineCount, subCount := countSkillModes(skillList, globalModeInline)
 
 	globalMode := "sub-agent"
@@ -171,6 +269,22 @@ func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skill
 		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · global mode: %s). Use /skill to list.",
 			len(skillList), inlineCount, subCount, globalMode))
 	}
+}
+
+// filterSkillsForMode removes skills that require a sub-agent when the global
+// execution mode is inline. Skills with sub-skills are only available in
+// sub-agent mode.
+func filterSkillsForMode(skillList []skills.SkillSummary, globalModeInline bool) []skills.SkillSummary {
+	if !globalModeInline {
+		return skillList
+	}
+	filtered := make([]skills.SkillSummary, 0, len(skillList))
+	for _, s := range skillList {
+		if !s.RequiresSubAgent {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
 }
 
 func countSkillModes(skillList []skills.SkillSummary, globalModeInline bool) (inline, forcedInline, sub int) {
@@ -210,6 +324,14 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 		chat.AddSystemMessage(fmt.Sprintf("Failed to resolve model: %v", err))
 		subs.tuiEngine.RequestRender()
 		return
+	}
+	// Local servers (LM Studio, llama.cpp) report the model's max context
+	// length before the model is loaded, but the real loaded context length
+	// may be much smaller. Refresh once at session start so budgets and
+	// compression limits are based on the actual available context.
+	if nCtx := subs.providerMgr.RefreshLocalContextWindow(); nCtx > 0 {
+		mdl.ContextWindow = nCtx
+		subs.ContextWindow = nCtx
 	}
 	streamOpts := subs.providerMgr.BuildStreamOptions()
 
@@ -267,10 +389,12 @@ func filterToolsForCurrentMode(subs *subsystems, allTools []agentic.Tool) []agen
 	return filtered
 }
 
-// buildActiveSkillsSection constructs a <skills> block containing the full
-// bodies of skills that have been loaded into the current mode's skill stack
-// before the conversation started.
-func buildActiveSkillsSection(subs *subsystems) string {
+// buildActiveSkillsSection lists the skills loaded into the current mode's
+// skill stack in compact form: name, short description, and file location.
+// The full skill body is not inlined in the system prompt; the agent loads a
+// skill with the read tool when the task matches it. This follows the pi
+// approach and keeps the initial prompt as short as possible.
+func buildActiveSkillsSection(subs *subsystems, budget int) string {
 	if subs.agentMgr == nil || subs.skillRegistry == nil {
 		return ""
 	}
@@ -279,24 +403,65 @@ func buildActiveSkillsSection(subs *subsystems) string {
 		return ""
 	}
 
-	var bodies []string
+	type item struct {
+		name        string
+		description string
+		location    string
+	}
+	var items []item
 	for _, name := range mode.Skills {
 		skill, ok := subs.skillRegistry.Get(name)
 		if !ok {
 			continue
 		}
-		bodies = append(bodies, fmt.Sprintf("<skill name=%q>\n%s\n</skill>", name, skill.Body))
+		items = append(items, item{
+			name:        escapeXML(skill.Meta.Name),
+			description: escapeXML(skill.Meta.Description),
+			location:    escapeXML(skill.FilePath),
+		})
 	}
-	if len(bodies) == 0 {
+	if len(items) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
-	b.WriteString("<skills>\n")
-	b.WriteString("The following skill instructions are active for this session:\n\n")
-	b.WriteString(strings.Join(bodies, "\n\n"))
-	b.WriteString("\n</skills>")
-	return b.String()
+	b.WriteString("<active_skills>\n")
+	b.WriteString("Load with the read tool when the task matches.\n")
+	for _, it := range items {
+		fmt.Fprintf(&b, "  <skill>\n")
+		fmt.Fprintf(&b, "    <name>%s</name>\n", it.name)
+		fmt.Fprintf(&b, "    <description>%s</description>\n", it.description)
+		fmt.Fprintf(&b, "    <location>%s</location>\n", it.location)
+		fmt.Fprintf(&b, "  </skill>\n")
+	}
+	b.WriteString("</active_skills>")
+	rendered := b.String()
+	if budget > 0 && len(rendered) > budget/4 {
+		// Too many active skills for the budget; keep only the names/locations.
+		b.Reset()
+		b.WriteString("<active_skills>\n")
+		b.WriteString("Active skills: ")
+		for i, it := range items {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%s (%s)", it.name, it.location)
+		}
+		b.WriteString("\n</active_skills>")
+		rendered = b.String()
+	}
+	return rendered
+}
+
+// escapeXML escapes special XML characters so rendered skill metadata is safe
+// for inclusion in the system prompt.
+func escapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
 }
 
 // buildMemorySection constructs a <memory> block from memory file summaries.

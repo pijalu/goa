@@ -10,7 +10,9 @@ import (
 )
 
 // HelpCommand shows command help and usage information.
-type HelpCommand struct{}
+type HelpCommand struct {
+	Registry *core.CommandRegistry
+}
 
 func (c *HelpCommand) Name() string      { return "help" }
 func (c *HelpCommand) Aliases() []string { return []string{} }
@@ -21,18 +23,20 @@ func (c *HelpCommand) LongHelp() string {
 
 func (c *HelpCommand) Run(ctx core.Context, args []string) error {
 	if len(args) > 0 && args[0] != "" {
-		return showHelpFor(ctx, ctx.ToolRegistry, ctx.DocsProvider, args[0])
+		return showHelpFor(ctx, c.Registry, ctx.ToolRegistry, ctx.DocsProvider, args[0])
 	}
-	return showFullHelp(ctx, ctx.ToolRegistry, ctx.DocsProvider)
+	return showFullHelp(ctx, c.Registry, ctx.ToolRegistry, ctx.DocsProvider)
 }
 
-func showHelpFor(out core.OutputWriter, reg core.ToolRegistry, dp core.DocsProvider, name string) error {
-	cmd, found := core.GlobalRegistry().Resolve(name)
-	if found {
-		writeFmt(out, "📋 /%s\n", cmd.Name())
-		writeFmt(out, "   %s\n\n", cmd.ShortHelp())
-		writeStr(out, cmd.LongHelp()+"\n")
-		return nil
+func showHelpFor(out core.OutputWriter, cmdReg *core.CommandRegistry, reg core.ToolRegistry, dp core.DocsProvider, name string) error {
+	if cmdReg != nil {
+		cmd, found := cmdReg.Resolve(name)
+		if found {
+			writeFmt(out, "📋 /%s\n", cmd.Name())
+			writeFmt(out, "   %s\n\n", cmd.ShortHelp())
+			writeStr(out, cmd.LongHelp()+"\n")
+			return nil
+		}
 	}
 
 	if reg != nil {
@@ -53,15 +57,19 @@ func showHelpFor(out core.OutputWriter, reg core.ToolRegistry, dp core.DocsProvi
 	return nil
 }
 
-func showFullHelp(out core.OutputWriter, reg core.ToolRegistry, dp core.DocsProvider) error {
+func showFullHelp(out core.OutputWriter, cmdReg *core.CommandRegistry, reg core.ToolRegistry, dp core.DocsProvider) error {
 	writeStr(out, "📋 Goa — terminal-native AI coding agent\n")
 	writeStr(out, "======================================\n\n")
 
 	writeStr(out, "Commands:\n")
-	for _, cmd := range core.GlobalRegistry().All() {
-		name := cmd.Name()
-		desc := cmd.ShortHelp()
-		writeFmt(out, "  /%-25s %s\n", name, desc)
+	if cmdReg != nil {
+		for _, cmd := range cmdReg.All() {
+			name := cmd.Name()
+			desc := cmd.ShortHelp()
+			writeFmt(out, "  /%-25s %s\n", name, desc)
+		}
+	} else {
+		writeStr(out, "  (command registry unavailable)\n")
 	}
 
 	printHelpTools(out, reg)

@@ -71,6 +71,20 @@ func TestAgentPool_DifferentRoles_GetDifferentAgents(t *testing.T) {
 	}
 }
 
+func TestAgentPool_ToolNames(t *testing.T) {
+	foo := &agenticToolMock{name: "foo"}
+	bar := &agenticToolMock{name: "bar"}
+	p := NewAgentPool(testModel("default"), provider.StreamOptions{}, []agentic.Tool{foo, bar})
+
+	names := p.ToolNames()
+	if len(names) != 2 {
+		t.Fatalf("expected 2 tool names, got %d", len(names))
+	}
+	if !containsString(names, "foo") || !containsString(names, "bar") {
+		t.Errorf("expected foo and bar, got %v", names)
+	}
+}
+
 func TestAgentPool_DifferentModelPerRole_UsesModelFactory(t *testing.T) {
 	p := NewAgentPool(testModel("default"), provider.StreamOptions{}, nil)
 
@@ -99,6 +113,14 @@ func TestAgentPool_DifferentModelPerRole_UsesModelFactory(t *testing.T) {
 		t.Errorf("expected ModelFactory called with 'gpt-3.5', got %v", resolvedModels)
 	}
 }
+
+type agenticToolMock struct {
+	name string
+}
+
+func (m *agenticToolMock) Schema() agentic.ToolSchema { return agentic.ToolSchema{Name: m.name} }
+func (m *agenticToolMock) Execute(input string) (string, error) { return "", nil }
+func (m *agenticToolMock) IsRetryable(err error) bool           { return false }
 
 func TestAgentPool_DefaultModel_WhenNoConfig(t *testing.T) {
 	p := NewAgentPool(testModel("default-model"), provider.StreamOptions{}, nil)

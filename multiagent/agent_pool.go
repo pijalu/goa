@@ -323,6 +323,19 @@ func (p *AgentPool) toolsForRole(role string, allowed []string) []agentic.Tool {
 	return result
 }
 
+// ToolNames returns the names of all tools registered in the pool. The
+// names are stable and can be used with AgentConfig.AllowedTools to restrict
+// the tools available to a sub-agent.
+func (p *AgentPool) ToolNames() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	names := make([]string, 0, len(p.tools))
+	for _, t := range p.tools {
+		names = append(names, t.Schema().Name)
+	}
+	return names
+}
+
 func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
 	if p.Config == nil {
 		return

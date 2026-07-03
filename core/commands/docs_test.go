@@ -179,7 +179,7 @@ func TestPrintHelpDocs_WithRegistry(t *testing.T) {
 
 func TestShowHelpFor_Unknown(t *testing.T) {
 	w := newWriter()
-	err := showHelpFor(w, nil, nil, "zzz_nonexistent_command")
+	err := showHelpFor(w, nil, nil, nil, "zzz_nonexistent_command")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestShowHelpFor_Unknown(t *testing.T) {
 
 func TestShowFullHelp(t *testing.T) {
 	w := newWriter()
-	err := showFullHelp(w, nil, nil)
+	err := showFullHelp(w, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
