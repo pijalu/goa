@@ -410,9 +410,10 @@ type EditConfig struct {
 }
 
 // WriteConfig controls write tool behavior.
-type WriteConfig struct {
-	tools.FileToolConfig `yaml:",inline"`
-}
+// Note: write does NOT support fuzzy filename matching — writing to the wrong
+// path would cause irreversible data loss. The struct exists for future
+// write-specific configuration options.
+type WriteConfig struct{}
 
 // BashConfig controls bash tool behavior.
 type BashConfig struct {

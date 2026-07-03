@@ -17,11 +17,15 @@ import (
 )
 
 // WriteFileTool creates or overwrites a file with the given content.
+//
+// IMPORTANT: write MUST NOT use fuzzy filename matching. Fuzzy path
+// resolution can redirect writes to the wrong file, causing irreversible
+// data loss. Unlike edit/read which handle existing files, write's
+// destructive nature requires exact path fidelity.
 type WriteFileTool struct {
 	WorktreeMgr        *internal.WorktreeManager
 	ProjectDir         string
 	GitStager          *GitStager
-	Config             FileToolConfig
 	// FileChangeNotifier, when set, is called after every successful file
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
@@ -78,22 +82,17 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 		return "", err
 	}
 
-	targetPath, fuzzyNote := t.resolveTarget(resolvedPath, originalPath)
-	t.stageIfExists(targetPath)
+	t.stageIfExists(resolvedPath)
 
-	if err := os.WriteFile(targetPath, []byte(processedContent), 0644); err != nil {
+	if err := os.WriteFile(resolvedPath, []byte(processedContent), 0644); err != nil {
 		return "", formatWriteError(originalPath, err)
 	}
 
 	if t.FileChangeNotifier != nil {
-		t.FileChangeNotifier(targetPath)
+		t.FileChangeNotifier(resolvedPath)
 	}
 
-	preview := buildWritePreview(originalPath, processedContent)
-	if fuzzyNote != "" {
-		preview = fuzzyNote + "\n" + preview
-	}
-	return preview, nil
+	return buildWritePreview(originalPath, processedContent), nil
 }
 
 func parseWriteFileParams(input string) (writeFileParams, error) {
@@ -139,29 +138,6 @@ func (t *WriteFileTool) stageIfExists(resolvedPath string) {
 	if _, err := os.Stat(resolvedPath); err == nil && t.GitStager != nil {
 		t.GitStager.StageBeforeEdit(resolvedPath, t.ProjectDir)
 	}
-}
-
-// resolveTarget returns the path to write to. When the exact path does not
-// exist and fuzzy matching is enabled, it searches the containing directory
-// for the closest existing match and writes there instead. This keeps write
-// filename resolution consistent with read and edit.
-func (t *WriteFileTool) resolveTarget(resolvedPath, originalPath string) (string, string) {
-	_, statErr := os.Stat(resolvedPath)
-	if statErr == nil {
-		return resolvedPath, ""
-	}
-	if !os.IsNotExist(statErr) || !FileToolFuzzyMatchEnabled(t.Config) {
-		return resolvedPath, ""
-	}
-	projectDir := filepath.Dir(resolvedPath)
-	if projectDir == "" {
-		projectDir = "."
-	}
-	suggest, confidence := FuzzyFindFile(projectDir, originalPath)
-	if suggest == "" || confidence < 0.6 {
-		return resolvedPath, ""
-	}
-	return suggest, fmt.Sprintf("Note: file not found, used closest match: %s", suggest)
 }
 
 func formatWriteError(path string, err error) error {

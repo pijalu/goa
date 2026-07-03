@@ -103,26 +103,40 @@ func TestWriteFileAtPrefix_ResolvesToCurrentDir(t *testing.T) {
 	}
 }
 
-func TestWriteFileFuzzyFilename_OverwritesClosestFile(t *testing.T) {
+func TestWriteFileFuzzyRejected_CreatesNewFileAsNamed(t *testing.T) {
 	dir := t.TempDir()
-	filePath := filepath.Join(dir, "target.txt")
-	if err := os.WriteFile(filePath, []byte("old"), 0644); err != nil {
+	existingPath := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(existingPath, []byte("old"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Chdir(dir)
 
+	// Write should NOT fuzzy-match to target.txt — it must create the exact
+	// path requested, even when a close match already exists.
 	tool := &WriteFileTool{}
 	result, err := tool.Execute(`{"path": "targt.txt", "content": "new"}`)
 	if err != nil {
-		t.Fatalf("Execute with fuzzy filename should succeed: %v", err)
+		t.Fatalf("Execute should succeed, creating file at exact requested path: %v", err)
 	}
-	if !strings.Contains(result, "used closest match") {
-		t.Errorf("Expected fuzzy-match note, got: %q", result)
+	if strings.Contains(result, "used closest match") {
+		t.Errorf("Write MUST NOT use fuzzy filename matching, got fuzzy-match note: %q", result)
 	}
-	data, _ := os.ReadFile(filePath)
+
+	// A new file named exactly targt.txt should be created
+	newFilePath := filepath.Join(dir, "targt.txt")
+	if _, err := os.Stat(newFilePath); err != nil {
+		t.Errorf("Expected targt.txt to be created at exact requested path")
+	}
+	data, _ := os.ReadFile(newFilePath)
 	if string(data) != "new" {
-		t.Errorf("Content = %q, want %q", string(data), "new")
+		t.Errorf("targt.txt content = %q, want %q", string(data), "new")
+	}
+
+	// Existing target.txt must be untouched
+	existingData, _ := os.ReadFile(existingPath)
+	if string(existingData) != "old" {
+		t.Errorf("target.txt should be untouched, got: %q", string(existingData))
 	}
 }
 
@@ -135,15 +149,16 @@ func TestWriteFileFuzzyFilename_Disabled(t *testing.T) {
 
 	t.Chdir(dir)
 
-	off := false
-	tool := &WriteFileTool{Config: FileToolConfig{FuzzyMatch: &off}}
+	// Config field is removed — write never fuzzy matches.
+	// This test verifies the behavior is correct by default.
+	tool := &WriteFileTool{}
 	_, err := tool.Execute(`{"path": "targt.txt", "content": "new"}`)
 	if err != nil {
-		t.Fatalf("Execute with fuzzy disabled should create new file: %v", err)
+		t.Fatalf("Execute should create new file at exact path: %v", err)
 	}
 	// A new file named targt.txt should be created instead of overwriting target.txt
 	if _, err := os.Stat(filepath.Join(dir, "targt.txt")); err != nil {
-		t.Errorf("Expected targt.txt to be created when fuzzy matching is disabled")
+		t.Errorf("Expected targt.txt to be created when fuzzy matching is not used")
 	}
 	data, _ := os.ReadFile(filePath)
 	if string(data) != "old" {

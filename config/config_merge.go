@@ -340,13 +340,10 @@ func mergeEditFile(dst, src *EditConfig) {
 	}
 }
 
-// mergeWriteFile merges the write tool config, preserving the default-on
-// fuzzy_match value when the source config does not set it.
-func mergeWriteFile(dst, src *WriteConfig) {
-	if src.FuzzyMatch != nil {
-		dst.FuzzyMatch = src.FuzzyMatch
-	}
-}
+// mergeWriteFile merges the write tool config. Write does not support fuzzy
+// filename matching (writing to the wrong path is irreversible data loss),
+// so this is a no-op placeholder for future write-specific options.
+func mergeWriteFile(dst, src *WriteConfig) {}
 
 // mergeSmartSearch merges the smartsearch config fields.
 func mergeSmartSearch(dst, src *SmartSearchConfig) {

@@ -126,7 +126,8 @@ tools:
     allow_fuzz_on_edits: true
     fuzzy_match: true
   write:
-    fuzzy_match: true
+    # Note: write does NOT support fuzzy filename matching — writing to the
+    # wrong path would cause irreversible data loss.
   read_file:
     fuzzy_match: true
   webfetch:

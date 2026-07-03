@@ -396,7 +396,6 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		WorktreeMgr:        wm,
 		ProjectDir:         projectDir,
 		GitStager:          gitStager,
-		Config:             cfg.Tools.Write.FileToolConfig,
 		FileChangeNotifier: notifyChanged,
 	})
 	reg.Register(&tools.EditFileTool{
