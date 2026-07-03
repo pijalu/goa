@@ -84,6 +84,10 @@ type SessionStoreAPI interface {
 	// the given name. The sourcePath must be a valid JSONL file. Returns
 	// an error if a session with that name already exists.
 	ImportSession(name, sourcePath string) error
+	// StartSessionWithID starts the session writer using the given session ID
+	// instead of generating a new one. Used by session restore to preserve
+	// the original conversation identity across restores.
+	StartSessionWithID(id string) string
 }
 
 // DocsProvider provides access to embedded documentation.

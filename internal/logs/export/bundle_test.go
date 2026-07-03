@@ -251,3 +251,4 @@ func (f *fakeSessionStore) DeleteSession(name string) error             { return
 func (f *fakeSessionStore) ImportSession(name, sourcePath string) error { return nil }
 func (f *fakeSessionStore) SessionID() string                           { return f.sessionID }
 func (f *fakeSessionStore) CurrentSessionPath() string                  { return f.sessionPath }
+func (f *fakeSessionStore) StartSessionWithID(id string) string          { return id }

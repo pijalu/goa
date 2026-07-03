@@ -203,7 +203,12 @@ func TestBGExec_ReadOutput_LongLinePreserved(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	if !strings.Contains(out, long) {
-		t.Errorf("200KiB line was not preserved (len out=%d)", len(out))
+		// Check for scanner error marker to distinguish truncation from tool failure
+		if strings.Contains(out, "[bg_exec: read error:") {
+			t.Errorf("200KiB line truncated due to scanner error (len out=%d, full output includes error marker):\n%s", len(out), out)
+		} else {
+			t.Errorf("200KiB line was not preserved (len out=%d)", len(out))
+		}
 	}
 	_, _ = tool.Execute(`{"action":"stop","id":"` + id + `"}`)
 }

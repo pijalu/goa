@@ -182,6 +182,29 @@ func (s *SessionStore) StartSession() string {
 		}
 	}
 	s.sessionID = fmt.Sprintf("%d_%s", time.Now().Unix(), randomID(8))
+	return s.openSessionWriterLocked()
+}
+
+// StartSessionWithID starts a session with the given ID, re-opening the
+// existing session file for append. The ID must be a valid session name
+// (filename without .jsonl). Used by session restore so the restored
+// conversation keeps its original identity.
+func (s *SessionStore) StartSessionWithID(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.writer != nil {
+		if err := s.writer.Close(); err != nil {
+			s.logError("close previous session writer", err)
+		}
+	}
+	s.sessionID = id
+	return s.openSessionWriterLocked()
+}
+
+// openSessionWriterLocked creates the session writer for the current sessionID.
+// Caller must hold s.mu.
+func (s *SessionStore) openSessionWriterLocked() string {
 	sessionDir := filepath.Join(s.dir, "sessions")
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		s.logError("create sessions dir", err)

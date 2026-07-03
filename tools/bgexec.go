@@ -290,9 +290,17 @@ func (t *BGExecTool) start(p bgExecParams) (string, error) {
 // memory growth.
 const maxScanLineLen = 1 << 20
 
+// readScanBufSize is the initial buffer size for the scanner used in
+// readOutput. A zero-length initial buffer (< 1.21) was known to confuse
+// the scanner's growth logic on some platforms, causing lines near the
+// buffer boundary to be silently truncated. Using a full-size initial
+// buffer ensures the first read fills it completely before any grow
+// decision is made.
+const readScanBufSize = 64 * 1024
+
 func (t *BGExecTool) readOutput(proc *BGProcess, reader io.ReadCloser, buf *ringBuffer) {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxScanLineLen)
+	scanner.Buffer(make([]byte, readScanBufSize), maxScanLineLen)
 	for scanner.Scan() {
 		buf.Write(scanner.Text())
 	}

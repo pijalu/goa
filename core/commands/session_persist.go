@@ -16,6 +16,7 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -67,14 +68,14 @@ func (c *SessionCommand) Run(ctx core.Context, args []string) error {
 		return runNew(ctx)
 	case "restore":
 		if name, ok := namedArg(args); ok {
-			return restoreSession(ctx, ctx, ctx.SessionStore, name)
+			return restoreSession(ctx, ctx, ctx.SessionStore, ctx.AgentManager, name)
 		}
-		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, false)
+		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, ctx.AgentManager, false)
 	case "delete":
 		if name, ok := namedArg(args); ok {
 			return deleteSessionByName(ctx, ctx.SessionStore, name)
 		}
-		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, true)
+		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, ctx.AgentManager, true)
 	case "import":
 		return importSessionFromZip(ctx, ctx, ctx.SessionStore, restArgs(args))
 	default:
@@ -136,12 +137,18 @@ func deleteSessionByName(w core.OutputWriter, store core.SessionStoreAPI, name s
 	return nil
 }
 
-// restoreSession loads and replays events from a saved session.
-// Depends on OutputWriter + EventSink + SessionStoreAPI.
+// restoreSession loads events from a saved session, restores the session ID,
+// rebuilds the agent's conversation history from the saved events, clears the
+// chat viewport, and replays events for visual display.
+//
+// After restore the agent operates with the restored conversation context and
+// the original session ID, so subsequent user input continues the conversation
+// and prompt cache keys remain stable.
 func restoreSession(
 	w core.OutputWriter,
 	es core.EventSink,
 	store core.SessionStoreAPI,
+	agentMgr *core.AgentManager,
 	name string,
 ) error {
 	if store == nil {
@@ -165,8 +172,29 @@ func restoreSession(
 		return nil
 	}
 
+	// If an agent session is active, inject the rebuilt history so the next
+	// user turn sees the restored conversation context.
+	if agentMgr != nil {
+		if agent := agentMgr.CurrentAgent(); agent != nil {
+			// Rebuild conversation history from the saved events.
+			history := agentic.EventsToHistory(events)
+
+			// Set the agent's conversation history to the restored one.
+			agent.SetHistory(history)
+
+			// Adopt the original session ID so prompt cache keys stay stable
+			// and session persistence continues under the restored identity.
+			opts := agent.StreamOptions()
+			opts.SessionID = name
+			agent.SetStreamOptions(opts)
+
+			// Switch the session store writer to the restored session ID so
+			// new events are appended to the original session file.
+			store.StartSessionWithID(name)
+		}
+	}
+
 	es.ClearChat()
-	es.InterruptAgent()
 	es.Flash(fmt.Sprintf("Restored session '%s' — %d events", name, len(events)))
 
 	// Replay events off the command goroutine so the UI event loop can drain
@@ -188,6 +216,7 @@ func showSessionPicker(
 	es core.EventSink,
 	sel core.Selector,
 	store core.SessionStoreAPI,
+	agentMgr *core.AgentManager,
 	deleteMode bool,
 ) error {
 	if store == nil {
@@ -217,7 +246,7 @@ func showSessionPicker(
 			es.Flash("Deleted session: " + selected)
 			return
 		}
-		restoreSession(w, es, store, selected)
+		restoreSession(w, es, store, agentMgr, selected)
 	})
 	return nil
 }

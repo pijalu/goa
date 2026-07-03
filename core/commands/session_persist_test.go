@@ -81,7 +81,7 @@ func TestRestoreSession_NoStore(t *testing.T) {
 	w := newWriter()
 	es := &fakeEventSink{}
 
-	err := restoreSession(w, es, nil, "my-session")
+	err := restoreSession(w, es, nil, nil, "my-session")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestRestoreSession_Success(t *testing.T) {
 		{Type: agentic.EventToolResult},
 	})
 
-	if err := restoreSession(w, es, store, "my-session"); err != nil {
+	if err := restoreSession(w, es, store, nil, "my-session"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	text := w.Text()
@@ -111,9 +111,6 @@ func TestRestoreSession_Success(t *testing.T) {
 	}
 	if !es.ClearCalled() {
 		t.Error("expected ClearChat to be called before replay")
-	}
-	if !es.InterruptCalled() {
-		t.Error("expected InterruptAgent to be called before replay")
 	}
 	flashes := es.Flashes()
 	if len(flashes) == 0 || !strings.Contains(flashes[0], "Restored session") {
@@ -130,7 +127,7 @@ func TestRestoreSession_ReplaysEvents(t *testing.T) {
 		{Type: agentic.EventToolResult},
 	})
 
-	if err := restoreSession(w, es, store, "my-session"); err != nil {
+	if err := restoreSession(w, es, store, nil, "my-session"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -164,7 +161,7 @@ func TestRestoreSession_LoadError(t *testing.T) {
 	store := newSessionStore(nil)
 	store.err = assertError("corrupt file")
 
-	err := restoreSession(w, es, store, "bad-session")
+	err := restoreSession(w, es, store, nil, "bad-session")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -178,7 +175,7 @@ func TestShowSessionPicker_NoStore(t *testing.T) {
 	es := &fakeEventSink{}
 	sel := newSelector("", false)
 
-	err := showSessionPicker(w, es, sel, nil, false)
+	err := showSessionPicker(w, es, sel, nil, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +190,7 @@ func TestShowSessionPicker_Empty(t *testing.T) {
 	sel := newSelector("", false)
 	store := newSessionStore(nil)
 
-	err := showSessionPicker(w, es, sel, store, false)
+	err := showSessionPicker(w, es, sel, store, nil, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +205,7 @@ func TestShowSessionPicker_DeleteCancel(t *testing.T) {
 	sel := newSelector("", false) // ok=false → cancelled
 	store := newSessionStore([]core.SessionInfo{{Name: "my-session", EventCount: 5}})
 
-	err := showSessionPicker(w, es, sel, store, true)
+	err := showSessionPicker(w, es, sel, store, nil, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
