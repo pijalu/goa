@@ -1,96 +1,51 @@
-# TODO — agentic optimization pass
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Pierre Poissinger -->
 
-All items from the agentic optimization / SOLID review have been resolved.
-This file is retained for history; each entry below records what was done
-and the commit that closed it.
+# TODO — execution tracker
 
----
+Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
+(single session), Orchestration is a separate dedicated session.
 
-## ✅ Structural
+## Track 1 — Bugs + Reviews (execute now)
+**Plan:** [`docs/fix-plan-2026-07-04.md`](docs/fix-plan-2026-07-04.md)
 
-### 1. Split `internal/agentic/agent.go` — was 3150 lines
+97 numbered microsteps, in execution order:
 
-The god-object has been decomposed into focused, same-package files (all
-under the 1000-line hard limit):
+- [ ] **B1** — Thinking-loop discoverability (completion + config menu)
+- [ ] **B2** — Up-arrow on empty line / cannot navigate to empty line
+- [ ] **B3** — `goal` tool: `.goa/goals` location + disable flag (default off) + cache collapse (kimi-code append-on-top model)
+- [ ] **B4** — Spinner disappears after 1st tool call
+- [ ] **B5** — Steering messages enqueued (`prompt.steered`-style injection)
+- [ ] **B6** — Config selection list cursor at `search>` marker
+- [ ] **B7** — smartsearch review (fix everything found)
+- [ ] **R1** — Stability review of all TUI code (fix everything found)
+- [ ] **R2** — Perf review of all TUI code (fix everything found)
+- [ ] **R3** — Functional review: workflow/swarm/multi-agent/goal (fix everything found)
+- [ ] **Close** — gates, interactive smoke test, archive `bugs.md` → `docs/archive/bugs.2026-07-04.md`
 
-- `agent_events.go` — output-event emission (`emit*`).
-- `agent_budget.go` — tool-call budget + repeat guardrails.
-- `agent_streaming.go` — stream-round drivers, event consumption, loop
-  detection, and stream-recovery/provider-context.
-- `agent_compression.go` — context-compression machinery.
-- `agent_context_stats.go` — context-usage stats + token estimation.
-- `agent_tools.go` — tool-call scheduling/execution + content-block helpers.
-- `agent_migrate.go` — provider message/schema migration.
-- `agent_turn_stats.go` — generation timing, turn stats, history helpers.
+## Track 2 — Orchestration (separate session)
+**Plan:** [`docs/orchestration-design.md`](docs/orchestration-design.md)
 
-`agent.go` is now 904 lines (was 3150). Pure relocations; no behavior change.
+43 numbered microsteps across 8 phases. Confirmed decisions baked in:
+per-run topology selector (hub/fanout/pipeline), config-only role→model map
+with bounded pool (`max_agents_per_model` + `max_total_agents`), tabs per
+agent + orchestrator + Summary, tab-driven steering (orchestrator may post
+to agents), fully event-sourced & resumable under `.goa/orchestrator/<run-id>/`,
+layered above swarm, optional goal binding.
 
-### 2. Remove duplicate `ToolRegistry`
+- [ ] Phase 0 — Config schema (`OrchestratorConfig`)
+- [ ] Phase 1 — Bounded agent pool with caps
+- [ ] Phase 2 — AgentHandle & live stats
+- [ ] Phase 3 — Orchestrator runtime (topology selector)
+- [ ] Phase 4 — Event sourcing & resumability
+- [ ] Phase 5 — TUI: orchestrator view + tabs + summary
+- [ ] Phase 6 — Goal binding integration
+- [ ] Phase 7 — Wiring, slash commands, headless flag
+- [ ] Phase 8 — Validation & gates
 
-Dependency Inversion applied: `agentic` now defines a minimal `ToolLookup`
-interface (`Get`/`Schemas`/`LoopHints`) and the `Agent` depends on it
-instead of the concrete `*ToolRegistry`. `agentic.ToolRegistry` remains the
-canonical immutable, caching implementation (used by the agent and the MCP
-publisher). The dead duplicate sort path (`tools.ToolRegistry.Schemas`,
-never called in production) was removed.
-
-### 3. `toolcallparser.go` — cursor-based scanner
-
-Replaced the free-function orchestration (with precomputed `funcStarts` and
-the O(n²) `insideOpenParameter` rescan) with a `toolCallScanner` struct
-holding `content` + a forward cursor, exposing `nextJSONCall`/
-`nextFunctionCall`. Because the cursor advances through consumed parameter
-values, a nested `<function=` token inside a value is absorbed and never
-treated as a top-level boundary.
-
----
-
-## ✅ Correctness
-
-### 4. `BashTool` / `TerminalTool` now respect the turn ctx
-
-Both implement `ContextTool` (`ExecuteContext`). `BashTool`'s run select
-now includes `<-ctx.Done()` and kills the process tree; `TerminalTool`
-threads `ctx` into `sandbox.Run` via `RunOpts.Cancel`. A cancelled turn is
-surfaced as a `cancelled` tool error. Tests verify a 30s `sleep` is
-interrupted in ~0.3s on cancellation.
-
-### 5. Dead test scaffolding removed
-
-The unused `contextToolCallProvider` type and methods (U1000) were removed
-from `agent_context_test.go`.
-
----
-
-## ✅ Performance
-
-### 6. `ToolScheduler` watcher goroutines
-
-`Add` now registers the cancellation watcher only for tasks added to
-`pending` (blocked). Immediately-started tasks rely on their execution
-goroutine (which already receives `s.ctx`), halving goroutines in the common
-all-independent case.
-
-### 7. `formatCompressHeader` unused parameters
-
-Reduced from `(cmd, lines, a, b)` to `(cmd)`; all call sites updated.
-
----
-
-## ✅ General technical debt — file size limits
-
-All production Go files now respect the 1000-line hard max. The following
-were split (each a pure same-package relocation, behavior unchanged):
-
-| File (was) | Now | Extracted into |
-|---|---|---|
-| `core/commands/config.go` (2015) | 958 | `config_completion.go`, `config_models.go`, `config_compression.go`, `config_cli.go` |
-| `config/config.go` (1460) | 806 | `config_validate.go`, `config_merge.go` |
-| `config/wizard_render.go` (1429) | 955 | `wizard_render_views.go` |
-| `core/agentmanager.go` (1424) | 995 | `agentmanager_lifecycle.go`, `agentmanager_events.go` |
-| `internal/app/headless.go` (1118) | 782 | `headless_renderers.go` |
-| `tui/editor.go` (1058) | 750 | `editor_input.go` |
-| `internal/agentic/provider/protocol/openai_completions.go` (1052) | 837 | `openai_completions_timings.go` |
-
-Gates verified: `go vet ./...`, `go test -count=1 -race ./...` (64 packages,
-all passing), and `find ... > 1000 lines` returns no production files.
+## Notes
+- The previous TODO content (agentic optimization pass) is fully resolved
+  and lives in git history; closed bugs are under `docs/archive/`.
+- All changes must pass the 5 gates run **separately**: `go vet ./...`,
+  `staticcheck ./...`, `gocognit -over 15 .`, `gocyclo -over 12 .`,
+  `go test -count=1 -race -cover ./...`.
