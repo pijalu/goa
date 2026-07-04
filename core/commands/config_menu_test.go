@@ -79,7 +79,7 @@ func TestConfigMenu_RootShowsItems(t *testing.T) {
 	if sr.title != "Settings:" {
 		t.Errorf("title = %q, want Settings:", sr.title)
 	}
-	want := []string{"profile", "model", "provider", "models", "mode", "compression", "theme", "spinner", "thinking_level", "thinking_blocks", "show_thinking", "multi_agent", "tools"}
+	want := []string{"profile", "model", "provider", "models", "mode", "compression", "theme", "spinner", "thinking_level", "thinking_blocks", "show_thinking", "multi_agent", "tools", "loop_detection", "skills"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d root items, got %d", len(want), len(sr.options))
 	}

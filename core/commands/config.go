@@ -161,8 +161,14 @@ func (m *configMenu) returnTo(baseLen int) {
 func (m *configMenu) showRoot() error {
 	m.current = func() { m.showRoot() }
 	cfg := m.ctx.Config
+	// Use the live runtime mode when available (AgentManager) instead of the
+	// static config default, so the menu reflects the actual session mode.
+	majorMode := string(m.ctx.CurrentMode().Major)
+	if majorMode == "" {
+		majorMode = cfg.ActiveMajor()
+	}
 	items := []tui.SelectorItem{
-		{Value: "profile", Label: "Mode", Description: cfg.ActiveMajor()},
+		{Value: "profile", Label: "Mode", Description: majorMode},
 		{Value: "model", Label: "Active model", Description: cfg.ActiveModel},
 		{Value: "provider", Label: "Provider", Description: cfg.ActiveProvider},
 		{Value: "models", Label: "Manage models", Description: "Add, edit, remove, or select models"},
@@ -175,6 +181,8 @@ func (m *configMenu) showRoot() error {
 		{Value: "show_thinking", Label: "Show thinking", Description: boolLabel(cfg.TUI.Transparency.ShowThinking)},
 		{Value: "multi_agent", Label: "Multi-agent", Description: multiAgentLabel(cfg, m.ctx.ForegroundOrchestrator)},
 		{Value: "tools", Label: "Tools", Description: toolsEnabledLabel(cfg)},
+		{Value: "loop_detection", Label: "Loop detection", Description: loopDetectionLabel(cfg)},
+		{Value: "skills", Label: "Skills", Description: skillsLabel(cfg)},
 	}
 	m.ctx.SelectOption("Settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -209,6 +217,8 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"show_thinking":   (*configMenu).toggleShowThinking,
 		"multi_agent":     (*configMenu).openMultiAgent,
 		"tools":           (*configMenu).openTools,
+		"loop_detection":  (*configMenu).openLoopDetection,
+		"skills":          (*configMenu).openSkills,
 	}
 }
 
@@ -222,6 +232,8 @@ func (m *configMenu) openSpinner()       { m.open(m.settingSpinner) }
 func (m *configMenu) openThinkingLevel() { m.open(m.settingThinkingLevel) }
 func (m *configMenu) openMultiAgent()    { m.open(m.settingMultiAgent) }
 func (m *configMenu) openTools()         { m.open(m.settingTools) }
+func (m *configMenu) openLoopDetection() { m.open(m.settingLoopDetection) }
+func (m *configMenu) openSkills()        { m.open(m.settingSkills) }
 
 func (m *configMenu) openActiveModel() {
 	m.open(func() {
@@ -713,7 +725,9 @@ func buildToolItems(cfg *config.Config) []tui.SelectorItem {
 		{"memento", "Persistent memory files"},
 		{"pty_exec", "Pseudo-terminal sessions"},
 		{"request_review", "Request companion review"},
+		{"smartsearch", "BM25 code search (needs restart to enable)"},
 		{"ssh_bash", "Remote SSH command execution"},
+		{"webfetch", "URL content fetching"},
 	}
 	items := make([]tui.SelectorItem, len(toolList))
 	for i, t := range toolList {
@@ -767,7 +781,11 @@ func (m *configMenu) saveToolToggle(toolName string, enabled bool) {
 	if m.ctx.ConfigSaver == nil {
 		return
 	}
-	if err := m.ctx.ConfigSaver.SaveHomeField([]string{"tools", "enabled", toolName}, enabled); err != nil {
+	path := []string{"tools", "enabled", toolName}
+	if toolName == "smartsearch" {
+		path = []string{"tools", "smartsearch", "enabled"}
+	}
+	if err := m.ctx.ConfigSaver.SaveHomeField(path, enabled); err != nil {
 		m.flash("Failed to save config: " + err.Error())
 	}
 }
@@ -782,6 +800,120 @@ func toolsEnabledLabel(cfg *config.Config) string {
 		}
 	}
 	return fmt.Sprintf("%d/%d enabled", on, len(names))
+}
+
+// loopDetectionLabel returns a short summary of loop detection settings.
+func loopDetectionLabel(cfg *config.Config) string {
+	if cfg.Execution.DisableToolBudget {
+		return "disabled"
+	}
+	return fmt.Sprintf("warn:%d stop:%d", cfg.Execution.LoopWarning, cfg.Execution.LoopInterrupt)
+}
+
+// skillsLabel returns a short summary of skills configuration.
+func skillsLabel(cfg *config.Config) string {
+	if cfg.Skills.ExecutionMode != "" {
+		return cfg.Skills.ExecutionMode
+	}
+	return "inline"
+}
+
+// settingLoopDetection is the /config → Loop detection sub-menu.
+func (m *configMenu) settingLoopDetection() {
+	m.current = m.settingLoopDetection
+	cfg := m.ctx.Config
+	items := []tui.SelectorItem{
+		{Value: "loop_warning", Label: "Loop warning threshold", Description: intLabel(cfg.Execution.LoopWarning)},
+		{Value: "loop_interrupt", Label: "Loop interrupt threshold", Description: intLabel(cfg.Execution.LoopInterrupt)},
+		{Value: "tool_repeat_total", Label: "Max tool repeats (total)", Description: intLabel(cfg.Execution.MaxToolRepeatTotal)},
+		{Value: "tool_repeat_consecutive", Label: "Max tool repeats (consecutive)", Description: intLabel(cfg.Execution.MaxToolRepeatConsecutive)},
+		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: intLabel(cfg.Execution.MaxToolCalls)},
+		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
+	}
+	m.ctx.SelectOption("Loop detection settings:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.handleLoopDetectionSetting(selected)
+	})
+}
+
+func intLabel(v int) string {
+	if v <= 0 {
+		return "default"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+func (m *configMenu) handleLoopDetectionSetting(selected string) {
+	cfg := m.ctx.Config
+	type loopField struct {
+		key       string
+		prompt    string
+		intVal    *int
+		isBool    bool
+		boolVal   *bool
+	}
+	fields := map[string]loopField{
+		"loop_warning":             {key: "execution.loop_warning", prompt: "Loop warning threshold:", intVal: &cfg.Execution.LoopWarning},
+		"loop_interrupt":           {key: "execution.loop_interrupt", prompt: "Loop interrupt threshold:", intVal: &cfg.Execution.LoopInterrupt},
+		"tool_repeat_total":        {key: "execution.max_tool_repeat_total", prompt: "Max total tool repeats:", intVal: &cfg.Execution.MaxToolRepeatTotal},
+		"tool_repeat_consecutive":  {key: "execution.max_tool_repeat_consecutive", prompt: "Max consecutive tool repeats:", intVal: &cfg.Execution.MaxToolRepeatConsecutive},
+		"max_tool_calls":           {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
+		"disable_tool_budget":      {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
+	}
+	f, ok := fields[selected]
+	if !ok {
+		m.back()
+		return
+	}
+	if f.isBool {
+		next := "false"
+		if *f.boolVal {
+			next = "true"
+		}
+		m.applySet(f.key, next)
+		m.settingLoopDetection()
+		return
+	}
+	m.ctx.ShowInput(f.prompt, fmt.Sprintf("%d", *f.intVal), func(v string, ok bool) {
+		if ok && v != "" {
+			m.applySet(f.key, v)
+		}
+		m.settingLoopDetection()
+	})
+}
+
+// settingSkills is the /config → Skills sub-menu.
+func (m *configMenu) settingSkills() {
+	m.current = m.settingSkills
+	items := []tui.SelectorItem{
+	{Value: "execution_mode", Label: "Execution mode", Description: m.ctx.Config.Skills.ExecutionMode},
+	}
+	m.ctx.SelectOption("Skills settings:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.handleSkillsSetting(selected)
+	})
+}
+
+func (m *configMenu) handleSkillsSetting(selected string) {
+	switch selected {
+	case "execution_mode":
+		items := []tui.SelectorItem{
+			{Value: "inline", Label: "inline", Description: "Run skills inline in the conversation"},
+			{Value: "subagent", Label: "sub-agent", Description: "Delegate skills to sub-agents"},
+		}
+		m.ctx.SelectOption("Skill execution mode:", items, m.ctx.Config.Skills.ExecutionMode, func(v string, ok bool) {
+			if ok && v != "" {
+				m.applySet("skills.execution_mode", v)
+			}
+			m.settingSkills()
+		})
+	}
 }
 
 // applySet invokes applyConfigSet and lets it surface errors to the user via

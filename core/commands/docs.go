@@ -343,13 +343,29 @@ func getToolEnabled(cfg *config.Config, name string) bool {
 		return cfg.Tools.Enabled.RequestReview
 	case "ssh_bash":
 		return cfg.Tools.Enabled.SSHBash
+	case "webfetch":
+		return cfg.Tools.Enabled.WebFetch
+	case "smartsearch":
+		return cfg.Tools.SmartSearch.Enabled
 	}
 	return false
 }
 
 // setToolEnabled updates the enabled flag for a configurable tool.
 func setToolEnabled(cfg *config.Config, name string, enabled bool) {
+	if name == "smartsearch" {
+		cfg.Tools.SmartSearch.Enabled = enabled
+		return
+	}
 	cfg.Tools.Enabled.SetEnabled(name, enabled)
+}
+
+// toolSavePath returns the config saver path for a tool's enabled flag.
+func toolSavePath(name string) []string {
+	if name == "smartsearch" {
+		return []string{"tools", "smartsearch", "enabled"}
+	}
+	return []string{"tools", "enabled", name}
 }
 
 // toggleTool enables or disables a configurable tool, persists the change,
@@ -370,7 +386,7 @@ func toggleTool(ctx core.Context, name, onOff string) error {
 	setToolEnabled(ctx.Config, name, enabled)
 
 	if ctx.ConfigSaver != nil {
-		if err := ctx.ConfigSaver.SaveHomeField([]string{"tools", "enabled", name}, enabled); err != nil {
+		if err := ctx.ConfigSaver.SaveHomeField(toolSavePath(name), enabled); err != nil {
 			ctx.Writef("Failed to save config: %v\n", err)
 			return nil
 		}

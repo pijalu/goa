@@ -363,6 +363,10 @@ var configSetters = map[string]configSetter{
 	"context_compression.threshold_percent": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
 	"context_compression.max_tokens":        setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
 	"context_compression.on_context_error":  setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
+	"execution.loop_warning":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
+	"execution.loop_interrupt":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
+	"execution.disable_tool_budget":         setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
+	"skills.execution_mode":                 setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
 }
 
 func setActiveMajor(cfg *config.Config, value string) error {

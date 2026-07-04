@@ -118,6 +118,7 @@ func ConfigurableToolNames() []string {
 		"memento",
 		"pty_exec",
 		"request_review",
+		"smartsearch",
 		"ssh_bash",
 		"webfetch",
 	}

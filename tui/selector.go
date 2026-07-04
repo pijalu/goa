@@ -365,6 +365,7 @@ func (s *Selector) renderSearchLine(c selectorColors) string {
 	if s.searchText != "" {
 		prompt += s.searchText
 	}
+	prompt += CURSOR_MARKER
 	return prompt
 }
 

@@ -765,13 +765,10 @@ func buildFooterStatParts(s sessionStats) []string {
 	// This is the standard cache hit rate: what fraction of cache operations
 	// were hits vs misses (cache creations). When CacheWrite is 0 (OpenAI-style
 	// where cache is a subset of prompt tokens), the rate represents how much
-	// of the cache-eligible input was served from cache.
+	// of the cache-eligible input was served from cache, using PromptN (net
+	// non-cached tokens) as the cache-miss portion.
 	if s.CacheReadTotal > 0 || s.CacheWriteTotal > 0 {
-		denom := s.CacheReadTotal + s.CacheWriteTotal
-		if denom == 0 {
-			denom = 1
-		}
-		pct := float64(s.CacheReadTotal) / float64(denom) * 100
+		pct := computeCacheHitPct(s.CacheReadTotal, s.CacheWriteTotal, s.PromptN)
 		parts = append(parts, formatCacheHitPart(pct, s.PrevCacheHitPct))
 	}
 	if s.ToolCalls > 0 {
@@ -807,6 +804,26 @@ func formatContextUsage(estimate, max int, autoMax bool) string {
 		color = tui.TheTheme.ColorHex("token_warning")
 	}
 	return ansi.Fg(color) + value + ansi.Reset
+}
+
+// computeCacheHitPct calculates the cache hit percentage.
+// When CacheWrite > 0, the rate is reads / (reads + writes), measuring what
+// fraction of cache operations were hits. When CacheWrite is 0 (OpenAI-style),
+// the denominator is reads + net prompt tokens (non-cached portion), providing
+// a meaningful rate instead of always showing 100%.
+func computeCacheHitPct(cacheRead, cacheWrite, promptN int) float64 {
+	if cacheWrite > 0 {
+		denom := cacheRead + cacheWrite
+		if denom == 0 {
+			denom = 1
+		}
+		return float64(cacheRead) / float64(denom) * 100
+	}
+	denom := cacheRead + promptN
+	if denom == 0 {
+		denom = 1
+	}
+	return float64(cacheRead) / float64(denom) * 100
 }
 
 // formatCacheHitPart renders the cache hit percentage with color coding

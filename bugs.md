@@ -33,3 +33,10 @@ If new items are added, restart the process.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
+
+# TODO
+
+## Tool execution interrupted (goa-export)
+Tool execution was interrupted/stopped during the bug-fixing session. Export saved at:
+  /Users/muaddib/dev/goa/.goa/exports/goa-export-20260704-135610.zip
+Investigate why the tool was stopped and whether export contains useful debugging data.
