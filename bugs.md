@@ -32,5 +32,4 @@ If new items are added, restart the process.
 5. Prefer the minimal fix over a broad refactor.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
-
-# Archived
+8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
