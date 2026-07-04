@@ -61,6 +61,11 @@ type App struct {
 	microCompacts int
 	compacts      int
 
+	// Previous cache hit percentage for cache-hit evolution tracking.
+	// Used to color the CH% footer stat based on whether the cache hit rate
+	// is growing, dropping, or stable.
+	prevCacheHitPct float64
+
 	// Status tracking for granular footer/status messages.
 	toolResultsSeen     int
 	toolCallsTotal      int

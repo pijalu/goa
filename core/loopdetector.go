@@ -44,9 +44,10 @@ type LoopDetector struct {
 
 	// Thinking-loop tracking — drives RecordThinkingDelta loop detection.
 	// Complete lines (terminated by '\n') are hashed and counted; only lines
-	// longer than minThinkLineLen are counted so short repeated bullets or
-	// separators do not false-positive. thinkMaxRepeat tracks the highest count
-	// seen for any single line in the current turn.
+	// with at least minThinkWordCount words are counted so short repeated
+	// bullets or separators do not false-positive. Code blocks and tool call
+	// blocks are stripped before processing. thinkMaxRepeat tracks the highest
+	// count seen for any single line in the current turn.
 	thinkPending          string
 	thinkLineCounts       map[string]int
 	thinkMaxRepeat        int
@@ -57,6 +58,13 @@ type LoopDetector struct {
 	// the integration point for a future (genuinely wired) error-rate check.
 	errorHistory []bool // last N tool results (true = error)
 	errorIdx     int
+
+	// tempThinkDisabled and tempToolDisabled are per-session temporary overrides
+	// that disable loop detection without modifying the persisted config.
+	// Set via /config:temp:think_loop_detection:off and
+	// /config:temp:tool_loop_detection:off slash commands.
+	tempThinkDisabled bool
+	tempToolDisabled  bool
 }
 
 // LoopDetectorConfig holds configurable parameters for the loop detector.
@@ -70,6 +78,12 @@ type LoopDetectorConfig struct {
 	// Zero falls back to the defaults in DefaultLoopDetectorConfig.
 	ThinkingLoopWarning   int
 	ThinkingLoopInterrupt int
+	// ThinkingDisabled disables thinking-loop detection entirely.
+	// Set via /config:temp:think_loop_detection:off for session-level override.
+	ThinkingDisabled bool
+	// ToolDisabled disables tool-call loop detection entirely.
+	// Set via /config:temp:tool_loop_detection:off for session-level override.
+	ToolDisabled bool
 }
 
 // DefaultLoopDetectorConfig returns sensible defaults for the loop detector.
@@ -84,10 +98,12 @@ func DefaultLoopDetectorConfig() LoopDetectorConfig {
 
 const loopErrorHistorySize = 10
 
-// minThinkLineLen is the minimum length a line of reasoning must reach before
-// it contributes to thinking-loop counting. This excludes short repeated
-// constructs (list markers, separators, single words) that legitimately recur.
-const minThinkLineLen = 40
+// minThinkWordCount is the minimum number of words a line of reasoning must
+// have before it contributes to thinking-loop counting. This excludes short
+// repeated constructs (list markers, separators, single words) that
+// legitimately recur. Changed from a character-based threshold (40 chars) to
+// a word-based threshold (10 words) to provide more meaningful filtering.
+const minThinkWordCount = 10
 
 // NewLoopDetector creates a loop detector with the given config.
 func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
@@ -110,9 +126,15 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 
 // RecordToolCall records a tool call and checks for loop patterns.
 // Returns a warning level: LoopOK (normal), LoopWarning, or LoopInterrupt.
+// Returns LoopOK immediately when tool-loop detection is disabled (either by
+// config or by session-level temp override).
 func (ld *LoopDetector) RecordToolCall(name, input string) LoopWarningLevel {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
+
+	if ld.tempToolDisabled {
+		return LoopOK
+	}
 
 	key := name + ":" + hashInput(input)
 	ld.turnToolCalls[key]++
@@ -139,11 +161,172 @@ func (ld *LoopDetector) RecordToolResult(err bool) {
 	ld.errorIdx++
 }
 
+// stripCodeBlocks removes fenced code blocks (```...```) from text.
+func stripCodeBlocks(text string) string {
+	var result strings.Builder
+	result.Grow(len(text))
+	for {
+		start := strings.Index(text, "```")
+		if start < 0 {
+			result.WriteString(text)
+			break
+		}
+		result.WriteString(text[:start])
+		text = text[start+3:]
+		// Find closing ```
+		end := strings.Index(text, "```")
+		if end < 0 {
+			// No closing fence — keep rest as-is
+			result.WriteString(text)
+			break
+		}
+		text = text[end+3:]
+	}
+	return result.String()
+}
+
+// stripXMLBlock strips all occurrences of an XML block with the given tag.
+// Returns the text with all <tag>...</tag> blocks removed.
+func stripXMLBlock(text, tag, endTag string) string {
+	for {
+		start := strings.Index(text, tag)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(text[start:], endTag)
+		if end < 0 {
+			text = text[:start]
+			break
+		}
+		text = text[:start] + text[start+end+len(endTag):]
+	}
+	return text
+}
+
+// isJSONToolCallStart reports whether a line looks like the start of a JSON
+// tool call block (one of the known tool call keys).
+func isJSONToolCallStart(trimmed string) bool {
+	return strings.HasPrefix(trimmed, `{"name":`) ||
+		strings.HasPrefix(trimmed, `{"function":`) ||
+		strings.HasPrefix(trimmed, `{"tool_name":`)
+}
+
+// stripToolCallBlocks strips tool call blocks from reasoning text. These are
+// blocks that look like XML tool_use elements or JSON tool-call structures.
+func stripToolCallBlocks(text string) string {
+	text = stripXMLBlock(text, "<tool_use>", "</tool_use>")
+	text = stripXMLBlock(text, "<function_call>", "</function_call>")
+	return stripJSONToolCalls(text)
+}
+
+// stripJSONToolCalls removes JSON tool call blocks ({"name": ..., {"function": ...,
+// {"tool_name": ...) from text by tracking brace depth across lines.
+func stripJSONToolCalls(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) <= 1 {
+		return text
+	}
+	var kept []string
+	inJSONBlock := false
+	braceDepth := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inJSONBlock && isJSONToolCallStart(trimmed) {
+			inJSONBlock = true
+			braceDepth = countBraceDepth(trimmed)
+			continue
+		}
+		if inJSONBlock {
+			braceDepth += countBraceDepth(trimmed)
+			if braceDepth <= 0 {
+				inJSONBlock = false
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// countBraceDepth returns the net brace depth change of a line.
+func countBraceDepth(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+	}
+	return depth
+}
+
+// wordCount returns the number of whitespace-separated words in s.
+func wordCount(s string) int {
+	if len(s) == 0 {
+		return 0
+	}
+	count := 1
+	inWord := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r' {
+			inWord = false
+		} else if !inWord {
+			count++
+			inWord = true
+		}
+	}
+	return count
+}
+
+// SetTempOverride sets a session-level temporary override for loop detection.
+// When disabled is true, the detection is disabled. These overrides are not
+// persisted and are cleared when the session ends or on Reset().
+func (ld *LoopDetector) SetTempOverride(kind string, disabled bool) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	switch kind {
+	case "think":
+		ld.tempThinkDisabled = disabled
+	case "tool":
+		ld.tempToolDisabled = disabled
+	}
+}
+
+// TempOverride returns the current temp override state for the given kind.
+func (ld *LoopDetector) TempOverride(kind string) bool {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	switch kind {
+	case "think":
+		return ld.tempThinkDisabled
+	case "tool":
+		return ld.tempToolDisabled
+	}
+	return false
+}
+
+// processThinkingLine strips code/tool blocks, checks word count, and returns
+// the cleaned line (or empty if it should be skipped).
+func processThinkingLine(line string) string {
+	line = stripCodeBlocks(line)
+	line = stripToolCallBlocks(line)
+	line = strings.TrimSpace(line)
+	if wordCount(line) < minThinkWordCount {
+		return ""
+	}
+	return line
+}
+
 // RecordThinkingDelta accumulates streamed reasoning text and detects when the
 // assistant repeats the same line of thought within a turn. It returns
 // LoopInterrupt when a significant line repeats beyond the interrupt threshold,
-// LoopWarning beyond the warning threshold, and LoopOK otherwise. Complete
-// (newline-terminated) lines are evaluated incrementally; short lines are
+// LoopWarning beyond the warning threshold, and LoopOK otherwise. Returns
+// LoopOK immediately when thinking-loop detection is disabled (either by
+// config or by session-level temp override). Complete (newline-terminated)
+// lines are evaluated incrementally; code blocks and tool call blocks are
+// stripped before analysis. Lines with fewer than minThinkWordCount words are
 // ignored to avoid false positives.
 func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 	if text == "" {
@@ -151,6 +334,10 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 	}
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
+
+	if ld.tempThinkDisabled {
+		return LoopOK
+	}
 
 	ld.thinkPending += text
 	for {
@@ -160,7 +347,9 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 		}
 		line := trimSpace(ld.thinkPending[:idx])
 		ld.thinkPending = ld.thinkPending[idx+1:]
-		if len(line) < minThinkLineLen {
+
+		line = processThinkingLine(line)
+		if line == "" {
 			continue
 		}
 		if isStructuralLine(line) {
@@ -221,6 +410,9 @@ func isSpace(b byte) bool {
 }
 
 // Reset clears all loop detector state for a new session or turn.
+// Per-session temp overrides (TempThinkDisabled, TempToolDisabled) are
+// preserved across resets so a single /config:temp command disables detection
+// for the entire session until the user re-enables it.
 func (ld *LoopDetector) Reset() {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()

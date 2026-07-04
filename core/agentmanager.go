@@ -1034,6 +1034,11 @@ func (am *AgentManager) logEventF(format string, args ...interface{}) {
 	}
 }
 
+// LoopDetector returns the session loop detector for temporary override commands.
+func (am *AgentManager) LoopDetector() *LoopDetector {
+	return am.loopDetector
+}
+
 // isToolResultError returns true when a tool result indicates an execution error.
 func isToolResultError(result string) bool {
 	return result == "" || strings.HasPrefix(result, "Error:")

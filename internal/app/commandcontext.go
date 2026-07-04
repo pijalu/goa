@@ -97,6 +97,7 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 			}
 			subs.tuiEngine.ShowOverlay(pv, opts)
 		},
+		LoopDetector: loopDetectorFrom(subs),
 	}
 }
 
@@ -125,6 +126,14 @@ func dumpChat(subs *subsystems, width int) string {
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// loopDetectorFrom returns the session loop detector from the agent manager.
+func loopDetectorFrom(subs *subsystems) *core.LoopDetector {
+	if subs.agentMgr == nil {
+		return nil
+	}
+	return subs.agentMgr.LoopDetector()
 }
 
 // makeToolFactory returns a factory that creates configurable tool instances

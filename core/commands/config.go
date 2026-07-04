@@ -97,8 +97,10 @@ func (c *ConfigCommand) Run(ctx core.Context, args []string) error {
 		return handleConfigRemove(ctx, args[1:])
 	case "reload":
 		return handleConfigReload(ctx)
+	case "temp":
+		return handleConfigTemp(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown config subcommand: %s (use 'set', 'add', 'remove' or 'reload')", args[0])
+		return fmt.Errorf("unknown config subcommand: %s (use 'set', 'add', 'remove', 'temp' or 'reload')", args[0])
 	}
 }
 

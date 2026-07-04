@@ -6,7 +6,9 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/pijalu/goa/core"
@@ -162,11 +164,99 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 
 	modelName := a.resolveModelName()
 	input = a.expandSkillInput(input)
+	// Expand @file references to absolute paths so the model can read them.
+	input = a.expandAtRefs(input)
 
 	a.showSendingStatus(modelName)
 	if err := subs.agentMgr.SendUserInputWithImages(input, images); err != nil {
 		a.handleSendError(err)
 	}
+}
+
+// expandAtRefs replaces @-prefixed file references with the full absolute path
+// so the model can read the file content. The @<path> pattern is resolved
+// relative to the current working directory.
+func (a *App) expandAtRefs(input string) string {
+	if a.subs == nil || a.subs.projectDir == "" {
+		return input
+	}
+	expanded := expandFileRefs(input, a.subs.projectDir)
+	return expanded
+}
+
+// isWordChar reports whether a byte is a word character (letter, digit, or underscore).
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9') || b == '_'
+}
+
+// isWhitespace reports whether a byte is a space, tab, newline, or carriage return.
+func isWhitespace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+// extractAtPath extracts the path after an @ character. Returns the path and
+// the end index in the input string.
+func extractAtPath(input string, startIdx int) (path string, endIdx int) {
+	pathEnd := startIdx
+	for pathEnd < len(input) && !isWhitespace(input[pathEnd]) {
+		pathEnd++
+	}
+	return input[startIdx:pathEnd], pathEnd
+}
+
+// resolveAtPath resolves a path from @<path> notation. If the path exists on
+// disk, returns the absolute path; otherwise returns "" to signal no expansion.
+func resolveAtPath(path, workdir string) string {
+	resolved := path
+	if !filepath.IsAbs(path) {
+		resolved = filepath.Join(workdir, path)
+	}
+	if _, err := os.Stat(resolved); err == nil {
+		return resolved
+	}
+	return ""
+}
+
+// expandFileRefs replaces @-prefixed file references in a string with the
+// absolute path of the file. It only replaces references that look like
+// @<path> where <path> is a valid filesystem path.
+func expandFileRefs(input, workdir string) string {
+	var result strings.Builder
+	result.Grow(len(input))
+	i := 0
+	for i < len(input) {
+		atIdx := strings.Index(input[i:], "@")
+		if atIdx < 0 {
+			result.WriteString(input[i:])
+			break
+		}
+		absIdx := i + atIdx
+		result.WriteString(input[i : i+atIdx])
+
+		// Keep @ as-is when it's mid-word
+		if absIdx > 0 && isWordChar(input[absIdx-1]) {
+			result.WriteByte('@')
+			i = absIdx + 1
+			continue
+		}
+
+		path, pathEnd := extractAtPath(input, absIdx+1)
+		if path == "" {
+			result.WriteByte('@')
+			i = absIdx + 1
+			continue
+		}
+
+		if resolved := resolveAtPath(path, workdir); resolved != "" {
+			result.WriteString(resolved)
+		} else {
+			result.WriteByte('@')
+			result.WriteString(path)
+		}
+		i = pathEnd
+	}
+	return result.String()
 }
 
 // extractImagePaths returns paths that look like pasted image files.

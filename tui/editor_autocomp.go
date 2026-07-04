@@ -66,6 +66,14 @@ func (e *Editor) updateAutoComp() {
 func (e *Editor) resolveAutoCompPrefix() string {
 	prefix := e.currentPrefix()
 	if prefix != "" {
+		// Command completion (/) is only triggered when / is at the very start
+		// of the input buffer (position 0), not when it appears mid-text
+		// (e.g., "read /help"). We check by looking at the buffer content
+		// rather than cursor position, since currentPrefix may return a
+		// /-prefixed segment from mid-text.
+		if strings.HasPrefix(prefix, "/") && !e.isSlashAtBufferStart(prefix) {
+			return ""
+		}
 		return prefix
 	}
 	fullPrefix := string(e.buf[:e.pos])
@@ -73,6 +81,17 @@ func (e *Editor) resolveAutoCompPrefix() string {
 		return fullPrefix
 	}
 	return ""
+}
+
+// isSlashAtBufferStart reports whether the /-prefixed prefix corresponds to
+// a / character at buffer position 0. This prevents mid-text / from being
+// treated as a command (e.g., "read /help" should not trigger command
+// completion even though currentPrefix returns "/help").
+func (e *Editor) isSlashAtBufferStart(prefix string) bool {
+	// Find where the prefix starts in the full buffer
+	bufStr := string(e.buf)
+	slashPos := strings.Index(bufStr, prefix)
+	return slashPos == 0
 }
 
 // shouldTriggerAutoComp reports whether the prefix should open the completion popup.

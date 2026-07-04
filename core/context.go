@@ -274,6 +274,10 @@ type Context struct {
 	// instead of fmt.Printf/Println (which go to stdout and are invisible
 	// in the TUI). The router returns this text as the command output.
 	OutputBuffer *strings.Builder
+
+	// LoopDetector provides access to the session loop detector for
+	// temporary override commands (/config:temp).
+	LoopDetector *LoopDetector
 }
 
 // Compile-time assertions that Context implements the three role interfaces.

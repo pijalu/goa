@@ -585,18 +585,26 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		ContextEstimate: 2000,
 		ContextMax:      10000,
 	})
-	// 300 / (1000+300+200) = 300/1500 = 20%
-	if !strings.Contains(stats, "CH20.0%") {
-		t.Errorf("expected cache hit 20%%, got %q", stats)
+	// 300 / (300+200) = 60% (cache hit = reads / (reads + writes))
+	if !strings.Contains(stats, "CH60.0%") {
+		t.Errorf("expected cache hit 60%%, got %q", stats)
 	}
-	// Cache read without prompt > 0 should not display.
+	// Cache hit is shown even when PromptN is 0, as long as cache ops exist.
 	noPrompt := formatFooterStats(sessionStats{
 		PromptN:         0,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
 	})
-	if strings.Contains(noPrompt, "CH") {
-		t.Errorf("expected no cache hit display when PromptN is 0, got %q", noPrompt)
+	if !strings.Contains(noPrompt, "CH60.0%") {
+		t.Errorf("expected cache hit 60%% when PromptN is 0, got %q", noPrompt)
+	}
+	// No cache ops at all should not show CH.
+	noCache := formatFooterStats(sessionStats{
+		PromptN:    1000,
+		PredictedN: 500,
+	})
+	if strings.Contains(noCache, "CH") {
+		t.Errorf("expected no cache hit display when no cache ops, got %q", noCache)
 	}
 }
 

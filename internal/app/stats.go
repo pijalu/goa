@@ -70,6 +70,7 @@ type sessionStats struct {
 	ToolCallLevel   ToolCallLevel // 0=normal, 1=warning, 2=stopped
 	MicroCompacts   int
 	Compacts        int
+	PrevCacheHitPct float64 // previous cache hit % for evolution comparison
 }
 
 func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
@@ -136,6 +137,7 @@ func (a *App) clearStats() {
 	a.compacts = 0
 	a.toolCallsTotal = 0
 	a.toolCallWarningLevel = ToolCallNormal
+	a.prevCacheHitPct = 0
 }
 
 func (a *App) handleProgressEvent(ev *agentic.OutputEvent) {
@@ -759,11 +761,18 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.SpeedTokPerSec > 0 {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
 	}
-	// Cache hit percentage = CacheRead / (prompt + cache read + cache write).
-	if s.PromptN > 0 && s.CacheReadTotal > 0 {
-		total := s.PromptN + s.CacheReadTotal + s.CacheWriteTotal
-		pct := float64(s.CacheReadTotal) / float64(total) * 100
-		parts = append(parts, fmt.Sprintf("CH%.1f%%", pct))
+	// Cache hit percentage = CacheRead / (CacheRead + CacheWrite) * 100.
+	// This is the standard cache hit rate: what fraction of cache operations
+	// were hits vs misses (cache creations). When CacheWrite is 0 (OpenAI-style
+	// where cache is a subset of prompt tokens), the rate represents how much
+	// of the cache-eligible input was served from cache.
+	if s.CacheReadTotal > 0 || s.CacheWriteTotal > 0 {
+		denom := s.CacheReadTotal + s.CacheWriteTotal
+		if denom == 0 {
+			denom = 1
+		}
+		pct := float64(s.CacheReadTotal) / float64(denom) * 100
+		parts = append(parts, formatCacheHitPart(pct, s.PrevCacheHitPct))
 	}
 	if s.ToolCalls > 0 {
 		parts = append(parts, formatToolCallPart(s.ToolCalls, s.ToolCallLevel))
@@ -798,6 +807,31 @@ func formatContextUsage(estimate, max int, autoMax bool) string {
 		color = tui.TheTheme.ColorHex("token_warning")
 	}
 	return ansi.Fg(color) + value + ansi.Reset
+}
+
+// formatCacheHitPart renders the cache hit percentage with color coding
+// based on evolution from the previous value:
+//   - Growing (>=1%):        light green (#3fb950)
+//   - Dropping (1% to <10%): light orange (#d29922)
+//   - Dropping (>=10%):      red (#f85149)
+//   - Stable (<1% change):   normal status bar color
+func formatCacheHitPart(pct, prevPct float64) string {
+	delta := pct - prevPct
+	colorHex := tui.TheTheme.ColorHex("status_bar_fg")
+
+	switch {
+	case delta >= 1.0:
+		// Growing cache hit — green
+		colorHex = "#3fb950"
+	case delta <= -10.0:
+		// Dropping significantly — red
+		colorHex = "#f85149"
+	case delta <= -1.0:
+		// Dropping moderately — orange
+		colorHex = "#d29922"
+	}
+
+	return ansi.Fg(colorHex) + fmt.Sprintf("CH%.1f%%", pct) + ansi.Reset
 }
 
 // formatToolCallPart renders the TC:N display with color coding:

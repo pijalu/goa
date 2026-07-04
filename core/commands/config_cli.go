@@ -267,6 +267,63 @@ func persistModeDefault(ctx core.Context, value string) error {
 	return ctx.ConfigSaver.SaveHomeField(modeDefaultsPath(ctx.Config), scalarValue(value))
 }
 
+// handleConfigTemp handles /config:temp subcommands for session-level
+// temporary overrides. These are not persisted — they only affect the
+// current session and are cleared on restart/session end.
+//
+// Supported overrides:
+//   /config:temp:think_loop_detection:off  — disable thinking-loop detection
+//   /config:temp:think_loop_detection:on   — enable thinking-loop detection
+//   /config:temp:tool_loop_detection:off   — disable tool-call loop detection
+//   /config:temp:tool_loop_detection:on    — enable tool-call loop detection
+func handleConfigTemp(ctx core.Context, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: /config:temp <setting> <on|off>")
+	}
+	setting := args[0]
+	value := args[1]
+
+	enabled := true
+	switch strings.ToLower(value) {
+	case "on", "true", "1", "yes":
+		enabled = true
+	case "off", "false", "0", "no":
+		enabled = false
+	default:
+		return fmt.Errorf("value must be 'on' or 'off', got %q", value)
+	}
+
+	switch setting {
+	case "think_loop_detection":
+		return applyTempOverride(ctx, "think", enabled)
+	case "tool_loop_detection":
+		return applyTempOverride(ctx, "tool", enabled)
+	default:
+		return fmt.Errorf("unknown temp setting: %q (use 'think_loop_detection' or 'tool_loop_detection')", setting)
+	}
+}
+
+// applyTempOverride applies a session-level temp override to the loop detector.
+func applyTempOverride(ctx core.Context, kind string, enabled bool) error {
+	ld := ctx.LoopDetector
+	if ld == nil {
+		writeStr(ctx, "Loop detector not available (headless mode). Override not applied.\n")
+		return nil
+	}
+	ld.SetTempOverride(kind, !enabled) // disabled=true means detection is OFF
+	state := "enabled"
+	if !enabled {
+		state = "disabled"
+	}
+	switch kind {
+	case "think":
+		writeFmt(ctx, "Temporary: thinking-loop detection %s (current session only)\n", state)
+	case "tool":
+		writeFmt(ctx, "Temporary: tool-call loop detection %s (current session only)\n", state)
+	}
+	return nil
+}
+
 // scalarValue converts common UI values to scalars suitable for YAML.
 func scalarValue(value string) any {
 	if v, err := strconv.ParseBool(value); err == nil {
