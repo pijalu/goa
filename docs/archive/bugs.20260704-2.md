@@ -33,3 +33,24 @@ If new items are added, restart the process.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
+
+# TODO
+
+## Tool execution interrupted (goa-export)
+Tool execution was interrupted/stopped during the bug-fixing session. Export saved at:
+  /Users/muaddib/dev/goa/.goa/exports/goa-export-20260704-135610.zip
+Investigate why the tool was stopped and whether export contains useful debugging data.
+
+At this point the spinner was not visible - there were no visible indicator of issues
+
+## Steering message are late
+Steering message should be sent as soon as possible - check how ../pi does
+The message should be kept as "Pending" on top of the input until sent successfully to the model - same as Pi
+
+## Performance
+Performance of the TUI is degrading with increasing content - pointing to redraw problems.
+The performance/cpu usage is increasing just typing in the input field.
+
+## search
+Search tool should support working on a file - eg: search configSetters in *.go under ~/dev/goa/core/commands/config_cli.go should find all configSetters in that file
+(the file can be specified as a path or glob pattern)

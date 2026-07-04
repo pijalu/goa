@@ -73,27 +73,38 @@ func (f *Footer) Render(width int) []string {
 }
 
 // buildLeftSide builds the left portion of the second status line
-// from stats, activity, tokens, and steering hint.
+// from stats, activity, tokens, steering hint, and pending steering text.
 func (f *Footer) buildLeftSide(fg string) string {
 	left2 := f.data.Stats
 	if left2 == "" {
 		left2 = f.data.Activity
 		if f.data.Tokens != "" {
-			if left2 != "" {
-				left2 += " │ " + f.data.Tokens
-			} else {
-				left2 = f.data.Tokens
-			}
+			left2 = appendWithSep(left2, f.data.Tokens)
 		}
 	}
 	if f.data.SteeringHint != "" {
-		if left2 != "" {
-			left2 += " │ " + ansi.Fg("#d29922") + f.data.SteeringHint + ansi.Reset + fg
-		} else {
-			left2 = ansi.Fg("#d29922") + f.data.SteeringHint + ansi.Reset + fg
+		hint := ansi.Fg("#d29922") + f.data.SteeringHint + ansi.Reset + fg
+		left2 = appendWithSep(left2, hint)
+	}
+	if f.data.SteeringPending != "" {
+		pendingText := f.data.SteeringPending
+		if len(pendingText) > 40 {
+			pendingText = pendingText[:40] + "…"
 		}
+		hint := "⏳ " + pendingText
+		colored := ansi.Fg("#d29922") + hint + ansi.Reset + fg
+		left2 = appendWithSep(left2, colored)
 	}
 	return left2
+}
+
+// appendWithSep appends s to base with a " │ " separator, or returns s when
+// base is empty.
+func appendWithSep(base, s string) string {
+	if base == "" {
+		return s
+	}
+	return base + " │ " + s
 }
 
 // formatWorkdirAdaptive returns the formatted working directory, optionally

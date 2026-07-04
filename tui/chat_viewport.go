@@ -64,6 +64,13 @@ type ChatViewport struct {
 		width int
 		lines []string
 	}
+	// generation increments on every mutation (append, update, invalidate).
+	// Render compares it to lastRenderGen: when they match and the cache is
+	// valid, it skips the O(n) dirtyIndices scan entirely. This avoids
+	// scanning all entries on every frame when only the input editor changes
+	// (the common typing scenario).
+	generation    int
+	lastRenderGen int
 }
 
 // NewChatViewport creates a ChatViewport backed by a fresh Conversation.
@@ -81,6 +88,14 @@ func (cv *ChatViewport) Render(width int) []string {
 	if width != cv.renderCache.width {
 		cv.resetRenderCaches(width)
 	}
+	// Fast path: when no mutations have occurred since the last render and
+	// the frame cache is valid, return it immediately without scanning all
+	// entries for dirty indices. The common typing scenario (only the input
+	// editor changes) hits this path.
+	if cv.generation == cv.lastRenderGen && cv.renderCache.lines != nil {
+		return cv.renderCache.lines
+	}
+	cv.lastRenderGen = cv.generation
 	dirty := cv.dirtyIndices()
 	if len(dirty) == 0 && cv.renderCache.lines != nil {
 		return cv.renderCache.lines
@@ -101,10 +116,12 @@ func (cv *ChatViewport) Render(width int) []string {
 func (cv *ChatViewport) Invalidate() {
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
+	cv.generation++
 	for i := range cv.entries {
 		cv.entries[i].View.Invalidate()
 		cv.entries[i].renderedWidth = 0
 		cv.entries[i].renderedLines = nil
+		cv.entries[i].lineOffset = 0
 		cv.entries[i].dirty = true
 	}
 }
@@ -113,6 +130,14 @@ func (cv *ChatViewport) Invalidate() {
 // editor / overlays). Implementing it satisfies the Component interface.
 func (cv *ChatViewport) HandleInput(string) {}
 
+// Clear removes all entries and invalidates the render cache.
+func (cv *ChatViewport) Clear() {
+	cv.Conversation.Clear()
+	cv.renderCache.width = 0
+	cv.renderCache.lines = nil
+	cv.generation++
+}
+
 // ── Generic Model delegates (composable primitives) ──
 
 // Append adds an entry to the conversation and marks the new entry dirty.
@@ -120,6 +145,17 @@ func (cv *ChatViewport) Append(e MessageEntry) int {
 	e.dirty = true
 	e.renderedWidth = 0
 	e.renderedLines = nil
+	// Compute lineOffset: total line count of all existing entries.
+	// Use the render cache when available (O(1)), fall back to O(n) scan.
+	if cv.renderCache.lines != nil {
+		e.lineOffset = len(cv.renderCache.lines)
+	} else {
+		e.lineOffset = 0
+		for _, existing := range cv.entries {
+			e.lineOffset += len(existing.renderedLines)
+		}
+	}
+	cv.generation++
 	return cv.Conversation.Append(e)
 }
 
@@ -130,7 +166,11 @@ func (cv *ChatViewport) UpdateLast(types []ConsoleItemType, fn func(*MessageEntr
 		fn(e)
 		e.dirty = true
 	}
-	return cv.Conversation.UpdateLast(types, wrapped)
+	if cv.Conversation.UpdateLast(types, wrapped) {
+		cv.generation++
+		return true
+	}
+	return false
 }
 
 // RemoveLast removes the most recent entry matching types and clears the
@@ -139,6 +179,7 @@ func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool)
 	if e, ok := cv.Conversation.RemoveLast(types); ok {
 		cv.renderCache.width = 0
 		cv.renderCache.lines = nil
+		cv.generation++
 		return e, true
 	}
 	return MessageEntry{}, false
@@ -148,9 +189,11 @@ func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool)
 func (cv *ChatViewport) resetRenderCaches(width int) {
 	cv.renderCache.width = width
 	cv.renderCache.lines = nil
+	cv.generation++
 	for i := range cv.entries {
 		cv.entries[i].renderedWidth = 0
 		cv.entries[i].renderedLines = nil
+		cv.entries[i].lineOffset = 0
 		cv.entries[i].dirty = true
 	}
 }
@@ -168,10 +211,12 @@ func (cv *ChatViewport) dirtyIndices() []int {
 }
 
 // fullRebuild re-renders all dirty entries and concatenates the per-entry
-// caches into the frame cache.
+// caches into the frame cache. Also recomputes lineOffsets for all entries so
+// that updateLastEntry can find the replacement range in O(1).
 func (cv *ChatViewport) fullRebuild(width int) {
 	cv.renderCache.width = width
 	cv.renderCache.lines = cv.renderCache.lines[:0]
+	offset := 0
 	for i := range cv.entries {
 		e := &cv.entries[i]
 		if e.renderedWidth != width || e.dirty || e.renderedLines == nil {
@@ -179,7 +224,9 @@ func (cv *ChatViewport) fullRebuild(width int) {
 			e.renderedWidth = width
 			e.dirty = false
 		}
+		e.lineOffset = offset
 		cv.renderCache.lines = append(cv.renderCache.lines, e.renderedLines...)
+		offset += len(e.renderedLines)
 	}
 }
 
@@ -190,10 +237,7 @@ func (cv *ChatViewport) updateLastEntry(width int) {
 	e := &cv.entries[idx]
 	newLines := e.View.Render(width)
 
-	start := 0
-	for i := 0; i < idx; i++ {
-		start += len(cv.entries[i].renderedLines)
-	}
+	start := e.lineOffset
 	cv.renderCache.lines = cv.renderCache.lines[:start]
 	cv.renderCache.lines = append(cv.renderCache.lines, newLines...)
 
@@ -336,6 +380,7 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 		for i := range cv.entries {
 			if cv.entries[i].View == tc {
 				cv.entries[i].dirty = true
+				cv.generation++
 				return
 			}
 		}

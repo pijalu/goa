@@ -32,6 +32,9 @@ type MessageEntry struct {
 	renderedWidth int
 	renderedLines []string
 	dirty         bool
+	// lineOffset is the index in the frame cache where this entry's rendered
+	// lines start. Cached to avoid an O(n) scan in updateLastEntry.
+	lineOffset int
 }
 
 // Conversation is the Model: the authoritative, generic store of the chat

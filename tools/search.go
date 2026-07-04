@@ -51,7 +51,7 @@ func (t *SearchTool) Schema() agentic.ToolSchema {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Root directory to search (default: project root)",
+					"description": "Root directory or file to search (default: project root). Supports single files for searching a specific file.",
 				},
 				"glob": map[string]any{
 					"type":        "string",
@@ -276,6 +276,18 @@ func trimGlobParts(glob string) []string {
 }
 
 func (t *SearchTool) collectFiles(rootPath, glob, excludeGlob string, excludes []string, recursive bool) []string {
+	// If rootPath points to a single file, search that file directly
+	// (single-file mode). This allows "search in <file>" usage.
+	if fi, err := os.Stat(rootPath); err == nil && !fi.IsDir() {
+		// Apply glob filter if specified
+		if glob != "" && !matchAnyGlob(rootPath, trimGlobParts(glob), filepath.Dir(rootPath)) {
+			return nil
+		}
+		if excludeGlob != "" && matchGlob(rootPath, excludeGlob, filepath.Dir(rootPath)) {
+			return nil
+		}
+		return []string{rootPath}
+	}
 	if recursive {
 		return t.walkRecursiveFiles(rootPath, glob, excludeGlob, excludes)
 	}
@@ -584,6 +596,7 @@ func (t *SearchTool) Examples() []string {
 		`{"pattern": "TODO"}`,
 		`{"pattern": "func.*Handler", "glob": "*.go", "max_results": 10}`,
 		`{"pattern": "FIXME", "path": "src/", "case_sensitive": true}`,
+		`{"pattern": "configSetters", "path": "core/commands/config_cli.go"}`, // single-file search
 	}
 }
 

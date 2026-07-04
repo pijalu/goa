@@ -336,6 +336,66 @@ func TestSearchTool_Execute_WithDotRoot(t *testing.T) {
 // double-counting bug where formatFileContentLines incremented *totalShown via
 // the pointer AND returned the count which the caller added back. That inflated
 // the "showing N" summary and prematurely truncated later files.
+func TestSearchTool_Execute_SearchSingleFile(t *testing.T) {
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "target.go")
+	if err := os.WriteFile(targetFile, []byte("package main\nfunc configSetters() {}\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Write another file to ensure we don't accidentally search both
+	if err := os.WriteFile(filepath.Join(dir, "other.go"), []byte("package other\nfunc somethingElse() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{WorktreeMgr: nil, Threads: 2, MaxResults: 50}
+	out, err := tool.Execute(`{"pattern": "configSetters", "path": "` + targetFile + `"}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if !strings.Contains(out, "configSetters") {
+		t.Errorf("expected to find 'configSetters' in single-file search, got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 match") {
+		t.Errorf("expected '1 match' in output, got:\n%s", out)
+	}
+}
+
+func TestSearchTool_Execute_SearchSingleFile_WithGlobFilter(t *testing.T) {
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "target.go")
+	if err := os.WriteFile(targetFile, []byte("package main\nfunc configSetters() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{WorktreeMgr: nil, Threads: 2, MaxResults: 50}
+	// glob matching a single file: *.go matches the file when passed as path
+	out, err := tool.Execute(`{"pattern": "configSetters", "path": "` + targetFile + `", "glob": "*.go"}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if !strings.Contains(out, "configSetters") {
+		t.Errorf("expected to find 'configSetters' with glob filter, got:\n%s", out)
+	}
+}
+
+func TestSearchTool_Execute_SearchSingleFile_GlobExcludes(t *testing.T) {
+	dir := t.TempDir()
+	targetFile := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(targetFile, []byte("configSetters\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{WorktreeMgr: nil, Threads: 2, MaxResults: 50}
+	// glob is "*.go", target is .txt — should exclude
+	out, err := tool.Execute(`{"pattern": "configSetters", "path": "` + targetFile + `", "glob": "*.go"}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if !strings.Contains(out, "no matching files found") {
+		t.Errorf("expected 'no matching files found' for mismatched glob, got:\n%s", out)
+	}
+}
+
 func TestSearchTool_TotalShownCountIsAccurate(t *testing.T) {
 	dir := t.TempDir()
 	// Two files, two matches each. With maxResults limiting total lines, the

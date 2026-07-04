@@ -356,6 +356,32 @@ func (a *App) setStreamingStatus() {
 	a.subs.statusMsg.Show("Answering...")
 }
 
+// failPendingTools walks all tool widgets in the chat viewport and marks any
+// that are still in Running or Pending state as interrupted (ToolError).
+// This ensures that tools interrupted by session cancellation or errors show
+// as ✗ (error) rather than remaining in "⟳ running" state indefinitely.
+func (a *App) failPendingTools() {
+	if a.subs.chat == nil {
+		return
+	}
+	interrupted := 0
+	for _, c := range a.subs.chat.Children() {
+		tc, ok := c.(*tui.ToolExecutionComponent)
+		if !ok {
+			continue
+		}
+		if tc.Status() == tui.ToolPending || tc.Status() == tui.ToolRunning {
+			tc.SetOutput("(interrupted)")
+			tc.SetStatus(tui.ToolError)
+			tc.SetPartial(false)
+			interrupted++
+		}
+	}
+	if interrupted > 0 && a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
+	}
+}
+
 func (a *App) toolStatusFromResult(text string) tui.ToolStatus {
 	trimmed := strings.TrimSpace(text)
 	// Budget-exceeded calls did not actually run; surface them as errors (✗)
@@ -374,6 +400,12 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	hadActiveStream := a.stream.active()
 	a.endCurrentStream()
 	a.stream = streamState{} // full reset
+
+	// Mark any tool widgets still in Running/Pending state as interrupted.
+	// Without this, tools interrupted by cancellation or error would stay
+	// in "⟳ running" state forever, giving no visible indication of failure.
+	a.failPendingTools()
+
 	a.statsMu.Lock()
 	a.sessionActive = false
 	a.toolResultsSeen = 0

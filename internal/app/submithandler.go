@@ -107,6 +107,8 @@ func (a *App) maybeSteerWorkflow(engine *tui.TUI, chat *tui.ChatViewport, text s
 	}
 	chat.AddSystemMessage(fmt.Sprintf("[steering] %s", text))
 	subs.foregroundOrch.InjectSteering(text)
+	// Show pending indicator in footer until steering is consumed by the model.
+	subs.footer.SetData(tui.FooterData{SteeringPending: text})
 	engine.RequestRender()
 	return true
 }

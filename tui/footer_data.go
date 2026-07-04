@@ -32,6 +32,7 @@ type FooterData struct {
 	CompanionActivity      string // current companion activity, empty when idle
 	GoalStatus             string // "active", "paused", "blocked", or empty when no goal
 	GoalObjective          string // truncated active/paused/blocked goal objective for the footer
+	SteeringPending        string // pending steering text displayed until consumed by the model
 }
 
 // preserveFooterData merges new data with previously preserved fields so the

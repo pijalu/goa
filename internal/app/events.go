@@ -195,6 +195,10 @@ func (a *App) handleControlEvent(ev event.ControlEvent) bool {
 		if a.subs.foregroundOrch != nil {
 			a.subs.foregroundOrch.InjectSteering(ev.SteeringInput.Text)
 			a.subs.chat.AddSystemMessage(fmt.Sprintf("[steering] %s", ev.SteeringInput.Text))
+			// Show pending indicator in footer until steering is consumed.
+			if a.subs.footer != nil {
+				a.subs.footer.SetData(tui.FooterData{SteeringPending: ev.SteeringInput.Text})
+			}
 		}
 		return true
 	}
@@ -611,6 +615,9 @@ func (a *App) handleWorkflowProgressEvent(e *event.WorkflowProgress) {
 	} else {
 		data.SteeringHint = ""
 	}
+	// Clear pending steering indicator; the steering has been consumed
+	// when a new progress event fires.
+	data.SteeringPending = ""
 	if activity != "" {
 		data.Activity = activity
 	}
