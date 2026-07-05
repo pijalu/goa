@@ -13,9 +13,12 @@
 #   install      Install to GOPATH/bin
 #   cross        Cross-compile for Linux, macOS, Windows
 #   run          Run Goa in current directory
+#   web-build    Render docs/*.md to web/*.html (builds the site)
+#   web-clean    Remove generated web/*.html doc pages
+#   web-serve    Build the site and serve it locally for preview
 #   help         Print this help message
 
-.PHONY: build clean test test-short test-cover test-race lint vet fmt install cross run help
+.PHONY: build clean test test-short test-cover test-race lint vet fmt install cross run web-build web-clean web-serve help
 
 GO := go
 BINARY := goa
@@ -108,6 +111,29 @@ agentic-demo-%:
 run: build
 	./$(BINARY)
 
+# ── Website ───────────────────────────────────────────────────────────────
+# The landing page (web/index.html), assets and the demo gif are committed.
+# Documentation pages are generated at build time from docs/*.md by the
+# cmd/webbuild tool, so the published site renders documentation instead of
+# linking to raw GitHub source.
+
+WEB_BUILD := $(GO) run ./cmd/webbuild -in docs -out web
+WEB_GEN_GLOB := architecture.html setup.html configuration.html commands.html \
+                tools.html skills.html tui.html profiles.html docs.html \
+                agentic-sdk.html plugins.html providers.html workflows.html \
+                orchestration-design.html skill-execution.html development.html \
+                profiling.html goals.html
+
+web-build:
+	$(WEB_BUILD)
+
+web-clean:
+	rm -f $(addprefix web/,$(WEB_GEN_GLOB))
+
+web-serve: web-build
+	@echo "Serving web/ at http://localhost:8000 (Ctrl-C to stop)"
+	cd web && python3 -m http.server 8000
+
 # ── Help ─────────────────────────────────────────────────────────────────
 
 help:
@@ -121,6 +147,11 @@ help:
 	@echo "  install      Install to GOPATH/bin"
 	@echo "  cross        Cross-compile for all platforms"
 	@echo "  run          Build and run Goa"
+	@echo ""
+	@echo "Website targets:"
+	@echo "  web-build    Render docs/*.md into web/*.html"
+	@echo "  web-clean    Remove generated web doc pages"
+	@echo "  web-serve    Build and serve the site locally"
 	@echo ""
 	@echo "Test targets:"
 	@echo "  test         Run all tests with race detection and coverage"

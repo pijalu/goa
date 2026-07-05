@@ -3,6 +3,7 @@ module github.com/pijalu/goa
 go 1.25.0
 
 require (
+	github.com/alecthomas/chroma/v2 v2.2.0
 	github.com/creack/pty v1.1.24
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/expr-lang/expr v1.17.8
@@ -12,6 +13,8 @@ require (
 	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0
+	github.com/yuin/goldmark v1.8.2
+	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0

@@ -5,15 +5,20 @@
 name: pages
 
 # Deploys the project landing page (web/) to GitHub Pages.
-# The page source lives under web/ — NOT in the repo root — per the
-# "Input/repo layout" decision. Repo Settings → Pages → Source must be set
-# to "GitHub Actions" (one-time manual setting; see README).
+# The landing page source (web/index.html) and assets are committed; the
+# documentation pages are generated at build time from docs/*.md by the
+# cmd/webbuild tool (`make web-build`). Repo Settings → Pages → Source must
+# be set to "GitHub Actions" (one-time manual setting; see README).
 
 on:
   push:
     branches: [main]
     paths:
       - 'web/**'
+      - 'docs/**'
+      - 'cmd/webbuild/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -35,6 +40,12 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Build site (render docs)
+        run: make web-build
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact

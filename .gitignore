@@ -1,13 +1,23 @@
 # ── Build artifacts ──────────────────────────────────────────────────────
 /goa
+/goa-test
+/profile
 dist/
 coverage.out
 coverage.html
+cpu.prof
+mem.prof
+trace.out
 *.exe
 *.dll
 *.so
 *.dylib
 *.test
+
+# Generated website documentation pages (built by `make web-build` from
+# docs/*.md). The landing page (web/index.html) and assets are committed.
+web/*.html
+!web/index.html
 
 # ── Session / runtime data ───────────────────────────────────────────────
 .goa/
