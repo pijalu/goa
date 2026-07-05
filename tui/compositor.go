@@ -41,14 +41,15 @@ type Layer struct {
 type CursorPos struct{ Row, Col int }
 
 // Scene is the complete protocol-free description of one frame: the terminal
-// size, the layers, and the input cursor. It is the single source of truth
-// consumed by the Compositor (terminal bytes), the AgentView (plain text for
-// AI tooling), and tests.
+// size, the layers, the input cursor, and a DOM of component nodes. It is the
+// single source of truth consumed by the Compositor (terminal bytes), the
+// AgentView (plain text for AI tooling), and tests.
 type Scene struct {
 	TerminalW int
 	TerminalH int
 	Layers    []Layer    // base layers first, then overlays; ordering within equal Z is stable
 	Cursor    *CursorPos // nil hides the hardware cursor
+	Nodes     []AgentNode
 }
 
 // compose builds the virtual-buffer canvas from the Scene's layers: each
@@ -161,6 +162,19 @@ type AgentLayer struct {
 	Visible bool     // whether any part falls inside the visible viewport
 }
 
+// AgentNode represents a single UI element in the agent-accessible DOM. It
+// gives a component's screen bounds, type, content, and focus state so tests
+// and agents can reason about the TUI without parsing escape sequences.
+type AgentNode struct {
+	Name     string
+	Type     string
+	Rect     Rect
+	Text     string // ANSI-stripped, newline-separated content
+	Focused  bool
+	Cursor   *CursorPos // cursor position relative to this node, or nil
+	Children []AgentNode
+}
+
 // AgentFrame is a structured, protocol-free representation of the current
 // screen for AI agent tooling: it lets an agent "see" the TUI without parsing
 // escape codes. Computed from the same Scene the Compositor renders, so agent
@@ -169,6 +183,7 @@ type AgentFrame struct {
 	Width, Height int
 	Cursor        *CursorPos
 	Layers        []AgentLayer // in z-order
+	Nodes         []AgentNode  // DOM nodes for agentic testing
 	Visible       []string     // ANSI-stripped visible viewport, top-to-bottom reading order
 }
 
@@ -186,7 +201,7 @@ func (s *Scene) AgentFrame(viewportH int) AgentFrame {
 		vBottom = height
 	}
 
-	frame := AgentFrame{Width: s.TerminalW, Height: viewportH, Cursor: s.Cursor}
+	frame := AgentFrame{Width: s.TerminalW, Height: viewportH, Cursor: s.Cursor, Nodes: s.Nodes}
 
 	// Layers, base then overlays by Z, all ANSI-stripped.
 	ordered := make([]Layer, 0, len(s.Layers))
@@ -210,6 +225,76 @@ func (s *Scene) AgentFrame(viewportH int) AgentFrame {
 		frame.Visible = append(frame.Visible, strings.TrimRight(ansi.Strip(canvas[y]), " "))
 	}
 	return frame
+}
+
+// FindNode returns the first node with the given name, or nil if none exists.
+func (f *AgentFrame) FindNode(name string) *AgentNode {
+	for i := range f.Nodes {
+		if f.Nodes[i].Name == name {
+			return &f.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// FindNodeByType returns the first node with the given type prefix, or nil.
+func (f *AgentFrame) FindNodeByType(typePrefix string) *AgentNode {
+	for i := range f.Nodes {
+		if strings.Contains(f.Nodes[i].Type, typePrefix) {
+			return &f.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// FocusedNode returns the first focused node, or nil.
+func (f *AgentFrame) FocusedNode() *AgentNode {
+	for i := range f.Nodes {
+		if f.Nodes[i].Focused {
+			return &f.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// CursorNode returns the node that contains the absolute cursor, or nil if
+// the cursor is hidden or no node overlaps it.
+func (f *AgentFrame) CursorNode() *AgentNode {
+	if f.Cursor == nil {
+		return nil
+	}
+	for i := range f.Nodes {
+		n := &f.Nodes[i]
+		if f.Cursor.Row >= n.Rect.Y && f.Cursor.Row < n.Rect.Y+n.Rect.H &&
+			f.Cursor.Col >= n.Rect.X && f.Cursor.Col < n.Rect.X+n.Rect.W {
+			return n
+		}
+	}
+	return nil
+}
+
+// Dump returns a human-readable description of the agentic screen model for
+// debugging test failures. It includes the terminal size, cursor, and every
+// node with its bounds and content.
+func (f AgentFrame) Dump() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("AgentFrame %dx%d\n", f.Width, f.Height))
+	if f.Cursor != nil {
+		b.WriteString(fmt.Sprintf("cursor: (%d,%d)\n", f.Cursor.Row, f.Cursor.Col))
+	} else {
+		b.WriteString("cursor: hidden\n")
+	}
+	for _, n := range f.Nodes {
+		focus := ""
+		if n.Focused {
+			focus = " [focused]"
+		}
+		b.WriteString(fmt.Sprintf("node %s (%s) rect=%+v%s\n", n.Name, n.Type, n.Rect, focus))
+		for _, line := range strings.Split(n.Text, "\n") {
+			b.WriteString(fmt.Sprintf("  %q\n", line))
+		}
+	}
+	return b.String()
 }
 
 // Compositor owns ALL terminal-protocol concerns: it composes a Scene's

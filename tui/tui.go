@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // CURSOR_MARKER is a zero-width escape sequence emitted by focused components.
@@ -896,7 +898,15 @@ func (t *TUI) findChatViewport() *ChatViewport {
 // Intended for tests; production renders go through the throttled renderLoop.
 func (t *TUI) RenderNow() []string { return t.renderNow() }
 
-// renderNow assembles a protocol-free Scene (layers + cursor) from the
+// SendKey injects a decoded key into the TUI, routes it to the focused
+// component, and synchronously renders one frame. This is the primary API for
+// agentic tests that drive the UI without a real terminal.
+func (t *TUI) SendKey(key string) {
+	t.handleKey(key)
+	t.RenderNow()
+}
+
+// renderNow assembles a protocol-free Scene (layers + cursor + DOM nodes) from the
 // component tree and overlays, then hands it to the Compositor which owns all
 // terminal-protocol output. The TUI never
 // emits escape sequences or touches the diff baseline.
@@ -926,12 +936,14 @@ func (t *TUI) buildScene(w, h int) *Scene {
 		if len(lines) == 0 {
 			continue
 		}
+		rect := Rect{X: 0, Y: y, W: w, H: len(lines)}
 		scene.Layers = append(scene.Layers, Layer{
 			Name:    componentLayerName(child),
 			Kind:    LayerBase,
-			Rect:    Rect{X: 0, Y: y, W: w, H: len(lines)},
+			Rect:    rect,
 			Content: lines,
 		})
+		scene.Nodes = append(scene.Nodes, agentNodeFor(child, rect, lines))
 		y += len(lines)
 	}
 	for _, ov := range t.overlayStack {
@@ -941,16 +953,32 @@ func (t *TUI) buildScene(w, h int) *Scene {
 		}
 		oh := clampOverlayHeight(len(olines), h)
 		startRow := overlayStartRow(ov.opts, oh, h)
+		rect := Rect{X: 0, Y: startRow, W: w, H: oh}
 		scene.Layers = append(scene.Layers, Layer{
 			Name:    componentLayerName(ov.comp),
 			Kind:    LayerOverlay,
 			Z:       1 + len(scene.Layers), // stable, above base
-			Rect:    Rect{X: 0, Y: startRow, W: w, H: oh},
+			Rect:    rect,
 			Content: append([]string(nil), olines[:oh]...),
 		})
+		scene.Nodes = append(scene.Nodes, agentNodeFor(ov.comp, rect, olines[:oh]))
 	}
 	extractCursorMarker(scene)
 	return scene
+}
+
+// agentNodeFor builds an AgentNode from a component and its rendered layer.
+func agentNodeFor(c Component, rect Rect, lines []string) AgentNode {
+	node := AgentNode{
+		Name: componentLayerName(c),
+		Type: fmt.Sprintf("%T", c),
+		Rect: rect,
+		Text: ansi.Strip(strings.Join(lines, "\n")),
+	}
+	if f, ok := c.(Focusable); ok {
+		node.Focused = f.Focused()
+	}
+	return node
 }
 
 // extractCursorMarker scans layers (topmost overlay first, then base layers)

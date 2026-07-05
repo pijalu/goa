@@ -144,6 +144,15 @@ func buildVisualLineMap(text string, width int) []visualLine {
 		// Skip past newline
 		bufPos = lineEnd + 1
 	}
+	// If the text ends with a newline, the cursor can sit on a trailing empty
+	// logical line. Add a visual line for it so cursor movement works correctly.
+	if len(runes) > 0 && runes[len(runes)-1] == '\n' {
+		result = append(result, visualLine{
+			logicalLine: countNewlines(string(runes)),
+			bufStart:    bufPos,
+			runeCount:   0,
+		})
+	}
 	return result
 }
 

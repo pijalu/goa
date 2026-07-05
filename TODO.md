@@ -12,7 +12,7 @@ Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
 97 numbered microsteps, in execution order:
 
 - [x] **B1** — Thinking-loop discoverability (completion + config menu)
-- [x] **B2** — Up-arrow on empty line / cannot navigate to empty line (follow-up fixes: recall history when cursor is at the start of the first visual line; fix `findVisualLine` boundary so Up moves from a wrapped second visual line to the first visual line; add `Editor.VisualCursor` for debugging)
+- [x] **B2** — Up-arrow on empty line / cannot navigate to empty line (follow-up fixes: recall history when cursor is at the start of the first visual line; fix `findVisualLine` boundary so Up moves from a wrapped second visual line to the first visual line; add `Editor.VisualCursor` for debugging; **additional fix:** `buildVisualLineMap` now includes a trailing empty logical line so Up from an empty second line works; agentic DOM integration test covers both decoded keys and raw CSI-u `Ctrl+Enter`)
 - [x] **B3** — `goal` tool: `.goa/goals` location + disable flag (default off) + cache collapse (kimi-code append-on-top model)
 - [x] **B4** — Spinner disappears after 1st tool call
 - [x] **B5** — Steering messages enqueued (`prompt.steered`-style injection)
@@ -22,6 +22,14 @@ Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
 - [x] **R2** — Perf review of all TUI code (profiled via `-perf-load`; top user hotspots are compositor differential rendering and terminal write syscalls; no user-code regressions found; drainInput goroutine removal also reduces allocation churn)
 - [x] **R3** — Functional review: workflow/swarm/multi-agent/goal (full test suite passes under `-race`; no new regressions found; steering queue already aligned with multi-agent orchestrator)
 - [x] **Close** — gates re-run separately, bugs archived to `docs/archive/bugs.2026-07-04.md`, `bugs.md` reduced to guidelines only
+
+## Track 1 addendum — Agentic TUI test model
+A flat DOM model was added to the TUI so agents and tests can query exact component bounds and cursor positions without parsing ANSI:
+- `AgentNode` (name, type, rect, text, focus, cursor, children)
+- `AgentFrame.Nodes`, `FindNode`, `FindNodeByType`, `FocusedNode`, `CursorNode`, `Dump`
+- `TUI.SendKey(key)` for synchronous input injection in tests
+- New tests in `tui/agentic_dom_test.go` including the B2 regression with raw CSI-u bytes
+- Backed by the same `Scene`/`AgentFrame` pipeline that renders the real terminal
 
 ## Track 2 — Orchestration (separate session)
 **Plan:** [`docs/ORCHESTRATION-DESIGN.md`](docs/ORCHESTRATION-DESIGN.md)
