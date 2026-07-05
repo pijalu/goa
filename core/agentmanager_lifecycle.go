@@ -143,7 +143,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		ConfirmTool:       am.confirmTool,
 	}
 	compressionCfg := am.buildCompressionConfig(cfg, mdl.ContextWindow)
-	if compressionCfg.MaxTokens > 0 {
+	if cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
 	}
 	if level := am.modeMgr.GetThinkingLevel(); level != "" {
@@ -163,16 +163,14 @@ func (am *AgentManager) SetDisableToolBudget(disabled bool) {
 }
 
 func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelContextWindow int) agentic.ContextCompressionConfig {
-	maxTokens := cfg.ContextCompression.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = modelContextWindow
-	}
-	if maxTokens == 0 {
-		return agentic.ContextCompressionConfig{}
-	}
-
+	// We intentionally do NOT fall back to modelContextWindow here. When the
+	// user has not configured a compression limit, leaving MaxTokens at 0 lets
+	// the agent use the runtime model window (which may be refreshed later,
+	// e.g., for local models whose loaded context is smaller than the default).
+	// Auto-deriving a hard MaxTokens from the initial model window would make
+	// the value stale and hide the real capacity in the UI.
 	return agentic.ContextCompressionConfig{
-		MaxTokens:           maxTokens,
+		MaxTokens:           cfg.ContextCompression.MaxTokens,
 		ThresholdPercent:    compressionThreshold(cfg),
 		OnContextError:      cfg.ContextCompression.OnContextError,
 		Strategy:            compressionStrategy(cfg),

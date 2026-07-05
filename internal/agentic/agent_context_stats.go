@@ -19,22 +19,24 @@ func (a *Agent) computeContextStats() ContextStats {
 	}
 
 	estimated := estimateTokensFromHistory(a.history)
-	maxTokens := a.cfg.ContextCompression.MaxTokens
-	autoMax := false
+
+	// The UI should always reflect the model's actual capacity. Prefer the
+	// runtime-refreshed context window, then the configured model window, and
+	// fall back to the explicit compression limit only when no model window is
+	// known. This prevents a stale auto-derived compression limit from hiding
+	// a smaller loaded context window (e.g., local models reporting 32k after
+	// the default registry advertised 131k).
+	maxTokens := int(a.contextWindow.Load())
+	autoMax := maxTokens > 0
 	if maxTokens == 0 {
-		// Fall back to the model's advertised context window so the UI can
-		// show usage even when the user has not configured compression.
 		maxTokens = a.cfg.Model.ContextWindow
 		autoMax = maxTokens > 0
-	} else if a.cfg.Model.ContextWindow > maxTokens {
-		// Compression is configured with a smaller limit than the model's
-		// actual context window. The smaller limit still drives proactive
-		// compression (see maybeCompress), but the displayed total should
-		// reflect what the model can actually hold. Mark as auto so the UI
-		// hints that the value comes from model metadata.
-		maxTokens = a.cfg.Model.ContextWindow
-		autoMax = true
 	}
+	if maxTokens == 0 {
+		maxTokens = a.cfg.ContextCompression.MaxTokens
+		autoMax = false
+	}
+
 	usagePercent := 0
 	if maxTokens > 0 {
 		usagePercent = estimated * 100 / maxTokens

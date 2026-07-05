@@ -957,8 +957,10 @@ func TestAgentManager_SetModel_UpdatesContextCompression(t *testing.T) {
 }
 
 // TestAgentManager_BuildCompressionConfig_AutoFromModelWindow verifies that
-// when the user does not configure context compression, AgentManager still
-// derives a compression config from the model's advertised context window.
+// when the user does not configure a compression limit, AgentManager leaves
+// MaxTokens at 0 so the agent can fall back to the runtime model window. This
+// avoids a stale hard limit when the local model's loaded context window is
+// refreshed later.
 func TestAgentManager_BuildCompressionConfig_AutoFromModelWindow(t *testing.T) {
 	cfg := &config.Config{
 		Execution: config.ExecutionConfig{TokenCritical: 80},
@@ -966,8 +968,8 @@ func TestAgentManager_BuildCompressionConfig_AutoFromModelWindow(t *testing.T) {
 	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
 
 	cc := am.buildCompressionConfig(cfg, 32768)
-	if cc.MaxTokens != 32768 {
-		t.Errorf("MaxTokens = %d, want 32768", cc.MaxTokens)
+	if cc.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d, want 0 (auto from model window)", cc.MaxTokens)
 	}
 	if cc.ThresholdPercent != 80 {
 		t.Errorf("ThresholdPercent = %d, want 80", cc.ThresholdPercent)

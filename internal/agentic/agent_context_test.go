@@ -175,6 +175,31 @@ func TestSetContextWindow_UpdatesEffectiveMaxTokens(t *testing.T) {
 	}
 }
 
+func TestSetContextWindow_UpdatesContextStats(t *testing.T) {
+	a := NewAgent(Config{
+		Model:        provider.Model{ContextWindow: 131072},
+		SystemPrompt: "You are helpful.",
+	})
+	a.SetContextWindow(32768)
+	stats := a.ContextStats()
+	if stats.MaxTokens != 32768 {
+		t.Errorf("ContextStats().MaxTokens after SetContextWindow = %d, want 32768", stats.MaxTokens)
+	}
+	if !stats.AutoMax {
+		t.Error("AutoMax should be true after runtime context-window refresh")
+	}
+}
+
+func TestEffectiveMaxTokens_CapsCompressionMaxByModelWindow(t *testing.T) {
+	a := NewAgent(Config{
+		Model:              provider.Model{ContextWindow: 8192},
+		ContextCompression: ContextCompressionConfig{MaxTokens: 100_000},
+	})
+	if got := a.effectiveMaxTokens(); got != 8192 {
+		t.Errorf("effectiveMaxTokens() = %d, want 8192 (model window caps explicit max)", got)
+	}
+}
+
 func TestCheckContextLimit_AllowsLargeHistoryWithinModelWindow(t *testing.T) {
 	a := &Agent{
 		cfg: Config{

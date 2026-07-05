@@ -106,15 +106,12 @@ func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrat
 
 // maybeCompress checks context usage and triggers compression if needed.
 func (a *Agent) maybeCompress(ctx context.Context) error {
-	cfg := a.cfg.ContextCompression
-	maxTokens := cfg.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = a.cfg.Model.ContextWindow
-	}
+	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
 		return nil
 	}
 
+	cfg := a.cfg.ContextCompression
 	strategy := cfg.Strategy
 	if strategy == "" {
 		strategy = CompressionToolElision

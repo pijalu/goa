@@ -9,19 +9,31 @@ import (
 )
 
 // effectiveMaxTokens returns the context window limit the agent should use for
-// compression and ceiling decisions. It prefers the explicit compression config,
-// then falls back to the model's advertised context window.
+// compression and ceiling decisions. When no compression limit is configured it
+// falls back to the model's advertised context window (which can be refreshed at
+// runtime by SetContextWindow). When a compression limit is configured, it is
+// bounded by the actual model window: the model cannot hold more than its
+// advertised capacity, so the effective limit is the smaller of the two.
 func (a *Agent) effectiveMaxTokens() int {
-	if a.cfg.ContextCompression.MaxTokens > 0 {
-		return a.cfg.ContextCompression.MaxTokens
-	}
-	if cw := a.contextWindow.Load(); cw > 0 {
-		return int(cw)
-	}
-	if a.cfg.Model.ContextWindow > 0 {
+	maxTokens := a.cfg.ContextCompression.MaxTokens
+	if maxTokens == 0 {
+		if cw := a.contextWindow.Load(); cw > 0 {
+			return int(cw)
+		}
 		return a.cfg.Model.ContextWindow
 	}
-	return 0
+	// Compression is configured; respect it, but cap it at the actual model
+	// window so we never defer compression past the model's real limit.
+	if cw := a.contextWindow.Load(); cw > 0 {
+		if int(cw) < maxTokens {
+			return int(cw)
+		}
+		return maxTokens
+	}
+	if a.cfg.Model.ContextWindow > 0 && a.cfg.Model.ContextWindow < maxTokens {
+		return a.cfg.Model.ContextWindow
+	}
+	return maxTokens
 }
 
 // enforceContextCeiling is a last-resort safety net. After proactive compression

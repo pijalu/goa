@@ -89,9 +89,11 @@ func TestContextStats_UsesModelWindowWhenLarger(t *testing.T) {
 	}
 }
 
-// TestContextStats_RespectsExplicitLargerMax verifies that when the configured
-// MaxTokens is larger than the model window, the explicit value wins.
-func TestContextStats_RespectsExplicitLargerMax(t *testing.T) {
+// TestContextStats_RespectsModelWindowWhenExplicitMaxExceedsIt verifies that
+// when the configured MaxTokens exceeds the model window, the displayed total
+// still reflects the actual model capacity. The model cannot hold more than
+// its advertised context window, so the UI should show that limit.
+func TestContextStats_RespectsModelWindowWhenExplicitMaxExceedsIt(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		Model:        provider.Model{ContextWindow: 8192},
@@ -104,11 +106,11 @@ func TestContextStats_RespectsExplicitLargerMax(t *testing.T) {
 	})
 
 	stats := agent.ContextStats()
-	if stats.MaxTokens != 100_000 {
-		t.Errorf("MaxTokens = %d, want 100_000 (explicit)", stats.MaxTokens)
+	if stats.MaxTokens != 8192 {
+		t.Errorf("MaxTokens = %d, want 8192 (model window)", stats.MaxTokens)
 	}
-	if stats.AutoMax {
-		t.Error("AutoMax should be false when explicit MaxTokens wins")
+	if !stats.AutoMax {
+		t.Error("AutoMax should be true when display total comes from model metadata")
 	}
 }
 
