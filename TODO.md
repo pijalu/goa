@@ -18,10 +18,10 @@ Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
 - [x] **B5** — Steering messages enqueued (`prompt.steered`-style injection)
 - [x] **B6** — Config selection list cursor at `search>` marker
 - [x] **B7** — smartsearch review (fix everything found)
-- [ ] **R1** — Stability review of all TUI code (fix everything found)
+- [~] **R1** — Stability review of all TUI code (drainInput goroutine leak fixed; remaining: panic recovery wrappers, edge-path audit)
 - [ ] **R2** — Perf review of all TUI code (fix everything found)
 - [ ] **R3** — Functional review: workflow/swarm/multi-agent/goal (fix everything found)
-- [ ] **Close** — gates, interactive smoke test, archive `bugs.md` → `docs/archive/bugs.2026-07-04.md`
+- [ ] **Close** — gates, interactive smoke test, archive `bugs.md` → `docs/archive/bugs.2026-07-04.md` (commit `9106503` captured B2-B7 + partial R1)
 
 ## Track 2 — Orchestration (separate session)
 **Plan:** [`docs/ORCHESTRATION-DESIGN.md`](docs/ORCHESTRATION-DESIGN.md)
