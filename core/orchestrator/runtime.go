@@ -52,6 +52,9 @@ type Runtime struct {
 	msgMu sync.Mutex
 	msgs  map[string][]string
 
+	subMu sync.Mutex
+	subs  []chan Event
+
 	// newID generates a unique run id. Override in tests for determinism.
 	newID func() string
 }
@@ -108,6 +111,34 @@ func (r *Runtime) emit(evt Event) {
 	case r.bus <- evt:
 	default:
 	}
+	r.fanout(evt)
+}
+
+// fanout delivers a copy of the event to every Subscribe() consumer without
+// blocking the run; slow consumers drop (the on-disk store is the source of
+// truth). Callers other than emit do not need the lock.
+func (r *Runtime) fanout(evt Event) {
+	r.subMu.Lock()
+	defer r.subMu.Unlock()
+	for _, ch := range r.subs {
+		select {
+		case ch <- evt:
+		default:
+		}
+	}
+}
+
+// Subscribe returns a fresh channel receiving every emitted event for the
+// remainder of this run. Used by the TUI panel forwarder; the command's chat
+// forwarder continues to use Events() (the legacy single bus). Closing the
+// runtime's bus at run end does not close subscriber channels — consumers
+// should also select on Done().
+func (r *Runtime) Subscribe() <-chan Event {
+	ch := make(chan Event, 64)
+	r.subMu.Lock()
+	r.subs = append(r.subs, ch)
+	r.subMu.Unlock()
+	return ch
 }
 
 // closeBus seals the event bus at run end.

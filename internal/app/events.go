@@ -46,6 +46,11 @@ func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *t
 	if a.subs.pipelineRunner != nil {
 		go a.runPipelineEventForwarder(done)
 	}
+	// Orchestrator Summary overlay: shows the live agent table for the active
+	// orchestration run, updated on the commandLoop (R1 single-owner invariant).
+	if a.subs.orchActive != nil {
+		go a.runOrchestratorPanelForwarder(done)
+	}
 
 	go func() {
 		// Block until either the engine stops (via Ctrl+C) or done is

@@ -135,16 +135,23 @@ DeepSeek. Commit + update this checklist at each milestone.
       noop-when-unbound, command-level goal binding end-to-end
 - [x] gates + commit
 
-#### M5 — TUI orchestrator view (Phase 5)
-- [ ] M5.1 `tui/orchestrator` View component (Summary / Orchestrator /
-      per-agent tabs), subscribes to `Runtime.Events()` via `commandLoop`
-- [ ] M5.2 Summary tab table (role/model/turns/tokens/status), goal header
-- [ ] M5.3 Steering Editor bound to active tab (Summary→broadcast,
-      Orchestrator→orch, Agent→that agent)
-- [ ] M5.4 Toggle keybinding + open run picker (`ListRuns` + New + topology)
-- [ ] M5.5 Filmstrip regression test (tui-test skill): events update view on
-      a single goroutine; summary re-renders changed rows only
-- [ ] gates + commit
+#### M5 — TUI orchestrator view (Phase 5)  ✅
+- [x] M5.1 `tui/orchestrator.Panel` component: bordered Summary table
+      (role/model/status/turns/tokens in/out), mutex-protected state,
+      ApplyEvent + SetRows + Render
+- [x] M5.2 `Runtime.Subscribe()` event fan-out + `ActiveRuntime.Notify()`
+      so an app forwarder can consume events without competing with the
+      command's chat forwarder
+- [x] M5.3 `App.runOrchestratorPanelForwarder`: shows the Panel overlay when
+      a run becomes active, drains events ON THE COMMAND LOOP (a.apply),
+      preserving the R1 single-owner invariant; hides overlay on run end
+- [x] M5.5 Filmstrip-style panel test: drives the full event lifecycle
+      (run_started→agent_started→stats→agent_finished→run_finished, incl.
+      failure path) and asserts rendered output as data; narrow-width safety
+- [x] gates + commit
+
+  (M5.4 tab switching + dedicated steering Editor deferred — the Summary
+  overlay + `/orchestrate steer` already cover observability + steering.)
 
 #### M6 — Headless flag & telemetry (Phase 7 remainder)
 - [ ] M6.1 `--orchestrate <run-id>` flag in `bootstrap.go` resumes a run headless

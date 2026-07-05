@@ -24,20 +24,31 @@ type Builder interface {
 // commands that inject messages. At most one run is "active" at a time;
 // launching a new run replaces (and stops listening to) the previous.
 type ActiveRuntime struct {
-	mu sync.Mutex
-	rt *Runtime
+	mu      sync.Mutex
+	rt      *Runtime
+	notify  chan struct{}
 }
 
 // NewActiveRuntime returns an empty holder.
-func NewActiveRuntime() *ActiveRuntime { return &ActiveRuntime{} }
+func NewActiveRuntime() *ActiveRuntime {
+	return &ActiveRuntime{notify: make(chan struct{}, 1)}
+}
+
+// Notify returns a channel that receives a value each time Set installs a new
+// (possibly nil) runtime. Buffer 1 so a late subscriber never blocks the setter.
+func (a *ActiveRuntime) Notify() <-chan struct{} { return a.notify }
 
 // Set installs rt as the active runtime and returns the previously-active
 // runtime (nil if none). The caller decides whether to stop the previous run.
 func (a *ActiveRuntime) Set(rt *Runtime) *Runtime {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	prev := a.rt
 	a.rt = rt
+	a.mu.Unlock()
+	select {
+	case a.notify <- struct{}{}:
+	default:
+	}
 	return prev
 }
 
