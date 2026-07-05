@@ -1401,6 +1401,65 @@ func TestAgent_ToolCallLimitResetsOnUniqueCall(t *testing.T) {
 	}
 }
 
+// TestAgent_SingleEventEndAcrossToolCallTurn is the regression test for the
+// "spinner disappears after the first tool call" bug.
+//
+// EventEnd marks the end of a whole conversation turn. A turn that performs
+// tool calls and then produces a final answer streams multiple rounds, but it
+// is still a single turn, so it must emit exactly one EventEnd — at the very
+// end. Previously completeStreamTurn emitted an EventEnd after every tool
+// batch; UI consumers (the status spinner) treated that as a session end and
+// armed a guard that silently dropped every subsequent Show(), so the spinner
+// vanished after the first tool call and never came back.
+//
+// Flow exercised: round 1 = tool call A, round 2 = tool call B, round 3 =
+// final text answer. Expected: exactly one EventEnd, positioned after the
+// final assistant content and with no EventEnd between the tool results and
+// the final answer.
+func TestAgent_SingleEventEndAcrossToolCallTurn(t *testing.T) {
+	p := registerUniqueArgToolProvider(2)
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+		Tools: []Tool{mockTool{
+			name:   "mock_tool",
+			schema: ToolSchema{Name: "mock_tool", Description: "test"},
+		}},
+		MaxToolCalls: 10,
+	})
+
+	obs := runAgentCollectingEvents(t, agent, "call tools")
+	events := obs.Events()
+
+	var endCount int
+	var lastEndIdx, lastContentIdx int = -1, -1
+	for i, e := range events {
+		if e.Type == EventEnd {
+			endCount++
+			lastEndIdx = i
+		}
+		if e.Type == EventContent && e.Role == Assistant {
+			lastContentIdx = i
+		}
+	}
+	if endCount != 1 {
+		var seq []string
+		for _, e := range events {
+			seq = append(seq, string(e.Type))
+		}
+		t.Fatalf("expected exactly 1 EventEnd for a multi-round tool-call turn, got %d. Event sequence: %v", endCount, seq)
+	}
+	if lastContentIdx < 0 {
+		t.Fatal("expected at least one assistant content event (the final answer)")
+	}
+	// The single EventEnd must come after the final assistant content: it
+	// terminates the turn, so nothing turn-related should follow it.
+	if lastEndIdx < lastContentIdx {
+		t.Fatalf("EventEnd (idx %d) came before final assistant content (idx %d); it must terminate the turn", lastEndIdx, lastContentIdx)
+	}
+}
+
 func TestAgent_ToolCallLimitEnforcedOnRepeatedCall(t *testing.T) {
 	totalCalls := 4
 	maxCalls := 3
@@ -2155,9 +2214,9 @@ type testResponseError struct {
 	body   string
 }
 
-func (e *testResponseError) Error() string       { return fmt.Sprintf("test error %d", e.status) }
-func (e *testResponseError) StatusCode() int       { return e.status }
-func (e *testResponseError) ResponseBody() string  { return e.body }
+func (e *testResponseError) Error() string        { return fmt.Sprintf("test error %d", e.status) }
+func (e *testResponseError) StatusCode() int      { return e.status }
+func (e *testResponseError) ResponseBody() string { return e.body }
 
 func TestFormatRetryMessage(t *testing.T) {
 	cases := []struct {
@@ -2175,7 +2234,7 @@ func TestFormatRetryMessage(t *testing.T) {
 		},
 		{
 			name: "plain http error",
-			err: &testResponseError{status: 500, body: "internal server error"},
+			err:  &testResponseError{status: 500, body: "internal server error"},
 			want: "Error: 500 - internal server error - retrying",
 		},
 		{

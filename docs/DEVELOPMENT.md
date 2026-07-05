@@ -150,6 +150,22 @@ type ToolError struct {
 - **Explicit error cases** — test missing params, invalid input, permission errors
 - **Naming**: `Test<FunctionName>_<Scenario>`
 
+### Testing TUI behavior (no real terminal)
+
+Never debug a TUI/UI bug by running goa against a live model, and never assert
+on ANSI escape bytes. The TUI is testable as **data** via a protocol-free
+screen model and a `Filmstrip` recorder.
+
+- **Driving an event sequence**: use the `uiScenario` harness
+  (`internal/app/ui_scenario_test.go`) to feed `agentic.OutputEvent`s through
+  the real `App.handleAgentOutputEvent` and record a `tui.Filmstrip` per step.
+- **Component-only behavior** (input/navigation/overlays): drive `tui.TUI`
+  directly on a fake terminal and read `engine.AgentFrame()`.
+
+Load the **`tui-test` skill** (`.agents/skills/tui-test/SKILL.md`) for the
+full workflow, event/state cheat sheet, and anti-patterns. See also the
+"Agent-testable UI (Filmstrip)" section in `docs/TUI.md`.
+
 ### Running Tests
 
 ```bash

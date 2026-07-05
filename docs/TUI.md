@@ -223,6 +223,57 @@ Agent SDK → OutputEvent → AgentManager.OnEvent → TUI events channel
   → renderNow()
 ```
 
+## Agent-testable UI (Filmstrip)
+
+The TUI is designed to be testable **without a real terminal**, so that both
+human-written tests and AI agents can drive a UI scenario and inspect the
+result as data. This is a first-class concern of the Compositor — the same
+`Scene` that produces terminal bytes also produces a protocol-free screen
+model that an agent can "view".
+
+Two layers make this work:
+
+1. **`tui.AgentFrame`** (`Compositor.AgentFrame`) — the structured,
+   ANSI-free description of one frame: terminal size, z-ordered layers, a
+   widget DOM (`AgentNode`), the cursor, and the visible viewport as plain
+   text in reading order. `AgentFrame.Dump()` renders a human-readable
+   summary for test-failure output.
+
+2. **`tui.Filmstrip`** — a recorder of the *series* of `AgentFrame` states as
+   a UI evolves, each paired with a compact `FrameDiff` (added/removed
+   visible lines, status-text, cursor movement). `Filmstrip.StatusTrace()`
+   returns the activity-spinner lifecycle across all steps — the single most
+   useful artifact for asserting on activity state. `Filmstrip.Render()`
+   produces an ANSI-free transcript suitable for an AI agent to read.
+
+### Driving a scenario in tests
+
+The `internal/app` package provides the `uiScenario` harness
+(`ui_scenario_test.go`) which wires the **full production component tree** to
+a fake terminal and feeds `agentic.OutputEvent`s through the real
+`App.handleAgentOutputEvent`, recording a `Filmstrip` snapshot after each
+event:
+
+```go
+sc := newUIScenario(t, 100, 24)
+sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "read", ...})
+trace := sc.filmstrip().StatusTrace() // activity lifecycle as data
+frame := sc.engine.AgentFrame()       // current widget DOM
+```
+
+This is the recommended way to write regression tests for any change to the
+event → status / streaming / tool-widget wiring. See
+`TestUIScenario_SpinnerSurvivesToolCallTurn` for the canonical example (it
+reproduces the "spinner disappears after the first tool call" bug end-to-end).
+
+### Why this matters
+
+Before this harness existed, the only way to observe a UI bug like the
+mid-turn spinner disappearance was to run goa against a live model in a real
+terminal — which made agent-driven debugging effectively blind. The
+filmstrip turns the UI into a first-class, inspectable data structure so an
+agent can localize and verify TUI fixes deterministically.
+
 ## Dependencies
 
 The TUI has no external dependencies beyond:

@@ -200,6 +200,40 @@ func TestEditFileTool_DeleteLines_RemovesContent(t *testing.T) {
 	}
 }
 
+func TestEditFileTool_DeleteLines_ReportsDeletedLineCount(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("a\nb\nc\nd\ne\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	result, err := tool.Execute(`{"path": "` + filePath + `", "operation": "delete_lines", "start_line": 2, "end_line": 4}`)
+	if err != nil {
+		t.Fatalf("Delete lines should succeed: %v", err)
+	}
+	if !strings.Contains(result, "3 lines affected") {
+		t.Errorf("Expected result to report 3 deleted lines, got: %q", result)
+	}
+}
+
+func TestEditFileTool_NotFound_ProvidesHelpfulHint(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir, AllowFuzz: true}
+	_, err := tool.Execute(`{"path": "` + filePath + `", "old_string": "nonexistent block", "new_string": "replacement"}`)
+	if err == nil {
+		t.Fatal("Expected error for nonexistent old_string")
+	}
+	if !strings.Contains(err.Error(), "read") && !strings.Contains(err.Error(), "delete_lines") {
+		t.Errorf("Expected error hint to mention read or delete_lines, got: %v", err)
+	}
+}
+
 func TestEditFileTool_FuzzyEdit_ExactOnly_WhenAllowFuzzIsFalse(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "test.go")

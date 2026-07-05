@@ -201,6 +201,29 @@ func TestChatViewport_SnapshotExposesStructuredData(t *testing.T) {
 	}
 }
 
+func TestChatViewport_InvalidateRunningToolWidgets(t *testing.T) {
+	cv := NewChatViewport()
+	cv.AddUserMessage("user msg")
+	tc := cv.AddToolExecution("bash", `{"command":"ls"}`)
+	tc.SetStatus(ToolRunning)
+
+	cv.Render(80)
+	genBefore := cv.generation
+
+	cv.InvalidateRunningToolWidgets()
+	if cv.generation <= genBefore {
+		t.Errorf("generation did not increment after invalidating running tools")
+	}
+
+	// Non-running tools should not be invalidated again.
+	tc.SetStatus(ToolSuccess)
+	genBefore = cv.generation
+	cv.InvalidateRunningToolWidgets()
+	if cv.generation != genBefore {
+		t.Errorf("non-running tools should not be invalidated")
+	}
+}
+
 func renderContains(lines []string, sub string) bool {
 	for _, l := range lines {
 		if strings.Contains(l, sub) {

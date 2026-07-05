@@ -178,7 +178,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		indentMode:   IndentMode(defaultStr(p.IndentMode, string(IndentPreserve))),
 	}
 
-	result, opErr := t.runOp(lines, EditOperation(op), ep)
+	result, affected, opErr := t.runOp(lines, EditOperation(op), ep)
 	if opErr != nil {
 		return "", wrapEditOpError(opErr, p.Path, op)
 	}
@@ -199,7 +199,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
 
-	resultMsg := fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, len(ep.newLines), diff)
+	resultMsg := fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, affected, diff)
 	if fuzzyNote != "" {
 		resultMsg = fuzzyNote + "\n" + resultMsg
 	}
@@ -210,12 +210,15 @@ func wrapEditOpError(opErr error, path, op string) error {
 	te, ok := opErr.(*internal.ToolError)
 	if ok {
 		te.Detail = fmt.Sprintf("[%s] %s: %s", path, op, te.Detail)
+		if te.HintText == "" {
+			te.HintText = "Use 'read' to verify the file content and operation parameters, then retry."
+		}
 		return te
 	}
 	return &internal.ToolError{
 		Tool: "edit", Type: "operation_failed",
 		Detail:   fmt.Sprintf("[%s] %s: %v", path, op, opErr),
-		HintText: "Check the operation parameters and the file content.",
+		HintText: "Use 'read' to verify the file content and operation parameters, then retry.",
 	}
 }
 
@@ -263,7 +266,7 @@ func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, s
 	return splitLines(string(data)), targetPath, fuzzyNote, nil
 }
 
-func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]string, error) {
+func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]string, int, error) {
 	switch op {
 	case OpReplaceLines:
 		return t.replaceLines(lines, p.startLine, p.endLine, p.newLines, p.indentMode)
@@ -276,16 +279,16 @@ func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]
 	case OpDeleteLines:
 		return t.deleteLines(lines, p.startLine, p.endLine)
 	default:
-		return nil, &internal.ToolError{Tool: "edit", Type: "unknown_operation",
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "unknown_operation",
 			Detail:   fmt.Sprintf("Unknown operation: %s", op),
 			HintText: "Use one of: replace_lines, replace_pattern, insert_after, insert_before, delete_lines"}
 	}
 }
 
-func (t *EditFileTool) replaceLines(lines []string, startLine, endLine int, newLines []string, indentMode IndentMode) ([]string, error) {
+func (t *EditFileTool) replaceLines(lines []string, startLine, endLine int, newLines []string, indentMode IndentMode) ([]string, int, error) {
 	start, end, err := t.checkLineRange(lines, startLine, endLine)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	targetLines := lines[start-1 : end]
 	adjusted := t.adjustIndent(targetLines, newLines, indentMode)
@@ -293,12 +296,12 @@ func (t *EditFileTool) replaceLines(lines []string, startLine, endLine int, newL
 	result = append(result, lines[:start-1]...)
 	result = append(result, adjusted...)
 	result = append(result, lines[end:]...)
-	return result, nil
+	return result, len(adjusted), nil
 }
 
-func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occurrence int, newLines []string, indentMode IndentMode) ([]string, error) {
+func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occurrence int, newLines []string, indentMode IndentMode) ([]string, int, error) {
 	if pattern == "" {
-		return nil, &internal.ToolError{Tool: "edit", Type: "missing_pattern",
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "missing_pattern",
 			Detail: "Pattern is required for replace_pattern", HintText: "Provide a 'pattern' to search for."}
 	}
 	caseSensitive := !strings.Contains(flags, "i")
@@ -316,46 +319,46 @@ func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occ
 		result = append(result, line)
 	}
 	if found == 0 {
-		return nil, &internal.ToolError{Tool: "edit", Type: "pattern_not_found",
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "pattern_not_found",
 			Detail:   fmt.Sprintf("Pattern %q not found in file", pattern),
-			HintText: "Check the pattern for typos or try with different flags."}
+			HintText: "Use 'read' to verify the file content and check the pattern for typos or try different flags."}
 	}
-	return result, nil
+	return result, len(newLines), nil
 }
 
-func (t *EditFileTool) insertAfter(lines []string, lineNum int, pattern string, newLines []string, indentMode IndentMode) ([]string, error) {
+func (t *EditFileTool) insertAfter(lines []string, lineNum int, pattern string, newLines []string, indentMode IndentMode) ([]string, int, error) {
 	if lineNum > 0 {
 		return t.insertAtLine(lines, lineNum, newLines, indentMode, false)
 	}
 	if pattern == "" {
-		return nil, &internal.ToolError{Tool: "edit", Type: "missing_parameter",
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "missing_parameter",
 			Detail:   "Provide either start_line or pattern for insert_after",
 			HintText: "Specify which line or pattern to insert after."}
 	}
 	return t.insertAtPattern(lines, pattern, newLines, indentMode, false)
 }
 
-func (t *EditFileTool) insertBefore(lines []string, lineNum int, pattern string, newLines []string, indentMode IndentMode) ([]string, error) {
+func (t *EditFileTool) insertBefore(lines []string, lineNum int, pattern string, newLines []string, indentMode IndentMode) ([]string, int, error) {
 	if lineNum > 0 {
 		return t.insertAtLine(lines, lineNum, newLines, indentMode, true)
 	}
 	if pattern == "" {
-		return nil, &internal.ToolError{Tool: "edit", Type: "missing_parameter",
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "missing_parameter",
 			Detail:   "Provide either start_line or pattern for insert_before",
 			HintText: "Specify which line or pattern to insert before."}
 	}
 	return t.insertAtPattern(lines, pattern, newLines, indentMode, true)
 }
 
-func (t *EditFileTool) deleteLines(lines []string, startLine, endLine int) ([]string, error) {
+func (t *EditFileTool) deleteLines(lines []string, startLine, endLine int) ([]string, int, error) {
 	start, end, err := t.checkLineRange(lines, startLine, endLine)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	result := make([]string, 0, len(lines)-(end-start+1))
 	result = append(result, lines[:start-1]...)
 	result = append(result, lines[end:]...)
-	return result, nil
+	return result, end - start + 1, nil
 }
 
 // checkLineRange validates and normalizes a 1-indexed line range.
@@ -367,7 +370,7 @@ func (t *EditFileTool) checkLineRange(lines []string, startLine, endLine int) (i
 	if startLine < 1 || startLine > n {
 		return 0, 0, &internal.ToolError{Tool: "edit", Type: "invalid_range",
 			Detail:   fmt.Sprintf("start_line %d is out of range (file has %d lines)", startLine, n),
-			HintText: "Check the file content with read first."}
+			HintText: "Use 'read' to verify the file length and provide a valid start_line."}
 	}
 	if endLine <= 0 {
 		endLine = n
@@ -375,7 +378,7 @@ func (t *EditFileTool) checkLineRange(lines []string, startLine, endLine int) (i
 	if endLine > n {
 		return 0, 0, &internal.ToolError{Tool: "edit", Type: "invalid_range",
 			Detail:   fmt.Sprintf("end_line %d is out of range (file has %d lines)", endLine, n),
-			HintText: "Check the file content with read first."}
+			HintText: "Use 'read' to verify the file length and provide a valid end_line."}
 	}
 	if startLine > endLine {
 		return 0, 0, &internal.ToolError{Tool: "edit", Type: "invalid_range",
@@ -385,11 +388,11 @@ func (t *EditFileTool) checkLineRange(lines []string, startLine, endLine int) (i
 	return startLine, endLine, nil
 }
 
-func (t *EditFileTool) insertAtLine(lines []string, lineNum int, newLines []string, indentMode IndentMode, before bool) ([]string, error) {
+func (t *EditFileTool) insertAtLine(lines []string, lineNum int, newLines []string, indentMode IndentMode, before bool) ([]string, int, error) {
 	if lineNum < 1 || lineNum > len(lines) {
-		return nil, &internal.ToolError{Tool: "edit", Type: "invalid_line",
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "invalid_line",
 			Detail:   fmt.Sprintf("Line %d is out of range (file has %d lines)", lineNum, len(lines)),
-			HintText: "Check the file content with read first."}
+			HintText: "Use 'read' to check the file content and provide a valid line number."}
 	}
 	idx := lineNum - 1
 	target := []string{lines[idx]}
@@ -404,10 +407,10 @@ func (t *EditFileTool) insertAtLine(lines []string, lineNum int, newLines []stri
 		result = append(result, adjusted...)
 		result = append(result, lines[idx+1:]...)
 	}
-	return result, nil
+	return result, len(adjusted), nil
 }
 
-func (t *EditFileTool) insertAtPattern(lines []string, pattern string, newLines []string, indentMode IndentMode, before bool) ([]string, error) {
+func (t *EditFileTool) insertAtPattern(lines []string, pattern string, newLines []string, indentMode IndentMode, before bool) ([]string, int, error) {
 	for i, line := range lines {
 		if strings.Contains(line, pattern) {
 			adjusted := t.adjustIndent([]string{line}, newLines, indentMode)
@@ -421,12 +424,12 @@ func (t *EditFileTool) insertAtPattern(lines []string, pattern string, newLines 
 				result = append(result, adjusted...)
 				result = append(result, lines[i+1:]...)
 			}
-			return result, nil
+			return result, len(adjusted), nil
 		}
 	}
-	return nil, &internal.ToolError{Tool: "edit", Type: "pattern_not_found",
+	return nil, 0, &internal.ToolError{Tool: "edit", Type: "pattern_not_found",
 		Detail:   fmt.Sprintf("Pattern %q not found in file", pattern),
-		HintText: "Check the pattern for typos."}
+		HintText: "Use 'read' to verify the file content and check the pattern for typos."}
 }
 
 func matchLine(line, pattern string, caseSensitive bool) bool {
@@ -593,7 +596,7 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error) *inter
 	case errors.Is(err, ErrAmbiguous):
 		return &internal.ToolError{Tool: "edit", Type: "ambiguous_match",
 			Detail:   fmt.Sprintf("Text %q matches multiple locations in %s", truncateStr(oldStr, 40), path),
-			HintText: "Provide more surrounding context in 'old_string' to make the match unique."}
+			HintText: "Add more surrounding context to 'old_string' so only one location matches. If the block is hard to make unique, use 'operation: replace_lines' with start_line/end_line instead."}
 	case errors.Is(err, ErrNotFound):
 		message := "Text %q not found in %s (exact match only)"
 		if t.AllowFuzz {
@@ -601,7 +604,7 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error) *inter
 		}
 		return &internal.ToolError{Tool: "edit", Type: "not_found",
 			Detail:   fmt.Sprintf(message, truncateStr(oldStr, 40), path),
-			HintText: "Check the exact content in the file with read first. The text must be present."}
+			HintText: "Use 'read' to verify the current file content (the file may have changed since your last read). Match the exact text including indentation and blank lines. For deletions or multi-line changes, use 'operation: delete_lines' or 'operation: replace_lines' with line numbers."}
 	case errors.Is(err, ErrNoChange):
 		return &internal.ToolError{Tool: "edit", Type: "no_change",
 			Detail:   "Old and new text are identical",
@@ -613,7 +616,7 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error) *inter
 	default:
 		return &internal.ToolError{Tool: "edit", Type: "edit_error",
 			Detail:   fmt.Sprintf("Edit failed: %v", err),
-			HintText: "Check the file content and try again."}
+			HintText: "Check the file content with 'read' and try again."}
 	}
 }
 

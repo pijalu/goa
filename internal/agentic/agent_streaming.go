@@ -308,8 +308,9 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 }
 
 // completeStreamTurn finalizes the assistant buffer, executes buffered tool
-// calls, and reports whether any tool calls were encountered. If a tool
-// result requested that the batch stop after this result, the turn ends
+// calls, and reports whether the agent loop should stream another round
+// (true = a real tool executed and the model should be queried again). If a
+// tool result requested that the batch stop after this result, the turn ends
 // even if the model issued additional tool calls.
 //
 // When tool calls are present, finalizeStreamTurn is NOT called — the full
@@ -318,6 +319,14 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 // partial assistant message (content only), followed by a second full message
 // from appendAssistantToolCallMessage, producing duplicate assistant messages
 // that break prompt caching and corrupt the conversation structure.
+//
+// EventEnd semantics: EventEnd signals the end of the whole conversation
+// turn, NOT the end of a single stream round. It is therefore emitted ONLY
+// when the turn is actually finishing — either here (when no further round
+// will run) or later via finalizeStreamTurn (once the model produces a final
+// answer without tool calls). Emitting EventEnd after every tool batch made
+// UI consumers (e.g. the status spinner) tear down turn state mid-turn, which
+// silently dropped the spinner after the first tool call.
 func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 	if a.tryAutoHealToolCalls() {
 		// fall through to tool execution below
@@ -333,12 +342,19 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 		hadRealExecution := a.executeBufferedToolCalls(ctx)
 		a.emitTurnStats()
 		a.checkSilentOverflow()
-		a.emitEvent(OutputEvent{Type: EventEnd})
+		// Decide whether the loop will stream another round. The turn continues
+		// only when a real tool executed and the batch was not asked to stop.
+		// EventEnd is emitted exclusively on the finishing path so mid-turn UI
+		// consumers never observe a premature turn end (which previously dropped
+		// the status spinner after the first tool call).
+		turnContinues := hadRealExecution && !a.stopBatchAfterThis
 		if a.stopBatchAfterThis {
 			a.stopBatchAfterThis = false
-			return false
 		}
-		return hadRealExecution
+		if !turnContinues {
+			a.emitEvent(OutputEvent{Type: EventEnd})
+		}
+		return turnContinues
 	}
 
 	// No tool calls: finalizeTurn appends the message and emits end events.

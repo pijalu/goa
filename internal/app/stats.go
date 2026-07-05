@@ -560,6 +560,7 @@ func (a *App) toolCallProgressLabel() string {
 }
 
 func (a *App) handleToolCall(ev *agentic.OutputEvent) {
+	oldText := a.subs.statusMsg.Text()
 	// Finalize any active thinking/content stream before rendering a tool call.
 	// The streaming path emits EventToolCall without a preceding state change,
 	// so the stream state machine must be broken here.
@@ -580,7 +581,28 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	}
 
 	label := a.toolCallProgressLabel()
+	// Start the shared status spinner first so that the tool widget and
+	// footer observe a non-empty CurrentSpinnerFrame when they render.
 	a.subs.statusMsg.Show(label)
+	tc.SetStatus(tui.ToolRunning)
+
+	// Keep the footer busy indicator spinning during the tool call. The
+	// streaming path may emit EventToolCall without a preceding state change,
+	// so the footer must be updated here as well as in handleStateChange.
+	subs := a.subs
+	subs.footer.SetData(tui.FooterData{
+		Workdir:                subs.projectDir,
+		Model:                  activeModelDisplay(subs),
+		Profile:                string(subs.effectiveModeState().Major),
+		Mode:                   string(subs.effectiveModeState().Autonomy),
+		Activity:               "tool calling",
+		MainActivity:           label,
+		CompanionModel:         companionModelDisplay(subs),
+		Provider:               subs.cfg.ActiveProvider,
+		ThinkingLevel:          mainThinkingLevel(subs),
+		CompanionThinkingLevel: companionThinkingLevel(subs),
+	})
+	subs.footer.SetModelBusy(true)
 
 	// Update terminal title for bash commands
 	if ev.ToolName == "bash" && a.subs.tuiEngine != nil {
@@ -594,6 +616,11 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 			}
 			a.subs.tuiEngine.SetTitle("goa - $ " + cmd)
 		}
+	}
+
+	if a.subs.logger != nil {
+		a.subs.logger.Log(agentic.Info, "[status] handleToolCall: tool=%s oldText=%q newText=%q visible=%v",
+			ev.ToolName, oldText, a.subs.statusMsg.Text(), a.subs.statusMsg.IsVisible())
 	}
 }
 

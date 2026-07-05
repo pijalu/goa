@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/spinner"
@@ -325,7 +326,32 @@ func TestStatusMsg_ShowAfterInTurnClear(t *testing.T) {
 	}
 }
 
-func TestStatusMsg_Render_NoSpinnerConfig(t *testing.T) {
+func TestStatusMsg_Render_DefaultSpinner(t *testing.T) {
+	_, def := spinner.Default()
+	SetSpinner(def)
+	defer resetSpinner()
+
+	sm := NewStatusMsg()
+	sm.Show("idle")
+
+	lines := sm.Render(80)
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 lines, got %d", len(lines))
+	}
+	line := lines[1]
+	stripped := ansi.Strip(line)
+
+	if !strings.Contains(stripped, "idle") {
+		t.Errorf("status line missing text: %q", stripped)
+	}
+
+	// Default spinner should render an animated frame, not a static diamond.
+	if !strings.Contains(stripped, "◜") && !strings.Contains(stripped, "◠") {
+		t.Errorf("status line missing default spinner frame: %q", stripped)
+	}
+}
+
+func TestStatusMsg_Render_SpinnerDisabled(t *testing.T) {
 	SetSpinner(spinner.Definition{})
 	defer resetSpinner()
 
@@ -343,7 +369,76 @@ func TestStatusMsg_Render_NoSpinnerConfig(t *testing.T) {
 		t.Errorf("status line missing text: %q", stripped)
 	}
 
-	if !strings.Contains(stripped, "◜") && !strings.Contains(stripped, "◆") {
-		t.Errorf("status line missing spinner indicator: %q", stripped)
+	// Disabled spinner should render a static diamond indicator.
+	if !strings.Contains(stripped, "◆") {
+		t.Errorf("status line missing static diamond indicator when spinner disabled: %q", stripped)
+	}
+}
+
+// TestStatusMsg_SetOnFrameChange verifies that the registered frame-change
+// callback is invoked both when the spinner starts and on every animation tick.
+func TestStatusMsg_SetOnFrameChange(t *testing.T) {
+	def := spinner.Definition{
+		Interval: 1,
+		Frames:   []string{"a", "b", "c"},
+	}
+	SetSpinner(def)
+	defer resetSpinner()
+
+	engine, stop := startWithLoops(t, 80, 24)
+	defer stop()
+
+	sm := NewStatusMsg()
+	sm.SetTUI(engine)
+
+	var calls int
+	var mu sync.Mutex
+	sm.SetOnFrameChange(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+	})
+
+	engine.ApplySync(func() {
+		sm.Show("test")
+	})
+
+	// Wait for at least one animation tick.
+	time.Sleep(20 * time.Millisecond)
+
+	engine.ApplySync(func() {})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls < 1 {
+		t.Fatalf("onFrameChange callback not called; got %d calls", calls)
+	}
+}
+
+// TestStatusMsg_Render_CompactWhenShortTerminal verifies that the status bar
+// renders a single compact line when the terminal is too short for the full
+// 3-line layout, keeping the spinner visible in constrained spaces.
+func TestStatusMsg_Render_CompactWhenShortTerminal(t *testing.T) {
+	def := spinner.Definition{
+		Interval: 100,
+		Frames:   []string{"◜", "◠", "◝"},
+	}
+	SetSpinner(def)
+	defer resetSpinner()
+
+	engine, stop := startWithLoops(t, 80, 10)
+	defer stop()
+
+	sm := NewStatusMsg()
+	sm.SetTUI(engine)
+	sm.Show("Thinking...")
+
+	lines := sm.Render(80)
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 compact status line for short terminal, got %d: %v", len(lines), lines)
+	}
+	stripped := ansi.Strip(lines[0])
+	if !strings.Contains(stripped, "Thinking...") {
+		t.Errorf("compact status line missing text: %q", stripped)
 	}
 }

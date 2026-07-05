@@ -403,7 +403,11 @@ func (f *Footer) companionCycleText(vis companionVis) string {
 func (f *Footer) formatModelPart(model, level, activity string, busy, active bool) string {
 	busyPrefix := ""
 	if busy {
-		busyPrefix = ansi.Fg("#d29922") + "⟳ " + ansi.Reset
+		if frame := CurrentSpinnerFrame(); frame != "" {
+			busyPrefix = ansi.Fg("#d29922") + frame + " " + ansi.Reset
+		} else {
+			busyPrefix = ansi.Fg("#d29922") + "⟳ " + ansi.Reset
+		}
 	}
 	color := ansi.Faint
 	if active {

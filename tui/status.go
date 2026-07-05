@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -25,14 +26,32 @@ func SetSpinner(def spinner.Definition) {
 	currentSpinner = def
 }
 
+var currentSpinnerFrame string
+var spinnerFrameMu sync.Mutex
+
+func updateCurrentSpinnerFrame(frames []string, frameIdx int) {
+	spinnerFrameMu.Lock()
+	defer spinnerFrameMu.Unlock()
+	if len(frames) == 0 {
+		currentSpinnerFrame = ""
+	} else {
+		currentSpinnerFrame = frames[frameIdx%len(frames)]
+	}
+}
+
+// CurrentSpinnerFrame returns the most recent spinner frame rendered by the
+// active StatusMsg animation. Other components (tool widgets, footer) can use
+// this to share the same animated frame without running their own goroutines.
+func CurrentSpinnerFrame() string {
+	spinnerFrameMu.Lock()
+	defer spinnerFrameMu.Unlock()
+	return currentSpinnerFrame
+}
+
 // getSpinner returns the current spinner frames and interval.
 func getSpinner() (frames []string, interval time.Duration) {
 	spinnerMu.Lock()
 	defer spinnerMu.Unlock()
-	if len(currentSpinner.Frames) == 0 {
-		_, def := spinner.Default()
-		currentSpinner = def
-	}
 	return currentSpinner.Frames, time.Duration(currentSpinner.IntervalMS()) * time.Millisecond
 }
 
@@ -44,13 +63,14 @@ func getSpinner() (frames []string, interval time.Duration) {
 // goroutine only forwards each tick back to the loop via TUI.Apply (see
 //). No mutex is required.
 type StatusMsg struct {
-	text         string
-	spinning     bool
-	frameIdx     int
-	tui          *TUI
-	ticker       *time.Ticker
-	done         chan struct{}
-	sessionEnded bool
+	text          string
+	spinning      bool
+	frameIdx      int
+	tui           *TUI
+	ticker        *time.Ticker
+	done          chan struct{}
+	sessionEnded  bool
+	onFrameChange func()
 }
 
 // NewStatusMsg creates a StatusMsg component.
@@ -74,18 +94,31 @@ func (s *StatusMsg) Text() string { return s.text }
 // SetTUI stores the TUI reference used to schedule frame advances on the loop.
 func (s *StatusMsg) SetTUI(t *TUI) { s.tui = t }
 
+// SetOnFrameChange registers a callback that is invoked every time the
+// animated spinner frame advances. Callers (e.g. the chat viewport) can use
+// it to invalidate dependent components that display the same frame.
+func (s *StatusMsg) SetOnFrameChange(fn func()) { s.onFrameChange = fn }
+
 // Show sets the status text and starts the spinner animation.
 // If the session has ended, Show() is a no-op so late events cannot restart
 // the spinner after the turn is finished. In-turn Clear() calls do NOT block
 // Show(), so the spinner can survive across sequential tool calls.
 func (s *StatusMsg) Show(text string) {
 	if s.sessionEnded {
+		log.Printf("[StatusMsg] Show(%q) ignored: sessionEnded=true", text)
 		return
 	}
 	if s.text == text && s.spinning {
 		return
 	}
+	oldText := s.text
 	s.text = text
+	log.Printf("[StatusMsg] Show(%q) oldText=%q spinning=%v", text, oldText, s.spinning)
+	frames, _ := getSpinner()
+	updateCurrentSpinnerFrame(frames, s.frameIdx)
+	if s.onFrameChange != nil {
+		s.onFrameChange()
+	}
 	if !s.spinning {
 		s.spinning = true
 		s.frameIdx = 0
@@ -102,6 +135,7 @@ func (s *StatusMsg) Show(text string) {
 // do not block future Show() calls; only SessionEnd() arms the guard that
 // prevents late events from re-starting the spinner.
 func (s *StatusMsg) Clear() {
+	log.Printf("[StatusMsg] Clear() oldText=%q spinning=%v", s.text, s.spinning)
 	s.text = ""
 	if s.spinning {
 		s.spinning = false
@@ -111,11 +145,15 @@ func (s *StatusMsg) Clear() {
 		}
 		close(s.done)
 	}
+	spinnerFrameMu.Lock()
+	currentSpinnerFrame = ""
+	spinnerFrameMu.Unlock()
 }
 
 // SessionEnd marks the session as finished and clears the status. After
 // SessionEnd(), Show() is a no-op until Reset() is called.
 func (s *StatusMsg) SessionEnd() {
+	log.Printf("[StatusMsg] SessionEnd()")
 	s.Clear()
 	s.sessionEnded = true
 }
@@ -124,6 +162,7 @@ func (s *StatusMsg) SessionEnd() {
 // fresh spinner. It must be called when a new turn begins after a session end.
 func (s *StatusMsg) Reset() {
 	if s.spinning {
+		s.sessionEnded = false
 		return
 	}
 	s.sessionEnded = false
@@ -164,13 +203,18 @@ func (s *StatusMsg) tickFrame() {
 		n = 1
 	}
 	s.frameIdx = (s.frameIdx + 1) % n
+	updateCurrentSpinnerFrame(frames, s.frameIdx)
+	if s.onFrameChange != nil {
+		s.onFrameChange()
+	}
 }
 
 // IsVisible returns whether status is shown.
 func (s *StatusMsg) IsVisible() bool { return s.text != "" }
 
-// Render returns the status line if visible, with 1col left/right padding
-// and a leading/trailing blank line for visual separation.
+// Render returns the status line if visible. When the terminal is short the
+// line is rendered without surrounding blank lines so the spinner stays
+// visible even when vertical space is tight.
 func (s *StatusMsg) Render(width int) []string {
 	txt := s.text
 	if txt == "" || width <= 0 {
@@ -185,6 +229,10 @@ func (s *StatusMsg) Render(width int) []string {
 	}
 	padded := padToWidth(dimText(prefix+" "+txt), width-1)
 	line := " " + padded
+	compact := s.tui != nil && s.tui.TerminalRows() <= 10
+	if compact {
+		return []string{line}
+	}
 	return []string{"", line, ""}
 }
 

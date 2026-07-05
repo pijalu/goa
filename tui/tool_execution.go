@@ -7,6 +7,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
@@ -119,6 +120,18 @@ func NewToolExecution(toolName, toolArgs string) *ToolExecutionComponent {
 
 // updateBox rebuilds the box header and body from current state.
 func (tc *ToolExecutionComponent) updateBox() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("goa: ToolExecutionComponent.updateBox panic (tool=%s): %v", tc.toolName, r)
+			// Leave a minimal visible header so the widget does not vanish.
+			tc.box.header = ansi.Fg(TheTheme.ColorHex("tool_running")) + "·" + " " + ansiBoldToolTitle(tc.toolName)
+			tc.box.body = ""
+			tc.box.duration = ""
+			tc.box.bgAnsi = tc.bgANSI()
+			tc.box.Invalidate()
+		}
+	}()
+
 	renderer := tc.renderer
 	if renderer == nil {
 		renderer = tc.generic
@@ -279,6 +292,9 @@ func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 	case ToolPending:
 		return "◉", TheTheme.ColorHex("tool_running")
 	case ToolRunning:
+		if frame := CurrentSpinnerFrame(); frame != "" {
+			return frame, TheTheme.ColorHex("tool_running")
+		}
 		return "⟳", TheTheme.ColorHex("tool_running")
 	case ToolSuccess:
 		return "✓", TheTheme.ColorHex("tool_success")

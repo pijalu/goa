@@ -129,8 +129,141 @@ var entityMap = map[string]string{
 	"$Dagger$":         "‡",
 }
 
-// translateEntities replaces $entity_name$ patterns with their Unicode equivalents.
+// mathCommandMap maps LaTeX command names (without backslash) to Unicode characters.
+// Derived from entityMap by stripping $ delimiters, plus LaTeX shorthands.
+var mathCommandMap map[string]string
+
+func init() {
+	mathCommandMap = make(map[string]string, len(entityMap)+4)
+	for entity, char := range entityMap {
+		if len(entity) >= 2 && entity[0] == '$' && entity[len(entity)-1] == '$' {
+			name := entity[1 : len(entity)-1]
+			mathCommandMap[name] = char
+		}
+	}
+	// Add LaTeX shorthands not present in entityMap
+	mathCommandMap["ge"] = "≥" // shorthand for \geq
+	mathCommandMap["le"] = "≤" // shorthand for \leq
+	mathCommandMap["ne"] = "≠" // shorthand for \neq
+	mathCommandMap["to"] = "→" // shorthand for \to
+}
+
+// isLetter reports whether b is an ASCII letter.
+func isLetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// translateLaTeXMathContent processes the inner content of a $...$ math block
+// (without the outer $ delimiters). It translates:
+//   - \command → Unicode character (via mathCommandMap)
+//   - \X (non-letter escape) → X (e.g., \% → %)
+//   - All other text is preserved literally.
+func translateLaTeXMathContent(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			if isLetter(s[i+1]) {
+				// Parse multi-letter command name
+				j := i + 2
+				for j < len(s) && isLetter(s[j]) {
+					j++
+				}
+				cmdName := s[i+1 : j]
+				if char, ok := mathCommandMap[cmdName]; ok {
+					out.WriteString(char)
+				} else {
+					// Unknown command — output as-is including backslash
+					out.WriteString(s[i:j])
+				}
+				i = j - 1 // loop increments past last letter
+			} else {
+				// Non-letter escape: \% → %, \_ → _, etc.
+				out.WriteByte(s[i+1])
+				i++ // skip the backslash
+			}
+		} else {
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
+}
+
+// translateLatexMath finds $\...$ LaTeX math blocks (dollar followed by backslash)
+// and replaces them with their rendered Unicode text. This handles patterns like
+// $\ge 90\%$ → ≥ 90%. Also handles $...$ blocks where a backslash appears anywhere
+// in the content (e.g., $x \ge 5$ or $90\%$), by checking for backslash between
+// dollar signs.
+//
+// Must run before the exact entityMap replacement to avoid interference with
+// patterns like $rightarrow$ which lack the leading backslash.
+func translateLatexMath(text string) string {
+	var out strings.Builder
+	pos := 0
+	for {
+		// Find $
+		idx := strings.Index(text[pos:], "$")
+		if idx < 0 {
+			break
+		}
+		idx += pos
+
+		// Write text before the $
+		out.WriteString(text[pos:idx])
+
+		// Determine if this $ starts a LaTeX math block.
+		// A $ starts a math block if it is immediately followed by \,
+		// OR if there's a \ somewhere before the next $.
+		closeIdx := -1
+
+		if idx+1 < len(text) && text[idx+1] == '\\' {
+			// Found $\ — definitely LaTeX math. Find closing $.
+			contentStart := idx + 1
+			ci := strings.Index(text[contentStart:], "$")
+			if ci >= 0 {
+				closeIdx = ci + contentStart
+			}
+		} else {
+			// Check if a backslash exists somewhere before the next $
+			nextDollar := strings.Index(text[idx+1:], "$")
+			if nextDollar > 0 {
+				between := text[idx+1 : idx+1+nextDollar]
+				if strings.Contains(between, "\\") {
+					contentStart := idx + 1
+					ci := strings.Index(text[contentStart:], "$")
+					if ci >= 0 {
+						closeIdx = ci + contentStart
+					}
+				}
+			}
+			// If nextDollar == 0 (adjacent $$) or < 0, not a math block.
+		}
+
+		if closeIdx < 0 {
+			// Not a math block — output $ as-is and continue
+			out.WriteByte('$')
+			pos = idx + 1
+			continue
+		}
+
+		// Extract and process the math content (text between the $ signs)
+		inner := text[idx+1 : closeIdx]
+		translated := translateLaTeXMathContent(inner)
+
+		out.WriteString(translated)
+		pos = closeIdx + 1
+	}
+	out.WriteString(text[pos:])
+	return out.String()
+}
+
+// translateEntities replaces special entity patterns with their Unicode equivalents.
+// Order of operations:
+//  1. Process $\...$ LaTeX math blocks (e.g., $\ge 90\%$ → ≥ 90%)
+//  2. Replace exact $entity$ patterns from entityMap (e.g., $rightarrow$ → →)
 func translateEntities(text string) string {
+	// First pass: handle LaTeX math blocks with $\...$
+	text = translateLatexMath(text)
+	// Second pass: handle exact $entity$ matches
 	for entity, char := range entityMap {
 		text = strings.ReplaceAll(text, entity, char)
 	}

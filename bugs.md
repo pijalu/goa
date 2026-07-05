@@ -36,4 +36,35 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-_None — all current items have been closed and archived under `docs/archive/bugs.<fixdate>.md`._
+## Question are not render correctly
+ask_user_question tool show odd escape like #30363d - possibly some incorrect ansi code
+
+```
+▾ thinking...
+▏The user has provided a single command: "summarize". This is an ambiguous request.
+▏1. Analyze the context: The project is about building a complex AI coding agent (goa). There are many files, skills, and
+▏   architectural components.
+▏2. Determine intent: When a user just says "summarize," they likely want a summary of the current state, the goal, or perhaps
+▏   the available documentation/context.
+▏3. Identify necessary information: Since no specific topic is given, I should ask for clarification to provide a useful
+▏   summary.
+▏I will use ask_user_question to clarify what needs summarizing.
+
+
+✓ run tool
+[ask_user_question] 1 question(s) answered:
+[{"question":"What would you like me to summarize? Please specify the topic, file, or area of the project (e.g., \"the architect
+
+#30363d╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+#30363d│ #c9d1d9❓ Topic for Summary
+#30363d│                                                                                                                         #30363d│ #8b949ePlease provide context so I can give you a relevant summary.
+#30363d│
+#30363d│ What would you like me to summarize? Please specify the topic, file, or area of the project (e.g., "the architecture," "
+#30363d│ current task plan," "a specific skill's documentation").
+#30363d╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (✱ feature/self)                                                                                           coder │ SOLO
+↑4.3K ↓225 45.0 tok/s TC:1 7.1%/32.0K (auto)                                                 (lmstudio) google/gemma-4-e4b • high
+```

@@ -17,7 +17,7 @@ import (
 func TestEditFileTool_ReplacePattern_Basic(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"hello world", "foo bar", "hello again"}
-	result, err := tool.replacePattern(lines, "hello", "", 1, []string{"hi"}, IndentAsIs)
+	result, _, err := tool.replacePattern(lines, "hello", "", 1, []string{"hi"}, IndentAsIs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestEditFileTool_ReplacePattern_Basic(t *testing.T) {
 func TestEditFileTool_ReplacePattern_Occurrence(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"dup line", "other", "dup line"}
-	result, err := tool.replacePattern(lines, "dup", "", 2, []string{"replaced"}, IndentAsIs)
+	result, _, err := tool.replacePattern(lines, "dup", "", 2, []string{"replaced"}, IndentAsIs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestEditFileTool_ReplacePattern_Occurrence(t *testing.T) {
 
 func TestEditFileTool_ReplacePattern_NoMatch(t *testing.T) {
 	tool := &EditFileTool{}
-	_, err := tool.replacePattern([]string{"a", "b"}, "zzz", "", 1, []string{"x"}, IndentAsIs)
+	_, _, err := tool.replacePattern([]string{"a", "b"}, "zzz", "", 1, []string{"x"}, IndentAsIs)
 	if err == nil {
 		t.Fatal("expected error for no match")
 	}
@@ -58,7 +58,7 @@ func TestEditFileTool_ReplacePattern_NoMatch(t *testing.T) {
 
 func TestEditFileTool_ReplacePattern_EmptyPattern(t *testing.T) {
 	tool := &EditFileTool{}
-	_, err := tool.replacePattern([]string{"a"}, "", "", 1, []string{"b"}, IndentAsIs)
+	_, _, err := tool.replacePattern([]string{"a"}, "", "", 1, []string{"b"}, IndentAsIs)
 	if err == nil {
 		t.Fatal("expected error for empty pattern")
 	}
@@ -67,7 +67,7 @@ func TestEditFileTool_ReplacePattern_EmptyPattern(t *testing.T) {
 func TestEditFileTool_ReplacePattern_WithFlags(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"HELLO", "world"}
-	result, err := tool.replacePattern(lines, "hello", "i", 1, []string{"hi"}, IndentAsIs)
+	result, _, err := tool.replacePattern(lines, "hello", "i", 1, []string{"hi"}, IndentAsIs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestEditFileTool_ReplacePattern_WithFlags(t *testing.T) {
 func TestEditFileTool_InsertBefore_WithLineNum(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"first", "second", "third"}
-	result, err := tool.insertBefore(lines, 2, "", []string{"inserted"}, IndentAsIs)
+	result, _, err := tool.insertBefore(lines, 2, "", []string{"inserted"}, IndentAsIs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestEditFileTool_InsertBefore_WithLineNum(t *testing.T) {
 
 func TestEditFileTool_InsertBefore_NoLineNumNoPattern(t *testing.T) {
 	tool := &EditFileTool{}
-	_, err := tool.insertBefore([]string{"a"}, 0, "", []string{"b"}, IndentAsIs)
+	_, _, err := tool.insertBefore([]string{"a"}, 0, "", []string{"b"}, IndentAsIs)
 	if err == nil {
 		t.Fatal("expected error for missing params")
 	}
@@ -106,7 +106,7 @@ func TestEditFileTool_InsertBefore_NoLineNumNoPattern(t *testing.T) {
 func TestEditFileTool_InsertAfter_WithLineNum(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"first", "second", "third"}
-	result, err := tool.insertAfter(lines, 1, "", []string{"inserted"}, IndentAsIs)
+	result, _, err := tool.insertAfter(lines, 1, "", []string{"inserted"}, IndentAsIs)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestEditFileTool_InsertAfter_WithLineNum(t *testing.T) {
 
 func TestEditFileTool_InsertAfter_NoLineNumNoPattern(t *testing.T) {
 	tool := &EditFileTool{}
-	_, err := tool.insertAfter([]string{"a"}, 0, "", []string{"b"}, IndentAsIs)
+	_, _, err := tool.insertAfter([]string{"a"}, 0, "", []string{"b"}, IndentAsIs)
 	if err == nil {
 		t.Fatal("expected error for missing params")
 	}
@@ -131,7 +131,7 @@ func TestEditFileTool_InsertAfter_NoLineNumNoPattern(t *testing.T) {
 func TestEditFileTool_InsertAtPattern_Before(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"line1", "target", "line3"}
-	result, err := tool.insertAtPattern(lines, "target", []string{"inserted"}, IndentAsIs, true)
+	result, _, err := tool.insertAtPattern(lines, "target", []string{"inserted"}, IndentAsIs, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestEditFileTool_InsertAtPattern_Before(t *testing.T) {
 func TestEditFileTool_InsertAtPattern_After(t *testing.T) {
 	tool := &EditFileTool{}
 	lines := []string{"line1", "target", "line3"}
-	result, err := tool.insertAtPattern(lines, "target", []string{"inserted"}, IndentAsIs, false)
+	result, _, err := tool.insertAtPattern(lines, "target", []string{"inserted"}, IndentAsIs, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestEditFileTool_InsertAtPattern_After(t *testing.T) {
 
 func TestEditFileTool_InsertAtPattern_NoMatch(t *testing.T) {
 	tool := &EditFileTool{}
-	_, err := tool.insertAtPattern([]string{"a"}, "zzz", []string{"b"}, IndentAsIs, true)
+	_, _, err := tool.insertAtPattern([]string{"a"}, "zzz", []string{"b"}, IndentAsIs, true)
 	if err == nil {
 		t.Fatal("expected error for no match")
 	}

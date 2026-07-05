@@ -389,6 +389,20 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 	return tc
 }
 
+// InvalidateRunningToolWidgets marks tool widgets that are still running as
+// dirty so the next render re-renders them. Used by the status spinner to
+// keep the shared animation frame in sync across the chat viewport.
+func (cv *ChatViewport) InvalidateRunningToolWidgets() {
+	for i := range cv.entries {
+		if tc, ok := cv.entries[i].View.(*ToolExecutionComponent); ok && tc.Status() == ToolRunning {
+			tc.updateBox()
+			tc.Invalidate()
+			cv.entries[i].dirty = true
+			cv.generation++
+		}
+	}
+}
+
 // ── Mutation primitives ──
 
 // RemoveLastMessage removes and returns the last message's view (any type).

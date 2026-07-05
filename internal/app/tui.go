@@ -152,6 +152,11 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.F
 	subs := a.subs
 	pendingMsgs.SetTUI(engine)
 	statusBar.SetTUI(engine)
+	statusBar.SetOnFrameChange(func() {
+		if chat != nil {
+			chat.InvalidateRunningToolWidgets()
+		}
+	})
 
 	engine.SetTitle("goa - " + filepath.Base(subs.projectDir))
 
@@ -278,11 +283,17 @@ func initTheme(cfg *config.Config) {
 	tui.SyncToolTheme()
 }
 
-// initSpinner sets the active spinner from config.
+// initSpinner sets the active spinner from config. An empty or unset spinner
+// name uses the default "arc" spinner; "none" explicitly disables animation.
 func initSpinner(cfg *config.Config) {
 	name := cfg.TUI.Spinner
-	if name == "" || name == "none" {
+	if name == "none" {
 		tui.SetSpinner(spinner.Definition{})
+		return
+	}
+	if name == "" {
+		_, def := spinner.Default()
+		tui.SetSpinner(def)
 		return
 	}
 	if def, ok := spinner.Get(name); ok {
