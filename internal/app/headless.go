@@ -11,11 +11,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/multiagent"
@@ -246,6 +248,10 @@ func (h *HeadlessApp) RunWithContext(ctx context.Context) int {
 // startWork begins the requested headless work (goal or single prompt) and
 // starts the corresponding completion watcher.
 func (h *HeadlessApp) startWork(ctx context.Context, dc *doneCloser, prompt string) error {
+	if h.opts.Orchestrate != "" {
+		go h.waitForOrch(ctx, dc)
+		return h.startOrchestrate(ctx, h.opts.Orchestrate)
+	}
 	if h.opts.Goal {
 		go h.waitForGoal(ctx, dc)
 		return h.startGoal(ctx, prompt)
@@ -269,6 +275,90 @@ func (h *HeadlessApp) handleContextCancelled(ctx context.Context) int {
 	}
 	h.renderer.Error("session cancelled")
 	return headlessExitTimeout
+}
+
+// startOrchestrate resumes (or re-runs) an orchestrator run headless. It
+// replays the run's event log to recover topology + objective, builds a fresh
+// Runtime via the adapter, and drives it, forwarding lifecycle events to the
+// headless renderer. The completion watcher (waitForOrch) closes dc when the
+// run finishes.
+func (h *HeadlessApp) startOrchestrate(ctx context.Context, runID string) error {
+	if h.subs.orchAdapter == nil || h.subs.orchActive == nil {
+		return fmt.Errorf("orchestrator subsystem not available")
+	}
+	rootDir := filepath.Join(h.subs.projectDir, ".goa", "orchestrator")
+	objective, top, err := h.resumeObjective(runID, rootDir)
+	if err != nil {
+		return err
+	}
+	cfg := h.subs.cfg.Orchestrator
+	if top != "" {
+		cfg.Defaults.Topology = top
+	}
+	rt, err := h.subs.orchAdapter.NewRuntime(cfg, rootDir)
+	if err != nil {
+		return err
+	}
+	h.subs.orchActive.Set(rt)
+	h.renderer.UserPrompt(fmt.Sprintf("Resuming orchestration [%s]: %s", cfg.Defaults.Topology, objective))
+	go h.forwardOrchEvents(rt)
+	go func() {
+		_ = rt.Run(ctx, objective)
+	}()
+	return nil
+}
+
+// resumeObjective replays a run's event log and returns (objective, topology)
+// or an error if the run is missing, has no objective, or is finished.
+func (h *HeadlessApp) resumeObjective(runID, rootDir string) (string, string, error) {
+	snap, err := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runID))
+	if err != nil {
+		return "", "", fmt.Errorf("resume %s: %w", runID, err)
+	}
+	if snap.Objective == "" {
+		return "", "", fmt.Errorf("run %s has no objective to resume", runID)
+	}
+	if snap.Finished {
+		return "", "", fmt.Errorf("run %s is already finished", runID)
+	}
+	return snap.Objective, string(snap.Topology), nil
+}
+
+// forwardOrchEvents renders lifecycle events from a run to the headless output.
+func (h *HeadlessApp) forwardOrchEvents(rt *orchestrator.Runtime) {
+	for ev := range rt.Events() {
+		switch ev.Type {
+		case orchestrator.EventAgentFinished:
+			h.renderer.UserPrompt(fmt.Sprintf("%s: %s", ev.Role, payloadString(ev, "outcome")))
+		case orchestrator.EventRunFinished:
+			status := "finished"
+			if payloadString(ev, "ok") == "false" {
+				status = "finished with errors"
+			}
+			h.renderer.UserPrompt("orchestration " + status)
+		}
+	}
+}
+
+// waitForOrch blocks until the active orchestration run finishes, then closes dc.
+func (h *HeadlessApp) waitForOrch(ctx context.Context, dc *doneCloser) {
+	rt := h.subs.orchActive.Get()
+	if rt == nil {
+		close(dc.done)
+		return
+	}
+	select {
+	case <-rt.Done():
+	case <-ctx.Done():
+	}
+	close(dc.done)
+}
+
+func payloadString(ev orchestrator.Event, key string) string {
+	if v, ok := ev.Payload[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 // startGoal creates a headless goal from the prompt and starts the goal driver.

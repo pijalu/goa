@@ -4,6 +4,25 @@
 
 package orchestrator
 
+// Telemetry event names emitted by the runtime.
+const (
+	TelemetryRunStarted   = "orch_run_started"
+	TelemetryRunFinished  = "orch_run_finished"
+	TelemetryAgentCrashed = "orch_agent_crashed"
+)
+
+// Telemetry is the minimal tracker interface the runtime calls on lifecycle
+// transitions. Mirrors core/goal.Telemetry so the same client satisfies both.
+// Nil telemetry is a no-op.
+type Telemetry interface {
+	Track(event string, props map[string]any)
+}
+
+// nopTelemetry discards all events.
+type nopTelemetry struct{}
+
+func (nopTelemetry) Track(string, map[string]any) {}
+
 // GoalBinder is the narrow goal-system surface a Runtime uses for goal-bound
 // runs. Defining it here keeps core/orchestrator decoupled from core/goal
 // (SOLID: dependency inversion). The production implementation wraps a

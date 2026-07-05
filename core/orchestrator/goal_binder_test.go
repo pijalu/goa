@@ -143,3 +143,50 @@ func TestRuntime_GoalBinding_NoopWhenUnbound(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 }
+
+// recordingTelemetry captures Track calls.
+type recordingTelemetry struct {
+	events []string
+}
+
+func (r *recordingTelemetry) Track(event string, _ map[string]any) {
+	r.events = append(r.events, event)
+}
+
+func TestRuntime_TelemetryEmitted(t *testing.T) {
+	cfg := goalTestCfg("fanout")
+	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		h.Run = func(ctx context.Context, prompt string) error { return nil }
+		return h, nil
+	})
+	rt, _ := NewRuntime(cfg, pool, nil, t.TempDir())
+	tel := &recordingTelemetry{}
+	rt.SetTelemetry(tel)
+	if err := rt.Run(context.Background(), "obj"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := []string{TelemetryRunStarted, TelemetryRunFinished}
+	if len(tel.events) != len(want) {
+		t.Fatalf("telemetry events = %v, want %v", tel.events, want)
+	}
+	for i, w := range want {
+		if tel.events[i] != w {
+			t.Errorf("event[%d] = %q, want %q", i, tel.events[i], w)
+		}
+	}
+}
+
+func TestRuntime_SetTelemetryNilIsSafe(t *testing.T) {
+	cfg := goalTestCfg("fanout")
+	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		h.Run = func(ctx context.Context, prompt string) error { return nil }
+		return h, nil
+	})
+	rt, _ := NewRuntime(cfg, pool, nil, t.TempDir())
+	rt.SetTelemetry(nil) // must not panic
+	if err := rt.Run(context.Background(), "obj"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}

@@ -153,10 +153,14 @@ DeepSeek. Commit + update this checklist at each milestone.
   (M5.4 tab switching + dedicated steering Editor deferred — the Summary
   overlay + `/orchestrate steer` already cover observability + steering.)
 
-#### M6 — Headless flag & telemetry (Phase 7 remainder)
-- [ ] M6.1 `--orchestrate <run-id>` flag in `bootstrap.go` resumes a run headless
-- [ ] M6.2 Telemetry: emit orchestrator lifecycle events (goal/telemetry pattern)
-- [ ] gates + commit
+#### M6 — Headless flag & telemetry (Phase 7 remainder)  ✅
+- [x] M6.1 `--orchestrate <run-id>` flag in bootstrap.go resumes a run headless
+      (startOrchestrate replays the event log, rebuilds topology/objective,
+      launches via the adapter; waitForOrch blocks until Done)
+- [x] M6.2 Telemetry: `orchestrator.Telemetry` interface; Runtime emits
+      `orch_run_started`/`orch_run_finished` (nil-safe); adapter wires a
+      `telClientAdapter` to the real telemetry client
+- [x] gates + commit (incl. validateModes fix so `--goal` still requires a prompt)
 
 #### M7 — End-to-end validation (Phase 8)
 - [ ] M7.1 Interactive scenarios: hub+goal+steer→complete; fanout kill/resume;

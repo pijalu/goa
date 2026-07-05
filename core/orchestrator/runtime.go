@@ -46,6 +46,7 @@ type Runtime struct {
 	goal      GoalBinder // optional; when set, the run is goal-bound
 	goalMu    sync.Mutex // guards the goal field
 	goalCallMu sync.Mutex // serializes goal API calls (single-driver design)
+	telemetry Telemetry  // optional; nil-safe via telemetryOr
 
 	// msgs accumulates streamed assistant text per role so Delegate can return
 	// a sub-agent's answer as the tool result without depending on the store.
@@ -80,6 +81,7 @@ func NewRuntime(cfg config.OrchestratorConfig, pool *BoundedAgentPool, store Eve
 		doneCh:   make(chan struct{}),
 		msgs:     map[string][]string{},
 		newID:    defaultRunID,
+		telemetry: nopTelemetry{},
 	}, nil
 }
 
@@ -171,6 +173,11 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 			"topology":  string(r.topology),
 		},
 	})
+	r.telemetry.Track(TelemetryRunStarted, map[string]any{
+		"topology": string(r.topology),
+		"roles":   len(r.cfg.Roles),
+		"goal":    r.GoalBound(),
+	})
 
 	var err error
 	switch r.topology {
@@ -185,6 +192,7 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	}
 
 	r.emit(Event{Type: EventRunFinished, Payload: map[string]any{"ok": err == nil}})
+	r.telemetry.Track(TelemetryRunFinished, map[string]any{"ok": err == nil})
 	r.finalizeGoal(err == nil, runFinishReason(err))
 	r.closeBus()
 	close(r.doneCh)
@@ -414,6 +422,14 @@ func statsPayload(s AgentStatsSnapshot) map[string]any {
 		"tool_calls":     s.ToolCalls,
 		"status":         string(s.Status),
 	}
+}
+
+// SetTelemetry attaches a tracker for lifecycle events (nil → no-op).
+func (r *Runtime) SetTelemetry(t Telemetry) {
+	if t == nil {
+		t = nopTelemetry{}
+	}
+	r.telemetry = t
 }
 
 // SetGoalBinder binds the run to a goal. Must be called before Run. When set,

@@ -832,6 +832,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	// holder exist. RegisterAll already ran (in initSkillAndCommandLayer) and
 	// deliberately does not register /orchestrate unconditionally, so this is
 	// the single registration point.
+	s.orchAdapter.SetTelemetry(&telClientAdapter{client: telemetry.NewClient(opts.Telemetry, cfg.ConfigDir)})
 	orchCmd := &commands.OrchestrateCommand{
 		Builder:  s.orchAdapter,
 		Active:   s.orchActive,

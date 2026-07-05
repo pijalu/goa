@@ -14,6 +14,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/telemetry"
 	"github.com/pijalu/goa/multiagent"
 )
 
@@ -30,6 +31,7 @@ type OrchestratorAdapter struct {
 	cfg   *config.Config
 	mu    sync.Mutex
 	seen  map[string]struct{} // roles already wired this process (observer dedupe)
+	tel   orchestrator.Telemetry
 }
 
 // NewOrchestratorAdapter constructs an adapter over an existing multiagent pool.
@@ -40,6 +42,9 @@ func NewOrchestratorAdapter(pool *multiagent.AgentPool, cfg *config.Config) *Orc
 		seen: map[string]struct{}{},
 	}
 }
+
+// SetTelemetry attaches a lifecycle tracker to every Runtime this adapter builds.
+func (a *OrchestratorAdapter) SetTelemetry(t orchestrator.Telemetry) { a.tel = t }
 
 // NewRuntime builds a fully-wired orchestrator.Runtime from the orchestrator
 // config section. The event store is rooted at rootDir (typically ".goa/orchestrator").
@@ -104,6 +109,9 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 		return nil, err
 	}
 	rt.SetIDGenerator(func() string { return runID })
+	if a.tel != nil {
+		rt.SetTelemetry(a.tel)
+	}
 	return rt, nil
 }
 
@@ -206,4 +214,22 @@ func delegateRoles(oCfg config.OrchestratorConfig) []string {
 		roles = append(roles, name)
 	}
 	return roles
+}
+
+// telClientAdapter adapts *telemetry.Client (Record(name, map[string]string))
+// to the orchestrator.Telemetry interface (Track(event, map[string]any)).
+type telClientAdapter struct {
+	client *telemetry.Client
+}
+
+// Track converts the props to string metadata and forwards to Record.
+func (t *telClientAdapter) Track(event string, props map[string]any) {
+	if t == nil || t.client == nil {
+		return
+	}
+	meta := make(map[string]string, len(props))
+	for k, v := range props {
+		meta[k] = fmt.Sprintf("%v", v)
+	}
+	t.client.Record(event, meta)
 }

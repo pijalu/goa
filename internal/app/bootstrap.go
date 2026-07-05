@@ -31,6 +31,7 @@ type RuntimeOptions struct {
 	PromptArg        string
 	PromptFile       string
 	Goal             bool
+	Orchestrate      string // run-id to resume headless via the orchestrator runtime
 	Plain            bool
 	Yes              bool
 	NoMemory         bool
@@ -56,6 +57,10 @@ type RuntimeOptions struct {
 
 // Headless reports whether the user requested headless execution.
 func (o RuntimeOptions) Headless() bool {
+	return o.Goal || o.Orchestrate != "" || o.promptImpliesHeadless()
+}
+
+func (o RuntimeOptions) promptImpliesHeadless() bool {
 	return o.PromptArg != "" || o.PromptFile != ""
 }
 
@@ -121,7 +126,7 @@ func (o RuntimeOptions) validateModes() error {
 	if o.PromptFile != "" && (o.Dream || o.DreamApply) {
 		return fmt.Errorf("--prompt-file is incompatible with --dream/--dream-apply")
 	}
-	if o.Goal && !o.Headless() {
+	if o.Goal && !o.promptImpliesHeadless() {
 		return fmt.Errorf("--goal requires --prompt or --prompt-file")
 	}
 	return nil
@@ -222,6 +227,7 @@ type runtimeFlagDefs struct {
 	prompt           *string
 	promptFile       *string
 	goal             *bool
+	orchestrate      *string
 	plain            *bool
 	yes              *bool
 	noMemory         *bool
@@ -267,6 +273,7 @@ func defineRuntimeFlags() runtimeFlagDefs {
 		prompt:           flag.String("prompt", "", "User prompt to execute (implies headless mode)"),
 		promptFile:       flag.String("prompt-file", "", "Read prompt from file (implies headless mode)"),
 		goal:             flag.Bool("goal", false, "Treat the prompt as a goal objective (headless mode only)"),
+		orchestrate:      flag.String("orchestrate", "", "Resume orchestrator run <run-id> headless"),
 		plain:            flag.Bool("plain", false, "Force plain, uncolored output in headless mode"),
 		yes:              flag.Bool("yes", false, "Auto-approve tool confirmations in headless mode"),
 		noMemory:         flag.Bool("no-memory", false, "Do not inject long-term memory into the system prompt"),
@@ -297,6 +304,7 @@ func (r *runtimeFlagDefs) collectInto() RuntimeOptions {
 		PromptArg:        *r.prompt,
 		PromptFile:       *r.promptFile,
 		Goal:             *r.goal,
+		Orchestrate:      *r.orchestrate,
 		Plain:            *r.plain,
 		Yes:              *r.yes,
 		NoMemory:         *r.noMemory,
