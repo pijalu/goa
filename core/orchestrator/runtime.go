@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,11 @@ type Runtime struct {
 
 	objective string
 
+	// msgs accumulates streamed assistant text per role so Delegate can return
+	// a sub-agent's answer as the tool result without depending on the store.
+	msgMu sync.Mutex
+	msgs  map[string][]string
+
 	// newID generates a unique run id. Override in tests for determinism.
 	newID func() string
 }
@@ -66,6 +72,7 @@ func NewRuntime(cfg config.OrchestratorConfig, pool *BoundedAgentPool, store Eve
 		rootDir:  rootDir,
 		bus:      make(chan Event, 256),
 		doneCh:   make(chan struct{}),
+		msgs:     map[string][]string{},
 		newID:    defaultRunID,
 	}, nil
 }
@@ -213,15 +220,14 @@ func (r *Runtime) runPipeline(ctx context.Context, objective string) error {
 	return nil
 }
 
-// runHub runs the "orchestrator" role first (if configured), then fanout over
-// the rest. A full hub uses DelegateTool; this is the cap-respecting fallback.
+// runHub drives ONLY the orchestrator role; it delegates to specialists via
+// the DelegateTool (wired by the adapter). Falls back to fanout when no
+// orchestrator role is configured.
 func (r *Runtime) runHub(ctx context.Context, objective string) error {
-	if _, ok := r.cfg.Roles["orchestrator"]; ok {
-		if err := r.driveOne(ctx, "orchestrator", objective); err != nil {
-			return err
-		}
+	if _, ok := r.cfg.Roles["orchestrator"]; !ok {
+		return r.runFanout(ctx, objective)
 	}
-	return r.runFanout(ctx, objective)
+	return r.driveOne(ctx, "orchestrator", objective)
 }
 
 // driveOne acquires a single role agent, runs one turn, and emits the full
@@ -264,23 +270,10 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 	return nil
 }
 
-// lastMessageFor is a best-effort carry for pipeline mode. The adapter emits
-// AgentMessage events with the streamed text; we replay the snapshot to find
-// the latest for a role.
+// lastMessageFor returns the latest accumulated message for a role (used by
+// pipeline carry). Delegates to MessageFor so it works with or without a store.
 func (r *Runtime) lastMessageFor(role string) string {
-	if r.store == nil {
-		return ""
-	}
-	events, _ := r.store.Replay()
-	var last string
-	for _, e := range events {
-		if e.Role == role && e.Type == EventAgentMessage {
-			if t, ok := e.Payload["text"].(string); ok {
-				last = t
-			}
-		}
-	}
-	return last
+	return r.MessageFor(role)
 }
 
 // RecordAgentMessage lets an adapter forward a streamed assistant chunk as an
@@ -290,9 +283,65 @@ func (r *Runtime) RecordAgentMessage(h *AgentHandle, text string) {
 	if h == nil || text == "" {
 		return
 	}
+	r.msgMu.Lock()
+	r.msgs[h.Role] = append(r.msgs[h.Role], text)
+	r.msgMu.Unlock()
 	r.emit(Event{Type: EventAgentMessage, AgentID: h.ID, Role: h.Role,
 		Payload: map[string]any{"text": text}})
 }
+
+// MessageFor returns the full streamed assistant text accumulated for a role
+// in this run so far. Used by Delegate to return a sub-agent's answer.
+func (r *Runtime) MessageFor(role string) string {
+	r.msgMu.Lock()
+	defer r.msgMu.Unlock()
+	return strings.Join(r.msgs[role], "")
+}
+
+// Delegate acquires a role agent, runs a single turn for `task`, releases it,
+// and returns the agent's streamed answer. It is the runtime primitive behind
+// the hub topology's DelegateTool: the orchestrator agent calls it from within
+// its own turn to dispatch work to a specialist.
+func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	h, err := r.pool.Acquire(ctx, role)
+	if err != nil {
+		return "", err
+	}
+	defer r.pool.Release(h)
+
+	h.Stats.SetStatus(AgentRunning)
+	r.emit(Event{Type: EventAgentStarted, AgentID: h.ID, Role: h.Role, Model: h.Model,
+		Payload: map[string]any{"delegated": true}})
+
+	// Reset per-role accumulation so MessageFor returns only this turn's text.
+	r.msgMu.Lock()
+	r.msgs[role] = nil
+	r.msgMu.Unlock()
+
+	h.Stats.IncTurn()
+	runErr := h.RunTurn(ctx, task)
+
+	snap := h.Stats.Snapshot()
+	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role, Payload: statsPayload(snap)})
+
+	if runErr != nil {
+		h.Stats.SetStatus(AgentCrashed)
+		r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
+			Payload: map[string]any{"outcome": "crashed", "error": runErr.Error()}})
+		return "", fmt.Errorf("delegate %s: %w", role, runErr)
+	}
+	h.Stats.SetStatus(AgentFinished)
+	r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
+		Payload: map[string]any{"outcome": "ok"}})
+	return r.MessageFor(role), nil
+}
+
+// Pool exposes the bounded pool so adapters can build tools (e.g. DelegateTool)
+// that need to acquire/release handles directly.
+func (r *Runtime) Pool() *BoundedAgentPool { return r.pool }
 
 func statsPayload(s AgentStatsSnapshot) map[string]any {
 	return map[string]any{

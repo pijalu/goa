@@ -110,14 +110,18 @@ DeepSeek. Commit + update this checklist at each milestone.
       drives real agents end-to-end, run persisted + replayed
 - [x] gates + commit
 
-#### M3 — DelegateTool & true hub topology (Phase 3 remainder)
-- [ ] M3.1 `core/orchestrator` `DelegateTool` (implements `agentic.Tool`):
-      input `{role, task}`, calls a `DelegateFunc` injected by the adapter
-      that Acquire+Run+Release a sub-agent and streams its events
-- [ ] M3.2 Hub topology: orchestrator agent is built WITH the DelegateTool;
-      `Run` drives the orchestrator agent which delegates per its judgement
-- [ ] M3.3 Unit test hub round-trip with a fake delegate; live test against LM
-- [ ] gates + commit
+#### M3 — DelegateTool & true hub topology (Phase 3 remainder)  ✅
+- [x] M3.1 `Runtime.Delegate(ctx, role, task)`: acquires a bounded-pool slot,
+      runs one turn, releases, returns the streamed answer (per-role message
+      accumulation in `Runtime`, no store dependency)
+- [x] M3.2 `OrchestratorDelegateTool` (adapter, implements `agentic.Tool` +
+      `ContextTool`) wired into the orchestrator-role agent via `SetTools`;
+      hub topology now drives ONLY the orchestrator (true delegation, not
+      fanout fallback). Added `Agent.Tools()` getter symmetric with SetTools.
+- [x] M3.3 Unit test `TestRuntime_DelegateRoundTrip`; **live test against
+      LMStudio (`TestOrchestratorAdapter_LiveHub`)** — proves the orchestrator
+      agent actually calls the delegate tool to dispatch the coder
+- [x] gates + commit
 
 #### M4 — Goal binding (Phase 6)
 - [ ] M4.1 `Runtime.BindGoal(*goal.GoalManager, objective|id)`: create/load a

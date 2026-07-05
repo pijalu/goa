@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -66,6 +67,16 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 			return agent.Run(ctx, prompt)
 		}
 
+		// The orchestrator role gets the DelegateTool so it can drive
+		// specialists itself (true hub topology). The tool closes over `rt`,
+		// which is assigned below before any turn runs.
+		if role == "orchestrator" {
+			roles := delegateRoles(oCfg)
+			cur := append([]agentic.Tool{}, agent.Tools()...)
+			cur = append(cur, &OrchestratorDelegateTool{Runtime: rt, Roles: roles})
+			agent.SetTools(cur)
+		}
+
 		// Attach the observer exactly once per (process, role) to avoid
 		// accumulation across multiple runs sharing the cached agent.
 		// (multiagent does not expose observer removal; for long-lived
@@ -118,4 +129,81 @@ func applyOutputEvent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev 
 			}
 		}
 	}
+}
+
+// OrchestratorDelegateTool is the tool the orchestrator agent uses to delegate
+// a sub-task to a specialist role. It calls Runtime.Delegate, which acquires a
+// bounded-pool slot, runs one turn, and returns the sub-agent's answer.
+//
+// It is distinct from multiagent.DelegateTool (the foreground-orchestrator
+// delegator) and lives here so core/orchestrator stays free of agentic imports.
+type OrchestratorDelegateTool struct {
+	agentic.BaseTool
+	Runtime *orchestrator.Runtime
+	// Roles enumerates the roles the orchestrator may delegate to (excludes
+	// "orchestrator" itself), populated from config so the schema enum is exact.
+	Roles []string
+}
+
+func (t *OrchestratorDelegateTool) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{
+		Name:        "delegate",
+		Description: "Delegate a sub-task to a specialist agent role and return its answer.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"role": map[string]any{
+					"type":        "string",
+					"description": "The role to delegate to",
+					"enum":        t.Roles,
+				},
+				"task": map[string]any{
+					"type":        "string",
+					"description": "The concrete task for the sub-agent",
+				},
+			},
+			"required": []string{"role", "task"},
+		},
+	}
+}
+
+func (t *OrchestratorDelegateTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input string) (string, error) {
+	var params struct {
+		Role string `json:"role"`
+		Task string `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if params.Role == "" || params.Task == "" {
+		return "", fmt.Errorf("role and task are required")
+	}
+	if t.Runtime == nil {
+		return "", fmt.Errorf("orchestrator runtime unavailable")
+	}
+	out, err := t.Runtime.Delegate(ctx, params.Role, params.Task)
+	if err != nil {
+		return "", err
+	}
+	if out == "" {
+		return fmt.Sprintf("[%s] completed the task (no text output).", params.Role), nil
+	}
+	return out, nil
+}
+
+// delegateRoles returns the roles the orchestrator may delegate to (everything
+// except "orchestrator"), used to populate the DelegateTool schema enum.
+func delegateRoles(oCfg config.OrchestratorConfig) []string {
+	var roles []string
+	for name := range oCfg.Roles {
+		if name == "orchestrator" {
+			continue
+		}
+		roles = append(roles, name)
+	}
+	return roles
 }

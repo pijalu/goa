@@ -481,6 +481,16 @@ func (a *Agent) SetTools(tools []Tool) {
 	a.reg = NewToolRegistry(tools)
 }
 
+// Tools returns a copy of the agent's current tool set. Use with SetTools to
+// append a tool without clobbering the existing ones.
+func (a *Agent) Tools() []Tool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]Tool, len(a.cfg.Tools))
+	copy(out, a.cfg.Tools)
+	return out
+}
+
 // InjectSystemMessage appends a system message to the conversation history.
 // It is sent to the model on the next turn so the model can be informed of
 // runtime changes (for example newly enabled tools) without losing history.
