@@ -175,23 +175,26 @@ func wrapRunesAtWidth(runes []rune, width int) []visualLine {
 	return result
 }
 
-// findVisualLine returns the index into the visual line map for the given buffer position.
-// Handles:
-//   - Normal lines: matches positions within [bufStart, bufStart+runeCount]
-//     (inclusive of the trailing position, which is the newline after the line)
-//   - Empty lines (runeCount=0): matches if pos is exactly at bufStart
-func findVisualLine(vlm []visualLine, pos int) int {
+// findVisualLine returns the index into the visual line map for the given buffer
+// position (rune index). text is the current buffer content. Handles:
+//   - Normal positions within a visual line.
+//   - Wrapped-line boundaries: the position at the exact end of a wrapped visual
+//     line belongs to the NEXT visual line, not the current one.
+//   - Logical-line end: the position at a newline or at EOF belongs to the
+//     current visual line.
+//   - Empty lines (runeCount=0): match if pos is exactly at bufStart.
+func findVisualLine(text string, vlm []visualLine, pos int) int {
+	runes := []rune(text)
+	textLen := len(runes)
 	for i, vl := range vlm {
-		if vl.runeCount == 0 {
-			// Empty visual line: match if pos is exactly at the start
-			if pos == vl.bufStart {
-				return i
-			}
-			continue
+		if pos == vl.bufStart && vl.runeCount == 0 {
+			return i
 		}
-		// Non-empty line: inclusive of end position so trailing newline
-		// (e.g., pos=4 after "test" of length 4) still belongs to this line.
-		if pos >= vl.bufStart && pos <= vl.bufStart+vl.runeCount {
+		end := vl.bufStart + vl.runeCount
+		if pos >= vl.bufStart && pos < end {
+			return i
+		}
+		if pos == end && (pos == textLen || runes[pos] == '\n') {
 			return i
 		}
 	}

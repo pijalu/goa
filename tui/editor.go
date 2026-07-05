@@ -194,6 +194,22 @@ func (e *Editor) Text() string {
 	return string(e.buf)
 }
 
+// VisualCursor returns the cursor's current visual line and column based on
+// the editor's prompt and buffer content at the given width. This is useful
+// for tests and agentic debugging to verify cursor placement without parsing
+// terminal output.
+func (e *Editor) VisualCursor(width int) (line, col int) {
+	if width <= 0 {
+		width = e.lastWidth
+	}
+	if width <= 0 {
+		width = 80
+	}
+	fullText := e.prompt + string(e.buf)
+	cursorFullPos := len(e.prompt) + e.pos
+	return visualCursorPos(fullText, cursorFullPos, width)
+}
+
 // expandPasteMarkers replaces [paste #N ...] markers with the actual pasted
 // content stored in e.pastes. This ensures the submitted text contains the
 // real content, not the display marker.
@@ -504,7 +520,7 @@ func (e *Editor) lineUp() {
 		width = 80
 	}
 	vlm := buildVisualLineMap(string(e.buf), width)
-	currentVL := findVisualLine(vlm, e.pos)
+	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
 	if currentVL <= 0 {
 		e.pos = 0
 		return
@@ -556,7 +572,7 @@ func (e *Editor) lineDown() {
 		width = 80
 	}
 	vlm := buildVisualLineMap(string(e.buf), width)
-	currentVL := findVisualLine(vlm, e.pos)
+	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
 	if currentVL >= len(vlm)-1 {
 		e.pos = len(e.buf)
 		return
@@ -740,7 +756,7 @@ func (e *Editor) isOnFirstVisualLine() bool {
 	if len(vlm) == 0 {
 		return true
 	}
-	currentVL := findVisualLine(vlm, e.pos)
+	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
 	return currentVL <= 0
 }
 
@@ -755,7 +771,7 @@ func (e *Editor) isOnLastVisualLine() bool {
 	if len(vlm) == 0 {
 		return true
 	}
-	currentVL := findVisualLine(vlm, e.pos)
+	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
 	return currentVL >= len(vlm)-1
 }
 
