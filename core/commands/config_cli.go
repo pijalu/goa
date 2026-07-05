@@ -367,6 +367,7 @@ var configSetters = map[string]configSetter{
 	"execution.loop_interrupt":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
 	"execution.disable_tool_budget":         setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
 	"skills.execution_mode":                 setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
+	"tools.enabled.goal":                    setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
 }
 
 func setActiveMajor(cfg *config.Config, value string) error {

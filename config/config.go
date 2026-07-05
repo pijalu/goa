@@ -281,6 +281,16 @@ type ToolsConfig struct {
 	Enabled     ToolEnabledConfig    `yaml:"enabled"`
 }
 
+// SmartSearchConfig controls the smartsearch tool.
+type SmartSearchConfig struct {
+	Enabled     bool     `yaml:"enabled"`
+	MaxResults  int      `yaml:"max_results"`
+	MinScore    float64  `yaml:"min_score"`
+	ExcludeDirs []string `yaml:"exclude_dirs"`
+	K1          float64  `yaml:"k1"`
+	B           float64  `yaml:"b"`
+}
+
 // TerminalConfig controls the hardened terminal tool.
 type TerminalConfig struct {
 	Sandbox TerminalSandboxConfig `yaml:"sandbox"`
@@ -301,6 +311,7 @@ type TerminalSandboxConfig struct {
 type ToolEnabledConfig struct {
 	BGExec        bool `yaml:"bg_exec"`
 	DelegateTo    bool `yaml:"delegate_to"`
+	Goal          bool `yaml:"goal"`
 	Memento       bool `yaml:"memento"`
 	PTYExec       bool `yaml:"pty_exec"`
 	RequestReview bool `yaml:"request_review"`
@@ -341,6 +352,8 @@ func (t *ToolEnabledConfig) SetEnabled(name string, value bool) {
 		t.BGExec = value
 	case "delegate_to":
 		t.DelegateTo = value
+	case "goal":
+		t.Goal = value
 	case "memento":
 		t.Memento = value
 	case "pty_exec":
@@ -372,6 +385,9 @@ func (t *ToolEnabledConfig) ApplyTo(target *ToolEnabledConfig) {
 	}
 	if t.set["delegate_to"] {
 		target.DelegateTo = t.DelegateTo
+	}
+	if t.set["goal"] {
+		target.Goal = t.Goal
 	}
 	if t.set["memento"] {
 		target.Memento = t.Memento
@@ -449,16 +465,6 @@ type SearchConfig struct {
 	Threads    int      `yaml:"threads"`
 	MaxResults int      `yaml:"max_results"`
 	Exclude    []string `yaml:"exclude"`
-}
-
-// SmartSearchConfig controls the BM25-based smart search tool.
-type SmartSearchConfig struct {
-	Enabled    bool     `yaml:"enabled"`
-	MaxResults int      `yaml:"max_results"`
-	MinScore   float64  `yaml:"min_score"`
-	Exclude    []string `yaml:"exclude"`
-	K1         float64  `yaml:"k1"`
-	B          float64  `yaml:"b"`
 }
 
 // ModeLineSegmentConfig configures a single mode line segment or side.

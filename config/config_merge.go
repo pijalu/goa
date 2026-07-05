@@ -353,8 +353,8 @@ func mergeSmartSearch(dst, src *SmartSearchConfig) {
 	if src.MinScore != 0 {
 		dst.MinScore = src.MinScore
 	}
-	if src.Exclude != nil {
-		dst.Exclude = src.Exclude
+	if src.ExcludeDirs != nil {
+		dst.ExcludeDirs = src.ExcludeDirs
 	}
 	if src.K1 != 0 {
 		dst.K1 = src.K1

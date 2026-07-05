@@ -62,6 +62,46 @@ type GoalManager struct {
 	replayErr error // captured during construction; see ReplayError
 }
 
+const goalsSubdir = "goals"
+
+// migrateLegacyGoalFiles moves goal files from the old dir location into
+// dir/goals/. Best-effort: errors are forwarded to telemetry but do not
+// prevent the manager from being constructed.
+func migrateLegacyGoalFiles(dir string, telemetry goal.Telemetry) {
+	goalsDir := filepath.Join(dir, goalsSubdir)
+	if err := os.MkdirAll(goalsDir, 0755); err != nil {
+		if telemetry != nil {
+			telemetry.Track("goal_migration_mkdir_failed", map[string]any{
+				"error": err.Error(),
+			})
+		}
+		return
+	}
+	moves := []struct {
+		oldName string
+		newName string
+	}{
+		{"goal-events.jsonl", "goal-events.jsonl"},
+		{"upcoming-goals.json", "upcoming-goals.json"},
+	}
+	for _, m := range moves {
+		oldPath := filepath.Join(dir, m.oldName)
+		newPath := filepath.Join(goalsDir, m.newName)
+		if _, err := os.Stat(newPath); err == nil {
+			continue // new location already exists, don't overwrite
+		}
+		if _, err := os.Stat(oldPath); err != nil {
+			continue // nothing to migrate
+		}
+		if err := os.Rename(oldPath, newPath); err != nil && telemetry != nil {
+			telemetry.Track("goal_migration_failed", map[string]any{
+				"file":  m.oldName,
+				"error": err.Error(),
+			})
+		}
+	}
+}
+
 // NewGoalManager creates a goal manager that persists to dir/goals/. It replays
 // any persisted goal events best-effort during construction so existing callers
 // keep working; the replay error (if any) is captured and exposed via
@@ -74,16 +114,18 @@ func NewGoalManager(dir string, deps ...GoalDependencies) *GoalManager {
 		dep = deps[0]
 	}
 
-	sessionDir := dir
-	store := goal.NewFileEventStore(filepath.Join(sessionDir, "goal-events.jsonl"))
+	migrateLegacyGoalFiles(dir, dep.Telemetry)
+
+	goalsDir := filepath.Join(dir, goalsSubdir)
+	store := goal.NewFileEventStore(filepath.Join(goalsDir, "goal-events.jsonl"))
 	mode := goal.NewGoalMode(store, dep.Publisher, dep.Telemetry, dep.ReminderFn)
 
-	queue := NewGoalQueueStore(filepath.Join(sessionDir, "upcoming-goals.json"))
+	queue := NewGoalQueueStore(filepath.Join(goalsDir, "upcoming-goals.json"))
 
 	m := &GoalManager{
 		Mode:  mode,
 		Queue: queue,
-		dir:   filepath.Join(dir, "goals"),
+		dir:   goalsDir,
 	}
 	// Best-effort replay at construction so existing callers keep working; the
 	// error is captured/surfaced below rather than silently swallowed.
@@ -118,11 +160,12 @@ func (m *GoalManager) ReplayError() error {
 
 // NewGoalManagerWithMode creates a manager with an explicit GoalMode.
 func NewGoalManagerWithMode(dir string, mode *goal.GoalMode) *GoalManager {
-	queue := NewGoalQueueStore(filepath.Join(dir, "upcoming-goals.json"))
+	goalsDir := filepath.Join(dir, goalsSubdir)
+	queue := NewGoalQueueStore(filepath.Join(goalsDir, "upcoming-goals.json"))
 	return &GoalManager{
 		Mode:  mode,
 		Queue: queue,
-		dir:   filepath.Join(dir, "goals"),
+		dir:   goalsDir,
 	}
 }
 

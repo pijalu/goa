@@ -32,16 +32,20 @@ func (c *TelemetryCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
-// CompleteArgs provides argument completions for on/off.
+// CompleteArgs provides argument completions for on/off. Only the value that
+// changes the current state is offered; the matching value is filtered out.
 func (c *TelemetryCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	opts := []string{"on", "off"}
-	var comps []core.ArgCompletion
-	for _, o := range opts {
-		if prefix == "" || strings.HasPrefix(o, prefix) {
-			comps = append(comps, core.ArgCompletion{Value: o, Description: "Toggle telemetry"})
-		}
+	enabled := c.Client != nil && c.Client.Enabled()
+	next := "off"
+	desc := "disable telemetry"
+	if !enabled {
+		next = "on"
+		desc = "enable telemetry"
 	}
-	return comps
+	if prefix != "" && !strings.HasPrefix(next, prefix) {
+		return nil
+	}
+	return []core.ArgCompletion{{Value: next, Description: desc}}
 }
 
 // Run executes the command.

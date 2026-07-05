@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/pijalu/goa/core"
@@ -15,12 +16,72 @@ func configSubcommandCompletions(prefix string) []core.ArgCompletion {
 		{"add", "add a provider or model"},
 		{"remove", "remove a provider or model"},
 		{"reload", "reload config"},
+		{"temp", "session-level temp overrides (loop detection)"},
 	} {
 		if prefix == "" || strings.HasPrefix(v.val, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: v.val, Description: v.desc})
 		}
 	}
 	return comps
+}
+
+// configTempCompletions returns actionable /config:temp:<setting>:<on|off>
+// argument completions. Only the value that changes the current state is
+// proposed; the matching value is filtered out so the user always picks an
+// action.
+func configTempCompletions(ctx core.Context, settingPrefix, valuePrefix string) []core.ArgCompletion {
+	settings := []struct{ val, desc, kind string }{
+		{"think_loop_detection", "thinking-loop detection", "think"},
+		{"tool_loop_detection", "tool-call loop detection", "tool"},
+	}
+	var comps []core.ArgCompletion
+	for _, s := range settings {
+		if settingPrefix != "" && !strings.HasPrefix(s.val, settingPrefix) {
+			continue
+		}
+		currentDisabled := ctx.LoopDetector != nil && ctx.LoopDetector.TempOverride(s.kind)
+		nextValue := "off"
+		state := "disable"
+		if currentDisabled {
+			nextValue = "on"
+			state = "enable"
+		}
+		if valuePrefix != "" && !strings.HasPrefix(nextValue, valuePrefix) {
+			continue
+		}
+		comps = append(comps, core.ArgCompletion{
+			Value:       "temp:" + s.val + ":" + nextValue,
+			Description: fmt.Sprintf("%s %s", state, s.desc),
+		})
+	}
+	return comps
+}
+
+// configTempArgCompletions parses the raw prefix after "/config" and returns
+// actionable temp completions, or nil if the prefix is not a temp request.
+func configTempArgCompletions(ctx core.Context, prefix string) []core.ArgCompletion {
+	if prefix == "" {
+		return nil
+	}
+	clean := strings.TrimSpace(prefix)
+	parts := strings.SplitN(clean, ":", 3)
+	head := parts[0]
+
+	if head != "temp" && !strings.HasPrefix("temp", head) && !strings.HasPrefix(head, "temp") {
+		return nil
+	}
+
+	if len(parts) == 1 {
+		return configTempCompletions(ctx, "", "")
+	}
+
+	setting := strings.TrimSpace(parts[1])
+	if len(parts) == 2 {
+		return configTempCompletions(ctx, setting, "")
+	}
+
+	valuePrefix := parts[2]
+	return configTempCompletions(ctx, setting, valuePrefix)
 }
 
 func prefixKeys(subPrefix, key string) []core.ArgCompletion {
@@ -60,6 +121,7 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"multi_agent.enabled", "true | false"},
 		{"multi_agent.companion_model", "model id"},
 		{"multi_agent.companion_provider", "provider id"},
+		{"tools.enabled.goal", "enable goal tools (default false)"},
 	}
 	var comps []core.ArgCompletion
 	for _, k := range keys {
@@ -81,13 +143,15 @@ func configValueCompletions(ctx core.Context, key, prefix string) []core.ArgComp
 	case "tui.theme":
 		return themeCompletionValues(prefix)
 	case "tui.transparency.show_thinking", "tui.transparency.thinking_collapsed", "multi_agent.enabled":
-		return boolCompletionValues(prefix)
+		return configBoolCompletionValues(ctx, key, prefix)
 	case "thinking_level":
 		return thinkingLevelCompletionValues(prefix)
 	case "active_model":
 		return modelCompletionValues(ctx, prefix)
 	case "active_provider", "multi_agent.companion_provider":
 		return providerCompletionValues(ctx, prefix)
+	case "tools.enabled.goal":
+		return boolCompletionValues(prefix)
 	}
 	return nil
 }
@@ -110,6 +174,26 @@ func modeCompletionValues(prefix string) []core.ArgCompletion {
 
 func themeCompletionValues(prefix string) []core.ArgCompletion {
 	return filteredCompletions([]string{"dark", "light"}, prefix, "")
+}
+
+func configBoolCompletionValues(ctx core.Context, key, prefix string) []core.ArgCompletion {
+	var current bool
+	switch key {
+	case "tui.transparency.show_thinking":
+		current = ctx.Config.TUI.Transparency.ShowThinking
+	case "tui.transparency.thinking_collapsed":
+		current = ctx.Config.TUI.Transparency.ThinkingCollapsed
+	case "multi_agent.enabled":
+		current = ctx.Config.MultiAgent.Enabled
+	}
+	next := "false"
+	if !current {
+		next = "true"
+	}
+	if prefix != "" && !strings.HasPrefix(next, prefix) {
+		return nil
+	}
+	return []core.ArgCompletion{{Value: next, Description: ""}}
 }
 
 func boolCompletionValues(prefix string) []core.ArgCompletion {

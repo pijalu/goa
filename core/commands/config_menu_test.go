@@ -48,6 +48,7 @@ func newMenuTestContext(t *testing.T, cfg *config.Config) (*core.Context, *selec
 		ConfigSaver:     config.NewCascadeLoader(t.TempDir(), "", nil),
 		ProviderManager: newTestProviderManager(),
 		EventBus:        tuiEvents,
+		LoopDetector:    core.NewLoopDetector(core.DefaultLoopDetectorConfig()),
 	}
 	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
 		sr.title = title
@@ -441,6 +442,46 @@ func TestConfigMenu_EscReturnsToPreviousPage(t *testing.T) {
 
 	if sr.title != "Multi-agent settings:" {
 		t.Errorf("after cancel title = %q, want Multi-agent settings:", sr.title)
+	}
+}
+
+func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("loop_detection", true)
+
+	if sr.title != "Loop detection settings:" {
+		t.Fatalf("expected loop detection menu, got %q", sr.title)
+	}
+	want := []string{"think_loop", "tool_loop", "thresholds"}
+	if len(sr.options) != len(want) {
+		t.Fatalf("expected %d loop detection items, got %d", len(want), len(sr.options))
+	}
+	for i, w := range want {
+		if sr.options[i].Value != w {
+			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
+		}
+	}
+
+	// Thinking-loop detection starts enabled.
+	if sr.options[0].Description != "on" {
+		t.Errorf("thinking-loop initial label = %q, want on", sr.options[0].Description)
+	}
+	if ctx.LoopDetector.TempOverride("think") {
+		t.Fatal("thinking-loop should start enabled")
+	}
+
+	// Toggle thinking-loop off.
+	sr.onSel("think_loop", true)
+
+	if !ctx.LoopDetector.TempOverride("think") {
+		t.Error("TempOverride(think) should be true (disabled) after toggle")
+	}
+	if sr.options[0].Description != "off" {
+		t.Errorf("thinking-loop after toggle label = %q, want off", sr.options[0].Description)
 	}
 }
 

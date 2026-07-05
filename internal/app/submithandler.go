@@ -43,6 +43,10 @@ func (a *App) makeSubmitHandler(engine *tui.TUI, chat *tui.ChatViewport) func(st
 			return
 		}
 
+		if !strings.HasPrefix(text, "/") && a.maybeSteerAgent(engine, chat, text) {
+			return
+		}
+
 		a.dispatchUserSubmit(engine, chat, text)
 	}
 }
@@ -94,6 +98,25 @@ func (a *App) displayUserMessage(chat *tui.ChatViewport, text string, images []s
 	for _, img := range images {
 		chat.AddSystemMessage(fmt.Sprintf("[attached image: %s]", img))
 	}
+}
+
+// maybeSteerAgent buffers user input as steering while the main agent is
+// running. The queued input is injected as a follow-up user message when the
+// current turn completes. Returns true if the input was consumed as steering.
+func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
+	subs := a.subs
+	if subs.agentMgr == nil || !subs.agentMgr.IsRunning() {
+		return false
+	}
+	if sq := subs.agentMgr.SteeringQueue(); sq != nil {
+		sq.Append(text)
+	}
+	chat.AddSystemMessage(fmt.Sprintf("[steering] %s", text))
+	data := subs.footer.Data()
+	data.SteeringPending = text
+	subs.footer.SetData(data)
+	engine.RequestRender()
+	return true
 }
 
 func (a *App) maybeSteerWorkflow(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {

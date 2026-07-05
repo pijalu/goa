@@ -78,3 +78,19 @@ func TestAutonomyCommand_Picker_Persists(t *testing.T) {
 		t.Errorf("saved Mode.Defaults[coder] = %q, want %q", saver.savedCfg.Mode.Defaults[internal.MajorCoder], internal.AutonomySolo)
 	}
 }
+
+func TestAutonomyCommand_CompleteArgs(t *testing.T) {
+	ctx := newAutonomyTestContext()
+	cmd := &AutonomyCommand{}
+
+	// Yolo is current: should not be proposed.
+	vals := cmd.CompleteArgs(ctx, "")
+	if len(vals) != 3 {
+		t.Errorf("yolo current: got %d completions, want 3", len(vals))
+	}
+	for _, v := range vals {
+		if v.Value == "yolo" {
+			t.Error("current autonomy yolo should not be proposed")
+		}
+	}
+}

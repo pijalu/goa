@@ -23,6 +23,22 @@ func runSwarm(t *testing.T, cmd *SwarmCommand, buf *strings.Builder, args ...str
 	return out
 }
 
+func TestSwarmCommand_CompleteArgs(t *testing.T) {
+	state := swarm.NewState()
+	cmd := &SwarmCommand{State: state}
+
+	vals := cmd.CompleteArgs(core.Context{}, "")
+	if len(vals) != 1 || vals[0].Value != "on" {
+		t.Errorf("off: got %v, want [on]", vals)
+	}
+
+	state.Enter(swarm.ManualTrigger, "manual")
+	vals = cmd.CompleteArgs(core.Context{}, "")
+	if len(vals) != 1 || vals[0].Value != "off" {
+		t.Errorf("on: got %v, want [off]", vals)
+	}
+}
+
 func TestSwarmCommand_OnSetsManualTrigger(t *testing.T) {
 	state := swarm.NewState()
 	cmd := &SwarmCommand{State: state}

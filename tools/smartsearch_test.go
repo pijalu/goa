@@ -104,6 +104,62 @@ func TestSmartSearchTool_ConcurrentCallsDoNotCorruptIndex(t *testing.T) {
 	}
 }
 
+// TestSmartSearchTool_GlobFilterBeforeLimit verifies that the glob filter is
+// applied before the max_results limit, so a restrictive glob can still return
+// results even if the top unfiltered hits do not match it.
+func TestSmartSearchTool_GlobFilterBeforeLimit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello world function main\n"), 0644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write b.go: %v", err)
+	}
+
+	tool := &SmartSearchTool{ProjectDir: dir}
+	res, err := tool.Execute(`{"query": "main", "glob": "*.go", "max_results": 1}`)
+	if err != nil {
+		t.Fatalf("smartsearch: %v", err)
+	}
+	if !strings.Contains(res, "b.go") {
+		t.Errorf("expected b.go in results, got: %s", res)
+	}
+	if strings.Contains(res, "a.txt") {
+		t.Errorf("did not expect a.txt in results, got: %s", res)
+	}
+}
+
+// TestSmartSearchTool_ExcludesGitignoreDirs verifies that directory names from
+// a project .gitignore are added to the default excludes.
+func TestSmartSearchTool_ExcludesGitignoreDirs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("coverage/\nout\n# comment\n*.log\n"), 0644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	covDir := filepath.Join(dir, "coverage")
+	if err := os.MkdirAll(covDir, 0755); err != nil {
+		t.Fatalf("mkdir coverage: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(covDir, "cov.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write coverage/cov.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	tool := &SmartSearchTool{ProjectDir: dir}
+	res, err := tool.Execute(`{"query": "main"}`)
+	if err != nil {
+		t.Fatalf("smartsearch: %v", err)
+	}
+	if strings.Contains(res, "coverage/cov.go") {
+		t.Errorf("did not expect coverage/cov.go in results, got: %s", res)
+	}
+	if !strings.Contains(res, "main.go") {
+		t.Errorf("expected main.go in results, got: %s", res)
+	}
+}
+
 // TestSmartSearchTool_ReturnsMatchingLines verifies that smartsearch surfaces
 // the matching source lines (like the normal search tool) so the agent can act
 // on results, not just file paths. The most-relevant candidate is grepped first.

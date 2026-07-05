@@ -497,7 +497,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 			ProjectDir:    projectDir,
 			MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
 			MinScore:      cfg.Tools.SmartSearch.MinScore,
-			ExcludeDirs:   cfg.Tools.SmartSearch.Exclude,
+			ExcludeDirs:   cfg.Tools.SmartSearch.ExcludeDirs,
 			K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
 			B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
 			ChangeTracker: changeTracker,

@@ -24,6 +24,10 @@ func (c *AutonomyCommand) Name() string      { return "autonomy" }
 func (c *AutonomyCommand) Aliases() []string { return []string{} }
 func (c *AutonomyCommand) ShortHelp() string { return "Set or display the autonomy level" }
 func (c *AutonomyCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	current := ""
+	if mode := ctx.CurrentMode(); !mode.IsZero() {
+		current = string(mode.Autonomy)
+	}
 	var comps []core.ArgCompletion
 	for _, v := range []struct{ val, desc string }{
 		{"yolo", "execute all tool calls automatically"},
@@ -31,6 +35,9 @@ func (c *AutonomyCommand) CompleteArgs(ctx core.Context, prefix string) []core.A
 		{"confirm", "pause before each tool call"},
 		{"review", "queue writes for batch approval"},
 	} {
+		if v.val == current {
+			continue
+		}
 		if strings.HasPrefix(v.val, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: v.val, Description: v.desc})
 		}

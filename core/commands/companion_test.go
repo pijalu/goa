@@ -17,6 +17,35 @@ import (
 	"github.com/pijalu/goa/multiagent"
 )
 
+func TestCompanionToggleCommand_CompleteArgs(t *testing.T) {
+	ctx := newCompanionTestContext(t)
+	cmd := &CompanionToggleCommand{}
+
+	// Disabled: offer on, agent, framework.
+	vals := cmd.CompleteArgs(ctx, "")
+	if len(vals) != 3 {
+		t.Errorf("disabled: got %v, want 3 options", vals)
+	}
+
+	// Agent-driven: offer off, framework.
+	if err := cmd.Run(ctx, []string{"agent"}); err != nil {
+		t.Fatalf("Run(agent): %v", err)
+	}
+	vals = cmd.CompleteArgs(ctx, "")
+	if len(vals) != 2 || vals[0].Value != "off" || vals[1].Value != "framework" {
+		t.Errorf("agent-driven: got %v, want [off framework]", vals)
+	}
+
+	// Framework-driven: offer off, agent.
+	if err := cmd.Run(ctx, []string{"framework"}); err != nil {
+		t.Fatalf("Run(framework): %v", err)
+	}
+	vals = cmd.CompleteArgs(ctx, "")
+	if len(vals) != 2 || vals[0].Value != "off" || vals[1].Value != "agent" {
+		t.Errorf("framework: got %v, want [off agent]", vals)
+	}
+}
+
 func TestCompanionToggleCommand_AgentEnablesReview(t *testing.T) {
 	ctx := newCompanionTestContext(t)
 	cmd := &CompanionToggleCommand{}

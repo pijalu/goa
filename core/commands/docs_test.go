@@ -16,6 +16,29 @@ import (
 	"github.com/pijalu/goa/tools"
 )
 
+func TestToolsDocCommand_ToggleCompletionStateAware(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tools.Enabled.WebFetch = true
+	ctx := core.Context{Config: cfg}
+	cmd := &ToolsDocCommand{}
+
+	vals := cmd.CompleteArgs(ctx, "webfetch:")
+	if len(vals) != 1 || vals[0].Value != "webfetch:off" {
+		t.Errorf("enabled tool: got %v, want [webfetch:off]", vals)
+	}
+
+	cfg.Tools.Enabled.WebFetch = false
+	vals = cmd.CompleteArgs(ctx, "webfetch:")
+	if len(vals) != 1 || vals[0].Value != "webfetch:on" {
+		t.Errorf("disabled tool: got %v, want [webfetch:on]", vals)
+	}
+
+	vals = cmd.CompleteArgs(ctx, "webfetch:of")
+	if len(vals) != 0 {
+		t.Errorf("no-action prefix: got %v, want []", vals)
+	}
+}
+
 func TestListDocs_WithProvider(t *testing.T) {
 	w := newWriter()
 	dp := &fakeDocsProvider{

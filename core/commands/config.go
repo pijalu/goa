@@ -35,6 +35,12 @@ func (c *ConfigCommand) LongHelp() string {
 }
 
 func (c *ConfigCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	// Handle temp subcommand completions first, using the raw prefix so we can
+	// detect a trailing space after a complete setting name and offer on/off.
+	if comps := configTempArgCompletions(ctx, prefix); comps != nil {
+		return comps
+	}
+
 	// The router keeps the raw text after the command name in prefix.
 	// We return the full argument string after "/config" so the completer can
 	// reconstruct "/config:set:key:value" correctly.
@@ -821,6 +827,70 @@ func skillsLabel(cfg *config.Config) string {
 // settingLoopDetection is the /config → Loop detection sub-menu.
 func (m *configMenu) settingLoopDetection() {
 	m.current = m.settingLoopDetection
+	items := []tui.SelectorItem{
+		{Value: "think_loop", Label: "Thinking-loop detection", Description: loopDetectionToggleLabel(m.ctx.LoopDetector, "think")},
+		{Value: "tool_loop", Label: "Tool-loop detection", Description: loopDetectionToggleLabel(m.ctx.LoopDetector, "tool")},
+		{Value: "thresholds", Label: "Threshold settings", Description: "warn/stop/repeat limits"},
+	}
+	m.ctx.SelectOption("Loop detection settings:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		switch selected {
+		case "think_loop":
+			m.toggleLoopDetection("think")
+		case "tool_loop":
+			m.toggleLoopDetection("tool")
+		case "thresholds":
+			m.open(m.settingLoopThresholds)
+		}
+	})
+}
+
+// loopDetectionToggleLabel returns the display label for a temp loop-detection
+// override. The detection is on unless the loop detector reports it disabled.
+func loopDetectionToggleLabel(ld *core.LoopDetector, kind string) string {
+	if ld == nil {
+		return "on"
+	}
+	if !ld.TempOverride(kind) {
+		return "on"
+	}
+	return "off"
+}
+
+// toggleLoopDetection flips the session-level temp override for the given kind.
+func (m *configMenu) toggleLoopDetection(kind string) {
+	ld := m.ctx.LoopDetector
+	if ld == nil {
+		m.flash("Loop detector not available.")
+		m.settingLoopDetection()
+		return
+	}
+	disabled := ld.TempOverride(kind)
+	ld.SetTempOverride(kind, !disabled)
+	m.flash(loopDetectionToggleFlash(kind, !disabled))
+	m.settingLoopDetection()
+}
+
+func loopDetectionToggleFlash(kind string, disabled bool) string {
+	state := "enabled"
+	if disabled {
+		state = "disabled"
+	}
+	switch kind {
+	case "think":
+		return fmt.Sprintf("Temporary: thinking-loop detection %s (current session only)", state)
+	case "tool":
+		return fmt.Sprintf("Temporary: tool-call loop detection %s (current session only)", state)
+	}
+	return ""
+}
+
+// settingLoopThresholds is the /config → Loop detection → Thresholds sub-menu.
+func (m *configMenu) settingLoopThresholds() {
+	m.current = m.settingLoopThresholds
 	cfg := m.ctx.Config
 	items := []tui.SelectorItem{
 		{Value: "loop_warning", Label: "Loop warning threshold", Description: intLabel(cfg.Execution.LoopWarning)},
@@ -830,12 +900,12 @@ func (m *configMenu) settingLoopDetection() {
 		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: intLabel(cfg.Execution.MaxToolCalls)},
 		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
 	}
-	m.ctx.SelectOption("Loop detection settings:", items, "", func(selected string, ok bool) {
+	m.ctx.SelectOption("Loop threshold settings:", items, "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
-		m.handleLoopDetectionSetting(selected)
+		m.handleLoopThresholdSetting(selected)
 	})
 }
 
@@ -846,22 +916,22 @@ func intLabel(v int) string {
 	return fmt.Sprintf("%d", v)
 }
 
-func (m *configMenu) handleLoopDetectionSetting(selected string) {
+func (m *configMenu) handleLoopThresholdSetting(selected string) {
 	cfg := m.ctx.Config
 	type loopField struct {
-		key       string
-		prompt    string
-		intVal    *int
-		isBool    bool
-		boolVal   *bool
+		key     string
+		prompt  string
+		intVal  *int
+		isBool  bool
+		boolVal *bool
 	}
 	fields := map[string]loopField{
-		"loop_warning":             {key: "execution.loop_warning", prompt: "Loop warning threshold:", intVal: &cfg.Execution.LoopWarning},
-		"loop_interrupt":           {key: "execution.loop_interrupt", prompt: "Loop interrupt threshold:", intVal: &cfg.Execution.LoopInterrupt},
-		"tool_repeat_total":        {key: "execution.max_tool_repeat_total", prompt: "Max total tool repeats:", intVal: &cfg.Execution.MaxToolRepeatTotal},
-		"tool_repeat_consecutive":  {key: "execution.max_tool_repeat_consecutive", prompt: "Max consecutive tool repeats:", intVal: &cfg.Execution.MaxToolRepeatConsecutive},
-		"max_tool_calls":           {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
-		"disable_tool_budget":      {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
+		"loop_warning":            {key: "execution.loop_warning", prompt: "Loop warning threshold:", intVal: &cfg.Execution.LoopWarning},
+		"loop_interrupt":          {key: "execution.loop_interrupt", prompt: "Loop interrupt threshold:", intVal: &cfg.Execution.LoopInterrupt},
+		"tool_repeat_total":       {key: "execution.max_tool_repeat_total", prompt: "Max total tool repeats:", intVal: &cfg.Execution.MaxToolRepeatTotal},
+		"tool_repeat_consecutive": {key: "execution.max_tool_repeat_consecutive", prompt: "Max consecutive tool repeats:", intVal: &cfg.Execution.MaxToolRepeatConsecutive},
+		"max_tool_calls":          {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
+		"disable_tool_budget":     {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
 	}
 	f, ok := fields[selected]
 	if !ok {
@@ -874,14 +944,14 @@ func (m *configMenu) handleLoopDetectionSetting(selected string) {
 			next = "true"
 		}
 		m.applySet(f.key, next)
-		m.settingLoopDetection()
+		m.settingLoopThresholds()
 		return
 	}
 	m.ctx.ShowInput(f.prompt, fmt.Sprintf("%d", *f.intVal), func(v string, ok bool) {
 		if ok && v != "" {
 			m.applySet(f.key, v)
 		}
-		m.settingLoopDetection()
+		m.settingLoopThresholds()
 	})
 }
 

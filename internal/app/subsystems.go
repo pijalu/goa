@@ -147,6 +147,12 @@ func (s *subsystems) effectiveModeState() internal.ModeState {
 func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, opts RuntimeOptions) *subsystems {
 	subs := initBaseSubsystems(cfg, projectDir)
 	agentBundle := initAgentBundle(cfg, projectDir)
+
+	// Steering queue: shared between AgentManager (consumes at turn end) and
+	// TUI submit handler (appends while a turn is running).
+	steeringQueue := core.NewSteeringQueue()
+	agentBundle.agentMgr.SetSteeringQueue(steeringQueue)
+
 	agentBundle.agentMgr.SetLifecycleRegistry(subs.lifecycleRegistry)
 	agentBundle.agentMgr.SetContextWindowRefresher(func() int {
 		if subs.providerMgr == nil {
@@ -161,7 +167,9 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	swarmState := swarm.NewState()
 	taskBus := tasks.NewBus(tasks.NopStore{}, agentBundle.eventBus)
 	goalManager, goalDriver := initGoalSystem(projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState)
-	registerGoalTools(subs.toolRegistry, goalManager)
+	if cfg.Tools.Enabled.Goal || opts.Goal {
+		registerGoalTools(subs.toolRegistry, goalManager)
+	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)
@@ -513,6 +521,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 	// The execution context is wired later in assembleSubsystems once the
 	// subsystems are fully assembled.
 	goaTool := core.NewGoaCommandToolWithContextFn(cmdRouter, func() core.Context { return core.Context{} })
+
 	toolRegistry.Register(goaTool)
 
 	return skillCommandBundle{
@@ -660,6 +669,7 @@ func wireForegroundOrchestrator(pool *multiagent.AgentPool, promptReg *prompts.R
 	orch := multiagent.NewForegroundOrchestrator(pool)
 	pool.SetOrchestrator(orch)
 	orch.SetPromptRegistry(promptReg)
+	orch.SetSteeringQueue(agentMgr.SteeringQueue())
 	orch.ModeSwitchCallback = makeModeSwitchCallback(agentMgr)
 	agentMgr.SetForegroundOrchestrator(orch)
 	return orch

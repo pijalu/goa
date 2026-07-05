@@ -137,6 +137,58 @@ func TestCompositor_CursorPositionOnFirstFrame(t *testing.T) {
 	}
 }
 
+// TestExtractCursorMarker_OverlayPreferred verifies that an overlay's cursor
+// marker takes precedence over base-layer markers, so input-owning overlays
+// (e.g. selectors) place the hardware cursor correctly.
+func TestExtractCursorMarker_OverlayPreferred(t *testing.T) {
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 8},
+				Content: []string{"chat" + CURSOR_MARKER}},
+			{Name: "selector", Kind: LayerOverlay, Rect: Rect{X: 0, Y: 2, W: 20, H: 3},
+				Content: []string{"title", "───", "search> " + CURSOR_MARKER}},
+		},
+	}
+	extractCursorMarker(scene)
+	if scene.Cursor == nil {
+		t.Fatal("cursor not extracted")
+	}
+	if scene.Cursor.Row != 4 {
+		t.Errorf("cursor row = %d, want 4 (overlay absolute row)", scene.Cursor.Row)
+	}
+	if scene.Cursor.Col != 8 {
+		t.Errorf("cursor col = %d, want 8 (after 'search> ')", scene.Cursor.Col)
+	}
+	if strings.Contains(scene.Layers[1].Content[2], CURSOR_MARKER) {
+		t.Error("cursor marker should be stripped from overlay content")
+	}
+}
+
+// TestExtractCursorMarker_FallsBackToBaseLayer verifies that when no overlay
+// marker exists, the base layer marker is still used.
+func TestExtractCursorMarker_FallsBackToBaseLayer(t *testing.T) {
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 8},
+				Content: []string{"chat" + CURSOR_MARKER}},
+			{Name: "selector", Kind: LayerOverlay, Rect: Rect{X: 0, Y: 2, W: 20, H: 3},
+				Content: []string{"title", "───", "search> "}},
+		},
+	}
+	extractCursorMarker(scene)
+	if scene.Cursor == nil {
+		t.Fatal("cursor not extracted")
+	}
+	if scene.Cursor.Row != 0 {
+		t.Errorf("cursor row = %d, want 0 (base layer)", scene.Cursor.Row)
+	}
+	if scene.Cursor.Col != 4 {
+		t.Errorf("cursor col = %d, want 4 (after 'chat')", scene.Cursor.Col)
+	}
+}
+
 // TestExtractCursorMarker_ReverseScanPrefersLastLayer verifies that the cursor
 // marker extraction scans base layers from back to front. This keeps the cost
 // bounded by the input layer instead of scanning the entire chat history, and

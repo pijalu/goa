@@ -60,6 +60,7 @@ type Selector struct {
 	animTicker    *time.Ticker
 	animStop      chan struct{}
 	animItemValue string
+	focused       bool
 }
 
 // NewSelector creates a Selector. Items are sorted alphabetically by Label.
@@ -309,6 +310,10 @@ func (s *Selector) emit(value string) {
 	default:
 	}
 }
+
+func (s *Selector) Focused() bool { return s.focused }
+
+func (s *Selector) SetFocused(focused bool) { s.focused = focused }
 
 func (s *Selector) Render(width int) []string {
 	return s.renderLocked(width)

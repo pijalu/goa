@@ -41,6 +41,103 @@ func TestBuildActiveGoalReminder(t *testing.T) {
 	}
 }
 
+func TestStaticGoalReminder_StableAcrossTurns(t *testing.T) {
+	base := GoalSnapshot{
+		Objective:           "fix tests",
+		CompletionCriterion: strPtr("all tests pass"),
+		Status:              GoalActive,
+	}
+	a := BuildStaticGoalReminder(base)
+	b := BuildStaticGoalReminder(GoalSnapshot{
+		Objective:           "fix tests",
+		CompletionCriterion: strPtr("all tests pass"),
+		Status:              GoalActive,
+		TurnsUsed:           5,
+		TokensUsed:          9999,
+		WallClockMs:         120000,
+	})
+	c := BuildStaticGoalReminder(GoalSnapshot{
+		Objective:           "fix tests",
+		CompletionCriterion: strPtr("all tests pass"),
+		Status:              GoalActive,
+		TurnsUsed:           10,
+		TokensUsed:          50000,
+		WallClockMs:         300000,
+	})
+	if a != b || b != c {
+		t.Error("static reminder should be byte-identical across turns for the same goal")
+	}
+}
+
+func TestDynamicGoalProgress_Changes(t *testing.T) {
+	base := GoalSnapshot{
+		Objective:  "fix tests",
+		Status:     GoalActive,
+		TurnsUsed:  1,
+		TokensUsed: 100,
+		WallClockMs: 1000,
+	}
+	a := BuildDynamicGoalProgress(base)
+	b := BuildDynamicGoalProgress(GoalSnapshot{
+		Objective:   "fix tests",
+		Status:        GoalActive,
+		TurnsUsed:     2,
+		TokensUsed:    200,
+		WallClockMs:   2000,
+	})
+	if a == b {
+		t.Error("dynamic progress should differ across turns")
+	}
+	if !strings.Contains(a, "1 continuation turns") || !strings.Contains(b, "2 continuation turns") {
+		t.Error("dynamic progress should reflect turn counts")
+	}
+}
+
+func TestBuildDynamicGoalProgress_StatusAndBudgets(t *testing.T) {
+	snap := GoalSnapshot{
+		Objective:   "fix tests",
+		Status:      GoalActive,
+		TurnsUsed:   3,
+		TokensUsed:  1234,
+		WallClockMs: 65000,
+		Budget: GoalBudgetReport{
+			TurnBudget:      intPtr(10),
+			RemainingTurns:  intPtr(7),
+			TokenBudget:     intPtr(5000),
+			RemainingTokens: intPtr(3766),
+		},
+	}
+	progress := BuildDynamicGoalProgress(snap)
+	for _, want := range []string{
+		"Status: active",
+		"3 continuation turns",
+		"1.2k tokens",
+		"turns 3/10",
+		"tokens 1.2k/5.0k",
+	} {
+		if !strings.Contains(progress, want) {
+			t.Errorf("dynamic progress missing %q", want)
+		}
+	}
+}
+
+func TestBuildStaticGoalReminder_NoDynamicContent(t *testing.T) {
+	snap := GoalSnapshot{
+		Objective:   "fix tests",
+		Status:      GoalActive,
+		TurnsUsed:   3,
+		TokensUsed:  1234,
+		WallClockMs: 65000,
+	}
+	static := BuildStaticGoalReminder(snap)
+	if strings.Contains(static, "Status: active") {
+		t.Error("static reminder should not contain dynamic status")
+	}
+	if strings.Contains(static, "continuation turns") {
+		t.Error("static reminder should not contain dynamic progress")
+	}
+}
+
 func TestBuildPausedNote(t *testing.T) {
 	snap := GoalSnapshot{
 		Objective:      "refactor",

@@ -48,6 +48,41 @@ func TestPopulateModeDefaults_PreservesExisting(t *testing.T) {
 	}
 }
 
+func TestRegisterGoalTools_GatedByConfigAndFlag(t *testing.T) {
+	cfg := &config.Config{}
+	if goalToolsEnabled(cfg, RuntimeOptions{}) {
+		t.Error("goal tools should be disabled by default")
+	}
+	if !goalToolsEnabled(cfg, RuntimeOptions{Goal: true}) {
+		t.Error("--goal flag should force-enable goal tools")
+	}
+
+	cfg2 := &config.Config{}
+	cfg2.Tools.Enabled.SetEnabled("goal", true)
+	if !goalToolsEnabled(cfg2, RuntimeOptions{}) {
+		t.Error("tools.enabled.goal=true should enable goal tools")
+	}
+}
+
+// goalToolsEnabled mirrors the gate used in InitSubsystems.
+func goalToolsEnabled(cfg *config.Config, opts RuntimeOptions) bool {
+	return cfg.Tools.Enabled.Goal || opts.Goal
+}
+
+// TestRegisterGoalTools_Directly verifies the helper registers the expected
+// goal-related tools.
+func TestRegisterGoalTools_Directly(t *testing.T) {
+	dir := t.TempDir()
+	gm := core.NewGoalManager(dir)
+	reg := tools.NewToolRegistry()
+	registerGoalTools(reg, gm)
+	for _, name := range []string{"CreateGoal", "UpdateGoal", "GetGoal"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Errorf("expected %q tool to be registered", name)
+		}
+	}
+}
+
 func TestRegisterSkillRunnerIfNeeded_RegistersForSubAgentMode(t *testing.T) {
 	skillReg := skills.NewSkillRegistry(nil)
 	skillReg.SetEmbeddedFS(skills.EmbeddedSkillsFS)

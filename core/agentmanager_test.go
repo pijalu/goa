@@ -1335,3 +1335,65 @@ func TestAgentManager_SetDisableToolBudget(t *testing.T) {
 	}
 	am.mu.Unlock()
 }
+
+func TestAgentManager_SteeringAppendWhileRunning(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	am.activeAgent = agentic.NewAgent(agentic.Config{})
+	am.running = true
+
+	err := am.SendUserInput("steer me")
+	if err != nil {
+		t.Fatalf("SendUserInput while running: %v", err)
+	}
+	if am.steering.Len() != 1 {
+		t.Errorf("steering queue length = %d, want 1", am.steering.Len())
+	}
+	pending := am.steering.Flush()
+	if len(pending) != 1 || pending[0] != "steer me" {
+		t.Errorf("steering queue = %v, want [steer me]", pending)
+	}
+}
+
+// TestAgentManager_SteeringFlushedAtTurnEnd verifies that steering input
+// appended while the agent is running is flushed from the queue when the
+// current turn completes. The flushed text is captured as pendingSteering and
+// dispatched by the turn defer.
+func TestAgentManager_SteeringFlushedAtTurnEnd(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+
+	runner := &recordingRunner{started: make(chan struct{})}
+
+	am.activeAgent = agentic.NewAgent(agentic.Config{})
+	am.running = true
+	am.steering.Append("steer me")
+	am.steering.Append("and me")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	am.runAgentTurn(ctx, cancel, 1, runner, "initial", nil)
+
+	if am.steering.Len() != 0 {
+		t.Errorf("steering queue length = %d, want 0 after turn end", am.steering.Len())
+	}
+	// The defer should have dispatched pendingSteering via SendUserInput; since
+	// the active agent is minimal, SendUserInput will fail, but the queue flush
+	// itself is the behavior under test.
+}
+
+type recordingRunner struct {
+	started chan struct{}
+}
+
+func (r *recordingRunner) Run(ctx context.Context, input string) error {
+	if r.started != nil {
+		close(r.started)
+	}
+	return nil
+}
+
+func (r *recordingRunner) RunWithImages(ctx context.Context, input string, images []string) error {
+	return r.Run(ctx, input)
+}

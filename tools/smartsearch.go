@@ -94,24 +94,11 @@ type smartSearchParams struct {
 
 // ExecuteContext performs the search with cancellation support.
 func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (string, error) {
-	var p smartSearchParams
-	if err := json.Unmarshal([]byte(input), &p); err != nil {
-		return "", &internal.ToolError{
-			Tool: "smartsearch", Type: "invalid_input",
-			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
-			HintText: "Ensure your input is valid JSON with query as a string.",
-		}
+	p, err := t.parseParams(input)
+	if err != nil {
+		return "", err
 	}
 
-	if p.Query == "" {
-		return "", &internal.ToolError{
-			Tool: "smartsearch", Type: "missing_query",
-			Detail:   "Query is required",
-			HintText: "Provide a natural language query describing what code you are looking for.",
-		}
-	}
-
-	// Resolve project root.
 	rootPath := t.resolveRootPath(p.RootPath)
 	if rootPath == "" {
 		return "", &internal.ToolError{
@@ -121,17 +108,9 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 		}
 	}
 
-	// Defaults.
-	maxResults := p.MaxResults
-	if maxResults <= 0 {
-		maxResults = defaultInt(t.MaxResults, 20)
-	}
-	minScore := p.MinScore
-	if minScore <= 0 {
-		minScore = t.MinScore
-	}
+	maxResults := t.resolveMaxResults(p.MaxResults)
+	minScore := t.resolveMinScore(p.MinScore)
 
-	// Ensure we have an index.
 	idx, rebuilt, err := t.getOrBuildIndex(rootPath)
 	if err != nil {
 		return "", &internal.ToolError{
@@ -145,31 +124,68 @@ func (t *SmartSearchTool) ExecuteContext(ctx context.Context, input string) (str
 		return fmt.Sprintf("[smartsearch: %q] — No files indexed (project may be empty or contain only binary files)", p.Query), nil
 	}
 
-	// Search.
-	results := idx.Search(p.Query, maxResults, minScore)
+	results := t.searchAndFilter(idx, p.Query, p.Glob, maxResults, minScore)
 	if len(results) == 0 {
+		if p.Glob != "" {
+			return fmt.Sprintf("[smartsearch: %q] — No relevant results matching %q (try removing the glob filter)", p.Query, p.Glob), nil
+		}
 		return fmt.Sprintf("[smartsearch: %q] — No relevant results found (try a different query or the search tool for exact matches)", p.Query), nil
 	}
 
-	// Apply glob filter if specified.
-	if p.Glob != "" {
-		results = filterByGlob(results, p.Glob)
-		if len(results) == 0 {
-			return fmt.Sprintf("[smartsearch: %q] — No relevant results matching %q (try removing the glob filter)", p.Query, p.Glob), nil
-		}
-	}
-
-	// Normalise scores for display.
-	normaliseResults(results)
-
-	// Enrich each ranked candidate (most-relevant first) with the matching
-	// source lines, mirroring the search tool's output so the agent can act on
-	// the results rather than only seeing file paths.
 	terms := extractQueryTerms(p.Query)
 	matches := buildMatchingLines(results, terms, maxResults)
 
 	idxDir := bm25.IndexDir(rootPath)
 	return t.formatResults(results, matches, p.Query, idx, rebuilt, idxDir), nil
+}
+
+func (t *SmartSearchTool) parseParams(input string) (smartSearchParams, error) {
+	var p smartSearchParams
+	if err := json.Unmarshal([]byte(input), &p); err != nil {
+		return p, &internal.ToolError{
+			Tool: "smartsearch", Type: "invalid_input",
+			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
+			HintText: "Ensure your input is valid JSON with query as a string.",
+		}
+	}
+	if p.Query == "" {
+		return p, &internal.ToolError{
+			Tool: "smartsearch", Type: "missing_query",
+			Detail:   "Query is required",
+			HintText: "Provide a natural language query describing what code you are looking for.",
+		}
+	}
+	return p, nil
+}
+
+func (t *SmartSearchTool) resolveMaxResults(v int) int {
+	if v > 0 {
+		return v
+	}
+	return defaultInt(t.MaxResults, 20)
+}
+
+func (t *SmartSearchTool) resolveMinScore(v float64) float64 {
+	if v > 0 {
+		return v
+	}
+	return t.MinScore
+}
+
+func (t *SmartSearchTool) searchAndFilter(idx *bm25.Index, query, glob string, maxResults int, minScore float64) []bm25.SearchResult {
+	searchLimit := maxResults * 10
+	if searchLimit < 100 {
+		searchLimit = 100
+	}
+	results := idx.Search(query, searchLimit, minScore)
+	if glob != "" {
+		results = filterByGlob(results, glob)
+	}
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
+	normaliseResults(results)
+	return results
 }
 
 // Execute implements agentic.Tool. Delegates to ExecuteContext.
@@ -215,7 +231,7 @@ func (t *SmartSearchTool) getOrBuildIndex(rootPath string) (*bm25.Index, bool, e
 	idxDir := bm25.IndexDir(rootPath)
 
 	// Build the indexer with shared change tracker.
-	builder := bm25.NewBuilder(rootPath, idxDir, t.excludes())
+	builder := bm25.NewBuilder(rootPath, idxDir, t.excludes(rootPath))
 	if t.ChangeTracker != nil {
 		builder.WithChangeTracker(t.ChangeTracker)
 	}
@@ -240,14 +256,65 @@ func (t *SmartSearchTool) getOrBuildIndex(rootPath string) (*bm25.Index, bool, e
 	return idx, true, nil
 }
 
-// excludes returns the default exclude directories combined with user config.
-func (t *SmartSearchTool) excludes() []string {
+// excludes returns the default exclude directories combined with user config
+// and any directory patterns found in the project .gitignore.
+func (t *SmartSearchTool) excludes(rootPath string) []string {
 	// Always exclude these.
 	defaults := []string{".git", "node_modules", "vendor", ".goa", "dist", "build", ".venv", "__pycache__"}
-	if len(t.ExcludeDirs) > 0 {
-		return append(defaults, t.ExcludeDirs...)
+	seen := make(map[string]bool, len(defaults))
+	for _, d := range defaults {
+		seen[d] = true
 	}
-	return defaults
+	out := append([]string(nil), defaults...)
+
+	if rootPath != "" {
+		for _, d := range gitignoreDirs(rootPath) {
+			if !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+
+	for _, d := range t.ExcludeDirs {
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// gitignoreDirs reads the project .gitignore and returns simple directory-name
+// excludes (lines ending with "/" or names without wildcards). Full glob
+// support is intentionally limited; this is a best-effort expansion.
+func gitignoreDirs(rootPath string) []string {
+	data, err := os.ReadFile(filepath.Join(rootPath, ".gitignore"))
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Strip leading slash if present.
+		line = strings.TrimPrefix(line, "/")
+		// Only accept simple directory or name patterns without wildcards.
+		if strings.ContainsAny(line, "*?[]") {
+			continue
+		}
+		if strings.HasSuffix(line, "/") {
+			dirs = append(dirs, strings.TrimSuffix(line, "/"))
+			continue
+		}
+		if !strings.Contains(line, "/") && !strings.Contains(line, ".") {
+			// Likely a generated directory name such as "coverage" or "out".
+			dirs = append(dirs, line)
+		}
+	}
+	return dirs
 }
 
 // smartLineMatch is a single matching source line for a candidate file.

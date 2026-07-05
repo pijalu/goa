@@ -85,6 +85,94 @@ func TestEditor_HistoryNavigation_SlashCommands(t *testing.T) {
 	}
 }
 
+// TestEditor_UpArrow_EmptyBuffer_RecallsLast verifies that pressing Up on an
+// empty editor recalls the most recent history entry.
+func TestEditor_UpArrow_EmptyBuffer_RecallsLast(t *testing.T) {
+	ed := NewEditor()
+	ed.SetHistory([]string{"a", "b"})
+	ed.SetFocused(true)
+
+	ed.HandleInput(KeyUp)
+	if got, want := ed.Text(), "b"; got != want {
+		t.Errorf("Text() = %q, want %q", got, want)
+	}
+	if got, want := ed.histIdx, 1; got != want {
+		t.Errorf("histIdx = %d, want %d", got, want)
+	}
+}
+
+// TestEditor_UpArrow_ToTop verifies that pressing Up continues to older entries
+// and stops at the top of history.
+func TestEditor_UpArrow_ToTop(t *testing.T) {
+	ed := NewEditor()
+	ed.SetHistory([]string{"a", "b"})
+	ed.SetFocused(true)
+
+	ed.HandleInput(KeyUp)
+	ed.HandleInput(KeyUp)
+	if got, want := ed.Text(), "a"; got != want {
+		t.Errorf("Text() after two Up = %q, want %q", got, want)
+	}
+	if got, want := ed.histIdx, 0; got != want {
+		t.Errorf("histIdx = %d, want %d", got, want)
+	}
+
+	ed.HandleInput(KeyUp)
+	if got, want := ed.Text(), "a"; got != want {
+		t.Errorf("Text() at top should stay %q, got %q", want, got)
+	}
+	if got, want := ed.histIdx, 0; got != want {
+		t.Errorf("histIdx = %d, want %d", got, want)
+	}
+}
+
+// TestEditor_DownArrow_PastNewest_ReturnsToEmptyLine verifies that pressing Down
+// from the newest history entry returns to an empty editable line with the
+// cursor at column 0.
+func TestEditor_DownArrow_PastNewest_ReturnsToEmptyLine(t *testing.T) {
+	ed := NewEditor()
+	ed.SetHistory([]string{"a", "b"})
+	ed.SetFocused(true)
+
+	ed.HandleInput(KeyUp)
+	ed.HandleInput(KeyUp) // now at "a"
+	ed.HandleInput(KeyDown) // to "b"
+	ed.HandleInput(KeyDown) // past newest -> empty
+
+	if got, want := ed.Text(), ""; got != want {
+		t.Errorf("Text() = %q, want empty", got)
+	}
+	if got, want := ed.pos, 0; got != want {
+		t.Errorf("pos = %d, want 0", got)
+	}
+	if got, want := ed.histIdx, -1; got != want {
+		t.Errorf("histIdx = %d, want -1", got)
+	}
+}
+
+// TestEditor_DownArrow_FromMultilineHistory_EmptyReachable verifies that Down
+// can return to an empty line even after navigating through a multiline entry.
+func TestEditor_DownArrow_FromMultilineHistory_EmptyReachable(t *testing.T) {
+	ed := NewEditor()
+	ed.SetHistory([]string{"line1\nline2", "x"})
+	ed.SetFocused(true)
+
+	ed.HandleInput(KeyUp) // "x"
+	ed.HandleInput(KeyUp) // "line1\nline2"
+	ed.HandleInput(KeyDown) // "x"
+	ed.HandleInput(KeyDown) // empty
+
+	if got, want := ed.Text(), ""; got != want {
+		t.Errorf("Text() = %q, want empty", got)
+	}
+	if got, want := ed.pos, 0; got != want {
+		t.Errorf("pos = %d, want 0", got)
+	}
+	if got, want := ed.histIdx, -1; got != want {
+		t.Errorf("histIdx = %d, want -1", got)
+	}
+}
+
 // TestEditor_HistoryNavigation_DraftRestore verifies that the current editing
 // draft is preserved when browsing history and restored when returning to
 // editing state.

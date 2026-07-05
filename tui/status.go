@@ -44,13 +44,13 @@ func getSpinner() (frames []string, interval time.Duration) {
 // goroutine only forwards each tick back to the loop via TUI.Apply (see
 //). No mutex is required.
 type StatusMsg struct {
-	text     string
-	spinning bool
-	frameIdx int
-	tui      *TUI
-	ticker   *time.Ticker
-	done     chan struct{}
-	cleared  bool
+	text         string
+	spinning     bool
+	frameIdx     int
+	tui          *TUI
+	ticker       *time.Ticker
+	done         chan struct{}
+	sessionEnded bool
 }
 
 // NewStatusMsg creates a StatusMsg component.
@@ -75,21 +75,17 @@ func (s *StatusMsg) Text() string { return s.text }
 func (s *StatusMsg) SetTUI(t *TUI) { s.tui = t }
 
 // Show sets the status text and starts the spinner animation.
-// After Clear(), subsequent Show() calls are ignored until Reset() is called,
-// preventing late events (e.g. EventProgress after EventEnd) from re-starting
-// the spinner after handleSessionEnd already cleared it.
+// If the session has ended, Show() is a no-op so late events cannot restart
+// the spinner after the turn is finished. In-turn Clear() calls do NOT block
+// Show(), so the spinner can survive across sequential tool calls.
 func (s *StatusMsg) Show(text string) {
+	if s.sessionEnded {
+		return
+	}
 	if s.text == text && s.spinning {
 		return
 	}
-	// If the spinner was cleared, don't restart it — a late event
-	// (e.g. EventProgress after EventEnd) would otherwise re-start
-	// the spinner after handleSessionEnd already cleared it.
-	if !s.spinning && s.text == "" && s.cleared {
-		return
-	}
 	s.text = text
-	s.cleared = false
 	if !s.spinning {
 		s.spinning = true
 		s.frameIdx = 0
@@ -102,10 +98,9 @@ func (s *StatusMsg) Show(text string) {
 	}
 }
 
-// Clear hides the status and stops the spinner.
-// After Clear(), Show() is a no-op until Reset() is called, so late events
-// cannot re-start the spinner. Reset() must be called before the next turn
-// (e.g. from the submit handler) to allow status updates again.
+// Clear hides the status and stops the spinner. Normal in-turn Clear() calls
+// do not block future Show() calls; only SessionEnd() arms the guard that
+// prevents late events from re-starting the spinner.
 func (s *StatusMsg) Clear() {
 	s.text = ""
 	if s.spinning {
@@ -116,16 +111,22 @@ func (s *StatusMsg) Clear() {
 		}
 		close(s.done)
 	}
-	s.cleared = true
 }
 
-// Reset clears the post-Clear() guard so that the next Show() can start a
-// fresh spinner. It must be called when a new turn begins.
+// SessionEnd marks the session as finished and clears the status. After
+// SessionEnd(), Show() is a no-op until Reset() is called.
+func (s *StatusMsg) SessionEnd() {
+	s.Clear()
+	s.sessionEnded = true
+}
+
+// Reset clears the post-session guard so that the next Show() can start a
+// fresh spinner. It must be called when a new turn begins after a session end.
 func (s *StatusMsg) Reset() {
 	if s.spinning {
 		return
 	}
-	s.cleared = false
+	s.sessionEnded = false
 	if s.done != nil {
 		select {
 		case <-s.done:

@@ -70,6 +70,15 @@ type WorkflowProgress struct {
 	Status      string // "running", "gate", "complete", "failed"
 }
 
+// SteeringQueue is the interface used by ForegroundOrchestrator for buffered
+// user steering input. It matches core.SteeringQueue so the same queue can be
+// shared between the agent and orchestration paths.
+type SteeringQueue interface {
+	Append(string)
+	Flush() []string
+	Len() int
+}
+
 // ForegroundOrchestrator runs agents synchronously in the main goroutine.
 // User sees each step as it happens via TUI events, and can steer mid-flight.
 type ForegroundOrchestrator struct {
@@ -82,7 +91,7 @@ type ForegroundOrchestrator struct {
 	promptReg *prompts.Registry
 
 	// Steering
-	steerCh chan string
+	steerQueue SteeringQueue
 
 	// TUI integration
 	events chan OrchestratorMessage
@@ -150,11 +159,39 @@ type ForegroundOrchestrator struct {
 // NewForegroundOrchestrator creates a foreground orchestrator.
 // It wires the pool's OnAgentCreated hook so every sub-agent forwards its
 // output text to the orchestrator's OutputHandler (if set).
+// defaultSteeringQueue is a minimal in-memory steering queue used when no
+// external queue is injected. It keeps the orchestrator self-contained and
+// matches the cap-1 channel semantics for single-steering use cases.
+type defaultSteeringQueue struct {
+	mu      sync.Mutex
+	pending []string
+}
+
+func (q *defaultSteeringQueue) Append(text string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.pending = append(q.pending, text)
+}
+
+func (q *defaultSteeringQueue) Flush() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	pending := q.pending
+	q.pending = nil
+	return pending
+}
+
+func (q *defaultSteeringQueue) Len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
+}
+
 func NewForegroundOrchestrator(pool *AgentPool) *ForegroundOrchestrator {
 	o := &ForegroundOrchestrator{
 		subAgents:   make(map[string]*agentic.Agent),
 		pool:        pool,
-		steerCh:     make(chan string, 1),
+		steerQueue:  &defaultSteeringQueue{},
 		gateCh:      make(chan GateDecision, 1),
 		events:      make(chan OrchestratorMessage, 1000),
 		lastOutputs: make(map[string]string),
@@ -421,11 +458,23 @@ func (o *ForegroundOrchestrator) resetStageState() {
 	o.stageAdvanced.Store(false)
 }
 
+// SetSteeringQueue sets the buffered steering queue. When non-nil, InjectSteering
+// appends to it and checkSteering flushes from it, allowing the same queue to be
+// shared with the main agent steering path.
+func (o *ForegroundOrchestrator) SetSteeringQueue(sq SteeringQueue) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.steerQueue = sq
+}
+
 // InjectSteering injects a user steering message into the next cycle.
 func (o *ForegroundOrchestrator) InjectSteering(text string) {
-	select {
-	case o.steerCh <- text:
-	default:
+	o.mu.Lock()
+	sq := o.steerQueue
+	o.mu.Unlock()
+	if sq != nil {
+		sq.Append(text)
+		return
 	}
 }
 
@@ -903,14 +952,19 @@ func (o *ForegroundOrchestrator) waitForGateApproval() string {
 	}
 }
 
-// checkSteering checks if a user steering message is available, non-blocking.
+// checkSteering checks if user steering messages are available, non-blocking.
 func (o *ForegroundOrchestrator) checkSteering() (string, bool) {
-	select {
-	case text := <-o.steerCh:
-		return text, true
-	default:
+	o.mu.Lock()
+	sq := o.steerQueue
+	o.mu.Unlock()
+	if sq == nil {
 		return "", false
 	}
+	pending := sq.Flush()
+	if len(pending) == 0 {
+		return "", false
+	}
+	return strings.Join(pending, "\n\n"), true
 }
 
 func (o *ForegroundOrchestrator) companionCountExceeded() bool {

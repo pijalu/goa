@@ -76,19 +76,21 @@ func TestForegroundOrchestrator_InjectSteering_Multiple(t *testing.T) {
 	pool := NewAgentPool(testModel("test-model"), provider.StreamOptions{}, nil)
 	orch := NewForegroundOrchestrator(pool)
 
-	// Only the first steering message should be buffered (channel cap = 1)
+	// With shared queue semantics, multiple steering messages are buffered
+	// and merged when consumed.
 	orch.InjectSteering("first")
-	orch.InjectSteering("second") // should be dropped
+	orch.InjectSteering("second")
 
 	text1, ok := orch.checkSteering()
 	if !ok {
-		t.Fatal("expected first steering to be available")
+		t.Fatal("expected steering to be available")
 	}
-	if text1 != "first" {
-		t.Errorf("expected 'first', got %q", text1)
+	want := "first\n\nsecond"
+	if text1 != want {
+		t.Errorf("expected %q, got %q", want, text1)
 	}
 
-	// Second should not be available (channel was full)
+	// Queue should be empty after draining.
 	_, ok = orch.checkSteering()
 	if ok {
 		t.Error("expected no more steering messages after draining")

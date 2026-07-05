@@ -14,7 +14,7 @@ type GoalInjector struct {
 	Mode *goal.GoalMode
 }
 
-// ActiveGoalReminder returns the appropriate goal context text for the
+// ActiveGoalReminder returns the static goal context text for the
 // current goal status, or an empty string when there is no goal.
 func (g *GoalInjector) ActiveGoalReminder() string {
 	result := g.Mode.GetGoal()
@@ -23,7 +23,7 @@ func (g *GoalInjector) ActiveGoalReminder() string {
 	}
 	switch result.Goal.Status {
 	case goal.GoalActive:
-		return goal.BuildActiveGoalReminder(*result.Goal)
+		return goal.BuildStaticGoalReminder(*result.Goal)
 	case goal.GoalBlocked:
 		return goal.BuildBlockedNote(*result.Goal)
 	case goal.GoalPaused:
@@ -33,11 +33,22 @@ func (g *GoalInjector) ActiveGoalReminder() string {
 	}
 }
 
+// ActiveGoalProgress returns the dynamic per-turn progress text for an
+// active goal, or empty string when there is no active goal.
+func (g *GoalInjector) ActiveGoalProgress() string {
+	result := g.Mode.GetGoal()
+	if result.Goal == nil {
+		return ""
+	}
+	if result.Goal.Status != goal.GoalActive {
+		return ""
+	}
+	return goal.BuildDynamicGoalProgress(*result.Goal)
+}
+
 // ReminderProvider chains multiple goal-state-style reminder sources into a
-// single agentic.GoalStateProvider. Each turn the agent prepends the joined
-// reminder text to the system prompt (see Agent.buildProviderContext). It is
-// the extension point used to inject the swarm-mode enter reminder while
-// swarm mode is active under a manual or task trigger.
+// single agentic.GoalStateProvider. The static reminder is prepended to the
+// system prompt; the dynamic progress is appended as a user message each turn.
 type ReminderProvider struct {
 	Sources []GoalReminderSource
 }
@@ -46,9 +57,11 @@ type ReminderProvider struct {
 // string in the same shape as agentic.GoalStateProvider.
 type GoalReminderSource interface {
 	ActiveGoalReminder() string
+	ActiveGoalProgress() string
 }
 
-// ActiveGoalReminder joins every non-empty source reminder with a blank line.
+// ActiveGoalReminder joins every non-empty static reminder from all sources
+// with a blank line.
 func (r *ReminderProvider) ActiveGoalReminder() string {
 	var parts []string
 	for _, s := range r.Sources {
@@ -56,6 +69,28 @@ func (r *ReminderProvider) ActiveGoalReminder() string {
 			continue
 		}
 		if text := s.ActiveGoalReminder(); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += "\n\n"
+		}
+		out += p
+	}
+	return out
+}
+
+// ActiveGoalProgress joins every non-empty dynamic progress from all sources
+// with a blank line.
+func (r *ReminderProvider) ActiveGoalProgress() string {
+	var parts []string
+	for _, s := range r.Sources {
+		if s == nil {
+			continue
+		}
+		if text := s.ActiveGoalProgress(); text != "" {
 			parts = append(parts, text)
 		}
 	}
@@ -90,3 +125,7 @@ func (s SwarmReminder) ActiveGoalReminder() string {
 	}
 	return swarm.EnterReminder()
 }
+
+// ActiveGoalProgress returns "" for swarm reminders; they carry no dynamic
+// progress.
+func (s SwarmReminder) ActiveGoalProgress() string { return "" }

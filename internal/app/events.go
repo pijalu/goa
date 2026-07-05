@@ -285,6 +285,28 @@ func (a *App) handleChatEvent(ev event.ChatEvent) {
 		a.showReviewPager(ev.ShowReviewPager)
 	case ev.PipelineProgress != nil:
 		a.showPipelineProgress(ev.PipelineProgress)
+	case ev.SteeringInjected != nil:
+		a.handleSteeringInjected(ev.SteeringInjected)
+	}
+}
+
+// handleSteeringInjected is called when buffered steering input is consumed
+// and injected into the conversation as a follow-up user message.
+func (a *App) handleSteeringInjected(injected *event.SteeringInput) {
+	if injected == nil {
+		return
+	}
+	subs := a.subs
+	if subs.chat != nil {
+		subs.chat.AddSystemMessage(fmt.Sprintf("[steering injected] %s", injected.Text))
+	}
+	if subs.footer != nil {
+		data := subs.footer.Data()
+		data.SteeringPending = ""
+		subs.footer.SetData(data)
+	}
+	if subs.tuiEngine != nil {
+		subs.tuiEngine.RequestRender()
 	}
 }
 

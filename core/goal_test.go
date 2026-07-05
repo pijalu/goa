@@ -128,6 +128,56 @@ func TestGoalManager_CreateGoal_UniqueIDs(t *testing.T) {
 	}
 }
 
+func TestGoalManager_PersistenceDir(t *testing.T) {
+	dir := t.TempDir()
+	gm := NewGoalManager(dir)
+	gm.CreateGoal("test")
+	gm.Queue.Append("queued task")
+	gm.Save()
+
+	goalsDir := filepath.Join(dir, "goals")
+	if _, err := os.Stat(goalsDir); err != nil {
+		t.Fatalf("goals directory not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(goalsDir, "goal-events.jsonl")); err != nil {
+		t.Errorf("goal-events.jsonl not under goals/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(goalsDir, "upcoming-goals.json")); err != nil {
+		t.Errorf("upcoming-goals.json not under goals/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "goal-events.jsonl")); err == nil {
+		t.Error("legacy goal-events.jsonl should not exist at dir root")
+	}
+}
+
+func TestGoalManager_MigrateLegacyGoalFiles(t *testing.T) {
+	dir := t.TempDir()
+	legacyEvents := filepath.Join(dir, "goal-events.jsonl")
+	legacyQueue := filepath.Join(dir, "upcoming-goals.json")
+	if err := os.WriteFile(legacyEvents, []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyQueue, []byte(`{}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = NewGoalManager(dir)
+
+	goalsDir := filepath.Join(dir, "goals")
+	if _, err := os.Stat(filepath.Join(goalsDir, "goal-events.jsonl")); err != nil {
+		t.Errorf("migrated goal-events.jsonl not found: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(goalsDir, "upcoming-goals.json")); err != nil {
+		t.Errorf("migrated upcoming-goals.json not found: %v", err)
+	}
+	if _, err := os.Stat(legacyEvents); err == nil {
+		t.Error("legacy goal-events.jsonl still exists at dir root")
+	}
+	if _, err := os.Stat(legacyQueue); err == nil {
+		t.Error("legacy upcoming-goals.json still exists at dir root")
+	}
+}
+
 func TestGoalManager_Persistence(t *testing.T) {
 	dir := t.TempDir()
 

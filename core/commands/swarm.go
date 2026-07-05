@@ -34,16 +34,23 @@ func (c *SwarmCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
-// CompleteArgs provides argument completions for swarm subcommands.
+// CompleteArgs provides argument completions for swarm subcommands. Only the
+// value that changes the current state is proposed; tasks are always offered.
 func (c *SwarmCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	opts := []string{"on", "off"}
-	var comps []core.ArgCompletion
-	for _, o := range opts {
-		if prefix == "" || strings.HasPrefix(o, prefix) {
-			comps = append(comps, core.ArgCompletion{Value: o})
-		}
+	if c.State == nil {
+		return nil
 	}
-	return comps
+	active := c.State.IsActive()
+	next := "off"
+	desc := "disable swarm mode"
+	if !active {
+		next = "on"
+		desc = "enable swarm mode"
+	}
+	if prefix == "" || strings.HasPrefix(next, prefix) {
+		return []core.ArgCompletion{{Value: next, Description: desc}}
+	}
+	return nil
 }
 
 // Run executes the command.

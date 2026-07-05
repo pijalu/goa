@@ -27,16 +27,18 @@ func (c *ThinkingBlocksCommand) LongHelp() string {
 }
 
 func (c *ThinkingBlocksCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	var comps []core.ArgCompletion
-	for _, v := range []struct{ val, desc string }{
-		{"on", "expand thinking blocks"},
-		{"off", "collapse thinking blocks"},
-	} {
-		if strings.HasPrefix(v.val, prefix) {
-			comps = append(comps, core.ArgCompletion{Value: v.val, Description: v.desc})
-		}
+	cfg := ctx.Config
+	collapsed := cfg != nil && cfg.TUI.Transparency.ThinkingCollapsed
+	next := "off"
+	desc := "collapse thinking blocks"
+	if collapsed {
+		next = "on"
+		desc = "expand thinking blocks"
 	}
-	return comps
+	if prefix != "" && !strings.HasPrefix(next, prefix) {
+		return nil
+	}
+	return []core.ArgCompletion{{Value: next, Description: desc}}
 }
 
 func (c *ThinkingBlocksCommand) Run(ctx core.Context, args []string) error {

@@ -7,24 +7,24 @@ Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
 (single session), Orchestration is a separate dedicated session.
 
 ## Track 1 — Bugs + Reviews (execute now)
-**Plan:** [`docs/fix-plan-2026-07-04.md`](docs/fix-plan-2026-07-04.md)
+**Plan:** [`docs/FIX-PLAN-2026-07-04.md`](docs/FIX-PLAN-2026-07-04.md)
 
 97 numbered microsteps, in execution order:
 
-- [ ] **B1** — Thinking-loop discoverability (completion + config menu)
-- [ ] **B2** — Up-arrow on empty line / cannot navigate to empty line
-- [ ] **B3** — `goal` tool: `.goa/goals` location + disable flag (default off) + cache collapse (kimi-code append-on-top model)
-- [ ] **B4** — Spinner disappears after 1st tool call
-- [ ] **B5** — Steering messages enqueued (`prompt.steered`-style injection)
-- [ ] **B6** — Config selection list cursor at `search>` marker
-- [ ] **B7** — smartsearch review (fix everything found)
+- [x] **B1** — Thinking-loop discoverability (completion + config menu)
+- [x] **B2** — Up-arrow on empty line / cannot navigate to empty line
+- [x] **B3** — `goal` tool: `.goa/goals` location + disable flag (default off) + cache collapse (kimi-code append-on-top model)
+- [x] **B4** — Spinner disappears after 1st tool call
+- [x] **B5** — Steering messages enqueued (`prompt.steered`-style injection)
+- [x] **B6** — Config selection list cursor at `search>` marker
+- [x] **B7** — smartsearch review (fix everything found)
 - [ ] **R1** — Stability review of all TUI code (fix everything found)
 - [ ] **R2** — Perf review of all TUI code (fix everything found)
 - [ ] **R3** — Functional review: workflow/swarm/multi-agent/goal (fix everything found)
 - [ ] **Close** — gates, interactive smoke test, archive `bugs.md` → `docs/archive/bugs.2026-07-04.md`
 
 ## Track 2 — Orchestration (separate session)
-**Plan:** [`docs/orchestration-design.md`](docs/orchestration-design.md)
+**Plan:** [`docs/ORCHESTRATION-DESIGN.md`](docs/ORCHESTRATION-DESIGN.md)
 
 43 numbered microsteps across 8 phases. Confirmed decisions baked in:
 per-run topology selector (hub/fanout/pipeline), config-only role→model map

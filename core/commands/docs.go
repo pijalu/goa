@@ -75,22 +75,29 @@ func (c *ToolsDocCommand) LongHelp() string {
 
 func (c *ToolsDocCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
 	if idx := strings.LastIndex(prefix, ":"); idx >= 0 {
-		return completeToolToggleSuffix(prefix[:idx], prefix[idx+1:])
+		return completeToolToggleSuffix(ctx, prefix[:idx], prefix[idx+1:])
 	}
 	return completeToolNames(ctx, prefix)
 }
 
-func completeToolToggleSuffix(name, suffix string) []core.ArgCompletion {
+func completeToolToggleSuffix(ctx core.Context, name, suffix string) []core.ArgCompletion {
 	if !isConfigurableTool(name) {
 		return nil
 	}
-	var comps []core.ArgCompletion
-	for _, v := range []string{"on", "off"} {
-		if strings.HasPrefix(v, suffix) {
-			comps = append(comps, core.ArgCompletion{Value: name + ":" + v, Description: "toggle " + name})
-		}
+	if ctx.Config == nil {
+		return nil
 	}
-	return comps
+	enabled := getToolEnabled(ctx.Config, name)
+	nextValue := "off"
+	desc := "disable " + name
+	if !enabled {
+		nextValue = "on"
+		desc = "enable " + name
+	}
+	if suffix != "" && !strings.HasPrefix(nextValue, suffix) {
+		return nil
+	}
+	return []core.ArgCompletion{{Value: name + ":" + nextValue, Description: desc}}
 }
 
 func completeToolNames(ctx core.Context, prefix string) []core.ArgCompletion {

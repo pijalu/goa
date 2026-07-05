@@ -25,9 +25,16 @@ func (c *ThinkingCommand) LongHelp() string {
 }
 
 func (c *ThinkingCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	current := ""
+	if ctx.AgentManager != nil {
+		current = ctx.AgentManager.GetThinkingLevel()
+	}
 	var comps []core.ArgCompletion
 	for _, level := range internal.AllThinkingLevels() {
 		s := string(level)
+		if s == current {
+			continue
+		}
 		if strings.HasPrefix(s, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: s, Description: thinkingLevelDesc(s)})
 		}

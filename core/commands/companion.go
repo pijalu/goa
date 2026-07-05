@@ -27,13 +27,31 @@ func (c *CompanionToggleCommand) LongHelp() string {
 }
 
 func (c *CompanionToggleCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	mode := multiagent.WorkflowInactive
+	if ctx.ForegroundOrchestrator != nil {
+		mode = ctx.ForegroundOrchestrator.Mode()
+	}
+	var opts []struct{ val, desc string }
+	switch mode {
+	case multiagent.WorkflowAgentDriven:
+		opts = []struct{ val, desc string }{
+			{"off", "disable companion mode"},
+			{"framework", "enable framework-driven (review every turn)"},
+		}
+	case multiagent.WorkflowCompanionMinor:
+		opts = []struct{ val, desc string }{
+			{"off", "disable companion mode"},
+			{"agent", "enable agent-driven mode"},
+		}
+	default:
+		opts = []struct{ val, desc string }{
+			{"on", "enable companion mode (agent-driven)"},
+			{"agent", "enable agent-driven mode"},
+			{"framework", "enable framework-driven (review every turn)"},
+		}
+	}
 	var comps []core.ArgCompletion
-	for _, v := range []struct{ val, desc string }{
-		{"on", "enable companion mode (agent-driven)"},
-		{"off", "disable companion mode"},
-		{"agent", "enable agent-driven mode"},
-		{"framework", "enable framework-driven (review every turn)"},
-	} {
+	for _, v := range opts {
 		if strings.HasPrefix(v.val, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: v.val, Description: v.desc})
 		}

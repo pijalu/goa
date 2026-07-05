@@ -78,6 +78,9 @@ type ChatEvent struct {
 	PipelineProgress *PipelineProgress
 	// TaskUpdate carries a background task status update.
 	TaskUpdate *TaskUpdate
+	// SteeringInjected is emitted when buffered steering input is consumed and
+	// injected into the conversation as a follow-up user message.
+	SteeringInjected *SteeringInput
 }
 
 // Flash is a transient flash message displayed in the status area.

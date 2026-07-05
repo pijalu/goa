@@ -936,10 +936,40 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	return scene
 }
 
-// extractCursorMarker scans base layers for the CURSOR_MARKER emitted by the
-// focused editor, sets Scene.Cursor to its absolute (row, col) position, and
-// strips the marker. col is grapheme-aware (matches the terminal).
+// extractCursorMarker scans layers (topmost overlay first, then base layers)
+// for the CURSOR_MARKER emitted by the focused input, sets Scene.Cursor to
+// its absolute (row, col) position, and strips the marker. col is
+// grapheme-aware (matches the terminal).
 func extractCursorMarker(scene *Scene) {
+	baseHeight := baseCanvasHeight(scene.Layers)
+	termH := scene.TerminalH
+	if termH < 1 {
+		termH = 24
+	}
+	viewportStart := max(0, baseHeight-termH)
+
+	// Scan topmost overlay first so input-owning overlays capture the cursor.
+	for li := len(scene.Layers) - 1; li >= 0; li-- {
+		l := &scene.Layers[li]
+		if l.Kind != LayerOverlay {
+			continue
+		}
+		rowOffset := viewportStart + l.Rect.Y
+		for ri := len(l.Content) - 1; ri >= 0; ri-- {
+			line := l.Content[ri]
+			idx := strings.Index(line, CURSOR_MARKER)
+			if idx < 0 {
+				continue
+			}
+			before := line[:idx]
+			col := visibleWidth(before)
+			l.Content[ri] = before + line[idx+len(CURSOR_MARKER):]
+			scene.Cursor = &CursorPos{Row: rowOffset + ri, Col: col}
+			return
+		}
+	}
+
+	// No overlay cursor: fall back to the focused base-layer editor.
 	for li := len(scene.Layers) - 1; li >= 0; li-- {
 		l := &scene.Layers[li]
 		if l.Kind != LayerBase {

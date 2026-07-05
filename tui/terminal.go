@@ -364,37 +364,10 @@ func (t *ProcessTerminal) Stop() {
 
 // drainInput reads any pending stdin data until idle for idleMs or maxMs reached.
 // Prevents buffered key sequences from leaking to the parent shell after exit.
+// The platform-specific implementation avoids leaking goroutines by using
+// non-blocking I/O where available.
 func (t *ProcessTerminal) drainInput(maxMs, idleMs int) {
-	deadline := time.After(time.Duration(maxMs) * time.Millisecond)
-	buf := make([]byte, 256)
-	for {
-		select {
-		case <-deadline:
-			return
-		default:
-		}
-		// Try a non-blocking read via goroutine with idleMs timeout
-		type readResult struct {
-			n   int
-			err error
-		}
-		ch := make(chan readResult, 1)
-		go func() {
-			n, err := os.Stdin.Read(buf)
-			ch <- readResult{n, err}
-		}()
-		select {
-		case r := <-ch:
-			if r.err != nil || r.n == 0 {
-				return
-			}
-			// Got data — keep draining
-		case <-time.After(time.Duration(idleMs) * time.Millisecond):
-			return // idle for idleMs — safe to exit
-		case <-deadline:
-			return
-		}
-	}
+	drainInputNonBlocking(t.fd, maxMs, idleMs)
 }
 
 // Write writes bytes to stdout.

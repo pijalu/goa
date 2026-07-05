@@ -250,6 +250,9 @@ func TestStatusMsg_ShowAfterClear(t *testing.T) {
 // TestStatusMsg_ShowAfterClearWithoutResetIsNoOp verifies that after Clear(),
 // Show() is a no-op until Reset() is called. This prevents late events
 // (e.g. EventProgress after EventEnd) from re-starting the spinner.
+// TestStatusMsg_ShowAfterClearWithoutResetIsNoOp verifies that after a
+// session-end Clear(), Show() is a no-op until Reset() is called. In-turn
+// Clear() calls do NOT block subsequent Show(); only SessionEnd arms the guard.
 func TestStatusMsg_ShowAfterClearWithoutResetIsNoOp(t *testing.T) {
 	defer resetSpinner()
 
@@ -260,20 +263,21 @@ func TestStatusMsg_ShowAfterClearWithoutResetIsNoOp(t *testing.T) {
 		t.Fatal("Show() did not make status visible")
 	}
 
-	sm.Clear()
+	// Simulate end of session: SessionEnd blocks future Show.
+	sm.SessionEnd()
 	if sm.IsVisible() {
-		t.Fatal("Clear() did not hide status")
+		t.Fatal("SessionEnd() did not hide status")
 	}
 	if sm.Render(80) != nil {
-		t.Error("Render() should return nil after Clear()")
+		t.Error("Render() should return nil after SessionEnd()")
 	}
 
 	sm.Show("Waiting...")
 	if sm.IsVisible() {
-		t.Error("Show() after Clear() without Reset() should not make status visible")
+		t.Error("Show() after SessionEnd() without Reset() should not make status visible")
 	}
 	if sm.Text() != "" {
-		t.Errorf("Show() after Clear() without Reset() should leave text empty, got %q", sm.Text())
+		t.Errorf("Show() after SessionEnd() without Reset() should leave text empty, got %q", sm.Text())
 	}
 	if sm.Render(80) != nil {
 		t.Error("Render() should return nil after Show() without Reset()")
@@ -284,6 +288,40 @@ func TestStatusMsg_ShowAfterClearWithoutResetIsNoOp(t *testing.T) {
 	sm.Show("Waiting...")
 	if !sm.IsVisible() {
 		t.Fatal("Show() after Reset() did not make status visible")
+	}
+}
+
+// TestStatusMsg_ShowAfterInTurnClear verifies that a normal Clear() during a
+// turn does not block the next Show(), so the spinner survives across multiple
+// sequential tool calls in the same turn.
+func TestStatusMsg_ShowAfterInTurnClear(t *testing.T) {
+	defer resetSpinner()
+
+	SetSpinner(spinner.Definition{
+		Interval: 100,
+		Frames:   []string{"⠋", "⠙", "⠹"},
+	})
+	defer resetSpinner()
+
+	sm := NewStatusMsg()
+
+	sm.Show("tool 1")
+	if sm.Text() != "tool 1" {
+		t.Fatalf("first Show: got %q", sm.Text())
+	}
+
+	sm.Clear()
+	if sm.IsVisible() {
+		t.Fatal("Clear() did not hide status")
+	}
+
+	// Next tool in the same turn should be able to show again without Reset().
+	sm.Show("tool 2")
+	if sm.Text() != "tool 2" {
+		t.Fatalf("Show() after in-turn Clear() failed: got %q", sm.Text())
+	}
+	if !sm.IsVisible() {
+		t.Fatal("Show() after in-turn Clear() did not make status visible")
 	}
 }
 

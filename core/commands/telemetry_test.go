@@ -28,6 +28,22 @@ func TestTelemetryCommandToggle(t *testing.T) {
 	}
 }
 
+func TestTelemetryCommand_CompleteArgs(t *testing.T) {
+	enabledClient := telemetry.NewClient(true, t.TempDir())
+	enabledCmd := &TelemetryCommand{Client: enabledClient}
+	vals := enabledCmd.CompleteArgs(core.Context{}, "")
+	if len(vals) != 1 || vals[0].Value != "off" {
+		t.Errorf("enabled: got %v, want [off]", vals)
+	}
+
+	disabledClient := telemetry.NewClient(false, t.TempDir())
+	disabledCmd := &TelemetryCommand{Client: disabledClient}
+	vals = disabledCmd.CompleteArgs(core.Context{}, "")
+	if len(vals) != 1 || vals[0].Value != "on" {
+		t.Errorf("disabled: got %v, want [on]", vals)
+	}
+}
+
 func TestTelemetryCommandNoClient(t *testing.T) {
 	cmd := &TelemetryCommand{}
 	if err := cmd.Run(core.Context{}, nil); err == nil {

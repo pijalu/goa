@@ -277,6 +277,7 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 		// Dispatch steering only after am.running is false, so the
 		// alreadyRunning check in SendUserInput does not re-queue.
 		if pending != "" {
+			am.emitSteeringInjected(pending)
 			_ = am.SendUserInput(pending)
 		}
 	}()
@@ -284,8 +285,32 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	am.applyPendingMajorMode()
 	am.applyPendingThinkingLevel()
 	am.executeRunner(ctx, runner, input, images)
+
+	// After the runner finishes, flush any steering input submitted while the
+	// turn was running and queue it as the next user turn.
+	am.mu.Lock()
+	pending := am.steering.Flush()
+	if len(pending) > 0 {
+		am.pendingSteering = strings.Join(pending, "\n\n")
+	}
+	am.mu.Unlock()
+
 	if am.postTurnHook != nil {
 		am.postTurnHook()
+	}
+}
+
+func (am *AgentManager) emitSteeringInjected(text string) {
+	am.emitChat(event.ChatEvent{SteeringInjected: &event.SteeringInput{Text: text}})
+}
+
+func (am *AgentManager) emitChat(ev event.ChatEvent) {
+	if am.eventsOut == nil {
+		return
+	}
+	select {
+	case am.eventsOut.Chat <- ev:
+	default:
 	}
 }
 
@@ -381,6 +406,22 @@ func (am *AgentManager) IsRunning() bool {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	return am.running
+}
+
+// SteeringQueue returns the session's steering queue. The TUI uses it to
+// append user input while the agent is running.
+func (am *AgentManager) SteeringQueue() *SteeringQueue {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.steering
+}
+
+// SetSteeringQueue replaces the steering queue. Used by tests and by wiring
+// code that wants a shared queue instance.
+func (am *AgentManager) SetSteeringQueue(sq *SteeringQueue) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.steering = sq
 }
 
 // LastUserInput returns the last user message.

@@ -278,6 +278,10 @@ type Context struct {
 	// LoopDetector provides access to the session loop detector for
 	// temporary override commands (/config:temp).
 	LoopDetector *LoopDetector
+
+	// Steering buffers user input submitted while the agent is running and
+	// injects it as a follow-up user message when the current turn ends.
+	Steering *SteeringQueue
 }
 
 // Compile-time assertions that Context implements the three role interfaces.

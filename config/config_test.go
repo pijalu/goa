@@ -1022,6 +1022,9 @@ func TestToolEnabledConfigDefaults(t *testing.T) {
 	if cfg.Tools.Enabled.RequestReview {
 		t.Error("RequestReview should be disabled by default")
 	}
+	if cfg.Tools.Enabled.Goal {
+		t.Error("Goal should be disabled by default")
+	}
 }
 
 func TestToolEnabledConfigRoundTrip(t *testing.T) {
@@ -1073,6 +1076,10 @@ func TestToolEnabledConfigSetEnabled(t *testing.T) {
 	cfg.SetEnabled("memento", true)
 	if !cfg.Memento {
 		t.Error("Memento should be true")
+	}
+	cfg.SetEnabled("goal", true)
+	if !cfg.Goal {
+		t.Error("Goal should be true")
 	}
 	if cfg.BGExec {
 		t.Error("BGExec should remain false")

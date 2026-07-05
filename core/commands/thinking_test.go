@@ -7,8 +7,10 @@ package commands
 import (
 	"testing"
 
+	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/event"
 )
 
 func TestThinkingCommand_Name(t *testing.T) {
@@ -20,6 +22,7 @@ func TestThinkingCommand_Name(t *testing.T) {
 
 func TestThinkingCommand_CompleteArgs(t *testing.T) {
 	cmd := &ThinkingCommand{}
+	// No current level: all levels offered.
 	comps := cmd.CompleteArgs(core.Context{}, "")
 	if len(comps) != 6 {
 		t.Errorf("expected 6 completions, got %d", len(comps))
@@ -27,6 +30,23 @@ func TestThinkingCommand_CompleteArgs(t *testing.T) {
 	comps = cmd.CompleteArgs(core.Context{}, "h")
 	if len(comps) != 1 || comps[0].Value != "high" {
 		t.Errorf("expected 1 'high' completion, got %+v", comps)
+	}
+
+	// Current level medium: medium excluded.
+	cfg := &config.Config{}
+	ss := core.NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	am := core.NewAgentManager(cfg, nil, nil, ss, tuiEvents, "")
+	_ = am.SetThinkingLevel("medium")
+	ctx := core.Context{AgentManager: am}
+	comps = cmd.CompleteArgs(ctx, "")
+	if len(comps) != 5 {
+		t.Errorf("expected 5 completions when medium is current, got %d", len(comps))
+	}
+	for _, c := range comps {
+		if c.Value == "medium" {
+			t.Error("current thinking level should not be proposed")
+		}
 	}
 }
 

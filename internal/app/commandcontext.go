@@ -98,7 +98,16 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 			subs.tuiEngine.ShowOverlay(pv, opts)
 		},
 		LoopDetector: loopDetectorFrom(subs),
+		Steering:     steeringQueueFrom(subs),
 	}
+}
+
+// steeringQueueFrom returns the session steering queue from the agent manager.
+func steeringQueueFrom(subs *subsystems) *core.SteeringQueue {
+	if subs.agentMgr == nil {
+		return nil
+	}
+	return subs.agentMgr.SteeringQueue()
 }
 
 // lastAssistantText returns the last assistant message text when the chat

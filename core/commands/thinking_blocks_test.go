@@ -21,6 +21,23 @@ func TestThinkingBlocksCommand_Name(t *testing.T) {
 	}
 }
 
+func TestThinkingBlocksCommand_CompleteArgs(t *testing.T) {
+	cfg := &config.Config{TUI: config.TUIConfig{Transparency: config.TransparencyConfig{ThinkingCollapsed: false}}}
+	ctx := core.Context{Config: cfg}
+	cmd := &ThinkingBlocksCommand{}
+
+	vals := cmd.CompleteArgs(ctx, "")
+	if len(vals) != 1 || vals[0].Value != "off" {
+		t.Errorf("expanded: got %v, want [off]", vals)
+	}
+
+	cfg.TUI.Transparency.ThinkingCollapsed = true
+	vals = cmd.CompleteArgs(ctx, "")
+	if len(vals) != 1 || vals[0].Value != "on" {
+		t.Errorf("collapsed: got %v, want [on]", vals)
+	}
+}
+
 func TestThinkingBlocksCommand_ToggleAndPersist(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

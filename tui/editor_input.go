@@ -193,6 +193,11 @@ func (e *Editor) handleCursorUp() {
 func (e *Editor) handleCursorDown() {
 	if e.histIdx > -1 && e.isOnLastVisualLine() {
 		e.navigateHistory(1)
+	} else if len(e.buf) == 0 && e.histIdx > -1 {
+		// Empty buffer while still in history browsing mode: allow Down to
+		// return to the newer entry / empty line even if visual-line checks
+		// would not trigger.
+		e.navigateHistory(1)
 	} else if e.isOnLastVisualLine() {
 		e.clearPreferredCol()
 		e.pos = findLineEnd(string(e.buf), e.pos)

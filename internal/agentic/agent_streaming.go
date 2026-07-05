@@ -823,6 +823,21 @@ func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 		if reminder := p.ActiveGoalReminder(); reminder != "" {
 			sp = reminder + "\n\n" + sp
 		}
+		if progress := p.ActiveGoalProgress(); progress != "" {
+			// Merge the dynamic goal progress into the most recent user
+			// message so the cacheable system-prompt prefix stays stable and
+			// the changing reminder becomes the last conversation message.
+			for i := len(msgs) - 1; i >= 0; i-- {
+				if msgs[i].Role == provider.RoleUser {
+					prefix := provider.ContentBlock{
+						Type: provider.ContentBlockText,
+						Text: "[goal progress]\n" + progress + "\n\n",
+					}
+					msgs[i].Content = append([]provider.ContentBlock{prefix}, msgs[i].Content...)
+					break
+				}
+			}
+		}
 	}
 
 	return provider.Context{

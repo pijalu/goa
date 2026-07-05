@@ -670,6 +670,20 @@ func (e *Editor) navigateHistory(direction int) {
 		return
 	}
 
+	if newIdx >= len(e.history) {
+		// Past newest: return to a truly empty editing line.
+		e.histIdx = -1
+		if e.historyDraft != nil {
+			e.setTextLocked(*e.historyDraft)
+			e.historyDraft = nil
+		} else {
+			e.clearLocked()
+		}
+		e.clearPreferredCol()
+		e.adjustScrollToCursor()
+		return
+	}
+
 	if e.histIdx == -1 && newIdx >= 0 {
 		draft := string(e.buf)
 		e.historyDraft = &draft
@@ -680,6 +694,10 @@ func (e *Editor) navigateHistory(direction int) {
 	e.applyHistoryIndex()
 }
 
+// nextHistoryIndex computes the target history index for a direction.
+// direction: -1 = older, 1 = newer.
+// Returns -1 to mean "return to editing state" (past newest), -2 to mean
+// no-op (already in editing state and pressing Down).
 func (e *Editor) nextHistoryIndex(direction int) int {
 	switch {
 	case e.histIdx == -1 && direction == -1:
@@ -688,6 +706,9 @@ func (e *Editor) nextHistoryIndex(direction int) int {
 		return -2 // sentinel: no-op
 	default:
 		newIdx := e.histIdx + direction
+		if newIdx < 0 {
+			return 0 // clamp to oldest entry
+		}
 		if newIdx >= len(e.history) {
 			return -1
 		}
