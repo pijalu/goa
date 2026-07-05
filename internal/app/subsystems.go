@@ -15,6 +15,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/orchestrator"
 	commands "github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/sessiontree"
@@ -72,6 +73,8 @@ type subsystems struct {
 	stateStore        *core.StateStore
 	goalManager       *core.GoalManager
 	goalDriver        *core.GoalDriver
+	orchAdapter       *OrchestratorAdapter
+	orchActive        *orchestrator.ActiveRuntime
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
 	runWizard         bool // set when /setup command requests wizard
@@ -809,6 +812,8 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		stateStore:        ab.stateStore,
 		goalManager:       goalManager,
 		goalDriver:        goalDriver,
+		orchAdapter:       NewOrchestratorAdapter(agentPool, cfg),
+		orchActive:        orchestrator.NewActiveRuntime(),
 		contextFiles:      internal.LoadProjectContextFiles(projectDir, cfg.ConfigDir),
 		requestReviewTool: requestReviewTool,
 		delegateTool:      delegateTool,
@@ -822,6 +827,17 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
 	}
+
+	// Register the orchestrator slash command now that the adapter + active
+	// holder exist. RegisterAll already ran (in initSkillAndCommandLayer) and
+	// deliberately does not register /orchestrate unconditionally, so this is
+	// the single registration point.
+	orchCmd := &commands.OrchestrateCommand{
+		Builder: s.orchAdapter,
+		Active:  s.orchActive,
+		RootDir: filepath.Join(projectDir, ".goa", "orchestrator"),
+	}
+	_ = core.GlobalRegistry().Register(orchCmd)
 
 	s.dreamScheduler = newDreamScheduler(s)
 	_ = s.dreamScheduler.readSchedulerState()

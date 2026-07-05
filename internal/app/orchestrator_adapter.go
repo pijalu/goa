@@ -47,8 +47,9 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 
 	factory := func(role, model string) (*orchestrator.AgentHandle, error) {
 		// Configure the role's model on the multiagent pool so GetOrCreate
-		// builds the agent against the right provider/model.
-		rcfg := a.cfg.Orchestrator.Roles[role]
+		// builds the agent against the right provider/model. Use the passed
+		// oCfg as the source of truth for role bindings.
+		rcfg := oCfg.Roles[role]
 		maCfg := multiagent.AgentConfig{
 			ModelName:    model,
 			ProviderID:   rcfg.Provider,

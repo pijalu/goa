@@ -89,27 +89,26 @@ Goal: a full agent-driven workflow invocable via `/orchestrate`, observable
 in the TUI, goal-bindable, and resumable — validated against local LM /
 DeepSeek. Commit + update this checklist at each milestone.
 
-#### M1 — Subsystem wiring & Context exposure (Phase 7 core)
-- [ ] M1.1 `OrchestratorRuntimeAccessor` on `core.Context` (lazy handle to a
-      live `*orchestrator.Runtime`, set when a run is active)
-- [ ] M1.2 Build the `OrchestratorAdapter` once in `assembleSubsystems`, store
-      on `subsystems`, expose via Context accessor
-- [ ] M1.3 Per-run orchestrator store root = `.goa/orchestrator` (reuse goal
-      store-root pattern)
-- [ ] gates + commit
+#### M1 — Subsystem wiring & Context exposure (Phase 7 core)  ✅
+- [x] M1.1 `OrchestratorBuilder` interface + `ActiveRuntime` holder in
+      `core/orchestrator/holder.go` (avoids core↔orchestrator import cycle)
+- [x] M1.2 `OrchestratorAdapter` built once in `assembleSubsystems`, stored on
+      `subsystems` (`orchAdapter` + `orchActive`)
+- [x] M1.3 Per-run store root `.goa/orchestrator` wired into the command
+- [x] gates + commit
 
-#### M2 — Slash command surface (Phase 7)
-- [ ] M2.1 Replace stub `OrchestrateCommand` with real subcommands:
-      `new [topology] [goal <id|objective>]`, `list`, `resume <run-id>`,
-      `steer <agent-id|all|orchestrator> <text>`
-- [ ] M2.2 `new` builds a Runtime via the adapter and launches `Run` in a
-      goroutine; forwards live events to the TUI event bus as `AgentEvent`s
-- [ ] M2.3 `list` prints `ListRuns()`; `resume` rebuilds + relaunches;
-      `steer` appends to the target handle / broadcast
-- [ ] M2.4 Completions for subcommands + topology enum
-- [ ] M2.5 Live integration test (LM/DeepSeek): `/orchestrate new fanout`
-      drives real agents end-to-end
-- [ ] gates + commit
+#### M2 — Slash command surface (Phase 7)  ✅
+- [x] M2.1 Real `OrchestrateCommand`: `new [topology] [goal <obj>] <obj>`,
+      `list`, `resume <run-id>`, `steer <target> <text>`
+- [x] M2.2 `new` builds a Runtime via the adapter, launches `Run` in a
+      goroutine, forwards lifecycle events into the chat viewport
+      (Flash + InterAgent); clears active holder on completion
+- [x] M2.3 `list` prints `ListRuns()`; `resume` replays + relaunches;
+      `steer` routes to handle / broadcast / orchestrator via Runtime methods
+- [x] M2.4 Completions for subcommands + topology shortcuts
+- [x] M2.5 Live integration test (LMStudio): `/orchestrate new fanout`
+      drives real agents end-to-end, run persisted + replayed
+- [x] gates + commit
 
 #### M3 — DelegateTool & true hub topology (Phase 3 remainder)
 - [ ] M3.1 `core/orchestrator` `DelegateTool` (implements `agentic.Tool`):

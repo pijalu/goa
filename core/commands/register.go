@@ -19,8 +19,8 @@ import (
 // Passing a zero value is allowed for tests; commands that need dependencies
 // will return an error if called without them.
 type CommandDependencies struct {
-	GoalCommand     *GoalCommand
-	AuthStore       *auth.Store
+	GoalCommand *GoalCommand
+	AuthStore   *auth.Store
 	SessionTree     *sessiontree.Manager
 	ThemeStore      *config.ThemeStore
 	UpdateChecker   *update.Checker
@@ -71,8 +71,7 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		// multiagent
 		&PipelineCommand{},
 		&GoCommand{},
-		// orchestrate
-		&OrchestrateCommand{},
+		// orchestrate (registered conditionally below via deps)
 		// profile
 		&ProfileCommand{},
 		// pair / reviewer workflows

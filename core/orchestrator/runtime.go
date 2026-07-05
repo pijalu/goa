@@ -39,6 +39,10 @@ type Runtime struct {
 	bus    chan Event
 	closed atomic.Bool
 
+	doneCh chan struct{}
+
+	objective string
+
 	// newID generates a unique run id. Override in tests for determinism.
 	newID func() string
 }
@@ -61,6 +65,7 @@ func NewRuntime(cfg config.OrchestratorConfig, pool *BoundedAgentPool, store Eve
 		topology: top,
 		rootDir:  rootDir,
 		bus:      make(chan Event, 256),
+		doneCh:   make(chan struct{}),
 		newID:    defaultRunID,
 	}, nil
 }
@@ -113,6 +118,7 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 		return err
 	}
 	r.runID = r.newID()
+	r.objective = objective
 	if r.store == nil {
 		// Still set runID on emitted events (handled in emit).
 	}
@@ -139,6 +145,7 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 
 	r.emit(Event{Type: EventRunFinished, Payload: map[string]any{"ok": err == nil}})
 	r.closeBus()
+	close(r.doneCh)
 	return err
 }
 
@@ -302,3 +309,86 @@ func statsPayload(s AgentStatsSnapshot) map[string]any {
 func defaultRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
 }
+
+// Done returns a channel closed when Run finishes (success or error). Allows
+// the TUI / command layer to know when to unsubscribe and clear the active
+// runtime holder.
+func (r *Runtime) Done() <-chan struct{} {
+	return r.doneCh
+}
+
+// SteerAgent appends a steering message to a specific live handle (by id).
+// Returns true if the handle was found. Safe from any goroutine.
+func (r *Runtime) SteerAgent(agentID, text string) bool {
+	for _, h := range r.pool.Live() {
+		if h.ID == agentID {
+			h.Steer(text)
+			r.emit(Event{Type: EventAgentSteered, AgentID: agentID, Role: h.Role,
+				Payload: map[string]any{"from": "user", "text": text}})
+			return true
+		}
+	}
+	return false
+}
+
+// SteerAll broadcasts a steering message to every live handle (including the
+// orchestrator role if present). Used by the Summary tab.
+func (r *Runtime) SteerAll(text string) {
+	for _, h := range r.pool.Live() {
+		h.Steer(text)
+		r.emit(Event{Type: EventAgentSteered, AgentID: h.ID, Role: h.Role,
+			Payload: map[string]any{"from": "broadcast", "text": text}})
+	}
+}
+
+// SteerOrchestrator targets the orchestrator-role handle only.
+func (r *Runtime) SteerOrchestrator(text string) bool {
+	for _, h := range r.pool.Live() {
+		if h.Role == "orchestrator" {
+			h.Steer(text)
+			r.emit(Event{Type: EventAgentSteered, AgentID: h.ID, Role: h.Role,
+				Payload: map[string]any{"from": "user", "text": text}})
+			return true
+		}
+	}
+	return false
+}
+
+// AgentRow is one row of the Summary snapshot, used by the TUI table.
+type AgentRow struct {
+	ID       string
+	Role     string
+	Model    string
+	Status   AgentStatus
+	Turns    int
+	TokensIn int
+	TokensOut int
+	ToolCalls int
+	Messages  int
+}
+
+// Snapshot returns the current live-agent rows for the Summary tab. It is a
+// point-in-time copy; mutating it does not affect the run.
+func (r *Runtime) Snapshot() []AgentRow {
+	handles := r.pool.Live()
+	rows := make([]AgentRow, 0, len(handles))
+	for _, h := range handles {
+		s := h.Stats.Snapshot()
+		rows = append(rows, AgentRow{
+			ID: h.ID, Role: h.Role, Model: h.Model,
+			Status: s.Status, Turns: s.Turns,
+			TokensIn: s.TokensIn, TokensOut: s.TokensOut,
+			ToolCalls: s.ToolCalls,
+		})
+	}
+	return rows
+}
+
+// Objective returns the objective of the current/last run.
+func (r *Runtime) Objective() string { return r.objective }
+
+// Topology returns the topology of the current run.
+func (r *Runtime) Topology() Topology { return r.topology }
+
+// RunID returns the id assigned to the current run (empty before Run starts).
+func (r *Runtime) RunID() string { return r.runID }

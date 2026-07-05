@@ -8,70 +8,38 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core"
-	"github.com/pijalu/goa/internal/agentic/provider"
-	"github.com/pijalu/goa/multiagent"
+	"github.com/pijalu/goa/core/orchestrator"
 )
 
-func TestOrchestrateCommand_ParsesTasks(t *testing.T) {
-	cmd := &OrchestrateCommand{}
-	ctx := core.Context{
-		ForegroundOrchestrator: nil, // no orchestrator — should print message
-	}
-
-	// Run with tasks
-	err := cmd.Run(ctx, []string{"task1", "task2"})
-	if err != nil {
-		// Should not error — prints message when no orchestrator
-		t.Logf("Run with tasks (expected): %v", err)
-	}
-}
-
-func TestOrchestrateCommand_NoArgs_ReturnsError(t *testing.T) {
-	cmd := &OrchestrateCommand{}
-	ctx := core.Context{}
-
-	err := cmd.Run(ctx, []string{})
-	if err == nil {
-		t.Fatal("expected error with no args")
-	}
-}
-
-func TestOrchestrateCommand_WithOrchestrator(t *testing.T) {
-	pool := multiagent.NewAgentPool(testCmdModel(), provider.StreamOptions{}, nil)
-	orch := multiagent.NewForegroundOrchestrator(pool)
-	ctx := core.Context{
-		ForegroundOrchestrator: orch,
-	}
-
-	cmd := &OrchestrateCommand{}
-	err := cmd.Run(ctx, []string{"test task"})
-	// Should not error — orchestrator available
-	if err != nil {
-		t.Logf("Run with orchestrator: %v", err)
-	}
-}
-
-func TestOrchestrateCommand_EmptyTasks_PrintsMessage(t *testing.T) {
-	cmd := &OrchestrateCommand{}
-	ctx := core.Context{}
-
-	err := cmd.Run(ctx, []string{""})
-	if err != nil {
-		t.Logf("Run with empty string: %v", err)
-	}
-	// Should not error — prints a message and returns nil
-}
-
-func TestOrchestrateCommand_ShortHelp_NotEmpty(t *testing.T) {
-	cmd := &OrchestrateCommand{}
+func TestOrchestrateCommand_Help(t *testing.T) {
+	cmd := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime()}
 	if cmd.ShortHelp() == "" {
 		t.Error("ShortHelp should not be empty")
 	}
-}
-
-func TestOrchestrateCommand_LongHelp_NotEmpty(t *testing.T) {
-	cmd := &OrchestrateCommand{}
 	if cmd.LongHelp() == "" {
 		t.Error("LongHelp should not be empty")
+	}
+	if cmd.Name() != "orchestrate" {
+		t.Errorf("Name = %q, want orchestrate", cmd.Name())
+	}
+	if len(cmd.Aliases()) == 0 {
+		t.Error("expected at least one alias (orch)")
+	}
+}
+
+func TestOrchestrateCommand_Completion(t *testing.T) {
+	cmd := &OrchestrateCommand{}
+	comps := cmd.CompleteArgs(core.Context{}, "")
+	if len(comps) == 0 {
+		t.Fatal("expected completion entries")
+	}
+	haveNew := false
+	for _, c := range comps {
+		if c.Value == "new" {
+			haveNew = true
+		}
+	}
+	if !haveNew {
+		t.Errorf("completion missing 'new'; got %+v", comps)
 	}
 }
