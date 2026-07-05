@@ -13,6 +13,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/orchestrator"
 )
 
@@ -25,9 +26,10 @@ type OrchestrateBuilder = orchestrator.Builder
 // selection (hub/fanout/pipeline), goal binding, listing, resuming, and
 // per-target steering. It is the user-facing surface over core/orchestrator.
 type OrchestrateCommand struct {
-	Builder OrchestrateBuilder // builds a wired Runtime per run
-	Active  *orchestrator.ActiveRuntime
-	RootDir string // event-store root, typically ".goa/orchestrator"
+	Builder  OrchestrateBuilder        // builds a wired Runtime per run
+	Active   *orchestrator.ActiveRuntime
+	RootDir  string                    // event-store root, typically ".goa/orchestrator"
+	GoalMode *goal.GoalMode            // optional; enables `goal <objective>` binding
 }
 
 func (c *OrchestrateCommand) Name() string      { return "orchestrate" }
@@ -128,6 +130,13 @@ func (c *OrchestrateCommand) runNew(ctx core.Context, rest []string) error {
 	rt, err := c.Builder.NewRuntime(oCfg, c.RootDir)
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
+	}
+	if p.goalObjective != "" {
+		if c.GoalMode == nil {
+			writeStr(ctx, "Warning: goal binding requested but goal mode unavailable; running goal-less.\n")
+		} else if err := c.bindGoal(rt, p.goalObjective); err != nil {
+			writeFmt(ctx, "Warning: goal bind failed (%v); running goal-less.\n", err)
+		}
 	}
 	if prev := c.Active.Set(rt); prev != nil {
 		// An older run is still active; leave it running but stop surfacing it.
@@ -328,4 +337,14 @@ func truncStr(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// bindGoal attaches a GoalBinder to the runtime and creates the goal.
+func (c *OrchestrateCommand) bindGoal(rt *orchestrator.Runtime, objective string) error {
+	gb := NewGoalBinder(c.GoalMode)
+	if _, err := gb.Create(objective, 0); err != nil {
+		return err
+	}
+	rt.SetGoalBinder(gb)
+	return nil
 }

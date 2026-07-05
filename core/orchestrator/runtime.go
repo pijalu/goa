@@ -43,6 +43,9 @@ type Runtime struct {
 	doneCh chan struct{}
 
 	objective string
+	goal      GoalBinder // optional; when set, the run is goal-bound
+	goalMu    sync.Mutex // guards the goal field
+	goalCallMu sync.Mutex // serializes goal API calls (single-driver design)
 
 	// msgs accumulates streamed assistant text per role so Delegate can return
 	// a sub-agent's answer as the tool result without depending on the store.
@@ -151,9 +154,17 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	}
 
 	r.emit(Event{Type: EventRunFinished, Payload: map[string]any{"ok": err == nil}})
+	r.finalizeGoal(err == nil, runFinishReason(err))
 	r.closeBus()
 	close(r.doneCh)
 	return err
+}
+
+func runFinishReason(err error) string {
+	if err != nil {
+		return "run failed: " + err.Error()
+	}
+	return "all agents finished"
 }
 
 // managedRoles returns the configured roles that should actually run as
@@ -256,6 +267,16 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role,
 		Payload: statsPayload(snap)})
 
+	if over, gerr := r.accrueGoalTokens(snap.TokensIn + snap.TokensOut); gerr != nil {
+		return fmt.Errorf("goal token accounting: %w", gerr)
+	} else if over {
+		reason := "aggregate token budget exhausted"
+		h.Stats.SetStatus(AgentCrashed)
+		r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
+			Payload: map[string]any{"outcome": "blocked", "reason": reason}})
+		return errors.New(reason)
+	}
+
 	outcome := "ok"
 	if runErr != nil {
 		h.Stats.SetStatus(AgentCrashed)
@@ -327,6 +348,15 @@ func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, erro
 	snap := h.Stats.Snapshot()
 	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role, Payload: statsPayload(snap)})
 
+	if over, gerr := r.accrueGoalTokens(snap.TokensIn + snap.TokensOut); gerr != nil {
+		return "", fmt.Errorf("goal token accounting: %w", gerr)
+	} else if over {
+		h.Stats.SetStatus(AgentCrashed)
+		r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
+			Payload: map[string]any{"outcome": "blocked", "reason": "aggregate token budget exhausted"}})
+		return "", errors.New("aggregate token budget exhausted")
+	}
+
 	if runErr != nil {
 		h.Stats.SetStatus(AgentCrashed)
 		r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
@@ -352,6 +382,54 @@ func statsPayload(s AgentStatsSnapshot) map[string]any {
 		"cache_creation": s.CacheCreation,
 		"tool_calls":     s.ToolCalls,
 		"status":         string(s.Status),
+	}
+}
+
+// SetGoalBinder binds the run to a goal. Must be called before Run. When set,
+// the runtime accrues aggregate token usage, blocks on budget exhaustion, and
+// marks the goal complete on a successful finish.
+func (r *Runtime) SetGoalBinder(gb GoalBinder) {
+	r.goalMu.Lock()
+	r.goal = gb
+	r.goalMu.Unlock()
+}
+
+// GoalBound reports whether the run has a goal binder attached.
+func (r *Runtime) GoalBound() bool {
+	r.goalMu.Lock()
+	defer r.goalMu.Unlock()
+	return r.goal != nil
+}
+
+// accrueGoalTokens reports a turn's token usage to the bound goal and returns
+// (overBudget, err). It is a no-op when no goal is bound.
+func (r *Runtime) accrueGoalTokens(tokens int) (bool, error) {
+	r.goalMu.Lock()
+	gb := r.goal
+	r.goalMu.Unlock()
+	if gb == nil || tokens <= 0 {
+		return false, nil
+	}
+	r.goalCallMu.Lock()
+	defer r.goalCallMu.Unlock()
+	return gb.RecordTokens(tokens)
+}
+
+// finalizeGoal marks the bound goal complete (ok) or blocked (!ok). No-op when
+// unbound.
+func (r *Runtime) finalizeGoal(ok bool, reason string) {
+	r.goalMu.Lock()
+	gb := r.goal
+	r.goalMu.Unlock()
+	if gb == nil {
+		return
+	}
+	r.goalCallMu.Lock()
+	defer r.goalCallMu.Unlock()
+	if ok {
+		_ = gb.Complete(reason)
+	} else {
+		_ = gb.Block(reason)
 	}
 }
 

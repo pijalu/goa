@@ -123,15 +123,17 @@ DeepSeek. Commit + update this checklist at each milestone.
       agent actually calls the delegate tool to dispatch the coder
 - [x] gates + commit
 
-#### M4 — Goal binding (Phase 6)
-- [ ] M4.1 `Runtime.BindGoal(*goal.GoalManager, objective|id)`: create/load a
-      goal, inject static reminder into orchestrator system prompt
-- [ ] M4.2 Aggregate budget enforcement: after each agent turn, accrue token
-      deltas to the goal; on exhaustion emit a budget-band reminder
-- [ ] M4.3 Completion: orchestrator synthesizes sub-results → `UpdateGoal(done)`
-      only when the completion criterion is met
-- [ ] M4.4 Tests: goal-bound run reaches `complete`; budget exhaustion → blocked
-- [ ] gates + commit
+#### M4 — Goal binding (Phase 6)  ✅
+- [x] M4.1 `GoalBinder` interface in core/orchestrator; `Runtime.SetGoalBinder`;
+      `goalObjective` parsing in `/orchestrate new [topology] goal <obj>`
+- [x] M4.2 Aggregate budget enforcement: after each turn, accrue token delta;
+      on exhaustion mark goal blocked + abort run (serialized via goalCallMu
+      since GoalMode is single-driver by design)
+- [x] M4.3 Completion: successful run → `GoalBinder.Complete`; failure/budget
+      → `Block`. Concrete `goalModeBinder` wraps `*goal.GoalMode`.
+- [x] M4.4 Tests: complete-on-success, budget-exhaustion→blocked,
+      noop-when-unbound, command-level goal binding end-to-end
+- [x] gates + commit
 
 #### M5 — TUI orchestrator view (Phase 5)
 - [ ] M5.1 `tui/orchestrator` View component (Summary / Orchestrator /

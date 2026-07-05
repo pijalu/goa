@@ -833,9 +833,10 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	// deliberately does not register /orchestrate unconditionally, so this is
 	// the single registration point.
 	orchCmd := &commands.OrchestrateCommand{
-		Builder: s.orchAdapter,
-		Active:  s.orchActive,
-		RootDir: filepath.Join(projectDir, ".goa", "orchestrator"),
+		Builder:  s.orchAdapter,
+		Active:   s.orchActive,
+		RootDir:  filepath.Join(projectDir, ".goa", "orchestrator"),
+		GoalMode: s.goalManager.Mode,
 	}
 	_ = core.GlobalRegistry().Register(orchCmd)
 
