@@ -83,31 +83,76 @@ Foundation layers shipped, fully tested under `-race`, all 5 gates green:
   that auto-skips when no local model is reachable: real streaming, token
   stats captured, both agents finished, run persisted + replayed (`finished=true`).
 
-### Remaining (genuinely integration-heavy; needs a focused session)
-These phases drive live `agentic.Agent` streams, the TUI component tree, the
-app wiring layer, and goal-budget enforcement. Per the design doc they belong
-in a dedicated session, and shipping them without end-to-end live tests would
-violate Hard Rules #1/#3/#4. The foundation above is the prerequisite they
-build on.
+### Remaining — micro-tasked plan (in execution order)
 
-- [ ] **Phase 3 (rest)** — `DelegateTool` for true hub topology (orchestrator
-  agent delegates to sub-agents via a tool, currently hub falls back to
-  orchestrator-then-fanout); observer dedupe across multiple runs sharing a
-  cached agent (use `CreateTaskAgent` per run for long-lived processes).
-- [ ] **Phase 5** — `tui/orchestrator` View: Summary/Orchestrator/per-agent
-  tabs, steering Editor, event subscription via `commandLoop`.
-- [ ] **Phase 6** — Goal binding: `BindGoal`, per-agent + aggregate budget
-  enforcement, completion synthesis.
-- [ ] **Phase 7** — Wiring (`subsystems.go`), `/orchestrate` slash commands,
-  `--orchestrate <run-id>` headless flag, telemetry.
-- [ ] **Phase 8** — Validation & gates across the full interactive scenarios.
+Goal: a full agent-driven workflow invocable via `/orchestrate`, observable
+in the TUI, goal-bindable, and resumable — validated against local LM /
+DeepSeek. Commit + update this checklist at each milestone.
 
-Also fixed this session: pre-existing `docs` gate failure — `fix-plan-2026-07-04.md`
-and `orchestration-design.md` were committed lowercase, breaking
-`TestList_UppercaseNames`; renamed to `FIX-PLAN-2026-07-04.md` /
-`ORCHESTRATION-DESIGN.md` (the names TODO.md and the design doc already
-referenced). `cmd/webbuild` is unaffected (it lowercases stems and excludes
-`fix-plan-`).
+#### M1 — Subsystem wiring & Context exposure (Phase 7 core)
+- [ ] M1.1 `OrchestratorRuntimeAccessor` on `core.Context` (lazy handle to a
+      live `*orchestrator.Runtime`, set when a run is active)
+- [ ] M1.2 Build the `OrchestratorAdapter` once in `assembleSubsystems`, store
+      on `subsystems`, expose via Context accessor
+- [ ] M1.3 Per-run orchestrator store root = `.goa/orchestrator` (reuse goal
+      store-root pattern)
+- [ ] gates + commit
+
+#### M2 — Slash command surface (Phase 7)
+- [ ] M2.1 Replace stub `OrchestrateCommand` with real subcommands:
+      `new [topology] [goal <id|objective>]`, `list`, `resume <run-id>`,
+      `steer <agent-id|all|orchestrator> <text>`
+- [ ] M2.2 `new` builds a Runtime via the adapter and launches `Run` in a
+      goroutine; forwards live events to the TUI event bus as `AgentEvent`s
+- [ ] M2.3 `list` prints `ListRuns()`; `resume` rebuilds + relaunches;
+      `steer` appends to the target handle / broadcast
+- [ ] M2.4 Completions for subcommands + topology enum
+- [ ] M2.5 Live integration test (LM/DeepSeek): `/orchestrate new fanout`
+      drives real agents end-to-end
+- [ ] gates + commit
+
+#### M3 — DelegateTool & true hub topology (Phase 3 remainder)
+- [ ] M3.1 `core/orchestrator` `DelegateTool` (implements `agentic.Tool`):
+      input `{role, task}`, calls a `DelegateFunc` injected by the adapter
+      that Acquire+Run+Release a sub-agent and streams its events
+- [ ] M3.2 Hub topology: orchestrator agent is built WITH the DelegateTool;
+      `Run` drives the orchestrator agent which delegates per its judgement
+- [ ] M3.3 Unit test hub round-trip with a fake delegate; live test against LM
+- [ ] gates + commit
+
+#### M4 — Goal binding (Phase 6)
+- [ ] M4.1 `Runtime.BindGoal(*goal.GoalManager, objective|id)`: create/load a
+      goal, inject static reminder into orchestrator system prompt
+- [ ] M4.2 Aggregate budget enforcement: after each agent turn, accrue token
+      deltas to the goal; on exhaustion emit a budget-band reminder
+- [ ] M4.3 Completion: orchestrator synthesizes sub-results → `UpdateGoal(done)`
+      only when the completion criterion is met
+- [ ] M4.4 Tests: goal-bound run reaches `complete`; budget exhaustion → blocked
+- [ ] gates + commit
+
+#### M5 — TUI orchestrator view (Phase 5)
+- [ ] M5.1 `tui/orchestrator` View component (Summary / Orchestrator /
+      per-agent tabs), subscribes to `Runtime.Events()` via `commandLoop`
+- [ ] M5.2 Summary tab table (role/model/turns/tokens/status), goal header
+- [ ] M5.3 Steering Editor bound to active tab (Summary→broadcast,
+      Orchestrator→orch, Agent→that agent)
+- [ ] M5.4 Toggle keybinding + open run picker (`ListRuns` + New + topology)
+- [ ] M5.5 Filmstrip regression test (tui-test skill): events update view on
+      a single goroutine; summary re-renders changed rows only
+- [ ] gates + commit
+
+#### M6 — Headless flag & telemetry (Phase 7 remainder)
+- [ ] M6.1 `--orchestrate <run-id>` flag in `bootstrap.go` resumes a run headless
+- [ ] M6.2 Telemetry: emit orchestrator lifecycle events (goal/telemetry pattern)
+- [ ] gates + commit
+
+#### M7 — End-to-end validation (Phase 8)
+- [ ] M7.1 Interactive scenarios: hub+goal+steer→complete; fanout kill/resume;
+      pipeline stage-carry; caps block-then-proceed
+- [ ] M7.2 `-race` across all; no goroutine leak (R1 methodology)
+- [ ] M7.3 README/docs update with orchestrator usage
+- [ ] final gates + commit; close Track 2
+
 
 ## Notes
 - The previous TODO content (agentic optimization pass) is fully resolved
