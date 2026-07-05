@@ -122,6 +122,10 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"multi_agent.companion_model", "model id"},
 		{"multi_agent.companion_provider", "provider id"},
 		{"tools.enabled.goal", "enable goal tools (default false)"},
+		{"orchestrator.roles.*", "{ model: <id>, provider: <id>, allowed_tools: [<names>] }"},
+		{"orchestrator.pool.max_total_agents", "integer (0 = unlimited pool delegation)"},
+		{"orchestrator.pool.max_agents_per_model.*", "integer >= 1"},
+		{"orchestrator.defaults.topology", "hub | fanout | pipeline"},
 	}
 	var comps []core.ArgCompletion
 	for _, k := range keys {
@@ -152,6 +156,8 @@ func configValueCompletions(ctx core.Context, key, prefix string) []core.ArgComp
 		return providerCompletionValues(ctx, prefix)
 	case "tools.enabled.goal":
 		return boolCompletionValues(prefix)
+	case "orchestrator.defaults.topology":
+		return filteredCompletions([]string{"hub", "fanout", "pipeline"}, prefix, "")
 	}
 	return nil
 }

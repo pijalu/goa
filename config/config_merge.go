@@ -27,6 +27,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergeContextCompression(other)
 	c.mergeTelegram(other)
 	c.mergePermissions(other)
+	c.mergeOrchestrator(other)
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.
@@ -505,5 +506,34 @@ func (c *Config) mergeTelegram(other *Config) {
 func (c *Config) mergePermissions(other *Config) {
 	if other.Permissions != nil {
 		c.Permissions = other.Permissions
+	}
+}
+
+// mergeOrchestrator merges the orchestrator config section. Roles and
+// per-model caps are merged last-write-wins per key so partial overrides at
+// the project/local layer do not wipe the base role map. Scalar caps adopt
+// non-zero values; topology adopts any non-empty value.
+func (c *Config) mergeOrchestrator(other *Config) {
+	if other.Orchestrator.Roles != nil {
+		if c.Orchestrator.Roles == nil {
+			c.Orchestrator.Roles = make(map[string]OrchestratorRole)
+		}
+		for name, r := range other.Orchestrator.Roles {
+			c.Orchestrator.Roles[name] = r
+		}
+	}
+	if other.Orchestrator.Pool.MaxTotalAgents != 0 {
+		c.Orchestrator.Pool.MaxTotalAgents = other.Orchestrator.Pool.MaxTotalAgents
+	}
+	if other.Orchestrator.Pool.MaxAgentsPerModel != nil {
+		if c.Orchestrator.Pool.MaxAgentsPerModel == nil {
+			c.Orchestrator.Pool.MaxAgentsPerModel = make(map[string]int)
+		}
+		for m, n := range other.Orchestrator.Pool.MaxAgentsPerModel {
+			c.Orchestrator.Pool.MaxAgentsPerModel[m] = n
+		}
+	}
+	if other.Orchestrator.Defaults.Topology != "" {
+		c.Orchestrator.Defaults.Topology = other.Orchestrator.Defaults.Topology
 	}
 }

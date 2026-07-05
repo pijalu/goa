@@ -57,6 +57,7 @@ type Config struct {
 	ThinkingLevels     ThinkingLevelConfig      `yaml:"thinking_levels"`
 	ContextCompression ContextCompressionConfig `yaml:"context_compression"`
 	Telegram           TelegramConfig           `yaml:"telegram"`
+	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
 	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
 	Permissions        []perms.Rule             `yaml:"permissions,omitempty"`
 	// Aliases maps short user-defined names to command invocations.
@@ -235,6 +236,33 @@ type MultiAgentConfig struct {
 	CoderModel             string `yaml:"coder_model"`
 	MessageTimeout         string `yaml:"message_timeout"`
 	ShowInterAgentMessages bool   `yaml:"show_inter_agent_messages"`
+}
+
+// OrchestratorConfig configures the orchestrator subsystem: per-run topology
+// selection, a config-only role→model map, and a bounded agent pool with
+// total + per-model caps. See docs/ORCHESTRATION-DESIGN.md.
+type OrchestratorConfig struct {
+	Roles    map[string]OrchestratorRole    `yaml:"roles,omitempty"`
+	Pool     OrchestratorPoolConfig     `yaml:"pool,omitempty"`
+	Defaults OrchestratorDefaultsConfig `yaml:"defaults,omitempty"`
+}
+
+// OrchestratorRole binds a role to a specific model/provider and tool allowlist.
+type OrchestratorRole struct {
+	Model        string   `yaml:"model"`
+	Provider     string   `yaml:"provider,omitempty"`
+	AllowedTools []string `yaml:"allowed_tools,omitempty"`
+}
+
+// OrchestratorPoolConfig bounds the live agent pool.
+type OrchestratorPoolConfig struct {
+	MaxTotalAgents  int            `yaml:"max_total_agents"`
+	MaxAgentsPerModel map[string]int `yaml:"max_agents_per_model,omitempty"`
+}
+
+// OrchestratorDefaultsConfig holds default topology selection for new runs.
+type OrchestratorDefaultsConfig struct {
+	Topology string `yaml:"topology"`
 }
 
 // MemoryConfig controls persistent memory file settings.

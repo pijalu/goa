@@ -70,6 +70,14 @@ context_compression:
 telegram:
   enabled: true
 
+orchestrator:
+  roles: {}
+  pool:
+    max_total_agents: 8
+    max_agents_per_model: {}
+  defaults:
+    topology: "hub"
+
 multi_agent:
   enabled: false
   pattern: "pair"

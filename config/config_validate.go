@@ -20,6 +20,7 @@ func (c *Config) Validate() error {
 	c.validateAgenticModels(&ve)
 	c.validateContextCompression(&ve)
 	c.validateSkillMode(&ve)
+	c.validateOrchestrator(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
@@ -160,5 +161,49 @@ func (c *Config) validateSkillMode(ve *internal.ValidationError) {
 	}
 	if c.Skills.ExecutionMode != AgenticSkillModeSubAgent && c.Skills.ExecutionMode != AgenticSkillModeInline {
 		ve.Add(fmt.Sprintf("skills.execution_mode: must be %q or %q", AgenticSkillModeSubAgent, AgenticSkillModeInline))
+	}
+}
+
+// Orchestrator topology values accepted by the per-run selector.
+const (
+	OrchestratorTopologyHub      = "hub"
+	OrchestratorTopologyFanout   = "fanout"
+	OrchestratorTopologyPipeline = "pipeline"
+)
+
+func (c *Config) validateOrchestrator(ve *internal.ValidationError) {
+	oc := c.Orchestrator
+	switch oc.Defaults.Topology {
+	case "", OrchestratorTopologyHub, OrchestratorTopologyFanout, OrchestratorTopologyPipeline:
+	default:
+		ve.Add(fmt.Sprintf("orchestrator.defaults.topology: must be %q, %q, or %q (got %q)",
+			OrchestratorTopologyHub, OrchestratorTopologyFanout, OrchestratorTopologyPipeline,
+			oc.Defaults.Topology))
+	}
+	// When no models are configured at all (early bootstrap), skip model
+	// existence checks so an empty embedded config validates cleanly.
+	skipModelCheck := len(c.Models) == 0
+	knownModels := make(map[string]struct{}, len(c.Models))
+	for _, m := range c.Models {
+		knownModels[m.ID] = struct{}{}
+	}
+	for name, role := range oc.Roles {
+		if role.Model == "" {
+			ve.Add(fmt.Sprintf("orchestrator.roles.%s.model: must be set", name))
+			continue
+		}
+		if !skipModelCheck {
+			if _, ok := knownModels[role.Model]; !ok {
+				ve.Add(fmt.Sprintf("orchestrator.roles.%s.model: model %q not found in models list", name, role.Model))
+			}
+		}
+	}
+	if oc.Pool.MaxTotalAgents < 0 {
+		ve.Add(fmt.Sprintf("orchestrator.pool.max_total_agents: must be >= 0 (got %d)", oc.Pool.MaxTotalAgents))
+	}
+	for m, n := range oc.Pool.MaxAgentsPerModel {
+		if n < 1 {
+			ve.Add(fmt.Sprintf("orchestrator.pool.max_agents_per_model.%s: must be >= 1 (got %d)", m, n))
+		}
 	}
 }
