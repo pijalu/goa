@@ -298,7 +298,7 @@ func curatedBlurb(stem string) string {
 	case "tui":
 		return "The ANSI-native UI: components, rendering and keybindings."
 	case "agentic-sdk":
-		return "The merged Agent SDK: agents, sessions and the event model."
+		return "The Agent SDK: agents, sessions and the event model."
 	case "plugins":
 		return "Extend Goa with JavaScript plugins via the Goja runtime."
 	case "providers":

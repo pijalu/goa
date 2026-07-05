@@ -8,7 +8,7 @@ Copyright (C) 2026 Pierre Poissinger
 
 ## Overview
 
-Goa is a terminal-native AI coding agent built around the merged **Agent SDK** in [`internal/agentic/`](../internal/agentic/). It follows an **event-driven architecture** with clear separation between the TUI layer (presentation), the core engine (application logic), and the agent SDK (LLM interaction).
+Goa is a terminal-native AI coding agent built around the **Agent SDK** in [`internal/agentic/`](../internal/agentic/). It follows an **event-driven architecture** with clear separation between the TUI layer (presentation), the core engine (application logic), and the agent SDK (LLM interaction).
 
 ## System Layers
 

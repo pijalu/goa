@@ -4,9 +4,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
 Copyright (C) 2026 Pierre Poissinger
 -->
 
-# Agent SDK Integration
+# Agent SDK
 
-Goa uses the **Agent SDK** located in [`internal/agentic/`](../internal/agentic/). The SDK was originally a standalone module and has been merged into the Goa repository, so it carries no external dependency.
+Goa's **Agent SDK** lives in [`internal/agentic/`](../internal/agentic/).
 
 ## SDK Architecture
 

@@ -35,7 +35,7 @@ goa/
 │   ├── context.go           # Command context
 │   └── commands/            # Command implementations
 ├── internal/                # Shared types, errors, git worktree,
-│   └── agentic/             # merged Agent SDK
+│   └── agentic/             # Agent SDK
 ├── tui/                     # ANSI TUI (inspired by pi/OpenCode/kimi-code)
 ├── tools/                   # Tool implementations
 ├── memory/                  # Memory store
@@ -184,7 +184,7 @@ make test
 
 ## Working with the Agent SDK
 
-The Agent SDK lives in `internal/agentic/`. It was originally a standalone module and has been merged into Goa, so it carries no external dependency. Its key types are used throughout Goa:
+The Agent SDK lives in `internal/agentic/`. Its key types are used throughout Goa:
 
 - `agentic.Agent` — Created by `AgentManager`
 - `agentic.Tool` — Implemented by all tools in `tools/`

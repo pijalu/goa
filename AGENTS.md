@@ -20,7 +20,7 @@ Copyright (C) 2026 Pierre Poissinger
 - **Module**: `github.com/pijalu/goa` · Go 1.25+
 - **Main entry**: `cmd/goa/main.go` → `internal/app/app.go`
 - **TUI engine** (`tui/`): Component-based ANSI TUI — `Component` interface, `TUI` engine with differential rendering, CSI 2026 synced output (inspired by pi/OpenCode/kimi-code).
-- **Agent SDK**: Merged into `internal/agentic/` (no external dependency)
+- **Agent SDK**: Lives in `internal/agentic/`
 - **Config cascade**: embedded → home (~/.goa/) → project (.goa/) → local (.goa/config.local.yaml) → env (GOA_) → flags
 - **Tools**: `tools/` package — each implements `agentic.Tool` interface. Renderers in same package for TUI display.
 - **Colors/ANSI**: `internal/ansi/` package for all escape sequence handling.

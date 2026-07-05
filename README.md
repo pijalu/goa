@@ -94,7 +94,7 @@ On first run, Goa walks you through:
 
 | Dependency | Purpose |
 |------------|---------|
-| Agent SDK (`internal/agentic/`) | Core AI agent SDK (merged, no external dependency) |
+| Agent SDK (`internal/agentic/`) | Core AI agent SDK |
 | ANSI TUI (`tui/`) | Custom TUI engine: Component/TUI/ProcessTerminal |
 | [`golang.org/x/term`](https://pkg.go.dev/golang.org/x/term) | Terminal raw mode |
 | [`cobra`](https://github.com/spf13/cobra) | CLI flag parsing |
@@ -140,7 +140,7 @@ goa/
 ├── multiagent/              # Pair & reviewer orchestrators, workflow engine
 ├── workflows/               # Workflow definitions (directory-per-workflow)
 ├── plugins/                 # JS plugin loader & Goja bridge
-├── internal/agentic/        # Merged Agent SDK
+├── internal/agentic/        # Agent SDK
 ├── chunks/                  # Milestone implementation briefs
 ├── docs/                    # Documentation
 ├── Makefile                 # Build, test, lint, cross-compile
