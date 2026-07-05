@@ -206,3 +206,45 @@ func TestEditor_HistoryNavigation_BackspaceWithMultibyte(t *testing.T) {
 		t.Errorf("after backspace: got %q, want %q", got, want)
 	}
 }
+
+// TestEditor_UpArrow_AtStartOfFirstLine_RecallsHistory verifies that pressing
+// Up when the cursor is at the start of the first line recalls history,
+// instead of being a no-op.
+func TestEditor_UpArrow_AtStartOfFirstLine_RecallsHistory(t *testing.T) {
+	ed := NewEditor()
+	ed.SetHistory([]string{"a", "b"})
+	ed.SetFocused(true)
+
+	ed.SetText("summarize ci")
+	ed.pos = 0
+	ed.HandleInput(KeyUp)
+
+	if got, want := ed.Text(), "b"; got != want {
+		t.Errorf("Text() = %q, want %q", got, want)
+	}
+	if got, want := ed.histIdx, 1; got != want {
+		t.Errorf("histIdx = %d, want %d", got, want)
+	}
+}
+
+
+// TestEditor_UpArrow_AfterSubmit_RecallsLast verifies that pressing Up after
+// submitting text recalls the just-submitted entry.
+func TestEditor_UpArrow_AfterSubmit_RecallsLast(t *testing.T) {
+	ed := NewEditor()
+	ed.SetFocused(true)
+	ed.SetOnSubmit(func(string) {})
+
+	ed.SetText("summarize ci")
+	ed.HandleInput(KeyEnter)
+
+	if ed.Text() != "" {
+		t.Fatalf("expected empty buffer after submit, got %q", ed.Text())
+	}
+
+	ed.HandleInput(KeyUp)
+	if got, want := ed.Text(), "summarize ci"; got != want {
+		t.Errorf("Text() after Up = %q, want %q", got, want)
+	}
+}
+

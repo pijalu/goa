@@ -12,7 +12,7 @@ Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
 97 numbered microsteps, in execution order:
 
 - [x] **B1** — Thinking-loop discoverability (completion + config menu)
-- [x] **B2** — Up-arrow on empty line / cannot navigate to empty line
+- [x] **B2** — Up-arrow on empty line / cannot navigate to empty line (follow-up: also recall history when cursor is at the start of the first visual line of a non-empty buffer, not just when the buffer is empty)
 - [x] **B3** — `goal` tool: `.goa/goals` location + disable flag (default off) + cache collapse (kimi-code append-on-top model)
 - [x] **B4** — Spinner disappears after 1st tool call
 - [x] **B5** — Steering messages enqueued (`prompt.steered`-style injection)

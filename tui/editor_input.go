@@ -181,9 +181,16 @@ func (e *Editor) handleCursorUp() {
 	} else if e.histIdx > -1 && e.isOnFirstVisualLine() {
 		e.navigateHistory(-1)
 	} else if e.isOnFirstVisualLine() {
-		e.clearPreferredCol()
-		e.pos = findLineStart(string(e.buf), e.pos)
-		e.adjustScrollToCursor()
+		// Cursor is on the first visual line. If it is already at the start
+		// of the buffer, recall history rather than doing nothing; otherwise
+		// move to the start of the line.
+		if e.pos == 0 {
+			e.navigateHistory(-1)
+		} else {
+			e.clearPreferredCol()
+			e.pos = findLineStart(string(e.buf), e.pos)
+			e.adjustScrollToCursor()
+		}
 	} else {
 		e.lineUp()
 	}
