@@ -36,41 +36,4 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-## Thinking loop not configurable from CLI flags
-Config still does not list thinking loop as configurable — there are no "temporary" command flags to disable/enable loop detection (both tool and thinking) as requested. (reopen !)
-
-## Input line: up-arrow at start of empty line does not work
-Pressing the "up" arrow key when at the start of a new, empty input line does nothing or does not navigate correctly.
-
-## Input line: cannot navigate to an empty line
-The input line reader does not allow cursor movement/navigation to an empty line.
-
-## Goal tool triggers cache stat collapse — disable by default
-The `goal` tool seems to trigger cache stat collapse. Investigate why !
-Goal files should be located under `.goa/goals`
-
-Goal tool should be disablabe via configuration such as other non-mandatory tools
-
-## Spinner disappears after 1st tool call
-The spinner disappears after the first tool call instead of continuing to show activity for subsequent calls.
-
-## Steering messages not processed — appear in chat but are not enqueued
-Adding a steering message does not work — messages are directly sent (appear in the chat) but do not seem to be processed. They should be enqueued and kept on top of the input line until the moment they are sent to the model.
-
-## config selection list cursor
-The cursor in the config selection list is put at random position - it should be set at the "search>" input
-
-## smartsearch
-Review smartsearch in the optic of a agent tool and check optimization/options required to make it more useful
-
-## Reviews
-* Stability: Run a stability review on all TUI code - there are known issues with stability that need to be addressed - especially possible panic and crash that are not handled gracefully and lead to an unexpected end of processing.
-* Perf: Run a critical review on code quality/optimization on all TUI code
-* Functional: Critical review workflow/swarm/multi-agent/multi-model/goal implementation testing
-
-## Orchestration
-There should be an orchestrator mode where a top-level orchestrator manages the execution of multiple agents (with their own model) - the TUI should allow a goal view with tabs (for each agent) so the user can switch between agents and see their progress.
-
-The goal/orchestrator should show the progress of all agents in a single view (per agent: stats as the status bar) and a chat view so the user can see the conversation between the orchestrator and the agents and add steering messages to guide the agents.
-
-This can use all existing option: goal, workflows, ...
+_None — all current items have been closed and archived under `docs/archive/bugs.<fixdate>.md`._

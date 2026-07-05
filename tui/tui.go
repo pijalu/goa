@@ -6,6 +6,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,15 @@ const CURSOR_MARKER = "\x1b_pi:c\x07"
 
 // SEGMENT_RESET resets all SGR attributes and closes any open OSC 8 hyperlink.
 const SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07"
+
+// recoverToLog recovers from panics in TUI loops and logs the stack to stderr
+// so a single malformed component or callback cannot kill the whole session.
+func recoverToLog(where string) {
+	if r := recover(); r != nil {
+		fmt.Fprintf(os.Stderr, "goa: panic recovered in %s: %v\n", where, r)
+	}
+}
+
 
 // OverlayOptions define positioning and sizing for overlay components.
 type OverlayOptions struct {
@@ -353,7 +363,10 @@ func (t *TUI) commandLoop() {
 		case cmd := <-t.cmds:
 			t.applyCommand(cmd)
 		case reply := <-t.snapReq:
-			reply <- t.buildSnapshot()
+			func() {
+				defer recoverToLog("snapshot")
+				reply <- t.buildSnapshot()
+			}()
 		case <-t.done:
 			return
 		}
@@ -365,6 +378,7 @@ func (t *TUI) commandLoop() {
 // itself needs no synchronization (serialized by the commandLoop). Commands run
 // to completion before the next command begins.
 func (t *TUI) applyCommand(cmd func()) {
+	defer recoverToLog("command")
 	cmd()
 	t.RequestRender()
 }
@@ -384,7 +398,10 @@ func (t *TUI) renderLoop() {
 			reply := make(chan *Scene, 1)
 			t.snapReq <- reply
 			scene := <-reply
-			t.compositor.Render(scene)
+			func() {
+				defer recoverToLog("render")
+				t.compositor.Render(scene)
+			}()
 			// Throttle to a maximum of ~60fps.
 			select {
 			case <-time.After(16 * time.Millisecond):

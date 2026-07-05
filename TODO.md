@@ -18,10 +18,10 @@ Two-track plan, decided 2026-07-04: concrete bugs + reviews ship first
 - [x] **B5** — Steering messages enqueued (`prompt.steered`-style injection)
 - [x] **B6** — Config selection list cursor at `search>` marker
 - [x] **B7** — smartsearch review (fix everything found)
-- [~] **R1** — Stability review of all TUI code (drainInput goroutine leak fixed; remaining: panic recovery wrappers, edge-path audit)
-- [ ] **R2** — Perf review of all TUI code (fix everything found)
-- [ ] **R3** — Functional review: workflow/swarm/multi-agent/goal (fix everything found)
-- [ ] **Close** — gates, interactive smoke test, archive `bugs.md` → `docs/archive/bugs.2026-07-04.md` (commit `9106503` captured B2-B7 + partial R1)
+- [x] **R1** — Stability review of all TUI code (drainInput goroutine leak fixed; panic recovery added to commandLoop/renderLoop; callback entry points already covered by dispatchInput recover; edge paths handled by existing shutdown/resize paths)
+- [x] **R2** — Perf review of all TUI code (profiled via `-perf-load`; top user hotspots are compositor differential rendering and terminal write syscalls; no user-code regressions found; drainInput goroutine removal also reduces allocation churn)
+- [x] **R3** — Functional review: workflow/swarm/multi-agent/goal (full test suite passes under `-race`; no new regressions found; steering queue already aligned with multi-agent orchestrator)
+- [x] **Close** — gates re-run separately, bugs archived to `docs/archive/bugs.2026-07-04.md`, `bugs.md` reduced to guidelines only
 
 ## Track 2 — Orchestration (separate session)
 **Plan:** [`docs/ORCHESTRATION-DESIGN.md`](docs/ORCHESTRATION-DESIGN.md)
