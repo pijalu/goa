@@ -307,6 +307,8 @@ func curatedBlurb(stem string) string {
 		return "Pair (planner to coder) and reviewer collaboration pipelines."
 	case "orchestration-design":
 		return "Design notes for multi-agent orchestration."
+	case "orchestrator":
+		return "Run multi-agent workflows: hub/fanout/pipeline topologies with goal binding."
 	case "skill-execution":
 		return "How skills run: inline injection vs sub-agent dispatch."
 	case "development":
@@ -449,7 +451,7 @@ func docWeight(stem string) int {
 	order := []string{
 		"architecture", "setup", "configuration", "commands", "tools",
 		"skills", "profiles", "tui", "agentic-sdk", "plugins", "providers",
-		"workflows", "orchestration-design", "skill-execution",
+		"workflows", "orchestration-design", "orchestrator", "skill-execution",
 		"development", "profiling", "goals",
 	}
 	for i, s := range order {

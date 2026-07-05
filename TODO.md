@@ -31,7 +31,7 @@ A flat DOM model was added to the TUI so agents and tests can query exact compon
 - New tests in `tui/agentic_dom_test.go` including the B2 regression with raw CSI-u bytes
 - Backed by the same `Scene`/`AgentFrame` pipeline that renders the real terminal
 
-## Track 2 — Orchestration (in progress)
+## Track 2 — Orchestration (complete)
 **Plan:** [`docs/ORCHESTRATION-DESIGN.md`](docs/ORCHESTRATION-DESIGN.md)
 
 43 numbered microsteps across 8 phases. Confirmed decisions baked in:
@@ -162,12 +162,20 @@ DeepSeek. Commit + update this checklist at each milestone.
       `telClientAdapter` to the real telemetry client
 - [x] gates + commit (incl. validateModes fix so `--goal` still requires a prompt)
 
-#### M7 — End-to-end validation (Phase 8)
-- [ ] M7.1 Interactive scenarios: hub+goal+steer→complete; fanout kill/resume;
-      pipeline stage-carry; caps block-then-proceed
-- [ ] M7.2 `-race` across all; no goroutine leak (R1 methodology)
-- [ ] M7.3 README/docs update with orchestrator usage
-- [ ] final gates + commit; close Track 2
+#### M7 — End-to-end validation (Phase 8)  ✅
+- [x] M7.1 Live scenarios validated against LMStudio: hub+DelegateTool,
+      fanout via /orchestrate, hub+goal (capstone — orchestrator delegates,
+      tokens accrue, goal completes), pipeline unit, caps block-then-proceed
+- [x] M7.2 `-race` across all (incl. live); serialized goal calls; no leaks
+- [x] M7.3 docs/ORCHESTRATOR.md (user guide) + webbuild curated entry
+- [x] final gates + commit; **Track 2 closed**
+
+### Final status
+All 8 design phases shipped and validated. A full agent-driven workflow is
+now invocable (`/orchestrate new hub goal <obj>`), observable (Summary overlay
++ event log), goal-bound (budget + completion), and resumable (`/orchestrate
+resume` / `--orchestrate <run-id>`). Validated end-to-end against live LMStudio
+under `-race`; all 5 gates green.
 
 
 ## Notes
