@@ -6,10 +6,12 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pijalu/goa/core/orchestrator"
+	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
 // TestOrchestratorAdapter_LiveFanout drives a real fanout orchestration
@@ -107,5 +109,82 @@ func TestOrchestratorAdapter_LiveAgentStartedCarriesProvider(t *testing.T) {
 		if _, ok := ev.Payload["thinking"]; !ok {
 			t.Errorf("EventAgentStarted for %s missing thinking payload", ev.Role)
 		}
+	}
+}
+
+// runLiveIntoView runs a live orchestration to completion, translating every
+// runtime event into a fresh MultiAgentView, and returns the view + runtime.
+// Used by the §4.1/4.3/4.4 live UI validations (all skip without LMStudio).
+func runLiveIntoView(t *testing.T, roles []string, topology string) (*orchpanel.MultiAgentView, *orchestrator.Runtime) {
+	t.Helper()
+	rt, _ := newLiveRuntime(t, roles, topology)
+	view := orchpanel.NewMultiAgentView("orchestration")
+	sub := rt.Subscribe()
+	runDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		runDone <- rt.Run(ctx, "Reply with the single word: ready")
+	}()
+	for {
+		select {
+		case ev := <-sub:
+			if ne, ok := translateOrchEvent(ev); ok {
+				view.ApplyEvent(ne)
+			}
+		case <-rt.Done():
+			<-runDone
+			return view, rt
+		}
+	}
+}
+
+// TestOrchestrator_LiveFanout_RendersTabbedView (§4.1) runs a 2-role fanout
+// against LMStudio, feeds events to a MultiAgentView, and asserts the view
+// shows Stats + 2 agent tabs + All and finishes.
+func TestOrchestrator_LiveFanout_RendersTabbedView(t *testing.T) {
+	if !lmstudioReachable(t) {
+		t.Skip("LMStudio not reachable on :1234 — skipping live orchestrator integration test")
+	}
+	view, rt := runLiveIntoView(t, []string{"summarizer", "coder"}, "fanout")
+	keys := make([]string, 0, 4)
+	for _, tab := range view.Tabs() {
+		keys = append(keys, tab.Key)
+	}
+	if len(keys) < 4 { // stats + 2 agents + all
+		t.Errorf("live fanout tabs = %v, want at least stats+2 agents+all", keys)
+	}
+	if keys[0] != "stats" || keys[len(keys)-1] != "all" {
+		t.Errorf("live fanout missing bookend tabs: %v", keys)
+	}
+	if !view.Finished() {
+		t.Error("live fanout view not finished")
+	}
+	for _, role := range []string{"summarizer", "coder"} {
+		if rt.MessageFor(role) == "" {
+			t.Errorf("role %s produced no streamed message", role)
+		}
+	}
+}
+
+// TestOrchestrator_LiveFanout_CacheHitReported (§4.4) asserts cache_read is
+// correctly parsed (>=0) and displayed from the live stats events. If the local
+// model does not report cache hits, the column must still render ("-" or a
+// number) so the display path is covered regardless.
+func TestOrchestrator_LiveFanout_CacheHitReported(t *testing.T) {
+	if !lmstudioReachable(t) {
+		t.Skip("LMStudio not reachable on :1234 — skipping live orchestrator integration test")
+	}
+	view, _ := runLiveIntoView(t, []string{"summarizer", "coder"}, "fanout")
+	for _, row := range view.Rows() {
+		if row.CacheRead < 0 {
+			t.Errorf("role %s cache_read = %d, want >= 0", row.Role, row.CacheRead)
+		}
+	}
+	// Rendering must not panic and must include the CH column.
+	lines := orchpanel.RenderStatsTable(view.Rows(), 90)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "CH") {
+		t.Errorf("stats table missing CH column")
 	}
 }
