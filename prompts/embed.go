@@ -16,7 +16,7 @@ import (
 	"github.com/pijalu/goa/internal/embeddoc"
 )
 
-//go:embed *.md mode/*/*.md pair/*.md task/*.md pipeline/*.md tools/*.md
+//go:embed *.md mode/*/*.md pair/*.md task/*.md pipeline/*.md tools/*.md orchestrate/*.md
 var embeddedFS embed.FS
 
 // LoadPipelinePrompt returns the stage prompt for a pipeline.
@@ -44,6 +44,16 @@ func LoadAgentDrivenPrompt() (string, error) {
 	data, err := embeddedFS.ReadFile("agent_driven.md")
 	if err != nil {
 		return "", fmt.Errorf("agent driven prompt not found: %w", err)
+	}
+	return string(data), nil
+}
+
+// LoadOrchestratePrompt returns an orchestrator prompt template by name.
+func LoadOrchestratePrompt(name string) (string, error) {
+	path := filepath.Join("orchestrate", name+".md")
+	data, err := embeddedFS.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("orchestrate prompt %s not found: %w", name, err)
 	}
 	return string(data), nil
 }

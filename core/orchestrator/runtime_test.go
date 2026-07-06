@@ -158,6 +158,33 @@ func TestRuntime_PipelineRunsSequentially(t *testing.T) {
 	}
 }
 
+func TestRuntime_PipelineCarryUsesEmbeddedTemplate(t *testing.T) {
+	var prompts []string
+	var mu sync.Mutex
+	factory := func(role, model string) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		h.Run = func(_ context.Context, p string) error {
+			mu.Lock()
+			prompts = append(prompts, p)
+			mu.Unlock()
+			return nil
+		}
+		return h, nil
+	}
+	rt, _, _ := runtimeFor(t, "pipeline", factory)
+	if err := rt.Run(context.Background(), "obj"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 2 {
+		t.Fatalf("expected 2 prompts, got %d: %v", len(prompts), prompts)
+	}
+	if !strings.Contains(prompts[1], "Objective: obj") {
+		t.Errorf("second prompt missing templated objective: %q", prompts[1])
+	}
+}
+
 func TestRuntime_PoolCapsBlockAndProceed(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.OrchestratorConfig{

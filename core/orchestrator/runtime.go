@@ -11,9 +11,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"text/template"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/prompts"
 )
 
 // Emitter forwards an orchestrator Event to the run's store and any live TUI
@@ -29,12 +31,12 @@ type Emitter func(Event)
 // HOW agentic output maps to events — those are supplied by an adapter
 // (internal/app) so this package is unit-testable without a live provider.
 type Runtime struct {
-	cfg       config.OrchestratorConfig
-	pool      *BoundedAgentPool
-	store     EventStore
-	topology  Topology
-	runID     string
-	rootDir   string
+	cfg      config.OrchestratorConfig
+	pool     *BoundedAgentPool
+	store    EventStore
+	topology Topology
+	runID    string
+	rootDir  string
 
 	emitMu sync.Mutex
 	bus    chan Event
@@ -42,10 +44,10 @@ type Runtime struct {
 
 	doneCh chan struct{}
 
-	objective string
-	goal      GoalBinder // optional; when set, the run is goal-bound
-	goalID    string     // goal id for the bound goal
-	goalMu    sync.Mutex // guards the goal field
+	objective  string
+	goal       GoalBinder // optional; when set, the run is goal-bound
+	goalID     string     // goal id for the bound goal
+	goalMu     sync.Mutex // guards the goal field
 	goalCallMu sync.Mutex // serializes goal API calls (single-driver design)
 	telemetry  Telemetry  // optional; nil-safe via telemetryOr
 	name       string     // friendly alias, e.g. "happy.hare"
@@ -77,15 +79,15 @@ func NewRuntime(cfg config.OrchestratorConfig, pool *BoundedAgentPool, store Eve
 		return nil, errors.New("orchestrator: nil pool")
 	}
 	return &Runtime{
-		cfg:      cfg,
-		pool:     pool,
-		store:    store,
-		topology: top,
-		rootDir:  rootDir,
-		bus:      make(chan Event, 256),
-		doneCh:   make(chan struct{}),
-		msgs:     map[string][]string{},
-		newID:    defaultRunID,
+		cfg:       cfg,
+		pool:      pool,
+		store:     store,
+		topology:  top,
+		rootDir:   rootDir,
+		bus:       make(chan Event, 256),
+		doneCh:    make(chan struct{}),
+		msgs:      map[string][]string{},
+		newID:     defaultRunID,
 		telemetry: nopTelemetry{},
 	}, nil
 }
@@ -198,8 +200,8 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	})
 	r.telemetry.Track(TelemetryRunStarted, map[string]any{
 		"topology": string(r.topology),
-		"roles":   len(r.cfg.Roles),
-		"goal":    r.GoalBound(),
+		"roles":    len(r.cfg.Roles),
+		"goal":     r.GoalBound(),
 	})
 
 	var err error
@@ -288,7 +290,9 @@ func (r *Runtime) runPipeline(ctx context.Context, objective string) error {
 			return err
 		}
 		// Feed this agent's last streamed message forward as context.
-		carry = r.lastMessageFor(role) + "\n\nContinue the pipeline with the above context. Objective: " + objective
+		carry = r.lastMessageFor(role) + "\n\n" + r.renderPrompt("pipeline_carry", map[string]any{
+			"Objective": objective,
+		})
 	}
 	return nil
 }
@@ -323,7 +327,24 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 	// The adapter's observer updates h.Stats during the turn. We bump the turn
 	// counter around the call; RunTurn drains steering into the prompt.
 	h.Stats.IncTurn()
-	runErr := h.RunTurn(ctx, prompt)
+
+	var rolePrompt string
+	switch r.topology {
+	case TopologyHub:
+		if role == "orchestrator" {
+			rolePrompt = r.renderPrompt("hub_orchestrator", map[string]any{"Objective": prompt})
+		} else {
+			rolePrompt = r.renderPrompt("fanout_role", map[string]any{"Objective": prompt})
+		}
+	case TopologyPipeline:
+		rolePrompt = r.renderPrompt("pipeline_role", map[string]any{"Objective": prompt})
+	default:
+		rolePrompt = r.renderPrompt("fanout_role", map[string]any{"Objective": prompt})
+	}
+	if rolePrompt == "" {
+		rolePrompt = prompt
+	}
+	runErr := h.RunTurn(ctx, rolePrompt)
 
 	snap := h.Stats.Snapshot()
 	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role,
@@ -445,6 +466,25 @@ func statsPayload(s AgentStatsSnapshot) map[string]any {
 		"tool_calls":     s.ToolCalls,
 		"status":         string(s.Status),
 	}
+}
+
+// renderPrompt executes an embedded orchestrator prompt template by name.
+// If the prompt or template execution fails, it returns an empty string so the
+// caller can fall back to the original prompt text.
+func (r *Runtime) renderPrompt(name string, data map[string]any) string {
+	tpl, err := prompts.LoadOrchestratePrompt(name)
+	if err != nil {
+		return ""
+	}
+	t, err := template.New(name).Parse(tpl)
+	if err != nil {
+		return ""
+	}
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return ""
+	}
+	return buf.String()
 }
 
 // SetTelemetry attaches a tracker for lifecycle events (nil → no-op).
@@ -569,12 +609,12 @@ func (r *Runtime) SteerOrchestrator(text string) bool {
 
 // AgentRow is one row of the Summary snapshot, used by the TUI table.
 type AgentRow struct {
-	ID       string
-	Role     string
-	Model    string
-	Status   AgentStatus
-	Turns    int
-	TokensIn int
+	ID        string
+	Role      string
+	Model     string
+	Status    AgentStatus
+	Turns     int
+	TokensIn  int
 	TokensOut int
 	ToolCalls int
 	Messages  int

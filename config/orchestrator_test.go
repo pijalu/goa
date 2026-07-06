@@ -164,6 +164,20 @@ func TestOrchestratorConfigValidate(t *testing.T) {
 	}
 }
 
+func TestOrchestratorConfigDefaultRolesEmpty(t *testing.T) {
+	base, err := DefaultConfigYAML()
+	if err != nil {
+		t.Fatalf("DefaultConfigYAML: %v", err)
+	}
+	cfg := &Config{}
+	if err := yaml.Unmarshal([]byte(base), cfg); err != nil {
+		t.Fatalf("parse default: %v", err)
+	}
+	if len(cfg.Orchestrator.Roles) != 0 {
+		t.Errorf("default roles should be empty, got %d", len(cfg.Orchestrator.Roles))
+	}
+}
+
 func errOrEmpty(err error) string {
 	if err == nil {
 		return ""

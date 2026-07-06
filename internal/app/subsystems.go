@@ -15,9 +15,9 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
-	"github.com/pijalu/goa/core/orchestrator"
 	commands "github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/core/sessiontree"
 	"github.com/pijalu/goa/core/swarm"
 	"github.com/pijalu/goa/core/tasks"
@@ -844,6 +844,11 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		Active:   s.orchActive,
 		RootDir:  filepath.Join(projectDir, ".goa", "orchestrator"),
 		GoalMode: s.goalManager.Mode,
+	}
+	orchCmd.ShowBrowser = func() {
+		b := orchpanel.NewBrowser(orchCmd.RootDir, nil)
+		handle := s.tuiEngine.ShowOverlay(b, tui.OverlayOptions{CaptureInput: true})
+		b.SetCloseFunc(func() { handle.Hide() })
 	}
 	_ = core.GlobalRegistry().Register(orchCmd)
 

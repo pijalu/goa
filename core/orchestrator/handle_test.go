@@ -5,6 +5,8 @@
 package orchestrator
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,5 +72,24 @@ func TestAgentHandle_DoneReleasesOnce(t *testing.T) {
 	case <-h.Done():
 	default:
 		t.Fatalf("Done not closed after release")
+	}
+}
+
+func TestAgentHandle_RunTurnUsesEmbeddedSteeringPrefix(t *testing.T) {
+	h := NewAgentHandle("coder-1", "coder", "m1")
+	h.Steer("focus on tests")
+	var prompt string
+	h.Run = func(_ context.Context, p string) error {
+		prompt = p
+		return nil
+	}
+	if err := h.RunTurn(context.Background(), "base prompt"); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !strings.Contains(prompt, "base prompt") {
+		t.Errorf("base prompt missing from %q", prompt)
+	}
+	if !strings.Contains(prompt, "[Steering] focus on tests") {
+		t.Errorf("steering prefix not rendered correctly, got %q", prompt)
 	}
 }

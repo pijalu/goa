@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/prompts"
 )
 
 // AgentStatus is the lifecycle state of a managed agent handle.
@@ -175,8 +176,13 @@ func (h *AgentHandle) Done() <-chan struct{} { return h.done }
 // no-op turn so pure-logic tests can drive the runtime without an agent.
 func (h *AgentHandle) RunTurn(ctx context.Context, basePrompt string) error {
 	prompt := basePrompt
+	steeringPrefix, _ := prompts.LoadOrchestratePrompt("steering_prefix")
+	steeringPrefix = strings.TrimSpace(steeringPrefix)
+	if steeringPrefix == "" {
+		steeringPrefix = "[Steering]"
+	}
 	if extra := h.DrainSteering(); len(extra) > 0 {
-		prompt = prompt + "\n\n[Steering] " + strings.Join(extra, "\n[Steering] ")
+		prompt = prompt + "\n\n" + steeringPrefix + " " + strings.Join(extra, "\n"+steeringPrefix+" ")
 	}
 	if h.Run == nil {
 		return nil

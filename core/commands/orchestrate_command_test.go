@@ -16,6 +16,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/orchestrator"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -147,8 +148,54 @@ func TestOrchestrateCommand_NoRolesErrors(t *testing.T) {
 
 func TestOrchestrateCommand_BareMenu(t *testing.T) {
 	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
-	if err := c.Run(testCtx(t), nil); err != nil {
+	ctx := testCtx(t)
+	if err := c.Run(ctx, nil); err != nil {
 		t.Fatalf("bare menu: %v", err)
+	}
+}
+
+func TestOrchestrateCommand_BareMenuNonInteractive(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+	if err := c.Run(ctx, nil); err != nil {
+		t.Fatalf("bare menu non-interactive: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Usage:") {
+		t.Errorf("expected usage output in non-interactive context, got %q", buf.String())
+	}
+}
+
+func TestOrchestrateCommand_NewMissingObjectiveNonInteractive(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	if err := c.Run(ctx, []string{"new"}); err == nil {
+		t.Fatal("expected error for missing objective in non-interactive context")
+	}
+}
+
+func TestOrchestrateCommand_ResumeMissingIDNonInteractive(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	if err := c.Run(ctx, []string{"resume"}); err == nil {
+		t.Fatal("expected error for missing id in non-interactive context")
+	}
+}
+
+func TestOrchestrateCommand_DeleteMissingIDNonInteractive(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	if err := c.Run(ctx, []string{"delete"}); err == nil {
+		t.Fatal("expected error for missing id in non-interactive context")
+	}
+}
+
+func TestOrchestrateCommand_SteerMissingArgsNonInteractive(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	if err := c.Run(ctx, []string{"steer"}); err == nil {
+		t.Fatal("expected error for missing id/message in non-interactive context")
 	}
 }
 
@@ -244,3 +291,123 @@ func TestOrchestrateCommand_ListRuns(t *testing.T) {
 
 // guard against accidental removal of used imports if file evolves.
 var _ = strings.TrimSpace
+
+func TestOrchestrateCommand_DefaultRoleSynthesis(t *testing.T) {
+	cfg := config.Config{ActiveModel: "gpt4"}
+	oCfg, defaulted := effectiveOrchestratorConfig(&cfg)
+	if !defaulted {
+		t.Fatal("expected default roles to be synthesized")
+	}
+	if len(oCfg.Roles) != 3 {
+		t.Fatalf("expected 3 default roles, got %d", len(oCfg.Roles))
+	}
+	for _, role := range []string{"orchestrator", "coder", "reviewer"} {
+		if oCfg.Roles[role].Model != "gpt4" {
+			t.Errorf("role %s model = %q, want gpt4", role, oCfg.Roles[role].Model)
+		}
+	}
+}
+
+func TestOrchestrateCommand_DefaultRoleSynthesisNoActiveModel(t *testing.T) {
+	cfg := config.Config{}
+	_, defaulted := effectiveOrchestratorConfig(&cfg)
+	if defaulted {
+		t.Error("expected no default roles when ActiveModel is empty")
+	}
+}
+
+func TestOrchestrateCommand_DefaultRolesRunUsesActiveModel(t *testing.T) {
+	b := &fakeBuilder{}
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := core.Context{Config: &config.Config{ActiveModel: "gpt4"}}
+	var mu sync.Mutex
+	var flashes []string
+	ctx.EventBus = &event.Bus{Chat: make(chan event.ChatEvent, 10)}
+	go func() {
+		for ev := range ctx.EventBus.Chat {
+			if ev.Flash != nil {
+				mu.Lock()
+				flashes = append(flashes, ev.Flash.Text)
+				mu.Unlock()
+			}
+		}
+	}()
+
+	if err := c.Run(ctx, []string{"new", "objective=obj"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && c.Active.Get() != nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	var found bool
+	for _, f := range flashes {
+		if strings.Contains(f, "No orchestrator roles configured") {
+			found = true
+			break
+		}
+	}
+	mu.Unlock()
+	if !found {
+		t.Errorf("expected warning flash, got %v", flashes)
+	}
+	if b.cfg.Roles["coder"].Model != "gpt4" {
+		t.Errorf("coder role model = %q, want gpt4", b.cfg.Roles["coder"].Model)
+	}
+}
+
+func TestOrchestrateCommand_AsyncErrorFlashed(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	var mu sync.Mutex
+	var flashes []string
+	ctx.EventBus = &event.Bus{Chat: make(chan event.ChatEvent, 10)}
+	go func() {
+		for ev := range ctx.EventBus.Chat {
+			if ev.Flash != nil {
+				mu.Lock()
+				flashes = append(flashes, ev.Flash.Text)
+				mu.Unlock()
+			}
+		}
+	}()
+	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		onSelected("", false)
+	}
+	step := 0
+	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
+		step++
+		if step == 1 {
+			onSubmit("all", true)
+			return
+		}
+		onSubmit("x", true)
+	}
+
+	if err := c.Run(ctx, []string{"steer"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := len(flashes) > 0
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	var found bool
+	for _, f := range flashes {
+		if strings.Contains(f, "no active orchestration") {
+			found = true
+			break
+		}
+	}
+	mu.Unlock()
+	if !found {
+		t.Errorf("expected no-active-run flash, got %v", flashes)
+	}
+}

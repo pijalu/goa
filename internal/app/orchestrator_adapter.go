@@ -9,10 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/orchestrator"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/telemetry"
 	"github.com/pijalu/goa/multiagent"
@@ -27,11 +27,11 @@ import (
 // agent's output observer is translated into orchestrator AgentStats updates
 // and AgentMessage events, so the runtime and TUI see uniform progress.
 type OrchestratorAdapter struct {
-	pool  *multiagent.AgentPool
-	cfg   *config.Config
-	mu    sync.Mutex
-	seen  map[string]struct{} // roles already wired this process (observer dedupe)
-	tel   orchestrator.Telemetry
+	pool *multiagent.AgentPool
+	cfg  *config.Config
+	mu   sync.Mutex
+	seen map[string]struct{} // roles already wired this process (observer dedupe)
+	tel  orchestrator.Telemetry
 }
 
 // NewOrchestratorAdapter constructs an adapter over an existing multiagent pool.
@@ -101,7 +101,7 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 	}
 
 	bounded := orchestrator.NewBoundedAgentPool(oCfg, factory)
-	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
+	runID := internal.PrefixedHexID("run", 4)
 	store := orchestrator.NewFileEventStore(rootDir, runID)
 	var err error
 	rt, err = orchestrator.NewRuntime(oCfg, bounded, store, rootDir)

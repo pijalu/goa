@@ -17,7 +17,7 @@ import (
 
 // coreContextForCommand builds the core.Context passed to slash commands.
 func coreContextForCommand(subs *subsystems, app *App) core.Context {
-	return core.Context{
+	ctx := core.Context{
 		Config:                 subs.cfg,
 		ProjectDir:             subs.projectDir,
 		InitialActiveProvider:  subs.cfg.ActiveProvider,
@@ -45,60 +45,63 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		GoalManager:            subs.goalManager,
 		ReloadHandler:          &ReloadHandler{subs: subs},
 		PTYManager:             subs.ptyMgr,
-		SelectOptionFunc: func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
-			ch := subs.tuiEngine.ShowSelector(title, options, current)
-			go func() {
-				selected := <-ch
-				if onSelected != nil {
-					app.apply(func() { onSelected(selected, selected != "") })
-				}
-			}()
-		},
-		ShowInputFunc: func(prompt, current string, onSubmit func(string, bool)) {
-			// Input discipline (docs/TUI.md): route ALL text input through the main
-			// input line (with the editor title set to the prompt) rather than a
-			// throwaway overlay Input. This preserves the (value, ok) contract:
-			// non-empty submit => ok=true; cancel (empty/Ctrl+C) => ok=false.
-			// The callbacks run later on the commandLoop, so no apply() wrapper.
-			if inp := subs.getInput(); inp != nil {
-				inp.SetText(current)
+		LoopDetector:           loopDetectorFrom(subs),
+		Steering:               steeringQueueFrom(subs),
+	}
+
+	if app != nil {
+		wireInteractiveCallbacks(&ctx, subs, app)
+	}
+	return ctx
+}
+
+func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
+	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		ch := subs.tuiEngine.ShowSelector(title, options, current)
+		go func() {
+			selected := <-ch
+			if onSelected != nil {
+				app.apply(func() { onSelected(selected, selected != "") })
 			}
-			app.requestMainInputWithCancel(prompt, func(text string) {
-				if onSubmit != nil {
-					onSubmit(text, true)
-				}
-			}, func() {
-				if onSubmit != nil {
-					onSubmit("", false)
-				}
-			}, true)
-		},
-		RequestMainInput: func(prompt string, onSubmit func(string)) {
-			app.requestMainInput(prompt, onSubmit)
-		},
-		ClarifyFunc: func(card *tui.ClarifyCard) (string, bool) {
-			return app.clarify(card)
-		},
-		SubmitToAgent: func(text string) {
-			subs.chat.AddUserMessage(text)
-			subs.tuiEngine.RequestRender()
-			app.sendToAgent(text)
-		},
-		RenderChat: func(width int) string {
-			return dumpChat(subs, width)
-		},
-		ShowPTYOverlay: func(sessionID string) {
-			pv := tui.NewPTYView(subs.ptyMgr, sessionID)
-			pv.SetTUI(subs.tuiEngine)
-			opts := tui.OverlayOptions{
-				Width:        0,
-				Height:       0,
-				CaptureInput: true,
+		}()
+	}
+	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
+		if inp := subs.getInput(); inp != nil {
+			inp.SetText(current)
+		}
+		app.requestMainInputWithCancel(prompt, func(text string) {
+			if onSubmit != nil {
+				onSubmit(text, true)
 			}
-			subs.tuiEngine.ShowOverlay(pv, opts)
-		},
-		LoopDetector: loopDetectorFrom(subs),
-		Steering:     steeringQueueFrom(subs),
+		}, func() {
+			if onSubmit != nil {
+				onSubmit("", false)
+			}
+		}, true)
+	}
+	ctx.RequestMainInput = func(prompt string, onSubmit func(string)) {
+		app.requestMainInput(prompt, onSubmit)
+	}
+	ctx.ClarifyFunc = func(card *tui.ClarifyCard) (string, bool) {
+		return app.clarify(card)
+	}
+	ctx.SubmitToAgent = func(text string) {
+		subs.chat.AddUserMessage(text)
+		subs.tuiEngine.RequestRender()
+		app.sendToAgent(text)
+	}
+	ctx.RenderChat = func(width int) string {
+		return dumpChat(subs, width)
+	}
+	ctx.ShowPTYOverlay = func(sessionID string) {
+		pv := tui.NewPTYView(subs.ptyMgr, sessionID)
+		pv.SetTUI(subs.tuiEngine)
+		opts := tui.OverlayOptions{
+			Width:        0,
+			Height:       0,
+			CaptureInput: true,
+		}
+		subs.tuiEngine.ShowOverlay(pv, opts)
 	}
 }
 
