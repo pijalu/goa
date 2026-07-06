@@ -417,6 +417,33 @@ func (f *flashCollector) reset() {
 	f.mu.Unlock()
 }
 
+func TestOrchestrateCommand_BrowserOpensOverlay(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	ctx.SelectOptionFunc = func(string, []tui.SelectorItem, string, func(string, bool)) {} // mark interactive
+	ctx.ShowInputFunc = func(string, string, func(string, bool)) {}
+
+	opened := false
+	c.ShowBrowser = func() { opened = true }
+	if err := c.Run(ctx, []string{"browser"}); err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	if !opened {
+		t.Error("ShowBrowser not invoked by /orchestrate:browser")
+	}
+}
+
+func TestOrchestrateCommand_BrowserNoCallbackErrors(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	ctx.SelectOptionFunc = func(string, []tui.SelectorItem, string, func(string, bool)) {}
+	ctx.ShowInputFunc = func(string, string, func(string, bool)) {}
+	// ShowBrowser intentionally nil.
+	if err := c.Run(ctx, []string{"browser"}); err == nil {
+		t.Error("expected error when ShowBrowser is nil")
+	}
+}
+
 func TestOrchestrateCommand_DefaultRoleSynthesis(t *testing.T) {
 	cfg := config.Config{ActiveModel: "gpt4"}
 	oCfg, defaulted := effectiveOrchestratorConfig(&cfg)

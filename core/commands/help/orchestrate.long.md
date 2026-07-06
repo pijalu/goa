@@ -20,6 +20,7 @@ Actions:
   /orchestrate:delete:id=<run-id>  Delete a run (requires confirmation).
   /orchestrate:delete:id=*         Delete all runs (requires confirmation).
   /orchestrate:steer:id=<agent-id|all|orchestrator>,message=<text>
+  /orchestrate:tab:<key|index>      Switch the orchestration view tab (stats/all/<agent> or 1-based index).
   /orchestrate:browser            Open the dedicated run browser overlay.
 
 Configuration:
@@ -31,9 +32,18 @@ Configuration:
                                    the box. Customize them under /config → Orchestrator.
 
 Steering:
-  While the Orchestrator Summary tab is visible, the main input line shows
-  "steer all:" and submitted text is broadcast to all live agents. You can
-  still type explicit /orchestrate:steer commands for directed steering.
+  While an orchestration run is active the chat region is replaced by a
+  persistent TABBED VIEW: a Stats tab, one tab per agent, and an All tab.
+  Cycle tabs with Ctrl+x (next) / Ctrl+z (prev), or /orchestrate:tab.
+  The input line prompt shows the steering target for the active tab
+  ("steer <role>:" on an agent tab, "steer all:" on Stats/All); submitted
+  text steers that target. You can still type explicit /orchestrate:steer
+  commands for directed steering.
+
+Stats tab columns:
+  role   (provider) model   think   in   out   CH
+  CH = cache-hit tokens ("-" when 0); think = effective reasoning level.
+  A footer line sums the aggregate token totals for the run.
 
 Examples:
   /orchestrate:new:topology=fanout,objective=Refactor auth layer
