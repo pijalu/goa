@@ -139,6 +139,14 @@ type AgentHandle struct {
 	Role string
 	// Model is the resolved model id for this handle.
 	Model string
+	// Provider is the resolved provider id for this handle (display-only,
+	// surfaced in EventAgentStarted / EventAgentStats so the TUI stats table
+	// can render the per-role provider column).
+	Provider string
+	// Thinking is the effective reasoning level for this handle (e.g.
+	// "off"/"low"/"medium"/"high"), surfaced alongside Provider for the stats
+	// table's "think" column.
+	Thinking string
 
 	// Stats tracks live usage counters.
 	Stats *AgentStats

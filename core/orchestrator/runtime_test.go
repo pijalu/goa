@@ -291,6 +291,43 @@ func TestRuntime_SteeringDrainedIntoTurn(t *testing.T) {
 	}
 }
 
+func TestRuntime_SnapshotCarriesCacheAndProvider(t *testing.T) {
+	rt, pool, _ := runtimeFor(t, "fanout", fakeFactory(new(atomic.Int32), "", nil))
+
+	// Acquire a live handle and populate it the way the adapter + observer do,
+	// then assert Snapshot() surfaces every field (incl. cache + provider).
+	h, err := pool.Acquire(context.Background(), "coder")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	h.Provider = "lmstudio"
+	h.Thinking = "medium"
+	h.Stats.AddUsage(40, 12, 1024, 0)
+	h.Stats.IncToolCall()
+
+	rows := rt.Snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("Snapshot() rows = %d, want 1: %+v", len(rows), rows)
+	}
+	r := rows[0]
+	if r.Role != "coder" {
+		t.Errorf("Role = %q, want coder", r.Role)
+	}
+	if r.Provider != "lmstudio" {
+		t.Errorf("Provider = %q, want lmstudio", r.Provider)
+	}
+	if r.Thinking != "medium" {
+		t.Errorf("Thinking = %q, want medium", r.Thinking)
+	}
+	if r.CacheRead != 1024 {
+		t.Errorf("CacheRead = %d, want 1024", r.CacheRead)
+	}
+	if r.TokensIn != 40 || r.TokensOut != 12 {
+		t.Errorf("tokens = in %d out %d, want 40/12", r.TokensIn, r.TokensOut)
+	}
+	pool.Release(h)
+}
+
 // assertLifecycle checks that the event sequence starts/ends with the expected
 // bookends and contains all required event types (order-robust for fanout
 // since parallel agents interleave).

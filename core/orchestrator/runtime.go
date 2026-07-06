@@ -322,6 +322,7 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 	r.emit(Event{
 		Type:    EventAgentStarted,
 		AgentID: h.ID, Role: h.Role, Model: h.Model,
+		Payload: map[string]any{"provider": h.Provider, "thinking": h.Thinking},
 	})
 
 	// The adapter's observer updates h.Stats during the turn. We bump the turn
@@ -348,7 +349,7 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 
 	snap := h.Stats.Snapshot()
 	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role,
-		Payload: statsPayload(snap)})
+		Payload: statsPayloadWithMeta(snap, h.Thinking)})
 
 	if over, gerr := r.accrueGoalTokens(snap.TokensIn + snap.TokensOut); gerr != nil {
 		return fmt.Errorf("goal token accounting: %w", gerr)
@@ -418,7 +419,7 @@ func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, erro
 
 	h.Stats.SetStatus(AgentRunning)
 	r.emit(Event{Type: EventAgentStarted, AgentID: h.ID, Role: h.Role, Model: h.Model,
-		Payload: map[string]any{"delegated": true}})
+		Payload: map[string]any{"delegated": true, "provider": h.Provider, "thinking": h.Thinking}})
 
 	// Reset per-role accumulation so MessageFor returns only this turn's text.
 	r.msgMu.Lock()
@@ -429,7 +430,7 @@ func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, erro
 	runErr := h.RunTurn(ctx, task)
 
 	snap := h.Stats.Snapshot()
-	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role, Payload: statsPayload(snap)})
+	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role, Payload: statsPayloadWithMeta(snap, h.Thinking)})
 
 	if over, gerr := r.accrueGoalTokens(snap.TokensIn + snap.TokensOut); gerr != nil {
 		return "", fmt.Errorf("goal token accounting: %w", gerr)
@@ -466,6 +467,15 @@ func statsPayload(s AgentStatsSnapshot) map[string]any {
 		"tool_calls":     s.ToolCalls,
 		"status":         string(s.Status),
 	}
+}
+
+// statsPayloadWithMeta extends the base stats payload with the agent's
+// effective thinking level so the TUI stats table can render the "think"
+// column from a single agent_stats event.
+func statsPayloadWithMeta(s AgentStatsSnapshot, thinking string) map[string]any {
+	p := statsPayload(s)
+	p["thinking"] = thinking
+	return p
 }
 
 // renderPrompt executes an embedded orchestrator prompt template by name.
@@ -609,15 +619,19 @@ func (r *Runtime) SteerOrchestrator(text string) bool {
 
 // AgentRow is one row of the Summary snapshot, used by the TUI table.
 type AgentRow struct {
-	ID        string
-	Role      string
-	Model     string
-	Status    AgentStatus
-	Turns     int
-	TokensIn  int
-	TokensOut int
-	ToolCalls int
-	Messages  int
+	ID            string
+	Role          string
+	Model         string
+	Provider      string
+	Thinking      string
+	Status        AgentStatus
+	Turns         int
+	TokensIn      int
+	TokensOut     int
+	CacheRead     int
+	CacheCreation int
+	ToolCalls     int
+	Messages      int
 }
 
 // Snapshot returns the current live-agent rows for the Summary tab. It is a
@@ -629,8 +643,10 @@ func (r *Runtime) Snapshot() []AgentRow {
 		s := h.Stats.Snapshot()
 		rows = append(rows, AgentRow{
 			ID: h.ID, Role: h.Role, Model: h.Model,
+			Provider: h.Provider, Thinking: h.Thinking,
 			Status: s.Status, Turns: s.Turns,
 			TokensIn: s.TokensIn, TokensOut: s.TokensOut,
+			CacheRead: s.CacheRead, CacheCreation: s.CacheCreation,
 			ToolCalls: s.ToolCalls,
 		})
 	}

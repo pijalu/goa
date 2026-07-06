@@ -68,6 +68,8 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 		}
 
 		h := orchestrator.NewAgentHandle("", role, model)
+		h.Provider = resolveRoleProvider(rcfg, a.cfg)
+		h.Thinking = string(agent.ReasoningEffort())
 		h.Run = func(ctx context.Context, prompt string) error {
 			return agent.Run(ctx, prompt)
 		}
@@ -214,6 +216,19 @@ func delegateRoles(oCfg config.OrchestratorConfig) []string {
 		roles = append(roles, name)
 	}
 	return roles
+}
+
+// resolveRoleProvider returns the provider id for an orchestrator role. It
+// prefers the role's explicit provider binding and falls back to the
+// process-wide active provider so every row of the stats table is non-empty.
+func resolveRoleProvider(rcfg config.OrchestratorRole, cfg *config.Config) string {
+	if rcfg.Provider != "" {
+		return rcfg.Provider
+	}
+	if cfg != nil && cfg.ActiveProvider != "" {
+		return cfg.ActiveProvider
+	}
+	return ""
 }
 
 // telClientAdapter adapts *telemetry.Client (Record(name, map[string]string))
