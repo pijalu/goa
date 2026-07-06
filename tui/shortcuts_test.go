@@ -108,25 +108,16 @@ func TestTUI_HandleAppShortcuts_ToggleThinkingBlocks(t *testing.T) {
 	}
 }
 
-func TestTUI_HandleAppShortcuts_AgentTabCycle(t *testing.T) {
+func TestTUI_HandleAppShortcuts_OpenAgentTabs(t *testing.T) {
 	tui := NewTUI(NewProcessTerminal())
 
-	next := false
-	prev := false
-	tui.OnAgentTabNext = func() { next = true }
-	tui.OnAgentTabPrev = func() { prev = true }
-
+	opened := false
+	tui.OnOpenAgentTabs = func() { opened = true }
 	if !tui.handleAppShortcuts("ctrl+x") {
 		t.Error("ctrl+x should be consumed")
 	}
-	if !next {
-		t.Error("OnAgentTabNext was not called for ctrl+x")
-	}
-	if !tui.handleAppShortcuts("ctrl+z") {
-		t.Error("ctrl+z should be consumed")
-	}
-	if !prev {
-		t.Error("OnAgentTabPrev was not called for ctrl+z")
+	if !opened {
+		t.Error("OnOpenAgentTabs was not called for ctrl+x")
 	}
 }
 

@@ -176,25 +176,24 @@ func checkNodeText(t *testing.T, f tui.AgentFrame, name string, want []string) {
 	}
 }
 
-// TestOrchestratorViewForwarder_CycleHotkeyChangesTab verifies the tab-cycle
-// hotkey handler advances the active tab and updates the steering prompt.
-func TestOrchestratorViewForwarder_CycleHotkeyChangesTab(t *testing.T) {
+// TestOrchestratorViewForwarder_TabPickerJumpsByNumber verifies the Ctrl+x
+// tab picker: opening it and pressing a number selects that tab and updates
+// the steering prompt.
+func TestOrchestratorViewForwarder_TabPickerJumpsByNumber(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
 	sc.applyOrchEvents(lifecycleEvents())
 
-	inp := sc.app.subs.getInput()
-	if got := inp.Title(); got != "steer all:" {
-		t.Errorf("initial prompt = %q, want 'steer all:'", got)
-	}
+	// Tabs: stats(1), c-1 coder(2), r-1 reviewer(3), all(4). Open + press 2.
+	sc.engine.ApplySync(func() { sc.app.openAgentTabSelector() })
+	sc.engine.ApplySync(func() { sc.engine.SendKey("2") })
 
-	sc.engine.ApplySync(func() { sc.app.cycleAgentTab(1) })
-	if got := inp.Title(); !strings.Contains(got, "steer coder:") {
-		t.Errorf("after cycle prompt = %q, want 'steer coder:'", got)
-	}
 	if tab, ok := sc.app.subs.agentView.ActiveTab(); !ok || tab.Key != "c-1" {
-		t.Errorf("active tab = %+v, want c-1", tab)
+		t.Errorf("after picker digit 2 active = %+v, want c-1", tab)
+	}
+	if got := sc.app.subs.getInput().Title(); got != "steer coder:" {
+		t.Errorf("prompt = %q, want 'steer coder:'", got)
 	}
 }
 

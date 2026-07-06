@@ -9,7 +9,7 @@ Copyright (C) 2026 Pierre Poissinger
 ANSI-free, reproducible Filmstrip captured from the production component tree driven
 by a neutral event sequence (start → 2 agents → stream → stats → finish). Validates:
 persistent Stats/per-agent/All tabs, the provider/model/think/in/out/CH columns, the
-steer-all prompt, the Ctrl+z/Ctrl+x nav hint, and live per-frame updates. Regenerated
+steer-all prompt, the Ctrl+x tab-picker hint, and live per-frame updates. Regenerated
 via `TestSmokeCaptureOnly` (internal/app).
 
 ```
@@ -30,7 +30,7 @@ via `TestSmokeCaptureOnly` (internal/app).
 + .                                                                                             │
 + no-model
 === step 1: run_started ===
-+ Ctrl+z / Ctrl+x switch tabs · /orchestrate:tab:<n>
++ Ctrl+x tabs · /orchestrate:tab:<n>
 + no agents yet
 + objective: ship it
 + orchestration · fanout · running

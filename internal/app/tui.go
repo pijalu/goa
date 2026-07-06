@@ -104,8 +104,7 @@ func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {
 	engine.OnCycleAutonomy = func() { a.handleCycleAutonomy() }
 	engine.OnChangeModel = func() { a.handleChangeModel() }
 	engine.OnToggleThinkingBlocks = func() { a.handleToggleThinkingBlocks() }
-	engine.OnAgentTabNext = func() { a.cycleAgentTab(1) }
-	engine.OnAgentTabPrev = func() { a.cycleAgentTab(-1) }
+	engine.OnOpenAgentTabs = func() { a.openAgentTabSelector() }
 	a.wireOrchCommandCallbacks()
 	engine.OnCancelInputRequest = func() bool { return a.cancelPendingMainInput() }
 }

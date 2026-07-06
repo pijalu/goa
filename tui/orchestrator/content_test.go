@@ -67,12 +67,12 @@ func TestAgentContent_ShowsNavHint(t *testing.T) {
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-1", Role: "coder"})
 
 	statsHint := strings.Join(stripAll(c.Render(80)), "\n")
-	if !strings.Contains(statsHint, "Ctrl+z / Ctrl+x") {
+	if !strings.Contains(statsHint, "Ctrl+x tabs") {
 		t.Errorf("stats tab missing nav hint:\n%s", statsHint)
 	}
 	v.SelectByKey("c-1")
 	agentHint := strings.Join(stripAll(c.Render(80)), "\n")
-	if !strings.Contains(agentHint, "Ctrl+z / Ctrl+x") {
+	if !strings.Contains(agentHint, "Ctrl+x tabs") {
 		t.Errorf("agent tab missing nav hint:\n%s", agentHint)
 	}
 }

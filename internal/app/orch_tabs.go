@@ -5,6 +5,7 @@
 package app
 
 import (
+	"github.com/pijalu/goa/tui"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
@@ -42,15 +43,26 @@ func orchRoleLabel(v *orchpanel.MultiAgentView, id string) string {
 	return id
 }
 
-// cycleAgentTab moves the active orchestration tab by dir and refreshes the
-// steering prompt. Invoked on the command loop from a hotkey shortcut.
-func (a *App) cycleAgentTab(dir int) {
+// openAgentTabSelector opens the tab picker overlay (Ctrl+x). It lists the
+// run's tabs as a numbered menu supporting number-jump, arrows, enter, esc.
+// No-op when no run is active. Invoked on the command loop from a hotkey.
+func (a *App) openAgentTabSelector() {
 	v := a.subs.agentView
 	if v == nil || !v.Active() {
 		return
 	}
-	v.Cycle(dir)
-	a.updateOrchInputPrompt()
+	engine := a.subs.tuiEngine
+	if engine == nil {
+		return
+	}
+	picker := orchpanel.NewAgentTabPicker(v)
+	handle := engine.ShowOverlay(picker, tui.OverlayOptions{CaptureInput: true})
+	picker.SetCloseFunc(func() { handle.Hide() })
+	picker.SetPickFunc(func(key string) {
+		if key != "" {
+			a.selectAgentTab(key)
+		}
+	})
 }
 
 // selectAgentTab selects a tab by key (or 1-based index) and refreshes the

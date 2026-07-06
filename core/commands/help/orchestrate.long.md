@@ -34,7 +34,8 @@ Configuration:
 Steering:
   While an orchestration run is active the chat region is replaced by a
   persistent TABBED VIEW: a Stats tab, one tab per agent, and an All tab.
-  Cycle tabs with Ctrl+x (next) / Ctrl+z (prev), or /orchestrate:tab.
+  Cycle tabs with Ctrl+x (opens a numbered tab picker: jump by number or
+  arrow+enter), or /orchestrate:tab.
   The input line prompt shows the steering target for the active tab
   ("steer <role>:" on an agent tab, "steer all:" on Stats/All); submitted
   text steers that target. You can still type explicit /orchestrate:steer

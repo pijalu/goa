@@ -130,13 +130,12 @@ type TUI struct {
 	// OnToggleThinkingBlocks is called when the thinking-blocks toggle key is pressed.
 	OnToggleThinkingBlocks func()
 
-	// OnAgentTabNext / OnAgentTabPrev cycle the active tab of the persistent
-	// multi-agent run view (Ctrl+x / Ctrl+z). The keys are layout-independent
-	// control characters (safe under goa's raw terminal, where ISIG is off) and
-	// sit adjacent on the keyboard (Z=left/prev, X=right/next), avoiding the
-	// Mac-awkward bracket keys. Source-agnostic so pipeline/swarm reuse them.
-	OnAgentTabNext func()
-	OnAgentTabPrev func()
+	// OnOpenAgentTabs opens the tab picker overlay for the persistent multi-agent
+	// run view (Ctrl+x). The picker lists tabs as a numbered menu supporting
+	// number-jump, arrows, enter, esc. The key is a layout-independent control
+	// char (safe under goa's raw terminal) and the callback name is source-
+	// agnostic so pipeline/swarm reuse it later.
+	OnOpenAgentTabs func()
 
 	// OnCancelInputRequest is called when Ctrl+C is pressed while the editor
 	// is empty and a main-input request is active. It lets the host cancel
@@ -752,8 +751,7 @@ var appShortcuts = []appShortcut{
 	{keys: []string{KeyShiftTab}, callback: func(t *TUI) func() { return t.OnCycleThinkingLevel }},
 	{keys: []string{KeyCtrlL}, callback: func(t *TUI) func() { return t.OnChangeModel }},
 	{keys: []string{KeyCtrlT}, callback: func(t *TUI) func() { return t.OnToggleThinkingBlocks }},
-	{keys: []string{"ctrl+x"}, callback: func(t *TUI) func() { return t.OnAgentTabNext }},
-	{keys: []string{"ctrl+z"}, callback: func(t *TUI) func() { return t.OnAgentTabPrev }},
+	{keys: []string{"ctrl+x"}, callback: func(t *TUI) func() { return t.OnOpenAgentTabs }},
 }
 
 func (t *TUI) invokeCallback(fn func()) {
