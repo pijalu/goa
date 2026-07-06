@@ -6,6 +6,8 @@ package commands
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/orchestrator"
+	"github.com/pijalu/goa/tui"
 )
 
 // fakeBuilder returns a Runtime backed by a fake factory so the command can be
@@ -73,47 +76,14 @@ func testCtx(t *testing.T) core.Context {
 	}}}
 }
 
-func TestParseNewArgs(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want parsedNew
-		err  bool
-	}{
-		{"bare objective", []string{"do", "thing"}, parsedNew{topology: "", objective: "do thing"}, false},
-		{"topology + objective", []string{"fanout", "do"}, parsedNew{topology: "fanout", objective: "do"}, false},
-		{"hub + goal", []string{"hub", "goal", "ship it"}, parsedNew{topology: "hub", objective: "ship it", goalObjective: "ship it"}, false},
-		{"goal + distinct run obj", []string{"goal", "be useful"}, parsedNew{objective: "be useful", goalObjective: "be useful"}, false},
-		{"empty errors", []string{}, parsedNew{}, true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got, err := parseNewArgs(c.args)
-			if c.err {
-				if err == nil {
-					t.Fatalf("expected error, got %+v", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got.topology != c.want.topology || got.objective != c.want.objective || got.goalObjective != c.want.goalObjective {
-				t.Errorf("got %+v, want %+v", got, c.want)
-			}
-		})
-	}
-}
-
 func TestOrchestrateCommand_NewFanout(t *testing.T) {
 	b := &fakeBuilder{}
 	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
 	ctx := testCtx(t)
 
-	if err := c.Run(ctx, []string{"new", "fanout", "test objective"}); err != nil {
+	if err := c.Run(ctx, []string{"new", "topology=fanout", "objective=test objective"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// The run launches in a goroutine; wait for it to finish via Active.Clear.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if c.Active.Get() == nil {
@@ -129,47 +99,146 @@ func TestOrchestrateCommand_NewFanout(t *testing.T) {
 	}
 }
 
+func TestOrchestrateCommand_NewWithCustomName(t *testing.T) {
+	b := &fakeBuilder{}
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+
+	if err := c.Run(ctx, []string{"new", "name=custom.id", "objective=do it"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && c.Active.Get() != nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if b.rt == nil || b.rt.Name() != "custom.id" {
+		t.Errorf("run name = %q, want custom.id", b.rt.Name())
+	}
+}
+
 func TestOrchestrateCommand_SteerActiveRuntime(t *testing.T) {
 	b := &fakeBuilder{}
 	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
 	ctx := testCtx(t)
 
-	if err := c.Run(ctx, []string{"new", "pipeline", "obj"}); err != nil {
+	if err := c.Run(ctx, []string{"new", "topology=pipeline", "objective=obj"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// Steer while the run may still be active.
 	if rt := c.Active.Get(); rt != nil {
 		rt.SteerAll("hello") // must not panic
 	}
-	// Steer with no active run after completion → error.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && c.Active.Get() != nil {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := c.Run(ctx, []string{"steer", "all", "x"}); err == nil {
+	if err := c.Run(ctx, []string{"steer", "id=all", "message=x"}); err == nil {
 		t.Errorf("expected error steering with no active run")
 	}
 }
 
 func TestOrchestrateCommand_NoRolesErrors(t *testing.T) {
-	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	b := &fakeBuilder{}
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
 	ctx := core.Context{Config: &config.Config{}}
-	if err := c.Run(ctx, []string{"new", "obj"}); err == nil {
+	if err := c.Run(ctx, []string{"new", "objective=obj"}); err == nil {
 		t.Errorf("expected error with no roles configured")
 	}
 }
 
-func TestOrchestrateCommand_UsageNoArgs(t *testing.T) {
+func TestOrchestrateCommand_BareMenu(t *testing.T) {
 	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
 	if err := c.Run(testCtx(t), nil); err != nil {
-		t.Fatalf("usage: %v", err)
+		t.Fatalf("bare menu: %v", err)
 	}
 }
 
 func TestOrchestrateCommand_NoBuilder(t *testing.T) {
 	c := &OrchestrateCommand{} // no builder
-	if err := c.Run(testCtx(t), []string{"new", "x"}); err != nil {
+	if err := c.Run(testCtx(t), []string{"new", "objective=x"}); err != nil {
 		t.Fatalf("expected nil error (graceful), got %v", err)
+	}
+}
+
+func TestOrchestrateCommand_DeleteSingleRun(t *testing.T) {
+	b := &fakeBuilder{}
+	rootDir := t.TempDir()
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: rootDir}
+	ctx := testCtx(t)
+
+	// Create a persisted run manually.
+	store := orchestrator.NewFileEventStore(rootDir, "run-1")
+	_ = store.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, Payload: map[string]any{"name": "happy.hare", "objective": "obj"}})
+
+	if err := c.Run(ctx, []string{"delete", "id=happy.hare", "confirm=true"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "run-1")); !os.IsNotExist(err) {
+		t.Errorf("run directory still exists after delete")
+	}
+}
+
+func TestOrchestrateCommand_DeleteAllRuns(t *testing.T) {
+	b := &fakeBuilder{}
+	rootDir := t.TempDir()
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: rootDir}
+	ctx := testCtx(t)
+
+	for _, id := range []string{"run-1", "run-2"} {
+		store := orchestrator.NewFileEventStore(rootDir, id)
+		_ = store.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, Payload: map[string]any{}})
+	}
+
+	if err := c.Run(ctx, []string{"delete", "id=*", "confirm=true"}); err != nil {
+		t.Fatalf("delete all: %v", err)
+	}
+	entries, _ := os.ReadDir(rootDir)
+	if len(entries) != 0 {
+		t.Errorf("expected empty dir, got %d entries", len(entries))
+	}
+}
+
+func TestOrchestrateCommand_ResumeRun(t *testing.T) {
+	b := &fakeBuilder{}
+	rootDir := t.TempDir()
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: rootDir}
+	ctx := testCtx(t)
+
+	store := orchestrator.NewFileEventStore(rootDir, "run-1")
+	_ = store.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, Payload: map[string]any{"name": "happy.hare", "objective": "obj", "topology": "fanout"}})
+
+	if err := c.Run(ctx, []string{"resume", "id=happy.hare"}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if c.Active.Get() == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestOrchestrateCommand_ListRuns(t *testing.T) {
+	rootDir := t.TempDir()
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: rootDir}
+	ctx := testCtx(t)
+
+	for _, id := range []string{"run-1", "run-2"} {
+		store := orchestrator.NewFileEventStore(rootDir, id)
+		_ = store.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, Payload: map[string]any{"name": id, "objective": "obj"}})
+	}
+
+	var captured []tui.SelectorItem
+	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		captured = options
+		onSelected("", false)
+	}
+
+	if err := c.Run(ctx, []string{"list"}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(captured) != 2 {
+		t.Errorf("list options = %d, want 2", len(captured))
 	}
 }
 

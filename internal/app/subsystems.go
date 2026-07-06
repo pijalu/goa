@@ -42,6 +42,7 @@ import (
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
 	goaltui "github.com/pijalu/goa/tui/goal"
+	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
 // subsystems bundles all initialized subsystems for clean return from InitSubsystems.
@@ -119,6 +120,11 @@ type subsystems struct {
 	// Agent-driven tool instances (kept so toggles can update Enabled)
 	requestReviewTool *multiagent.RequestReviewTool
 	delegateTool      *multiagent.DelegateTool
+
+	// Orchestrator Summary panel and its overlay handle. Set while an
+	// orchestration run is active so the main input line can be contextual.
+	orchPanel       *orchpanel.Panel
+	orchPanelHandle *tui.OverlayHandle
 
 	// dreamScheduler triggers automatic memory consolidation after sessions.
 	dreamScheduler *dreamScheduler
@@ -849,6 +855,8 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	if s.modelValidator != nil {
 		s.modelValidator.Start(context.Background(), 5*time.Minute)
 	}
+
+	s.startOrchestratorCleanup()
 
 	return s
 }

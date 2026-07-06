@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
@@ -39,16 +40,30 @@ func (a *App) makeSubmitHandler(engine *tui.TUI, chat *tui.ChatViewport) func(st
 			return
 		}
 
-		if !strings.HasPrefix(text, "/") && a.maybeSteerWorkflow(engine, chat, text) {
-			return
-		}
-
-		if !strings.HasPrefix(text, "/") && a.maybeSteerAgent(engine, chat, text) {
+		if a.routeSteering(engine, chat, text) {
 			return
 		}
 
 		a.dispatchUserSubmit(engine, chat, text)
 	}
+}
+
+// routeSteering checks the workflow, orchestrator, and main-agent steering
+// paths in order. It returns true if the input was consumed as steering.
+func (a *App) routeSteering(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
+	if strings.HasPrefix(text, "/") {
+		return false
+	}
+	if a.maybeSteerWorkflow(engine, chat, text) {
+		return true
+	}
+	if a.maybeSteerOrchestrator(engine, chat, text) {
+		return true
+	}
+	if a.maybeSteerAgent(engine, chat, text) {
+		return true
+	}
+	return false
 }
 
 // handlePendingMainInput consumes a value for a command that is waiting on
@@ -98,6 +113,24 @@ func (a *App) displayUserMessage(chat *tui.ChatViewport, text string, images []s
 	for _, img := range images {
 		chat.AddSystemMessage(fmt.Sprintf("[attached image: %s]", img))
 	}
+}
+
+func (a *App) maybeSteerOrchestrator(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
+	subs := a.subs
+	if subs.orchPanel == nil || subs.orchPanelHandle == nil || !subs.orchPanelHandle.IsVisible() {
+		return false
+	}
+	chat.AddSystemMessage(fmt.Sprintf("[steer all] %s", text))
+	ctx := coreContextForCommand(subs, a)
+	cmd := &commands.OrchestrateCommand{
+		Builder:  subs.orchAdapter,
+		Active:   subs.orchActive,
+		RootDir:  filepath.Join(subs.projectDir, ".goa", "orchestrator"),
+		GoalMode: subs.goalManager.Mode,
+	}
+	_ = cmd.Run(ctx, []string{"steer", "id=all", "message=" + text})
+	engine.RequestRender()
+	return true
 }
 
 // maybeSteerAgent buffers user input as steering while the main agent is

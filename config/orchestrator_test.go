@@ -26,6 +26,18 @@ func TestOrchestratorConfigDefaultsMerge(t *testing.T) {
 	if cfg.Orchestrator.Defaults.Topology != OrchestratorTopologyHub {
 		t.Errorf("default topology = %q, want hub", cfg.Orchestrator.Defaults.Topology)
 	}
+	if cfg.Orchestrator.Retention.Enabled != true {
+		t.Errorf("default retention.enabled = %v, want true", cfg.Orchestrator.Retention.Enabled)
+	}
+	if cfg.Orchestrator.Retention.Days != 7 {
+		t.Errorf("default retention.days = %d, want 7", cfg.Orchestrator.Retention.Days)
+	}
+	if cfg.Goals.Retention.Enabled != true {
+		t.Errorf("default goals.retention.enabled = %v, want true", cfg.Goals.Retention.Enabled)
+	}
+	if cfg.Goals.Retention.Days != 7 {
+		t.Errorf("default goals.retention.days = %d, want 7", cfg.Goals.Retention.Days)
+	}
 	if cfg.Orchestrator.Roles == nil {
 		t.Errorf("default roles map should be non-nil after merge")
 	}
@@ -119,6 +131,19 @@ func TestOrchestratorConfigValidate(t *testing.T) {
 				Roles: map[string]OrchestratorRole{"coder": {Model: "real"}},
 			},
 			models: []ModelConfig{{ID: "real"}},
+		},
+		{
+			name: "negative retention days rejected",
+			cfg: OrchestratorConfig{
+				Retention: OrchestratorRetentionConfig{Enabled: true, Days: -1},
+			},
+			wantSub: "orchestrator.retention.days",
+		},
+		{
+			name: "zero retention days accepted",
+			cfg: OrchestratorConfig{
+				Retention: OrchestratorRetentionConfig{Enabled: true, Days: 0},
+			},
 		},
 	}
 

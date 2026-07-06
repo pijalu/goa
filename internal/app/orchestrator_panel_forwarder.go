@@ -36,10 +36,23 @@ func (a *App) drainActiveOrchRun(done <-chan struct{}) {
 	}
 	panel := orchpanel.NewPanel()
 	a.apply(func() {
-		panel.SetHeader(string(rt.Topology()), rt.Objective())
+		a.subs.orchPanel = panel
+		if inp := a.subs.getInput(); inp != nil {
+			inp.SetTitle("steer all:")
+		}
 	})
 	handle := a.subs.tuiEngine.ShowOverlay(panel, tui.OverlayOptions{Width: 0, Height: 0, CaptureInput: false})
-	defer handle.Hide()
+	a.apply(func() { a.subs.orchPanelHandle = handle })
+	defer func() {
+		handle.Hide()
+		a.apply(func() {
+			a.subs.orchPanel = nil
+			a.subs.orchPanelHandle = nil
+			if inp := a.subs.getInput(); inp != nil {
+				inp.SetTitle("")
+			}
+		})
+	}()
 
 	sub := rt.Subscribe()
 	for {

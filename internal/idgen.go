@@ -134,3 +134,21 @@ func SplitFriendlyName(s string) bool {
 	}
 	return true
 }
+
+// IsValidRunName reports whether s is acceptable as a user-supplied custom
+// orchestrator run name. Rules: non-empty, lowercase, alphanumeric plus . - _.
+func IsValidRunName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '.', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}

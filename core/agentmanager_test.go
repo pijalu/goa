@@ -855,6 +855,21 @@ func TestAgentManager_RefreshContextWindow_OnFirstAssistantDelta(t *testing.T) {
 }
 
 func TestAgentManager_Interrupt_CancelsRunningTurn(t *testing.T) {
+	am, prov := setupBlockingAgentManager(t)
+
+	waitForProviderStart(t, prov)
+	waitForAgentManagerRunning(t, am, true)
+
+	if err := am.Interrupt(); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	waitForEndEvent(t, am)
+	waitForAgentManagerRunning(t, am, false)
+}
+
+func setupBlockingAgentManager(t *testing.T) (*AgentManager, *blockingProvider) {
+	t.Helper()
 	api := agenticprovider.Api("test-blocking-" + t.Name())
 	prov := &blockingProvider{api: api, started: make(chan struct{})}
 	agenticprovider.RegisterApiProvider(prov)
@@ -874,53 +889,52 @@ func TestAgentManager_Interrupt_CancelsRunningTurn(t *testing.T) {
 	if _, err := am.StartSession(mdl, opts, "system prompt", nil, cfg); err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
-
 	if err := am.SendUserInput("hello"); err != nil {
 		t.Fatalf("SendUserInput: %v", err)
 	}
+	return am, prov
+}
 
-	// Wait until the provider's Stream method is actually running.
+func waitForProviderStart(t *testing.T, prov *blockingProvider) {
+	t.Helper()
 	select {
 	case <-prov.started:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("provider Stream did not start")
 	}
+}
 
+func waitForAgentManagerRunning(t *testing.T, am *AgentManager, wantRunning bool) {
+	t.Helper()
 	waitForCondition(t, func() bool {
 		am.mu.Lock()
 		defer am.mu.Unlock()
-		return am.running
+		if wantRunning {
+			return am.running
+		}
+		return !am.running && am.cancel == nil
 	}, 100*time.Millisecond)
+}
 
-	if err := am.Interrupt(); err != nil {
-		t.Fatalf("Interrupt: %v", err)
-	}
-
-	// The canceled turn should report an error event within 100 ms.
+func waitForEndEvent(t *testing.T, am *AgentManager) {
+	t.Helper()
 	deadline := time.After(100 * time.Millisecond)
-	var sawEnd bool
-	for !sawEnd {
+	for {
 		select {
 		case ev := <-am.Events():
 			if ev.Type == agentic.EventEnd {
-				sawEnd = true
 				if ev.Text != "" {
 					t.Fatalf("expected empty Text for user cancellation, got %q", ev.Text)
 				}
 				if ev.Metadata["cancelled"] != "true" {
 					t.Fatalf("expected cancelled metadata for user cancellation, got %v", ev.Metadata)
 				}
+				return
 			}
 		case <-deadline:
 			t.Fatal("turn did not terminate within 100 ms of Interrupt")
 		}
 	}
-
-	waitForCondition(t, func() bool {
-		am.mu.Lock()
-		defer am.mu.Unlock()
-		return !am.running && am.cancel == nil
-	}, 100*time.Millisecond)
 }
 
 func TestAgentManager_SetModel_UpdatesContextCompression(t *testing.T) {

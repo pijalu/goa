@@ -15,6 +15,8 @@ import (
 	"github.com/pijalu/goa/core/commands/help"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/orchestrator"
+	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/tui"
 )
 
 // OrchestrateBuilder builds a Runtime for one orchestration run. The production
@@ -26,10 +28,10 @@ type OrchestrateBuilder = orchestrator.Builder
 // selection (hub/fanout/pipeline), goal binding, listing, resuming, and
 // per-target steering. It is the user-facing surface over core/orchestrator.
 type OrchestrateCommand struct {
-	Builder  OrchestrateBuilder        // builds a wired Runtime per run
+	Builder  OrchestrateBuilder // builds a wired Runtime per run
 	Active   *orchestrator.ActiveRuntime
-	RootDir  string                    // event-store root, typically ".goa/orchestrator"
-	GoalMode *goal.GoalMode            // optional; enables `goal <objective>` binding
+	RootDir  string             // event-store root, typically ".goa/orchestrator"
+	GoalMode *goal.GoalMode     // optional; enables goal binding
 }
 
 func (c *OrchestrateCommand) Name() string      { return "orchestrate" }
@@ -39,147 +41,398 @@ func (c *OrchestrateCommand) ShortHelp() string {
 }
 func (c *OrchestrateCommand) LongHelp() string { return help.LongHelp(c.Name()) }
 
-// Run dispatches to the subcommand parsed from args[0].
+// CompleteArgs implements core.ArgCompleter.
+func (c *OrchestrateCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	var out []core.ArgCompletion
+	for _, sc := range orchestrateSubcommands {
+		if prefix == "" || strings.HasPrefix(sc.value, prefix) {
+			out = append(out, core.ArgCompletion{Value: sc.value, Description: sc.desc})
+		}
+	}
+	return out
+}
+
+// Run dispatches to the parsed subcommand. Missing required fields trigger
+// interactive prompts instead of hard errors.
 func (c *OrchestrateCommand) Run(ctx core.Context, args []string) error {
 	if c.Builder == nil || c.Active == nil {
 		writeStr(ctx, "Orchestration subsystem not available.\n")
 		return nil
 	}
-	if len(args) == 0 {
-		return c.usage(ctx)
+	in, err := parseOrchestrateInput(args)
+	if err != nil {
+		return err
 	}
-	switch strings.ToLower(args[0]) {
-	case "new", "start", "run":
-		return c.runNew(ctx, args[1:])
-	case "list", "ls":
-		return c.runList(ctx)
+	switch in.Subcommand {
+	case "":
+		return c.showMenu(ctx)
+	case "new":
+		return c.runNewInteractive(ctx, in)
+	case "list":
+		return c.runListInteractive(ctx)
 	case "resume":
-		return c.runResume(ctx, args[1:])
+		return c.runResumeInteractive(ctx, in)
+	case "delete":
+		return c.runDeleteInteractive(ctx, in)
 	case "steer":
-		return c.runSteer(ctx, args[1:])
-	case "help", "?":
-		return c.usage(ctx)
+		return c.runSteerInteractive(ctx, in)
 	default:
-		// Bare objective: /orchestrate <objective> → new run with default topology.
-		return c.runNew(ctx, args)
+		return fmt.Errorf("unknown /orchestrate subcommand: %s", in.Subcommand)
 	}
 }
 
 func (c *OrchestrateCommand) usage(ctx core.Context) error {
 	writeStr(ctx, "Usage:\n")
-	writeStr(ctx, "  /orchestrate new [hub|fanout|pipeline] [goal <objective>] <objective>\n")
-	writeStr(ctx, "  /orchestrate list\n")
-	writeStr(ctx, "  /orchestrate resume <run-id>\n")
-	writeStr(ctx, "  /orchestrate steer <agent-id|all|orchestrator> <text>\n")
+	writeStr(ctx, "  /orchestrate:new:[topology=hub][,name=alias][,objective=<text>]\n")
+	writeStr(ctx, "  /orchestrate:list\n")
+	writeStr(ctx, "  /orchestrate:resume:id=<run-id>\n")
+	writeStr(ctx, "  /orchestrate:delete:id=<run-id|*>[,confirm=true]\n")
+	writeStr(ctx, "  /orchestrate:steer:id=<agent-id|all|orchestrator>,message=<text>\n")
 	return nil
 }
 
-// parsedNew captures the parsed /orchestrate new arguments.
-type parsedNew struct {
-	topology      string
-	objective     string
-	goalObjective string
+// --- interactive entry points ------------------------------------------------
+
+func (c *OrchestrateCommand) showMenu(ctx core.Context) error {
+	items := []tui.SelectorItem{
+		{Value: "new", Label: "new", Description: "start a new orchestration"},
+		{Value: "resume", Label: "resume", Description: "resume an existing run"},
+		{Value: "delete", Label: "delete", Description: "delete a run or all runs"},
+		{Value: "list", Label: "list", Description: "list all runs"},
+	}
+	ctx.SelectOption("Orchestrate:", items, "", func(selected string, ok bool) {
+		if !ok || selected == "" {
+			return
+		}
+		in := OrchestrateInput{Subcommand: selected}
+		switch selected {
+		case "new":
+			c.runNewInteractive(ctx, in)
+		case "resume":
+			c.runResumeInteractive(ctx, in)
+		case "delete":
+			c.runDeleteInteractive(ctx, in)
+		case "list":
+			c.runListInteractive(ctx)
+		}
+	})
+	return nil
 }
 
-func parseNewArgs(rest []string) (parsedNew, error) {
-	var p parsedNew
-	i := 0
-	// Optional topology keyword.
-	if i < len(rest) {
-		switch strings.ToLower(rest[i]) {
-		case config.OrchestratorTopologyHub, config.OrchestratorTopologyFanout, config.OrchestratorTopologyPipeline:
-			p.topology = strings.ToLower(rest[i])
-			i++
-		}
-	}
-	// Optional "goal <objective>" then run objective, or just run objective.
-	remaining := rest[i:]
-	for j, tok := range remaining {
-		if strings.ToLower(tok) == "goal" && j+1 < len(remaining) {
-			p.goalObjective = strings.Join(remaining[j+1:], " ")
-			p.objective = strings.TrimSpace(strings.Join(remaining[:j], " "))
-			if p.objective == "" {
-				p.objective = p.goalObjective // run on the goal itself
+func (c *OrchestrateCommand) runNewInteractive(ctx core.Context, in OrchestrateInput) error {
+	if in.Objective == "" {
+		ctx.ShowInput("Objective:", "", func(value string, ok bool) {
+			if !ok || value == "" {
+				return
 			}
-			return p, nil
-		}
+			in.Objective = value
+			c.runNewInteractive(ctx, in)
+		})
+		return nil
 	}
-	p.objective = strings.TrimSpace(strings.Join(remaining, " "))
-	if p.objective == "" {
-		return p, fmt.Errorf("usage: /orchestrate new [topology] [goal <objective>] <objective>")
-	}
-	return p, nil
+	return c.doNew(ctx, in)
 }
 
-func (c *OrchestrateCommand) runNew(ctx core.Context, rest []string) error {
-	p, err := parseNewArgs(rest)
+func (c *OrchestrateCommand) runResumeInteractive(ctx core.Context, in OrchestrateInput) error {
+	if in.ID == "" {
+		runs, err := c.listableRuns()
+		if err != nil {
+			return err
+		}
+		items := runSelectorItems(runs, true)
+		if len(items) == 0 {
+			writeStr(ctx, "No resumable runs found.\n")
+			return nil
+		}
+		ctx.SelectOption("Resume run:", items, "", func(selected string, ok bool) {
+			if !ok || selected == "" {
+				return
+			}
+			in.ID = selected
+			c.runResumeInteractive(ctx, in)
+		})
+		return nil
+	}
+	return c.doResume(ctx, in)
+}
+
+func (c *OrchestrateCommand) runDeleteInteractive(ctx core.Context, in OrchestrateInput) error {
+	if in.ID == "" {
+		runs, err := c.listableRuns()
+		if err != nil {
+			return err
+		}
+		items := runSelectorItems(runs, false)
+		items = append(items, tui.SelectorItem{
+			Value:       "*",
+			Label:       "— delete all —",
+			Description: "remove every orchestration run",
+		})
+		if len(items) == 1 {
+			writeStr(ctx, "No runs to delete.\n")
+			return nil
+		}
+		ctx.SelectOption("Delete run:", items, "", func(selected string, ok bool) {
+			if !ok || selected == "" {
+				return
+			}
+			in.ID = selected
+			c.runDeleteInteractive(ctx, in)
+		})
+		return nil
+	}
+	if !in.Confirm {
+		ctx.SelectOption("Delete "+in.ID+"?", confirmItems(), "no", func(v string, ok bool) {
+			if !ok || v != "yes" {
+				return
+			}
+			in.Confirm = true
+			c.runDeleteInteractive(ctx, in)
+		})
+		return nil
+	}
+	return c.doDelete(ctx, in)
+}
+
+func (c *OrchestrateCommand) runListInteractive(ctx core.Context) error {
+	runs, err := c.listableRuns()
+	if err != nil {
+		return err
+	}
+	items := runSelectorItems(runs, false)
+	if len(items) == 0 {
+		writeStr(ctx, "No orchestration runs found.\n")
+		return nil
+	}
+	ctx.SelectOption("Orchestration runs:", items, "", func(selected string, ok bool) {
+		if !ok || selected == "" {
+			return
+		}
+		c.runResumeInteractive(ctx, OrchestrateInput{Subcommand: "resume", ID: selected})
+	})
+	return nil
+}
+
+func (c *OrchestrateCommand) runSteerInteractive(ctx core.Context, in OrchestrateInput) error {
+	if in.ID == "" {
+		ctx.ShowInput("Agent ID (or all/orchestrator):", "", func(value string, ok bool) {
+			if !ok || value == "" {
+				return
+			}
+			in.ID = value
+			c.runSteerInteractive(ctx, in)
+		})
+		return nil
+	}
+	if in.Message == "" {
+		ctx.ShowInput("Steer "+in.ID+":", "", func(value string, ok bool) {
+			if !ok || value == "" {
+				return
+			}
+			in.Message = value
+			c.runSteerInteractive(ctx, in)
+		})
+		return nil
+	}
+	return c.doSteer(ctx, in)
+}
+
+// --- synchronous execution ---------------------------------------------------
+
+func (c *OrchestrateCommand) doNew(ctx core.Context, in OrchestrateInput) error {
+	topology, err := normalizeTopology(in.Topology, ctx.Config)
 	if err != nil {
 		return err
 	}
 	oCfg := ctx.Config.Orchestrator
-	if p.topology != "" {
-		oCfg.Defaults.Topology = p.topology
-	}
+	oCfg.Defaults.Topology = topology
 	if len(oCfg.Roles) == 0 {
 		return fmt.Errorf("no orchestrator.roles configured — define roles in config first")
-	}
-	if _, exists := oCfg.Roles["orchestrator"]; !exists && strings.EqualFold(oCfg.Defaults.Topology, config.OrchestratorTopologyHub) {
-		writeStr(ctx, "Note: hub topology works best with an 'orchestrator' role; running fanout-style fallback.\n")
 	}
 
 	rt, err := c.Builder.NewRuntime(oCfg, c.RootDir)
 	if err != nil {
 		return fmt.Errorf("build runtime: %w", err)
 	}
-	if p.goalObjective != "" {
-		if c.GoalMode == nil {
-			writeStr(ctx, "Warning: goal binding requested but goal mode unavailable; running goal-less.\n")
-		} else if err := c.bindGoal(rt, p.goalObjective); err != nil {
+
+	name := c.resolveRunName(in.Name)
+	rt.SetName(name)
+
+	if _, exists := oCfg.Roles["orchestrator"]; !exists && topology == config.OrchestratorTopologyHub {
+		writeStr(ctx, "Note: hub topology works best with an 'orchestrator' role; running fanout-style fallback.\n")
+	}
+
+	if c.GoalMode != nil {
+		goalID, err := c.bindGoal(rt, name, in.Objective)
+		if err != nil {
 			writeFmt(ctx, "Warning: goal bind failed (%v); running goal-less.\n", err)
+		} else {
+			rt.SetGoalID(goalID)
 		}
 	}
+
 	if prev := c.Active.Set(rt); prev != nil {
 		// An older run is still active; leave it running but stop surfacing it.
 	}
 
-	writeFmt(ctx, "Started orchestration [%s]: %s\n", oCfg.Defaults.Topology, p.objective)
-	if p.goalObjective != "" {
-		writeFmt(ctx, "  goal binding: %s\n", p.goalObjective)
-	}
-	c.launch(ctx, rt, p.objective)
+	writeFmt(ctx, "Started orchestration [%s] %s: %s\n", topology, name, in.Objective)
+	c.launch(ctx, rt, in.Objective)
 	return nil
 }
 
-// launch starts the run in a goroutine and forwards lifecycle events into the
-// chat viewport (Flash + InterAgent). The forwarder exits when the run's
-// Events() channel closes, then clears the active holder.
+func (c *OrchestrateCommand) doResume(ctx core.Context, in OrchestrateInput) error {
+	internalID, err := orchestrator.ResolveRunID(c.RootDir, in.ID)
+	if err != nil {
+		return err
+	}
+	store := orchestrator.NewFileEventStore(c.RootDir, internalID)
+	snap, err := orchestrator.ReplaySnapshot(store)
+	if err != nil {
+		return fmt.Errorf("resume %s: %w", internalID, err)
+	}
+	if snap.Finished {
+		writeFmt(ctx, "Run %s is already finished — nothing to resume.\n", internalID)
+		return nil
+	}
+	oCfg := ctx.Config.Orchestrator
+	if snap.Topology != "" {
+		oCfg.Defaults.Topology = string(snap.Topology)
+	}
+	rt, err := c.Builder.NewRuntime(oCfg, c.RootDir)
+	if err != nil {
+		return err
+	}
+	if snap.Name != "" {
+		rt.SetName(snap.Name)
+	}
+	c.Active.Set(rt)
+	writeFmt(ctx, "Resuming %s: %s\n", snap.NameOrID(), snap.Objective)
+	c.launch(ctx, rt, snap.Objective)
+	return nil
+}
+
+func (c *OrchestrateCommand) doDelete(ctx core.Context, in OrchestrateInput) error {
+	if in.ID == "*" {
+		return c.deleteAll(ctx)
+	}
+	internalID, err := orchestrator.ResolveRunID(c.RootDir, in.ID)
+	if err != nil {
+		return err
+	}
+	store := orchestrator.NewFileEventStore(c.RootDir, internalID)
+	snap, _ := orchestrator.ReplaySnapshot(store)
+	orchestrator.StopActiveRun(c.Active, internalID, 5*time.Second)
+	if err := orchestrator.DeleteRun(c.RootDir, internalID); err != nil {
+		return err
+	}
+	if snap.GoalID != "" && c.GoalMode != nil {
+		_, _ = c.GoalMode.CancelGoalByID(snap.GoalID, goal.GoalActorRuntime)
+	}
+	writeFmt(ctx, "Deleted run %s.\n", internalID)
+	return nil
+}
+
+func (c *OrchestrateCommand) deleteAll(ctx core.Context) error {
+	if rt := c.Active.Get(); rt != nil {
+		c.Active.Clear(rt)
+		rt.Cancel()
+		select {
+		case <-rt.Done():
+		case <-time.After(5 * time.Second):
+		}
+	}
+	runs, _ := orchestrator.ListRuns(c.RootDir)
+	deleted, err := orchestrator.DeleteAllRuns(c.RootDir)
+	if err != nil {
+		return err
+	}
+	if c.GoalMode != nil {
+		for _, r := range runs {
+			if r.GoalID == "" {
+				continue
+			}
+			_, _ = c.GoalMode.CancelGoalByID(r.GoalID, goal.GoalActorRuntime)
+		}
+	}
+	writeFmt(ctx, "Deleted %d run(s).\n", deleted)
+	return nil
+}
+
+func (c *OrchestrateCommand) doSteer(ctx core.Context, in OrchestrateInput) error {
+	rt := c.Active.Get()
+	if rt == nil {
+		return fmt.Errorf("no active orchestration to steer")
+	}
+	switch strings.ToLower(in.ID) {
+	case "all":
+		rt.SteerAll(in.Message)
+		writeFmt(ctx, "Broadcast steering to all agents: %s\n", in.Message)
+	case "orchestrator", "orch":
+		if rt.SteerOrchestrator(in.Message) {
+			writeStr(ctx, "Steered orchestrator.\n")
+		} else {
+			writeStr(ctx, "No orchestrator agent is live right now.\n")
+		}
+	default:
+		if rt.SteerAgent(in.ID, in.Message) {
+			writeFmt(ctx, "Steered %s.\n", in.ID)
+		} else {
+			return fmt.Errorf("no live agent with id %q", in.ID)
+		}
+	}
+	return nil
+}
+
+// --- helpers -----------------------------------------------------------------
+
+func (c *OrchestrateCommand) resolveRunName(requested string) string {
+	if requested != "" && internal.IsValidRunName(requested) {
+		if _, err := orchestrator.ResolveRunID(c.RootDir, requested); err == nil {
+			// Collision: fall back to generated name below.
+		} else {
+			return requested
+		}
+	}
+	return orchestrator.GenerateRunName(c.RootDir)
+}
+
+func (c *OrchestrateCommand) listableRuns() ([]orchestrator.RunSummary, error) {
+	return orchestrator.ListRuns(c.RootDir)
+}
+
+func (c *OrchestrateCommand) bindGoal(rt *orchestrator.Runtime, name, objective string) (string, error) {
+	gb := NewGoalBinder(c.GoalMode)
+	goalID, err := gb.CreateWithName(objective, name, 0)
+	if err != nil {
+		return "", err
+	}
+	rt.SetGoalBinder(gb)
+	return goalID, nil
+}
+
 func (c *OrchestrateCommand) launch(ctx core.Context, rt *orchestrator.Runtime, objective string) {
 	go c.forwardEvents(ctx, rt)
 	go func() {
 		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		err := rt.Run(runCtx, objective)
+		_ = rt.Run(runCtx, objective)
 		<-rt.Done()
 		c.Active.Clear(rt)
-		if err != nil {
-			ctx.Flash(fmt.Sprintf("Orchestration failed: %v", err))
-		}
 	}()
 }
 
 func (c *OrchestrateCommand) forwardEvents(ctx core.Context, rt *orchestrator.Runtime) {
-	seen := map[string]bool{} // per-agent finished dedupe for chat lines
+	seen := map[string]bool{}
 	for ev := range rt.Events() {
 		c.handleOrchEvent(ctx, rt, ev, seen)
 	}
 }
 
-// handleOrchEvent routes one orchestrator event to the chat viewport. Kept
-// cyclotronically simple: each case does a single formatted emission.
 func (c *OrchestrateCommand) handleOrchEvent(ctx core.Context, rt *orchestrator.Runtime, ev orchestrator.Event, seen map[string]bool) {
 	switch ev.Type {
 	case orchestrator.EventRunStarted:
-		ctx.Flash(fmt.Sprintf("▷ orchestration %s started", rt.Topology()))
+		ctx.Flash(fmt.Sprintf("▷ orchestration %s started", rt.NameOrID()))
 	case orchestrator.EventAgentStarted:
 		ctx.InterAgent(ev.Role, "user", fmt.Sprintf("▶ %s (%s) started", ev.Role, ev.Model))
 	case orchestrator.EventAgentFinished:
@@ -204,7 +457,7 @@ func emitRunFinished(ctx core.Context, rt *orchestrator.Runtime, ev orchestrator
 	if !ok {
 		status = "finished with errors"
 	}
-	ctx.Flash("■ orchestration " + status)
+	ctx.Flash("■ orchestration " + rt.NameOrID() + " " + status)
 	for _, r := range rt.Snapshot() {
 		writeFmt(ctx, "  %-12s %-8s turns=%d in=%d out=%d tools=%d\n",
 			r.Role, r.Status, r.Turns, r.TokensIn, r.TokensOut, r.ToolCalls)
@@ -225,113 +478,6 @@ func boolValOr(p map[string]any, k string, fallback bool) bool {
 	return fallback
 }
 
-func (c *OrchestrateCommand) runList(ctx core.Context) error {
-	runs, err := orchestrator.ListRuns(c.RootDir)
-	if err != nil {
-		return err
-	}
-	if len(runs) == 0 {
-		writeStr(ctx, "No orchestration runs found.\n")
-		return nil
-	}
-	writeStr(ctx, "Orchestration runs (most recent first):\n")
-	for _, r := range runs {
-		state := "running"
-		if r.Finished {
-			state = "finished"
-		}
-		writeFmt(ctx, "  %s  [%s/%s]  agents=%d  %s  %s\n",
-			r.RunID, r.Topology, state, r.AgentCount, truncStr(r.Objective, 50), r.UpdatedAt.Format("2006-01-02 15:04"))
-	}
-	return nil
-}
-
-func (c *OrchestrateCommand) runResume(ctx core.Context, rest []string) error {
-	if len(rest) == 0 {
-		return fmt.Errorf("usage: /orchestrate resume <run-id>")
-	}
-	runID := rest[0]
-	store := orchestrator.NewFileEventStore(c.RootDir, runID)
-	snap, err := orchestrator.ReplaySnapshot(store)
-	if err != nil {
-		return fmt.Errorf("resume %s: %w", runID, err)
-	}
-	if snap.Finished {
-		writeFmt(ctx, "Run %s is already finished — nothing to resume.\n", runID)
-		return nil
-	}
-	writeFmt(ctx, "Resuming run %s (topology=%s, agents=%d). Re-issuing objective.\n",
-		runID, snap.Topology, len(snap.Agents))
-	// For M2 we re-launch with the same objective; full mid-flight agent
-	// re-acquisition (Phase 4 step 21 runtime half) lands with M3/M4.
-	oCfg := ctx.Config.Orchestrator
-	if snap.Topology != "" {
-		oCfg.Defaults.Topology = string(snap.Topology)
-	}
-	rt, err := c.Builder.NewRuntime(oCfg, c.RootDir)
-	if err != nil {
-		return err
-	}
-	c.Active.Set(rt)
-	c.launch(ctx, rt, snap.Objective)
-	return nil
-}
-
-func (c *OrchestrateCommand) runSteer(ctx core.Context, rest []string) error {
-	if len(rest) < 2 {
-		return fmt.Errorf("usage: /orchestrate steer <agent-id|all|orchestrator> <text>")
-	}
-	target := rest[0]
-	text := strings.Join(rest[1:], " ")
-	rt := c.Active.Get()
-	if rt == nil {
-		return fmt.Errorf("no active orchestration to steer")
-	}
-	switch strings.ToLower(target) {
-	case "all":
-		rt.SteerAll(text)
-		writeFmt(ctx, "Broadcast steering to all agents: %s\n", text)
-	case "orchestrator", "orch":
-		if rt.SteerOrchestrator(text) {
-			writeStr(ctx, "Steered orchestrator.\n")
-		} else {
-			writeStr(ctx, "No orchestrator agent is live right now.\n")
-		}
-	default:
-		if rt.SteerAgent(target, text) {
-			writeFmt(ctx, "Steered %s.\n", target)
-		} else {
-			return fmt.Errorf("no live agent with id %q", target)
-		}
-	}
-	return nil
-}
-
-// orchestrateSubcommands feeds /orchestrate:<tab> completion.
-var orchestrateSubcommands = []struct {
-	value, desc string
-}{
-	{"new", "start a new run: new [topology] [goal <obj>] <objective>"},
-	{"list", "list past runs"},
-	{"resume", "resume a run: resume <run-id>"},
-	{"steer", "steer: steer <agent-id|all|orchestrator> <text>"},
-	{"hub", "shortcut: new hub run"},
-	{"fanout", "shortcut: new fanout run"},
-	{"pipeline", "shortcut: new pipeline run"},
-}
-
-// CompleteArgs implements core.ArgCompleter.
-func (c *OrchestrateCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	prefix = strings.ToLower(strings.TrimSpace(prefix))
-	var out []core.ArgCompletion
-	for _, sc := range orchestrateSubcommands {
-		if prefix == "" || strings.HasPrefix(sc.value, prefix) {
-			out = append(out, core.ArgCompletion{Value: sc.value, Description: sc.desc})
-		}
-	}
-	return out
-}
-
 func truncStr(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -339,12 +485,41 @@ func truncStr(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// bindGoal attaches a GoalBinder to the runtime and creates the goal.
-func (c *OrchestrateCommand) bindGoal(rt *orchestrator.Runtime, objective string) error {
-	gb := NewGoalBinder(c.GoalMode)
-	if _, err := gb.Create(objective, 0); err != nil {
-		return err
+// --- selector builders -------------------------------------------------------
+
+var orchestrateSubcommands = []struct {
+	value, desc string
+}{
+	{"new", "start a new run: /orchestrate:new:[topology=...][,name=...][,objective=...]"},
+	{"list", "list all runs"},
+	{"resume", "resume a run: /orchestrate:resume:id=<run-id>"},
+	{"delete", "delete: /orchestrate:delete:id=<run-id|*>[,confirm=true]"},
+	{"steer", "steer: /orchestrate:steer:id=<agent-id|all|orchestrator>,message=<text>"},
+}
+
+func runSelectorItems(runs []orchestrator.RunSummary, onlyUnfinished bool) []tui.SelectorItem {
+	items := make([]tui.SelectorItem, 0, len(runs))
+	for _, r := range runs {
+		if onlyUnfinished && r.Finished {
+			continue
+		}
+		label := r.NameOrID()
+		desc := fmt.Sprintf("%s %s  agents=%d  %s", r.Topology, statusLabel(r.Finished), r.AgentCount, truncStr(r.Objective, 40))
+		items = append(items, tui.SelectorItem{Value: r.RunID, Label: label, Description: desc})
 	}
-	rt.SetGoalBinder(gb)
-	return nil
+	return items
+}
+
+func confirmItems() []tui.SelectorItem {
+	return []tui.SelectorItem{
+		{Value: "yes", Label: "Yes", Description: "confirm deletion"},
+		{Value: "no", Label: "No", Description: "cancel"},
+	}
+}
+
+func statusLabel(finished bool) string {
+	if finished {
+		return "finished"
+	}
+	return "running"
 }

@@ -821,7 +821,21 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 }
 
 func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
+	msgs := a.buildProviderHistory()
+	sp := a.buildSystemPrompt()
+	mergeGoalProgress(msgs, a.cfg.GoalStateProvider)
+
+	return provider.Context{
+		Context:      ctx,
+		SystemPrompt: sp,
+		Messages:     msgs,
+		Tools:        migrateSchemas(a.reg.Schemas()),
+	}
+}
+
+func (a *Agent) buildProviderHistory() []provider.Message {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	msgs := make([]provider.Message, 0, len(a.history))
 	for i, m := range a.history {
 		// Skip only the initial system prompt message; the provider context
@@ -832,35 +846,36 @@ func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 		}
 		msgs = append(msgs, migrateMessage(m))
 	}
-	a.mu.Unlock()
+	return msgs
+}
 
+func (a *Agent) buildSystemPrompt() string {
 	sp := a.cfg.SystemPrompt
 	if p := a.cfg.GoalStateProvider; p != nil {
 		if reminder := p.ActiveGoalReminder(); reminder != "" {
 			sp = reminder + "\n\n" + sp
 		}
-		if progress := p.ActiveGoalProgress(); progress != "" {
-			// Merge the dynamic goal progress into the most recent user
-			// message so the cacheable system-prompt prefix stays stable and
-			// the changing reminder becomes the last conversation message.
-			for i := len(msgs) - 1; i >= 0; i-- {
-				if msgs[i].Role == provider.RoleUser {
-					prefix := provider.ContentBlock{
-						Type: provider.ContentBlockText,
-						Text: "[goal progress]\n" + progress + "\n\n",
-					}
-					msgs[i].Content = append([]provider.ContentBlock{prefix}, msgs[i].Content...)
-					break
-				}
-			}
-		}
 	}
+	return sp
+}
 
-	return provider.Context{
-		Context:      ctx,
-		SystemPrompt: sp,
-		Messages:     msgs,
-		Tools:        migrateSchemas(a.reg.Schemas()),
+func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) {
+	if p == nil {
+		return
+	}
+	progress := p.ActiveGoalProgress()
+	if progress == "" {
+		return
+	}
+	prefix := provider.ContentBlock{
+		Type: provider.ContentBlockText,
+		Text: "[goal progress]\n" + progress + "\n\n",
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == provider.RoleUser {
+			msgs[i].Content = append([]provider.ContentBlock{prefix}, msgs[i].Content...)
+			break
+		}
 	}
 }
 

@@ -280,45 +280,28 @@ func cleanBlurb(s string) string {
 // curatedBlurb returns a hand-written one-line description for key docs, so the
 // index is informative even when a document's first paragraph is dense.
 func curatedBlurb(stem string) string {
-	switch stem {
-	case "architecture":
-		return "How the TUI, core engine, agent SDK and provider layer fit together."
-	case "setup":
-		return "Install Goa, run the first-run wizard and connect a provider."
-	case "configuration":
-		return "The config cascade: embedded, home, project, local, env, CLI."
-	case "commands":
-		return "Reference for every slash command in the TUI."
-	case "tools":
-		return "The composable tool registry: read, edit, bash, search, SSH and more."
-	case "skills":
-		return "Reusable prompt templates, inline or as sub-agents."
-	case "profiles":
-		return "Built-in coder, planner and reviewer profiles, plus custom ones."
-	case "tui":
-		return "The ANSI-native UI: components, rendering and keybindings."
-	case "agentic-sdk":
-		return "The Agent SDK: agents, sessions and the event model."
-	case "plugins":
-		return "Extend Goa with JavaScript plugins via the Goja runtime."
-	case "providers":
-		return "OpenAI-compatible endpoints: OpenAI, llama.cpp, LM Studio, Ollama."
-	case "workflows":
-		return "Pair (planner to coder) and reviewer collaboration pipelines."
-	case "orchestration-design":
-		return "Design notes for multi-agent orchestration."
-	case "orchestrator":
-		return "Run multi-agent workflows: hub/fanout/pipeline topologies with goal binding."
-	case "skill-execution":
-		return "How skills run: inline injection vs sub-agent dispatch."
-	case "development":
-		return "Building, testing and contributing to Goa."
-	case "profiling":
-		return "Profiling and performance tooling for Goa."
-	case "goals":
-		return "Project goals, roadmap and direction."
-	}
-	return ""
+	return curatedBlurbs[stem]
+}
+
+var curatedBlurbs = map[string]string{
+	"architecture":          "How the TUI, core engine, agent SDK and provider layer fit together.",
+	"setup":                 "Install Goa, run the first-run wizard and connect a provider.",
+	"configuration":         "The config cascade: embedded, home, project, local, env, CLI.",
+	"commands":              "Reference for every slash command in the TUI.",
+	"tools":                 "The composable tool registry: read, edit, bash, search, SSH and more.",
+	"skills":                "Reusable prompt templates, inline or as sub-agents.",
+	"profiles":              "Built-in coder, planner and reviewer profiles, plus custom ones.",
+	"tui":                   "The ANSI-native UI: components, rendering and keybindings.",
+	"agentic-sdk":           "The Agent SDK: agents, sessions and the event model.",
+	"plugins":               "Extend Goa with JavaScript plugins via the Goja runtime.",
+	"providers":             "OpenAI-compatible endpoints: OpenAI, llama.cpp, LM Studio, Ollama.",
+	"workflows":             "Pair (planner to coder) and reviewer collaboration pipelines.",
+	"orchestration-design":  "Design notes for multi-agent orchestration.",
+	"orchestrator":          "Run multi-agent workflows: hub/fanout/pipeline topologies with goal binding.",
+	"skill-execution":       "How skills run: inline injection vs sub-agent dispatch.",
+	"development":           "Building, testing and contributing to Goa.",
+	"profiling":             "Profiling and performance tooling for Goa.",
+	"goals":                 "Project goals, roadmap and direction.",
 }
 
 // excludeDoc lists filename stems that should not be published as pages.
@@ -357,36 +340,10 @@ func run(inDir, outDir string) error {
 	}
 	sort.Strings(matches)
 
-	pages := make([]rendered, 0, len(matches))
-	docSet := map[string]bool{}
-	// Pre-pass: collect the complete doc set so cross-links resolve
-	// regardless of alphabetical processing order.
-	for _, p := range matches {
-		if excludeDoc(p) {
-			continue
-		}
-		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(p), ".md"))
-		docSet[stem] = true
-	}
-
-	entries := []docEntry{}
-	for _, p := range matches {
-		if excludeDoc(p) {
-			continue
-		}
-		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(p), ".md"))
-		source, err := os.ReadFile(p)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", p, err)
-		}
-		title := titleFromSource(source, prettify(stem))
-		body, toc := renderDoc(source, docSet)
-		pages = append(pages, rendered{Stem: stem, Title: title, HTML: body, TOC: toc})
-		blurb := curatedBlurb(stem)
-		if blurb == "" {
-			blurb = blurbFromSource(source)
-		}
-		entries = append(entries, docEntry{Stem: stem, Title: title, Blurb: blurb, Href: stem + ".html"})
+	docSet := collectDocSet(matches)
+	pages, entries, err := processDocs(matches, docSet)
+	if err != nil {
+		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return docWeight(entries[i].Stem) < docWeight(entries[j].Stem) })
 
@@ -403,6 +360,46 @@ func run(inDir, outDir string) error {
 	}
 	fmt.Printf("webbuild: wrote %d doc pages to %s\n", len(pages), outDir)
 	return nil
+}
+
+func collectDocSet(matches []string) map[string]bool {
+	docSet := map[string]bool{}
+	for _, p := range matches {
+		if excludeDoc(p) {
+			continue
+		}
+		stem := stemFromPath(p)
+		docSet[stem] = true
+	}
+	return docSet
+}
+
+func processDocs(matches []string, docSet map[string]bool) ([]rendered, []docEntry, error) {
+	pages := make([]rendered, 0, len(matches))
+	entries := []docEntry{}
+	for _, p := range matches {
+		if excludeDoc(p) {
+			continue
+		}
+		stem := stemFromPath(p)
+		source, err := os.ReadFile(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", p, err)
+		}
+		title := titleFromSource(source, prettify(stem))
+		body, toc := renderDoc(source, docSet)
+		pages = append(pages, rendered{Stem: stem, Title: title, HTML: body, TOC: toc})
+		blurb := curatedBlurb(stem)
+		if blurb == "" {
+			blurb = blurbFromSource(source)
+		}
+		entries = append(entries, docEntry{Stem: stem, Title: title, Blurb: blurb, Href: stem + ".html"})
+	}
+	return pages, entries, nil
+}
+
+func stemFromPath(p string) string {
+	return strings.ToLower(strings.TrimSuffix(filepath.Base(p), ".md"))
 }
 
 // writePage renders a single documentation page from the embedded template.

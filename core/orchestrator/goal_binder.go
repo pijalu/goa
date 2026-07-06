@@ -32,6 +32,10 @@ type GoalBinder interface {
 	// applies an optional aggregate token budget. Returns the new goal id.
 	Create(objective string, tokenBudget int) (string, error)
 
+	// CreateWithName is like Create but also supplies a friendly name for the
+	// goal. Implementations that do not support names may ignore the parameter.
+	CreateWithName(objective, name string, tokenBudget int) (string, error)
+
 	// RecordTokens accrues a token delta to the bound goal and reports whether
 	// the aggregate budget is now exhausted (true ⇒ the run should stop).
 	RecordTokens(delta int) (overBudget bool, err error)
@@ -42,4 +46,8 @@ type GoalBinder interface {
 	// Block marks the bound goal as blocked (e.g. budget exhausted) without
 	// completing it.
 	Block(reason string) error
+
+	// Delete discards the bound goal. Used for ephemeral goals and when a run
+	// is explicitly deleted.
+	Delete(reason string) error
 }

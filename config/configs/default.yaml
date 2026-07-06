@@ -77,6 +77,14 @@ orchestrator:
     max_agents_per_model: {}
   defaults:
     topology: "hub"
+  retention:
+    enabled: true
+    days: 7
+
+goals:
+  retention:
+    enabled: true
+    days: 7
 
 multi_agent:
   enabled: false

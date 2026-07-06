@@ -345,35 +345,49 @@ func (w *wizardComponent) startEndpointInput(s *modelSlot) {
 		if result == "" {
 			return
 		}
-		w.tui.Apply(func() {
-			cs := w.currentSlot()
-			cs.endpoint = result
-			if cs.selectedPresetIndex < 0 {
-				cs.providerID = DeriveProviderID(result)
-				cs.providerName = deriveProviderName(result)
-			}
-			w.editor.Clear()
-			w.inputMode = ""
-			// Determine if API key is needed
-			presets := PresetProviders()
-			needsKey := cs.selectedPresetIndex >= 0 && cs.selectedPresetIndex < len(presets) && presets[cs.selectedPresetIndex].NeedsAPIKey
-			if needsKey {
-				if w.state == stateCompanionProviderEndpoint {
-					w.state = stateCompanionProviderKey
-				} else {
-					w.state = stateProviderKey
-				}
-				w.startKeyInput(cs)
-			} else {
-				if w.state == stateCompanionProviderEndpoint {
-					w.state = stateCompanionProviderTest
-				} else {
-					w.state = stateProviderTest
-				}
-				w.fetchAvailableModels(cs)
-			}
-		})
+		w.tui.Apply(func() { w.applyEndpointResult(result) })
 	}()
+}
+
+func (w *wizardComponent) applyEndpointResult(result string) {
+	cs := w.currentSlot()
+	cs.endpoint = result
+	if cs.selectedPresetIndex < 0 {
+		cs.providerID = DeriveProviderID(result)
+		cs.providerName = deriveProviderName(result)
+	}
+	w.editor.Clear()
+	w.inputMode = ""
+	w.advanceEndpointResult(cs)
+}
+
+func (w *wizardComponent) advanceEndpointResult(cs *modelSlot) {
+	if endpointNeedsKey(cs) {
+		w.state = endpointKeyState(w.state)
+		w.startKeyInput(cs)
+		return
+	}
+	w.state = endpointTestState(w.state)
+	w.fetchAvailableModels(cs)
+}
+
+func endpointNeedsKey(cs *modelSlot) bool {
+	presets := PresetProviders()
+	return cs.selectedPresetIndex >= 0 && cs.selectedPresetIndex < len(presets) && presets[cs.selectedPresetIndex].NeedsAPIKey
+}
+
+func endpointKeyState(state wizardState) wizardState {
+	if state == stateCompanionProviderEndpoint {
+		return stateCompanionProviderKey
+	}
+	return stateProviderKey
+}
+
+func endpointTestState(state wizardState) wizardState {
+	if state == stateCompanionProviderEndpoint {
+		return stateCompanionProviderTest
+	}
+	return stateProviderTest
 }
 
 func (w *wizardComponent) advanceFromModelSelect() {

@@ -55,6 +55,7 @@ type GoalBudgetReport struct {
 type GoalSnapshot struct {
 	GoalID              string           `json:"goalId,omitempty"`
 	Name                string           `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
+	ManagedBy           string           `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
 	Objective           string           `json:"objective"`
 	CompletionCriterion *string          `json:"completionCriterion,omitempty"`
 	Status              GoalStatus       `json:"status"`
@@ -74,6 +75,7 @@ type GoalToolResult struct {
 type UpcomingGoal struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
+	ManagedBy string    `json:"managedBy,omitempty"`
 	Objective string    `json:"objective"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -107,6 +109,7 @@ type GoalChangeStats struct {
 type CreateGoalInput struct {
 	Objective           string
 	Name                string // optional friendly alias; auto-generated when empty
+	ManagedBy           string // empty for normal goals; "orchestrator" for ephemeral orchestrator goals
 	CompletionCriterion *string
 	Replace             bool
 }
@@ -120,6 +123,7 @@ type GoalReasonInput struct {
 type goalStage struct {
 	goalID              string
 	name                string
+	managedBy           string
 	objective           string
 	completionCriterion *string
 	status              GoalStatus
@@ -129,6 +133,7 @@ type goalStage struct {
 	wallClockResumedAt  *int64
 	budgetLimits        GoalBudgetLimits
 	terminalReason      *string
+	updatedAt           time.Time
 }
 
 // GoalEventType identifies a record in the event-sourced log.
@@ -149,6 +154,7 @@ type GoalEventRecord struct {
 	// goal.create fields
 	GoalID              *string `json:"goalId,omitempty"`
 	Name                *string `json:"name,omitempty"` // friendly alias
+	ManagedBy           *string `json:"managedBy,omitempty"`
 	Objective           *string `json:"objective,omitempty"`
 	CompletionCriterion *string `json:"completionCriterion,omitempty"`
 

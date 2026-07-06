@@ -993,46 +993,45 @@ func extractCursorMarker(scene *Scene) {
 	}
 	viewportStart := max(0, baseHeight-termH)
 
-	// Scan topmost overlay first so input-owning overlays capture the cursor.
-	for li := len(scene.Layers) - 1; li >= 0; li-- {
-		l := &scene.Layers[li]
-		if l.Kind != LayerOverlay {
-			continue
-		}
-		rowOffset := viewportStart + l.Rect.Y
-		for ri := len(l.Content) - 1; ri >= 0; ri-- {
-			line := l.Content[ri]
-			idx := strings.Index(line, CURSOR_MARKER)
-			if idx < 0 {
-				continue
-			}
-			before := line[:idx]
-			col := visibleWidth(before)
-			l.Content[ri] = before + line[idx+len(CURSOR_MARKER):]
-			scene.Cursor = &CursorPos{Row: rowOffset + ri, Col: col}
-			return
-		}
+	if row, col, found := findCursorInLayers(scene.Layers, LayerOverlay, viewportStart); found {
+		scene.Cursor = &CursorPos{Row: row, Col: col}
+		return
 	}
+	if row, col, found := findCursorInLayers(scene.Layers, LayerBase, 0); found {
+		scene.Cursor = &CursorPos{Row: row, Col: col}
+	}
+}
 
-	// No overlay cursor: fall back to the focused base-layer editor.
-	for li := len(scene.Layers) - 1; li >= 0; li-- {
-		l := &scene.Layers[li]
-		if l.Kind != LayerBase {
+// findCursorInLayers scans layers of the given kind from top to bottom and
+// returns the cursor position if a CURSOR_MARKER is found. The yOffset is added
+// to the row coordinate for overlay layers.
+func findCursorInLayers(layers []Layer, kind LayerKind, yOffset int) (int, int, bool) {
+	for li := len(layers) - 1; li >= 0; li-- {
+		l := &layers[li]
+		if l.Kind != kind {
 			continue
 		}
-		for ri := len(l.Content) - 1; ri >= 0; ri-- {
-			line := l.Content[ri]
-			idx := strings.Index(line, CURSOR_MARKER)
-			if idx < 0 {
-				continue
-			}
-			before := line[:idx]
-			col := visibleWidth(before)
-			l.Content[ri] = before + line[idx+len(CURSOR_MARKER):]
-			scene.Cursor = &CursorPos{Row: l.Rect.Y + ri, Col: col}
-			return
+		rowOffset := yOffset + l.Rect.Y
+		if row, col, found := findCursorInLayer(l, rowOffset); found {
+			return row, col, true
 		}
 	}
+	return 0, 0, false
+}
+
+func findCursorInLayer(l *Layer, rowOffset int) (int, int, bool) {
+	for ri := len(l.Content) - 1; ri >= 0; ri-- {
+		line := l.Content[ri]
+		idx := strings.Index(line, CURSOR_MARKER)
+		if idx < 0 {
+			continue
+		}
+		before := line[:idx]
+		col := visibleWidth(before)
+		l.Content[ri] = before + line[idx+len(CURSOR_MARKER):]
+		return rowOffset + ri, col, true
+	}
+	return 0, 0, false
 }
 
 // componentLayerName returns a short semantic name for a component, used to

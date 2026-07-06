@@ -21,6 +21,7 @@ func (c *Config) Validate() error {
 	c.validateContextCompression(&ve)
 	c.validateSkillMode(&ve)
 	c.validateOrchestrator(&ve)
+	c.validateGoals(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
@@ -205,5 +206,15 @@ func (c *Config) validateOrchestrator(ve *internal.ValidationError) {
 		if n < 1 {
 			ve.Add(fmt.Sprintf("orchestrator.pool.max_agents_per_model.%s: must be >= 1 (got %d)", m, n))
 		}
+	}
+	if oc.Retention.Days < 0 {
+		ve.Add(fmt.Sprintf("orchestrator.retention.days: must be >= 0 (got %d)", oc.Retention.Days))
+	}
+}
+
+func (c *Config) validateGoals(ve *internal.ValidationError) {
+	gr := c.Goals.Retention
+	if gr.Days < 0 {
+		ve.Add(fmt.Sprintf("goals.retention.days: must be >= 0 (got %d)", gr.Days))
 	}
 }

@@ -260,27 +260,30 @@ func TestStreamLoopWindowRange(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotMin, gotMax := streamLoopWindowRange(tt.text)
-			if !tt.wantOk {
-				if gotMin != 0 || gotMax != 0 {
-					t.Errorf("streamLoopWindowRange() = (%d, %d), want (0, 0)", gotMin, gotMax)
-				}
-				return
-			}
-			// min should always be 20
-			if gotMin != 20 {
-				t.Errorf("streamLoopWindowRange() min = %d, want %d", gotMin, 20)
-			}
-			// max should be len(text)/2, capped at 120, clamped to ≥ minWindow
-			expectedMax := len(tt.text) / 2
-			if expectedMax > 120 {
-				expectedMax = 120
-			}
-			if gotMax != expectedMax {
-				t.Errorf("streamLoopWindowRange() max = %d, want %d (len=%d/2=%d, capped=120)",
-					gotMax, expectedMax, len(tt.text), len(tt.text)/2)
-			}
+			assertWindowRange(t, tt.text, tt.wantOk)
 		})
+	}
+}
+
+func assertWindowRange(t *testing.T, text string, wantOk bool) {
+	t.Helper()
+	gotMin, gotMax := streamLoopWindowRange(text)
+	if !wantOk {
+		if gotMin != 0 || gotMax != 0 {
+			t.Errorf("streamLoopWindowRange() = (%d, %d), want (0, 0)", gotMin, gotMax)
+		}
+		return
+	}
+	if gotMin != 20 {
+		t.Errorf("streamLoopWindowRange() min = %d, want %d", gotMin, 20)
+	}
+	expectedMax := len(text) / 2
+	if expectedMax > 120 {
+		expectedMax = 120
+	}
+	if gotMax != expectedMax {
+		t.Errorf("streamLoopWindowRange() max = %d, want %d (len=%d/2=%d, capped=120)",
+			gotMax, expectedMax, len(text), len(text)/2)
 	}
 }
 
@@ -313,18 +316,12 @@ func TestStreamHasRepeatedSuffix(t *testing.T) {
 }
 
 func TestStreamLoopIntegration(t *testing.T) {
-	// Test full pipeline: checkStreamLoop via the pure functions it calls.
-	// We can't easily instantiate a real Agent in this test file due to its
-	// many dependencies, so we verify the building blocks end-to-end.
-
 	t.Run("box drawing not detected as loop", func(t *testing.T) {
-		// Box-drawing characters like ─ ┐ └ │ should be stripped by normalize
 		text := "╭───╮\n│ a │\n╰───╯"
 		clean := streamLoopNormalize(text)
 		if clean != "a" {
 			t.Errorf("box drawing normalized to %q, want 'a'", clean)
 		}
-		// Empty enough that loop detection doesn't trigger
 		minW, _ := streamLoopWindowRange(clean)
 		if minW != 0 {
 			t.Errorf("box drawing should not trigger window range, got minWindow=%d", minW)
@@ -332,50 +329,56 @@ func TestStreamLoopIntegration(t *testing.T) {
 	})
 
 	t.Run("single word repeat not detected", func(t *testing.T) {
-		// Even if repeated, a single word should not trigger
-		text := "the the the the the the the the the the the the the the the the the the"
-		clean := streamLoopNormalize(text)
-		minW, maxW := streamLoopWindowRange(clean)
-		if minW == 0 {
-			t.Fatal("should have valid window range")
-		}
-		// Check that each window fails the word-count check
-		for window := minW; window <= maxW; window++ {
-			suffix := clean[len(clean)-window:]
-			if streamHasMultipleUniqueWords(suffix) {
-				// Only fail if streamHasRepeatedSuffix also matches
-				repeats := streamLoopRepeatsNeeded(window)
-				if streamHasRepeatedSuffix(clean, window, repeats) {
-					t.Errorf("single-word repeat should not trigger loop detection at window=%d, suffix=%q", window, suffix)
-				}
-			}
-		}
+		assertSingleWordRepeatNotDetected(t)
 	})
 
 	t.Run("multi-word repeat detected", func(t *testing.T) {
-		// A genuine multi-word loop should be detected
-		text := "the quick brown the quick brown the quick brown the quick brown " +
-			"the quick brown the quick brown the quick brown the quick brown"
-		clean := streamLoopNormalize(text)
-		minW, maxW := streamLoopWindowRange(clean)
-		if minW == 0 {
-			t.Fatal("should have valid window range")
-		}
-		found := false
-		for window := minW; window <= maxW; window++ {
+		assertMultiWordRepeatDetected(t)
+	})
+}
+
+func assertSingleWordRepeatNotDetected(t *testing.T) {
+	t.Helper()
+	text := "the the the the the the the the the the the the the the the the the the"
+	clean := streamLoopNormalize(text)
+	minW, maxW := streamLoopWindowRange(clean)
+	if minW == 0 {
+		t.Fatal("should have valid window range")
+	}
+	for window := minW; window <= maxW; window++ {
+		suffix := clean[len(clean)-window:]
+		if streamHasMultipleUniqueWords(suffix) {
 			repeats := streamLoopRepeatsNeeded(window)
 			if streamHasRepeatedSuffix(clean, window, repeats) {
-				suffix := clean[len(clean)-window:]
-				if streamHasMultipleUniqueWords(suffix) {
-					found = true
-					break
-				}
+				t.Errorf("single-word repeat should not trigger loop detection at window=%d, suffix=%q", window, suffix)
 			}
 		}
-		if !found {
-			t.Error("genuine multi-word loop should be detected")
+	}
+}
+
+func assertMultiWordRepeatDetected(t *testing.T) {
+	t.Helper()
+	text := "the quick brown the quick brown the quick brown the quick brown " +
+		"the quick brown the quick brown the quick brown the quick brown"
+	clean := streamLoopNormalize(text)
+	minW, maxW := streamLoopWindowRange(clean)
+	if minW == 0 {
+		t.Fatal("should have valid window range")
+	}
+	found := false
+	for window := minW; window <= maxW; window++ {
+		repeats := streamLoopRepeatsNeeded(window)
+		if streamHasRepeatedSuffix(clean, window, repeats) {
+			suffix := clean[len(clean)-window:]
+			if streamHasMultipleUniqueWords(suffix) {
+				found = true
+				break
+			}
 		}
-	})
+	}
+	if !found {
+		t.Error("genuine multi-word loop should be detected")
+	}
 }
 
 // repeatString returns s repeated n times.

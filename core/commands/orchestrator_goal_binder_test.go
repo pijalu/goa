@@ -46,6 +46,43 @@ func TestGoalBinder_WrapsGoalMode(t *testing.T) {
 	}
 }
 
+func TestGoalBinder_EphemeralManagedGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	gb := NewGoalBinder(mode).(*goalModeBinder)
+
+	id, err := gb.CreateWithName("ship it", "happy.hare", 0)
+	if err != nil {
+		t.Fatalf("CreateWithName: %v", err)
+	}
+	g := mode.GetGoal().Goal
+	if g == nil || g.ManagedBy != "orchestrator" {
+		t.Fatalf("goal not managed: %+v", g)
+	}
+	if g.Name != "happy.hare" {
+		t.Errorf("goal name = %q, want happy.hare", g.Name)
+	}
+
+	if err := gb.Complete("done"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Errorf("managed goal should be cleared after complete, got %+v", mode.GetGoal().Goal)
+	}
+
+	// Re-create and delete explicitly.
+	id, err = gb.CreateWithName("ship it", "happy.hare", 0)
+	if err != nil {
+		t.Fatalf("CreateWithName 2: %v", err)
+	}
+	if err := gb.Delete("run deleted"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Errorf("managed goal should be cleared after delete, got %+v", mode.GetGoal().Goal)
+	}
+	_ = id
+}
+
 // TestOrchestrateCommand_GoalBinding end-to-end (fake builder + real GoalMode):
 // `/orchestrate new fanout goal <obj> <obj>` binds a goal; on run completion
 // the goal is marked complete.
@@ -58,7 +95,7 @@ func TestOrchestrateCommand_GoalBinding(t *testing.T) {
 	}
 	ctx := testCtx(t)
 
-	if err := c.Run(ctx, []string{"new", "fanout", "goal", "deliver value", "deliver value"}); err != nil {
+	if err := c.Run(ctx, []string{"new", "topology=fanout", "objective=deliver value"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// Wait for the background run to finish.
@@ -69,7 +106,7 @@ func TestOrchestrateCommand_GoalBinding(t *testing.T) {
 	if c.Active.Get() != nil {
 		t.Fatalf("run did not finish")
 	}
-	// The goal must have been created then completed (cleared on complete).
+	// The goal must have been created then cleared on complete.
 	if snap := mode.GetActiveGoal(); snap != nil {
 		t.Errorf("goal should be cleared after successful run, got %+v", snap)
 	}

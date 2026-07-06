@@ -58,6 +58,7 @@ type Config struct {
 	ContextCompression ContextCompressionConfig `yaml:"context_compression"`
 	Telegram           TelegramConfig           `yaml:"telegram"`
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
+	Goals              GoalsConfig              `yaml:"goals,omitempty"`
 	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
 	Permissions        []perms.Rule             `yaml:"permissions,omitempty"`
 	// Aliases maps short user-defined names to command invocations.
@@ -239,12 +240,20 @@ type MultiAgentConfig struct {
 }
 
 // OrchestratorConfig configures the orchestrator subsystem: per-run topology
-// selection, a config-only role→model map, and a bounded agent pool with
-// total + per-model caps. See docs/ORCHESTRATION-DESIGN.md.
+// selection, a config-only role→model map, a bounded agent pool with
+// total + per-model caps, and retention settings. See docs/ORCHESTRATION-DESIGN.md.
 type OrchestratorConfig struct {
-	Roles    map[string]OrchestratorRole    `yaml:"roles,omitempty"`
-	Pool     OrchestratorPoolConfig     `yaml:"pool,omitempty"`
-	Defaults OrchestratorDefaultsConfig `yaml:"defaults,omitempty"`
+	Roles     map[string]OrchestratorRole `yaml:"roles,omitempty"`
+	Pool      OrchestratorPoolConfig      `yaml:"pool,omitempty"`
+	Defaults  OrchestratorDefaultsConfig  `yaml:"defaults,omitempty"`
+	Retention OrchestratorRetentionConfig `yaml:"retention,omitempty"`
+}
+
+// OrchestratorRetentionConfig controls how long finished orchestration runs
+// are kept on disk. Enabled=false or Days=0 means "keep forever".
+type OrchestratorRetentionConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Days    int  `yaml:"days"`
 }
 
 // OrchestratorRole binds a role to a specific model/provider and tool allowlist.
@@ -263,6 +272,18 @@ type OrchestratorPoolConfig struct {
 // OrchestratorDefaultsConfig holds default topology selection for new runs.
 type OrchestratorDefaultsConfig struct {
 	Topology string `yaml:"topology"`
+}
+
+// GoalsConfig controls the durable goal subsystem.
+type GoalsConfig struct {
+	Retention GoalsRetentionConfig `yaml:"retention,omitempty"`
+}
+
+// GoalsRetentionConfig controls how long terminal normal goals are kept.
+// Enabled=false or Days=0 means "keep forever".
+type GoalsRetentionConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Days    int  `yaml:"days"`
 }
 
 // MemoryConfig controls persistent memory file settings.
@@ -408,32 +429,26 @@ func (t *ToolEnabledConfig) ApplyTo(target *ToolEnabledConfig) {
 	if t.set == nil || target == nil {
 		return
 	}
-	if t.set["bg_exec"] {
-		target.BGExec = t.BGExec
+	type field struct {
+		name string
+		src  bool
+		dst  *bool
 	}
-	if t.set["delegate_to"] {
-		target.DelegateTo = t.DelegateTo
+	fields := []field{
+		{"bg_exec", t.BGExec, &target.BGExec},
+		{"delegate_to", t.DelegateTo, &target.DelegateTo},
+		{"goal", t.Goal, &target.Goal},
+		{"memento", t.Memento, &target.Memento},
+		{"pty_exec", t.PTYExec, &target.PTYExec},
+		{"request_review", t.RequestReview, &target.RequestReview},
+		{"ssh_bash", t.SSHBash, &target.SSHBash},
+		{"webfetch", t.WebFetch, &target.WebFetch},
+		{"clarify_disabled", t.ClarifyDisabled, &target.ClarifyDisabled},
 	}
-	if t.set["goal"] {
-		target.Goal = t.Goal
-	}
-	if t.set["memento"] {
-		target.Memento = t.Memento
-	}
-	if t.set["pty_exec"] {
-		target.PTYExec = t.PTYExec
-	}
-	if t.set["request_review"] {
-		target.RequestReview = t.RequestReview
-	}
-	if t.set["ssh_bash"] {
-		target.SSHBash = t.SSHBash
-	}
-	if t.set["webfetch"] {
-		target.WebFetch = t.WebFetch
-	}
-	if t.set["clarify_disabled"] {
-		target.ClarifyDisabled = t.ClarifyDisabled
+	for _, f := range fields {
+		if t.set[f.name] {
+			*f.dst = f.src
+		}
 	}
 	if target.set == nil {
 		target.set = make(map[string]bool)

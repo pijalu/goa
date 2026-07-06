@@ -186,9 +186,11 @@ func (m *configMenu) showRoot() error {
 		{Value: "thinking_blocks", Label: "Thinking blocks", Description: thinkingBlocksLabel(cfg)},
 		{Value: "show_thinking", Label: "Show thinking", Description: boolLabel(cfg.TUI.Transparency.ShowThinking)},
 		{Value: "multi_agent", Label: "Multi-agent", Description: multiAgentLabel(cfg, m.ctx.ForegroundOrchestrator)},
+		{Value: "orchestrator", Label: "Orchestrator", Description: orchestratorLabel(cfg)},
 		{Value: "tools", Label: "Tools", Description: toolsEnabledLabel(cfg)},
 		{Value: "loop_detection", Label: "Loop detection", Description: loopDetectionLabel(cfg)},
 		{Value: "skills", Label: "Skills", Description: skillsLabel(cfg)},
+		{Value: "goals", Label: "Goals", Description: goalsRetentionLabel(cfg.Goals.Retention)},
 	}
 	m.ctx.SelectOption("Settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -222,9 +224,11 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"thinking_blocks": (*configMenu).toggleThinkingBlocks,
 		"show_thinking":   (*configMenu).toggleShowThinking,
 		"multi_agent":     (*configMenu).openMultiAgent,
+		"orchestrator":    (*configMenu).openOrchestrator,
 		"tools":           (*configMenu).openTools,
 		"loop_detection":  (*configMenu).openLoopDetection,
 		"skills":          (*configMenu).openSkills,
+		"goals":           (*configMenu).openGoalsRetention,
 	}
 }
 

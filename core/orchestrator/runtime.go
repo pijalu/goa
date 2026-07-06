@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal"
 )
 
 // Emitter forwards an orchestrator Event to the run's store and any live TUI
@@ -44,9 +44,14 @@ type Runtime struct {
 
 	objective string
 	goal      GoalBinder // optional; when set, the run is goal-bound
+	goalID    string     // goal id for the bound goal
 	goalMu    sync.Mutex // guards the goal field
 	goalCallMu sync.Mutex // serializes goal API calls (single-driver design)
-	telemetry Telemetry  // optional; nil-safe via telemetryOr
+	telemetry  Telemetry  // optional; nil-safe via telemetryOr
+	name       string     // friendly alias, e.g. "happy.hare"
+
+	cancelMu sync.Mutex
+	cancel   context.CancelFunc // cancels the run context; set by Run
 
 	// msgs accumulates streamed assistant text per role so Delegate can return
 	// a sub-agent's answer as the tool result without depending on the store.
@@ -160,18 +165,36 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	runCtx, cancel := context.WithCancel(ctx)
+	r.cancelMu.Lock()
+	r.cancel = cancel
+	r.cancelMu.Unlock()
+	defer func() {
+		cancel()
+		r.cancelMu.Lock()
+		r.cancel = nil
+		r.cancelMu.Unlock()
+	}()
+
 	r.runID = r.newID()
 	r.objective = objective
 	if r.store == nil {
 		// Still set runID on emitted events (handled in emit).
 	}
 
+	payload := map[string]any{
+		"objective": objective,
+		"topology":  string(r.topology),
+	}
+	if r.name != "" {
+		payload["name"] = r.name
+	}
+	if r.goalID != "" {
+		payload["goal_id"] = r.goalID
+	}
 	r.emit(Event{
-		Type: EventRunStarted,
-		Payload: map[string]any{
-			"objective": objective,
-			"topology":  string(r.topology),
-		},
+		Type:    EventRunStarted,
+		Payload: payload,
 	})
 	r.telemetry.Track(TelemetryRunStarted, map[string]any{
 		"topology": string(r.topology),
@@ -186,9 +209,9 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	case TopologyHub:
 		// Hub without DelegateTool behaves like fanout over the non-orchestrator
 		// roles; the orchestrator role (if any) runs first to "plan".
-		err = r.runHub(ctx, objective)
+		err = r.runHub(runCtx, objective)
 	default:
-		err = r.runFanout(ctx, objective)
+		err = r.runFanout(runCtx, objective)
 	}
 
 	r.emit(Event{Type: EventRunFinished, Payload: map[string]any{"ok": err == nil}})
@@ -441,6 +464,10 @@ func (r *Runtime) SetGoalBinder(gb GoalBinder) {
 	r.goalMu.Unlock()
 }
 
+// SetGoalID records the goal id associated with the binder. It is emitted in
+// the run_started event so the run snapshot can later recover it.
+func (r *Runtime) SetGoalID(id string) { r.goalID = id }
+
 // GoalBound reports whether the run has a goal binder attached.
 func (r *Runtime) GoalBound() bool {
 	r.goalMu.Lock()
@@ -481,7 +508,19 @@ func (r *Runtime) finalizeGoal(ok bool, reason string) {
 }
 
 func defaultRunID() string {
-	return fmt.Sprintf("run-%d", time.Now().UnixNano())
+	return internal.PrefixedHexID("run", 4)
+}
+
+// Cancel requests the running orchestration to stop. It is safe to call
+// multiple times and from any goroutine. If the run has already finished,
+// Cancel is a no-op.
+func (r *Runtime) Cancel() {
+	r.cancelMu.Lock()
+	cancel := r.cancel
+	r.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // Done returns a channel closed when Run finishes (success or error). Allows
@@ -563,6 +602,22 @@ func (r *Runtime) Objective() string { return r.objective }
 
 // Topology returns the topology of the current run.
 func (r *Runtime) Topology() Topology { return r.topology }
+
+// SetName sets the friendly human-readable alias for this run. Must be
+// called before Run. The name is emitted in the run_started event and
+// exposed by Name().
+func (r *Runtime) SetName(name string) { r.name = name }
+
+// Name returns the friendly alias for this run (empty if not set).
+func (r *Runtime) Name() string { return r.name }
+
+// NameOrID returns the friendly name if set, otherwise the internal run ID.
+func (r *Runtime) NameOrID() string {
+	if r.name != "" {
+		return r.name
+	}
+	return r.runID
+}
 
 // RunID returns the id assigned to the current run (empty before Run starts).
 func (r *Runtime) RunID() string { return r.runID }

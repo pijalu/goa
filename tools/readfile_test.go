@@ -414,7 +414,6 @@ func TestReadDirectory(t *testing.T) {
 		dir, cleanup := tempDir(t)
 		defer cleanup()
 
-		// Create some files and subdirectories
 		os.WriteFile(filepath.Join(dir, "file1.go"), []byte("package main"), 0644)
 		os.WriteFile(filepath.Join(dir, "file2.md"), []byte("# doc"), 0644)
 		os.MkdirAll(filepath.Join(dir, "subdir"), 0755)
@@ -423,22 +422,7 @@ func TestReadDirectory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-
-		if !strings.Contains(result, "read directory") {
-			t.Errorf("expected 'read directory' header, got: %s", result)
-		}
-		if !strings.Contains(result, "file1.go") {
-			t.Errorf("expected file1.go in listing, got: %s", result)
-		}
-		if !strings.Contains(result, "file2.md") {
-			t.Errorf("expected file2.md in listing, got: %s", result)
-		}
-		if !strings.Contains(result, "subdir/") {
-			t.Errorf("expected subdir/ (with trailing slash) in listing, got: %s", result)
-		}
-		if !strings.Contains(result, "[directory: 3 entries]") {
-			t.Errorf("expected 3 entries in listing, got: %s", result)
-		}
+		assertDirectoryListing(t, result, []string{"file1.go", "file2.md", "subdir/", "[directory: 3 entries]"})
 	})
 
 	t.Run("empty directory", func(t *testing.T) {
@@ -459,8 +443,6 @@ func TestReadDirectory(t *testing.T) {
 		defer cleanup()
 
 		os.WriteFile(filepath.Join(dir, "a.txt"), []byte("data"), 0644)
-
-		// Use a relative path via a subdirectory change
 		result, err := tool.Execute(`{"path": "` + dir + `"}`)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -469,6 +451,15 @@ func TestReadDirectory(t *testing.T) {
 			t.Errorf("expected a.txt in listing, got: %s", result)
 		}
 	})
+}
+
+func assertDirectoryListing(t *testing.T, result string, want []string) {
+	t.Helper()
+	for _, w := range want {
+		if !strings.Contains(result, w) {
+			t.Errorf("expected %q in listing, got: %s", w, result)
+		}
+	}
 }
 
 

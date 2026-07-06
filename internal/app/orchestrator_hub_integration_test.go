@@ -10,11 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/orchestrator"
-	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
-	"github.com/pijalu/goa/multiagent"
-	"github.com/pijalu/goa/provider"
 )
 
 // TestOrchestratorAdapter_LiveHub drives a TRUE hub topology against LMStudio:
@@ -26,44 +22,7 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 	if !lmstudioReachable(t) {
 		t.Skip("LMStudio not reachable on :1234 — skipping live hub test")
 	}
-	cl := config.NewCascadeLoader(".", "", nil)
-	cfg, err := cl.Load()
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if cfg.ActiveModel == "" {
-		t.Skip("no active_model configured")
-	}
-
-	pm := provider.NewProviderManager(cfg)
-	mdl, err := pm.ResolveModelByID(cfg.ActiveModel)
-	if err != nil {
-		t.Fatalf("resolve model: %v", err)
-	}
-	opts := pm.BuildStreamOptions()
-	pool := multiagent.NewAgentPool(mdl, opts, nil)
-	pool.SetGoaConfig(cfg)
-	pool.ModelFactory = func(name string) (agenticprovider.Model, error) {
-		return pm.ResolveModelByID(name)
-	}
-	pool.ProviderModelFactory = func(pid, name string) (agenticprovider.Model, error) {
-		return pm.ResolveModelForProvider(pid, name)
-	}
-
-	rootDir := t.TempDir()
-	oCfg := config.OrchestratorConfig{
-		Roles: map[string]config.OrchestratorRole{
-			"orchestrator": {Model: cfg.ActiveModel},
-			"coder":        {Model: cfg.ActiveModel},
-		},
-		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 2},
-		Defaults: config.OrchestratorDefaultsConfig{Topology: config.OrchestratorTopologyHub},
-	}
-	adapter := NewOrchestratorAdapter(pool, cfg)
-	rt, err := adapter.NewRuntime(oCfg, rootDir)
-	if err != nil {
-		t.Fatalf("build runtime: %v", err)
-	}
+	rt, rootDir := newLiveRuntime(t, []string{"orchestrator", "coder"}, "hub")
 
 	done := make(chan error, 1)
 	go func() {
@@ -74,18 +33,7 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 				"After it returns, summarize its answer in one sentence.")
 	}()
 
-	// Drain events so the bus does not block; count agent starts by role.
-	var mu sync.Mutex
-	started := map[string]int{}
-	go func() {
-		for ev := range rt.Events() {
-			if ev.Type == orchestrator.EventAgentStarted {
-				mu.Lock()
-				started[ev.Role]++
-				mu.Unlock()
-			}
-		}
-	}()
+	started, wait := drainAgentStarts(rt.Events())
 
 	select {
 	case err := <-done:
@@ -96,29 +44,34 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 		t.Fatalf("hub run timed out")
 	}
 
+	wait()
 	// The orchestrator must have started, AND the coder must have been
 	// delegated to (started via the DelegateTool). This is the proof of real
 	// tool-driven delegation rather than the orchestrator just answering alone.
-	mu.Lock()
-	orcStarted := started["orchestrator"]
-	coderStarted := started["coder"]
-	mu.Unlock()
-	if orcStarted == 0 {
+	if started["orchestrator"] == 0 {
 		t.Errorf("orchestrator agent never started")
 	}
-	if coderStarted == 0 {
+	if started["coder"] == 0 {
 		t.Errorf("coder was never delegated to — orchestrator did not use the delegate tool; started=%v", started)
 	}
 
-	runs, _ := orchestrator.ListRuns(rootDir)
-	if len(runs) != 1 {
-		t.Fatalf("expected 1 persisted run, got %d", len(runs))
-	}
-	snap, err := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runs[0].RunID))
-	if err != nil {
-		t.Fatalf("ReplaySnapshot: %v", err)
-	}
-	if !snap.Finished {
-		t.Errorf("snapshot not finished")
-	}
+	assertRunSnapshotFinished(t, rootDir, 2)
+}
+
+// drainAgentStarts reads events until the channel is closed and returns a map
+// counting how many times each role was started, plus a wait function the
+// caller must invoke before reading the map.
+func drainAgentStarts(events <-chan orchestrator.Event) (map[string]int, func()) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	started := map[string]int{}
+	go func() {
+		defer wg.Done()
+		for ev := range events {
+			if ev.Type == orchestrator.EventAgentStarted {
+				started[ev.Role]++
+			}
+		}
+	}()
+	return started, wg.Wait
 }

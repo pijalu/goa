@@ -89,12 +89,16 @@ func (m *GoalMode) RestoreCreate(record GoalEventRecord) {
 		tokensUsed:   0,
 		wallClockMs:  0,
 		budgetLimits: GoalBudgetLimits{},
+		updatedAt:    record.Timestamp,
 	}
 	if record.GoalID != nil {
 		state.goalID = *record.GoalID
 	}
 	if record.Name != nil {
 		state.name = *record.Name
+	}
+	if record.ManagedBy != nil {
+		state.managedBy = *record.ManagedBy
 	}
 	if record.Objective != nil {
 		state.objective = *record.Objective
@@ -190,6 +194,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 	state := &goalStage{
 		goalID:              generateGoalID(),
 		name:                name,
+		managedBy:           input.ManagedBy,
 		objective:           objective,
 		completionCriterion: completionCriterion,
 		status:              GoalActive,
@@ -197,6 +202,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		tokensUsed:          0,
 		wallClockMs:         0,
 		wallClockResumedAt:  &nowMs,
+		updatedAt:           now,
 		budgetLimits:        GoalBudgetLimits{},
 	}
 
@@ -206,6 +212,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		Timestamp:           now,
 		GoalID:              &state.goalID,
 		Name:                &state.name,
+		ManagedBy:           &state.managedBy,
 		Objective:           &state.objective,
 		CompletionCriterion: state.completionCriterion,
 	})
@@ -297,6 +304,19 @@ func (m *GoalMode) CancelGoal(actor GoalActor) (GoalSnapshot, error) {
 	return snapshot, nil
 }
 
+// CancelGoalByID discards the current goal only if its ID matches the given
+// ID. It returns an error if there is no active goal or if the IDs differ.
+func (m *GoalMode) CancelGoalByID(goalID string, actor GoalActor) (GoalSnapshot, error) {
+	state, err := m.requireState()
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	if state.goalID != goalID {
+		return GoalSnapshot{}, fmt.Errorf("active goal ID mismatch")
+	}
+	return m.CancelGoal(actor)
+}
+
 // MarkBlocked marks the goal blocked.
 func (m *GoalMode) MarkBlocked(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
 	state := m.state
@@ -340,6 +360,24 @@ func (m *GoalMode) MarkComplete(input GoalReasonInput, actor GoalActor) (*GoalSn
 // PauseOnInterrupt parks an active goal when its live turn is aborted.
 func (m *GoalMode) PauseOnInterrupt(reason string) (*GoalSnapshot, error) {
 	return m.PauseActiveGoal(GoalReasonInput{Reason: &reason}, GoalActorUser)
+}
+
+// CleanupExpired clears the active goal if it is in a terminal state and has
+// not been updated for at least retentionDays. A retentionDays value of 0 or
+// negative means "keep forever".
+func (m *GoalMode) CleanupExpired(retentionDays int) error {
+	if retentionDays <= 0 {
+		return nil
+	}
+	state := m.state
+	if state == nil || state.status == GoalActive {
+		return nil
+	}
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	if state.updatedAt.Before(cutoff) {
+		m.clearInternal(GoalActorRuntime, emitOption{Emit: true, Track: true})
+	}
+	return nil
 }
 
 // GetGoal returns the current goal snapshot.
@@ -518,6 +556,7 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 	return GoalSnapshot{
 		GoalID:              state.goalID,
 		Name:                state.name,
+		ManagedBy:           state.managedBy,
 		Objective:           state.objective,
 		CompletionCriterion: state.completionCriterion,
 		Status:              state.status,
@@ -546,6 +585,7 @@ type persistOptions struct {
 }
 
 func (m *GoalMode) persistState(state *goalStage, opts persistOptions) {
+	state.updatedAt = time.Now()
 	m.state = state
 	if opts.Silent {
 		return

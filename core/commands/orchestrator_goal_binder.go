@@ -27,10 +27,14 @@ func NewGoalBinder(mode *goal.GoalMode) orchestrator.GoalBinder {
 }
 
 func (b *goalModeBinder) Create(objective string, tokenBudget int) (string, error) {
+	return b.CreateWithName(objective, "", tokenBudget)
+}
+
+func (b *goalModeBinder) CreateWithName(objective, name string, tokenBudget int) (string, error) {
 	if b.mode == nil {
 		return "", fmt.Errorf("goal mode unavailable")
 	}
-	input := goal.CreateGoalInput{Objective: objective, Replace: true}
+	input := goal.CreateGoalInput{Objective: objective, Name: name, ManagedBy: "orchestrator", Replace: true}
 	if tokenBudget > 0 {
 		tb := tokenBudget
 		input.CompletionCriterion = nil
@@ -46,6 +50,26 @@ func (b *goalModeBinder) Create(objective string, tokenBudget int) (string, erro
 	return snap.GoalID, nil
 }
 
+func (b *goalModeBinder) isManaged() bool {
+	if b.mode == nil || b.goalID == "" {
+		return false
+	}
+	g := b.mode.GetGoal().Goal
+	return g != nil && g.GoalID == b.goalID && g.ManagedBy == "orchestrator"
+}
+
+func (b *goalModeBinder) Delete(reason string) error {
+	if b.mode == nil || b.goalID == "" {
+		return nil
+	}
+	g := b.mode.GetGoal().Goal
+	if g != nil && g.GoalID == b.goalID {
+		_, err := b.mode.CancelGoal(goal.GoalActorRuntime)
+		return err
+	}
+	return nil
+}
+
 func (b *goalModeBinder) RecordTokens(delta int) (bool, error) {
 	if b.mode == nil || delta <= 0 {
 		return false, nil
@@ -58,6 +82,9 @@ func (b *goalModeBinder) RecordTokens(delta int) (bool, error) {
 }
 
 func (b *goalModeBinder) Complete(reason string) error {
+	if b.isManaged() {
+		return b.Delete(reason)
+	}
 	if b.mode == nil {
 		return nil
 	}
@@ -67,6 +94,9 @@ func (b *goalModeBinder) Complete(reason string) error {
 }
 
 func (b *goalModeBinder) Block(reason string) error {
+	if b.isManaged() {
+		return b.Delete(reason)
+	}
 	if b.mode == nil {
 		return nil
 	}

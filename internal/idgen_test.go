@@ -56,6 +56,28 @@ func TestFriendlyNameUnique_FillsEntirePool(t *testing.T) {
 	}
 }
 
+func TestIsValidRunName(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"happy.hare", true},
+		{"custom-id", true},
+		{"run_42", true},
+		{"", false},
+		{"Custom.ID", false},
+		{"custom id", false},
+		{"custom/id", false},
+		{"UPPER", false},
+		{"a", true},
+	}
+	for _, tc := range cases {
+		if got := IsValidRunName(tc.in); got != tc.want {
+			t.Errorf("IsValidRunName(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestSplitFriendlyName(t *testing.T) {
 	cases := []struct {
 		in   string

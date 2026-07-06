@@ -6,9 +6,12 @@ package orchestrator
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"time"
+
+	"github.com/pijalu/goa/internal"
 )
 
 // AgentSnapshot is the reconstructed view of a single managed agent after
@@ -34,12 +37,21 @@ type AgentSnapshot struct {
 // RunSnapshot is the fully-replayed state of a run, used by Resume.
 type RunSnapshot struct {
 	RunID     string
+	Name      string
 	Topology  Topology
 	Objective string
 	GoalID    string
 	Started   bool
 	Finished  bool
 	Agents    map[string]*AgentSnapshot
+}
+
+// NameOrID returns the friendly name if set, otherwise the internal run ID.
+func (r *RunSnapshot) NameOrID() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.RunID
 }
 
 // ReplaySnapshot rebuilds the in-memory state of a run from its event log.
@@ -67,6 +79,7 @@ func applyEvent(snap *RunSnapshot, e Event) {
 	case EventRunStarted:
 		snap.Started = true
 		snap.Objective = stringVal(e.Payload, "objective")
+		snap.Name = stringVal(e.Payload, "name")
 		snap.GoalID = stringVal(e.Payload, "goal_id")
 		if t := stringVal(e.Payload, "topology"); t != "" {
 			snap.Topology = Topology(t)
@@ -146,13 +159,23 @@ func intVal(p map[string]any, k string, fallback int) int {
 // RunSummary is the lightweight descriptor returned by ListRuns for the TUI
 // run picker.
 type RunSummary struct {
-	RunID     string
-	Finished  bool
-	StartedAt time.Time
-	UpdatedAt time.Time
-	Topology  Topology
-	Objective string
+	RunID      string
+	Name       string
+	GoalID     string
+	Finished   bool
+	StartedAt  time.Time
+	UpdatedAt  time.Time
+	Topology   Topology
+	Objective  string
 	AgentCount int
+}
+
+// NameOrID returns the friendly name if set, otherwise the internal run ID.
+func (r RunSummary) NameOrID() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.RunID
 }
 
 // ListRuns scans rootDir/<run-id>/events.jsonl and returns one summary per
@@ -182,6 +205,8 @@ func ListRuns(rootDir string) ([]RunSummary, error) {
 		}
 		s := RunSummary{
 			RunID:      runID,
+			Name:       snap.Name,
+			GoalID:     snap.GoalID,
 			Finished:   snap.Finished,
 			Topology:   snap.Topology,
 			Objective:  snap.Objective,
@@ -198,4 +223,45 @@ func ListRuns(rootDir string) ([]RunSummary, error) {
 		return summaries[i].UpdatedAt.After(summaries[j].UpdatedAt)
 	})
 	return summaries, nil
+}
+
+// ResolveRunID looks up a run by friendly name or internal run ID. It returns
+// the internal run ID (directory name) when found. The input may be a friendly
+// name stored in the run_started event or the internal ID itself.
+func ResolveRunID(rootDir, id string) (string, error) {
+	if id == "" {
+		return "", errors.New("orchestrator: run id is empty")
+	}
+	summaries, err := ListRuns(rootDir)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range summaries {
+		if s.RunID == id {
+			return s.RunID, nil
+		}
+	}
+	for _, s := range summaries {
+		if s.Name == id {
+			return s.RunID, nil
+		}
+	}
+	return "", fmt.Errorf("orchestrator: run %q not found", id)
+}
+
+// GenerateRunName returns a friendly name that is not currently in use among
+// the runs under rootDir. If rootDir cannot be read, it still returns a name
+// (unique generation is best-effort in that case).
+func GenerateRunName(rootDir string) string {
+	summaries, err := ListRuns(rootDir)
+	if err != nil {
+		return internal.FriendlyName()
+	}
+	taken := make(map[string]bool, len(summaries))
+	for _, s := range summaries {
+		if s.Name != "" {
+			taken[s.Name] = true
+		}
+	}
+	return internal.FriendlyNameUnique(taken)
 }

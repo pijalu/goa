@@ -176,7 +176,11 @@ func (c *GoalCommand) showStatus(ctx core.Context) error {
 		return nil
 	}
 	g := result.Goal
-	writeFmt(ctx, "Goal [%s]: %s\n", g.Name, g.Objective)
+	name := g.Name
+	if g.ManagedBy != "" {
+		name += " [" + g.ManagedBy + "]"
+	}
+	writeFmt(ctx, "Goal [%s]: %s\n", name, g.Objective)
 	writeFmt(ctx, "Status: %s\n", g.Status)
 	writeFmt(ctx, "Turns: %d\n", g.TurnsUsed)
 	writeFmt(ctx, "Tokens: %s\n", goal.FormatTokens(g.TokensUsed))
@@ -185,6 +189,9 @@ func (c *GoalCommand) showStatus(ctx core.Context) error {
 }
 
 func (c *GoalCommand) pause(ctx core.Context) error {
+	if err := c.rejectIfManaged("pause"); err != nil {
+		return err
+	}
 	if c.Mode.GetGoal().Goal == nil {
 		return fmt.Errorf("no current goal to pause")
 	}
@@ -198,6 +205,9 @@ func (c *GoalCommand) pause(ctx core.Context) error {
 }
 
 func (c *GoalCommand) resume(ctx core.Context) error {
+	if err := c.rejectIfManaged("resume"); err != nil {
+		return err
+	}
 	if c.Mode.GetGoal().Goal == nil {
 		return fmt.Errorf("no current goal to resume")
 	}
@@ -210,6 +220,9 @@ func (c *GoalCommand) resume(ctx core.Context) error {
 }
 
 func (c *GoalCommand) cancel(ctx core.Context) error {
+	if err := c.rejectIfManaged("cancel"); err != nil {
+		return err
+	}
 	if c.Mode.GetGoal().Goal == nil {
 		return fmt.Errorf("no current goal to cancel")
 	}
@@ -338,6 +351,9 @@ func (c *GoalCommand) replace(ctx core.Context, objective string) error {
 	if current == nil {
 		return fmt.Errorf("no current goal to replace")
 	}
+	if err := c.rejectIfManaged("replace"); err != nil {
+		return err
+	}
 	c.promptReplaceConfirm(ctx, current, objective)
 	return nil
 }
@@ -389,6 +405,14 @@ func (c *GoalCommand) promptReplaceConfirm(ctx core.Context, current *goal.GoalS
 		}
 		_ = c.startGoal(ctx, objective, true)
 	})
+}
+
+func (c *GoalCommand) rejectIfManaged(op string) error {
+	g := c.Mode.GetGoal().Goal
+	if g != nil && g.ManagedBy == "orchestrator" {
+		return fmt.Errorf("goal %s is managed by /orchestrate; cannot %s", g.Name, op)
+	}
+	return nil
 }
 
 // describeActiveGoal writes a short summary of the currently active goal to

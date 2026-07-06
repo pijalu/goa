@@ -171,29 +171,8 @@ func TestRuntime_PoolCapsBlockAndProceed(t *testing.T) {
 	}
 	var inflight, maxInflight atomic.Int32
 	var gate atomic.Bool
-	gate.Store(true) // hold all turns until released
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
-		h := NewAgentHandle("", role, model)
-		h.Run = func(ctx context.Context, prompt string) error {
-			inflight.Add(1)
-			for {
-				if !gate.Load() {
-					break
-				}
-				if ctx.Err() != nil {
-					inflight.Add(-1)
-					return ctx.Err()
-				}
-				time.Sleep(2 * time.Millisecond)
-			}
-			if m := inflight.Load(); m > maxInflight.Load() {
-				maxInflight.Store(m)
-			}
-			inflight.Add(-1)
-			return nil
-		}
-		return h, nil
-	})
+	gate.Store(true)
+	pool := NewBoundedAgentPool(cfg, blockOnGateFactory(&gate, &inflight, &maxInflight))
 	store := NewFileEventStore(dir, "run-caps")
 	rt, err := NewRuntime(cfg, pool, store, dir)
 	if err != nil {
@@ -219,6 +198,29 @@ func TestRuntime_PoolCapsBlockAndProceed(t *testing.T) {
 	}
 	if got := maxInflight.Load(); got > 2 {
 		t.Errorf("max inflight = %d, cap is 2", got)
+	}
+}
+
+// blockOnGateFactory returns an AgentFactory whose Run funcs block on gate,
+// tracking inflight and max-inflight counts for pool-cap tests.
+func blockOnGateFactory(gate *atomic.Bool, inflight, maxInflight *atomic.Int32) AgentFactory {
+	return func(role, model string) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		h.Run = func(ctx context.Context, prompt string) error {
+			inflight.Add(1)
+			defer inflight.Add(-1)
+			for gate.Load() {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			if m := inflight.Load(); m > maxInflight.Load() {
+				maxInflight.Store(m)
+			}
+			return nil
+		}
+		return h, nil
 	}
 }
 

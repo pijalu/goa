@@ -161,99 +161,80 @@ func isLetter(b byte) bool {
 func translateLaTeXMathContent(s string) string {
 	var out strings.Builder
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) {
-			if isLetter(s[i+1]) {
-				// Parse multi-letter command name
-				j := i + 2
-				for j < len(s) && isLetter(s[j]) {
-					j++
-				}
-				cmdName := s[i+1 : j]
-				if char, ok := mathCommandMap[cmdName]; ok {
-					out.WriteString(char)
-				} else {
-					// Unknown command — output as-is including backslash
-					out.WriteString(s[i:j])
-				}
-				i = j - 1 // loop increments past last letter
-			} else {
-				// Non-letter escape: \% → %, \_ → _, etc.
-				out.WriteByte(s[i+1])
-				i++ // skip the backslash
-			}
-		} else {
+		if s[i] != '\\' || i+1 >= len(s) {
 			out.WriteByte(s[i])
+			continue
+		}
+		if isLetter(s[i+1]) {
+			j := i + 2
+			for j < len(s) && isLetter(s[j]) {
+				j++
+			}
+			writeCommand(&out, s[i:j])
+			i = j - 1
+		} else {
+			out.WriteByte(s[i+1])
+			i++
 		}
 	}
 	return out.String()
 }
 
-// translateLatexMath finds $\...$ LaTeX math blocks (dollar followed by backslash)
-// and replaces them with their rendered Unicode text. This handles patterns like
-// $\ge 90\%$ → ≥ 90%. Also handles $...$ blocks where a backslash appears anywhere
-// in the content (e.g., $x \ge 5$ or $90\%$), by checking for backslash between
-// dollar signs.
-//
-// Must run before the exact entityMap replacement to avoid interference with
-// patterns like $rightarrow$ which lack the leading backslash.
+func writeCommand(out *strings.Builder, raw string) {
+	cmdName := raw[1:]
+	if char, ok := mathCommandMap[cmdName]; ok {
+		out.WriteString(char)
+	} else {
+		out.WriteString(raw)
+	}
+}
+
 func translateLatexMath(text string) string {
 	var out strings.Builder
 	pos := 0
-	for {
-		// Find $
+	for pos < len(text) {
 		idx := strings.Index(text[pos:], "$")
 		if idx < 0 {
 			break
 		}
 		idx += pos
-
-		// Write text before the $
 		out.WriteString(text[pos:idx])
 
-		// Determine if this $ starts a LaTeX math block.
-		// A $ starts a math block if it is immediately followed by \,
-		// OR if there's a \ somewhere before the next $.
-		closeIdx := -1
-
-		if idx+1 < len(text) && text[idx+1] == '\\' {
-			// Found $\ — definitely LaTeX math. Find closing $.
-			contentStart := idx + 1
-			ci := strings.Index(text[contentStart:], "$")
-			if ci >= 0 {
-				closeIdx = ci + contentStart
-			}
-		} else {
-			// Check if a backslash exists somewhere before the next $
-			nextDollar := strings.Index(text[idx+1:], "$")
-			if nextDollar > 0 {
-				between := text[idx+1 : idx+1+nextDollar]
-				if strings.Contains(between, "\\") {
-					contentStart := idx + 1
-					ci := strings.Index(text[contentStart:], "$")
-					if ci >= 0 {
-						closeIdx = ci + contentStart
-					}
-				}
-			}
-			// If nextDollar == 0 (adjacent $$) or < 0, not a math block.
-		}
-
+		closeIdx := findLatexMathClose(text, idx)
 		if closeIdx < 0 {
-			// Not a math block — output $ as-is and continue
 			out.WriteByte('$')
 			pos = idx + 1
 			continue
 		}
 
-		// Extract and process the math content (text between the $ signs)
 		inner := text[idx+1 : closeIdx]
-		translated := translateLaTeXMathContent(inner)
-
-		out.WriteString(translated)
+		out.WriteString(translateLaTeXMathContent(inner))
 		pos = closeIdx + 1
 	}
 	out.WriteString(text[pos:])
 	return out.String()
+}
+
+func findLatexMathClose(text string, start int) int {
+	if start+1 < len(text) && text[start+1] == '\\' {
+		return nextDollarAfter(text, start+1)
+	}
+	nextDollar := strings.Index(text[start+1:], "$")
+	if nextDollar <= 0 {
+		return -1
+	}
+	between := text[start+1 : start+1+nextDollar]
+	if !strings.Contains(between, "\\") {
+		return -1
+	}
+	return nextDollarAfter(text, start+1)
+}
+
+func nextDollarAfter(text string, pos int) int {
+	if idx := strings.Index(text[pos:], "$"); idx >= 0 {
+		return idx + pos
+	}
+	return -1
 }
 
 // translateEntities replaces special entity patterns with their Unicode equivalents.

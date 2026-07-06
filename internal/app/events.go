@@ -170,44 +170,64 @@ func (a *App) runFooterEventReader(done chan struct{}, ch <-chan event.FooterEve
 func (a *App) handleControlEvent(ev event.ControlEvent) bool {
 	switch {
 	case ev.StopRequest:
-		if a.subs.tuiEngine != nil {
-			a.subs.tuiEngine.Stop()
-		}
-		return true
+		return a.handleStopRequest()
 	case ev.NewSession:
-		if a.subs.chat != nil {
-			a.subs.chat.Clear()
-		}
-		a.clearStats()
-		if a.subs.agentMgr != nil {
-			a.subs.agentMgr.StopSession()
-		}
-		startAgentSession(a.subs, a.subs.chat)
-		if a.subs.tuiEngine != nil {
-			a.subs.tuiEngine.RequestRender()
-		}
-		return true
+		return a.handleNewSession()
 	case ev.RunWizard:
-		a.subs.runWizard = true
-		if a.subs.tuiEngine != nil {
-			a.subs.tuiEngine.Stop()
-		}
-		return true
+		return a.handleRunWizard()
 	case ev.GateApproval != nil:
-		a.showGateApprovalSelector(ev.GateApproval)
-		return true
+		return a.handleGateApprovalControl(ev.GateApproval)
 	case ev.SteeringInput != nil:
-		if a.subs.foregroundOrch != nil {
-			a.subs.foregroundOrch.InjectSteering(ev.SteeringInput.Text)
-			a.subs.chat.AddSystemMessage(fmt.Sprintf("[steering] %s", ev.SteeringInput.Text))
-			// Show pending indicator in footer until steering is consumed.
-			if a.subs.footer != nil {
-				a.subs.footer.SetData(tui.FooterData{SteeringPending: ev.SteeringInput.Text})
-			}
-		}
-		return true
+		return a.handleSteeringInputControl(ev.SteeringInput)
 	}
 	return false
+}
+
+func (a *App) handleStopRequest() bool {
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.Stop()
+	}
+	return true
+}
+
+func (a *App) handleNewSession() bool {
+	if a.subs.chat != nil {
+		a.subs.chat.Clear()
+	}
+	a.clearStats()
+	if a.subs.agentMgr != nil {
+		a.subs.agentMgr.StopSession()
+	}
+	startAgentSession(a.subs, a.subs.chat)
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
+	}
+	return true
+}
+
+func (a *App) handleRunWizard() bool {
+	a.subs.runWizard = true
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.Stop()
+	}
+	return true
+}
+
+func (a *App) handleGateApprovalControl(gate *event.GateApproval) bool {
+	a.showGateApprovalSelector(gate)
+	return true
+}
+
+func (a *App) handleSteeringInputControl(si *event.SteeringInput) bool {
+	if a.subs.foregroundOrch == nil {
+		return true
+	}
+	a.subs.foregroundOrch.InjectSteering(si.Text)
+	a.subs.chat.AddSystemMessage(fmt.Sprintf("[steering] %s", si.Text))
+	if a.subs.footer != nil {
+		a.subs.footer.SetData(tui.FooterData{SteeringPending: si.Text})
+	}
+	return true
 }
 
 func (a *App) showGateApprovalSelector(gate *event.GateApproval) {

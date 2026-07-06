@@ -16,92 +16,100 @@ package agentic
 //   - Tool results become separate Message{Role: ToolRole} entries
 //   - EventEnd flushes any pending assistant message
 func EventsToHistory(events []OutputEvent) []Message {
-	var history []Message
-
-	// current assistant message accumulator
-	type accum struct {
-		content   string
-		thinking  string
-		toolCalls []ToolCallInfo
-	}
-	var cur *accum
-
-	flushAccum := func() {
-		if cur == nil {
-			return
-		}
-		msg := Message{
-			Type:      Content,
-			Role:      Assistant,
-			Content:   cur.content,
-			Thinking:  cur.thinking,
-			ToolCalls: cur.toolCalls,
-		}
-		if msg.Content != "" || msg.Thinking != "" || len(msg.ToolCalls) > 0 {
-			history = append(history, msg)
-		}
-		cur = nil
-	}
-
-	ensureAccum := func() {
-		if cur == nil {
-			cur = &accum{}
-		}
-	}
-
+	history := &historyBuilder{}
 	for _, ev := range events {
-		switch ev.Type {
-		case EventContent:
-			switch ev.Role {
-			case User:
-				flushAccum()
-				if ev.Text != "" {
-					history = append(history, Message{
-						Type: Content, Role: User, Content: ev.Text,
-					})
-				}
-
-			case Assistant:
-				ensureAccum()
-				if ev.State == StateThinking {
-					cur.thinking += ev.Text
-				} else {
-					cur.content += ev.Text
-				}
-
-			case System:
-				// System messages from event replay are skipped; the agent
-				// re-injects the system prompt via SetHistory when needed.
-			}
-
-		case EventToolCall:
-			ensureAccum()
-			cur.toolCalls = append(cur.toolCalls, ToolCallInfo{
-				ID: ev.ToolCallID, Type: "function",
-				Name: ev.ToolName, Arguments: ev.ToolInput,
-			})
-
-		case EventToolResult:
-			flushAccum()
-			if ev.ToolResult != "" || ev.ToolCallID != "" {
-				history = append(history, Message{
-					Type: Content, Role: ToolRole,
-					Content: ev.ToolResult, ToolCallID: ev.ToolCallID,
-					ToolName: ev.ToolName,
-				})
-			}
-
-		case EventEnd:
-			flushAccum()
-
-		// EventTokenStats, EventContextStats, EventCompact, EventClear,
-		// EventProgress, EventStateChange — all skipped, they carry no
-		// conversation content.
-		}
+		history.handleEvent(ev)
 	}
+	history.flush()
+	return history.messages
+}
 
-	// Flush any trailing message if the event stream lacks an EventEnd.
-	flushAccum()
+// historyBuilder accumulates OutputEvents into a Message history.
+type historyBuilder struct {
+	messages []Message
+	cur      *messageAccum
+}
 
-	return history
+// messageAccum holds a partially built assistant message.
+type messageAccum struct {
+	content   string
+	thinking  string
+	toolCalls []ToolCallInfo
+}
+
+func (b *historyBuilder) handleEvent(ev OutputEvent) {
+	switch ev.Type {
+	case EventContent:
+		b.handleContent(ev)
+	case EventToolCall:
+		b.handleToolCall(ev)
+	case EventToolResult:
+		b.handleToolResult(ev)
+	case EventEnd:
+		b.flush()
+	}
+}
+
+func (b *historyBuilder) handleContent(ev OutputEvent) {
+	switch ev.Role {
+	case User:
+		b.flush()
+		if ev.Text != "" {
+			b.messages = append(b.messages, Message{
+				Type: Content, Role: User, Content: ev.Text,
+			})
+		}
+	case Assistant:
+		b.ensureAccum()
+		if ev.State == StateThinking {
+			b.cur.thinking += ev.Text
+		} else {
+			b.cur.content += ev.Text
+		}
+	case System:
+		// System messages from event replay are skipped; the agent
+		// re-injects the system prompt via SetHistory when needed.
+	}
+}
+
+func (b *historyBuilder) handleToolCall(ev OutputEvent) {
+	b.ensureAccum()
+	b.cur.toolCalls = append(b.cur.toolCalls, ToolCallInfo{
+		ID: ev.ToolCallID, Type: "function",
+		Name: ev.ToolName, Arguments: ev.ToolInput,
+	})
+}
+
+func (b *historyBuilder) handleToolResult(ev OutputEvent) {
+	b.flush()
+	if ev.ToolResult != "" || ev.ToolCallID != "" {
+		b.messages = append(b.messages, Message{
+			Type: Content, Role: ToolRole,
+			Content: ev.ToolResult, ToolCallID: ev.ToolCallID,
+			ToolName: ev.ToolName,
+		})
+	}
+}
+
+func (b *historyBuilder) ensureAccum() {
+	if b.cur == nil {
+		b.cur = &messageAccum{}
+	}
+}
+
+func (b *historyBuilder) flush() {
+	if b.cur == nil {
+		return
+	}
+	msg := Message{
+		Type:      Content,
+		Role:      Assistant,
+		Content:   b.cur.content,
+		Thinking:  b.cur.thinking,
+		ToolCalls: b.cur.toolCalls,
+	}
+	if msg.Content != "" || msg.Thinking != "" || len(msg.ToolCalls) > 0 {
+		b.messages = append(b.messages, msg)
+	}
+	b.cur = nil
 }

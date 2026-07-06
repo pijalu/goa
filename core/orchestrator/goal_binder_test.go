@@ -26,11 +26,23 @@ type fakeGoalBinder struct {
 }
 
 func (f *fakeGoalBinder) Create(objective string, tokenBudget int) (string, error) {
+	return f.CreateWithName(objective, "", tokenBudget)
+}
+
+func (f *fakeGoalBinder) CreateWithName(objective, name string, tokenBudget int) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.overAt = tokenBudget
 	f.created = objective
 	return "goal-1", nil
+}
+
+func (f *fakeGoalBinder) Delete(reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completed = true
+	f.completeReason = reason
+	return nil
 }
 
 func (f *fakeGoalBinder) RecordTokens(delta int) (bool, error) {
