@@ -122,12 +122,18 @@ func (s *StatusMsg) Show(text string) {
 	if !s.spinning {
 		s.spinning = true
 		s.frameIdx = 0
-		done := make(chan struct{})
-		_, interval := getSpinner()
-		ticker := time.NewTicker(interval)
-		s.done = done
-		s.ticker = ticker
-		go s.animate(done, ticker.C)
+		// Only launch the animation goroutine when the commandLoop is running.
+		// In the single-goroutine test mode (loops not running), TUI.Apply runs
+		// the callback inline, so a background animation would race with the test
+		// goroutine. The status text and initial frame are still visible.
+		if s.tui != nil && s.tui.LoopsRunning() {
+			done := make(chan struct{})
+			_, interval := getSpinner()
+			ticker := time.NewTicker(interval)
+			s.done = done
+			s.ticker = ticker
+			go s.animate(done, ticker.C)
+		}
 	}
 }
 
@@ -143,7 +149,10 @@ func (s *StatusMsg) Clear() {
 			s.ticker.Stop()
 			s.ticker = nil
 		}
-		close(s.done)
+		if s.done != nil {
+			close(s.done)
+			s.done = nil
+		}
 	}
 	spinnerFrameMu.Lock()
 	currentSpinnerFrame = ""

@@ -355,6 +355,12 @@ func (t *TUI) RunLoops() {
 	go t.listenResize()
 }
 
+// LoopsRunning reports whether the Actor-model command/render loops are active.
+// Components that schedule asynchronous work on the commandLoop can use this
+// to avoid creating goroutines that would run inline (and race) in the
+// single-goroutine test mode.
+func (t *TUI) LoopsRunning() bool { return t.loopsRunning.Load() }
+
 // commandLoop is the SOLE goroutine that mutates component state. It processes
 // Commands from cmds and builds Scene snapshots on demand for the renderLoop.
 // Single ownership is what lets components drop their mutexes.

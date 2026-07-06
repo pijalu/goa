@@ -7,6 +7,7 @@ package app
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -451,28 +452,23 @@ func TestHandleToolCall_StatusBarSpinnerVisible_AfterAnswering(t *testing.T) {
 	}
 }
 
-func TestHandleToolCall_ToolWidgetAnimates(t *testing.T) {
-	anim := spinner.Definition{
-		Interval: 1,
-		Frames:   []string{"◜", "◠", "◝", "◞", "◡", "◟"},
+func findFrame(render string, frames []string) string {
+	for _, f := range frames {
+		if strings.Contains(render, f) {
+			return f
+		}
 	}
-	tui.SetSpinner(anim)
-	defer tui.SetSpinner(spinner.Definition{})
+	return ""
+}
 
+func setupToolCallAnimationTest(t *testing.T, anim spinner.Definition) (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg, *App, func()) {
+	t.Helper()
 	term := &testTerminal{w: 80, h: 24}
 	engine := tui.NewTUI(term)
 	if err := engine.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	engine.RunLoops()
-	defer func() {
-		engine.Stop()
-		select {
-		case <-engine.Stopped():
-		case <-time.After(time.Second):
-			t.Fatal("engine did not stop")
-		}
-	}()
 
 	header := tui.NewHeader("goa", "test")
 	chat := tui.NewChatViewport()
@@ -493,9 +489,6 @@ func TestHandleToolCall_ToolWidgetAnimates(t *testing.T) {
 
 	pending.SetTUI(engine)
 	statusBar.SetTUI(engine)
-	statusBar.SetOnFrameChange(func() {
-		chat.InvalidateRunningToolWidgets()
-	})
 	inp.SetTUI(engine)
 
 	subs := testSubsystems()
@@ -506,37 +499,68 @@ func TestHandleToolCall_ToolWidgetAnimates(t *testing.T) {
 	subs.goalBubble = goal
 	app := New(subs)
 
+	cleanup := func() {
+		engine.ApplySync(func() { statusBar.Clear() })
+		engine.Stop()
+		select {
+		case <-engine.Stopped():
+		case <-time.After(time.Second):
+			t.Fatal("engine did not stop")
+		}
+	}
+
+	return engine, chat, statusBar, app, cleanup
+}
+
+func TestHandleToolCall_ToolWidgetAnimates(t *testing.T) {
+	// Use a 2-frame spinner with a 20ms interval. The interval is long enough
+	// that only one tick can fire between detecting the first tick and
+	// capturing the second render, making the frame-difference assertion
+	// deterministic.
+	anim := spinner.Definition{
+		Interval: 20,
+		Frames:   []string{"◜", "◠"},
+	}
+	tui.SetSpinner(anim)
+	defer tui.SetSpinner(spinner.Definition{})
+
+	engine, chat, statusBar, app, cleanup := setupToolCallAnimationTest(t, anim)
+	defer cleanup()
+
+	tickCh := make(chan struct{})
+	var ticks int
+	var mu sync.Mutex
+	statusBar.SetOnFrameChange(func() {
+		chat.InvalidateRunningToolWidgets()
+		mu.Lock()
+		ticks++
+		if ticks == 2 {
+			close(tickCh)
+		}
+		mu.Unlock()
+	})
+
 	engine.ApplySync(func() {
 		app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`})
 	})
 
-	// Render once to get the initial frame via the command loop.
-	frame1Data := engine.AgentFrame()
-	render1 := strings.Join(frame1Data.Visible, "\n")
-
-	var frame1 string
-	for _, f := range anim.Frames {
-		if strings.Contains(render1, f) {
-			frame1 = f
-			break
-		}
-	}
+	render1 := strings.Join(engine.AgentFrame().Visible, "\n")
+	frame1 := findFrame(render1, anim.Frames)
 	if frame1 == "" {
 		t.Fatalf("expected tool widget to render a spinner frame, got:\n%s", render1)
 	}
 
-	// Wait for at least one spinner tick and re-render via the command loop.
-	time.Sleep(20 * time.Millisecond)
-	frame2Data := engine.AgentFrame()
-	render2 := strings.Join(frame2Data.Visible, "\n")
-
-	var frame2 string
-	for _, f := range anim.Frames {
-		if strings.Contains(render2, f) {
-			frame2 = f
-			break
-		}
+	select {
+	case <-tickCh:
+	case <-time.After(500 * time.Millisecond):
+		mu.Lock()
+		c := ticks
+		mu.Unlock()
+		t.Fatalf("spinner did not tick within 500ms (ticks=%d)", c)
 	}
+
+	render2 := strings.Join(engine.AgentFrame().Visible, "\n")
+	frame2 := findFrame(render2, anim.Frames)
 	if frame2 == "" {
 		t.Fatalf("expected tool widget to render a spinner frame after tick, got:\n%s", render2)
 	}

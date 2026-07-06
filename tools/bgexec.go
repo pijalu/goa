@@ -266,14 +266,16 @@ func (t *BGExecTool) start(p bgExecParams) (string, error) {
 
 	// Wait in background
 	go func() {
-		proc.Cmd.Wait()
-		proc.exitCode.Store(int32(proc.Cmd.ProcessState.ExitCode()))
-		// Wait for scanner goroutines to finish writing to ring buffers before
-		// signalling done. cmd.Wait() closes the pipes but does not wait for
-		// pipe readers to complete, so without this synchronisation a reader of
-		// the ring buffer (e.g. a test waiting on done) may observe the last
-		// line(s) missing.
+		// Wait for the scanner goroutines to finish reading the stdout/stderr
+		// pipes before calling cmd.Wait(). Wait() closes the read end of the
+		// pipes, which races with the scanners and can produce a spurious
+		// "file already closed" error that truncates output.
 		proc.scannerWg.Wait()
+		// Reap the process and collect its exit code.
+		_ = proc.Cmd.Wait()
+		if proc.Cmd.ProcessState != nil {
+			proc.exitCode.Store(int32(proc.Cmd.ProcessState.ExitCode()))
+		}
 		close(proc.done)
 	}()
 

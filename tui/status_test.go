@@ -442,3 +442,60 @@ func TestStatusMsg_Render_CompactWhenShortTerminal(t *testing.T) {
 		t.Errorf("compact status line missing text: %q", stripped)
 	}
 }
+
+// TestStatusMsg_ShowWithoutRunningLoopsDoesNotRace verifies that when the
+// TUI loops are not running (single-goroutine test mode), Show() does not
+// spawn a background animation goroutine. Without this guard, the animation
+// would call TUI.Apply() from a separate goroutine; because Apply() runs
+// inline when the loops are not running, that races with the test goroutine
+// that is rendering the same components.
+func TestStatusMsg_ShowWithoutRunningLoopsDoesNotRace(t *testing.T) {
+	def := spinner.Definition{
+		Interval: 1,
+		Frames:   []string{"a", "b", "c"},
+	}
+	SetSpinner(def)
+	defer resetSpinner()
+
+	term := &fakeTerminal{w: 80, h: 24}
+	engine := NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+
+	sm := NewStatusMsg()
+	sm.SetTUI(engine)
+
+	var calls int
+	var mu sync.Mutex
+	sm.SetOnFrameChange(func() {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	sm.Show("test")
+
+	mu.Lock()
+	if calls != 1 {
+		t.Fatalf("Show() should call onFrameChange exactly once, got %d", calls)
+	}
+	mu.Unlock()
+
+	// Without running loops, no animation goroutine should be ticking.
+	time.Sleep(20 * time.Millisecond)
+
+	mu.Lock()
+	if calls != 1 {
+		t.Fatalf("animation ticked without running loops; onFrameChange calls=%d", calls)
+	}
+	mu.Unlock()
+
+	// Clear must not panic when no animation goroutine was started.
+	sm.Clear()
+	if sm.IsVisible() {
+		t.Fatal("Clear() did not hide status")
+	}
+}
+

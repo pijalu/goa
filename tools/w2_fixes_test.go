@@ -210,6 +210,11 @@ func TestBGExec_ReadOutput_LongLinePreserved(t *testing.T) {
 			t.Errorf("200KiB line was not preserved (len out=%d)", len(out))
 		}
 	}
+	// A spurious scanner error (e.g. from cmd.Wait() racing with the pipe
+	// reader) would insert this marker even when the line is otherwise present.
+	if strings.Contains(out, "[bg_exec: read error:") {
+		t.Errorf("read output contains scanner error marker:\n%s", out)
+	}
 	_, _ = tool.Execute(`{"action":"stop","id":"` + id + `"}`)
 }
 
