@@ -31,9 +31,11 @@ type AgentTab struct {
 
 // AgentEnhancedRow is one stats-table row carrying the full column set
 // requested by the tabbed-run UI: provider/model/thinking plus cache-hit.
+// Label is the display name (role, disambiguated when a role recurs).
 type AgentEnhancedRow struct {
 	AgentID   string
 	Role      string
+	Label     string
 	Provider  string
 	Model     string
 	Thinking  string
@@ -98,9 +100,10 @@ type MultiAgentView struct {
 	tabs   []AgentTab
 	active int
 
-	rows  []AgentEnhancedRow
-	logs  map[string]*AgentLog
-	order []string // agentIDs in first-seen order (stable tabs + "All")
+	rows      []AgentEnhancedRow
+	logs      map[string]*AgentLog
+	order     []string // agentIDs in first-seen order (stable tabs + "All")
+	roleCount map[string]int
 }
 
 // NewMultiAgentView returns an empty view tagged with the given source label
@@ -177,13 +180,38 @@ func (v *MultiAgentView) handleSourceFinished(ev AgentViewEvent) {
 
 func (v *MultiAgentView) handleAgentStarted(ev AgentViewEvent) {
 	v.ensureBookendTabs()
-	label := ev.Role
-	if label == "" {
-		label = ev.AgentID
+	role := ev.Role
+	if role == "" {
+		role = ev.AgentID
 	}
+	label := v.disambiguateLabel(role)
 	v.ensureAgentTab(ev.AgentID, label)
 	v.upsertRow(ev)
-	v.ensureLog(ev.AgentID, ev.Role)
+	v.setRowLabel(ev.AgentID, label)
+	v.ensureLog(ev.AgentID, label)
+}
+
+// disambiguateLabel returns a stable display label for a role, appending a
+// ·N suffix when the same role recurs (e.g. hub delegating to "coder" twice
+// yields "coder" then "coder·2") so tabs and rows stay distinguishable.
+func (v *MultiAgentView) disambiguateLabel(role string) string {
+	if v.roleCount == nil {
+		v.roleCount = map[string]int{}
+	}
+	v.roleCount[role]++
+	if v.roleCount[role] == 1 {
+		return role
+	}
+	return fmt.Sprintf("%s·%d", role, v.roleCount[role])
+}
+
+func (v *MultiAgentView) setRowLabel(agentID, label string) {
+	for i := range v.rows {
+		if v.rows[i].AgentID == agentID {
+			v.rows[i].Label = label
+			return
+		}
+	}
 }
 
 func (v *MultiAgentView) handleAgentMessage(ev AgentViewEvent) {

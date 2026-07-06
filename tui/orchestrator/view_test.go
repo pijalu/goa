@@ -174,6 +174,35 @@ func TestView_LateAgentKeepsActiveTab(t *testing.T) {
 	}
 }
 
+// TestView_DisambiguatesDuplicateRoles asserts that when the same role
+// recurs (hub delegating to "coder" twice), the second agent gets a ·2 suffix
+// on BOTH its tab label and its stats row label, so tabs stay distinguishable.
+func TestView_DisambiguatesDuplicateRoles(t *testing.T) {
+	v := NewMultiAgentView("orchestration")
+	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
+	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-1", Role: "coder", Provider: "p", Model: "m"})
+	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-2", Role: "coder", Provider: "p", Model: "m"})
+
+	labels := make([]string, 0, 2)
+	for _, tab := range v.Tabs() {
+		if tab.Kind == TabAgent {
+			labels = append(labels, tab.Label)
+		}
+	}
+	if !equalSlice(labels, []string{"coder", "coder·2"}) {
+		t.Errorf("agent tab labels = %v, want [coder coder·2]", labels)
+	}
+	for _, row := range v.Rows() {
+		want := "coder"
+		if row.AgentID == "c-2" {
+			want = "coder·2"
+		}
+		if row.Label != want {
+			t.Errorf("row %s label = %q, want %q", row.AgentID, row.Label, want)
+		}
+	}
+}
+
 func tabKeys(tabs []AgentTab) []string {
 	out := make([]string, len(tabs))
 	for i, t := range tabs {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/orchestrator"
@@ -117,6 +118,10 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 	return rt, nil
 }
 
+// liveStatsInterval bounds how often in-flight token stats reach the TUI
+// during a streaming turn. Tuned for visible live progress without flooding.
+const liveStatsInterval = 200 * time.Millisecond
+
 // applyOutputEvent translates an agentic.OutputEvent into AgentStats updates
 // and AgentMessage events on the runtime. It is safe to call from the agent's
 // observer goroutine.
@@ -131,6 +136,11 @@ func applyOutputEvent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev 
 		if ev.Timings != nil {
 			h.Stats.AddUsage(ev.Timings.PromptN, ev.Timings.PredictedN,
 				ev.Timings.CacheReadTokens, ev.Timings.CacheWriteTokens)
+		}
+		// Push a throttled live stats event so the TUI table updates in real
+		// time during long turns (not just at turn end).
+		if rt != nil {
+			rt.EmitLiveStats(h, liveStatsInterval)
 		}
 	case agentic.EventContent:
 		if ev.Role == agentic.Assistant && ev.State == agentic.StateContent && ev.Text != "" {

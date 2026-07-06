@@ -57,6 +57,26 @@ func TestAgentContent_RendersEachTab(t *testing.T) {
 	}
 }
 
+// TestAgentContent_ShowsNavHint asserts every tab renders the navigation hint
+// so users can discover Ctrl+x/Ctrl+z without reading docs.
+func TestAgentContent_ShowsNavHint(t *testing.T) {
+	c := NewAgentContent()
+	v := NewMultiAgentView("orchestration")
+	c.SetView(v)
+	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
+	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-1", Role: "coder"})
+
+	statsHint := strings.Join(stripAll(c.Render(80)), "\n")
+	if !strings.Contains(statsHint, "Ctrl+z / Ctrl+x") {
+		t.Errorf("stats tab missing nav hint:\n%s", statsHint)
+	}
+	v.SelectByKey("c-1")
+	agentHint := strings.Join(stripAll(c.Render(80)), "\n")
+	if !strings.Contains(agentHint, "Ctrl+z / Ctrl+x") {
+		t.Errorf("agent tab missing nav hint:\n%s", agentHint)
+	}
+}
+
 // TestRenderStatsTable_FormatsColumns asserts the enhanced stats table
 // formats the provider/model, thinking, and cache columns exactly as the
 // tabbed-run UI requires (including the "-" placeholder for zero cache).

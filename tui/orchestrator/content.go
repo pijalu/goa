@@ -47,15 +47,22 @@ func (c *AgentContent) Render(width int) []string {
 	if !ok {
 		return nil
 	}
+	var lines []string
 	switch tab.Kind {
 	case TabStats:
-		return c.renderStats(width)
+		lines = c.renderStats(width)
 	case TabAgent:
-		return c.renderAgent(tab.Key, width)
+		lines = c.renderAgent(tab.Key, width)
 	case TabAll:
-		return c.renderAll(width)
+		lines = c.renderAll(width)
 	}
-	return nil
+	return append(lines, clip(navHintLine(), width))
+}
+
+// navHintLine is the faint one-line hint shown at the bottom of every tab so
+// the user can discover tab navigation without reading the docs.
+func navHintLine() string {
+	return ansi.Faint + "  Ctrl+z / Ctrl+x switch tabs · /orchestrate:tab:<n>" + ansi.Reset
 }
 
 // HandleInput is a no-op (display only).

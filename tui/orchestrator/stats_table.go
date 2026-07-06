@@ -39,10 +39,18 @@ func statsHeaderLine() string {
 
 func statsRowLine(r AgentEnhancedRow) string {
 	return fmt.Sprintf("  %-13s %-24s %-5s %6d %6d %6s",
-		truncField(r.Role, 13),
+		truncField(rowLabel(r), 13),
 		truncField(providerModel(r.Provider, r.Model), 24),
 		thinkField(r.Thinking),
 		r.TokensIn, r.TokensOut, cacheField(r.CacheRead))
+}
+
+// rowLabel returns the disambiguated display label, falling back to Role.
+func rowLabel(r AgentEnhancedRow) string {
+	if r.Label != "" {
+		return r.Label
+	}
+	return r.Role
 }
 
 // providerModel renders the combined "(provider) model" cell.

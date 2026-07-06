@@ -328,6 +328,70 @@ func TestRuntime_SnapshotCarriesCacheAndProvider(t *testing.T) {
 	pool.Release(h)
 }
 
+// TestRuntime_EmitLiveStatsThrottled asserts EmitLiveStats (a) emits an
+// EventAgentStats mid-turn, (b) throttles repeated calls within the interval,
+// and (c) does NOT persist to the store (the turn-end event is the durable
+// record). This is what keeps the TUI stats table live during long turns.
+func TestRuntime_EmitLiveStatsThrottled(t *testing.T) {
+	rt, pool, store := runtimeFor(t, "fanout", fakeFactory(new(atomic.Int32), "", nil))
+	h, err := pool.Acquire(context.Background(), "coder")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer pool.Release(h)
+
+	sub := rt.Subscribe()
+	before := countStats(sub)
+
+	h.Stats.AddUsage(10, 5, 0, 0)
+	if !rt.EmitLiveStats(h, 50*time.Millisecond) {
+		t.Error("first EmitLiveStats should emit")
+	}
+	if rt.EmitLiveStats(h, 50*time.Millisecond) { // throttled
+		t.Error("second EmitLiveStats within interval should be throttled")
+	}
+	emitted := countStats(sub) - before
+	// First call emits; second is throttled.
+	if emitted == 0 {
+		t.Error("no live stats event emitted")
+	}
+
+	// Live stats must NOT be persisted to the store.
+	events, err := store.Replay()
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == EventAgentStats {
+			t.Errorf("live stats leaked into durable store: %+v", e)
+		}
+	}
+
+	// After the interval, a further call emits again.
+	time.Sleep(60 * time.Millisecond)
+	before2 := countStats(sub)
+	if !rt.EmitLiveStats(h, 50*time.Millisecond) {
+		t.Error("EmitLiveStats after interval should emit")
+	}
+	if countStats(sub)-before2 == 0 {
+		t.Error("no emit after interval elapsed")
+	}
+}
+
+func countStats(sub <-chan Event) int {
+	n := 0
+	for {
+		select {
+		case ev := <-sub:
+			if ev.Type == EventAgentStats {
+				n++
+			}
+		default:
+			return n
+		}
+	}
+}
+
 // assertLifecycle checks that the event sequence starts/ends with the expected
 // bookends and contains all required event types (order-robust for fanout
 // since parallel agents interleave).

@@ -8,6 +8,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pijalu/goa/core"
@@ -161,6 +162,11 @@ type AgentHandle struct {
 	// done is closed when the handle has reached a terminal state and the
 	// pool slot has been released.
 	done chan struct{}
+
+	// statsEmitUnix is the last time EmitLiveStats emitted a live stats event
+	// for this handle (unix nano). Used to throttle in-flight UI updates so
+	// long streaming turns show live token counts without flooding the bus.
+	statsEmitUnix atomic.Int64
 }
 
 // NewAgentHandle constructs a handle with fresh stats and an empty steering

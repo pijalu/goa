@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"text/template"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
@@ -111,6 +112,14 @@ func (r *Runtime) emit(evt Event) {
 	if r.store != nil {
 		_ = r.store.Append(evt)
 	}
+	r.emitLive(evt)
+}
+
+// emitLive fans an event out to live subscribers (bus + Subscribe channels)
+// WITHOUT persisting it. Used for high-frequency in-flight updates (live token
+// stats) that must reach the TUI but should not bloat the durable event log —
+// the turn-end EventAgentStats is the persisted record.
+func (r *Runtime) emitLive(evt Event) {
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
 	if r.closed.Load() {
@@ -373,6 +382,31 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 	r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
 		Payload: map[string]any{"outcome": outcome}})
 	return nil
+}
+
+// EmitLiveStats emits an in-flight EventAgentStats for h from its current
+// Stats snapshot, but no more often than minInterval per handle. It lets the
+// TUI show live token counts during a long turn instead of freezing until
+// turn end. The event goes to live subscribers only (not the durable store).
+// Safe to call from the agent's observer goroutine; returns whether it emitted.
+func (r *Runtime) EmitLiveStats(h *AgentHandle, minInterval time.Duration) bool {
+	if h == nil {
+		return false
+	}
+	now := time.Now().UnixNano()
+	last := h.statsEmitUnix.Load()
+	if now-last < int64(minInterval) {
+		return false
+	}
+	h.statsEmitUnix.Store(now)
+	snap := h.Stats.Snapshot()
+	evt := Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role,
+		Payload: statsPayloadWithMeta(snap, h.Thinking)}
+	if r.runID != "" {
+		evt.RunID = r.runID
+	}
+	r.emitLive(evt)
+	return true
 }
 
 // lastMessageFor returns the latest accumulated message for a role (used by
