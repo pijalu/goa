@@ -122,11 +122,6 @@ type subsystems struct {
 	requestReviewTool *multiagent.RequestReviewTool
 	delegateTool      *multiagent.DelegateTool
 
-	// Orchestrator Summary panel and its overlay handle. Set while an
-	// orchestration run is active so the main input line can be contextual.
-	orchPanel       *orchpanel.Panel
-	orchPanelHandle *tui.OverlayHandle
-
 	// Persistent tabbed multi-agent run view (replaces the transient panel
 	// overlay). agentView is the single state owner mutated only on the command
 	// loop; agentContent and agentTabBar are render-only views over it. All
