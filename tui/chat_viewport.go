@@ -59,6 +59,11 @@ type ChatMessage struct {
 type ChatViewport struct {
 	*Conversation
 
+	// suppressed hides the viewport during orchestration mode so the
+	// persistent AgentContent region can take its place without double-rendering.
+	// Set on the command loop via SetSuppressed.
+	suppressed bool
+
 	// renderCache holds the concatenated output of the last Render call.
 	renderCache struct {
 		width int
@@ -78,10 +83,23 @@ func NewChatViewport() *ChatViewport {
 	return &ChatViewport{Conversation: NewConversation()}
 }
 
+// SetSuppressed toggles whether the viewport hides itself. While suppressed,
+// Render returns nil so the orchestration AgentContent region replaces it.
+func (cv *ChatViewport) SetSuppressed(b bool) {
+	cv.suppressed = b
+	cv.generation++
+}
+
+// IsSuppressed reports whether the viewport is currently hidden.
+func (cv *ChatViewport) IsSuppressed() bool { return cv.suppressed }
+
 // Render draws every entry's view. Per-entry caches avoid re-rendering
 // unchanged entries; the total frame cache is updated incrementally when only
 // the last entry changed, which is the common case during streaming.
 func (cv *ChatViewport) Render(width int) []string {
+	if cv.suppressed {
+		return nil
+	}
 	if width <= 0 {
 		return nil
 	}

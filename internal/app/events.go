@@ -46,10 +46,11 @@ func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *t
 	if a.subs.pipelineRunner != nil {
 		go a.runPipelineEventForwarder(done)
 	}
-	// Orchestrator Summary overlay: shows the live agent table for the active
-	// orchestration run, updated on the commandLoop (R1 single-owner invariant).
+	// Persistent multi-agent run view: shows the tabbed (Stats + per-agent +
+	// All) view for the active orchestration run, updated on the commandLoop
+	// (R1 single-owner invariant). Unlike the old overlay it stays after finish.
 	if a.subs.orchActive != nil {
-		go a.runOrchestratorPanelForwarder(done)
+		go a.runOrchestratorViewForwarder(done)
 	}
 
 	go func() {

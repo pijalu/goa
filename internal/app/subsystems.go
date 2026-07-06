@@ -126,6 +126,14 @@ type subsystems struct {
 	orchPanel       *orchpanel.Panel
 	orchPanelHandle *tui.OverlayHandle
 
+	// Persistent tabbed multi-agent run view (replaces the transient panel
+	// overlay). agentView is the single state owner mutated only on the command
+	// loop; agentContent and agentTabBar are render-only views over it. All
+	// three are nil/unattached outside an active run.
+	agentView    *orchpanel.MultiAgentView
+	agentContent *orchpanel.AgentContent
+	agentTabBar  *orchpanel.AgentTabBar
+
 	// dreamScheduler triggers automatic memory consolidation after sessions.
 	dreamScheduler *dreamScheduler
 }

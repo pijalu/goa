@@ -16,16 +16,17 @@ import (
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
 	goaltui "github.com/pijalu/goa/tui/goal"
+	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
-	engine, chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter := a.createTUIComponents()
+	engine, chat, agentContent, agentTabBar, pendingMsgs, statusBar, goalBubble, inp, statusFooter := a.createTUIComponents()
 	subs.goalBubble = goalBubble
 	a.configureKeyLogging(engine)
 	a.attachInputHandlers(inp, engine)
-	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter)
+	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, pendingMsgs, statusBar, goalBubble, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
 	a.loadInputHistory(inp)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
@@ -35,7 +36,7 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 		os.Exit(1)
 	}
 
-	a.finalizeTUI(engine, chat, statusFooter, pendingMsgs, statusBar, inp)
+	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, pendingMsgs, statusBar, inp)
 	return engine, chat, inp
 }
 
@@ -44,11 +45,13 @@ func headerFrom(projectDir string) *tui.Header {
 	return h
 }
 
-func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer) {
+func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer) {
 	projectDir := a.subs.projectDir
 	ft := tui.NewProcessTerminal()
 	engine := tui.NewTUI(ft)
 	chat := tui.NewChatViewport()
+	agentContent := orchpanel.NewAgentContent()
+	agentTabBar := orchpanel.NewAgentTabBar()
 	pendingMsgs := tui.NewStatusMsg()
 	statusBar := tui.NewStatusMsg()
 	inp := tui.NewEditor()
@@ -56,7 +59,7 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg
 	statusFooter := tui.NewFooter()
 	statusFooter.SetData(tui.FooterData{Workdir: projectDir})
 	statusFooter.RefreshGit()
-	return engine, chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter
+	return engine, chat, agentContent, agentTabBar, pendingMsgs, statusBar, goalBubble, inp, statusFooter
 }
 
 func (a *App) configureKeyLogging(engine *tui.TUI) {
@@ -127,12 +130,14 @@ func (a *App) stopBackgroundProcesses() {
 	}
 }
 
-func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, pendingMsgs, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, inp *tui.Editor, footer *tui.Footer) {
+func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, pendingMsgs, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, inp *tui.Editor, footer *tui.Footer) {
 	engine.AddChild(header)
 	engine.AddChild(chat)
+	engine.AddChild(agentContent)
 	engine.AddChild(pendingMsgs)
 	engine.AddChild(statusBar)
 	engine.AddChild(goalBubble)
+	engine.AddChild(agentTabBar)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)
@@ -148,7 +153,7 @@ func (a *App) configureInputEditor(inp *tui.Editor, engine *tui.TUI) {
 	inp.SetTUI(engine)
 }
 
-func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.Footer, pendingMsgs, statusBar *tui.StatusMsg, inp *tui.Editor) {
+func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, footer *tui.Footer, pendingMsgs, statusBar *tui.StatusMsg, inp *tui.Editor) {
 	subs := a.subs
 	pendingMsgs.SetTUI(engine)
 	statusBar.SetTUI(engine)
@@ -165,6 +170,8 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.F
 	subs.tuiEngine = engine
 	subs.statusMsg = statusBar
 	subs.pendingMsgs = pendingMsgs
+	subs.agentContent = agentContent
+	subs.agentTabBar = agentTabBar
 
 	footer.SetData(a.initialFooterData())
 }

@@ -117,10 +117,14 @@ func (a *App) displayUserMessage(chat *tui.ChatViewport, text string, images []s
 
 func (a *App) maybeSteerOrchestrator(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
 	subs := a.subs
-	if subs.orchPanel == nil || subs.orchPanelHandle == nil || !subs.orchPanelHandle.IsVisible() {
+	if subs.agentView == nil || !subs.agentView.Active() {
 		return false
 	}
-	chat.AddSystemMessage(fmt.Sprintf("[steer all] %s", text))
+	target := "all"
+	if id := subs.agentView.ActiveAgentID(); id != "" {
+		target = id
+	}
+	chat.AddSystemMessage(fmt.Sprintf("[steer %s] %s", target, text))
 	ctx := coreContextForCommand(subs, a)
 	cmd := &commands.OrchestrateCommand{
 		Builder:  subs.orchAdapter,
@@ -128,7 +132,7 @@ func (a *App) maybeSteerOrchestrator(engine *tui.TUI, chat *tui.ChatViewport, te
 		RootDir:  filepath.Join(subs.projectDir, ".goa", "orchestrator"),
 		GoalMode: subs.goalManager.Mode,
 	}
-	_ = cmd.Run(ctx, []string{"steer", "id=all", "message=" + text})
+	_ = cmd.Run(ctx, []string{"steer", "id=" + target, "message=" + text})
 	engine.RequestRender()
 	return true
 }
