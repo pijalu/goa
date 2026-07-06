@@ -37,6 +37,7 @@ On first run, Goa walks you through:
 | **👤 Agent Profiles** | Built-in profiles: coder, planner, reviewer — custom via `extends` |
 | **🧩 Skills** | Reusable prompt templates — inline (system prompt injection) or sub-agent |
 | **🔁 Multi-Agent** | Pair (planner → coder) and reviewer (coder → reviewer) collaboration |
+| **🧠 Orchestrator** | Multi-agent orchestration with hub/fanout/pipeline topologies, bounded agent pool, goal binding, event-sourced run log, and headless resume |
 | **📋 Workflows** | Multi-stage, multi-agent workflows with team collaboration and AgentBus |
 | **🧪 Loop Detection** | 5 heuristics (identical calls, token budget, timeout, activity, error rate) |
 | **💾 Session Persistence** | Full JSONL session history with `/save` and `/restore` |
@@ -115,6 +116,7 @@ On first run, Goa walks you through:
 | [TUI.md](docs/TUI.md) | TUI layout & usage |
 | [AGENTIC-SDK.md](docs/AGENTIC-SDK.md) | How Goa wraps the agentic SDK |
 | [WORKFLOWS.md](docs/WORKFLOWS.md) | Workflow system reference |
+| [ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Orchestrator: multi-agent topology selector, goal binding, live Summary, headless resume |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development guide |
 | [bugs.md](bugs.md) | Known issues and roadmap |
 | [AGENTS.md](AGENTS.md) | AI agent coding guidelines |
@@ -129,9 +131,13 @@ goa/
 ├── config/                  # Config struct, cascade loader, defaults, wizard
 ├── core/                    # Commands, registry, router, agent manager,
 │   │                        # loop detector, execution controller, session store
-│   └── commands/            # 30+ commands (auto-registered via init())
+│   ├── commands/            # 30+ commands (auto-registered via init())
+│   └── orchestrator/        # Orchestration runtime: bounded pool, handle, store, topology, goal binding
 ├── internal/                # Shared types, enums, errors, git worktree manager
 ├── tui/                     # ANSI TUI: engine, components, overlays, styles
+│   ├── goal/                # Goal status panel
+│   ├── swarm/               # Swarm mode renderer
+│   └── orchestrator/        # Orchestrator Summary panel
 ├── tools/                   # Tool registry & implementations
 ├── memory/                  # Persistent memory store
 ├── profiles/                # Profile resolution & built-in definitions

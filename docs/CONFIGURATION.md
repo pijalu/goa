@@ -239,6 +239,22 @@ multi_agent:
   message_timeout: 120s
   show_inter_agent_messages: true
 
+# ── Orchestrator ───────────────────────────────────────────────────
+orchestrator:
+  roles:
+    orchestrator:
+      model: my-model-id
+    coder:
+      model: my-model-id
+      provider: ""                   # optional per-role provider override
+      allowed_tools: [bash, edit]     # optional tool allowlist
+  pool:
+    max_total_agents: 8              # max concurrent agents (0 = unlimited)
+    max_agents_per_model:
+      my-model-id: 4                 # optional per-model cap
+  defaults:
+    topology: hub                    # hub | fanout | pipeline
+
 # ── Plugins ────────────────────────────────────────────────────────
 plugins:
   enabled: ["*"]                     # Enable all plugins

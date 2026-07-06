@@ -232,6 +232,30 @@ remove the model (with confirmation).
   /model llama-3.2-1b  → Switch to local model
 ```
 
+### `/orchestrate` — Run multi-agent orchestration
+
+```
+Usage: /orchestrate <subcommand> [args]
+Aliases: /orch
+
+Subcommands:
+  new [hub|fanout|pipeline] [goal <objective>] <objective>
+  list
+  resume <run-id>
+  steer <agent-id|all|orchestrator> <text>
+```
+
+Run a multi-agent orchestration with per-run topology selection (hub/fanout/
+pipeline), optional goal binding, and live observability. Orchestrations are
+fully event-sourced under `.goa/orchestrator/<run-id>/` and resumable.
+
+  /orchestrate new hub "Research X and summarize"
+  /orchestrate new fanout goal <obj> <obj>
+  /orchestrate list
+  /orchestrate resume run-1234
+  /orchestrate steer all "consider edge cases"
+```
+
 ### `/provider` — Manage providers
 
 ```
