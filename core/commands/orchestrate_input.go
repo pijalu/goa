@@ -22,16 +22,19 @@ type OrchestrateInput struct {
 	Message    string // steering message
 	Confirm    bool   // delete bypass flag
 	Goal       string // deprecated/forward-compat goal binding
+	Tab        string // tab key/index for the tab subcommand
 }
 
 // orchestrateKnownKeys maps each subcommand to the set of keys it accepts.
 // The order matters: earlier keys take precedence when scanning a raw string.
 var orchestrateKnownKeys = map[string][]string{
-	"new":    {"topology", "name", "goal", "objective"},
-	"resume": {"id"},
-	"delete": {"id", "confirm"},
-	"steer":  {"id", "message"},
-	"list":   {},
+	"new":     {"topology", "name", "goal", "objective"},
+	"resume":  {"id"},
+	"delete":  {"id", "confirm"},
+	"steer":   {"id", "message"},
+	"list":    {},
+	"tab":     {},
+	"browser": {},
 }
 
 // parseOrchestrateInput parses the colon-separated arguments after the
@@ -58,6 +61,13 @@ func parseOrchestrateInput(args []string) (OrchestrateInput, error) {
 	}
 	in.Subcommand = sub
 
+	// "tab" takes a single positional argument (a tab key or 1-based index),
+	// not key=value pairs, so handle it before the generic kv parser.
+	if sub == "tab" {
+		in.Tab = strings.TrimSpace(strings.Join(args[1:], " "))
+		return in, nil
+	}
+
 	keys := orchestrateKnownKeys[in.Subcommand]
 	raw := strings.Join(args[1:], ",")
 	pairs, err := splitKeyValuePairs(raw, keys)
@@ -69,7 +79,7 @@ func parseOrchestrateInput(args []string) (OrchestrateInput, error) {
 
 func isKnownSubcommand(sub string) bool {
 	switch sub {
-	case "new", "resume", "delete", "steer", "list":
+	case "new", "resume", "delete", "steer", "list", "tab", "browser":
 		return true
 	}
 	return false

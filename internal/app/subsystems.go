@@ -76,6 +76,7 @@ type subsystems struct {
 	goalDriver        *core.GoalDriver
 	orchAdapter       *OrchestratorAdapter
 	orchActive        *orchestrator.ActiveRuntime
+	orchCmd           *commands.OrchestrateCommand
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
 	runWizard         bool // set when /setup command requests wizard
@@ -858,6 +859,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		handle := s.tuiEngine.ShowOverlay(b, tui.OverlayOptions{CaptureInput: true})
 		b.SetCloseFunc(func() { handle.Hide() })
 	}
+	s.orchCmd = orchCmd
 	_ = core.GlobalRegistry().Register(orchCmd)
 
 	s.dreamScheduler = newDreamScheduler(s)

@@ -35,6 +35,11 @@ type OrchestrateCommand struct {
 	// ShowBrowser is set by the TUI host to open the dedicated orchestrator
 	// browser overlay. When nil, /orchestrate:browser returns an error.
 	ShowBrowser func()
+	// SelectAgentTab selects a tab of the persistent multi-agent run view by
+	// key (or 1-based index) and returns the selected tab's label. Set by the
+	// TUI host; when nil, /orchestrate:tab returns an error. Named generically
+	// so pipeline/swarm reuse it later.
+	SelectAgentTab func(key string) (label string, ok bool)
 }
 
 func (c *OrchestrateCommand) Name() string      { return "orchestrate" }
@@ -92,6 +97,8 @@ func (c *OrchestrateCommand) Run(ctx core.Context, args []string) error {
 		return c.runDeleteInteractive(ctx, in)
 	case "steer":
 		return c.runSteerInteractive(ctx, in)
+	case "tab":
+		return c.runTab(ctx, in)
 	case "browser":
 		return c.runBrowser(ctx)
 	default:
@@ -106,6 +113,7 @@ func (c *OrchestrateCommand) usage(ctx core.Context) error {
 	writeStr(ctx, "  /orchestrate:resume:id=<run-id>\n")
 	writeStr(ctx, "  /orchestrate:delete:id=<run-id|*>[,confirm=true]\n")
 	writeStr(ctx, "  /orchestrate:steer:id=<agent-id|all|orchestrator>,message=<text>\n")
+	writeStr(ctx, "  /orchestrate:tab:<key|index>      Switch the orchestration view tab (stats/all/<agent>).\n")
 	writeStr(ctx, "  /orchestrate:browser            Open the dedicated run browser overlay.\n")
 	return nil
 }
@@ -328,6 +336,29 @@ func (c *OrchestrateCommand) runBrowser(ctx core.Context) error {
 		return fmt.Errorf("browser overlay not available")
 	}
 	c.ShowBrowser()
+	return nil
+}
+
+// runTab selects a tab of the persistent multi-agent run view. It requires an
+// active orchestration run and a TUI host that supplies SelectAgentTab.
+func (c *OrchestrateCommand) runTab(ctx core.Context, in OrchestrateInput) error {
+	if c.SelectAgentTab == nil {
+		return fmt.Errorf("tab navigation not available")
+	}
+	if c.Active.Get() == nil {
+		flashStr(ctx, "No active orchestration run.\n")
+		return nil
+	}
+	if in.Tab == "" {
+		flashStr(ctx, "Usage: /orchestrate:tab:<key|index>\n")
+		return nil
+	}
+	label, ok := c.SelectAgentTab(in.Tab)
+	if !ok {
+		flashFmt(ctx, "Unknown tab %q.\n", in.Tab)
+		return nil
+	}
+	flashFmt(ctx, "tab: %s\n", label)
 	return nil
 }
 
@@ -608,6 +639,8 @@ var orchestrateSubcommands = []struct {
 	{"resume", "resume a run: /orchestrate:resume:id=<run-id>"},
 	{"delete", "delete: /orchestrate:delete:id=<run-id|*>[,confirm=true]"},
 	{"steer", "steer: /orchestrate:steer:id=<agent-id|all|orchestrator>,message=<text>"},
+	{"tab", "switch view tab: /orchestrate:tab:<key|index>"},
+	{"browser", "open the run browser overlay"},
 }
 
 func runSelectorItems(runs []orchestrator.RunSummary, onlyUnfinished bool) []tui.SelectorItem {

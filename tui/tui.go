@@ -130,6 +130,14 @@ type TUI struct {
 	// OnToggleThinkingBlocks is called when the thinking-blocks toggle key is pressed.
 	OnToggleThinkingBlocks func()
 
+	// OnAgentTabNext / OnAgentTabPrev cycle the active tab of the persistent
+	// multi-agent run view (Ctrl+x / Ctrl+z). The keys are layout-independent
+	// control characters (safe under goa's raw terminal, where ISIG is off) and
+	// sit adjacent on the keyboard (Z=left/prev, X=right/next), avoiding the
+	// Mac-awkward bracket keys. Source-agnostic so pipeline/swarm reuse them.
+	OnAgentTabNext func()
+	OnAgentTabPrev func()
+
 	// OnCancelInputRequest is called when Ctrl+C is pressed while the editor
 	// is empty and a main-input request is active. It lets the host cancel
 	// the pending prompt instead of quitting. If it returns true, the quit is
@@ -706,27 +714,46 @@ func (t *TUI) handleAppShortcuts(key string) bool {
 
 // resolveAppShortcut maps a decoded key to its application-level callback.
 // It accounts for terminals that emit an alt+printable character instead of
-// the ESC+<base> sequence for Option-key combinations on macOS.
+// the ESC+<base> sequence for Option-key combinations on macOS. A flat table
+// keeps the dispatch cyclomatic-complexity low (one loop, no big switch).
 func (t *TUI) resolveAppShortcut(key string) (func(), bool) {
 	altKey := altKeyName(key)
-	switch {
-	case matchesKey(key, "ctrl+g"):
-		return t.OnToggleGoalBubble, true
-	case matchesKey(key, "alt+m") || matchesKey(key, "alt+M") || matchesKey(altKey, "alt+m"):
-		return t.OnChangeMode, true
-	case matchesKey(key, "alt+o") || matchesKey(key, "alt+O") || matchesKey(altKey, "alt+o"):
-		return t.OnOpenModeSelector, true
-	case matchesKey(key, "ctrl+shift+m"):
-		return t.OnCycleAutonomy, true
-	case matchesKey(key, KeyShiftTab):
-		return t.OnCycleThinkingLevel, true
-	case matchesKey(key, KeyCtrlL):
-		return t.OnChangeModel, true
-	case matchesKey(key, KeyCtrlT):
-		return t.OnToggleThinkingBlocks, true
-	default:
-		return nil, false
+	for _, sc := range appShortcuts {
+		if sc.matches(key, altKey) {
+			return sc.callback(t), true
+		}
 	}
+	return nil, false
+}
+
+// appShortcut is one application-level keybinding: a set of accepted key names
+// (plus the macOS Option-alias form) and the callback it resolves to.
+type appShortcut struct {
+	keys     []string // exact key names (and alt+uppercase variants)
+	altAlias string   // optional macOS Option-key alias (e.g. "alt+m")
+	callback func(t *TUI) func()
+}
+
+func (s appShortcut) matches(key, altKey string) bool {
+	for _, k := range s.keys {
+		if matchesKey(key, k) {
+			return true
+		}
+	}
+	return s.altAlias != "" && matchesKey(altKey, s.altAlias)
+}
+
+// appShortcuts is the ordered table consumed by resolveAppShortcut.
+var appShortcuts = []appShortcut{
+	{keys: []string{"ctrl+g"}, callback: func(t *TUI) func() { return t.OnToggleGoalBubble }},
+	{keys: []string{"alt+m", "alt+M"}, altAlias: "alt+m", callback: func(t *TUI) func() { return t.OnChangeMode }},
+	{keys: []string{"alt+o", "alt+O"}, altAlias: "alt+o", callback: func(t *TUI) func() { return t.OnOpenModeSelector }},
+	{keys: []string{"ctrl+shift+m"}, callback: func(t *TUI) func() { return t.OnCycleAutonomy }},
+	{keys: []string{KeyShiftTab}, callback: func(t *TUI) func() { return t.OnCycleThinkingLevel }},
+	{keys: []string{KeyCtrlL}, callback: func(t *TUI) func() { return t.OnChangeModel }},
+	{keys: []string{KeyCtrlT}, callback: func(t *TUI) func() { return t.OnToggleThinkingBlocks }},
+	{keys: []string{"ctrl+x"}, callback: func(t *TUI) func() { return t.OnAgentTabNext }},
+	{keys: []string{"ctrl+z"}, callback: func(t *TUI) func() { return t.OnAgentTabPrev }},
 }
 
 func (t *TUI) invokeCallback(fn func()) {

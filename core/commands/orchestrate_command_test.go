@@ -292,6 +292,131 @@ func TestOrchestrateCommand_ListRuns(t *testing.T) {
 // guard against accidental removal of used imports if file evolves.
 var _ = strings.TrimSpace
 
+func TestOrchestrateCommand_TabSelectsAndFlashes(t *testing.T) {
+	b := &fakeBuilder{}
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+
+	// Hold a built runtime active without running it so c.Active.Get() != nil.
+	rt, err := b.NewRuntime(ctx.Config.Orchestrator, t.TempDir())
+	if err != nil {
+		t.Fatalf("build runtime: %v", err)
+	}
+	c.Active.Set(rt)
+
+	var got string
+	c.SelectAgentTab = func(key string) (string, bool) {
+		got = key
+		if key == "all" {
+			return "All", true
+		}
+		return "", false
+	}
+
+	flashes := newFlashCollector(&ctx)
+
+	if err := c.Run(ctx, []string{"tab", "all"}); err != nil {
+		t.Fatalf("tab all: %v", err)
+	}
+	if got != "all" {
+		t.Errorf("SelectAgentTab called with %q, want all", got)
+	}
+	if !flashes.contains("tab: All") {
+		t.Errorf("expected 'tab: All' flash, got %v", flashes.snapshot())
+	}
+
+	// Unknown key → 'Unknown tab' flash.
+	flashes.reset()
+	if err := c.Run(ctx, []string{"tab", "nope"}); err != nil {
+		t.Fatalf("tab nope: %v", err)
+	}
+	if !flashes.contains("Unknown tab") {
+		t.Errorf("expected 'Unknown tab' flash, got %v", flashes.snapshot())
+	}
+}
+
+func TestOrchestrateCommand_TabNoActiveRun(t *testing.T) {
+	c := &OrchestrateCommand{Builder: &fakeBuilder{}, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	c.SelectAgentTab = func(string) (string, bool) { return "x", true }
+	flashes := newFlashCollector(&ctx)
+
+	if err := c.Run(ctx, []string{"tab", "all"}); err != nil {
+		t.Fatalf("tab: %v", err)
+	}
+	if !flashes.contains("No active orchestration run") {
+		t.Errorf("expected no-active-run flash, got %v", flashes.snapshot())
+	}
+}
+
+func TestOrchestrateCommand_TabNoHostCallback(t *testing.T) {
+	b := &fakeBuilder{}
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: t.TempDir()}
+	ctx := testCtx(t)
+	rt, err := b.NewRuntime(ctx.Config.Orchestrator, t.TempDir())
+	if err != nil {
+		t.Fatalf("build runtime: %v", err)
+	}
+	c.Active.Set(rt)
+	// SelectAgentTab intentionally nil → error.
+	if err := c.Run(ctx, []string{"tab", "all"}); err == nil {
+		t.Error("expected error when SelectAgentTab is nil")
+	}
+}
+
+// flashCollector drains the chat event bus for Flash messages.
+type flashCollector struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func newFlashCollector(ctx *core.Context) *flashCollector {
+	fc := &flashCollector{}
+	ctx.EventBus = &event.Bus{Chat: make(chan event.ChatEvent, 16)}
+	go func() {
+		for ev := range ctx.EventBus.Chat {
+			if ev.Flash != nil {
+				fc.add(ev.Flash.Text)
+			}
+		}
+	}()
+	return fc
+}
+
+func (f *flashCollector) add(s string) {
+	f.mu.Lock()
+	f.msgs = append(f.msgs, s)
+	f.mu.Unlock()
+}
+
+func (f *flashCollector) contains(want string) bool {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		for _, m := range f.msgs {
+			if strings.Contains(m, want) {
+				f.mu.Unlock()
+				return true
+			}
+		}
+		f.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func (f *flashCollector) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.msgs...)
+}
+
+func (f *flashCollector) reset() {
+	f.mu.Lock()
+	f.msgs = nil
+	f.mu.Unlock()
+}
+
 func TestOrchestrateCommand_DefaultRoleSynthesis(t *testing.T) {
 	cfg := config.Config{ActiveModel: "gpt4"}
 	oCfg, defaulted := effectiveOrchestratorConfig(&cfg)

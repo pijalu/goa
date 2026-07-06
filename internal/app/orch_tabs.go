@@ -67,3 +67,25 @@ func (a *App) selectAgentTab(sel string) bool {
 	}
 	return ok
 }
+
+// orchSelectTabLabel selects a tab and returns its label (for the command's
+// confirmation flash). Returns ok=false when the run is inactive or the key
+// does not match a tab.
+func (a *App) orchSelectTabLabel(key string) (string, bool) {
+	if !a.selectAgentTab(key) {
+		return "", false
+	}
+	if tab, ok := a.subs.agentView.ActiveTab(); ok {
+		return tab.Label, true
+	}
+	return "", true
+}
+
+// wireOrchCommandCallbacks connects the /orchestrate command's host callbacks
+// to the app's view-navigation logic. Called once during TUI assembly; safe to
+// call before any run is active (the callbacks no-op then).
+func (a *App) wireOrchCommandCallbacks() {
+	if cmd := a.subs.orchCmd; cmd != nil {
+		cmd.SelectAgentTab = a.orchSelectTabLabel
+	}
+}

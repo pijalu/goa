@@ -176,6 +176,28 @@ func checkNodeText(t *testing.T, f tui.AgentFrame, name string, want []string) {
 	}
 }
 
+// TestOrchestratorViewForwarder_CycleHotkeyChangesTab verifies the tab-cycle
+// hotkey handler advances the active tab and updates the steering prompt.
+func TestOrchestratorViewForwarder_CycleHotkeyChangesTab(t *testing.T) {
+	sc := newOrchViewScenario(t, 100, 30)
+	sc.app.attachOrchView(newFakeOrchSource())
+	sc.flush()
+	sc.applyOrchEvents(lifecycleEvents())
+
+	inp := sc.app.subs.getInput()
+	if got := inp.Title(); got != "steer all:" {
+		t.Errorf("initial prompt = %q, want 'steer all:'", got)
+	}
+
+	sc.engine.ApplySync(func() { sc.app.cycleAgentTab(1) })
+	if got := inp.Title(); !strings.Contains(got, "steer coder:") {
+		t.Errorf("after cycle prompt = %q, want 'steer coder:'", got)
+	}
+	if tab, ok := sc.app.subs.agentView.ActiveTab(); !ok || tab.Key != "c-1" {
+		t.Errorf("active tab = %+v, want c-1", tab)
+	}
+}
+
 // TestOrchestratorViewForwarder_SteerPromptReflectsActiveTab verifies the input
 // editor prompt follows the active tab (steer all: on Stats, steer coder: on
 // the coder tab).
