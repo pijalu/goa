@@ -42,6 +42,15 @@ Status: **investigation only** (no code changes). Companion to
 >   `ArtifactContributor` extension point (`internal/logs/export/contrib.go`);
 >   all domain-specific code was removed from it (Open/Closed). The
 >   orchestrator contributor registration is the next step.
+>
+> **Implementation update 3 (2026-07-06).** R11 wiring landed SOLID:
+>   `core/commands/orchestrate_export.go` registers an `ArtifactContributor`
+>   that bundles the most recent run's `events.jsonl` + a JSON summary built
+>   from the domain's `ReplaySnapshot` (no event-JSON parsing in the export
+>   package). The contributor is registered via `init()` in `core/commands`
+>   (imported by every entry point, so it covers both TUI and headless export).
+>   Tests: contributor unit test + an export-level test asserting the generic
+>   extension point flows both Data and Path artifacts through `BuildBundle`.
 
 > **Revision note.** The first pass (R1–R7) inferred the crash from the
 > concurrency model because the export bundle was stale. After the full crash

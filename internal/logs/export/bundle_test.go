@@ -252,3 +252,48 @@ func (f *fakeSessionStore) ImportSession(name, sourcePath string) error { return
 func (f *fakeSessionStore) SessionID() string                           { return f.sessionID }
 func (f *fakeSessionStore) CurrentSessionPath() string                  { return f.sessionPath }
 func (f *fakeSessionStore) StartSessionWithID(id string) string          { return id }
+
+// TestBuildBundle_IncludesContributorArtifacts verifies the Open/Closed
+// extension point: a registered ArtifactContributor's artifacts are bundled
+// (both inline Data and copied Path) without the bundler knowing their content.
+func TestBuildBundle_IncludesContributorArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	setupTestProject(t, dir)
+	// Sentinel file so the contributor fires only for this test's dir and is a
+	// harmless no-op for every other test sharing the package registry.
+	if err := os.WriteFile(filepath.Join(dir, ".contrib-marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcPath := filepath.Join(dir, "contrib-source.txt")
+	if err := os.WriteFile(srcPath, []byte("path-contributed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	RegisterContributor(func(projectDir string) []Artifact {
+		if _, err := os.Stat(filepath.Join(projectDir, ".contrib-marker")); err != nil {
+			return nil
+		}
+		return []Artifact{
+			{Name: "contrib/data.txt", Data: []byte("data-contributed")},
+			{Name: "contrib/copied.txt", Path: srcPath},
+		}
+	})
+
+	ctx := core.Context{
+		Config:    &config.Config{ConfigDir: filepath.Join(dir, ".goa")},
+		ProjectDir: dir,
+	}
+	result, err := BuildBundle(ctx, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBundle: %v", err)
+	}
+	entries := readZipEntries(t, result.Path)
+	if !entries["contrib/data.txt"] || !entries["contrib/copied.txt"] {
+		t.Errorf("contributor artifacts missing in bundle: %+v", entries)
+	}
+	if data, err := readZipFile(t, result.Path, "contrib/data.txt"); err != nil || string(data) != "data-contributed" {
+		t.Errorf("contrib/data.txt = %q (%v), want data-contributed", string(data), err)
+	}
+	if data, err := readZipFile(t, result.Path, "contrib/copied.txt"); err != nil || string(data) != "path-contributed" {
+		t.Errorf("contrib/copied.txt = %q (%v), want path-contributed", string(data), err)
+	}
+}
