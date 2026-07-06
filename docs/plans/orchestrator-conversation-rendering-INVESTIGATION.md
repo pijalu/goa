@@ -51,6 +51,17 @@ Status: **investigation only** (no code changes). Companion to
 >   (imported by every entry point, so it covers both TUI and headless export).
 >   Tests: contributor unit test + an export-level test asserting the generic
 >   extension point flows both Data and Path artifacts through `BuildBundle`.
+>
+> **Implementation update 4 (2026-07-06).** Session reload with orchestration
+> is now correct. Previously `/orchestrate:resume` (`doResume`) forked a NEW
+> run-id and re-ran everything from scratch, abandoning the prior event log.
+> New `Runtime.Resume(store, snap)` re-roots persistence to the existing run's
+> event log (continuing seq + forcing run-id = snap.RunID) so the resumed run
+> IS the same run, and skips fanout/pipeline roles that already finished
+> successfully (carrying their snapshotted answer forward via `resumeSkip`).
+> Hub re-drives the orchestrator (delegations are dynamic). Test:
+> `TestRuntime_ResumeSkipsFinishedRoles` (0 new turns, same run-id, 2 resumed
+> events).
 
 > **Revision note.** The first pass (R1–R7) inferred the crash from the
 > concurrency model because the export bundle was stale. After the full crash

@@ -433,6 +433,9 @@ func (c *OrchestrateCommand) doResume(ctx core.Context, in OrchestrateInput) err
 	if snap.Name != "" {
 		rt.SetName(snap.Name)
 	}
+	// Continue the same run (same run-id + event log) and skip roles that
+	// already finished, instead of re-running everything under a new id.
+	rt.Resume(store, snap)
 	c.Active.Set(rt)
 	flashFmt(ctx, "Resuming %s: %s\n", snap.NameOrID(), snap.Objective)
 	c.launch(ctx, rt, snap.Objective)

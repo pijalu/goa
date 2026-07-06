@@ -39,6 +39,13 @@ type Runtime struct {
 	runID    string
 	rootDir  string
 
+	// resume, when set by Resume(), records the snapshot of a prior run so
+	// fanout/pipeline skip roles that already finished successfully and the
+	// run continues under the same run-id/event-log. Hub re-drives the
+	// orchestrator (delegations are dynamic, so prior specialist results are
+	// not reused).
+	resume *RunSnapshot
+
 	emitMu sync.Mutex
 	bus    chan Event
 	closed atomic.Bool
@@ -334,6 +341,16 @@ func (r *Runtime) runHub(ctx context.Context, objective string) error {
 // driveOne acquires a single role agent, runs one turn, and emits the full
 // lifecycle (Started → stats → Finished). It always releases the handle.
 func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
+	// Resume: skip non-orchestrator roles that already finished in the prior
+	// run (fanout/pipeline). The orchestrator role is always re-driven (it is
+	// the hub entry point); hub specialist delegations are dynamic and are
+	// not skipped.
+	if role != "orchestrator" {
+		if agentID, msg, ok := r.resumeFinishedRole(role); ok {
+			r.resumeSkip(role, agentID, msg)
+			return nil
+		}
+	}
 	h, err := r.pool.Acquire(ctx, role)
 	if err != nil {
 		r.emit(Event{Type: EventAgentFinished, Role: role,
@@ -760,6 +777,55 @@ func (r *Runtime) Topology() Topology { return r.topology }
 // called before Run. The name is emitted in the run_started event and
 // exposed by Name().
 func (r *Runtime) SetName(name string) { r.name = name }
+
+// Resume continues a prior run. Persistence is re-rooted to store (the
+// existing run's event log, so new events append with continuing seq) and the
+// run id is forced to snap.RunID so the resumed run is the same run, not a
+// fork. During fanout/pipeline, roles that already reached a successful
+// terminal state in snap are skipped (their snapshotted answer is carried
+// forward) so completed work is not redone. Hub topology re-drives the
+// orchestrator because delegations are dynamic.
+//
+// store must already have been Replay'd (so its internal seq continues from
+// the existing log); snap is the replayed snapshot.
+func (r *Runtime) Resume(store EventStore, snap *RunSnapshot) {
+	if r.sink != nil {
+		r.sink.close()
+	}
+	r.store = store
+	r.sink = newDurableSink(store)
+	if snap == nil {
+		return
+	}
+	r.resume = snap
+	runID := snap.RunID
+	r.SetIDGenerator(func() string { return runID })
+}
+
+// resumeFinishedRole returns the snapshotted answer for role if that role
+// already finished successfully in the resume snapshot (ok=true). Used to
+// skip idempotent re-runs of completed fanout/pipeline stages.
+func (r *Runtime) resumeFinishedRole(role string) (string, string, bool) {
+	if r.resume == nil {
+		return "", "", false
+	}
+	for _, a := range r.resume.Agents {
+		if a.Role == role && a.Status == AgentFinished {
+			return a.ID, strings.Join(a.Messages, ""), true
+		}
+	}
+	return "", "", false
+}
+
+// resumeSkip emits a synthetic resumed lifecycle for a role whose work is
+// carried forward from the prior run, without driving a new turn.
+func (r *Runtime) resumeSkip(role, agentID, msg string) {
+	r.setLastMessage(role, msg)
+	r.emit(Event{Type: EventAgentStarted, AgentID: agentID, Role: role,
+		Payload: map[string]any{"resumed": true}})
+	r.emit(Event{Type: EventAgentFinished, AgentID: agentID, Role: role,
+		Payload: map[string]any{"outcome": "resumed", "text": msg}})
+}
 
 // Name returns the friendly alias for this run (empty if not set).
 func (r *Runtime) Name() string { return r.name }
