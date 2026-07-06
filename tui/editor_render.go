@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
-	"github.com/rivo/uniseg"
 )
 
 // ── Rendering ──
@@ -80,21 +79,25 @@ func renderTitledBorder(title, thinkingLevel string, width int) string {
 	return border + strings.Repeat("─", left) + reset + center + border + strings.Repeat("─", right) + reset
 }
 
-// renderContentLine renders a single content line with optional cursor marker.
-func (e *Editor) renderContentLine(line string, hasCursor bool, cursorCol int) string {
+// renderContentLine renders a single content line with an optional cursor
+// marker. cursorOffset is the rune offset of the cursor within line; because
+// line is a faithful slice of the source (a wrapChunk.Text), the marker is
+// inserted exactly at the cursor's rune position — display and cursor can
+// never disagree.
+func (e *Editor) renderContentLine(line string, hasCursor bool, cursorOffset int) string {
 	if !hasCursor {
 		return padToWidth(line, e.lastWidth)
 	}
-	bytePos := bytePosForCol(line, cursorCol)
+	bytePos := runeOffsetToByte(line, cursorOffset)
 	return padToWidth(line[:bytePos]+CURSOR_MARKER+line[bytePos:], e.lastWidth)
 }
 
 // editorLayout holds the computed rendering geometry for the editor.
 type editorLayout struct {
-	wrapped          []string
+	chunks           []wrapChunk
 	totalVisualLines int
 	cursorVisLine    int
-	cursorCol        int
+	cursorOffset     int // rune offset of the cursor within its chunk
 	dispStart        int
 	dispEnd          int
 	translatedLine   int
@@ -117,11 +120,11 @@ func (e *Editor) Render(width int) []string {
 
 func (e *Editor) computeLayout(width int) editorLayout {
 	fullText := e.prompt + string(e.buf)
-	wrapped := wrapText(fullText, width)
-	totalVisualLines := len(wrapped)
+	chunks := wrapChunks(fullText, width)
+	totalVisualLines := len(chunks)
 
 	cursorFullPos := len(e.prompt) + e.pos
-	cursorVisLine, cursorCol := visualCursorPos(fullText, cursorFullPos, width)
+	cursorVisLine, cursorOffset := cursorChunk(chunks, fullText, cursorFullPos)
 
 	e.maxLines = clampEditorMaxLines(totalVisualLines, e.terminalRows())
 	e.scroll = clampScroll(cursorVisLine, e.scroll, e.maxLines, totalVisualLines)
@@ -130,10 +133,10 @@ func (e *Editor) computeLayout(width int) editorLayout {
 	dispEnd := min(e.scroll+e.maxLines, totalVisualLines)
 
 	return editorLayout{
-		wrapped:          wrapped,
+		chunks:           chunks,
 		totalVisualLines: totalVisualLines,
 		cursorVisLine:    cursorVisLine,
-		cursorCol:        cursorCol,
+		cursorOffset:     cursorOffset,
 		dispStart:        dispStart,
 		dispEnd:          dispEnd,
 		translatedLine:   cursorVisLine - e.scroll,
@@ -182,7 +185,7 @@ func (e *Editor) renderEditorFrame(layout editorLayout, width int) []string {
 
 	for i := layout.dispStart; i < layout.dispEnd; i++ {
 		hasCursor := e.focused && (i-layout.dispStart) == layout.translatedLine
-		result = append(result, e.renderContentLine(layout.wrapped[i], hasCursor, layout.cursorCol))
+		result = append(result, e.renderContentLine(layout.chunks[i].Text, hasCursor, layout.cursorOffset))
 	}
 
 	for len(result)-1 < e.maxLines {
@@ -338,281 +341,6 @@ func clampWindowStart(selLine, total, maxShow int) int {
 		}
 	}
 	return start
-}
-
-// wordInfo tracks a word's rune range within a paragraph for visual cursor computation.
-type wordInfo struct {
-	start int // rune start (inclusive)
-	end   int // rune end (exclusive)
-}
-
-// buildWordPositions splits a paragraph into words with their rune positions.
-func buildWordPositions(runes []rune) []wordInfo {
-	var words []wordInfo
-	i := 0
-	for i < len(runes) {
-		if runes[i] == ' ' {
-			i++
-			continue
-		}
-		start := i
-		for i < len(runes) && runes[i] != ' ' {
-			i++
-		}
-		words = append(words, wordInfo{start: start, end: i})
-	}
-	return words
-}
-
-// cursorInCurrentParagraph checks if the cursor position falls within the
-// current paragraph content (as opposed to at the trailing newline or after).
-func cursorInCurrentParagraph(runePos, paraStart, paraLen int, hasNewline bool) bool {
-	// Within content OR at the trailing newline position (end of line).
-	// The newline character logically belongs to the current line for
-	// visual cursor positioning, so <= is correct here.
-	if runePos <= paraStart+paraLen {
-		return true
-	}
-	return false
-}
-
-// firstWordEnd returns the end rune position of the word at the given index.
-func firstWordEnd(runes []rune, words []wordInfo, idx int) int {
-	if idx < 0 || idx >= len(words) {
-		return 0
-	}
-	return words[idx].end
-}
-
-// cursorColInWord computes the visual column of an offset within a word.
-// Width is grapheme-cluster-aware (via ansi.Width) so multi-rune clusters such
-// as ZWJ emoji contribute their true rendered width, keeping the column
-// consistent with the marker placement in bytePosForCol.
-func cursorColInWord(runes []rune, w wordInfo, offset, baseCol int) int {
-	within := offset - w.start
-	if within < 0 {
-		within = 0
-	}
-	return baseCol + ansi.Width(string(runes[w.start:w.start+within]))
-}
-
-// processLongWord handles the cursor position within a long word that exceeds
-// the line width and must be broken character-by-character.
-// Returns (found, visLine, visCol) where found is true if the cursor was located.
-func processLongWord(runes []rune, w wordInfo, offset, visLine, visCol, width int) (bool, int, int) {
-	// Flush current line first
-	if visCol > 0 {
-		visLine++
-		visCol = 0
-	}
-	// Break the word into chunks, tracking each grapheme cluster's position.
-	// Cluster-aware so ZWJ emoji/combining marks break at true rendered widths.
-	wordStr := string(runes[w.start:w.end])
-	gr := uniseg.NewGraphemes(wordStr)
-	runeOff := 0 // rune offset within the word
-	for gr.Next() {
-		cluster := gr.Str()
-		cw := ansi.ClusterWidth(cluster)
-		if visCol+cw > width {
-			visLine++
-			visCol = 0
-		}
-		if w.start+runeOff == offset {
-			return true, visLine, visCol
-		}
-		visCol += cw
-		runeOff += len([]rune(cluster))
-	}
-	return false, visLine, visCol
-}
-
-// processNormalWord handles the cursor position within a normal (non-long) word
-// that fits within the line width. Returns (found, visLine, visCol).
-func processNormalWord(runes []rune, words []wordInfo, wi int, w wordInfo, offset, visLine, visCol, width int) (bool, int, int) {
-	ww := visibleWidth(string(runes[w.start:w.end]))
-	spaceWidth := 0
-	if wi > 0 {
-		spaceWidth = 1
-	}
-
-	// Check if cursor falls in the space before this word
-	if wi > 0 && offset >= firstWordEnd(runes, words, wi-1) && offset < w.start {
-		return true, visLine, visCol
-	}
-
-	// Normal word: try to add to current line
-	if visCol+spaceWidth+ww > width && visCol > 0 {
-		visLine++
-		visCol = 0
-		spaceWidth = 0
-	}
-
-	// Check if cursor falls in the space we're about to add
-	if spaceWidth > 0 && offset == w.start-1 {
-		return true, visLine, visCol
-	}
-
-	// Add space
-	if spaceWidth > 0 {
-		visCol++
-	}
-
-	// Check if cursor falls within this word
-	if offset >= w.start && offset <= w.end {
-		visCol = cursorColInWord(runes, w, offset, visCol)
-		return true, visLine, visCol
-	}
-
-	visCol += ww
-	return false, visLine, visCol
-}
-
-// processParagraph handles one paragraph in visualCursorPos.
-// Returns (done, visLine, visCol) where done=true means the cursor was found.
-func processParagraph(runes []rune, paraStart, paraEnd, runePos, visLine, visCol, width int) (bool, int, int) {
-	hasNewline := paraEnd < len(runes)
-	paraRunes := runes[paraStart:paraEnd]
-	paraLen := len(paraRunes)
-
-	// Check if cursor falls within this paragraph
-	if cursorInCurrentParagraph(runePos, paraStart, paraLen, hasNewline) {
-		offsetInPara := runePos - paraStart
-		l, c := visualCursorInParagraph(string(paraRunes), offsetInPara, width)
-		return true, visLine + l, c
-	}
-
-	// Cursor is after this paragraph — count its visual lines and advance
-	if paraLen > 0 {
-		wrapped := ansi.Wrap(string(paraRunes), width)
-		visLine += len(wrapped)
-		visCol = 0
-
-		// If a newline follows, cursor may be at the newline position
-		if hasNewline && paraStart+paraLen == runePos {
-			return true, visLine, 0
-		}
-	} else if hasNewline {
-		// Empty paragraph (consecutive newlines) — one empty visual line
-		if paraStart == runePos {
-			return true, visLine, 0
-		}
-		visLine++
-		visCol = 0
-	}
-
-	return false, visLine, visCol
-}
-
-// visualCursorPos returns the visual line and column for a rune position in wrapped text.
-// Matches the word-wrapping algorithm used by ansi.Wrap: text is split into words,
-// and each word is placed on the current line if it fits, otherwise it starts a new line.
-// Long words that exceed the width are broken character-by-character.
-// Newlines (\n) force a line break and reset the paragraph.
-func visualCursorPos(text string, runePos, width int) (line, col int) {
-	if width <= 0 {
-		return 0, 0
-	}
-	runes := []rune(text)
-	if runePos > len(runes) {
-		runePos = len(runes)
-	}
-
-	visLine := 0
-	visCol := 0
-
-	// Process text paragraph by paragraph (split by newlines)
-	paraStart := 0
-	for paraStart <= len(runes) {
-		// Find end of this paragraph (next newline or end of text)
-		paraEnd := paraStart
-		for paraEnd < len(runes) && runes[paraEnd] != '\n' {
-			paraEnd++
-		}
-
-		done, l, c := processParagraph(runes, paraStart, paraEnd, runePos, visLine, visCol, width)
-		if done {
-			return l, c
-		}
-		visLine, visCol = l, c
-		paraStart = paraEnd + 1
-	}
-
-	return visLine, visCol
-}
-
-// visualCursorInParagraph computes the visual position within a single paragraph
-// (no newlines) for a given rune offset, using word-based wrapping.
-func visualCursorInParagraph(para string, offset, width int) (line, col int) {
-	if width <= 0 || para == "" {
-		return 0, 0
-	}
-	runes := []rune(para)
-	if offset > len(runes) {
-		offset = len(runes)
-	}
-
-	words := buildWordPositions(runes)
-	visLine, visCol := simulateWordWrap(runes, words, offset, width)
-
-	// Account for trailing spaces after the last word.
-	if len(words) > 0 {
-		lastWordEnd := words[len(words)-1].end
-		for j := lastWordEnd; j < len(runes); j++ {
-			if runes[j] == ' ' {
-				visCol++
-			}
-		}
-	}
-	return visLine, visCol
-}
-
-// simulateWordWrap walks through words to find the visual position of offset.
-func simulateWordWrap(runes []rune, words []wordInfo, offset, width int) (visLine, visCol int) {
-	for wi, w := range words {
-		ww := visibleWidth(string(runes[w.start:w.end]))
-
-		if ww > width {
-			found, l, c := processLongWord(runes, w, offset, visLine, visCol, width)
-			if found {
-				return l, c
-			}
-			visLine, visCol = l, c
-			continue
-		}
-
-		found, l, c := processNormalWord(runes, words, wi, w, offset, visLine, visCol, width)
-		if found {
-			return l, c
-		}
-		visLine, visCol = l, c
-	}
-	return visLine, visCol
-}
-
-// bytePosForCol finds the byte position in line that corresponds to the given
-// visual column. It is grapheme-cluster-aware so the returned byte offset
-// always lands on a cluster boundary and the accumulated width matches
-// visibleWidth (and thus the terminal's actual rendering). This is what keeps
-// the hardware cursor column aligned with the glyph under multi-rune clusters
-// such as ZWJ emoji, combining marks, and regional-indicator flags.
-func bytePosForCol(line string, col int) int {
-	if col <= 0 {
-		return 0
-	}
-	current := 0
-	gr := uniseg.NewGraphemes(line)
-	for gr.Next() {
-		cluster := gr.Str()
-		w := ansi.ClusterWidth(cluster)
-		if current+w > col {
-			// Cursor falls inside this cluster — place the marker at the
-			// cluster boundary (a cursor never splits a grapheme cluster).
-			start, _ := gr.Positions()
-			return start
-		}
-		current += w
-	}
-	return len(line)
 }
 
 // Focused returns focus state.

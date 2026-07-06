@@ -6,30 +6,35 @@ package tui
 
 import "testing"
 
-// TestFindVisualLine_WrapBoundary verifies that the position at the exact
+// TestCursorChunk_WrapBoundary verifies that the position at the exact
 // start of a wrapped visual line is mapped to that visual line, not the
 // previous one.
-func TestFindVisualLine_WrapBoundary(t *testing.T) {
+func TestCursorChunk_WrapBoundary(t *testing.T) {
 	// "1234567890" is exactly 10 display columns, so "abc" starts on the
 	// second visual line at buffer position 10.
-	vlm := buildVisualLineMap("1234567890abc", 10)
-	if len(vlm) != 2 {
-		t.Fatalf("expected 2 visual lines, got %d: %+v", len(vlm), vlm)
+	text := "1234567890abc"
+	chunks := wrapChunks(text, 10)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %+v", len(chunks), chunks)
 	}
-	if got := findVisualLine("1234567890abc", vlm, 10); got != 1 {
-		t.Errorf("findVisualLine(pos=10) = %d, want 1", got)
+	idx, off := cursorChunk(chunks, text, 10)
+	if idx != 1 || off != 0 {
+		t.Errorf("cursorChunk(pos=10) = (%d,%d), want (1,0)", idx, off)
 	}
 }
 
-// TestFindVisualLine_LogicalLineEnd verifies that the position right after
-// the last character of a logical line still belongs to that line.
-func TestFindVisualLine_LogicalLineEnd(t *testing.T) {
-	vlm := buildVisualLineMap("hello\nworld", 80)
-	if len(vlm) != 2 {
-		t.Fatalf("expected 2 visual lines, got %d", len(vlm))
+// TestCursorChunk_LogicalLineEnd verifies that the position right after the
+// last character of a logical line (on its newline) still belongs to that
+// line.
+func TestCursorChunk_LogicalLineEnd(t *testing.T) {
+	text := "hello\nworld"
+	chunks := wrapChunks(text, 80)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
 	}
-	if got := findVisualLine("hello\nworld", vlm, 5); got != 0 {
-		t.Errorf("findVisualLine(pos=5) = %d, want 0", got)
+	idx, off := cursorChunk(chunks, text, 5)
+	if idx != 0 || off != 5 {
+		t.Errorf("cursorChunk(pos=5) = (%d,%d), want (0,5)", idx, off)
 	}
 }
 

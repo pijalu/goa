@@ -361,15 +361,26 @@ func TestEditor_BracketedPaste_ExpandsTabs(t *testing.T) {
 	}
 }
 
+// visualCursorFor maps a rune position to (visual line, col) via the single
+// wrapChunks source of truth — the same layout used to render the editor. It
+// replaces the old standalone visualCursorPos simulation that could drift
+// from the displayed wrapping.
+func visualCursorFor(text string, pos, width int) (line, col int) {
+	chunks := wrapChunks(text, width)
+	idx, off := cursorChunk(chunks, text, pos)
+	c := chunks[idx]
+	return idx, visibleWidth(c.Text[:runeOffsetToByte(c.Text, off)])
+}
+
 func TestVisualCursorPos_SingleLine(t *testing.T) {
-	line, col := visualCursorPos("hello", 5, 80)
+	line, col := visualCursorFor("hello", 5, 80)
 	if line != 0 || col != 5 {
 		t.Errorf("expected (0,5), got (%d,%d)", line, col)
 	}
 }
 
 func TestVisualCursorPos_Empty(t *testing.T) {
-	line, col := visualCursorPos("", 0, 80)
+	line, col := visualCursorFor("", 0, 80)
 	if line != 0 || col != 0 {
 		t.Errorf("expected (0,0), got (%d,%d)", line, col)
 	}
@@ -377,7 +388,7 @@ func TestVisualCursorPos_Empty(t *testing.T) {
 
 func TestVisualCursorPos_MultiLine(t *testing.T) {
 	// "test\nme" cursor at end (after "me")
-	line, col := visualCursorPos("test\nme", 7, 80)
+	line, col := visualCursorFor("test\nme", 7, 80)
 	if line != 1 || col != 2 {
 		t.Errorf("\"test\\nme\" pos=7: expected (1,2), got (%d,%d)", line, col)
 	}
@@ -385,7 +396,7 @@ func TestVisualCursorPos_MultiLine(t *testing.T) {
 
 func TestVisualCursorPos_MultiLineAtNewline(t *testing.T) {
 	// "test\n" cursor at newline (after "test")
-	line, col := visualCursorPos("test\n", 5, 80)
+	line, col := visualCursorFor("test\n", 5, 80)
 	if line != 1 || col != 0 {
 		t.Errorf("\"test\\n\" pos=5: expected (1,0), got (%d,%d)", line, col)
 	}
@@ -393,7 +404,7 @@ func TestVisualCursorPos_MultiLineAtNewline(t *testing.T) {
 
 func TestVisualCursorPos_MultiLineFirstLine(t *testing.T) {
 	// "test\nme" cursor at "test"
-	line, col := visualCursorPos("test\nme", 2, 80)
+	line, col := visualCursorFor("test\nme", 2, 80)
 	if line != 0 || col != 2 {
 		t.Errorf("\"test\\nme\" pos=2: expected (0,2), got (%d,%d)", line, col)
 	}
@@ -403,7 +414,7 @@ func TestVisualCursorPos_WrappedLine(t *testing.T) {
 	// A line long enough to wrap: "hello world" in width 5
 	// Word-wrap produces: ["hello", "world"]
 	// Cursor at end of "hello world" (11)
-	line, col := visualCursorPos("hello world", 11, 5)
+	line, col := visualCursorFor("hello world", 11, 5)
 	// visibleWidth("hello world") = 11. Word-wrapped: "hello" (line 0), "world" (line 1)
 	// Cursor at end of "world" is on line 1, col 5
 	if line != 1 || col != 5 {
@@ -413,7 +424,7 @@ func TestVisualCursorPos_WrappedLine(t *testing.T) {
 
 func TestVisualCursorPos_TrailingSpaces(t *testing.T) {
 	// "> this is " cursor at end (10) — trailing space after "is"
-	line, col := visualCursorPos("> this is ", 10, 80)
+	line, col := visualCursorFor("> this is ", 10, 80)
 	if line != 0 || col != 10 {
 		t.Errorf("\"> this is \" pos=10 w=80: expected (0,10), got (%d,%d)", line, col)
 	}
@@ -421,7 +432,7 @@ func TestVisualCursorPos_TrailingSpaces(t *testing.T) {
 
 func TestVisualCursorPos_TrailingSpaces_Multiple(t *testing.T) {
 	// "hello   " cursor at end (8) — three trailing spaces after "hello"
-	line, col := visualCursorPos("hello   ", 8, 80)
+	line, col := visualCursorFor("hello   ", 8, 80)
 	if line != 0 || col != 8 {
 		t.Errorf("\"hello   \" pos=8 w=80: expected (0,8), got (%d,%d)", line, col)
 	}
@@ -430,7 +441,7 @@ func TestVisualCursorPos_TrailingSpaces_Multiple(t *testing.T) {
 func TestVisualCursorPos_TrailingSpaces_Wrapped(t *testing.T) {
 	// "hello world  " cursor at end (13) — two trailing spaces after "world", width=5
 	// Word-wrap: "hello" (line 0), "world" (line 1), trailing spaces count
-	line, col := visualCursorPos("hello world  ", 13, 5)
+	line, col := visualCursorFor("hello world  ", 13, 5)
 	if line != 1 || col != 7 {
 		t.Errorf("\"hello world  \" pos=13 w=5: expected (1,7), got (%d,%d)", line, col)
 	}
@@ -440,7 +451,7 @@ func TestVisualCursorPos_MultiLineWithWrap(t *testing.T) {
 	// Line 0 "hello" wraps: "hel", "lo" = 2 visual lines
 	// Line 1 "world" wraps: "wor", "ld" = 2 visual lines
 	// total = 4 visual lines, cursor col = "ld" = 2
-	line, col := visualCursorPos("hello\nworld", 11, 3)
+	line, col := visualCursorFor("hello\nworld", 11, 3)
 	if line != 3 || col != 2 {
 		t.Errorf("\"hello\\nworld\" pos=11 w=3: expected (3,2), got (%d,%d)", line, col)
 	}
@@ -1072,7 +1083,7 @@ func BenchmarkEditorRender_1000Chars(b *testing.B) {
 }
 
 // BenchmarkEditorComputeLayout_1000Chars isolates the layout computation
-// (wrapText + visualCursorPos) from the render overhead.
+// (wrapChunks + cursorChunk) from the render overhead.
 func BenchmarkEditorComputeLayout_1000Chars(b *testing.B) {
 	ed := NewEditor()
 	ed.SetFocused(true)
@@ -1095,7 +1106,8 @@ func BenchmarkEditorComputeLayout_1000Chars(b *testing.B) {
 	}
 }
 
-// BenchmarkVisualCursorPos_1000Chars isolates the visualCursorPos call.
+// BenchmarkVisualCursorPos_1000Chars isolates the cursor-location call
+// (wrapChunks + cursorChunk).
 func BenchmarkVisualCursorPos_1000Chars(b *testing.B) {
 	var sb strings.Builder
 	for i := 0; i < 20; i++ {
@@ -1108,7 +1120,7 @@ func BenchmarkVisualCursorPos_1000Chars(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		visualCursorPos(text, 500, 80)
+		visualCursorFor(text, 500, 80)
 	}
 }
 

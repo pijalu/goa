@@ -206,8 +206,10 @@ func (e *Editor) VisualCursor(width int) (line, col int) {
 		width = 80
 	}
 	fullText := e.prompt + string(e.buf)
-	cursorFullPos := len(e.prompt) + e.pos
-	return visualCursorPos(fullText, cursorFullPos, width)
+	chunks := wrapChunks(fullText, width)
+	idx, off := cursorChunk(chunks, fullText, len(e.prompt)+e.pos)
+	c := chunks[idx]
+	return idx, visibleWidth(c.Text[:runeOffsetToByte(c.Text, off)])
 }
 
 // expandPasteMarkers replaces [paste #N ...] markers with the actual pasted
@@ -514,116 +516,85 @@ func (e *Editor) nextGraphemeOrMarker(s string, pos int) int {
 	return BytePosToRuneIndex(s, next)
 }
 
-func (e *Editor) lineUp() {
+// editorChunks builds the visual-line layout (chunks) for the current buffer
+// at the editor's render width and returns it with the cursor's full-text rune
+// position. Shared by cursor navigation so movement, scrolling, and rendering
+// all agree on a single layout — the same wrapChunks used to display the text.
+func (e *Editor) editorChunks() (chunks []wrapChunk, fullText string, pos int) {
 	width := e.lastWidth
 	if width <= 0 {
 		width = 80
 	}
-	vlm := buildVisualLineMap(string(e.buf), width)
-	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
+	fullText = e.prompt + string(e.buf)
+	chunks = wrapChunks(fullText, width)
+	pos = len(e.prompt) + e.pos
+	return chunks, fullText, pos
+}
+
+// verticalMoveColumn resolves the target column for an up/down move using the
+// sticky (preferred) column rules. Shared by lineUp and lineDown.
+func (e *Editor) verticalMoveColumn(currentVisCol, sourceMaxVis, targetMaxVis int) int {
+	if !e.preferredColSet || currentVisCol < sourceMaxVis-1 {
+		if targetMaxVis < currentVisCol {
+			e.setPreferredCol(currentVisCol)
+			return targetMaxVis - 1
+		}
+		e.clearPreferredCol()
+		return currentVisCol
+	}
+	if targetMaxVis < currentVisCol || targetMaxVis < e.preferredVisualCol {
+		return targetMaxVis - 1
+	}
+	col := e.preferredVisualCol
+	e.clearPreferredCol()
+	return col
+}
+
+func (e *Editor) lineUp() {
+	chunks, fullText, pos := e.editorChunks()
+	currentVL, _ := cursorChunk(chunks, fullText, pos)
 	if currentVL <= 0 {
 		e.pos = 0
 		return
 	}
-	currentVisCol := e.pos - vlm[currentVL].bufStart
-	sourceMaxVis := vlm[currentVL].runeCount
-	targetVL := vlm[currentVL-1]
-	targetMaxVis := targetVL.runeCount
-
-	// Sticky column logic
-	var moveToCol int
-	if !e.preferredColSet || currentVisCol < sourceMaxVis-1 {
-		// P=0 or S=1 (cursor in middle of source line)
-		if targetMaxVis < currentVisCol {
-			// T=1: target shorter — set preferred, go to end
-			e.setPreferredCol(currentVisCol)
-			moveToCol = targetMaxVis - 1
-		} else {
-			// T=0: target fits
-			e.clearPreferredCol()
-			moveToCol = currentVisCol
-		}
-	} else {
-		// P=1, S=0 (cursor was clamped to end of source line)
-		if targetMaxVis < currentVisCol || targetMaxVis < e.preferredVisualCol {
-			// T=1 or U=1: target can't fit preferred
-			moveToCol = targetMaxVis - 1
-		} else {
-			// T=0, U=0: target fits preferred
-			moveToCol = e.preferredVisualCol
-			e.clearPreferredCol()
-		}
-	}
+	cur := chunks[currentVL]
+	target := chunks[currentVL-1]
+	moveToCol := e.verticalMoveColumn(pos-cur.Start, cur.End-cur.Start, target.End-target.Start)
 	if moveToCol < 0 {
 		moveToCol = 0
 	}
-	e.pos = targetVL.bufStart + moveToCol
+	e.pos = target.Start + moveToCol - len(e.prompt)
 	if e.pos < 0 {
 		e.pos = 0
 	}
-
-	// Adjust scroll so the new cursor position is visible
 	e.adjustScrollToCursor()
 }
 
 func (e *Editor) lineDown() {
-	width := e.lastWidth
-	if width <= 0 {
-		width = 80
-	}
-	vlm := buildVisualLineMap(string(e.buf), width)
-	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
-	if currentVL >= len(vlm)-1 {
+	chunks, fullText, pos := e.editorChunks()
+	currentVL, _ := cursorChunk(chunks, fullText, pos)
+	if currentVL >= len(chunks)-1 {
 		e.pos = len(e.buf)
 		return
 	}
-	currentVisCol := e.pos - vlm[currentVL].bufStart
-	sourceMaxVis := vlm[currentVL].runeCount
-	targetVL := vlm[currentVL+1]
-	targetMaxVis := targetVL.runeCount
-
-	// Sticky column logic
-	var moveToCol int
-	if !e.preferredColSet || currentVisCol < sourceMaxVis-1 {
-		if targetMaxVis < currentVisCol {
-			e.setPreferredCol(currentVisCol)
-			moveToCol = targetMaxVis - 1
-		} else {
-			e.clearPreferredCol()
-			moveToCol = currentVisCol
-		}
-	} else {
-		if targetMaxVis < currentVisCol || targetMaxVis < e.preferredVisualCol {
-			moveToCol = targetMaxVis - 1
-		} else {
-			moveToCol = e.preferredVisualCol
-			e.clearPreferredCol()
-		}
-	}
+	cur := chunks[currentVL]
+	target := chunks[currentVL+1]
+	moveToCol := e.verticalMoveColumn(pos-cur.Start, cur.End-cur.Start, target.End-target.Start)
 	if moveToCol < 0 {
 		moveToCol = 0
 	}
-	e.pos = targetVL.bufStart + moveToCol
+	e.pos = target.Start + moveToCol - len(e.prompt)
 	if e.pos < 0 {
 		e.pos = 0
 	}
-
-	// Adjust scroll so the new cursor position is visible
 	e.adjustScrollToCursor()
 }
 
 // adjustScrollToCursor adjusts e.scroll so the cursor is visible.
 // Called after cursor movement operations.
 func (e *Editor) adjustScrollToCursor() {
-	width := e.lastWidth
-	if width <= 0 {
-		width = 80
-	}
-	fullText := e.prompt + string(e.buf)
-	wrapped := wrapText(fullText, width)
-	totalVisLines := len(wrapped)
-	cursorFullPos := len(e.prompt) + e.pos
-	cursorVisLine, _ := visualCursorPos(fullText, cursorFullPos, width)
+	chunks, fullText, pos := e.editorChunks()
+	cursorVisLine, _ := cursorChunk(chunks, fullText, pos)
 
 	if cursorVisLine < e.scroll {
 		e.scroll = cursorVisLine
@@ -631,7 +602,7 @@ func (e *Editor) adjustScrollToCursor() {
 		e.scroll = cursorVisLine - e.maxLines + 1
 	}
 
-	maxScroll := totalVisLines - e.maxLines
+	maxScroll := len(chunks) - e.maxLines
 	if e.scroll > maxScroll {
 		e.scroll = maxScroll
 	}
@@ -746,33 +717,23 @@ func (e *Editor) applyHistoryIndex() {
 }
 
 // isOnFirstVisualLine returns true if the cursor is on the first visual line.
-// Uses buildVisualLineMap for correct visual line detection with wrapped lines.
 func (e *Editor) isOnFirstVisualLine() bool {
-	width := e.lastWidth
-	if width <= 0 {
-		width = 80
-	}
-	vlm := buildVisualLineMap(string(e.buf), width)
-	if len(vlm) == 0 {
+	chunks, fullText, pos := e.editorChunks()
+	if len(chunks) == 0 {
 		return true
 	}
-	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
-	return currentVL <= 0
+	idx, _ := cursorChunk(chunks, fullText, pos)
+	return idx <= 0
 }
 
 // isOnLastVisualLine returns true if the cursor is on the last visual line.
-// Uses buildVisualLineMap for correct visual line detection with wrapped lines.
 func (e *Editor) isOnLastVisualLine() bool {
-	width := e.lastWidth
-	if width <= 0 {
-		width = 80
-	}
-	vlm := buildVisualLineMap(string(e.buf), width)
-	if len(vlm) == 0 {
+	chunks, fullText, pos := e.editorChunks()
+	if len(chunks) == 0 {
 		return true
 	}
-	currentVL := findVisualLine(string(e.buf), vlm, e.pos)
-	return currentVL >= len(vlm)-1
+	idx, _ := cursorChunk(chunks, fullText, pos)
+	return idx >= len(chunks)-1
 }
 
 func (e *Editor) wordLeft() {

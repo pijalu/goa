@@ -125,55 +125,6 @@ func padToWidthStyled(s string, width int, bgAnsi string) string {
 	return bgAnsi + padded + ansi.Reset
 }
 
-// runeWidth returns the display width of a single rune.
-// East Asian wide characters count as 2.
-func runeWidth(r rune) int {
-	if r == '\t' {
-		return ansi.TabWidth // simplified — caller should track col
-	}
-	if isWideRune(r) {
-		return 2
-	}
-	return 1
-}
-
-// wideRanges lists Unicode ranges where characters have a display width of 2.
-// The slice is kept sorted by start code point for binary search.
-var wideRanges = []struct{ start, end rune }{
-	{0x1100, 0x115F},   // Hangul Jamo
-	{0x2600, 0x26FF},   // Miscellaneous Symbols
-	{0x2700, 0x27BF},   // Dingbats
-	{0x2E80, 0x9FFF},   // CJK Radicals, Ideographs
-	{0xAC00, 0xD7AF},   // Hangul Syllables
-	{0xF900, 0xFAFF},   // CJK Compatibility Ideographs
-	{0xFE30, 0xFE6F},   // CJK Compatibility Forms
-	{0xFF01, 0xFF60},   // Fullwidth Forms
-	{0xFFE0, 0xFFE6},   // Fullwidth Signs
-	{0x1B000, 0x1B0FF}, // Kana Supplement
-	{0x1F200, 0x1F2FF}, // Enclosed Ideographic Supplement
-	{0x1F300, 0x1F9FF}, // Emoji ranges
-	{0x20000, 0x2A6DF}, // CJK Extension B
-	{0x2A700, 0x2B73F}, // CJK Extension C
-	{0x2B740, 0x2B81F}, // CJK Extension D
-	{0x2F800, 0x2FA1F}, // CJK Compatibility Supplement
-}
-
-// isWideRune reports whether r belongs to a Unicode range with width 2.
-func isWideRune(r rune) bool {
-	lo, hi := 0, len(wideRanges)
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if r < wideRanges[mid].start {
-			hi = mid
-		} else if r > wideRanges[mid].end {
-			lo = mid + 1
-		} else {
-			return true
-		}
-	}
-	return false
-}
-
 // dimText returns text wrapped in faint ANSI styling.
 func dimText(text string) string {
 	return "\x1b[2m" + text + "\x1b[0m"

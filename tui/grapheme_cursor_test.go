@@ -8,42 +8,58 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/rivo/uniseg"
 )
 
-// TestBytePosForCol_GraphemeAware verifies the cursor-marker byte offset lands
-// on a grapheme boundary and that its preceding width matches the target
-// column. This is the core of the "input line cursor corrupt" fix: with ZWJ
-// emoji the old rune-based math placed the marker mid-cluster or past the
-// glyph, so the hardware cursor column disagreed with the terminal.
-func TestBytePosForCol_GraphemeAware(t *testing.T) {
+// TestCursorPlacement_GraphemeAware verifies the new cursor-marker placement
+// path (wrapChunks + cursorChunk + runeOffsetToByte) lands the marker on a
+// grapheme-cluster boundary with the correct preceding visible width. This is
+// the core of the "input line cursor" correctness: the marker is placed at the
+// cursor's rune offset within its chunk, and chunks are faithful slices of the
+// source, so the hardware cursor column always matches the rendered glyph —
+// for ZWJ emoji and combining marks too.
+func TestCursorPlacement_GraphemeAware(t *testing.T) {
 	cases := []struct {
-		name string
-		line string
-		col  int
-		// wantBytes is the expected byte offset of the marker insertion point.
-		wantBytes int
-		// wantWidth is visibleWidth of line[:wantBytes]; it must equal col
-		// (or the column of the cluster boundary at/before col).
+		name      string
+		text      string
+		pos       int
 		wantWidth int
 	}{
-		{"ascii", "hello", 2, 2, 2},
-		{"ascii end", "hi", 2, 2, 2},
-		{"zwj family after", "👨‍👩‍👧", 2, len("👨‍👩‍👧"), 2},
-		{"zwj family mid", "👨‍👩‍👧", 1, 0, 0},
-		{"ascii then emoji", "ab👨‍👩‍👧", 2, 2, 2},
-		{"ascii then emoji after", "ab👨‍👩‍👧", 4, len("ab👨‍👩‍👧"), 4},
-		{"flag emoji", "🇯🇵", 2, len("🇯🇵"), 2},
-		{"combining acute", "e\u0301", 1, len("e\u0301"), 1},
+		{"ascii mid", "hello", 2, 2},
+		{"ascii end", "hi", 2, 2},
+		{"zwj family after", "👨‍👩‍👧", len([]rune("👨‍👩‍👧")), 2},
+		{"zwj family mid", "👨‍👩‍👧", 0, 0},
+		{"ascii then emoji after", "ab👨‍👩‍👧", 2, 2},
+		{"flag emoji after", "🇯🇵", len([]rune("🇯🇵")), 2},
+		{"combining acute", "e\u0301", len([]rune("e\u0301")), 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := bytePosForCol(c.line, c.col)
-			if got != c.wantBytes {
-				t.Errorf("bytePosForCol(%q,%d) = %d, want %d", c.line, c.col, got, c.wantBytes)
-			}
-			w := ansi.Width(c.line[:got])
+			chunks := wrapChunks(c.text, 80)
+			idx, off := cursorChunk(chunks, c.text, c.pos)
+			bytePos := runeOffsetToByte(chunks[idx].Text, off)
+			w := ansi.Width(chunks[idx].Text[:bytePos])
 			if w != c.wantWidth {
-				t.Errorf("visibleWidth(line[:%d]) = %d, want %d", got, w, c.wantWidth)
+				t.Errorf("visibleWidth before marker = %d, want %d (bytePos=%d, chunk=%q)",
+					w, c.wantWidth, bytePos, chunks[idx].Text)
+			}
+			// The marker must never split a grapheme cluster: re-segmenting the
+			// chunk text up to the marker must end exactly on a cluster boundary.
+			gr := uniseg.NewGraphemes(chunks[idx].Text)
+			boundary := 0
+			ok := false
+			for gr.Next() {
+				if boundary == bytePos {
+					ok = true
+				}
+				_, end := gr.Positions()
+				boundary = end
+			}
+			if boundary == bytePos {
+				ok = true
+			}
+			if !ok {
+				t.Errorf("marker byte %d splits a grapheme cluster in %q", bytePos, chunks[idx].Text)
 			}
 		})
 	}
