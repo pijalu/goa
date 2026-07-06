@@ -113,6 +113,11 @@ func NewMultiAgentView(source string) *MultiAgentView {
 // Source returns the source label (e.g. "orchestration").
 func (v *MultiAgentView) Source() string { return v.source }
 
+// Active reports whether the view has an attached run with tabs (i.e. it should
+// be rendered). Returns false when no source has started, so the content/tabbar
+// components return nil and the chat viewport renders normally.
+func (v *MultiAgentView) Active() bool { return len(v.tabs) > 0 }
+
 // Meta returns the display-only source metadata (objective/topology/name).
 func (v *MultiAgentView) Meta() map[string]string {
 	out := make(map[string]string, len(v.meta))
