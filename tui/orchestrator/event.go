@@ -26,6 +26,12 @@ const (
 	EvAgentStarted AgentEventKind = "agent_started"
 	// EvAgentMessage carries a chunk of streamed agent text for its tab log.
 	EvAgentMessage AgentEventKind = "agent_message"
+	// EvAgentThinking carries a chunk of streamed agent thinking.
+	EvAgentThinking AgentEventKind = "agent_thinking"
+	// EvAgentToolCall carries a tool call the agent requested.
+	EvAgentToolCall AgentEventKind = "agent_tool_call"
+	// EvAgentToolResult carries a completed tool result for the agent.
+	EvAgentToolResult AgentEventKind = "agent_tool_result"
 	// EvAgentStats carries an updated usage snapshot for the agent's row.
 	EvAgentStats AgentEventKind = "agent_stats"
 	// EvAgentSteered records a steering injection for transparency.
@@ -49,14 +55,18 @@ type AgentStatsDelta struct {
 // INTO before feeding the view. No field references orchestration concepts:
 // source identity and run-level metadata travel in Meta as free-form strings.
 type AgentViewEvent struct {
-	Kind     AgentEventKind
-	AgentID  string
-	Role     string
-	Provider string
-	Model    string
-	Thinking string
-	Status   string
-	Text     string
-	Stats    *AgentStatsDelta
-	Meta     map[string]string
+	Kind      AgentEventKind
+	AgentID   string
+	Role      string
+	Provider  string
+	Model     string
+	Thinking  string
+	Status    string
+	Text      string
+	Tool      string
+	ToolInput string
+	CallID    string
+	OK        bool
+	Stats     *AgentStatsDelta
+	Meta      map[string]string
 }

@@ -46,6 +46,11 @@ type ToolExecutionComponent struct {
 	// onInvalidate is called when internal state changes (output, status,
 	// duration) so the owning ChatViewport can invalidate its render cache.
 	onInvalidate func()
+
+	// agentLabel is the owning agent's display label (e.g. "coder"). When set,
+	// it is rendered as a colored prefix on the tool header so multiple agents'
+	// tool calls are distinguishable in the chat viewport.
+	agentLabel string
 }
 
 // toolBox renders the tool header, body, and trailing blank with the
@@ -153,6 +158,9 @@ func (tc *ToolExecutionComponent) updateBox() {
 			call += " " + ansiToolOutput(tc.toolArgs)
 		}
 	}
+	if tc.agentLabel != "" {
+		call = ansi.Fg(hashColor(tc.agentLabel)) + "[" + tc.agentLabel + "]" + ansi.Reset + " " + call
+	}
 	tc.box.header = ansi.Fg(iconColor) + icon + " " + ansi.FgReset + call
 
 	// Build body
@@ -215,6 +223,16 @@ func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 // render cache.
 func (tc *ToolExecutionComponent) SetOnInvalidate(fn func()) {
 	tc.onInvalidate = fn
+}
+
+// SetAgentLabel sets the display label prefix for the tool widget.
+func (tc *ToolExecutionComponent) SetAgentLabel(label string) {
+	tc.agentLabel = label
+	tc.updateBox()
+	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
 }
 
 // SetOutput sets the tool's output text.

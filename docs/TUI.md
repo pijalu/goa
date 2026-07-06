@@ -223,6 +223,16 @@ Agent SDK → OutputEvent → AgentManager.OnEvent → TUI events channel
   → renderNow()
 ```
 
+The `ChatViewport` also supports concurrent agent-scoped streams. During an
+orchestrated run, the `App` maintains a per-agent `agentStreamRegistry`
+(`internal/app/agent_streams.go`) that maps each agent to a set of in-place
+widgets: one thinking block, one content block, and one tool execution widget
+per call. All of these reuse the same `ChatViewport` primitives as the main
+agent, so the orchestrator conversation renders in the normal chat viewport and
+parallel agents do not overwrite each other's blocks. See
+`internal/app/orchestrator_conversation_render_test.go` for the Filmstrip
+regression pattern.
+
 ## Agent-testable UI (Filmstrip)
 
 The TUI is designed to be testable **without a real terminal**, so that both

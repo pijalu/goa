@@ -66,8 +66,8 @@ func (a *App) openAgentTabSelector() {
 }
 
 // selectAgentTab selects a tab by key (or 1-based index) and refreshes the
-// steering prompt. Returns whether the selection matched. Invoked on the
-// command loop from the /orchestrate:tab command.
+// steering prompt + chat suppression. Returns whether the selection matched.
+// Invoked on the command loop from the /orchestrate:tab command.
 func (a *App) selectAgentTab(sel string) bool {
 	v := a.subs.agentView
 	if v == nil || !v.Active() {
@@ -76,8 +76,23 @@ func (a *App) selectAgentTab(sel string) bool {
 	ok := v.SelectByKey(sel)
 	if ok {
 		a.updateOrchInputPrompt()
+		a.updateChatSuppressionForOrchTab()
 	}
 	return ok
+}
+
+// updateChatSuppressionForOrchTab shows the chat viewport on the Conversation
+// tab and suppresses it on the Stats tab so the stats panel can replace it.
+func (a *App) updateChatSuppressionForOrchTab() {
+	v := a.subs.agentView
+	if v == nil || a.subs.chat == nil {
+		return
+	}
+	tab, ok := v.ActiveTab()
+	if !ok {
+		return
+	}
+	a.subs.chat.SetSuppressed(tab.Kind != orchpanel.TabConversation)
 }
 
 // orchSelectTabLabel selects a tab and returns its label (for the command's

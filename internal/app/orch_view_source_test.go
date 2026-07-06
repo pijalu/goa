@@ -46,6 +46,21 @@ func TestTranslateOrchEvent_Mappings(t *testing.T) {
 				Provider: "google", Thinking: "off"},
 		},
 		{
+			name: "agent_thinking passes text",
+			in:   orchestrator.Event{Type: orchestrator.EventAgentThinking, AgentID: "c-1", Role: "coder", Payload: map[string]any{"text": "reasoning"}},
+			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAgentThinking, AgentID: "c-1", Role: "coder", Text: "reasoning"},
+		},
+		{
+			name: "agent_tool_call passes tool/input/call_id",
+			in:   orchestrator.Event{Type: orchestrator.EventAgentToolCall, AgentID: "c-1", Role: "coder", Payload: map[string]any{"tool": "writefile", "input": `{"path":"x.txt"}`, "call_id": "t1"}},
+			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAgentToolCall, AgentID: "c-1", Role: "coder", Tool: "writefile", ToolInput: `{"path":"x.txt"}`, CallID: "t1"},
+		},
+		{
+			name: "agent_tool_result passes call_id/text/ok",
+			in:   orchestrator.Event{Type: orchestrator.EventAgentToolResult, AgentID: "c-1", Role: "coder", Payload: map[string]any{"call_id": "t1", "text": "written", "ok": true}},
+			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAgentToolResult, AgentID: "c-1", Role: "coder", CallID: "t1", Text: "written", OK: true},
+		},
+		{
 			name: "agent_message passes text",
 			in:   orchestrator.Event{Type: orchestrator.EventAgentMessage, AgentID: "c-1", Role: "coder", Payload: map[string]any{"text": "hi"}},
 			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAgentMessage, AgentID: "c-1", Role: "coder", Text: "hi"},

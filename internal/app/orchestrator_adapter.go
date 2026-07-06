@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,32 +124,64 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 const liveStatsInterval = 200 * time.Millisecond
 
 // applyOutputEvent translates an agentic.OutputEvent into AgentStats updates
-// and AgentMessage events on the runtime. It is safe to call from the agent's
-// observer goroutine.
+// and runtime events. It is safe to call from the agent's observer goroutine.
 func applyOutputEvent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
 	if h == nil {
 		return
 	}
 	switch ev.Type {
 	case agentic.EventToolCall:
-		h.Stats.IncToolCall()
+		applyToolCall(h, rt, ev)
+	case agentic.EventToolResult:
+		applyToolResult(h, rt, ev)
 	case agentic.EventTokenStats:
-		if ev.Timings != nil {
-			h.Stats.AddUsage(ev.Timings.PromptN, ev.Timings.PredictedN,
-				ev.Timings.CacheReadTokens, ev.Timings.CacheWriteTokens)
-		}
-		// Push a throttled live stats event so the TUI table updates in real
-		// time during long turns (not just at turn end).
-		if rt != nil {
-			rt.EmitLiveStats(h, liveStatsInterval)
-		}
+		applyTokenStats(h, rt, ev)
 	case agentic.EventContent:
-		if ev.Role == agentic.Assistant && ev.State == agentic.StateContent && ev.Text != "" {
-			if rt != nil {
-				rt.RecordAgentMessage(h, ev.Text)
-			}
-		}
+		applyContent(h, rt, ev)
 	}
+}
+
+func applyToolCall(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
+	h.Stats.IncToolCall()
+	if rt != nil {
+		rt.RecordAgentToolCall(h, ev.ToolName, ev.ToolInput, ev.ToolCallID)
+	}
+}
+
+func applyToolResult(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
+	if rt != nil {
+		rt.RecordAgentToolResult(h, ev.ToolCallID, ev.Text, !isErrorResult(ev.Text))
+	}
+}
+
+func applyTokenStats(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
+	if ev.Timings != nil {
+		h.Stats.AddUsage(ev.Timings.PromptN, ev.Timings.PredictedN,
+			ev.Timings.CacheReadTokens, ev.Timings.CacheWriteTokens)
+	}
+	// Push a throttled live stats event so the TUI table updates in real
+	// time during long turns (not just at turn end).
+	if rt != nil {
+		rt.EmitLiveStats(h, liveStatsInterval)
+	}
+}
+
+func applyContent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
+	if ev.Role != agentic.Assistant || ev.Text == "" || rt == nil {
+		return
+	}
+	switch ev.State {
+	case agentic.StateThinking:
+		rt.RecordAgentThinking(h, ev.Text)
+	case agentic.StateContent:
+		rt.RecordAgentMessage(h, ev.Text)
+	}
+}
+
+// isErrorResult reports whether a tool result text should be treated as failed.
+func isErrorResult(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	return strings.HasPrefix(trimmed, "Error:") || strings.HasPrefix(trimmed, agentic.ToolBudgetResultPrefix)
 }
 
 // OrchestratorDelegateTool is the tool the orchestrator agent uses to delegate

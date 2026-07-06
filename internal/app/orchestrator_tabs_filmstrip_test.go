@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -38,12 +37,17 @@ func TestOrchestratorTabs_Filmstrip_PersistenceAndPerFrameBar(t *testing.T) {
 	for i := 1; i < len(frames); i++ {
 		assertBarPresent(t, frames[i], "frame %d (%s)", i, frames[i].Label)
 	}
-	if !frameShowsStatsCH(t, frames) {
-		t.Error("no frame showed the stats table CH column")
-	}
 	assertBarPresent(t, frames[len(frames)-1], "tab bar disappeared after run finished (view must persist)")
 	if sc.app.subs.agentView == nil || !sc.app.subs.agentView.Finished() {
 		t.Error("view not finished after run_finished event")
+	}
+
+	// Switch to Stats tab and verify the CH column is visible there.
+	sc.engine.ApplySync(func() { sc.app.selectAgentTab("stats") })
+	frame := sc.frame()
+	c := frame.FindNode("orchestrator.AgentContent")
+	if c == nil || !strings.Contains(c.Text, "CH") {
+		t.Errorf("stats tab should show CH column; AgentContent = %v", c)
 	}
 }
 
@@ -78,17 +82,3 @@ func assertBarAbsent(t *testing.T, s tui.Snapshot, msg string) {
 		t.Error(msg)
 	}
 }
-
-func frameShowsStatsCH(t *testing.T, frames []tui.Snapshot) bool {
-	t.Helper()
-	for _, fr := range frames {
-		c := fr.Frame.FindNode("orchestrator.AgentContent")
-		if c != nil && strings.Contains(c.Text, "CH") {
-			return true
-		}
-	}
-	return false
-}
-
-// keep the orchestrator import referenced if helpers evolve.
-var _ = orchestrator.EventRunStarted

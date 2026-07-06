@@ -39,10 +39,11 @@ func (t *testTerminal) SetTitle(title string)                       {}
 
 func testSubsystems() *subsystems {
 	return &subsystems{
-		chat:      tui.NewChatViewport(),
-		statusMsg: tui.NewStatusMsg(),
-		footer:    tui.NewFooter(),
-		events:    event.MakeBus(16, 16, 16, 16),
+		chat:         tui.NewChatViewport(),
+		statusMsg:    tui.NewStatusMsg(),
+		footer:       tui.NewFooter(),
+		events:       event.MakeBus(16, 16, 16, 16),
+		agentStreams: newAgentStreamRegistry(),
 		cfg: &config.Config{
 			TUI: config.TUIConfig{
 				Transparency: config.TransparencyConfig{

@@ -9,11 +9,10 @@ import (
 	"testing"
 )
 
-// TestAgentContent_RendersEachTab builds a view via NEUTRAL events and asserts
-// each tab kind renders the expected ANSI-stripped substrings: the Stats tab
-// shows the CH column + a role, an agent tab shows the streamed text, and the
-// All tab shows both roles. The no-view case returns nil.
-func TestAgentContent_RendersEachTab(t *testing.T) {
+// TestAgentContent_RendersTabs builds a view via NEUTRAL events and asserts
+// the Conversation tab returns nil (chat renders the conversation) and the
+// Stats tab renders the CH column + a role. The no-view case returns nil.
+func TestAgentContent_RendersTabs(t *testing.T) {
 	c := NewAgentContent()
 
 	// No view attached: invisible.
@@ -26,10 +25,15 @@ func TestAgentContent_RendersEachTab(t *testing.T) {
 	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted, Meta: map[string]string{"topology": "hub", "objective": "ship it"}})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "orch-1", Role: "orchestrator", Model: "qwen", Provider: "lmstudio", Thinking: "medium"})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "coder-1", Role: "coder", Model: "gemma", Provider: "google", Thinking: "off"})
-	v.ApplyEvent(AgentViewEvent{Kind: EvAgentMessage, AgentID: "coder-1", Role: "coder", Text: "writing tests here"})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStats, AgentID: "coder-1", Role: "coder", Stats: &AgentStatsDelta{TokensIn: 40, TokensOut: 12, CacheRead: 1024}})
 
-	// Stats tab (default active): CH header + coder role + provider column.
+	// Conversation tab (default active): content component returns nil.
+	if lines := c.Render(90); lines != nil {
+		t.Errorf("conversation tab should render nil, got %v", lines)
+	}
+
+	// Stats tab: CH header + coder role + provider column.
+	v.SelectByKey("stats")
 	stats := stripAll(c.Render(90))
 	joined := strings.Join(stats, "\n")
 	for _, want := range []string{"CH", "coder", "(google)", "gemma", "1024", "orchestration"} {
@@ -37,43 +41,21 @@ func TestAgentContent_RendersEachTab(t *testing.T) {
 			t.Errorf("stats tab missing %q:\n%s", want, joined)
 		}
 	}
-
-	// Agent tab: select coder, render its transcript.
-	v.SelectByKey("coder-1")
-	agent := stripAll(c.Render(90))
-	joined = strings.Join(agent, "\n")
-	if !strings.Contains(joined, "writing tests here") {
-		t.Errorf("agent tab missing streamed text:\n%s", joined)
-	}
-
-	// All tab: both roles appear with their [role] prefix.
-	v.SelectByKey("all")
-	all := stripAll(c.Render(90))
-	joined = strings.Join(all, "\n")
-	for _, want := range []string{"[coder]", "writing tests here"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("all tab missing %q:\n%s", want, joined)
-		}
-	}
 }
 
-// TestAgentContent_ShowsNavHint asserts every tab renders the navigation hint
-// so users can discover Ctrl+x/Ctrl+z without reading docs.
+// TestAgentContent_ShowsNavHint asserts the Stats tab renders the navigation
+// hint so users can discover Ctrl+x without reading docs.
 func TestAgentContent_ShowsNavHint(t *testing.T) {
 	c := NewAgentContent()
 	v := NewMultiAgentView("orchestration")
 	c.SetView(v)
 	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-1", Role: "coder"})
+	v.SelectByKey("stats")
 
 	statsHint := strings.Join(stripAll(c.Render(80)), "\n")
 	if !strings.Contains(statsHint, "Ctrl+x tabs") {
 		t.Errorf("stats tab missing nav hint:\n%s", statsHint)
-	}
-	v.SelectByKey("c-1")
-	agentHint := strings.Join(stripAll(c.Render(80)), "\n")
-	if !strings.Contains(agentHint, "Ctrl+x tabs") {
-		t.Errorf("agent tab missing nav hint:\n%s", agentHint)
 	}
 }
 

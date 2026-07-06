@@ -17,10 +17,9 @@ import (
 // reads via the view's accessor methods. Render returns nil when no view is
 // attached, so the component is invisible outside orchestration mode.
 //
-// Tabs:
-//   - Stats: enhanced agent table + source header + aggregate footer.
-//   - Agent: that agent's streamed transcript (content/thinking/markers).
-//   - All:   every agent transcript interleaved in first-seen order.
+// Tabs are reduced to Conversation (default) and Stats. The conversation itself
+// renders in the main chat viewport via the agent stream registry, so this
+// component returns nil for the Conversation tab.
 type AgentContent struct {
 	view *MultiAgentView
 }
@@ -35,7 +34,9 @@ func (c *AgentContent) SetView(v *MultiAgentView) { c.view = v }
 func (c *AgentContent) View() *MultiAgentView { return c.view }
 
 // Render implements tui.Component. Returns nil when no run is active so the
-// chat viewport can render normally.
+// chat viewport can render normally. The Conversation tab content is rendered
+// by the main chat viewport via agent-scoped streams, so this component returns
+// nil for that tab.
 func (c *AgentContent) Render(width int) []string {
 	if c.view == nil || !c.view.Active() {
 		return nil
@@ -47,15 +48,10 @@ func (c *AgentContent) Render(width int) []string {
 	if !ok {
 		return nil
 	}
-	var lines []string
-	switch tab.Kind {
-	case TabStats:
-		lines = c.renderStats(width)
-	case TabAgent:
-		lines = c.renderAgent(tab.Key, width)
-	case TabAll:
-		lines = c.renderAll(width)
+	if tab.Kind == TabConversation {
+		return nil
 	}
+	lines := c.renderStats(width)
 	return append(lines, clip(navHintLine(), width))
 }
 
@@ -84,31 +80,6 @@ func (c *AgentContent) renderStats(width int) []string {
 	return out
 }
 
-func (c *AgentContent) renderAgent(agentID string, width int) []string {
-	v := c.view
-	out := []string{clip(c.agentHeader(agentID), width)}
-	log := v.LogFor(agentID)
-	if log == nil {
-		return out
-	}
-	for _, line := range log.Lines() {
-		out = append(out, clip("  "+styleLogLine(line), width))
-	}
-	return out
-}
-
-func (c *AgentContent) renderAll(width int) []string {
-	v := c.view
-	out := []string{clip(c.allHeader(), width)}
-	for _, log := range v.OrderedLogs() {
-		prefix := ansi.Faint + "[" + roleLabel(log.Role, log.AgentID) + "] " + ansi.Reset
-		for _, line := range log.Lines() {
-			out = append(out, clip(prefix+styleLogLine(line), width))
-		}
-	}
-	return out
-}
-
 // headerLine renders the Stats-tab header: source · topology · status.
 func (c *AgentContent) headerLine() string {
 	parts := []string{c.view.Source()}
@@ -117,30 +88,6 @@ func (c *AgentContent) headerLine() string {
 	}
 	parts = append(parts, viewStatusLabel(c.view))
 	return ansi.Bold + strings.Join(parts, " · ") + ansi.BoldReset
-}
-
-func (c *AgentContent) agentHeader(agentID string) string {
-	role := agentID
-	if l := c.view.LogFor(agentID); l != nil && l.Role != "" {
-		role = l.Role
-	}
-	return ansi.Bold + c.view.Source() + " · " + role + ansi.BoldReset
-}
-
-func (c *AgentContent) allHeader() string {
-	return ansi.Bold + c.view.Source() + " · all" + ansi.BoldReset
-}
-
-// styleLogLine renders one transcript line with kind-appropriate styling:
-// content normal, thinking/marker faint.
-func styleLogLine(line AgentLogLine) string {
-	switch line.Kind {
-	case LogContent:
-		return line.Text
-	case LogThinking, LogMarker:
-		return ansi.Faint + line.Text + ansi.Reset
-	}
-	return line.Text
 }
 
 // viewStatusLabel returns the colored run-state word for the header.
@@ -153,12 +100,4 @@ func viewStatusLabel(v *MultiAgentView) string {
 	default:
 		return ansi.Fg(colPrimary) + "running" + ansi.Reset
 	}
-}
-
-// roleLabel returns a stable human-readable label for a log entry.
-func roleLabel(role, agentID string) string {
-	if role != "" {
-		return role
-	}
-	return agentID
 }

@@ -5,8 +5,9 @@
 package app
 
 import (
-	"github.com/pijalu/goa/core/orchestrator"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
+
+	"github.com/pijalu/goa/core/orchestrator"
 )
 
 // orchEventSource is the runtime surface the view forwarder depends on. It is
@@ -42,7 +43,9 @@ func (a *App) runOrchestratorViewForwarder(done <-chan struct{}) {
 }
 
 // attachOrchView creates the view for a new run and binds the render-only
-// components + chat suppression + steering prompt to it, all on the command loop.
+// components. The default active tab is Conversation, so the chat viewport is
+// visible and the AgentContent region is hidden. Ctrl+x toggles to Stats,
+// which suppresses the chat and shows the stats panel.
 func (a *App) attachOrchView(src orchEventSource) {
 	view := orchpanel.NewMultiAgentView("orchestration")
 	a.apply(func() {
@@ -54,16 +57,20 @@ func (a *App) attachOrchView(src orchEventSource) {
 			a.subs.agentTabBar.SetView(view)
 		}
 		if a.subs.chat != nil {
-			a.subs.chat.SetSuppressed(true)
+			// Default to Conversation: chat is visible.
+			a.subs.chat.SetSuppressed(false)
+		}
+		if a.subs.agentStreams != nil {
+			a.subs.agentStreams = newAgentStreamRegistry()
 		}
 		a.updateOrchInputPrompt()
 	})
 }
 
 // drainOrchView translates each orchestrator event into a neutral
-// AgentViewEvent and applies it to the view on the command loop. It returns
-// when the run finishes (leaving the view attached and persistent) or when the
-// app is stopping.
+// AgentViewEvent and applies it on the command loop. It returns when the run
+// finishes (leaving the view attached and persistent) or when the app is
+// stopping.
 func (a *App) drainOrchView(done <-chan struct{}, src orchEventSource) {
 	sub := src.Subscribe()
 	for {
@@ -79,14 +86,40 @@ func (a *App) drainOrchView(done <-chan struct{}, src orchEventSource) {
 			if !ok {
 				continue
 			}
-			view := a.subs.agentView
-			if view == nil {
-				continue
-			}
 			a.apply(func() {
-				view.ApplyEvent(ne)
+				a.handleOrchViewEvent(ne)
 				a.updateOrchInputPrompt()
 			})
+		}
+	}
+}
+
+// handleOrchViewEvent routes a neutral agent view event to either the chat
+// viewport (conversation streaming) or the persistent stats panel (lifecycle,
+// stats, steering). It must be called on the command loop.
+func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
+	switch ne.Kind {
+	case orchpanel.EvAgentThinking:
+		a.handleAgentThinking(ne.AgentID, ne.Text)
+	case orchpanel.EvAgentMessage:
+		a.handleAgentContent(ne.AgentID, ne.Text)
+	case orchpanel.EvAgentToolCall:
+		a.handleAgentToolCall(ne.AgentID, ne.Tool, ne.ToolInput, ne.CallID)
+	case orchpanel.EvAgentToolResult:
+		a.handleAgentToolResult(ne.AgentID, ne.CallID, ne.Text, ne.OK)
+	case orchpanel.EvAgentStarted:
+		a.beginAgentStream(ne.Role, ne.AgentID)
+		if a.subs.agentView != nil {
+			a.subs.agentView.ApplyEvent(ne)
+		}
+	case orchpanel.EvAgentFinished:
+		if a.subs.agentView != nil {
+			a.subs.agentView.ApplyEvent(ne)
+		}
+		a.endAgentStream(ne.AgentID)
+	default:
+		if a.subs.agentView != nil {
+			a.subs.agentView.ApplyEvent(ne)
 		}
 	}
 }

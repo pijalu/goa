@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package app
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core/orchestrator"
+	"github.com/pijalu/goa/internal/agentic"
+)
+
+// TestOrchestratorAdapterEvents_ForwardThinkingAndToolEvents asserts that the
+// adapter's observer emits EventAgentThinking, EventAgentToolCall and
+// EventAgentToolResult from the runtime in addition to the existing
+// EventAgentMessage and stats plumbing.
+func TestOrchestratorAdapterEvents_ForwardThinkingAndToolEvents(t *testing.T) {
+	var mu sync.Mutex
+	var received []orchestrator.Event
+
+	h := orchestrator.NewAgentHandle("h-1", "coder", "gemma")
+	h.Provider = "google"
+
+	rt := newTestRuntimeForAdapter(t, func(evt orchestrator.Event) {
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+	})
+
+	observer := func(ev agentic.OutputEvent) { applyOutputEvent(h, rt, ev) }
+
+	observer(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateThinking, Text: "reasoning "})
+	observer(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateThinking, Text: "continues"})
+	observer(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateContent, Text: "answer "})
+	observer(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateContent, Text: "text"})
+	observer(agentic.OutputEvent{Type: agentic.EventToolCall, Role: agentic.Assistant, ToolName: "writefile", ToolInput: `{"path":"x.txt"}`, ToolCallID: "t1"})
+	observer(agentic.OutputEvent{Type: agentic.EventToolResult, Role: agentic.Assistant, ToolName: "writefile", ToolCallID: "t1", Text: "written"})
+
+	// Wait for the async emit (bus is buffered, but emit is synchronous in our
+	// fake runtime below). Allow a small window for the goroutine to collect.
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	got := append([]orchestrator.Event(nil), received...)
+	mu.Unlock()
+
+	assertHas := func(want orchestrator.EventType) {
+		t.Helper()
+		for _, ev := range got {
+			if ev.Type == want {
+				return
+			}
+		}
+		t.Errorf("missing event type %s in received events: %v", want, eventTypes(got))
+	}
+	assertHas(orchestrator.EventAgentThinking)
+	assertHas(orchestrator.EventAgentMessage)
+	assertHas(orchestrator.EventAgentToolCall)
+	assertHas(orchestrator.EventAgentToolResult)
+
+	// Check accumulated text on the message stream.
+	if got := rt.MessageFor("coder"); got != "answer text" {
+		t.Errorf("MessageFor(coder) = %q, want %q", got, "answer text")
+	}
+}
+
+// TestOrchestratorAdapterEvents_ToolResultErrorStatus asserts that the adapter
+// marks tool results starting with Error: or the goa-system budget prefix as
+// not ok.
+func TestOrchestratorAdapterEvents_ToolResultErrorStatus(t *testing.T) {
+	var mu sync.Mutex
+	var received []orchestrator.Event
+
+	h := orchestrator.NewAgentHandle("h-1", "coder", "gemma")
+	rt := newTestRuntimeForAdapter(t, func(evt orchestrator.Event) {
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+	})
+
+	observer := func(ev agentic.OutputEvent) { applyOutputEvent(h, rt, ev) }
+	observer(agentic.OutputEvent{Type: agentic.EventToolResult, ToolCallID: "t1", Text: "Error: file not found"})
+	observer(agentic.OutputEvent{Type: agentic.EventToolResult, ToolCallID: "t2", Text: agentic.ToolBudgetResultPrefix})
+
+	time.Sleep(10 * time.Millisecond)
+	mu.Lock()
+	got := append([]orchestrator.Event(nil), received...)
+	mu.Unlock()
+	for _, id := range []string{"t1", "t2"} {
+		var ok *bool
+		for _, ev := range got {
+			if ev.Type == orchestrator.EventAgentToolResult {
+				if gotID, _ := ev.Payload["call_id"].(string); gotID == id {
+					if b, bok := ev.Payload["ok"].(bool); bok {
+						ok = &b
+					}
+				}
+			}
+		}
+		if ok == nil || *ok {
+			t.Errorf("tool result %s should be ok=false, got ok=%v", id, ok)
+		}
+	}
+}
+
+func newTestRuntimeForAdapter(t *testing.T, emitFn func(orchestrator.Event)) *orchestrator.Runtime {
+	t.Helper()
+	cfg := config.OrchestratorConfig{Roles: map[string]config.OrchestratorRole{"coder": {Model: "gemma"}}}
+	pool := orchestrator.NewBoundedAgentPool(cfg, func(role, model string) (*orchestrator.AgentHandle, error) {
+		return orchestrator.NewAgentHandle("fake-"+role, role, model), nil
+	})
+	rt, err := orchestrator.NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if emitFn != nil {
+		// Replace the bus consumer with our own so emitted events are captured
+		// synchronously. The real runtime is closed before use, so this is safe.
+		ch := rt.Events()
+		go func() {
+			for ev := range ch {
+				emitFn(ev)
+			}
+		}()
+	}
+	return rt
+}
+
+func eventTypes(evts []orchestrator.Event) []orchestrator.EventType {
+	out := make([]orchestrator.EventType, len(evts))
+	for i, ev := range evts {
+		out[i] = ev.Type
+	}
+	return out
+}
+
+// allow context import if needed elsewhere.
+var _ = context.Background()

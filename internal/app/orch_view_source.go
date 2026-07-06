@@ -42,6 +42,28 @@ func translateOrchEvent(ev orchestrator.Event) (orchpanel.AgentViewEvent, bool) 
 			AgentID: ev.AgentID, Role: ev.Role,
 			Text: orchStr(ev.Payload, "text"),
 		}, true
+	case orchestrator.EventAgentThinking:
+		return orchpanel.AgentViewEvent{
+			Kind:    orchpanel.EvAgentThinking,
+			AgentID: ev.AgentID, Role: ev.Role,
+			Text: orchStr(ev.Payload, "text"),
+		}, true
+	case orchestrator.EventAgentToolCall:
+		return orchpanel.AgentViewEvent{
+			Kind:      orchpanel.EvAgentToolCall,
+			AgentID:   ev.AgentID, Role: ev.Role,
+			Tool:      orchStr(ev.Payload, "tool"),
+			ToolInput: orchStr(ev.Payload, "input"),
+			CallID:    orchStr(ev.Payload, "call_id"),
+		}, true
+	case orchestrator.EventAgentToolResult:
+		return orchpanel.AgentViewEvent{
+			Kind:    orchpanel.EvAgentToolResult,
+			AgentID: ev.AgentID, Role: ev.Role,
+			CallID: orchStr(ev.Payload, "call_id"),
+			Text:   orchStr(ev.Payload, "text"),
+			OK:     orchBool(ev.Payload, "ok"),
+		}, true
 	case orchestrator.EventAgentStats:
 		return orchpanel.AgentViewEvent{
 			Kind:     orchpanel.EvAgentStats,
@@ -101,6 +123,14 @@ func orchStr(p map[string]any, k string) string {
 		return v
 	}
 	return ""
+}
+
+// orchBool reads a bool payload field (false when absent/wrong type).
+func orchBool(p map[string]any, k string) bool {
+	if v, ok := p[k].(bool); ok {
+		return v
+	}
+	return false
 }
 
 // orchInt reads an int payload field (0 when absent/wrong type).

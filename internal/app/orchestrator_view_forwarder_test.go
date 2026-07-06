@@ -58,6 +58,7 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	subs.agentContent = agentContent
 	subs.agentTabBar = agentTabBar
 	subs.inputEditor = inp
+	subs.agentStreams = newAgentStreamRegistry()
 
 	return &orchViewScenario{
 		tb: tb, engine: engine, chat: chat,
@@ -147,9 +148,15 @@ func TestOrchestratorViewForwarder_RendersTabbedView(t *testing.T) {
 	sc.applyOrchEvents(lifecycleEvents())
 
 	frame := sc.frame()
-	checkNodeText(t, frame, "orchestrator.AgentTabBar", []string{"Stats", "All", "coder", "[1/"})
+	checkNodeText(t, frame, "orchestrator.AgentTabBar", []string{"Conversation", "Stats", "[1/"})
+	checkNodeText(t, frame, "ChatViewport", []string{"hello"})
+	checkAbsent(t, frame, "orchestrator.AgentContent", "AgentContent should be hidden on Conversation tab")
+
+	// Switch to Stats tab and verify the stats panel renders.
+	sc.app.selectAgentTab("stats")
+	frame = sc.frame()
 	checkNodeText(t, frame, "orchestrator.AgentContent", []string{"CH", "(google)", "gemma"})
-	checkAbsent(t, frame, "ChatViewport", "ChatViewport layer should be suppressed during orchestration")
+	checkAbsent(t, frame, "ChatViewport", "ChatViewport should be suppressed on Stats tab")
 
 	if sc.app.subs.agentView == nil || !sc.app.subs.agentView.Finished() {
 		t.Error("view not attached or not marked finished")
@@ -185,15 +192,15 @@ func TestOrchestratorViewForwarder_TabPickerJumpsByNumber(t *testing.T) {
 	sc.flush()
 	sc.applyOrchEvents(lifecycleEvents())
 
-	// Tabs: stats(1), c-1 coder(2), r-1 reviewer(3), all(4). Open + press 2.
+	// Tabs: Conversation(1), Stats(2). Open picker + press 2 to select Stats.
 	sc.engine.ApplySync(func() { sc.app.openAgentTabSelector() })
 	sc.engine.ApplySync(func() { sc.engine.SendKey("2") })
 
-	if tab, ok := sc.app.subs.agentView.ActiveTab(); !ok || tab.Key != "c-1" {
-		t.Errorf("after picker digit 2 active = %+v, want c-1", tab)
+	if tab, ok := sc.app.subs.agentView.ActiveTab(); !ok || tab.Key != "stats" {
+		t.Errorf("after picker digit 2 active = %+v, want stats", tab)
 	}
-	if got := sc.app.subs.getInput().Title(); got != "steer coder:" {
-		t.Errorf("prompt = %q, want 'steer coder:'", got)
+	if got := sc.app.subs.getInput().Title(); got != "steer all:" {
+		t.Errorf("prompt = %q, want 'steer all:'", got)
 	}
 }
 
@@ -207,14 +214,15 @@ func TestOrchestratorViewForwarder_SteerPromptReflectsActiveTab(t *testing.T) {
 	sc.applyOrchEvents(lifecycleEvents())
 
 	inp := sc.app.subs.getInput()
+	// Default active tab is Conversation; steering targets the last-started agent.
+	if got := inp.Title(); got != "steer reviewer:" {
+		t.Errorf("conversation-tab prompt = %q, want 'steer reviewer:'", got)
+	}
+	if !sc.app.selectAgentTab("stats") {
+		t.Fatal("selectAgentTab(stats) failed")
+	}
 	if got := inp.Title(); got != "steer all:" {
 		t.Errorf("stats-tab prompt = %q, want 'steer all:'", got)
-	}
-	if !sc.app.selectAgentTab("c-1") {
-		t.Fatal("selectAgentTab(c-1) failed")
-	}
-	if got := inp.Title(); got != "steer coder:" {
-		t.Errorf("coder-tab prompt = %q, want 'steer coder:'", got)
 	}
 }
 

@@ -59,12 +59,28 @@ goa --orchestrate <run-id>
 
 ## Observability
 
-While a run is active, a **Summary overlay** renders the live agent table
-(role / model / status / turns / tokens) and updates on the command loop. Run
-events (`run_started`, `agent_started`, `agent_message`, `agent_stats`,
-`agent_finished`, `run_finished`) are appended to
-`.goa/orchestrator/<run-id>/events.jsonl`, so every run is fully resumable and
-replayable via `ReplaySnapshot`.
+While a run is active, a persistent tab bar appears above the input line with
+two tabs:
+
+- **Conversation** (default) — the orchestrator and every specialist agent
+  stream their thinking, content, and tool calls into the main chat viewport as
+  agent-labeled, in-place-updating blocks. This is the same chat viewport used
+  by the main agent, so parallel agents each get their own distinct widget.
+- **Stats** — shows the live agent table (role / model / provider / status /
+turns / tokens / CH) and aggregate counters. Use `Ctrl+x` (or
+`/orchestrate:tab:<n>`) to toggle between the two.
+
+Run events (`run_started`, `agent_started`, `agent_message`, `agent_thinking`,
+`agent_tool_call`, `agent_tool_result`, `agent_stats`, `agent_finished`,
+`run_finished`) are appended to `.goa/orchestrator/<run-id>/events.jsonl`, so
+every run is fully resumable and replayable via `ReplaySnapshot`.
+
+## Steering
+
+On the **Conversation** tab, steering targets the most recently started agent
+(e.g. the currently delegated specialist). On the **Stats** tab, steering
+broadcasts to all live agents. Use `/orchestrate:steer <agent-id|all|orchestrator> <text>`
+or the input prompt shown in the footer.
 
 ## Goal binding
 

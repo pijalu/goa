@@ -407,6 +407,99 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 	return tc
 }
 
+// AddAgentThinkingBlock appends a thinking block labeled with the agent's
+// display name. Used by the orchestrator conversation path so each agent's
+// thinking is rendered in its own distinct, in-place-updating block.
+func (cv *ChatViewport) AddAgentThinkingBlock(label, text string, expanded bool) *thinkingBlock {
+	comp := newThinkingBlock(text)
+	comp.expanded = expanded
+	comp.agentLabel = label
+	cv.Append(MessageEntry{
+		Data: MessageData{Type: ConsoleThinkingBlock, Text: text, Meta: map[string]string{"agent": label}},
+		View: comp,
+	})
+	return comp
+}
+
+// UpdateAgentThinking updates the most recent agent-labeled thinking block for
+// label with the accumulated text. Returns true if a matching block was found.
+func (cv *ChatViewport) UpdateAgentThinking(label, text string) bool {
+	idx := cv.lastAgentEntryIndex(label, ConsoleThinkingBlock)
+	if idx < 0 {
+		return false
+	}
+	e := &cv.entries[idx]
+	e.Data.Text = text
+	if tb, ok := e.View.(*thinkingBlock); ok {
+		tb.SetText(text)
+	}
+	e.dirty = true
+	cv.generation++
+	return true
+}
+
+// AddAgentContent appends an assistant message from a specific agent.
+func (cv *ChatViewport) AddAgentContent(label, text string) Component {
+	msg := newAgentMessage(text, label)
+	cv.Append(MessageEntry{
+		Data: MessageData{Type: ConsoleAgentMessage, Text: text, Meta: map[string]string{"agent": label}},
+		View: msg,
+	})
+	return msg
+}
+
+// UpdateAgentContent updates the most recent agent-labeled content block for
+// label with the accumulated text. Returns true if a matching block was found.
+func (cv *ChatViewport) UpdateAgentContent(label, text string) bool {
+	idx := cv.lastAgentEntryIndex(label, ConsoleAgentMessage)
+	if idx < 0 {
+		return false
+	}
+	e := &cv.entries[idx]
+	e.Data.Text = text
+	setViewText(e.View, text)
+	e.dirty = true
+	cv.generation++
+	return true
+}
+
+// lastAgentEntryIndex returns the index of the most recent entry whose meta
+// agent matches label and whose type is one of types (or any type if types is
+// empty).
+func (cv *ChatViewport) lastAgentEntryIndex(label string, types ...ConsoleItemType) int {
+	for i := len(cv.entries) - 1; i >= 0; i-- {
+		if e := cv.entries[i]; e.Data.Meta != nil && e.Data.Meta["agent"] == label {
+			if len(types) == 0 {
+				return i
+			}
+			for _, t := range types {
+				if e.Data.Type == t {
+					return i
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// AddAgentToolExecution adds an agent-labeled tool widget and returns it.
+func (cv *ChatViewport) AddAgentToolExecution(label, name, argsJSON string) *ToolExecutionComponent {
+	tc := cv.AddToolExecution(name, argsJSON)
+	tc.SetAgentLabel(label)
+	// Stamp the meta entry so later updates can attribute this tool to the agent.
+	if last, ok := cv.Conversation.LastWhere(func(e MessageEntry) bool {
+		_, is := e.View.(*ToolExecutionComponent)
+		return is
+	}); ok {
+		if last.Data.Meta == nil {
+			last.Data.Meta = map[string]string{"agent": label}
+		} else {
+			last.Data.Meta["agent"] = label
+		}
+	}
+	return tc
+}
+
 // InvalidateRunningToolWidgets marks tool widgets that are still running as
 // dirty so the next render re-renders them. Used by the status spinner to
 // keep the shared animation frame in sync across the chat viewport.

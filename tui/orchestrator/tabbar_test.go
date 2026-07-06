@@ -11,9 +11,9 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// TestAgentTabBar_RendersActiveAndIndicator builds a 3-tab view with the middle
-// tab active and asserts the bar shows the source prefix, a bolded active label,
-// and a right-justified [2/3] indicator. The inactive case returns nil.
+// TestAgentTabBar_RendersActiveAndIndicator builds a view with the Conversation
+// tab active and asserts the bar shows the source prefix, a bolded active
+// label, and a right-justified [1/2] indicator. The inactive case returns nil.
 func TestAgentTabBar_RendersActiveAndIndicator(t *testing.T) {
 	b := NewAgentTabBar()
 
@@ -28,9 +28,7 @@ func TestAgentTabBar_RendersActiveAndIndicator(t *testing.T) {
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "a-1", Role: "alpha"})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "b-1", Role: "beta"})
 
-	// 4 tabs: stats, alpha, beta, all. Select the first agent tab.
-	v.SelectByKey("a-1")
-
+	// Conversation tab is active by default.
 	lines := b.Render(80)
 	if len(lines) != 1 {
 		t.Fatalf("Render returned %d lines, want 1", len(lines))
@@ -41,14 +39,14 @@ func TestAgentTabBar_RendersActiveAndIndicator(t *testing.T) {
 	if !strings.HasPrefix(plain, "orchestration:") {
 		t.Errorf("missing source prefix: %q", plain)
 	}
-	if !strings.Contains(plain, "alpha") || !strings.Contains(plain, "Stats") || !strings.Contains(plain, "All") {
+	if !strings.Contains(plain, "Conversation") || !strings.Contains(plain, "Stats") {
 		t.Errorf("tab labels missing: %q", plain)
 	}
 	// Active tab is bold (raw keeps the bold sequence), inactive are not.
 	if !strings.Contains(raw, ansi.Bold) {
 		t.Errorf("active tab not bolded: %q", raw)
 	}
-	if !strings.Contains(plain, "[2/4]") {
+	if !strings.Contains(plain, "[1/2]") {
 		t.Errorf("indicator missing/wrong: %q", plain)
 	}
 }

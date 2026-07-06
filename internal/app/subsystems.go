@@ -130,6 +130,10 @@ type subsystems struct {
 	agentContent *orchpanel.AgentContent
 	agentTabBar  *orchpanel.AgentTabBar
 
+	// agentStreams tracks per-agent streaming state for orchestrator
+	// conversation rendering in the main chat viewport.
+	agentStreams *agentStreamRegistry
+
 	// dreamScheduler triggers automatic memory consolidation after sessions.
 	dreamScheduler *dreamScheduler
 }
@@ -833,6 +837,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,
 		perfLoadDuration:  opts.PerfLoadDuration,
+		agentStreams:      newAgentStreamRegistry(),
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })

@@ -425,7 +425,8 @@ func (c *collapsibleComponent) Render(width int) []string {
 }
 
 // thinkingBlock renders thinking content: italic, dim, indented with ▏.
-// Supports collapse/expand with Enter (S8).
+// Supports collapse/expand with Enter (S8). When agentLabel is set, the header
+// reads "<label> thinking..." so multiple agents can be distinguished.
 type thinkingBlock struct {
 	text        string
 	expanded    bool
@@ -434,6 +435,7 @@ type thinkingBlock struct {
 	turnNumber  int
 	textColor   string // theme token name; defaults to "thinking_text"
 	headerColor string // theme token name; defaults to "thinking_header"
+	agentLabel  string
 }
 
 func newThinkingBlock(text string) *thinkingBlock {
@@ -490,7 +492,11 @@ func (m *thinkingBlock) buildHeader() string {
 		glyph = "▾"
 	}
 	headerColor := ansi.Fg(TheTheme.ColorHex(m.headerColor))
-	return fmt.Sprintf("  %s%s thinking...%s%s%s", headerColor, glyph, timingStr, tokenStr, ansi.Reset)
+	label := ""
+	if m.agentLabel != "" {
+		label = " " + m.agentLabel
+	}
+	return fmt.Sprintf("  %s%s%s thinking...%s%s%s", headerColor, glyph, label, timingStr, tokenStr, ansi.Reset)
 }
 
 func (m *thinkingBlock) computeGutter(width int) (string, int) {

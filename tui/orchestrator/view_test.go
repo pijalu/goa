@@ -21,7 +21,6 @@ func buildLifecycleView(t *testing.T) *MultiAgentView {
 		{Kind: EvSourceStarted, Meta: map[string]string{"objective": "ship it", "topology": "hub"}},
 		{Kind: EvAgentStarted, AgentID: "orch-1", Role: "orchestrator", Model: "qwen", Provider: "lmstudio", Thinking: "medium"},
 		{Kind: EvAgentStarted, AgentID: "coder-1", Role: "coder", Model: "gemma", Provider: "google", Thinking: "off"},
-		{Kind: EvAgentMessage, AgentID: "coder-1", Role: "coder", Text: "writing tests"},
 		{Kind: EvAgentStats, AgentID: "coder-1", Role: "coder", Status: "running", Stats: &AgentStatsDelta{
 			Turns: 1, TokensIn: 40, TokensOut: 12, CacheRead: 1024, ToolCalls: 2}},
 		{Kind: EvAgentSteered, AgentID: "coder-1", Role: "coder", Text: "use bcrypt"},
@@ -34,24 +33,20 @@ func buildLifecycleView(t *testing.T) *MultiAgentView {
 	return v
 }
 
-// TestView_TabsAndOrdering asserts the bookend + per-agent tabs and the default
-// active selection.
+// TestView_TabsAndOrdering asserts the Conversation + Stats tabs and the
+// default active selection.
 func TestView_TabsAndOrdering(t *testing.T) {
 	v := buildLifecycleView(t)
 	keys := tabKeys(v.Tabs())
-	want := []string{"stats", "orch-1", "coder-1", "all"}
+	want := []string{"conversation", "stats"}
 	if !equalSlice(keys, want) {
 		t.Errorf("tabs = %v, want %v", keys, want)
 	}
-	if active, _ := v.ActiveTab(); active.Key != "stats" {
-		t.Errorf("active = %q, want stats", active.Key)
+	if active, _ := v.ActiveTab(); active.Key != "conversation" {
+		t.Errorf("active = %q, want conversation", active.Key)
 	}
-	if got, want := v.TabIndex(), "1/4"; got != want {
+	if got, want := v.TabIndex(), "1/2"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
-	}
-	ordered := v.OrderedLogs()
-	if len(ordered) != 2 || ordered[0].AgentID != "orch-1" || ordered[1].AgentID != "coder-1" {
-		t.Errorf("OrderedLogs = %+v", ordered)
 	}
 }
 
@@ -60,23 +55,23 @@ func TestView_TabsAndOrdering(t *testing.T) {
 func TestView_Navigation(t *testing.T) {
 	v := buildLifecycleView(t)
 	v.Cycle(1)
-	if active, _ := v.ActiveTab(); active.Key != "orch-1" {
-		t.Errorf("after Cycle(1) active = %q, want orch-1", active.Key)
+	if active, _ := v.ActiveTab(); active.Key != "stats" {
+		t.Errorf("after Cycle(1) active = %q, want stats", active.Key)
 	}
-	if !v.SelectByKey("all") {
-		t.Fatal("SelectByKey(all) returned false")
+	if !v.SelectByKey("conversation") {
+		t.Fatal("SelectByKey(conversation) returned false")
 	}
-	if active, _ := v.ActiveTab(); active.Key != "all" {
-		t.Errorf("after SelectByKey(all) active = %q, want all", active.Key)
+	if active, _ := v.ActiveTab(); active.Key != "conversation" {
+		t.Errorf("after SelectByKey(conversation) active = %q, want conversation", active.Key)
 	}
-	if got, want := v.TabIndex(), "4/4"; got != want {
+	if got, want := v.TabIndex(), "1/2"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
 	}
-	if !v.SelectByKey("1") {
-		t.Error("SelectByKey(1) returned false")
+	if !v.SelectByKey("2") {
+		t.Error("SelectByKey(2) returned false")
 	}
 	if active, _ := v.ActiveTab(); active.Key != "stats" {
-		t.Errorf("after SelectByKey(1) active = %q, want stats", active.Key)
+		t.Errorf("after SelectByKey(2) active = %q, want stats", active.Key)
 	}
 	if v.SelectByKey("nope") {
 		t.Error("SelectByKey(unknown) should return false")
@@ -110,8 +105,8 @@ func TestView_StatsRow(t *testing.T) {
 	}
 }
 
-// TestView_TranscriptAndMarkers checks the streamed text and the steer/finish
-// markers were captured into the agent log.
+// TestView_TranscriptAndMarkers checks the steer/finish markers were captured
+// into the agent log even though they are no longer rendered as transcript tabs.
 func TestView_TranscriptAndMarkers(t *testing.T) {
 	v := buildLifecycleView(t)
 	log := v.LogFor("coder-1")
@@ -119,7 +114,7 @@ func TestView_TranscriptAndMarkers(t *testing.T) {
 		t.Fatal("missing coder log")
 	}
 	lines := log.Lines()
-	for _, want := range []string{"writing tests", "[steer] use bcrypt", "[finished]"} {
+	for _, want := range []string{"[steer] use bcrypt", "[finished]"} {
 		if !containsJoin(lines, want) {
 			t.Errorf("coder log missing %q: %+v", want, lines)
 		}
@@ -139,8 +134,9 @@ func TestView_FailedRun(t *testing.T) {
 	}
 }
 
-// TestView_ActiveAgentID verifies steering-target resolution: agent tabs return
-// their AgentID; Stats/All return "" (meaning "steer all").
+// TestView_ActiveAgentID verifies steering-target resolution: on the
+// Conversation tab it returns the most recently started agent; on Stats it
+// returns "" (meaning "steer all").
 func TestView_ActiveAgentID(t *testing.T) {
 	v := NewMultiAgentView("orchestration")
 	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
@@ -153,53 +149,19 @@ func TestView_ActiveAgentID(t *testing.T) {
 			t.Errorf("active %q AgentID = %q, want %q", sel, got, want)
 		}
 	}
+	wantFor("conversation", "coder-1")
 	wantFor("stats", "")
-	wantFor("coder-1", "coder-1")
-	wantFor("all", "")
 }
 
-// TestView_LateAgentKeepsActiveTab verifies inserting a new agent tab (which
-// shifts the All tab right) keeps the active selection stable.
-func TestView_LateAgentKeepsActiveTab(t *testing.T) {
-	v := NewMultiAgentView("orchestration")
-	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
-	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "a-1", Role: "a"})
-	v.SelectByKey("all")
-	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "b-1", Role: "b"})
-	if active, _ := v.ActiveTab(); active.Key != "all" {
-		t.Errorf("late insert moved active to %q, want all", active.Key)
-	}
-	if got, want := v.TabIndex(), "4/4"; got != want {
-		t.Errorf("TabIndex = %q, want %q", got, want)
-	}
-}
-
-// TestView_DisambiguatesDuplicateRoles asserts that when the same role
-// recurs (hub delegating to "coder" twice), the second agent gets a ·2 suffix
-// on BOTH its tab label and its stats row label, so tabs stay distinguishable.
+// TestView_DisambiguatesDuplicateRoles asserts that the DisambiguateLabel rule
+// still produces "coder", "coder·2" for repeated roles.
 func TestView_DisambiguatesDuplicateRoles(t *testing.T) {
 	v := NewMultiAgentView("orchestration")
-	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
-	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-1", Role: "coder", Provider: "p", Model: "m"})
-	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "c-2", Role: "coder", Provider: "p", Model: "m"})
-
-	labels := make([]string, 0, 2)
-	for _, tab := range v.Tabs() {
-		if tab.Kind == TabAgent {
-			labels = append(labels, tab.Label)
-		}
+	if got := v.DisambiguateLabel("coder"); got != "coder" {
+		t.Errorf("first label = %q, want coder", got)
 	}
-	if !equalSlice(labels, []string{"coder", "coder·2"}) {
-		t.Errorf("agent tab labels = %v, want [coder coder·2]", labels)
-	}
-	for _, row := range v.Rows() {
-		want := "coder"
-		if row.AgentID == "c-2" {
-			want = "coder·2"
-		}
-		if row.Label != want {
-			t.Errorf("row %s label = %q, want %q", row.AgentID, row.Label, want)
-		}
+	if got := v.DisambiguateLabel("coder"); got != "coder·2" {
+		t.Errorf("second label = %q, want coder·2", got)
 	}
 }
 

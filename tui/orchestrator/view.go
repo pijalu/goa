@@ -13,12 +13,12 @@ import (
 type AgentTabKind int
 
 const (
-	// TabStats is the aggregate stats table tab (always present, index 0).
-	TabStats AgentTabKind = iota
-	// TabAgent is one per-agent transcript tab.
-	TabAgent
-	// TabAll is the interleaved transcript tab (always present, last index).
-	TabAll
+	// TabConversation is the default chat-visible tab. Selecting it hides the
+	// stats panel and lets the normal chat viewport render the orchestrator
+	// conversation via agent-scoped streaming blocks.
+	TabConversation AgentTabKind = iota
+	// TabStats is the aggregate stats table tab (always present).
+	TabStats
 )
 
 // AgentTab is one selectable tab. Agent tabs are keyed by AgentID but labeled
@@ -91,6 +91,10 @@ func (l *AgentLog) Lines() []AgentLogLine {
 // them via App.apply, so the view is only ever touched by the loop. The two
 // render-only components (AgentContent, AgentTabBar) hold a pointer and read
 // via the accessor methods below — never mutating.
+//
+// Tabs are reduced to Conversation (default) and Stats. The conversation
+// itself renders in the normal chat viewport via the agent stream registry;
+// this view only owns the stats table.
 type MultiAgentView struct {
 	source   string
 	meta     map[string]string
@@ -150,8 +154,6 @@ func (v *MultiAgentView) ApplyEvent(ev AgentViewEvent) {
 		v.handleSourceFinished(ev)
 	case EvAgentStarted:
 		v.handleAgentStarted(ev)
-	case EvAgentMessage:
-		v.handleAgentMessage(ev)
 	case EvAgentStats:
 		v.handleAgentStats(ev)
 	case EvAgentSteered:
@@ -180,29 +182,13 @@ func (v *MultiAgentView) handleSourceFinished(ev AgentViewEvent) {
 
 func (v *MultiAgentView) handleAgentStarted(ev AgentViewEvent) {
 	v.ensureBookendTabs()
-	role := ev.Role
-	if role == "" {
-		role = ev.AgentID
-	}
-	label := v.disambiguateLabel(role)
-	v.ensureAgentTab(ev.AgentID, label)
 	v.upsertRow(ev)
-	v.setRowLabel(ev.AgentID, label)
-	v.ensureLog(ev.AgentID, label)
-}
-
-// disambiguateLabel returns a stable display label for a role, appending a
-// ·N suffix when the same role recurs (e.g. hub delegating to "coder" twice
-// yields "coder" then "coder·2") so tabs and rows stay distinguishable.
-func (v *MultiAgentView) disambiguateLabel(role string) string {
-	if v.roleCount == nil {
-		v.roleCount = map[string]int{}
+	if ev.AgentID != "" {
+		v.order = append(v.order, ev.AgentID)
+		v.ensureLog(ev.AgentID, ev.Role)
+		label := v.DisambiguateLabel(ev.Role)
+		v.setRowLabel(ev.AgentID, label)
 	}
-	v.roleCount[role]++
-	if v.roleCount[role] == 1 {
-		return role
-	}
-	return fmt.Sprintf("%s·%d", role, v.roleCount[role])
 }
 
 func (v *MultiAgentView) setRowLabel(agentID, label string) {
@@ -214,16 +200,19 @@ func (v *MultiAgentView) setRowLabel(agentID, label string) {
 	}
 }
 
-func (v *MultiAgentView) handleAgentMessage(ev AgentViewEvent) {
-	if ev.Text == "" {
-		return
+// disambiguateLabel returns a stable display label for a role, appending a
+// ·N suffix when the same role recurs (e.g. hub delegating to "coder" twice
+// yields "coder" then "coder·2") so tabs and rows stay distinguishable.
+// It is exported so the agent stream registry can reuse the same rule.
+func (v *MultiAgentView) DisambiguateLabel(role string) string {
+	if v.roleCount == nil {
+		v.roleCount = map[string]int{}
 	}
-	v.ensureLog(ev.AgentID, ev.Role)
-	kind := LogContent
-	if ev.Status == "thinking" {
-		kind = LogThinking
+	v.roleCount[role]++
+	if v.roleCount[role] == 1 {
+		return role
 	}
-	v.appendLine(ev.AgentID, AgentLogLine{Kind: kind, Text: ev.Text})
+	return fmt.Sprintf("%s·%d", role, v.roleCount[role])
 }
 
 func (v *MultiAgentView) handleAgentStats(ev AgentViewEvent) {
@@ -254,38 +243,17 @@ func (v *MultiAgentView) handleAgentFinished(ev AgentViewEvent) {
 	v.appendLine(ev.AgentID, AgentLogLine{Kind: LogMarker, Text: "[finished]"})
 }
 
-// ensureBookendTabs guarantees the Stats (index 0) and All (last index) tabs
-// exist. Agent tabs are inserted between them.
+// ensureBookendTabs guarantees the Conversation (index 0) and Stats (index 1)
+// tabs exist. Conversation is selected by default so the chat is visible.
 func (v *MultiAgentView) ensureBookendTabs() {
 	if len(v.tabs) > 0 {
 		return
 	}
 	v.tabs = []AgentTab{
+		{Key: "conversation", Label: "Conversation", Kind: TabConversation},
 		{Key: "stats", Label: "Stats", Kind: TabStats},
-		{Key: "all", Label: "All", Kind: TabAll},
 	}
 	v.active = 0
-}
-
-// ensureAgentTab inserts an agent tab before the All tab (preserving the active
-// tab's identity when the slice shifts). Idempotent.
-func (v *MultiAgentView) ensureAgentTab(key, label string) {
-	for _, t := range v.tabs {
-		if t.Key == key {
-			return
-		}
-	}
-	v.order = append(v.order, key)
-	insertAt := len(v.tabs)
-	if n := len(v.tabs); n > 0 && v.tabs[n-1].Kind == TabAll {
-		insertAt = n - 1
-	}
-	v.tabs = append(v.tabs, AgentTab{})
-	copy(v.tabs[insertAt+1:], v.tabs[insertAt:])
-	v.tabs[insertAt] = AgentTab{Key: key, Label: label, Kind: TabAgent}
-	if v.active >= insertAt {
-		v.active++
-	}
 }
 
 // upsertRow merges a partial event into the row for ev.AgentID, creating it on
@@ -367,14 +335,19 @@ func (v *MultiAgentView) ActiveTab() (AgentTab, bool) {
 	return v.tabs[v.active], true
 }
 
-// ActiveAgentID returns the AgentID of the active agent tab, or "" when the
-// active tab is Stats/All. Used by steering to target the selected agent.
+// ActiveAgentID returns the AgentID of the most recently started agent when
+// the active tab is Conversation, so steering can target a specific agent
+// without requiring the user to switch away from the chat. On the Stats tab it
+// returns "" so steering broadcasts to all agents.
 func (v *MultiAgentView) ActiveAgentID() string {
-	t, ok := v.ActiveTab()
-	if !ok || t.Kind != TabAgent {
+	if len(v.order) == 0 {
 		return ""
 	}
-	return t.Key
+	tab, ok := v.ActiveTab()
+	if !ok || tab.Kind != TabConversation {
+		return ""
+	}
+	return v.order[len(v.order)-1]
 }
 
 // SelectByKey selects the tab whose Key matches sel, or the 1-based numeric
@@ -424,19 +397,6 @@ func (v *MultiAgentView) Rows() []AgentEnhancedRow {
 // LogFor returns the transcript for one agent (nil if absent).
 func (v *MultiAgentView) LogFor(agentID string) *AgentLog {
 	return v.logs[agentID]
-}
-
-// OrderedLogs returns every agent transcript in first-seen order, for the
-// "All" tab. The returned pointers are owned by the view; callers must not
-// mutate them.
-func (v *MultiAgentView) OrderedLogs() []*AgentLog {
-	out := make([]*AgentLog, 0, len(v.order))
-	for _, id := range v.order {
-		if l := v.logs[id]; l != nil {
-			out = append(out, l)
-		}
-	}
-	return out
 }
 
 // AggregateTokens sums every row's token counters for the stats footer.

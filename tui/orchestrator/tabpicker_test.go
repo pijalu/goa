@@ -11,8 +11,8 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// buildPickerView creates a view with 4 tabs (stats, coder, reviewer, all) for
-// picker tests, with the stats tab active initially.
+// buildPickerView creates a view with 2 tabs (Conversation, Stats) for picker
+// tests, with the Conversation tab active initially.
 func buildPickerView(t *testing.T) *MultiAgentView {
 	t.Helper()
 	v := NewMultiAgentView("orchestration")
@@ -30,9 +30,9 @@ func TestAgentTabPicker_DigitJumpPicksAndCloses(t *testing.T) {
 	p.SetPickFunc(func(key string) { picked = key })
 	p.SetCloseFunc(func() { closed = true })
 
-	p.HandleInput("3") // reviewer (index 2)
-	if picked != "r-1" {
-		t.Errorf("digit 3 picked %q, want r-1", picked)
+	p.HandleInput("2") // stats (index 1)
+	if picked != "stats" {
+		t.Errorf("digit 2 picked %q, want stats", picked)
 	}
 	if !closed {
 		t.Error("picker did not close after pick")
@@ -46,9 +46,9 @@ func TestAgentTabPicker_OutOfRangeDigitIgnored(t *testing.T) {
 	p.SetPickFunc(func(string) { called = true })
 	p.SetCloseFunc(func() {})
 
-	p.HandleInput("9") // only 4 tabs
+	p.HandleInput("9") // only 2 tabs
 	if called {
-		t.Error("digit 9 should not pick when only 4 tabs exist")
+		t.Error("digit 9 should not pick when only 2 tabs exist")
 	}
 }
 
@@ -59,11 +59,10 @@ func TestAgentTabPicker_ArrowThenEnter(t *testing.T) {
 	p.SetPickFunc(func(key string) { picked = key })
 	p.SetCloseFunc(func() {})
 
-	p.HandleInput(tui.KeyDown) // stats -> coder
-	p.HandleInput(tui.KeyDown) // coder -> reviewer
+	p.HandleInput(tui.KeyDown) // Conversation -> Stats
 	p.HandleInput(tui.KeyEnter)
-	if picked != "r-1" {
-		t.Errorf("arrow+enter picked %q, want r-1", picked)
+	if picked != "stats" {
+		t.Errorf("arrow+enter picked %q, want stats", picked)
 	}
 }
 
@@ -91,7 +90,7 @@ func TestAgentTabPicker_RendersNumberedList(t *testing.T) {
 	p.SetCloseFunc(func() {})
 
 	joined := strings.Join(stripAll(p.Render(60)), "\n")
-	for _, want := range []string{"1", "2", "coder", "reviewer", "All", "jump"} {
+	for _, want := range []string{"1", "2", "Conversation", "Stats", "jump"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("picker render missing %q:\n%s", want, joined)
 		}

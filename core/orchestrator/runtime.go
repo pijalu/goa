@@ -429,6 +429,36 @@ func (r *Runtime) RecordAgentMessage(h *AgentHandle, text string) {
 		Payload: map[string]any{"text": text}})
 }
 
+// RecordAgentThinking emits a display-only thinking chunk event. It does NOT
+// accumulate into r.msgs; thinking is transient UI state.
+func (r *Runtime) RecordAgentThinking(h *AgentHandle, text string) {
+	if h == nil || text == "" {
+		return
+	}
+	r.emit(Event{Type: EventAgentThinking, AgentID: h.ID, Role: h.Role,
+		Payload: map[string]any{"text": text}})
+}
+
+// RecordAgentToolCall emits a tool-call event so the TUI can render a running
+// tool widget for the agent.
+func (r *Runtime) RecordAgentToolCall(h *AgentHandle, tool, input, callID string) {
+	if h == nil || tool == "" {
+		return
+	}
+	r.emit(Event{Type: EventAgentToolCall, AgentID: h.ID, Role: h.Role,
+		Payload: map[string]any{"tool": tool, "input": input, "call_id": callID}})
+}
+
+// RecordAgentToolCall emits a tool-result event so the TUI can finalize the
+// corresponding tool widget.
+func (r *Runtime) RecordAgentToolResult(h *AgentHandle, callID, text string, ok bool) {
+	if h == nil {
+		return
+	}
+	r.emit(Event{Type: EventAgentToolResult, AgentID: h.ID, Role: h.Role,
+		Payload: map[string]any{"call_id": callID, "text": text, "ok": ok}})
+}
+
 // MessageFor returns the full streamed assistant text accumulated for a role
 // in this run so far. Used by Delegate to return a sub-agent's answer.
 func (r *Runtime) MessageFor(role string) string {
