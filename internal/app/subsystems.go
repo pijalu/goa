@@ -372,7 +372,7 @@ func initGoalSystem(projectDir string, eventBus *event.Bus, agentMgr *core.Agent
 		}
 	}
 	publisher := &goalEventPublisher{bus: eventBus}
-	manager := core.NewGoalManager(projectDir, core.GoalDependencies{
+	manager := core.NewGoalManager(filepath.Join(projectDir, ".goa"), core.GoalDependencies{
 		Publisher:  publisher,
 		Telemetry:  nil,
 		ReminderFn: reminderFn,
