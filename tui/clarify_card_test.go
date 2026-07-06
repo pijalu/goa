@@ -29,6 +29,27 @@ func TestClarifyCard_RenderContainsAllFields(t *testing.T) {
 	}
 }
 
+func TestClarifyCard_RenderUsesAnsiNotHex(t *testing.T) {
+	c := NewClarifyCard("Topic", "Summary", "Question?", []string{"a", "b"})
+	raw := strings.Join(c.Render(60), "\n")
+	// The bug produced literal hex strings like #30363d in the output because
+	// cardColors returned raw ColorHex values. Ensure no hex tokens leak.
+	hexPatterns := []string{"#30363d", "#c9d1d9", "#8b949e", "#58a6ff"}
+	for _, hex := range hexPatterns {
+		if strings.Contains(raw, hex) {
+			t.Errorf("raw hex color %q leaked into render:\n%s", hex, raw)
+		}
+	}
+	// ANSI escape sequences should be present (and stripped by ansi.Strip).
+	if !strings.Contains(raw, "\x1b[") {
+		t.Errorf("expected ANSI escape sequences in render, got:\n%s", raw)
+	}
+	stripped := ansi.Strip(raw)
+	if strings.Contains(stripped, "\x1b[") {
+		t.Errorf("ansi.Strip failed to remove escapes from:\n%s", raw)
+	}
+}
+
 func TestClarifyCard_EmptyOptionalFields(t *testing.T) {
 	c := NewClarifyCard("Title", "", "Just answer", nil)
 	out := renderCardPlain(c, 40)

@@ -80,17 +80,17 @@ func (c *ClarifyCard) Render(width int) []string {
 	return lines
 }
 
-// cardColors resolves the theme colors used by the card.
+// cardColors resolves the theme colors used by the card as ANSI escape sequences.
 func cardColors() (bd, ac, dim string) {
-	bd = TheTheme.ColorHex("goa_panel_border")
+	bd = ansi.Fg(TheTheme.ColorHex("goa_panel_border"))
 	if bd == "" {
-		bd = TheTheme.ColorHex("border_default")
+		bd = ansi.Fg(TheTheme.ColorHex("border_default"))
 	}
-	ac = TheTheme.ColorHex("accent")
+	ac = ansi.Fg(TheTheme.ColorHex("accent"))
 	if ac == "" {
-		ac = TheTheme.ColorHex("selection_fg")
+		ac = ansi.Fg(TheTheme.ColorHex("selection_fg"))
 	}
-	dim = TheTheme.ColorHex("system_msg")
+	dim = ansi.Fg(TheTheme.ColorHex("system_msg"))
 	return bd, ac, dim
 }
 
