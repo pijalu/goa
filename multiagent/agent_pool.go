@@ -191,6 +191,33 @@ func (p *AgentPool) GetOrCreate(role string) (*agentic.Agent, error) {
 	return a, nil
 }
 
+// CreateEphemeralAgent builds a fresh, isolated agent for role that is NOT
+// cached and NOT registered on the agent bus. Each call returns a distinct
+// *agentic.Agent with its own conversation history and tool instances, so it
+// is safe to run concurrently and across many delegations without the
+// shared-state leakage of the cached GetOrCreate path.
+//
+// This is the agent factory for /orchestrate delegation ("delegate to a series
+// of workers as required"): every delegate(role, task) call acquires one.
+//
+// Unlike GetOrCreate/CreateTaskAgent, ephemeral agents:
+//   - receive only their allow-listed BASE tools (no WorkflowNextTool, no
+//     SendMessageTool), because orchestration specialists are isolated;
+//   - are NOT force-tooled (tool_choice=auto), so a specialist can return a
+//     plain text answer as its delegation result;
+//   - do NOT fire OnAgentCreated, so they do not inherit the foreground
+//     orchestrator's companion observer (which would otherwise route their
+//     events into the companion renderer — the "companion · cycle" leak).
+//
+// The caller owns the agent's full lifecycle (it is GC'd once released).
+func (p *AgentPool) CreateEphemeralAgent(role string, cfg AgentConfig) (*agentic.Agent, error) {
+	systemPrompt := p.resolveSystemPrompt(role, cfg)
+	mdl := p.resolveRoleModel(cfg)
+	tools := p.baseToolsForRole(role, cfg.AllowedTools)
+	ac := p.assembleConfig(mdl, cfg, systemPrompt, tools, false)
+	return agentic.NewAgent(ac), nil
+}
+
 func (p *AgentPool) wireAgentBusLocked(role string, a *agentic.Agent) {
 	if p.agentBus == nil {
 		return
@@ -259,33 +286,27 @@ func (p *AgentPool) resolveRoleModel(cfg AgentConfig) provider.Model {
 }
 
 func (p *AgentPool) buildAgentConfig(role string, mdl provider.Model, cfg AgentConfig, systemPrompt string) agentic.Config {
-	opts := p.defaultOpts
 	tools := p.toolsForRole(role, cfg.AllowedTools)
+	force := role == gorole.Planner || role == gorole.Coder || role == gorole.Reviewer || role == gorole.Companion
+	return p.assembleConfig(mdl, cfg, systemPrompt, tools, force)
+}
 
+// assembleConfig builds an agentic.Config from a resolved model, prompt, and
+// tool set. forceToolUse sets tool_choice=required and appends the "you MUST
+// use these tools" directive (workflow stage agents); orchestration ephemeral
+// agents pass false so a specialist can return a plain text answer as its
+// delegation result.
+func (p *AgentPool) assembleConfig(mdl provider.Model, cfg AgentConfig, systemPrompt string, tools []agentic.Tool, forceToolUse bool) agentic.Config {
+	opts := p.defaultOpts
 	// Ensure MaxTokens is generous enough for reasoning models (e.g., Qwen)
 	// that use tokens for thinking before producing tool calls.
 	if opts.MaxTokens == 0 || opts.MaxTokens < 2048 {
 		opts.MaxTokens = 4096
 	}
-
-	// Force tool use for workflow stage agents. Qwen defaults to text-only
-	// responses with tool_choice=auto. workflows:next validates that actual
-	// tools were called before allowing advancement, so the model must
-	// first call write/bash before it can call workflows:next.
-	if role == gorole.Planner || role == gorole.Coder || role == gorole.Reviewer || role == gorole.Companion {
+	if forceToolUse {
 		opts.ToolChoice = "required"
+		systemPrompt = appendToolDirective(systemPrompt, tools)
 	}
-
-	// Include tool names in the system prompt so the model knows what it can use.
-	// Full descriptions are available via the API tools parameter.
-	systemPrompt = systemPrompt + "\n\nAvailable tools: "
-	toolNames := make([]string, 0, len(tools))
-	for _, t := range tools {
-		toolNames = append(toolNames, t.Schema().Name)
-	}
-	systemPrompt = systemPrompt + strings.Join(toolNames, ", ")
-	systemPrompt = systemPrompt + ".\nYou MUST use these tools to complete your work — call them by name with the required arguments."
-
 	ac := agentic.Config{
 		Model:         mdl,
 		APIKey:        opts.APIKey,
@@ -300,13 +321,19 @@ func (p *AgentPool) buildAgentConfig(role string, mdl provider.Model, cfg AgentC
 	return ac
 }
 
-func (p *AgentPool) toolsForRole(role string, allowed []string) []agentic.Tool {
-	result := make([]agentic.Tool, 0, len(p.tools)+2)
-	for _, t := range p.tools {
-		if len(allowed) == 0 || containsString(allowed, t.Schema().Name) {
-			result = append(result, t)
-		}
+// appendToolDirective adds the available-tools list and the "you MUST use
+// tools" instruction to the system prompt (workflow stage agents only).
+func appendToolDirective(systemPrompt string, tools []agentic.Tool) string {
+	toolNames := make([]string, 0, len(tools))
+	for _, t := range tools {
+		toolNames = append(toolNames, t.Schema().Name)
 	}
+	return systemPrompt + "\n\nAvailable tools: " + strings.Join(toolNames, ", ") +
+		".\nYou MUST use these tools to complete your work — call them by name with the required arguments."
+}
+
+func (p *AgentPool) toolsForRole(role string, allowed []string) []agentic.Tool {
+	result := p.baseToolsForRole(role, allowed)
 	if p.agentBus != nil {
 		result = append(result, &agentic.SendMessageTool{
 			Bus:      p.agentBus,
@@ -319,6 +346,20 @@ func (p *AgentPool) toolsForRole(role string, allowed []string) []agentic.Tool {
 		result = append(result, &WorkflowNextTool{
 			Orchestrator: p.orch,
 		})
+	}
+	return result
+}
+
+// baseToolsForRole returns the allow-listed tool set WITHOUT the workflow and
+// companion extras. Used by orchestration ephemeral agents, which are isolated
+// single-task workers (not companion or workflow-stage agents). The role
+// argument is accepted for symmetry with toolsForRole.
+func (p *AgentPool) baseToolsForRole(_ string, allowed []string) []agentic.Tool {
+	result := make([]agentic.Tool, 0, len(p.tools))
+	for _, t := range p.tools {
+		if len(allowed) == 0 || containsString(allowed, t.Schema().Name) {
+			result = append(result, t)
+		}
 	}
 	return result
 }

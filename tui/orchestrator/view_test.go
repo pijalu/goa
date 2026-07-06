@@ -33,19 +33,21 @@ func buildLifecycleView(t *testing.T) *MultiAgentView {
 	return v
 }
 
-// TestView_TabsAndOrdering asserts the Conversation + Stats tabs and the
-// default active selection.
+// TestView_TabsAndOrdering asserts the Conversation + Stats bookends come
+// first, followed by one per-agent filter tab per started agent.
 func TestView_TabsAndOrdering(t *testing.T) {
 	v := buildLifecycleView(t)
 	keys := tabKeys(v.Tabs())
-	want := []string{"conversation", "stats"}
-	if !equalSlice(keys, want) {
-		t.Errorf("tabs = %v, want %v", keys, want)
+	if len(keys) != 4 {
+		t.Fatalf("tabs = %v, want 4 (conversation+stats+2 agents)", keys)
+	}
+	if keys[0] != "conversation" || keys[1] != "stats" {
+		t.Errorf("bookend tabs = %v, want conversation,stats first", keys[:2])
 	}
 	if active, _ := v.ActiveTab(); active.Key != "conversation" {
 		t.Errorf("active = %q, want conversation", active.Key)
 	}
-	if got, want := v.TabIndex(), "1/2"; got != want {
+	if got, want := v.TabIndex(), "1/4"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
 	}
 }
@@ -64,7 +66,7 @@ func TestView_Navigation(t *testing.T) {
 	if active, _ := v.ActiveTab(); active.Key != "conversation" {
 		t.Errorf("after SelectByKey(conversation) active = %q, want conversation", active.Key)
 	}
-	if got, want := v.TabIndex(), "1/2"; got != want {
+	if got, want := v.TabIndex(), "1/4"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
 	}
 	if !v.SelectByKey("2") {

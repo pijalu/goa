@@ -69,6 +69,15 @@ type ChatViewport struct {
 		width int
 		lines []string
 	}
+	// agentFilter, when non-empty, hides every entry whose Meta["agent"]
+	// differs, producing a per-agent view (TabAgent) without duplicating the
+	// streaming widgets. Empty shows the whole conversation (Conversation tab).
+	agentFilter string
+
+	// lastRenderFilter is the filter used to build renderCache; a change forces
+	// a full rebuild even when no entry is dirty (filter-only view switch).
+	lastRenderFilter string
+
 	// generation increments on every mutation (append, update, invalidate).
 	// Render compares it to lastRenderGen: when they match and the cache is
 	// valid, it skips the O(n) dirtyIndices scan entirely. This avoids
@@ -82,6 +91,21 @@ type ChatViewport struct {
 func NewChatViewport() *ChatViewport {
 	return &ChatViewport{Conversation: NewConversation()}
 }
+
+// SetAgentFilter scopes the viewport to one agent's blocks (label as stamped
+// in Meta["agent"]). An empty label shows the whole conversation. Invalidates
+// the render cache. Used by the per-agent TabAgent to isolate a worker's
+// output without duplicating widgets.
+func (cv *ChatViewport) SetAgentFilter(label string) {
+	if cv.agentFilter == label {
+		return
+	}
+	cv.agentFilter = label
+	cv.generation++
+}
+
+// AgentFilter returns the active per-agent filter label ("" = show all).
+func (cv *ChatViewport) AgentFilter() string { return cv.agentFilter }
 
 // SetSuppressed toggles whether the viewport hides itself. While suppressed,
 // Render returns nil so the orchestration AgentContent region replaces it.
@@ -114,7 +138,19 @@ func (cv *ChatViewport) Render(width int) []string {
 		return cv.renderCache.lines
 	}
 	cv.lastRenderGen = cv.generation
+	if cv.agentFilter != cv.lastRenderFilter {
+		// A filter switch (entering OR leaving a per-agent tab) changes which
+		// entries are visible, so bypass the dirty fast paths entirely.
+		cv.fullRebuild(width)
+		return cv.renderCache.lines
+	}
 	dirty := cv.dirtyIndices()
+	// While a per-agent filter is active, visibility can change per entry, so
+	// always fully rebuild instead of using the single-entry fast paths.
+	if cv.agentFilter != "" {
+		cv.fullRebuild(width)
+		return cv.renderCache.lines
+	}
 	if len(dirty) == 0 && cv.renderCache.lines != nil {
 		return cv.renderCache.lines
 	}
@@ -233,10 +269,20 @@ func (cv *ChatViewport) dirtyIndices() []int {
 // that updateLastEntry can find the replacement range in O(1).
 func (cv *ChatViewport) fullRebuild(width int) {
 	cv.renderCache.width = width
+	cv.lastRenderFilter = cv.agentFilter
 	cv.renderCache.lines = cv.renderCache.lines[:0]
 	offset := 0
 	for i := range cv.entries {
 		e := &cv.entries[i]
+		if cv.agentFilter != "" {
+			agent := ""
+			if e.Data.Meta != nil {
+				agent = e.Data.Meta["agent"]
+			}
+			if agent != cv.agentFilter {
+				continue
+			}
+		}
 		if e.renderedWidth != width || e.dirty || e.renderedLines == nil {
 			e.renderedLines = e.View.Render(width)
 			e.renderedWidth = width

@@ -79,16 +79,18 @@ func TestOrchestratorConversation_SingleAgentStreamsThinkingContentTool(t *testi
 		t.Fatalf("expected bash tool widget, got:\n%s", rendered)
 	}
 
-	// Ensure the MultiAgentView still exists as a Stats panel, but only the
-	// Stats tab is shown (no All / agent transcript tabs).
+	// Ensure the MultiAgentView still exists as a Stats panel. The Conversation
+	// + Stats bookends are present; per-agent filter tabs (TabAgent) may also
+	// be present — those are the restored per-agent view, not transcript tabs.
 	if sc.app.subs.agentView == nil {
 		t.Fatal("agentView should still be attached")
 	}
+	haveBookends := map[orchpanel.AgentTabKind]bool{}
 	for _, tab := range sc.app.subs.agentView.Tabs() {
-		if tab.Kind == orchpanel.TabConversation || tab.Kind == orchpanel.TabStats {
-			continue
-		}
-		t.Fatalf("unexpected tab kind: %+v", tab)
+		haveBookends[tab.Kind] = true
+	}
+	if !haveBookends[orchpanel.TabConversation] || !haveBookends[orchpanel.TabStats] {
+		t.Fatalf("missing Conversation/Stats bookends: %+v", sc.app.subs.agentView.Tabs())
 	}
 }
 

@@ -92,7 +92,26 @@ func (r *agentStreamRegistry) end(agentID string) {
 	}
 }
 
-// (a *App) methods are called from the command loop (the forwarder's apply).
+// reconcileAgentContent snaps an agent's displayed content to the
+// authoritative full text. It is called on EvAgentFinished so that any
+// content deltas dropped by the live fanout (a lossy best-effort path) are
+// repaired from the durable source of truth — the handle's accumulated
+// message, carried on the finished event. Thinking is intentionally not
+// reconciled (it is transient and may be lossy by design).
+func (a *App) reconcileAgentContent(agentID, text string) {
+	if a.subs.agentStreams == nil || a.subs.chat == nil || text == "" {
+		return
+	}
+	state := a.subs.agentStreams.get(agentID)
+	if state == nil {
+		return
+	}
+	state.content.Reset()
+	state.content.WriteString(text)
+	if state.contentView != nil {
+		a.subs.chat.UpdateAgentContent(state.label, text)
+	}
+}
 
 func (a *App) beginAgentStream(role, agentID string) {
 	if a.subs.agentStreams == nil {

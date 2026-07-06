@@ -60,9 +60,11 @@ func (a *App) attachOrchView(src orchEventSource) {
 			// Default to Conversation: chat is visible.
 			a.subs.chat.SetSuppressed(false)
 		}
-		if a.subs.agentStreams != nil {
-			a.subs.agentStreams = newAgentStreamRegistry()
-		}
+		// Fresh stream registry per run, unconditionally. (The previous
+		// `if != nil` guard was inverted: it only reset when already set, and
+		// would have left a nil registry — rendering nothing — if the
+		// pre-init ever changed.)
+		a.subs.agentStreams = newAgentStreamRegistry()
 		a.updateOrchInputPrompt()
 	})
 }
@@ -113,6 +115,9 @@ func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
 			a.subs.agentView.ApplyEvent(ne)
 		}
 	case orchpanel.EvAgentFinished:
+		if ne.Text != "" {
+			a.reconcileAgentContent(ne.AgentID, ne.Text)
+		}
 		if a.subs.agentView != nil {
 			a.subs.agentView.ApplyEvent(ne)
 		}

@@ -19,6 +19,10 @@ const (
 	TabConversation AgentTabKind = iota
 	// TabStats is the aggregate stats table tab (always present).
 	TabStats
+	// TabAgent is a per-agent filter tab. Selecting it keeps the chat visible
+	// but filters it to that one agent's blocks (thinking/content/tool),
+	// restoring the per-agent view without duplicating streaming widgets.
+	TabAgent
 )
 
 // AgentTab is one selectable tab. Agent tabs are keyed by AgentID but labeled
@@ -188,7 +192,20 @@ func (v *MultiAgentView) handleAgentStarted(ev AgentViewEvent) {
 		v.ensureLog(ev.AgentID, ev.Role)
 		label := v.DisambiguateLabel(ev.Role)
 		v.setRowLabel(ev.AgentID, label)
+		v.ensureAgentTab(ev.AgentID, label)
 	}
+}
+
+// ensureAgentTab appends a per-agent filter tab for agentID (labelled with the
+// disambiguated role) the first time the agent is seen. Tabs stay ordered
+// [Conversation, Stats, <agent>…]. Idempotent per agentID.
+func (v *MultiAgentView) ensureAgentTab(agentID, label string) {
+	for _, t := range v.tabs {
+		if t.Key == agentID {
+			return
+		}
+	}
+	v.tabs = append(v.tabs, AgentTab{Key: agentID, Label: label, Kind: TabAgent})
 }
 
 func (v *MultiAgentView) setRowLabel(agentID, label string) {
@@ -335,19 +352,25 @@ func (v *MultiAgentView) ActiveTab() (AgentTab, bool) {
 	return v.tabs[v.active], true
 }
 
-// ActiveAgentID returns the AgentID of the most recently started agent when
-// the active tab is Conversation, so steering can target a specific agent
-// without requiring the user to switch away from the chat. On the Stats tab it
-// returns "" so steering broadcasts to all agents.
+// ActiveAgentID returns the AgentID steering should target for the active
+// tab: the tab's own agent for a per-agent tab, the most recently started
+// agent for the Conversation tab, or "" on Stats (broadcast to all).
 func (v *MultiAgentView) ActiveAgentID() string {
-	if len(v.order) == 0 {
-		return ""
-	}
 	tab, ok := v.ActiveTab()
-	if !ok || tab.Kind != TabConversation {
+	if !ok {
 		return ""
 	}
-	return v.order[len(v.order)-1]
+	switch tab.Kind {
+	case TabAgent:
+		return tab.Key
+	case TabConversation:
+		if len(v.order) == 0 {
+			return ""
+		}
+		return v.order[len(v.order)-1]
+	default:
+		return ""
+	}
 }
 
 // SelectByKey selects the tab whose Key matches sel, or the 1-based numeric

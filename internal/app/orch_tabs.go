@@ -81,8 +81,10 @@ func (a *App) selectAgentTab(sel string) bool {
 	return ok
 }
 
-// updateChatSuppressionForOrchTab shows the chat viewport on the Conversation
-// tab and suppresses it on the Stats tab so the stats panel can replace it.
+// updateChatSuppressionForOrchTab configures the chat viewport for the active
+// tab: Conversation shows the full chat; Stats suppresses it so the stats
+// panel replaces it; a per-agent TabAgent keeps the chat visible but filters
+// it to that one worker's blocks.
 func (a *App) updateChatSuppressionForOrchTab() {
 	v := a.subs.agentView
 	if v == nil || a.subs.chat == nil {
@@ -92,7 +94,17 @@ func (a *App) updateChatSuppressionForOrchTab() {
 	if !ok {
 		return
 	}
-	a.subs.chat.SetSuppressed(tab.Kind != orchpanel.TabConversation)
+	switch tab.Kind {
+	case orchpanel.TabStats:
+		a.subs.chat.SetSuppressed(true)
+		a.subs.chat.SetAgentFilter("")
+	case orchpanel.TabAgent:
+		a.subs.chat.SetSuppressed(false)
+		a.subs.chat.SetAgentFilter(tab.Label)
+	default: // TabConversation
+		a.subs.chat.SetSuppressed(false)
+		a.subs.chat.SetAgentFilter("")
+	}
 }
 
 // orchSelectTabLabel selects a tab and returns its label (for the command's

@@ -536,4 +536,7 @@ func (c *Config) mergeOrchestrator(other *Config) {
 	if other.Orchestrator.Defaults.Topology != "" {
 		c.Orchestrator.Defaults.Topology = other.Orchestrator.Defaults.Topology
 	}
+	if other.Orchestrator.Defaults.RunTimeout != "" {
+		c.Orchestrator.Defaults.RunTimeout = other.Orchestrator.Defaults.RunTimeout
+	}
 }

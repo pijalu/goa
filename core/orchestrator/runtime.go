@@ -43,6 +43,10 @@ type Runtime struct {
 	bus    chan Event
 	closed atomic.Bool
 
+	// sink persists events off the streaming hot path (R1). nil when no store
+	// is configured (in-memory runs); emit then skips durable persistence.
+	sink *durableSink
+
 	doneCh chan struct{}
 
 	objective  string
@@ -56,10 +60,13 @@ type Runtime struct {
 	cancelMu sync.Mutex
 	cancel   context.CancelFunc // cancels the run context; set by Run
 
-	// msgs accumulates streamed assistant text per role so Delegate can return
-	// a sub-agent's answer as the tool result without depending on the store.
-	msgMu sync.Mutex
-	msgs  map[string][]string
+	// lastByRole remembers the most recent finished turn's streamed text per
+	// role so MessageFor(role) (pipeline carry, tests) works WITHOUT the old
+	// per-role accumulator that two concurrent delegate(coder) calls clobbered.
+	// The source of truth for a single delegation's answer is the handle's own
+	// accumulator (AgentHandle.AppendMessage / Message), not this map.
+	lastMsgMu  sync.Mutex
+	lastByRole map[string]string
 
 	subMu sync.Mutex
 	subs  []chan Event
@@ -87,9 +94,10 @@ func NewRuntime(cfg config.OrchestratorConfig, pool *BoundedAgentPool, store Eve
 		rootDir:   rootDir,
 		bus:       make(chan Event, 256),
 		doneCh:    make(chan struct{}),
-		msgs:      map[string][]string{},
+		lastByRole: map[string]string{},
 		newID:     defaultRunID,
 		telemetry: nopTelemetry{},
+		sink:      newDurableSink(store),
 	}, nil
 }
 
@@ -102,14 +110,18 @@ func (r *Runtime) Events() <-chan Event { return r.bus }
 // SetIDGenerator overrides the run-id generator (tests).
 func (r *Runtime) SetIDGenerator(fn func() string) { r.newID = fn }
 
-// emit appends to the store (best-effort) and fans out on the bus. It never
-// blocks the run: store errors are swallowed (logged via event), and the bus
-// send is non-blocking.
+// emit persists the event (best-effort, off the hot path via the durable
+// sink) and fans it out to live subscribers. It never blocks the run: the
+// durable submit is non-blocking (overflow is counted, not waited on), and
+// the live send is non-blocking. This is the R1 invariant: emitting an event
+// — which happens per streamed token — must not stall the agent's reader.
 func (r *Runtime) emit(evt Event) {
 	if r.runID != "" && evt.RunID == "" {
 		evt.RunID = r.runID
 	}
-	if r.store != nil {
+	if r.sink != nil {
+		r.sink.submit(evt)
+	} else if r.store != nil {
 		_ = r.store.Append(evt)
 	}
 	r.emitLive(evt)
@@ -229,6 +241,9 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	r.telemetry.Track(TelemetryRunFinished, map[string]any{"ok": err == nil})
 	r.finalizeGoal(err == nil, runFinishReason(err))
 	r.closeBus()
+	// Drain the durable sink so the on-disk event log is complete (including
+	// the run_finished event) before callers snapshot/replay/export it.
+	r.Stop()
 	close(r.doneCh)
 	return err
 }
@@ -379,8 +394,9 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 		return fmt.Errorf("agent %s (%s): %w", h.ID, h.Role, runErr)
 	}
 	h.Stats.SetStatus(AgentFinished)
+	r.setLastMessage(h.Role, h.Message())
 	r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
-		Payload: map[string]any{"outcome": outcome}})
+		Payload: map[string]any{"outcome": outcome, "text": h.Message()}})
 	return nil
 }
 
@@ -417,14 +433,14 @@ func (r *Runtime) lastMessageFor(role string) string {
 
 // RecordAgentMessage lets an adapter forward a streamed assistant chunk as an
 // AgentMessage event for a handle (used by pipeline carry and the TUI). It is
-// safe to call from the agent's observer goroutine.
+// safe to call from the agent's observer goroutine. The chunk is accumulated
+// on the handle (not a shared per-role buffer) so concurrent delegations of
+// the same role stay isolated.
 func (r *Runtime) RecordAgentMessage(h *AgentHandle, text string) {
 	if h == nil || text == "" {
 		return
 	}
-	r.msgMu.Lock()
-	r.msgs[h.Role] = append(r.msgs[h.Role], text)
-	r.msgMu.Unlock()
+	h.AppendMessage(text)
 	r.emit(Event{Type: EventAgentMessage, AgentID: h.ID, Role: h.Role,
 		Payload: map[string]any{"text": text}})
 }
@@ -459,12 +475,22 @@ func (r *Runtime) RecordAgentToolResult(h *AgentHandle, callID, text string, ok 
 		Payload: map[string]any{"call_id": callID, "text": text, "ok": ok}})
 }
 
-// MessageFor returns the full streamed assistant text accumulated for a role
-// in this run so far. Used by Delegate to return a sub-agent's answer.
+// MessageFor returns the most recent finished turn's streamed text for a
+// role (pipeline carry, fanout tests). It is NOT the source of truth for a
+// specific delegation's answer — Delegate returns the handle's own Message()
+// — so it is safe under concurrent same-role delegations.
 func (r *Runtime) MessageFor(role string) string {
-	r.msgMu.Lock()
-	defer r.msgMu.Unlock()
-	return strings.Join(r.msgs[role], "")
+	r.lastMsgMu.Lock()
+	defer r.lastMsgMu.Unlock()
+	return r.lastByRole[role]
+}
+
+// setLastMessage records a finished turn's text for a role, feeding
+// MessageFor. Called under the handle's owner after its turn completes.
+func (r *Runtime) setLastMessage(role, msg string) {
+	r.lastMsgMu.Lock()
+	r.lastByRole[role] = msg
+	r.lastMsgMu.Unlock()
 }
 
 // Delegate acquires a role agent, runs a single turn for `task`, releases it,
@@ -484,11 +510,6 @@ func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, erro
 	h.Stats.SetStatus(AgentRunning)
 	r.emit(Event{Type: EventAgentStarted, AgentID: h.ID, Role: h.Role, Model: h.Model,
 		Payload: map[string]any{"delegated": true, "provider": h.Provider, "thinking": h.Thinking}})
-
-	// Reset per-role accumulation so MessageFor returns only this turn's text.
-	r.msgMu.Lock()
-	r.msgs[role] = nil
-	r.msgMu.Unlock()
 
 	h.Stats.IncTurn()
 	runErr := h.RunTurn(ctx, task)
@@ -512,9 +533,10 @@ func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, erro
 		return "", fmt.Errorf("delegate %s: %w", role, runErr)
 	}
 	h.Stats.SetStatus(AgentFinished)
+	r.setLastMessage(role, h.Message())
 	r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
-		Payload: map[string]any{"outcome": "ok"}})
-	return r.MessageFor(role), nil
+		Payload: map[string]any{"outcome": "ok", "text": h.Message()}})
+	return h.Message(), nil
 }
 
 // Pool exposes the bounded pool so adapters can build tools (e.g. DelegateTool)
@@ -623,6 +645,17 @@ func (r *Runtime) finalizeGoal(ok bool, reason string) {
 
 func defaultRunID() string {
 	return internal.PrefixedHexID("run", 4)
+}
+
+// Stop tears down the durable sink, flushing any buffered events to disk.
+// It should be called when the runtime is no longer needed (after Run
+// returns and any final snapshot/Replay). It is idempotent and does not
+// cancel an in-flight run — use Cancel for that. Stopping the sink keeps a
+// long-lived process from leaking a writer goroutine per run (R7).
+func (r *Runtime) Stop() {
+	if r.sink != nil {
+		r.sink.close()
+	}
 }
 
 // Cancel requests the running orchestration to stop. It is safe to call

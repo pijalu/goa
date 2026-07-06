@@ -62,9 +62,11 @@ func TestOrchestratorAdapterEvents_ForwardThinkingAndToolEvents(t *testing.T) {
 	assertHas(orchestrator.EventAgentToolCall)
 	assertHas(orchestrator.EventAgentToolResult)
 
-	// Check accumulated text on the message stream.
-	if got := rt.MessageFor("coder"); got != "answer text" {
-		t.Errorf("MessageFor(coder) = %q, want %q", got, "answer text")
+	// Check accumulated text on the handle (the per-delegation source of
+	// truth). The old role-keyed MessageFor buffer is gone — two concurrent
+	// delegate(coder) calls used to clobber it.
+	if got := h.Message(); got != "answer text" {
+		t.Errorf("handle.Message() = %q, want %q", got, "answer text")
 	}
 }
 

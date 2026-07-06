@@ -90,6 +90,7 @@ func translateOrchEvent(ev orchestrator.Event) (orchpanel.AgentViewEvent, bool) 
 			Kind:    orchpanel.EvAgentFinished,
 			AgentID: ev.AgentID, Role: ev.Role,
 			Status: orchFinishedStatus(ev.Payload),
+			Text:   orchStr(ev.Payload, "text"),
 		}, true
 	}
 	return orchpanel.AgentViewEvent{}, false

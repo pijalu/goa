@@ -167,6 +167,13 @@ type AgentHandle struct {
 	// for this handle (unix nano). Used to throttle in-flight UI updates so
 	// long streaming turns show live token counts without flooding the bus.
 	statsEmitUnix atomic.Int64
+
+	// msg accumulates THIS handle's streamed assistant text so its delegation
+	// (or fanout/pipeline stage) returns exactly its own answer, isolated from
+	// concurrent delegations of the same role. The runtime's old per-role
+	// accumulator was clobbered when two delegate(coder) ran in parallel.
+	msgMu sync.Mutex
+	msg   []byte
 }
 
 // NewAgentHandle constructs a handle with fresh stats and an empty steering
@@ -218,6 +225,27 @@ func (h *AgentHandle) DrainSteering() []string {
 		return nil
 	}
 	return h.Steering.Flush()
+}
+
+// AppendMessage adds a streamed assistant text chunk to this handle's answer.
+// Safe to call from the agent's observer goroutine.
+func (h *AgentHandle) AppendMessage(text string) {
+	if h == nil || text == "" {
+		return
+	}
+	h.msgMu.Lock()
+	h.msg = append(h.msg, text...)
+	h.msgMu.Unlock()
+}
+
+// Message returns the full streamed assistant text accumulated for this handle.
+func (h *AgentHandle) Message() string {
+	if h == nil {
+		return ""
+	}
+	h.msgMu.Lock()
+	defer h.msgMu.Unlock()
+	return string(h.msg)
 }
 
 // markReleased closes the done channel. It is idempotent.

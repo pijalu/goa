@@ -121,6 +121,15 @@ func collectArtifacts(zb *ZipBuilder, ctx core.Context, opts BuildOptions) (pres
 	// Session events.
 	collector.addFile(resolveSessionPath(ctx, opts), "session/events.jsonl", nil)
 
+	// Subsystem-contributed artifacts (Open/Closed): each subsystem that owns
+	// diagnostics outside SessionStore (e.g. the orchestrator run log) registers
+	// a contributor; the bundler stays free of domain knowledge.
+	for _, contribute := range registeredContributors() {
+		for _, art := range contribute(opts.ProjectDir) {
+			collector.addArtifact(art)
+		}
+	}
+
 	// Logs.
 	agentLogPath := resolveAgentLogPath(ctx, opts)
 	keyLogPath := resolveKeyLogPath(ctx, opts)
@@ -172,6 +181,21 @@ type artifactCollector struct {
 	present []string
 	missing []string
 }
+
+// addArtifact bundles one contributor-provided artifact: inline Data when
+// present, otherwise the source Path is copied. Empty artifacts are recorded
+// as missing so the manifest reflects them.
+func (c *artifactCollector) addArtifact(a Artifact) {
+	switch {
+	case a.Data != nil:
+		c.addBytes(a.Name, a.Data)
+	case a.Path != "":
+		c.addFile(a.Path, a.Name, nil)
+	default:
+		c.missing = append(c.missing, a.Name)
+	}
+}
+
 
 func (c *artifactCollector) addBytes(target string, data []byte) {
 	if err := c.zb.AddBytes(target, data); err == nil {

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -31,8 +30,6 @@ import (
 type OrchestratorAdapter struct {
 	pool *multiagent.AgentPool
 	cfg  *config.Config
-	mu   sync.Mutex
-	seen map[string]struct{} // roles already wired this process (observer dedupe)
 	tel  orchestrator.Telemetry
 }
 
@@ -41,7 +38,6 @@ func NewOrchestratorAdapter(pool *multiagent.AgentPool, cfg *config.Config) *Orc
 	return &OrchestratorAdapter{
 		pool: pool,
 		cfg:  cfg,
-		seen: map[string]struct{}{},
 	}
 }
 
@@ -54,17 +50,20 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 	var rt *orchestrator.Runtime
 
 	factory := func(role, model string) (*orchestrator.AgentHandle, error) {
-		// Configure the role's model on the multiagent pool so GetOrCreate
-		// builds the agent against the right provider/model. Use the passed
-		// oCfg as the source of truth for role bindings.
 		rcfg := oCfg.Roles[role]
 		maCfg := multiagent.AgentConfig{
 			ModelName:    model,
 			ProviderID:   rcfg.Provider,
 			AllowedTools: rcfg.AllowedTools,
 		}
-		a.pool.SetConfig(role, maCfg)
-		agent, err := a.pool.GetOrCreate(role)
+		// Fresh, isolated agent per Acquire (i.e. per delegation). Each worker
+		// gets its own conversation history, tool instances, and an observer
+		// bound to its own handle, so the orchestrator can delegate to a series
+		// of workers — including repeated or concurrent delegations to the
+		// SAME role — without shared-state leakage (R2/R3/R7/R12) and without
+		// inheriting the foreground orchestrator's companion observer, which
+		// the cached GetOrCreate path attached via OnAgentCreated (R10).
+		agent, err := a.pool.CreateEphemeralAgent(role, maCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -76,31 +75,20 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 			return agent.Run(ctx, prompt)
 		}
 
-		// The orchestrator role gets the DelegateTool so it can drive
-		// specialists itself (true hub topology). The tool closes over `rt`,
-		// which is assigned below before any turn runs.
+		// Only the orchestrator role drives specialists; workers receive just
+		// their allow-listed base tools (no delegate, no workflow tool).
 		if role == "orchestrator" {
-			roles := delegateRoles(oCfg)
 			cur := append([]agentic.Tool{}, agent.Tools()...)
-			cur = append(cur, &OrchestratorDelegateTool{Runtime: rt, Roles: roles})
+			cur = append(cur, &OrchestratorDelegateTool{Runtime: rt, Roles: delegateRoles(oCfg)})
 			agent.SetTools(cur)
 		}
 
-		// Attach the observer exactly once per (process, role) to avoid
-		// accumulation across multiple runs sharing the cached agent.
-		// (multiagent does not expose observer removal; for long-lived
-		// processes, prefer CreateTaskAgent with a unique role per run.)
-		a.mu.Lock()
-		_, already := a.seen[role]
-		if !already {
-			a.seen[role] = struct{}{}
-		}
-		a.mu.Unlock()
-		if !already {
-			agent.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
-				applyOutputEvent(h, rt, ev)
-			}))
-		}
+		// Attach the orchestrator observer to THIS fresh agent, bound to THIS
+		// handle. No dedupe is needed: every agent is distinct and dies with
+		// its handle when released, so there is no cross-run accumulation.
+		agent.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
+			applyOutputEvent(h, rt, ev)
+		}))
 		return h, nil
 	}
 

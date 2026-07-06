@@ -147,15 +147,16 @@ func TestOrchestrator_LiveFanout_RendersTabbedView(t *testing.T) {
 		t.Skip("LMStudio not reachable on :1234 — skipping live orchestrator integration test")
 	}
 	view, rt := runLiveIntoView(t, []string{"summarizer", "coder"}, "fanout")
-	keys := make([]string, 0, 2)
+	keys := make([]string, 0, 4)
 	for _, tab := range view.Tabs() {
 		keys = append(keys, tab.Key)
 	}
-	if len(keys) != 2 {
-		t.Errorf("live fanout tabs = %v, want conversation+stats", keys)
-	}
-	if keys[0] != "conversation" || keys[1] != "stats" {
+	// Conversation + Stats bookends, plus one per-agent filter tab per role.
+	if len(keys) < 2 || keys[0] != "conversation" || keys[1] != "stats" {
 		t.Errorf("live fanout missing bookend tabs: %v", keys)
+	}
+	if len(keys) < 4 {
+		t.Errorf("live fanout tabs = %v, want at least 4 (bookends + 2 agents)", keys)
 	}
 	if !view.Finished() {
 		t.Error("live fanout view not finished")

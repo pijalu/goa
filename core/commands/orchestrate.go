@@ -558,12 +558,31 @@ func (c *OrchestrateCommand) bindGoal(rt *orchestrator.Runtime, name, objective 
 func (c *OrchestrateCommand) launch(ctx core.Context, rt *orchestrator.Runtime, objective string) {
 	go c.forwardEvents(ctx, rt)
 	go func() {
-		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		runCtx, cancel := context.WithTimeout(context.Background(), orchestrateRunTimeout(ctx))
 		defer cancel()
 		_ = rt.Run(runCtx, objective)
 		<-rt.Done()
 		c.Active.Clear(rt)
 	}()
+}
+
+// orchestrateRunTimeout derives the per-run wall-clock budget from config
+// (orchestrator.defaults.run_timeout, e.g. "10m"). Empty or unparseable values
+// fall back to 10m so a misconfigured timeout never disables the guard. The
+// previous hard-coded 10m was the silent crash trigger when R1/R12 made runs
+// exceed it; making it configurable does not lower the guard, it makes it
+// visible and tunable.
+const defaultOrchestrateRunTimeout = 10 * time.Minute
+
+func orchestrateRunTimeout(ctx core.Context) time.Duration {
+	if ctx.Config != nil {
+		if s := ctx.Config.Orchestrator.Defaults.RunTimeout; s != "" {
+			if d, err := time.ParseDuration(s); err == nil && d > 0 {
+				return d
+			}
+		}
+	}
+	return defaultOrchestrateRunTimeout
 }
 
 func (c *OrchestrateCommand) forwardEvents(ctx core.Context, rt *orchestrator.Runtime) {

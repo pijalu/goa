@@ -46,7 +46,7 @@ func TestAgentTabBar_RendersActiveAndIndicator(t *testing.T) {
 	if !strings.Contains(raw, ansi.Bold) {
 		t.Errorf("active tab not bolded: %q", raw)
 	}
-	if !strings.Contains(plain, "[1/2]") {
+	if !strings.Contains(plain, "[1/4]") {
 		t.Errorf("indicator missing/wrong: %q", plain)
 	}
 }
