@@ -189,3 +189,58 @@ func TestOrchestrator_LiveFanout_CacheHitReported(t *testing.T) {
 		t.Errorf("stats table missing CH column")
 	}
 }
+
+// TestOrchestratorAdapter_LiveHubDelegationIsolation is the LMStudio e2e for
+// the delegation-isolation fix cluster (R2/R3/R7/R12): a hub run must complete
+// against a real model with every started agent carrying a DISTINCT agent id
+// (no two handles collide on the shared cached agent), and the run must
+// persist a replayable snapshot. It does not require the model to call
+// delegate (model behaviour varies); it asserts the wiring is crash-free and
+// attribution is unique. Skipped without LMStudio.
+func TestOrchestratorAdapter_LiveHubDelegationIsolation(t *testing.T) {
+	if !lmstudioReachable(t) {
+		t.Skip("LMStudio not reachable on :1234 — skipping live hub e2e")
+	}
+	rt, rootDir := newLiveRuntime(t, []string{"coder"}, "hub")
+
+	var started []orchestrator.Event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range rt.Events() {
+			if ev.Type == orchestrator.EventAgentStarted {
+				started = append(started, ev)
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	if err := rt.Run(ctx, "Reply with the single word: ready"); err != nil {
+		t.Fatalf("hub Run: %v", err)
+	}
+	<-done
+
+	// Every started agent has a unique id (the fresh-agent-per-delegation fix
+	// guarantees no two handles share an identity).
+	seen := map[string]bool{}
+	for _, ev := range started {
+		if ev.AgentID == "" {
+			continue
+		}
+		if seen[ev.AgentID] {
+			t.Errorf("duplicate AgentID across delegations: %s (shared-agent leak)", ev.AgentID)
+		}
+		seen[ev.AgentID] = true
+	}
+
+	// The run persisted a replayable snapshot (R11 event log + resume support).
+	runs, err := orchestrator.ListRuns(rootDir)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("ListRuns: %d runs (%v), want 1", len(runs), err)
+	}
+	snap, err := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runs[0].RunID))
+	if err != nil || !snap.Started {
+		t.Fatalf("snapshot not started/Readable: snap=%+v err=%v", snap, err)
+	}
+}

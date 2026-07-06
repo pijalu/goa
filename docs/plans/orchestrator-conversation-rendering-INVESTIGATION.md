@@ -62,6 +62,13 @@ Status: **investigation only** (no code changes). Companion to
 > Hub re-drives the orchestrator (delegations are dynamic). Test:
 > `TestRuntime_ResumeSkipsFinishedRoles` (0 new turns, same run-id, 2 resumed
 > events).
+>
+> **Implementation update 5 (2026-07-06).** LMStudio e2e validation: the four
+> existing live tests pass against the reachable local model, plus a new
+> `TestOrchestratorAdapter_LiveHubDelegationIsolation` hub e2e asserting every
+> started agent has a distinct id (no shared-agent leak) and the run persists a
+> replayable snapshot. Also refactored `ChatViewport.Render` to keep TUI
+> complexity within budget.
 
 > **Revision note.** The first pass (R1–R7) inferred the crash from the
 > concurrency model because the export bundle was stale. After the full crash

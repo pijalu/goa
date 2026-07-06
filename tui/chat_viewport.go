@@ -138,24 +138,20 @@ func (cv *ChatViewport) Render(width int) []string {
 		return cv.renderCache.lines
 	}
 	cv.lastRenderGen = cv.generation
-	if cv.agentFilter != cv.lastRenderFilter {
-		// A filter switch (entering OR leaving a per-agent tab) changes which
-		// entries are visible, so bypass the dirty fast paths entirely.
+	return cv.renderChanges(width)
+}
+
+// renderChanges applies pending mutations to the frame cache and returns it.
+// Extracted from Render to keep both under the TUI complexity budget. A
+// per-agent filter (active or just switched) changes entry visibility, so it
+// always fully rebuilds; otherwise the dirty fast paths apply.
+func (cv *ChatViewport) renderChanges(width int) []string {
+	if cv.agentFilter != "" || cv.agentFilter != cv.lastRenderFilter || cv.renderCache.lines == nil {
 		cv.fullRebuild(width)
 		return cv.renderCache.lines
 	}
 	dirty := cv.dirtyIndices()
-	// While a per-agent filter is active, visibility can change per entry, so
-	// always fully rebuild instead of using the single-entry fast paths.
-	if cv.agentFilter != "" {
-		cv.fullRebuild(width)
-		return cv.renderCache.lines
-	}
-	if len(dirty) == 0 && cv.renderCache.lines != nil {
-		return cv.renderCache.lines
-	}
-	if cv.renderCache.lines == nil {
-		cv.fullRebuild(width)
+	if len(dirty) == 0 {
 		return cv.renderCache.lines
 	}
 	if len(dirty) == 1 && dirty[0] == len(cv.entries)-1 {
