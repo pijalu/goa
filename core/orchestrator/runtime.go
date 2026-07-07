@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -335,7 +336,56 @@ func (r *Runtime) runHub(ctx context.Context, objective string) error {
 	if _, ok := r.cfg.Roles["orchestrator"]; !ok {
 		return r.runFanout(ctx, objective)
 	}
-	return r.driveOne(ctx, "orchestrator", objective)
+	if err := r.driveOne(ctx, "orchestrator", objective); err != nil {
+		return err
+	}
+	// After the orchestrator's delegation turn, run a guaranteed synthesis
+	// turn that inlines every specialist's output. The delegate tool result
+	// already surfaces to the orchestrator within its first turn; this is a
+	// robustness guarantee for models that stop after delegating without
+	// summarizing. No-op when no specialist reported output.
+	return r.synthesize(ctx, objective)
+}
+
+// synthesize runs a final orchestrator turn with a prompt that inlines every
+// specialist's reported output, so the user sees a visible synthesis even when
+// a model stops after delegating. Hub-only; no-op when no specialist reported
+// output OR when the orchestrator already produced a final message in its
+// delegation turn (the model followed the hub_orchestrator prompt's synthesis
+// step, so a forced second turn would be redundant).
+func (r *Runtime) synthesize(ctx context.Context, objective string) error {
+	if strings.TrimSpace(r.MessageFor("orchestrator")) != "" {
+		return nil
+	}
+	specialists := r.collectSpecialistOutputs()
+	if specialists == "" {
+		return nil
+	}
+	prompt := r.renderPrompt("hub_synthesis", map[string]any{
+		"Objective":   objective,
+		"Specialists": specialists,
+	})
+	if prompt == "" {
+		return nil
+	}
+	return r.acquireAndRun(ctx, "orchestrator", prompt)
+}
+
+// collectSpecialistOutputs formats the final message of every non-orchestrator
+// role that reported output, in deterministic (sorted) role order, for the
+// synthesis prompt.
+func (r *Runtime) collectSpecialistOutputs() string {
+	roles := r.managedRoles()
+	sort.Strings(roles)
+	var b strings.Builder
+	for _, role := range roles {
+		msg := strings.TrimSpace(r.MessageFor(role))
+		if msg == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "## %s\n%s\n\n", role, msg)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // driveOne acquires a single role agent, runs one turn, and emits the full
@@ -351,6 +401,29 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 			return nil
 		}
 	}
+	return r.acquireAndRun(ctx, role, r.renderRolePrompt(role, prompt))
+}
+
+// renderRolePrompt renders the topology-specific prompt for a role's turn.
+func (r *Runtime) renderRolePrompt(role, prompt string) string {
+	switch r.topology {
+	case TopologyHub:
+		if role == "orchestrator" {
+			return r.renderPrompt("hub_orchestrator", map[string]any{"Objective": prompt})
+		}
+		return r.renderPrompt("fanout_role", map[string]any{"Objective": prompt})
+	case TopologyPipeline:
+		return r.renderPrompt("pipeline_role", map[string]any{"Objective": prompt})
+	default:
+		return r.renderPrompt("fanout_role", map[string]any{"Objective": prompt})
+	}
+}
+
+// acquireAndRun acquires a role agent, emits Started, runs one turn with the
+// given (already-rendered) prompt, and emits Stats + Finished. It always
+// releases the handle. Shared by driveOne and the hub synthesis turn so both
+// follow the identical lifecycle (goal-token accounting, outcome events).
+func (r *Runtime) acquireAndRun(ctx context.Context, role, renderedPrompt string) error {
 	h, err := r.pool.Acquire(ctx, role)
 	if err != nil {
 		r.emit(Event{Type: EventAgentFinished, Role: role,
@@ -370,23 +443,10 @@ func (r *Runtime) driveOne(ctx context.Context, role, prompt string) error {
 	// counter around the call; RunTurn drains steering into the prompt.
 	h.Stats.IncTurn()
 
-	var rolePrompt string
-	switch r.topology {
-	case TopologyHub:
-		if role == "orchestrator" {
-			rolePrompt = r.renderPrompt("hub_orchestrator", map[string]any{"Objective": prompt})
-		} else {
-			rolePrompt = r.renderPrompt("fanout_role", map[string]any{"Objective": prompt})
-		}
-	case TopologyPipeline:
-		rolePrompt = r.renderPrompt("pipeline_role", map[string]any{"Objective": prompt})
-	default:
-		rolePrompt = r.renderPrompt("fanout_role", map[string]any{"Objective": prompt})
+	if renderedPrompt == "" {
+		renderedPrompt = role
 	}
-	if rolePrompt == "" {
-		rolePrompt = prompt
-	}
-	runErr := h.RunTurn(ctx, rolePrompt)
+	runErr := h.RunTurn(ctx, renderedPrompt)
 
 	snap := h.Stats.Snapshot()
 	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role,

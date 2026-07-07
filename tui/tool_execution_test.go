@@ -313,3 +313,26 @@ func TestToolExecution_BashRenderer_ShowsCommandAndOutput(t *testing.T) {
 		t.Errorf("expected duration, got %q", rendered)
 	}
 }
+
+// TestToolExecution_GenericRendererShowsNameAndArgs verifies that a tool
+// WITHOUT a dedicated renderer (here "glob") no longer renders the uninformative
+// literal "run tool". The generic renderer returns "", so ToolExecutionComponent
+// falls back to "<toolName> <FormatToolArgs>" — e.g. "glob **/*.go".
+func TestToolExecution_GenericRendererShowsNameAndArgs(t *testing.T) {
+	tc := NewToolExecution("glob", "")
+	tc.SetArgsJSON(`{"pattern":"**/*.go"}`)
+	tc.SetStatus(ToolRunning)
+
+	rendered := strings.Join(tc.Render(80), "\n")
+	stripped := ansi.Strip(rendered)
+
+	if strings.Contains(stripped, "run tool") {
+		t.Errorf("generic tool should not show literal 'run tool'; got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "glob") {
+		t.Errorf("expected header to contain tool name 'glob'; got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "**/*.go") {
+		t.Errorf("expected header to contain formatted arg '**/*.go'; got:\n%s", stripped)
+	}
+}

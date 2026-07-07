@@ -261,6 +261,14 @@ func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), o
 	if !silent && a.subs.chat != nil {
 		a.subs.chat.AddSystemMessage(prompt)
 	}
+	// The prompt is also shown in the persistent PendingInputBox so it survives
+	// tab switches (the chat system message is hidden when ChatViewport is
+	// suppressed on Stats/agent tabs). Shown regardless of `silent` because
+	// silent callers (e.g. clarify) still need the question visible off the
+	// Conversation tab.
+	if box := a.subs.pendingInputBox; box != nil {
+		box.SetPrompt(prompt)
+	}
 	if inp := a.subs.getInput(); inp != nil {
 		inp.SetTitle(prompt)
 	}
@@ -315,9 +323,13 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 func (a *App) clearMainInputRequest() {
 	a.pendingInput = nil
 	if a.subs != nil {
-		if inp := a.subs.getInput(); inp != nil {
-			inp.SetTitle("")
+		if box := a.subs.pendingInputBox; box != nil {
+			box.Clear()
 		}
+		// Restore the input title for the active context (steer prompt during
+		// orchestration, empty otherwise). pendingInput is already nil so
+		// updateOrchInputPrompt will not early-return.
+		a.updateOrchInputPrompt()
 	}
 }
 

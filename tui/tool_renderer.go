@@ -34,8 +34,14 @@ func GetToolRenderer(name string) ToolRenderer {
 // renderer. Fallback: bold tool name + dim args.
 type genericRenderer struct{}
 
+// RenderCall returns an empty header for tools without a dedicated renderer.
+// Returning "" lets ToolExecutionComponent.updateBox fall back to a
+// descriptive "<toolName> <formatted-args>" header (built from
+// FormatToolArgs), so the widget shows e.g. "glob **/*.go" instead of the
+// uninformative literal "run tool". The tool name is not available on
+// RenderContext, so the label cannot be built here; the fallback owns it.
 func (genericRenderer) RenderCall(args map[string]any, ctx RenderContext) string {
-	return ansiBoldToolTitle("run tool")
+	return ""
 }
 
 func (genericRenderer) RenderResult(output string, ctx RenderContext) string {

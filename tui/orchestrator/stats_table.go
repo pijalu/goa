@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/metrics"
 )
 
 // RenderStatsTable renders the enhanced agent rows as an aligned table with the
@@ -15,19 +16,21 @@ import (
 //
 //	role   (provider) model   think   in   out   CH
 //
-// CH is the cache-hit token count (rendered as "-" when 0). It is shared by
-// AgentContent's Stats tab and (after T8) any caller wanting the bare table.
+// CH is the cache-hit percentage for the agent (rendered as "-" when the agent
+// has no cache activity). It is shared by AgentContent's Stats tab and any
+// caller wanting the bare table. Every line is fitted to exactly `width`
+// visible columns so the panel background spans the full width.
 func RenderStatsTable(rows []AgentEnhancedRow, width int) []string {
 	if width < 30 {
 		width = 30
 	}
-	out := []string{clip(statsHeaderLine(), width)}
+	out := []string{fit(statsHeaderLine(), width)}
 	if len(rows) == 0 {
-		out = append(out, clip("  "+ansi.Faint+"no agents yet"+ansi.Reset, width))
+		out = append(out, fit("  "+ansi.Faint+"no agents yet"+ansi.Reset, width))
 		return out
 	}
 	for _, r := range rows {
-		out = append(out, clip(statsRowLine(r), width))
+		out = append(out, fit(statsRowLine(r), width))
 	}
 	return out
 }
@@ -42,7 +45,7 @@ func statsRowLine(r AgentEnhancedRow) string {
 		truncField(rowLabel(r), 13),
 		truncField(providerModel(r.Provider, r.Model), 24),
 		thinkField(r.Thinking),
-		r.TokensIn, r.TokensOut, cacheField(r.CacheRead))
+		r.TokensIn, r.TokensOut, cacheField(r.CacheRead, r.CacheCreation, r.TokensIn))
 }
 
 // rowLabel returns the disambiguated display label, falling back to Role.
@@ -72,9 +75,12 @@ func thinkField(t string) string {
 	return t
 }
 
-func cacheField(n int) string {
-	if n <= 0 {
+// cacheField renders the per-agent cache-hit percentage. It returns "-" when
+// the agent reported no cache activity at all (no reads and no writes); a
+// genuine 0% (writes but no reads) is shown as "0%" since it is meaningful.
+func cacheField(cacheRead, cacheCreation, tokensIn int) string {
+	if cacheRead+cacheCreation <= 0 {
 		return ansi.Faint + "-" + ansi.Reset
 	}
-	return fmt.Sprintf("%d", n)
+	return fmt.Sprintf("%.0f%%", metrics.CacheHitPct(cacheRead, cacheCreation, tokensIn))
 }

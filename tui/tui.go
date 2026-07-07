@@ -227,6 +227,13 @@ func (t *TUI) Buffer() []string {
 //
 // The scene is built on the commandLoop (via ApplySync) so component state is
 // read by the sole owner — no locking, consistent with the Actor model.
+// FullRedrawCount exposes the compositor's count of full-screen redraws,
+// for diagnostics/tests asserting that streaming/edits do not trigger
+// excessive full wipes (Bug 2).
+func (t *TUI) FullRedrawCount() int {
+	return t.compositor.FullRedrawCount()
+}
+
 func (t *TUI) AgentFrame() AgentFrame {
 	var frame AgentFrame
 	t.ApplySync(func() {

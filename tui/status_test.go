@@ -27,13 +27,11 @@ func TestStatusMsg_Render_Spacer(t *testing.T) {
 	sm.Show("Thinking...")
 
 	lines := sm.Render(80)
-	if len(lines) == 0 {
-		t.Fatal("Render returned no lines for visible status")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 status line (stable height), got %d", len(lines))
 	}
-	if len(lines) < 2 {
-		t.Fatalf("expected at least 2 lines, got %d", len(lines))
-	}
-	line := lines[1]
+	line := lines[0]
+
 	stripped := ansi.Strip(line)
 
 	if !strings.Contains(stripped, "Thinking...") {
@@ -73,10 +71,10 @@ func TestStatusMsg_Render_Spacer_WithAnimatedSpinner(t *testing.T) {
 	sm.Show("Processing...")
 
 	lines := sm.Render(80)
-	if len(lines) < 2 {
-		t.Fatalf("expected at least 2 lines, got %d", len(lines))
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 status line (stable height), got %d", len(lines))
 	}
-	line := lines[1]
+	line := lines[0]
 	stripped := ansi.Strip(line)
 
 	if !strings.Contains(stripped, "Processing...") {
@@ -100,8 +98,10 @@ func TestStatusMsg_Render_Spacer_WithAnimatedSpinner(t *testing.T) {
 func TestStatusMsg_Render_Hidden(t *testing.T) {
 	sm := NewStatusMsg()
 	lines := sm.Render(80)
-	if lines != nil {
-		t.Errorf("expected nil for hidden status, got %d lines", len(lines))
+	// Idle status reserves a single blank line (stable height) — it must NOT
+	// be nil, otherwise toggling Show/Clear would shift the layout (Bug 2).
+	if len(lines) != 1 || lines[0] != "" {
+		t.Errorf("expected single blank reserved line when idle, got %v", lines)
 	}
 }
 
@@ -111,6 +111,33 @@ func TestStatusMsg_Render_ZeroWidth(t *testing.T) {
 	lines := sm.Render(0)
 	if lines != nil {
 		t.Errorf("expected nil for zero width, got %d lines", len(lines))
+	}
+}
+
+// TestStatusMsg_StableHeight verifies Bug 2: the rendered height is identical
+// across idle/shown/cleared states so toggling the spinner never shifts the
+// layout (input editor / footer) up and down.
+func TestStatusMsg_StableHeight(t *testing.T) {
+	defer resetSpinner()
+	SetSpinner(spinner.Definition{Interval: 100, Frames: []string{"◜", "◠", "◝"}})
+	sm := NewStatusMsg()
+
+	idle := sm.Render(80)
+	sm.Show("Working...")
+	shown := sm.Render(80)
+	sm.Clear()
+	cleared := sm.Render(80)
+
+	for name, lines := range map[string][]string{"idle": idle, "shown": shown, "cleared": cleared} {
+		if len(lines) != 1 {
+			t.Errorf("%s state rendered %d lines, want 1 (stable height)", name, len(lines))
+		}
+	}
+	if strings.TrimSpace(shown[0]) == "" {
+		t.Errorf("shown status line is blank: %q", shown[0])
+	}
+	if cleared[0] != "" || idle[0] != "" {
+		t.Errorf("idle/cleared reserved line should be blank; idle=%q cleared=%q", idle[0], cleared[0])
 	}
 }
 
@@ -238,10 +265,10 @@ func TestStatusMsg_ShowAfterClear(t *testing.T) {
 	}
 
 	lines := sm.Render(80)
-	if len(lines) < 2 {
+	if len(lines) != 1 {
 		t.Fatal("Render returned no lines for visible status after Clear+Reset+Show")
 	}
-	line := lines[1]
+	line := lines[0]
 	stripped := ansi.Strip(line)
 	if !strings.Contains(stripped, "Waiting...") {
 		t.Errorf("status line missing new text after Clear+Reset+Show: %q", stripped)
@@ -269,8 +296,8 @@ func TestStatusMsg_ShowAfterClearWithoutResetIsNoOp(t *testing.T) {
 	if sm.IsVisible() {
 		t.Fatal("SessionEnd() did not hide status")
 	}
-	if sm.Render(80) != nil {
-		t.Error("Render() should return nil after SessionEnd()")
+	if lines := sm.Render(80); len(lines) != 1 || lines[0] != "" {
+		t.Errorf("Render() should return a single blank reserved line after SessionEnd(), got %v", lines)
 	}
 
 	sm.Show("Waiting...")
@@ -280,8 +307,8 @@ func TestStatusMsg_ShowAfterClearWithoutResetIsNoOp(t *testing.T) {
 	if sm.Text() != "" {
 		t.Errorf("Show() after SessionEnd() without Reset() should leave text empty, got %q", sm.Text())
 	}
-	if sm.Render(80) != nil {
-		t.Error("Render() should return nil after Show() without Reset()")
+	if lines := sm.Render(80); len(lines) != 1 || lines[0] != "" {
+		t.Errorf("Render() should return a single blank reserved line after Show() without Reset(), got %v", lines)
 	}
 
 	// After Reset(), Show() works again.
@@ -335,10 +362,10 @@ func TestStatusMsg_Render_DefaultSpinner(t *testing.T) {
 	sm.Show("idle")
 
 	lines := sm.Render(80)
-	if len(lines) < 2 {
-		t.Fatalf("expected at least 2 lines, got %d", len(lines))
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 status line (stable height), got %d", len(lines))
 	}
-	line := lines[1]
+	line := lines[0]
 	stripped := ansi.Strip(line)
 
 	if !strings.Contains(stripped, "idle") {
@@ -359,10 +386,10 @@ func TestStatusMsg_Render_SpinnerDisabled(t *testing.T) {
 	sm.Show("idle")
 
 	lines := sm.Render(80)
-	if len(lines) < 2 {
-		t.Fatalf("expected at least 2 lines, got %d", len(lines))
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly 1 status line (stable height), got %d", len(lines))
 	}
-	line := lines[1]
+	line := lines[0]
 	stripped := ansi.Strip(line)
 
 	if !strings.Contains(stripped, "idle") {

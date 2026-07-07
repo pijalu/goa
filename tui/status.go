@@ -221,13 +221,20 @@ func (s *StatusMsg) tickFrame() {
 // IsVisible returns whether status is shown.
 func (s *StatusMsg) IsVisible() bool { return s.text != "" }
 
-// Render returns the status line if visible. When the terminal is short the
-// line is rendered without surrounding blank lines so the spinner stays
-// visible even when vertical space is tight.
+// Render returns a single stable-height line: the spinner text when active,
+// or a blank reserved line when idle. It always returns exactly one line
+// (when width > 0) so toggling Show/Clear never changes the layer height —
+// this prevents the input editor and footer from jumping up and down across
+// turn boundaries (Bug 2). The previous ["", line, ""] padding toggled 3↔0
+// rows on every turn start/end.
 func (s *StatusMsg) Render(width int) []string {
-	txt := s.text
-	if txt == "" || width <= 0 {
+	if width <= 0 {
 		return nil
+	}
+	txt := s.text
+	if txt == "" {
+		// Idle: reserve a single blank line so the layer height is stable.
+		return []string{""}
 	}
 	frames, _ := getSpinner()
 	var prefix string
@@ -236,13 +243,7 @@ func (s *StatusMsg) Render(width int) []string {
 	} else {
 		prefix = "◆"
 	}
-	padded := padToWidth(dimText(prefix+" "+txt), width-1)
-	line := " " + padded
-	compact := s.tui != nil && s.tui.TerminalRows() <= 10
-	if compact {
-		return []string{line}
-	}
-	return []string{"", line, ""}
+	return []string{" " + padToWidth(dimText(prefix+" "+txt), width-1)}
 }
 
 // HandleInput is a no-op.

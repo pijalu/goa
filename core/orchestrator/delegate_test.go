@@ -33,6 +33,12 @@ func TestRuntime_DelegateRoundTrip(t *testing.T) {
 		switch role {
 		case "orchestrator":
 			h.Run = func(ctx context.Context, prompt string) error {
+				// The synthesis turn inlines specialist outputs and must not
+				// re-delegate; detect it by its prompt and produce a summary.
+				if strings.Contains(prompt, "Specialist outputs:") {
+					rtRef.RecordAgentMessage(h, "synthesis: the answer is 42")
+					return nil
+				}
 				// Simulate the orchestrator delegating via the tool path.
 				out, err := rtRef.Delegate(ctx, "coder", "compute answer")
 				if err != nil {

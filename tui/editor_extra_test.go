@@ -932,6 +932,51 @@ func TestEditor_SetTitle_GetTitle(t *testing.T) {
 	}
 }
 
+func TestEditor_SetTitle_StripsTrailingColon(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"Describe the issue:", "Describe the issue"},
+		{"Describe the issue: ", "Describe the issue"},
+		{"Describe the issue : ", "Describe the issue"},
+		{"no colon here", "no colon here"},
+		{"goal objective", "goal objective"},
+		{"", ""},
+		{":", ""},
+		// Only a single trailing colon is stripped; the remaining colon stays.
+		{"trailing::", "trailing:"},
+		// Leading/internal colons are preserved.
+		{"note: mid colon", "note: mid colon"},
+	}
+	for _, c := range cases {
+		ed := NewEditor()
+		ed.SetTitle(c.in)
+		if got := ed.Title(); got != c.want {
+			t.Errorf("SetTitle(%q): Title() = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestEditor_Render_TitleHasNoTrailingColon(t *testing.T) {
+	ed := NewEditor()
+	ed.SetText("hello")
+	ed.pos = 5
+	ed.SetTitle("Describe the issue:")
+	result := ed.Render(80)
+
+	top := stripANSIExtended(result[0])
+	if !strings.Contains(top, "Describe the issue") {
+		t.Fatalf("expected top border to contain title, got %q", top)
+	}
+	if strings.Contains(top, "issue:") {
+		t.Errorf("title should not end with ':' before bracket, got %q", top)
+	}
+	// The bracket must close immediately after the title text.
+	if !strings.Contains(top, "issue ┠") {
+		t.Errorf("expected 'issue ┠' in top border, got %q", top)
+	}
+}
+
 func TestEditor_Render_TitleInTopBorder(t *testing.T) {
 	ed := NewEditor()
 	ed.SetText("hello")

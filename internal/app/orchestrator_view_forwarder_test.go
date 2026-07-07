@@ -39,6 +39,7 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	chat := tui.NewChatViewport()
 	agentContent := orchpanel.NewAgentContent()
 	agentTabBar := orchpanel.NewAgentTabBar()
+	pendingInputBox := tui.NewPendingInputBox()
 	inp := tui.NewEditor()
 	header := tui.NewHeader("goa", "test")
 	footer := tui.NewFooter()
@@ -46,6 +47,7 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	engine.AddChild(header)
 	engine.AddChild(chat)
 	engine.AddChild(agentContent)
+	engine.AddChild(pendingInputBox)
 	engine.AddChild(agentTabBar)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
@@ -58,6 +60,7 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	subs.agentContent = agentContent
 	subs.agentTabBar = agentTabBar
 	subs.inputEditor = inp
+	subs.pendingInputBox = pendingInputBox
 	subs.agentStreams = newAgentStreamRegistry()
 
 	return &orchViewScenario{
@@ -199,8 +202,8 @@ func TestOrchestratorViewForwarder_TabPickerJumpsByNumber(t *testing.T) {
 	if tab, ok := sc.app.subs.agentView.ActiveTab(); !ok || tab.Key != "stats" {
 		t.Errorf("after picker digit 2 active = %+v, want stats", tab)
 	}
-	if got := sc.app.subs.getInput().Title(); got != "steer all:" {
-		t.Errorf("prompt = %q, want 'steer all:'", got)
+	if got := sc.app.subs.getInput().Title(); got != "steer all" {
+		t.Errorf("prompt = %q, want 'steer all'", got)
 	}
 }
 
@@ -215,14 +218,15 @@ func TestOrchestratorViewForwarder_SteerPromptReflectsActiveTab(t *testing.T) {
 
 	inp := sc.app.subs.getInput()
 	// Default active tab is Conversation; steering targets the last-started agent.
-	if got := inp.Title(); got != "steer reviewer:" {
-		t.Errorf("conversation-tab prompt = %q, want 'steer reviewer:'", got)
+	// The title must not end with ':' — it renders inside the bordered editor title.
+	if got := inp.Title(); got != "steer reviewer" {
+		t.Errorf("conversation-tab prompt = %q, want 'steer reviewer'", got)
 	}
 	if !sc.app.selectAgentTab("stats") {
 		t.Fatal("selectAgentTab(stats) failed")
 	}
-	if got := inp.Title(); got != "steer all:" {
-		t.Errorf("stats-tab prompt = %q, want 'steer all:'", got)
+	if got := inp.Title(); got != "steer all" {
+		t.Errorf("stats-tab prompt = %q, want 'steer all'", got)
 	}
 }
 

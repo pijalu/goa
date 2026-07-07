@@ -191,7 +191,11 @@ func (a *App) handleAgentToolCall(agentID, name, input, callID string) {
 		state.tools[callID] = tc
 	}
 	if a.subs.statusMsg != nil {
-		a.subs.statusMsg.Show(state.label + " tool calling")
+		// Include the tool name so the spinner identifies which tool the agent
+		// is invoking (e.g. "coder tool calling: bash"), not just the generic
+		// "tool calling". Keeps the "tool calling" substring so existing
+		// footer/status assertions still match.
+		a.subs.statusMsg.Show(state.label + " tool calling: " + name)
 	}
 }
 

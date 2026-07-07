@@ -37,18 +37,19 @@ type AgentTab struct {
 // requested by the tabbed-run UI: provider/model/thinking plus cache-hit.
 // Label is the display name (role, disambiguated when a role recurs).
 type AgentEnhancedRow struct {
-	AgentID   string
-	Role      string
-	Label     string
-	Provider  string
-	Model     string
-	Thinking  string
-	Status    string
-	Turns     int
-	TokensIn  int
-	TokensOut int
-	CacheRead int
-	ToolCalls int
+	AgentID       string
+	Role          string
+	Label         string
+	Provider      string
+	Model         string
+	Thinking      string
+	Status        string
+	Turns         int
+	TokensIn      int
+	TokensOut     int
+	CacheRead     int
+	CacheCreation int // Anthropic-style cache_creation_input_tokens (writes)
+	ToolCalls     int
 }
 
 // AgentLogLineKind classifies a transcript line for faint-vs-normal styling.
@@ -308,6 +309,7 @@ func (v *MultiAgentView) applyRowEv(row *AgentEnhancedRow, ev AgentViewEvent) {
 		row.TokensIn = ev.Stats.TokensIn
 		row.TokensOut = ev.Stats.TokensOut
 		row.CacheRead = ev.Stats.CacheRead
+		row.CacheCreation = ev.Stats.CacheCreation
 		row.ToolCalls = ev.Stats.ToolCalls
 	}
 }
@@ -422,12 +424,15 @@ func (v *MultiAgentView) LogFor(agentID string) *AgentLog {
 	return v.logs[agentID]
 }
 
-// AggregateTokens sums every row's token counters for the stats footer.
-func (v *MultiAgentView) AggregateTokens() (in, out, ch, turns int) {
+// AggregateTokens sums every row's token counters for the stats footer. It
+// returns cacheRead and cacheCreation separately so callers can compute the
+// aggregate cache-hit percentage via metrics.CacheHitPct.
+func (v *MultiAgentView) AggregateTokens() (in, out, cacheRead, cacheCreation, turns int) {
 	for _, r := range v.rows {
 		in += r.TokensIn
 		out += r.TokensOut
-		ch += r.CacheRead
+		cacheRead += r.CacheRead
+		cacheCreation += r.CacheCreation
 		turns += r.Turns
 	}
 	return

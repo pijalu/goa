@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/metrics"
 )
 
 // AgentContent renders the active tab's content for the persistent multi-agent
@@ -52,7 +53,7 @@ func (c *AgentContent) Render(width int) []string {
 		return nil
 	}
 	lines := c.renderStats(width)
-	return append(lines, clip(navHintLine(), width))
+	return append(lines, fit(navHintLine(), width))
 }
 
 // navHintLine is the faint one-line hint shown at the bottom of every tab so
@@ -69,14 +70,20 @@ func (c *AgentContent) Invalidate() {}
 
 func (c *AgentContent) renderStats(width int) []string {
 	v := c.view
-	out := []string{clip(c.headerLine(), width)}
+	out := []string{fit(c.headerLine(), width)}
 	if obj := v.MetaValue("objective"); obj != "" {
-		out = append(out, clip("  "+ansi.Faint+"objective: "+obj+ansi.Reset, width))
+		out = append(out, fit("  "+ansi.Faint+"objective: "+obj+ansi.Reset, width))
 	}
 	out = append(out, RenderStatsTable(v.Rows(), width)...)
-	in, outT, ch, turns := v.AggregateTokens()
-	footer := ansi.Faint + fmt.Sprintf("  Σ in=%d out=%d CH=%d · turns=%d", in, outT, ch, turns) + ansi.Reset
-	out = append(out, clip(footer, width))
+	in, outT, cacheRead, cacheCreation, turns := v.AggregateTokens()
+	// Aggregate cache-hit percentage across all agents. "-" when no agent
+	// reported any cache activity, matching the per-row placeholder.
+	cacheLabel := "-"
+	if cacheRead+cacheCreation > 0 {
+		cacheLabel = fmt.Sprintf("%.0f%%", metrics.CacheHitPct(cacheRead, cacheCreation, in))
+	}
+	footer := ansi.Faint + fmt.Sprintf("  Σ in=%d out=%d CH=%s · turns=%d", in, outT, cacheLabel, turns) + ansi.Reset
+	out = append(out, fit(footer, width))
 	return out
 }
 

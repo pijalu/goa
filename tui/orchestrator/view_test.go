@@ -101,7 +101,7 @@ func TestView_StatsRow(t *testing.T) {
 	if coder.CacheRead != 1024 || coder.TokensOut != 12 {
 		t.Errorf("coder counters = ch %d out %d, want 1024/12", coder.CacheRead, coder.TokensOut)
 	}
-	in, out, ch, turns := v.AggregateTokens()
+	in, out, ch, _, turns := v.AggregateTokens()
 	if in != 40 || out != 12 || ch != 1024 || turns != 1 {
 		t.Errorf("aggregate = in %d out %d ch %d turns %d", in, out, ch, turns)
 	}

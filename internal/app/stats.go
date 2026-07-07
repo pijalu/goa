@@ -13,6 +13,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/metrics"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -827,7 +828,7 @@ func buildFooterStatParts(s sessionStats) []string {
 	// of the cache-eligible input was served from cache, using PromptN (net
 	// non-cached tokens) as the cache-miss portion.
 	if s.CacheReadTotal > 0 || s.CacheWriteTotal > 0 {
-		pct := computeCacheHitPct(s.CacheReadTotal, s.CacheWriteTotal, s.PromptN)
+		pct := metrics.CacheHitPct(s.CacheReadTotal, s.CacheWriteTotal, s.PromptN)
 		parts = append(parts, formatCacheHitPart(pct, s.PrevCacheHitPct))
 	}
 	if s.ToolCalls > 0 {
@@ -863,26 +864,6 @@ func formatContextUsage(estimate, max int, autoMax bool) string {
 		color = tui.TheTheme.ColorHex("token_warning")
 	}
 	return ansi.Fg(color) + value + ansi.Reset
-}
-
-// computeCacheHitPct calculates the cache hit percentage.
-// When CacheWrite > 0, the rate is reads / (reads + writes), measuring what
-// fraction of cache operations were hits. When CacheWrite is 0 (OpenAI-style),
-// the denominator is reads + net prompt tokens (non-cached portion), providing
-// a meaningful rate instead of always showing 100%.
-func computeCacheHitPct(cacheRead, cacheWrite, promptN int) float64 {
-	if cacheWrite > 0 {
-		denom := cacheRead + cacheWrite
-		if denom == 0 {
-			denom = 1
-		}
-		return float64(cacheRead) / float64(denom) * 100
-	}
-	denom := cacheRead + promptN
-	if denom == 0 {
-		denom = 1
-	}
-	return float64(cacheRead) / float64(denom) * 100
 }
 
 // formatCacheHitPart renders the cache hit percentage with color coding

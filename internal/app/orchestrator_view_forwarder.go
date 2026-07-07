@@ -110,21 +110,53 @@ func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
 	case orchpanel.EvAgentToolResult:
 		a.handleAgentToolResult(ne.AgentID, ne.CallID, ne.Text, ne.OK)
 	case orchpanel.EvAgentStarted:
-		a.beginAgentStream(ne.Role, ne.AgentID)
-		if a.subs.agentView != nil {
-			a.subs.agentView.ApplyEvent(ne)
-		}
+		a.applyAgentStarted(ne)
 	case orchpanel.EvAgentFinished:
-		if ne.Text != "" {
-			a.reconcileAgentContent(ne.AgentID, ne.Text)
-		}
-		if a.subs.agentView != nil {
-			a.subs.agentView.ApplyEvent(ne)
-		}
-		a.endAgentStream(ne.AgentID)
+		a.applyAgentFinished(ne)
+	case orchpanel.EvSourceFinished:
+		a.applySourceFinished(ne)
 	default:
-		if a.subs.agentView != nil {
-			a.subs.agentView.ApplyEvent(ne)
-		}
+		a.applyToView(ne)
+	}
+}
+
+// applyAgentStarted begins the agent's stream and forwards the event to the
+// persistent view.
+func (a *App) applyAgentStarted(ne orchpanel.AgentViewEvent) {
+	a.beginAgentStream(ne.Role, ne.AgentID)
+	a.applyToView(ne)
+}
+
+// applyAgentFinished reconciles the agent's final content, forwards the event,
+// and ends the stream.
+func (a *App) applyAgentFinished(ne orchpanel.AgentViewEvent) {
+	if ne.Text != "" {
+		a.reconcileAgentContent(ne.AgentID, ne.Text)
+	}
+	a.applyToView(ne)
+	a.endAgentStream(ne.AgentID)
+}
+
+// applySourceFinished clears the shared status spinner so it does not linger
+// (e.g. "orchestrator answering...") after the finish banner appears, then
+// forwards the event. EvSourceFinished is the last event of a run; EvAgentStats
+// (the only event that may follow) does not touch the spinner, so a plain
+// Clear() suffices — no SessionEnd guard (the main-agent path owns that
+// pairing via submithandler).
+func (a *App) applySourceFinished(ne orchpanel.AgentViewEvent) {
+	if a.subs.statusMsg != nil {
+		a.subs.statusMsg.Clear()
+	}
+	a.applyToView(ne)
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
+	}
+}
+
+// applyToView forwards an event to the persistent agent view (no-op when no
+// view is attached).
+func (a *App) applyToView(ne orchpanel.AgentViewEvent) {
+	if a.subs.agentView != nil {
+		a.subs.agentView.ApplyEvent(ne)
 	}
 }

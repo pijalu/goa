@@ -154,12 +154,52 @@ func (cv *ChatViewport) renderChanges(width int) []string {
 	if len(dirty) == 0 {
 		return cv.renderCache.lines
 	}
-	if len(dirty) == 1 && dirty[0] == len(cv.entries)-1 {
+	// Fast path: only the last entry changed AND it renders at the bottom of
+	// the two-zone frame (no active entries sort after it). Otherwise the
+	// active/inactive reordering requires a full rebuild.
+	if len(dirty) == 1 && dirty[0] == len(cv.entries)-1 && cv.lastEntryAtBottom() {
 		cv.updateLastEntry(width)
 		return cv.renderCache.lines
 	}
 	cv.fullRebuild(width)
 	return cv.renderCache.lines
+}
+
+// isEntryActive reports whether entry i is in the "active" zone: a running or
+// pending tool widget. Active entries render at the bottom of the frame so
+// in-progress tool calls stay visible while completed items scroll up above
+// them. Streaming thinking/assistant blocks are deliberately NOT active —
+// they remain in chronological order so concurrent streams do not jump.
+func (cv *ChatViewport) isEntryActive(i int) bool {
+	e := &cv.entries[i]
+	if tc, ok := e.View.(*ToolExecutionComponent); ok {
+		switch tc.Status() {
+		case ToolRunning, ToolPending:
+			return true
+		}
+	}
+	return false
+}
+
+// lastEntryAtBottom reports whether the last entry renders at the bottom of the
+// frame under two-zone ordering. The streaming fast path (updateLastEntry) is
+// only valid when this holds; otherwise a full rebuild is required.
+func (cv *ChatViewport) lastEntryAtBottom() bool {
+	n := len(cv.entries)
+	if n == 0 {
+		return true
+	}
+	if cv.isEntryActive(n - 1) {
+		return true // last entry is active → end of active zone → bottom
+	}
+	// Last entry is inactive: it is at the bottom only if NO active entries
+	// exist (otherwise the active zone sorts after it).
+	for i := range cv.entries {
+		if cv.isEntryActive(i) {
+			return false
+		}
+	}
+	return true
 }
 
 // Invalidate propagates to every entry's view and clears the render caches.
@@ -263,31 +303,50 @@ func (cv *ChatViewport) dirtyIndices() []int {
 // fullRebuild re-renders all dirty entries and concatenates the per-entry
 // caches into the frame cache. Also recomputes lineOffsets for all entries so
 // that updateLastEntry can find the replacement range in O(1).
+//
+// Two-zone render: inactive (historical) entries first in chronological order,
+// then active entries (running/pending tools) in chronological order, so active
+// tool calls pin to the bottom and completed items scroll up above them. When
+// no entries are active this is identical to a plain chronological render, so
+// the common streaming case is unaffected.
 func (cv *ChatViewport) fullRebuild(width int) {
 	cv.renderCache.width = width
 	cv.lastRenderFilter = cv.agentFilter
 	cv.renderCache.lines = cv.renderCache.lines[:0]
 	offset := 0
-	for i := range cv.entries {
-		e := &cv.entries[i]
-		if cv.agentFilter != "" {
-			agent := ""
-			if e.Data.Meta != nil {
-				agent = e.Data.Meta["agent"]
-			}
-			if agent != cv.agentFilter {
+	for pass := 0; pass < 2; pass++ {
+		active := pass == 1
+		for i := range cv.entries {
+			if cv.isEntryActive(i) != active {
 				continue
 			}
+			offset += cv.appendEntry(&cv.entries[i], width, offset)
 		}
-		if e.renderedWidth != width || e.dirty || e.renderedLines == nil {
-			e.renderedLines = e.View.Render(width)
-			e.renderedWidth = width
-			e.dirty = false
-		}
-		e.lineOffset = offset
-		cv.renderCache.lines = append(cv.renderCache.lines, e.renderedLines...)
-		offset += len(e.renderedLines)
 	}
+}
+
+// appendEntry renders entry e (re-rendering only when stale) into the frame
+// cache at the given offset, recording its lineOffset. It returns the number
+// of lines appended (0 when the agent filter excludes e). Extracted from
+// fullRebuild to keep both under the complexity budget.
+func (cv *ChatViewport) appendEntry(e *MessageEntry, width, offset int) int {
+	if cv.agentFilter != "" {
+		agent := ""
+		if e.Data.Meta != nil {
+			agent = e.Data.Meta["agent"]
+		}
+		if agent != cv.agentFilter {
+			return 0
+		}
+	}
+	if e.renderedWidth != width || e.dirty || e.renderedLines == nil {
+		e.renderedLines = e.View.Render(width)
+		e.renderedWidth = width
+		e.dirty = false
+	}
+	e.lineOffset = offset
+	cv.renderCache.lines = append(cv.renderCache.lines, e.renderedLines...)
+	return len(e.renderedLines)
 }
 
 // updateLastEntry re-renders the last entry and replaces its block in the
@@ -333,6 +392,11 @@ func (cv *ChatViewport) AddMessage(msg *ChatMessage) {
 		Data: MessageData{Type: msg.Type, Text: msg.Content, Meta: msg.Meta},
 		View: comp,
 	})
+	switch msg.Type {
+	case ConsoleAssistantMessage, ConsoleThinkingBlock, ConsoleAgentMessage,
+		ConsoleCompanionMessage, ConsoleCompanionThinkingBlock:
+	default:
+	}
 }
 
 // AddUserMessage adds a user message (blue background, bright text).

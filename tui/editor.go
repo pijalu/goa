@@ -162,8 +162,27 @@ func (e *Editor) SetThinkingLevel(level string) {
 
 // SetTitle sets an optional label rendered on the top border.
 // An empty string clears the title and restores a plain separator.
+//
+// A single trailing colon (optionally preceded by whitespace) is stripped so
+// prompts such as "Describe the issue:" do not render as "┨ Describe the
+// issue: ┠" — the colon collides visually with the closing "┠" bracket drawn
+// by renderTitledBorder. Only the visual title is normalized; callers that
+// need the original prompt text should keep their own copy (e.g. the chat
+// system message).
 func (e *Editor) SetTitle(title string) {
-	e.title = title
+	e.title = normalizeEditorTitle(title)
+}
+
+// normalizeEditorTitle trims surrounding whitespace and removes a single
+// trailing colon (with any preceding space) so the bordered title does not end
+// with ":" adjacent to the closing "┠" bracket. Only one trailing colon is
+// stripped ("a::" → "a:"); leading/internal colons are preserved.
+func normalizeEditorTitle(title string) string {
+	t := strings.TrimSpace(title)
+	if strings.HasSuffix(t, ":") {
+		t = strings.TrimSpace(t[:len(t)-1])
+	}
+	return t
 }
 
 // Title returns the current top-border title.

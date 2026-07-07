@@ -10,12 +10,21 @@ import (
 )
 
 // updateOrchInputPrompt sets the input editor's title to reflect the steering
-// target implied by the active orchestration tab: "steer <role>:" for an agent
-// tab, "steer all:" for Stats/All, and "" when no run is active. Must be called
-// on the command loop (it mutates the editor + reads the view).
+// target implied by the active orchestration tab: "steer <role>" for an agent
+// tab, "steer all" for Stats/All, and "" when no run is active. The label is
+// rendered inside the editor's bordered title ("┨ steer <role> ┠"), so it must
+// not end with ":" — the colon would collide with the closing "┠" bracket
+// (see Editor.SetTitle normalization). Must be called on the command loop
+// (it mutates the editor + reads the view).
 func (a *App) updateOrchInputPrompt() {
 	inp := a.subs.getInput()
 	if inp == nil {
+		return
+	}
+	// A pending main-input request owns the editor title (and the
+	// PendingInputBox); do not clobber it with the steer prompt on every
+	// orchestration event. The title is restored by clearMainInputRequest.
+	if a.pendingInput != nil {
 		return
 	}
 	v := a.subs.agentView
@@ -26,12 +35,13 @@ func (a *App) updateOrchInputPrompt() {
 	inp.SetTitle(orchSteerPrompt(v))
 }
 
-// orchSteerPrompt returns the prompt label for the active tab.
+// orchSteerPrompt returns the prompt label for the active tab. The label is
+// used verbatim as the editor title and must not carry a trailing colon.
 func orchSteerPrompt(v *orchpanel.MultiAgentView) string {
 	if id := v.ActiveAgentID(); id != "" {
-		return "steer " + orchRoleLabel(v, id) + ":"
+		return "steer " + orchRoleLabel(v, id)
 	}
-	return "steer all:"
+	return "steer all"
 }
 
 // orchRoleLabel returns the human-readable role for an agent id (falls back to
