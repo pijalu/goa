@@ -36,6 +36,25 @@ type KeyReleaseAware interface {
 	WantsKeyRelease() bool
 }
 
+// HeightAllocated is implemented by the layout's fill region (the conversation
+// viewport). The TUI layout pass (buildScene) measures the fixed chrome,
+// computes the remaining vertical slack (terminal height minus chrome), and
+// pushes it to the fill via SetAllocatedHeight BEFORE rendering it. The fill
+// bottom-anchors its content within that height (blank padding above the
+// content) so that:
+//   - the input/status/footer stay pinned at the screen bottom in every
+//     regime (small content no longer floats the footer up), and
+//   - growth scrolls the oldest content into scrollback instead of pushing
+//     the footer / completed widgets downward.
+//
+// This replaces the former monotonically-growing stable-height padding, which
+// leaked height across tab/filter changes and scrolled filtered content out of
+// view. Single Responsibility: the layout owns the budget; the fill owns how to
+// bottom-anchor within it.
+type HeightAllocated interface {
+	SetAllocatedHeight(height int)
+}
+
 // InputTrap is an optional interface for components that want to intercept
 // global keys (Ctrl+C) before the TUI handles them.
 type InputTrap interface {

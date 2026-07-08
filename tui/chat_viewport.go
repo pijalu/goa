@@ -85,6 +85,17 @@ type ChatViewport struct {
 	// (the common typing scenario).
 	generation    int
 	lastRenderGen int
+
+	// allocatedHeight is the vertical budget the layout (buildScene) reserves
+	// for this viewport (terminal height minus chrome). Render bottom-anchors
+	// the content within it: when the content is shorter than the budget, blank
+	// lines are PREPENDED so the content sits just above the status line and
+	// the input/footer stay pinned at the screen bottom. When the content
+	// exceeds the budget, it is rendered in full so the compositor can scroll
+	// the oldest lines into terminal scrollback. Zero (tests / no layout) means
+	// no anchoring — render the content at its natural height.
+	allocatedHeight int
+	lastRenderWidth int
 }
 
 // NewChatViewport creates a ChatViewport backed by a fresh Conversation.
@@ -117,9 +128,15 @@ func (cv *ChatViewport) SetSuppressed(b bool) {
 // IsSuppressed reports whether the viewport is currently hidden.
 func (cv *ChatViewport) IsSuppressed() bool { return cv.suppressed }
 
+// SetAllocatedHeight is called by the layout pass (buildScene) with the
+// vertical budget reserved for this viewport. See HeightAllocated.
+func (cv *ChatViewport) SetAllocatedHeight(height int) { cv.allocatedHeight = height }
+
 // Render draws every entry's view. Per-entry caches avoid re-rendering
 // unchanged entries; the total frame cache is updated incrementally when only
-// the last entry changed, which is the common case during streaming.
+// the last entry changed, which is the common case during streaming. The
+// rendered content is finally bottom-anchored to the allocated height so the
+// input/footer stay pinned.
 func (cv *ChatViewport) Render(width int) []string {
 	if cv.suppressed {
 		return nil
@@ -127,7 +144,8 @@ func (cv *ChatViewport) Render(width int) []string {
 	if width <= 0 {
 		return nil
 	}
-	if width != cv.renderCache.width {
+	if width != cv.lastRenderWidth {
+		cv.lastRenderWidth = width
 		cv.resetRenderCaches(width)
 	}
 	// Fast path: when no mutations have occurred since the last render and
@@ -135,10 +153,29 @@ func (cv *ChatViewport) Render(width int) []string {
 	// entries for dirty indices. The common typing scenario (only the input
 	// editor changes) hits this path.
 	if cv.generation == cv.lastRenderGen && cv.renderCache.lines != nil {
-		return cv.renderCache.lines
+		return cv.bottomAlign(cv.renderCache.lines)
 	}
 	cv.lastRenderGen = cv.generation
-	return cv.renderChanges(width)
+	cv.renderChanges(width)
+	return cv.bottomAlign(cv.renderCache.lines)
+}
+
+// bottomAlign prepends blank lines so the content sits at the bottom of the
+// allocated region. This keeps every component below the viewport (status,
+// input, footer) pinned at the same screen row regardless of whether the
+// conversation is empty or full, and makes growth scroll the oldest content
+// into scrollback instead of pushing the footer down. Content taller than the
+// budget is returned unchanged so the compositor's scrollback handles it.
+func (cv *ChatViewport) bottomAlign(lines []string) []string {
+	if cv.allocatedHeight <= 0 || len(lines) >= cv.allocatedHeight {
+		return lines
+	}
+	pad := cv.allocatedHeight - len(lines)
+	out := make([]string, 0, cv.allocatedHeight)
+	for i := 0; i < pad; i++ {
+		out = append(out, "")
+	}
+	return append(out, lines...)
 }
 
 // renderChanges applies pending mutations to the frame cache and returns it.
@@ -165,40 +202,10 @@ func (cv *ChatViewport) renderChanges(width int) []string {
 	return cv.renderCache.lines
 }
 
-// isEntryActive reports whether entry i is in the "active" zone: a running or
-// pending tool widget. Active entries render at the bottom of the frame so
-// in-progress tool calls stay visible while completed items scroll up above
-// them. Streaming thinking/assistant blocks are deliberately NOT active —
-// they remain in chronological order so concurrent streams do not jump.
-func (cv *ChatViewport) isEntryActive(i int) bool {
-	e := &cv.entries[i]
-	if tc, ok := e.View.(*ToolExecutionComponent); ok {
-		switch tc.Status() {
-		case ToolRunning, ToolPending:
-			return true
-		}
-	}
-	return false
-}
-
-// lastEntryAtBottom reports whether the last entry renders at the bottom of the
-// frame under two-zone ordering. The streaming fast path (updateLastEntry) is
-// only valid when this holds; otherwise a full rebuild is required.
+// lastEntryAtBottom reports whether the last entry renders at the bottom of
+// the frame. With chronological ordering (no active-zone sort), the last entry
+// is always at the bottom.
 func (cv *ChatViewport) lastEntryAtBottom() bool {
-	n := len(cv.entries)
-	if n == 0 {
-		return true
-	}
-	if cv.isEntryActive(n - 1) {
-		return true // last entry is active → end of active zone → bottom
-	}
-	// Last entry is inactive: it is at the bottom only if NO active entries
-	// exist (otherwise the active zone sorts after it).
-	for i := range cv.entries {
-		if cv.isEntryActive(i) {
-			return false
-		}
-	}
 	return true
 }
 
@@ -304,24 +311,18 @@ func (cv *ChatViewport) dirtyIndices() []int {
 // caches into the frame cache. Also recomputes lineOffsets for all entries so
 // that updateLastEntry can find the replacement range in O(1).
 //
-// Two-zone render: inactive (historical) entries first in chronological order,
-// then active entries (running/pending tools) in chronological order, so active
-// tool calls pin to the bottom and completed items scroll up above them. When
-// no entries are active this is identical to a plain chronological render, so
-// the common streaming case is unaffected.
+// All entries render in chronological order. Previously running/pending tools
+// were sorted to a separate "active" zone at the bottom; that caused open tool
+// calls to stay pinned to the bottom while newer messages/thinking accumulated
+// above them. The FIFO layout requested in bugs.md keeps every entry in the
+// order it occurred, so a running tool moves up as newer content is appended.
 func (cv *ChatViewport) fullRebuild(width int) {
 	cv.renderCache.width = width
 	cv.lastRenderFilter = cv.agentFilter
 	cv.renderCache.lines = cv.renderCache.lines[:0]
 	offset := 0
-	for pass := 0; pass < 2; pass++ {
-		active := pass == 1
-		for i := range cv.entries {
-			if cv.isEntryActive(i) != active {
-				continue
-			}
-			offset += cv.appendEntry(&cv.entries[i], width, offset)
-		}
+	for i := range cv.entries {
+		offset += cv.appendEntry(&cv.entries[i], width, offset)
 	}
 }
 
@@ -592,17 +593,18 @@ func (cv *ChatViewport) lastAgentEntryIndex(label string, types ...ConsoleItemTy
 func (cv *ChatViewport) AddAgentToolExecution(label, name, argsJSON string) *ToolExecutionComponent {
 	tc := cv.AddToolExecution(name, argsJSON)
 	tc.SetAgentLabel(label)
-	// Stamp the meta entry so later updates can attribute this tool to the agent.
-	if last, ok := cv.Conversation.LastWhere(func(e MessageEntry) bool {
-		_, is := e.View.(*ToolExecutionComponent)
-		return is
-	}); ok {
-		if last.Data.Meta == nil {
-			last.Data.Meta = map[string]string{"agent": label}
-		} else {
-			last.Data.Meta["agent"] = label
+	// Stamp the meta entry so the per-agent filter can attribute this tool to
+	// the agent. UpdateLast modifies the real entry in place; LastWhere
+	// returned a copy that would not persist.
+	cv.UpdateLast([]ConsoleItemType{ConsoleToolCall}, func(e *MessageEntry) {
+		if e.View == tc {
+			if e.Data.Meta == nil {
+				e.Data.Meta = map[string]string{"agent": label}
+			} else {
+				e.Data.Meta["agent"] = label
+			}
 		}
-	}
+	})
 	return tc
 }
 

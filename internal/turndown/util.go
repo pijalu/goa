@@ -48,17 +48,6 @@ func trimTrailingNewlines(s string) string {
 	return s[:i]
 }
 
-func trimNewlines(s string) string {
-	return trimTrailingNewlines(trimLeadingNewlines(s))
-}
-
-func repeat(s string, count int) string {
-	if count <= 0 {
-		return ""
-	}
-	return strings.Repeat(s, count)
-}
-
 // escapeMarkdown escapes Markdown-special characters.
 func escapeMarkdown(s string) string {
 	replacements := []struct {

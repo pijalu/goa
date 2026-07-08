@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/core"
-	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/skills"
 )
@@ -153,11 +152,6 @@ func (s *dreamScheduler) notify(msg string) {
 		return
 	}
 	s.subs.flash(msg)
-}
-
-// resolveDreamModel picks the configured dream model or falls back to active.
-func resolveDreamModel(cfg provider.Model) provider.Model {
-	return cfg
 }
 
 // dreamStateFile returns the path where the scheduler persists its state.

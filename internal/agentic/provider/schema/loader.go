@@ -23,12 +23,6 @@ const (
 	providersSubdir  = "providers"
 )
 
-// profileSource tracks where a profile was loaded from for debugging.
-type profileSource struct {
-	Profile VariantProfile
-	Source  string
-}
-
 // LoadEmbeddedProfiles loads all embedded variant profiles.
 func LoadEmbeddedProfiles() ([]VariantProfile, error) {
 	entries, err := variantsFS.ReadDir("variants")

@@ -46,6 +46,15 @@ type Editor struct {
 	scroll    int // vertical scroll offset in visual lines
 	lastWidth int // width used for last render (for visual line calc)
 
+	// stableMaxLines tracks the largest maxLines value seen since the last
+	// terminal resize. The editor never renders below this height so that the
+	// input line and the footer below it do not jump up when the buffer shrinks.
+	stableMaxLines int
+
+	// lastTerminalRows is used to detect terminal resizes and reset
+	// stableMaxLines when the screen dimensions change.
+	lastTerminalRows int
+
 	// Message queue (pending messages merged by default)
 	queue []string
 

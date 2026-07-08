@@ -619,9 +619,6 @@ func TestResolveActiveModel_ReasoningAndCompat(t *testing.T) {
 	if !mdl.Reasoning {
 		t.Error("Expected Reasoning to be true")
 	}
-	if _, ok := mdl.ThinkingLevelMap[agenticprovider.ThinkingMedium]; !ok {
-		t.Errorf("Expected ThinkingLevelMap to contain medium")
-	}
 	if mdl.ThinkingBudgets[agenticprovider.ThinkingMedium] != 512 {
 		t.Errorf("ThinkingBudget medium = %d, want 512", mdl.ThinkingBudgets[agenticprovider.ThinkingMedium])
 	}

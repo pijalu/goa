@@ -151,8 +151,8 @@ func TestOrchestrator_LiveFanout_RendersTabbedView(t *testing.T) {
 	for _, tab := range view.Tabs() {
 		keys = append(keys, tab.Key)
 	}
-	// Conversation + Stats bookends, plus one per-agent filter tab per role.
-	if len(keys) < 2 || keys[0] != "conversation" || keys[1] != "stats" {
+	// Stats + Conversation bookends, plus one per-agent filter tab per role.
+	if len(keys) < 2 || keys[0] != "stats" || keys[1] != "conversation" {
 		t.Errorf("live fanout missing bookend tabs: %v", keys)
 	}
 	if len(keys) < 4 {
@@ -190,6 +190,51 @@ func TestOrchestrator_LiveFanout_CacheHitReported(t *testing.T) {
 	}
 }
 
+// startCollectingAgentStartedEvents begins a goroutine that drains rt.Events()
+// and returns every EventAgentStarted. The caller must wait on the returned
+// channel before inspecting the slice.
+func startCollectingAgentStartedEvents(rt *orchestrator.Runtime) ([]orchestrator.Event, chan struct{}) {
+	var started []orchestrator.Event
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range rt.Events() {
+			if ev.Type == orchestrator.EventAgentStarted {
+				started = append(started, ev)
+			}
+		}
+	}()
+	return started, done
+}
+
+// assertUniqueAgentIDs fails if any started event repeats an AgentID.
+func assertUniqueAgentIDs(t *testing.T, started []orchestrator.Event) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, ev := range started {
+		if ev.AgentID == "" {
+			continue
+		}
+		if seen[ev.AgentID] {
+			t.Errorf("duplicate AgentID across delegations: %s (shared-agent leak)", ev.AgentID)
+		}
+		seen[ev.AgentID] = true
+	}
+}
+
+// assertReplayableSnapshot fails if the run did not persist a replayable snapshot.
+func assertReplayableSnapshot(t *testing.T, rootDir string) {
+	t.Helper()
+	runs, err := orchestrator.ListRuns(rootDir)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("ListRuns: %d runs (%v), want 1", len(runs), err)
+	}
+	snap, err := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runs[0].RunID))
+	if err != nil || !snap.Started {
+		t.Fatalf("snapshot not started/Readable: snap=%+v err=%v", snap, err)
+	}
+}
+
 // TestOrchestratorAdapter_LiveHubDelegationIsolation is the LMStudio e2e for
 // the delegation-isolation fix cluster (R2/R3/R7/R12): a hub run must complete
 // against a real model with every started agent carrying a DISTINCT agent id
@@ -203,16 +248,7 @@ func TestOrchestratorAdapter_LiveHubDelegationIsolation(t *testing.T) {
 	}
 	rt, rootDir := newLiveRuntime(t, []string{"coder"}, "hub")
 
-	var started []orchestrator.Event
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range rt.Events() {
-			if ev.Type == orchestrator.EventAgentStarted {
-				started = append(started, ev)
-			}
-		}
-	}()
+	started, done := startCollectingAgentStartedEvents(rt)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -221,26 +257,6 @@ func TestOrchestratorAdapter_LiveHubDelegationIsolation(t *testing.T) {
 	}
 	<-done
 
-	// Every started agent has a unique id (the fresh-agent-per-delegation fix
-	// guarantees no two handles share an identity).
-	seen := map[string]bool{}
-	for _, ev := range started {
-		if ev.AgentID == "" {
-			continue
-		}
-		if seen[ev.AgentID] {
-			t.Errorf("duplicate AgentID across delegations: %s (shared-agent leak)", ev.AgentID)
-		}
-		seen[ev.AgentID] = true
-	}
-
-	// The run persisted a replayable snapshot (R11 event log + resume support).
-	runs, err := orchestrator.ListRuns(rootDir)
-	if err != nil || len(runs) != 1 {
-		t.Fatalf("ListRuns: %d runs (%v), want 1", len(runs), err)
-	}
-	snap, err := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runs[0].RunID))
-	if err != nil || !snap.Started {
-		t.Fatalf("snapshot not started/Readable: snap=%+v err=%v", snap, err)
-	}
+	assertUniqueAgentIDs(t, started)
+	assertReplayableSnapshot(t, rootDir)
 }

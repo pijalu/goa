@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"github.com/pijalu/goa/config"
-	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/skills"
@@ -432,7 +431,7 @@ func (a *App) reloadSkills() {
 	a.subs.skillRegistry = reg
 
 	// Register /<skillname> shortcuts for the newly loaded project skills.
-	if warnings := commands.RegisterSkillShortcuts(core.GlobalRegistry(), reg); len(warnings) > 0 {
+	if warnings := commands.RegisterSkillShortcuts(a.subs.cmdRouter.Registry(), reg); len(warnings) > 0 {
 		for _, w := range warnings {
 			log.Printf("Warning: %s\n", w)
 		}

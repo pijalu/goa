@@ -968,9 +968,38 @@ func (t *TUI) renderNow() []string {
 // grapheme-aware) and stripped from layer content.
 func (t *TUI) buildScene(w, h int) *Scene {
 	scene := &Scene{TerminalW: w, TerminalH: h}
+
+	// Layout pass: measure the fixed chrome and push the remaining vertical
+	// slack (terminal height minus chrome) into any fill component
+	// (HeightAllocated, e.g. the conversation viewport) BEFORE rendering it.
+	// The fill bottom-anchors its content within that slack, so the
+	// input/status/footer stay pinned at the screen bottom and growth scrolls
+	// the oldest content into scrollback instead of pushing the footer down.
+	// This is the correct replacement for the former monotonically-growing
+	// stable-height padding.
+	rendered := make([][]string, len(t.children))
+	chromeHeight := 0
+	var fills []int
+	for i, child := range t.children {
+		if _, ok := child.(HeightAllocated); ok {
+			fills = append(fills, i)
+			continue
+		}
+		rendered[i] = child.Render(w)
+		chromeHeight += len(rendered[i])
+	}
+	for _, idx := range fills {
+		budget := (h - chromeHeight) / len(fills)
+		if budget < 0 {
+			budget = 0
+		}
+		t.children[idx].(HeightAllocated).SetAllocatedHeight(budget)
+		rendered[idx] = t.children[idx].Render(w)
+	}
+
 	y := 0
-	for _, child := range t.children {
-		lines := child.Render(w)
+	for i, child := range t.children {
+		lines := rendered[i]
 		if len(lines) == 0 {
 			continue
 		}
@@ -988,6 +1017,9 @@ func (t *TUI) buildScene(w, h int) *Scene {
 		olines := ov.comp.Render(w)
 		if len(olines) == 0 {
 			continue
+		}
+		if ov.opts.CaptureInput {
+			scene.OverlayCapturesInput = true
 		}
 		oh := clampOverlayHeight(len(olines), h)
 		startRow := overlayStartRow(ov.opts, oh, h)
@@ -1023,6 +1055,10 @@ func agentNodeFor(c Component, rect Rect, lines []string) AgentNode {
 // for the CURSOR_MARKER emitted by the focused input, sets Scene.Cursor to
 // its absolute (row, col) position, and strips the marker. col is
 // grapheme-aware (matches the terminal).
+//
+// When a capturing overlay is open, the base editor's cursor must NOT be used:
+// the overlay owns input and a non-cursor overlay (like the tab picker) should
+// leave the hardware cursor hidden.
 func extractCursorMarker(scene *Scene) {
 	baseHeight := baseCanvasHeight(scene.Layers)
 	termH := scene.TerminalH
@@ -1033,6 +1069,11 @@ func extractCursorMarker(scene *Scene) {
 
 	if row, col, found := findCursorInLayers(scene.Layers, LayerOverlay, viewportStart); found {
 		scene.Cursor = &CursorPos{Row: row, Col: col}
+		return
+	}
+	if scene.OverlayCapturesInput {
+		// Capturing overlay is open and has no cursor of its own: hide the
+		// cursor so it does not leak through from the underlying editor.
 		return
 	}
 	if row, col, found := findCursorInLayers(scene.Layers, LayerBase, 0); found {

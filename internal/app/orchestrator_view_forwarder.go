@@ -57,8 +57,9 @@ func (a *App) attachOrchView(src orchEventSource) {
 			a.subs.agentTabBar.SetView(view)
 		}
 		if a.subs.chat != nil {
-			// Default to Conversation: chat is visible.
-			a.subs.chat.SetSuppressed(false)
+			// Default to Stats: the persistent stats panel is visible and the
+			// chat viewport is suppressed until the user switches to Conversation.
+			a.subs.chat.SetSuppressed(true)
 		}
 		// Fresh stream registry per run, unconditionally. (The previous
 		// `if != nil` guard was inverted: it only reset when already set, and

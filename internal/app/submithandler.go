@@ -501,7 +501,7 @@ func (a *App) handleHelpCommand() {
 	subs := a.subs
 	var b strings.Builder
 	b.WriteString("# Goa Commands\n\n")
-	for _, cmd := range core.GlobalRegistry().All() {
+	for _, cmd := range a.subs.cmdRouter.Registry().All() {
 		name := cmd.Name()
 		desc := cmd.ShortHelp()
 		if desc == "" {

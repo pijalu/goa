@@ -163,7 +163,7 @@ func isRetryable(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return netErr.Timeout()
 	}
 	var errno syscall.Errno
 	if errors.As(err, &errno) {

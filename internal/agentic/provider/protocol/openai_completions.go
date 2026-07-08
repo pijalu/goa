@@ -781,7 +781,7 @@ func parseRootFields(raw map[string]any) []parserMessage {
 
 func resolveThinkingLevel(model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile) string {
 	if opts.Reasoning != "" && opts.Reasoning != schema.ThinkingOff {
-		if native, ok := model.ThinkingLevelMap[opts.Reasoning]; ok {
+		if native, ok := profile.Defaults.ThinkingLevelMap[opts.Reasoning]; ok {
 			return native
 		}
 		return string(opts.Reasoning)

@@ -11,8 +11,8 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// buildPickerView creates a view with 2 tabs (Conversation, Stats) for picker
-// tests, with the Conversation tab active initially.
+// buildPickerView creates a view with 2 tabs (Stats, Conversation) for picker
+// tests, with the Stats tab active initially.
 func buildPickerView(t *testing.T) *MultiAgentView {
 	t.Helper()
 	v := NewMultiAgentView("orchestration")
@@ -30,12 +30,25 @@ func TestAgentTabPicker_DigitJumpPicksAndCloses(t *testing.T) {
 	p.SetPickFunc(func(key string) { picked = key })
 	p.SetCloseFunc(func() { closed = true })
 
-	p.HandleInput("2") // stats (index 1)
-	if picked != "stats" {
-		t.Errorf("digit 2 picked %q, want stats", picked)
+	p.HandleInput("2") // conversation (index 1)
+	if picked != "conversation" {
+		t.Errorf("digit 2 picked %q, want conversation", picked)
 	}
 	if !closed {
 		t.Error("picker did not close after pick")
+	}
+}
+
+func TestAgentTabPicker_DigitOnePicksStats(t *testing.T) {
+	v := buildPickerView(t)
+	var picked string
+	p := NewAgentTabPicker(v)
+	p.SetPickFunc(func(key string) { picked = key })
+	p.SetCloseFunc(func() {})
+
+	p.HandleInput("1") // stats (index 0)
+	if picked != "stats" {
+		t.Errorf("digit 1 picked %q, want stats", picked)
 	}
 }
 
@@ -59,10 +72,10 @@ func TestAgentTabPicker_ArrowThenEnter(t *testing.T) {
 	p.SetPickFunc(func(key string) { picked = key })
 	p.SetCloseFunc(func() {})
 
-	p.HandleInput(tui.KeyDown) // Conversation -> Stats
+	p.HandleInput(tui.KeyDown) // Stats -> Conversation
 	p.HandleInput(tui.KeyEnter)
-	if picked != "stats" {
-		t.Errorf("arrow+enter picked %q, want stats", picked)
+	if picked != "conversation" {
+		t.Errorf("arrow+enter picked %q, want conversation", picked)
 	}
 }
 

@@ -42,6 +42,29 @@ func TestChatViewportAgentFilter_IsolatesOneAgent(t *testing.T) {
 	}
 }
 
+// TestChatViewportAgentFilter_IncludesToolWidgets is the RED regression for
+// bugs.md: per-agent tabs must show the agent's tool widgets, not only text
+// blocks.
+func TestChatViewportAgentFilter_IncludesToolWidgets(t *testing.T) {
+	cv := NewChatViewport()
+	tc := cv.AddAgentToolExecution("coder", "write", `{"path":"x"}`)
+	tc.SetStatus(ToolSuccess)
+	cv.AddAgentContent("coder", "Done.")
+	cv.AddAgentContent("reviewer", "reviewer note")
+
+	cv.SetAgentFilter("coder")
+	rendered := ansi.Strip(strings.Join(cv.Render(80), "\n"))
+	if !strings.Contains(rendered, "write") {
+		t.Errorf("coder filter should show coder tool widget:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Done.") {
+		t.Errorf("coder filter should show coder content:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "reviewer note") {
+		t.Errorf("coder filter should not show reviewer content:\n%s", rendered)
+	}
+}
+
 // TestChatViewportAgentContentReconcile_ToFullText is the RED→GREEN test for
 // R5: after partial streaming, snapping the content widget to the
 // authoritative full text repairs any gaps dropped by the live fanout.

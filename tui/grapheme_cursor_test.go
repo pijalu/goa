@@ -11,6 +11,22 @@ import (
 	"github.com/rivo/uniseg"
 )
 
+// markerOnGraphemeBoundary reports whether bytePos is a grapheme-cluster
+// boundary in s. It walks all clusters and returns true if the boundary is at
+// the start of a cluster or at the end of the string.
+func markerOnGraphemeBoundary(s string, bytePos int) bool {
+	gr := uniseg.NewGraphemes(s)
+	boundary := 0
+	for gr.Next() {
+		if boundary == bytePos {
+			return true
+		}
+		_, end := gr.Positions()
+		boundary = end
+	}
+	return boundary == bytePos
+}
+
 // TestCursorPlacement_GraphemeAware verifies the new cursor-marker placement
 // path (wrapChunks + cursorChunk + runeOffsetToByte) lands the marker on a
 // grapheme-cluster boundary with the correct preceding visible width. This is
@@ -43,22 +59,7 @@ func TestCursorPlacement_GraphemeAware(t *testing.T) {
 				t.Errorf("visibleWidth before marker = %d, want %d (bytePos=%d, chunk=%q)",
 					w, c.wantWidth, bytePos, chunks[idx].Text)
 			}
-			// The marker must never split a grapheme cluster: re-segmenting the
-			// chunk text up to the marker must end exactly on a cluster boundary.
-			gr := uniseg.NewGraphemes(chunks[idx].Text)
-			boundary := 0
-			ok := false
-			for gr.Next() {
-				if boundary == bytePos {
-					ok = true
-				}
-				_, end := gr.Positions()
-				boundary = end
-			}
-			if boundary == bytePos {
-				ok = true
-			}
-			if !ok {
+			if !markerOnGraphemeBoundary(chunks[idx].Text, bytePos) {
 				t.Errorf("marker byte %d splits a grapheme cluster in %q", bytePos, chunks[idx].Text)
 			}
 		})

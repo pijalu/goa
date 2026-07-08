@@ -50,20 +50,6 @@ func (b *fakeBuilder) NewRuntime(cfg config.OrchestratorConfig, rootDir string) 
 	return rt, nil
 }
 
-func baseCfg() config.Config {
-	return config.Config{
-		Orchestrator: config.OrchestratorConfig{
-			Roles: map[string]config.OrchestratorRole{
-				"orchestrator": {Model: "m"},
-				"coder":        {Model: "m"},
-				"reviewer":     {Model: "m"},
-			},
-			Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
-			Defaults: config.OrchestratorDefaultsConfig{Topology: config.OrchestratorTopologyFanout},
-		},
-	}
-}
-
 func testCtx(t *testing.T) core.Context {
 	t.Helper()
 	return core.Context{Config: &config.Config{Orchestrator: config.OrchestratorConfig{

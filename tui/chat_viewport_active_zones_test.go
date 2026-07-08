@@ -29,10 +29,11 @@ func stripAllLines(lines []string) []string {
 	return out
 }
 
-// TestChatViewport_ActiveItemsPinnedToBottom verifies Bug 6: while a tool is
-// running it renders at the bottom; once finalized, it scrolls up into the
-// historical zone and a subsequent streaming assistant message takes the bottom.
-func TestChatViewport_ActiveItemsPinnedToBottom(t *testing.T) {
+// TestChatViewport_ToolsStayInChronologicalOrder verifies the FIFO layout
+// from bugs.md: a tool widget appears in the order it was created. While it is
+// running it sits below earlier entries and above later entries; once
+// finalized, later entries continue to render below it.
+func TestChatViewport_ToolsStayInChronologicalOrder(t *testing.T) {
 	cv := NewChatViewport()
 	cv.AddUserMessage("please run ls")
 	tc := cv.AddToolExecution("bash", `{"command":"ls"}`)
@@ -64,12 +65,10 @@ func TestChatViewport_ActiveItemsPinnedToBottom(t *testing.T) {
 	}
 }
 
-// TestChatViewport_RunningToolPinnedToBottomWhenNotLast exercises the two-zone
-// reordering: a running tool that is NOT the last-appended entry is pulled to
-// the bottom, below inactive entries appended after it. This is the
-// interleaved case (e.g. orchestration: one agent's tool runs while another's
-// completed message is already in scrollback).
-func TestChatViewport_RunningToolPinnedToBottomWhenNotLast(t *testing.T) {
+// TestChatViewport_RunningToolStaysInChronologicalOrder exercises the FIFO
+// layout: a running tool that is NOT the last-appended entry stays in its
+// chronological position; later entries render below it.
+func TestChatViewport_RunningToolStaysInChronologicalOrder(t *testing.T) {
 	cv := NewChatViewport()
 	// Running tool (active), then an assistant message that gets finalized
 	// (inactive) when a non-streaming entry is appended afterwards.
@@ -87,15 +86,14 @@ func TestChatViewport_RunningToolPinnedToBottomWhenNotLast(t *testing.T) {
 	if assistantIdx < 0 {
 		t.Fatalf("assistant not found:\n%s", strings.Join(lines, "\n"))
 	}
-	if toolIdx <= assistantIdx {
-		t.Errorf("running tool (%d) should be below inactive assistant (%d):\n%s", toolIdx, assistantIdx, strings.Join(lines, "\n"))
+	if toolIdx >= assistantIdx {
+		t.Errorf("running tool (%d) should be above inactive assistant (%d):\n%s", toolIdx, assistantIdx, strings.Join(lines, "\n"))
 	}
 }
 
-// TestChatViewport_StreamingFastPathPreserved ensures the two-zone change did
-// not break the streaming fast path: a sequence of UpdateLastMessage calls on
-// the last entry (the common streaming case, no running tools) renders correctly
-// and keeps the streaming content at the bottom.
+// TestChatViewport_FIFOFastPathPreserved is the same smoke test as
+// StreamingFastPathPreserved but named to clarify that removing the active-zone
+// sort did not regress the streaming fast path.
 func TestChatViewport_StreamingFastPathPreserved(t *testing.T) {
 	cv := NewChatViewport()
 	cv.AddUserMessage("hi")

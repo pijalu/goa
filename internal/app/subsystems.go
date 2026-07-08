@@ -517,19 +517,20 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 		TrustManager:    trustMgr,
 		SwarmState:      swarmState,
 	}
-	if err := commands.RegisterAll(core.GlobalRegistry(), deps); err != nil {
+	registry := core.NewCommandRegistry()
+	if err := commands.RegisterAll(registry, deps); err != nil {
 		log.Fatalf("Failed to register commands: %v", err)
 	}
-	if warnings := commands.RegisterSkillShortcuts(core.GlobalRegistry(), skillRegistry); len(warnings) > 0 {
+	if warnings := commands.RegisterSkillShortcuts(registry, skillRegistry); len(warnings) > 0 {
 		for _, w := range warnings {
 			log.Printf("Warning: %s\n", w)
 		}
 	}
 
-	docEngine := core.NewDocEngine(core.GlobalRegistry())
+	docEngine := core.NewDocEngine(registry)
 	docEngine.SetToolRegistry(toolRegistry)
 	docEngine.SetSkillRegistry(skillRegistry)
-	cmdRouter := core.NewCommandRouter(core.GlobalRegistry(), docEngine)
+	cmdRouter := core.NewCommandRouter(registry, docEngine)
 	if cfg.Aliases != nil {
 		cmdRouter.SetAliases(cfg.Aliases)
 	}
@@ -860,7 +861,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		b.SetCloseFunc(func() { handle.Hide() })
 	}
 	s.orchCmd = orchCmd
-	_ = core.GlobalRegistry().Register(orchCmd)
+	_ = s.cmdRouter.Registry().Register(orchCmd)
 
 	s.dreamScheduler = newDreamScheduler(s)
 	_ = s.dreamScheduler.readSchedulerState()

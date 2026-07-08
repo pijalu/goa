@@ -70,6 +70,22 @@ func TestOrchestratorAdapterEvents_ForwardThinkingAndToolEvents(t *testing.T) {
 	}
 }
 
+func findToolResultOK(got []orchestrator.Event, id string) *bool {
+	for _, ev := range got {
+		if ev.Type != orchestrator.EventAgentToolResult {
+			continue
+		}
+		gotID, _ := ev.Payload["call_id"].(string)
+		if gotID != id {
+			continue
+		}
+		if b, ok := ev.Payload["ok"].(bool); ok {
+			return &b
+		}
+	}
+	return nil
+}
+
 // TestOrchestratorAdapterEvents_ToolResultErrorStatus asserts that the adapter
 // marks tool results starting with Error: or the goa-system budget prefix as
 // not ok.
@@ -92,17 +108,9 @@ func TestOrchestratorAdapterEvents_ToolResultErrorStatus(t *testing.T) {
 	mu.Lock()
 	got := append([]orchestrator.Event(nil), received...)
 	mu.Unlock()
+
 	for _, id := range []string{"t1", "t2"} {
-		var ok *bool
-		for _, ev := range got {
-			if ev.Type == orchestrator.EventAgentToolResult {
-				if gotID, _ := ev.Payload["call_id"].(string); gotID == id {
-					if b, bok := ev.Payload["ok"].(bool); bok {
-						ok = &b
-					}
-				}
-			}
-		}
+		ok := findToolResultOK(got, id)
 		if ok == nil || *ok {
 			t.Errorf("tool result %s should be ok=false, got ok=%v", id, ok)
 		}

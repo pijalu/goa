@@ -6,7 +6,6 @@ package turndown
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -313,8 +312,6 @@ func imageRule() Rule {
 		},
 	}
 }
-
-var tableCellRe = regexp.MustCompile(`\s*\n\s*`)
 
 func tableRule() Rule {
 	return Rule{

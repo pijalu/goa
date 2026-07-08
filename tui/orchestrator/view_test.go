@@ -41,11 +41,11 @@ func TestView_TabsAndOrdering(t *testing.T) {
 	if len(keys) != 4 {
 		t.Fatalf("tabs = %v, want 4 (conversation+stats+2 agents)", keys)
 	}
-	if keys[0] != "conversation" || keys[1] != "stats" {
-		t.Errorf("bookend tabs = %v, want conversation,stats first", keys[:2])
+	if keys[0] != "stats" || keys[1] != "conversation" {
+		t.Errorf("bookend tabs = %v, want stats,conversation first", keys[:2])
 	}
-	if active, _ := v.ActiveTab(); active.Key != "conversation" {
-		t.Errorf("active = %q, want conversation", active.Key)
+	if active, _ := v.ActiveTab(); active.Key != "stats" {
+		t.Errorf("active = %q, want stats", active.Key)
 	}
 	if got, want := v.TabIndex(), "1/4"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
@@ -57,14 +57,14 @@ func TestView_TabsAndOrdering(t *testing.T) {
 func TestView_Navigation(t *testing.T) {
 	v := buildLifecycleView(t)
 	v.Cycle(1)
-	if active, _ := v.ActiveTab(); active.Key != "stats" {
-		t.Errorf("after Cycle(1) active = %q, want stats", active.Key)
-	}
-	if !v.SelectByKey("conversation") {
-		t.Fatal("SelectByKey(conversation) returned false")
-	}
 	if active, _ := v.ActiveTab(); active.Key != "conversation" {
-		t.Errorf("after SelectByKey(conversation) active = %q, want conversation", active.Key)
+		t.Errorf("after Cycle(1) active = %q, want conversation", active.Key)
+	}
+	if !v.SelectByKey("stats") {
+		t.Fatal("SelectByKey(stats) returned false")
+	}
+	if active, _ := v.ActiveTab(); active.Key != "stats" {
+		t.Errorf("after SelectByKey(stats) active = %q, want stats", active.Key)
 	}
 	if got, want := v.TabIndex(), "1/4"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
@@ -72,8 +72,8 @@ func TestView_Navigation(t *testing.T) {
 	if !v.SelectByKey("2") {
 		t.Error("SelectByKey(2) returned false")
 	}
-	if active, _ := v.ActiveTab(); active.Key != "stats" {
-		t.Errorf("after SelectByKey(2) active = %q, want stats", active.Key)
+	if active, _ := v.ActiveTab(); active.Key != "conversation" {
+		t.Errorf("after SelectByKey(2) active = %q, want conversation", active.Key)
 	}
 	if v.SelectByKey("nope") {
 		t.Error("SelectByKey(unknown) should return false")
@@ -182,18 +182,6 @@ func rowFor(v *MultiAgentView, id string) *AgentEnhancedRow {
 		}
 	}
 	return nil
-}
-
-func equalSlice(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func containsJoin(lines []AgentLogLine, want string) bool {

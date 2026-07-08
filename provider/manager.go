@@ -331,7 +331,7 @@ func applyModelConfigCapabilities(mdl *agenticprovider.Model, mCfg config.ModelC
 		mdl.InputTypes = mCfg.InputTypes
 	}
 	if mCfg.ThinkingLevel != "" {
-		mdl.ThinkingLevelMap = defaultThinkingLevelMap()
+		mdl.Reasoning = true
 	}
 }
 
@@ -472,7 +472,7 @@ func applyModelConfigToFallback(mdl *agenticprovider.Model, mCfg config.ModelCon
 		mdl.Reasoning = true
 	}
 	if mCfg.ThinkingLevel != "" {
-		mdl.ThinkingLevelMap = defaultThinkingLevelMap()
+		mdl.Reasoning = true
 	}
 	if budgets := effectiveThinkingBudgets(mCfg); len(budgets) > 0 {
 		mdl.ThinkingBudgets = budgets
@@ -489,19 +489,6 @@ func applyProviderExtraToFallback(mdl *agenticprovider.Model, pCfg config.Provid
 	mdl.Extra = make(map[string]any, len(pCfg.Extra))
 	for k, v := range pCfg.Extra {
 		mdl.Extra[k] = v
-	}
-}
-
-// defaultThinkingLevelMap returns the canonical thinking-level mapping.
-func defaultThinkingLevelMap() agenticprovider.ThinkingLevelMap {
-	return agenticprovider.ThinkingLevelMap{
-		agenticprovider.ThinkingOff:     string(agenticprovider.ThinkingOff),
-		agenticprovider.ThinkingMinimal: string(agenticprovider.ThinkingMinimal),
-		agenticprovider.ThinkingLow:     string(agenticprovider.ThinkingLow),
-		agenticprovider.ThinkingMedium:  string(agenticprovider.ThinkingMedium),
-		agenticprovider.ThinkingHigh:    string(agenticprovider.ThinkingHigh),
-		agenticprovider.ThinkingXHigh:   string(agenticprovider.ThinkingXHigh),
-		agenticprovider.ThinkingMax:     string(agenticprovider.ThinkingMax),
 	}
 }
 

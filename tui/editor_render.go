@@ -25,6 +25,9 @@ func maxEditorLines(terminalRows int) int {
 	if maxDesired > 12 {
 		maxDesired = 12
 	}
+	if maxDesired < 1 {
+		maxDesired = 1
+	}
 	return maxDesired
 }
 
@@ -127,6 +130,18 @@ func (e *Editor) computeLayout(width int) editorLayout {
 	cursorVisLine, cursorOffset := cursorChunk(chunks, fullText, cursorFullPos)
 
 	e.maxLines = clampEditorMaxLines(totalVisualLines, e.terminalRows())
+	// Reset the stable height tracker when the terminal is resized; position
+	// changes are expected in that case.
+	if tr := e.terminalRows(); tr != e.lastTerminalRows {
+		e.lastTerminalRows = tr
+		e.stableMaxLines = 0
+	}
+	if e.maxLines > e.stableMaxLines {
+		e.stableMaxLines = e.maxLines
+	}
+	if e.maxLines < e.stableMaxLines {
+		e.maxLines = e.stableMaxLines
+	}
 	e.scroll = clampScroll(cursorVisLine, e.scroll, e.maxLines, totalVisualLines)
 
 	dispStart := e.scroll

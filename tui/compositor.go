@@ -45,11 +45,12 @@ type CursorPos struct{ Row, Col int }
 // single source of truth consumed by the Compositor (terminal bytes), the
 // AgentView (plain text for AI tooling), and tests.
 type Scene struct {
-	TerminalW int
-	TerminalH int
-	Layers    []Layer    // base layers first, then overlays; ordering within equal Z is stable
-	Cursor    *CursorPos // nil hides the hardware cursor
-	Nodes     []AgentNode
+	TerminalW            int
+	TerminalH            int
+	OverlayCapturesInput bool       // true when at least one overlay has CaptureInput
+	Layers               []Layer    // base layers first, then overlays; ordering within equal Z is stable
+	Cursor               *CursorPos // nil hides the hardware cursor
+	Nodes                []AgentNode
 }
 
 // compose builds the virtual-buffer canvas from the Scene's layers: each
@@ -319,13 +320,12 @@ type Compositor struct {
 	viewportTop         int // last frame's viewport top (for absolute cursor math)
 	maxLinesRendered    int
 	fullRedrawCount     int
-	clearOnShrink       bool
 	firstScrollDone     bool // true after the first viewport scroll; affects scrollback population
 }
 
 // NewCompositor creates a Compositor bound to a Terminal.
 func NewCompositor(term Terminal) *Compositor {
-	return &Compositor{terminal: term, clearOnShrink: true}
+	return &Compositor{terminal: term}
 }
 
 // FullRedrawCount exposes the number of full redraws (diagnostics/tests).
@@ -445,10 +445,11 @@ func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChang
 		fullRender(true)
 		return true
 	}
-	if c.clearOnShrink && len(canvas) < c.maxLinesRendered && !hasOverlay {
-		fullRender(true)
-		return true
-	}
+	// The differential path (renderChangePath) handles shrink by clearing just
+	// the freed trailing lines, preserving terminal scrollback. A former
+	// full-erase-on-shrink branch lived here; it only worked because a
+	// now-removed padding hack kept the canvas artificially at its max height,
+	// and without that it wiped scrollback on every legitimate shrink.
 	return false
 }
 
@@ -750,9 +751,15 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	}
 	finalCursorRow := renderEnd
 	// Clear extra trailing lines if the buffer shrank (absolute CUP per line).
+	// Only clear rows that are actually on screen: when the canvas shrank to fit
+	// (canvas <= height), the freed lines are above/below the visible region and
+	// must not be touched, or the last visible line (e.g. the input) gets wiped.
 	if extra := len(c.prevLines) - len(canvas); extra > 0 {
 		for k := 0; k < extra; k++ {
-			row := clampRow((len(canvas)+k)-vtop+1, height)
+			row := (len(canvas) + k) - vtop + 1
+			if row < 1 || row > height {
+				continue
+			}
 			buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", row))
 		}
 		finalCursorRow = max(0, len(canvas)-1)
@@ -814,6 +821,14 @@ func applyLineResets(lines []string) []string {
 }
 
 func needsFullRedrawForChange(firstChanged, prevViewportTop, viewportTop, newLen, height int, overlayOpen bool) bool {
+	// When the canvas fits on screen, the whole conversation is already visible:
+	// there is no scrollback region to reveal and the viewport cannot scroll up.
+	// A change there is just new content to rewrite differentially. Forcing a
+	// full redraw would emit a screen clear and wipe the terminal scrollback —
+	// the shrink regression (clear/collapse after overflow).
+	if newLen <= height {
+		return false
+	}
 	if firstChanged < prevViewportTop {
 		return true
 	}

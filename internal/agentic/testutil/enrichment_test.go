@@ -7,7 +7,6 @@ package testutil
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -304,9 +303,9 @@ func TestHandleToolCall_NoRetryWhenNotRetryable(t *testing.T) {
 }
 
 func TestRealLLM_SelfCorrection(t *testing.T) {
-	endpoint := os.Getenv("K8_LLM_URL")
-	if endpoint == "" {
-		endpoint = "http://localhost:1234/v1/chat/completions"
+	endpoint, ok := realLLMEndpoint()
+	if !ok {
+		t.Skipf("set K8_LLM_URL to run the real-LLM self-correction test")
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}

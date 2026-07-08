@@ -194,7 +194,7 @@ func (a *App) initialFooterData() tui.FooterData {
 }
 
 func (a *App) buildCommandCompleter() *tui.CommandCompleter {
-	cmdNames, descriptions := collectCmdNames()
+	cmdNames, descriptions := collectCmdNames(a.subs.cmdRouter.Registry())
 	addAliases(cmdNames, descriptions, a.subs.cfg.Aliases)
 
 	cmdCompleter := tui.NewCommandCompleter(cmdNames, descriptions)
@@ -208,9 +208,9 @@ func (a *App) buildCommandCompleter() *tui.CommandCompleter {
 	return cmdCompleter
 }
 
-// collectCmdNames returns all command names and descriptions from the global registry.
-func collectCmdNames() ([]string, map[string]string) {
-	allCmds := core.GlobalRegistry().All()
+// collectCmdNames returns all command names and descriptions from the given registry.
+func collectCmdNames(registry *core.CommandRegistry) ([]string, map[string]string) {
+	allCmds := registry.All()
 	cmdNames := make([]string, 0, len(allCmds))
 	descriptions := make(map[string]string, len(allCmds)*2)
 	for _, c := range allCmds {
@@ -239,7 +239,7 @@ func addAliases(cmdNames []string, descriptions map[string]string, aliases map[s
 func (a *App) buildArgCompleter() func(cmdName, argPrefix string) []tui.Completion {
 	return func(cmdName, argPrefix string) []tui.Completion {
 		name := strings.TrimPrefix(cmdName, "/")
-		cmd, found := resolveCommandOrAlias(name, a.subs.cfg.Aliases)
+		cmd, found := resolveCommandOrAlias(name, a.subs.cfg.Aliases, a.subs.cmdRouter.Registry())
 		if !found {
 			return nil
 		}
@@ -268,14 +268,14 @@ func (a *App) buildArgCompleter() func(cmdName, argPrefix string) []tui.Completi
 }
 
 // resolveCommandOrAlias looks up a command by name, resolving aliases if not found.
-func resolveCommandOrAlias(name string, aliases map[string]string) (core.Command, bool) {
-	cmd, found := core.GlobalRegistry().Resolve(name)
+func resolveCommandOrAlias(name string, aliases map[string]string, registry *core.CommandRegistry) (core.Command, bool) {
+	cmd, found := registry.Resolve(name)
 	if found {
 		return cmd, true
 	}
 	if aliases != nil {
 		if target, ok := aliases[name]; ok && !strings.Contains(target, ":") {
-			return core.GlobalRegistry().Resolve(target)
+			return registry.Resolve(target)
 		}
 	}
 	return nil, false

@@ -37,6 +37,7 @@ type Defaults struct {
 	TopK            *float64        `json:"top_k,omitempty"`
 	MaxTokens       *int            `json:"max_tokens,omitempty"`
 	Thinking        string          `json:"thinking,omitempty"`
+	ThinkingLevelMap ThinkingLevelMap `json:"thinking_level_map,omitempty"`
 	ThinkingBudgets ThinkingBudgets `json:"thinking_budgets,omitempty"`
 }
 

@@ -105,7 +105,7 @@ func keepSignatureOnlyThinking(messages []schema.Message) []schema.Message {
 
 func convertThinkingToTextWhenRequired(messages []schema.Message, model schema.Model, profile schema.VariantProfile) []schema.Message {
 	sourceFormat := model.ThinkingFormat
-	if sourceFormat == "" && len(model.ThinkingLevelMap) > 0 {
+	if sourceFormat == "" && len(profile.Defaults.ThinkingLevelMap) > 0 {
 		sourceFormat = schema.ThinkingFormatThinkingContent
 	}
 	targetFormat := schema.ThinkingFormat(profile.Compat.ThinkingFormat)

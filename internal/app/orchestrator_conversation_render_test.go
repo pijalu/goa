@@ -31,6 +31,89 @@ func orchStreamEvents() []orchestrator.Event {
 	}
 }
 
+func captureOrchFilmstripOnTab(t *testing.T, sc *orchViewScenario, events []orchestrator.Event, tabKey string) *tui.Filmstrip {
+	t.Helper()
+	film := tui.NewFilmstrip()
+	film.Capture("pre-run", sc.frame(), "")
+
+	var head, tail []orchestrator.Event
+	for i, ev := range events {
+		if ev.Type == orchestrator.EventRunStarted {
+			head = events[:i+1]
+			if i+1 < len(events) {
+				tail = events[i+1:]
+			}
+			break
+		}
+	}
+	if head == nil {
+		head = events
+	}
+
+	for _, ev := range head {
+		ne, ok := translateOrchEvent(ev)
+		if !ok {
+			continue
+		}
+		sc.engine.ApplySync(func() { sc.app.handleOrchViewEvent(ne) })
+		film.Capture(string(ev.Type), sc.frame(), sc.app.subs.statusMsg.Text())
+	}
+
+	if tabKey != "" {
+		sc.engine.ApplySync(func() { sc.app.selectAgentTab(tabKey) })
+		film.Capture("switch_"+tabKey, sc.frame(), sc.app.subs.statusMsg.Text())
+	}
+
+	for _, ev := range tail {
+		ne, ok := translateOrchEvent(ev)
+		if !ok {
+			continue
+		}
+		sc.engine.ApplySync(func() { sc.app.handleOrchViewEvent(ne) })
+		film.Capture(string(ev.Type), sc.frame(), sc.app.subs.statusMsg.Text())
+	}
+	return film
+}
+
+// captureOrchFilmstripOnConversationTab is a convenience wrapper for the
+// common case where the conversation tab must be visible while replaying events.
+func captureOrchFilmstripOnConversationTab(t *testing.T, sc *orchViewScenario, events []orchestrator.Event) *tui.Filmstrip {
+	return captureOrchFilmstripOnTab(t, sc, events, "conversation")
+}
+
+// chatViewportFromFilmstrip returns the ChatViewport node from the final
+// frame, failing the test if it is missing or empty.
+func chatViewportFromFilmstrip(t *testing.T, film *tui.Filmstrip) *tui.AgentNode {
+	t.Helper()
+	frames := film.Frames()
+	if len(frames) == 0 {
+		t.Fatal("no frames captured")
+	}
+	last := frames[len(frames)-1]
+	node := last.Frame.FindNode("ChatViewport")
+	if node == nil {
+		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Fatal("ChatViewport is suppressed or missing from frame")
+	}
+	if strings.TrimSpace(node.Text) == "" {
+		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Fatal("ChatViewport is empty")
+	}
+	return node
+}
+
+// assertConversationHasNoPerChunkLines fails if the rendered text contains the
+// tell-tale per-chunk log lines that the bug produced.
+func assertConversationHasNoPerChunkLines(t *testing.T, rendered, film string) {
+	t.Helper()
+	for _, bad := range []string{"[coder] he ", "[coder] llo", "[coder] world"} {
+		if strings.Contains(rendered, bad) {
+			t.Logf("Filmstrip:\n%s", film)
+			t.Fatal("rendered text contains per-chunk [coder] lines")
+		}
+	}
+}
+
 // TestOrchestratorConversation_SingleAgentStreamsThinkingContentTool is a RED
 // test for the broken conversation rendering bug. It asserts that the chat
 // viewport is not suppressed and that a single agent's thinking, content, and
@@ -41,47 +124,35 @@ func TestOrchestratorConversation_SingleAgentStreamsThinkingContentTool(t *testi
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
 
-	film := captureOrchFilmstrip(t, sc, orchStreamEvents())
-	frames := film.Frames()
-	if len(frames) == 0 {
-		t.Fatal("no frames captured")
-	}
-	last := frames[len(frames)-1]
-	node := last.Frame.FindNode("ChatViewport")
-	if node == nil {
-		t.Logf("Filmstrip:\n%s", film.Render())
-		t.Fatal("ChatViewport is suppressed or missing from conversation frame")
-	}
-	if strings.TrimSpace(node.Text) == "" {
-		t.Logf("Filmstrip:\n%s", film.Render())
-		t.Fatal("ChatViewport is empty")
-	}
+	film := captureOrchFilmstripOnConversationTab(t, sc, orchStreamEvents())
+	node := chatViewportFromFilmstrip(t, film)
 	rendered := node.Text
+	filmStr := film.Render()
 
-	if strings.Contains(rendered, "[coder] he ") || strings.Contains(rendered, "[coder] llo") || strings.Contains(rendered, "[coder] world") {
-		t.Logf("Filmstrip:\n%s", film.Render())
-		t.Fatal("rendered text contains per-chunk [coder] lines")
-	}
+	assertConversationHasNoPerChunkLines(t, rendered, filmStr)
+
 	if strings.Count(rendered, "coder thinking...") < 1 {
-		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Logf("Filmstrip:\n%s", filmStr)
 		t.Fatalf("expected at least one 'coder thinking...' header, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "planning the design") {
-		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Logf("Filmstrip:\n%s", filmStr)
 		t.Fatalf("expected accumulated thinking text, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "hello world") {
-		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Logf("Filmstrip:\n%s", filmStr)
 		t.Fatalf("expected accumulated content text, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "$ ls") {
-		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Logf("Filmstrip:\n%s", filmStr)
 		t.Fatalf("expected bash tool widget, got:\n%s", rendered)
 	}
 
-	// Ensure the MultiAgentView still exists as a Stats panel. The Conversation
-	// + Stats bookends are present; per-agent filter tabs (TabAgent) may also
-	// be present — those are the restored per-agent view, not transcript tabs.
+	assertConversationHasBookendTabs(t, sc)
+}
+
+func assertConversationHasBookendTabs(t *testing.T, sc *orchViewScenario) {
+	t.Helper()
 	if sc.app.subs.agentView == nil {
 		t.Fatal("agentView should still be attached")
 	}
@@ -114,13 +185,8 @@ func TestOrchestratorConversation_TwoAgentsConcurrentThinking(t *testing.T) {
 		{Type: orchestrator.EventAgentFinished, AgentID: "r-1", Role: "reviewer"},
 		{Type: orchestrator.EventRunFinished, Payload: map[string]any{"ok": true}},
 	}
-	film := captureOrchFilmstrip(t, sc, events)
-	last := film.Frames()[len(film.Frames())-1]
-	node := last.Frame.FindNode("ChatViewport")
-	if node == nil {
-		t.Logf("Filmstrip:\n%s", film.Render())
-		t.Fatal("ChatViewport missing in final frame")
-	}
+	film := captureOrchFilmstripOnConversationTab(t, sc, events)
+	node := chatViewportFromFilmstrip(t, film)
 	rendered := node.Text
 	if !strings.Contains(rendered, "a1a2") {
 		t.Logf("Filmstrip:\n%s", film.Render())
@@ -135,25 +201,3 @@ func TestOrchestratorConversation_TwoAgentsConcurrentThinking(t *testing.T) {
 		t.Fatalf("expected distinct thinking headers for both agents, got:\n%s", rendered)
 	}
 }
-
-// captureOrchFilmstrip records the frame after each translated event is
-// applied via the App's command loop, exactly as the production forwarder
-// would apply it.
-func captureOrchFilmstrip(t *testing.T, sc *orchViewScenario, events []orchestrator.Event) *tui.Filmstrip {
-	t.Helper()
-	film := tui.NewFilmstrip()
-	film.Capture("pre-run", sc.frame(), "")
-	for _, ev := range events {
-		ne, ok := translateOrchEvent(ev)
-		if !ok {
-			continue
-		}
-		sc.engine.ApplySync(func() { sc.app.handleOrchViewEvent(ne) })
-		film.Capture(string(ev.Type), sc.frame(), sc.app.subs.statusMsg.Text())
-	}
-	return film
-}
-
-// compile-time check to keep imports relevant if helpers change.
-var _ = orchpanel.TabConversation
-var _ = orchpanel.TabStats

@@ -85,7 +85,10 @@ func profileMatches(m ProfileMatch, model Model) bool {
 }
 
 // ResolveProfile resolves the variant profile for a model using embedded and
-// user-configured profiles.
+// user-configured profiles. As a migration bridge, it also copies the model's
+// deprecated ThinkingLevelMap into the resolved profile when the profile does
+// not define its own map. Once every variant profile supplies its own
+// thinking_level_map, this fallback can be removed.
 func ResolveProfile(model Model) VariantProfile {
 	profiles, err := LoadAllProfiles()
 	if err != nil {
@@ -93,7 +96,26 @@ func ResolveProfile(model Model) VariantProfile {
 		return VariantProfile{}
 	}
 	r := NewResolver(profiles)
-	return r.Resolve(model)
+	profile := r.Resolve(model)
+	profile = migrateThinkingLevelMap(model, profile)
+	return profile
+}
+
+// migrateThinkingLevelMap is a migration bridge: the old model registry
+// carries thinking-level mappings, while the new VariantProfile is supposed to
+// own them. Copy the model's map into the profile when the profile has none so
+// provider code can stop reading the deprecated Model.ThinkingLevelMap field.
+func migrateThinkingLevelMap(model Model, profile VariantProfile) VariantProfile {
+	if len(profile.Defaults.ThinkingLevelMap) > 0 || len(model.ThinkingLevelMap) == 0 {
+		return profile
+	}
+	if profile.Defaults.ThinkingLevelMap == nil {
+		profile.Defaults.ThinkingLevelMap = make(ThinkingLevelMap)
+	}
+	for k, v := range model.ThinkingLevelMap {
+		profile.Defaults.ThinkingLevelMap[k] = v
+	}
+	return profile
 }
 
 var urlTemplateRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -143,7 +165,20 @@ func mergeDefaults(d *Defaults, o Defaults) {
 	setIfNotNil(&d.TopK, o.TopK)
 	setIfNotNil(&d.MaxTokens, o.MaxTokens)
 	setIfNonEmpty(&d.Thinking, o.Thinking)
+	mergeThinkingLevelMap(d, o)
 	mergeThinkingBudgets(d, o)
+}
+
+func mergeThinkingLevelMap(d *Defaults, o Defaults) {
+	if len(o.ThinkingLevelMap) == 0 {
+		return
+	}
+	if d.ThinkingLevelMap == nil {
+		d.ThinkingLevelMap = make(ThinkingLevelMap)
+	}
+	for k, v := range o.ThinkingLevelMap {
+		d.ThinkingLevelMap[k] = v
+	}
 }
 
 func mergeThinkingBudgets(d *Defaults, o Defaults) {

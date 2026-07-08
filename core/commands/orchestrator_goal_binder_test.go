@@ -50,7 +50,7 @@ func TestGoalBinder_EphemeralManagedGoal(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	gb := NewGoalBinder(mode).(*goalModeBinder)
 
-	id, err := gb.CreateWithName("ship it", "happy.hare", 0)
+	_, err := gb.CreateWithName("ship it", "happy.hare", 0)
 	if err != nil {
 		t.Fatalf("CreateWithName: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestGoalBinder_EphemeralManagedGoal(t *testing.T) {
 	}
 
 	// Re-create and delete explicitly.
-	id, err = gb.CreateWithName("ship it", "happy.hare", 0)
+	id, err := gb.CreateWithName("ship it", "happy.hare", 0)
 	if err != nil {
 		t.Fatalf("CreateWithName 2: %v", err)
 	}

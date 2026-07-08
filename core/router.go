@@ -43,6 +43,11 @@ func NewCommandRouter(registry *CommandRegistry, docEng *DocEngine) *CommandRout
 	}
 }
 
+// Registry returns the underlying command registry.
+func (r *CommandRouter) Registry() *CommandRegistry {
+	return r.registry
+}
+
 // SetAliases configures user-defined command aliases for the router.
 // The map keys are alias names, values are the target command invocation
 // (e.g. "n" → "session:new"). Aliases are resolved in Parse before looking

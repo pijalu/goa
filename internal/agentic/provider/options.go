@@ -6,6 +6,8 @@ package provider
 
 import (
 	"time"
+
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 // buildBaseOptions applies model-level defaults to a partial StreamOptions
@@ -62,7 +64,8 @@ func BuildSimpleOptions(model Model, opts SimpleStreamOptions) StreamOptions {
 	base := BuildBaseOptions(model, opts.StreamOptions)
 
 	// Clamp reasoning level to what the model supports.
-	level := ClampThinkingLevel(model, opts.Reasoning)
+	profile := schema.ResolveProfile(model)
+	level := ClampThinkingLevelWithMap(profile.Defaults.ThinkingLevelMap, model.Reasoning, opts.Reasoning)
 
 	// If the model has a ThinkingLevelMap, map the level to the
 	// provider-specific value and store it for the provider to use.
@@ -82,21 +85,29 @@ func BuildSimpleOptions(model Model, opts SimpleStreamOptions) StreamOptions {
 // If the requested level is higher than what the model supports, clamps down.
 // If the level is empty or off, returns ThinkingOff.
 func ClampThinkingLevel(model Model, level ThinkingLevel) ThinkingLevel {
+	profile := schema.ResolveProfile(model)
+	return ClampThinkingLevelWithMap(profile.Defaults.ThinkingLevelMap, model.Reasoning, level)
+}
+
+// ClampThinkingLevelWithMap is the map-based implementation of
+// ClampThinkingLevel. It allows callers that already have a VariantProfile to
+// clamp without re-resolving the profile.
+func ClampThinkingLevelWithMap(levelMap ThinkingLevelMap, reasoning bool, level ThinkingLevel) ThinkingLevel {
 	if level == "" || level == ThinkingOff {
 		return ThinkingOff
 	}
 
-	if !model.Reasoning {
+	if !reasoning {
 		return ThinkingOff
 	}
 
 	// If the model has a ThinkingLevelMap, check if the level exists.
-	if len(model.ThinkingLevelMap) > 0 {
-		if _, ok := model.ThinkingLevelMap[level]; ok {
+	if len(levelMap) > 0 {
+		if _, ok := levelMap[level]; ok {
 			return level
 		}
 		// Level not found in map — find the highest level below the requested one.
-		return nearestThinkingLevel(model.ThinkingLevelMap, level)
+		return nearestThinkingLevel(levelMap, level)
 	}
 
 	// No map defined — pass through if the level is known.

@@ -29,12 +29,19 @@ func TestAgentContent_RendersTabs(t *testing.T) {
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "coder-1", Role: "coder", Model: "gemma", Provider: "google", Thinking: "off"})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStats, AgentID: "coder-1", Role: "coder", Stats: &AgentStatsDelta{TokensIn: 40, TokensOut: 12, CacheRead: 1024}})
 
-	// Conversation tab (default active): content component returns nil.
+	// Stats tab (default active): content component renders the stats panel.
+	if lines := c.Render(90); lines == nil {
+		t.Fatal("stats tab should render content")
+	}
+
+	// Conversation tab: content component returns nil because the chat
+	// viewport renders the conversation.
+	v.SelectByKey("conversation")
 	if lines := c.Render(90); lines != nil {
 		t.Errorf("conversation tab should render nil, got %v", lines)
 	}
 
-	// Stats tab: CH header + coder role + provider column.
+	// Back to Stats tab: CH header + coder role + provider column.
 	v.SelectByKey("stats")
 	stats := stripAll(c.Render(90))
 	joined := strings.Join(stats, "\n")

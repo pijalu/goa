@@ -34,7 +34,7 @@ func TestOrchestratorHub_RenderAnalyzeDelegateSummary(t *testing.T) {
 		{Type: orchestrator.EventRunFinished, Payload: map[string]any{"ok": true}},
 	}
 
-	film := captureOrchFilmstrip(t, sc, events)
+	film := captureOrchFilmstripOnConversationTab(t, sc, events)
 	last := film.Frames()[len(film.Frames())-1]
 	node := last.Frame.FindNode("ChatViewport")
 	if node == nil {

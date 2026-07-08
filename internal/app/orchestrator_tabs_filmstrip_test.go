@@ -154,6 +154,7 @@ func TestOrchestratorTabs_PendingInputBoxSurvivesTabSwitch(t *testing.T) {
 	}
 
 	// Conversation tab: PendingInputBox renders the prompt.
+	sc.app.selectAgentTab("conversation")
 	convFrame := sc.frame()
 	if box := convFrame.FindNode("PendingInputBox"); box == nil || !strings.Contains(box.Text, "Describe the issue") {
 		t.Errorf("Conversation tab: PendingInputBox missing prompt; node=%v", box)
@@ -200,22 +201,14 @@ func TestOrchestratorTabs_ToolCallShowsNameInStatusAndWidget(t *testing.T) {
 
 	// "glob" has no dedicated renderer → exercises the generic fallback.
 	events := []orchestrator.Event{
+		{Type: orchestrator.EventRunStarted, Payload: map[string]any{"objective": "test", "topology": "hub"}},
 		{Type: orchestrator.EventAgentStarted, AgentID: "c-1", Role: "coder", Model: "gemma",
 			Payload: map[string]any{"provider": "google", "thinking": "off"}},
 		{Type: orchestrator.EventAgentToolCall, AgentID: "c-1", Role: "coder",
 			Payload: map[string]any{"tool": "glob", "input": `{"pattern":"**/*.go"}`, "call_id": "t1"}},
 	}
 
-	film := tui.NewFilmstrip()
-	for _, ev := range events {
-		ne, ok := translateOrchEvent(ev)
-		if !ok {
-			continue
-		}
-		nev := ne
-		sc.engine.ApplySync(func() { sc.app.handleOrchViewEvent(nev) })
-		film.Capture(string(ev.Type), sc.frame(), sc.app.subs.statusMsg.Text())
-	}
+	film := captureOrchFilmstripOnTab(t, sc, events, "conversation")
 
 	trace := film.StatusTrace()
 	nameInStatus := false

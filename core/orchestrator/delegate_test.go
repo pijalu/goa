@@ -13,13 +13,40 @@ import (
 	"github.com/pijalu/goa/config"
 )
 
-// TestRuntime_DelegateRoundTrip proves the hub primitive: the orchestrator
-// role is driven, and when its (fake) turn "delegates" by calling Delegate
-// directly, a specialist agent is acquired, run, released, and its streamed
-// text is returned as the delegation result.
-func TestRuntime_DelegateRoundTrip(t *testing.T) {
-	var coderRuns atomic.Int32
-	var rtRef *Runtime
+// makeOrchestratorDelegateRun returns a fake Run that delegates the given task
+// to the given role and asserts the result contains wantSubstring. The runtime
+// and handle are captured when the closure is created.
+func makeOrchestratorDelegateRun(t *testing.T, rtRef **Runtime, h *AgentHandle, role, task, wantSubstring string) func(context.Context, string) error {
+	return func(ctx context.Context, prompt string) error {
+		if strings.Contains(prompt, "Specialist outputs:") {
+			(*rtRef).RecordAgentMessage(h, "synthesis: "+wantSubstring)
+			return nil
+		}
+		out, err := (*rtRef).Delegate(ctx, role, task)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(out, wantSubstring) {
+			t.Errorf("delegate returned %q, want it to contain %q", out, wantSubstring)
+		}
+		return nil
+	}
+}
+
+// makeCoderAnswerRun returns a fake Run that records the given answer and
+// counts executions.
+func makeCoderAnswerRun(rtRef **Runtime, h *AgentHandle, counter *atomic.Int32, answer string) func(context.Context, string) error {
+	return func(ctx context.Context, prompt string) error {
+		counter.Add(1)
+		(*rtRef).RecordAgentMessage(h, answer)
+		return nil
+	}
+}
+
+// makeDelegateRoundTripPool builds a pool whose orchestrator delegates to the
+// coder role and whose coder returns a fixed answer.
+func makeDelegateRoundTripPool(t *testing.T, rtRef **Runtime, coderRuns *atomic.Int32) (*BoundedAgentPool, config.OrchestratorConfig) {
+	t.Helper()
 	cfg := config.OrchestratorConfig{
 		Roles: map[string]config.OrchestratorRole{
 			"orchestrator": {Model: "m"},
@@ -32,32 +59,24 @@ func TestRuntime_DelegateRoundTrip(t *testing.T) {
 		h := NewAgentHandle("", role, model)
 		switch role {
 		case "orchestrator":
-			h.Run = func(ctx context.Context, prompt string) error {
-				// The synthesis turn inlines specialist outputs and must not
-				// re-delegate; detect it by its prompt and produce a summary.
-				if strings.Contains(prompt, "Specialist outputs:") {
-					rtRef.RecordAgentMessage(h, "synthesis: the answer is 42")
-					return nil
-				}
-				// Simulate the orchestrator delegating via the tool path.
-				out, err := rtRef.Delegate(ctx, "coder", "compute answer")
-				if err != nil {
-					return err
-				}
-				if !strings.Contains(out, "42") {
-					t.Errorf("delegate returned %q, want it to contain 42", out)
-				}
-				return nil
-			}
+			h.Run = makeOrchestratorDelegateRun(t, rtRef, h, "coder", "compute answer", "42")
 		case "coder":
-			h.Run = func(ctx context.Context, prompt string) error {
-				coderRuns.Add(1)
-				rtRef.RecordAgentMessage(h, "the answer is 42")
-				return nil
-			}
+			h.Run = makeCoderAnswerRun(rtRef, h, coderRuns, "the answer is 42")
 		}
 		return h, nil
 	})
+	return pool, cfg
+}
+
+// TestRuntime_DelegateRoundTrip proves the hub primitive: the orchestrator
+// role is driven, and when its (fake) turn "delegates" by calling Delegate
+// directly, a specialist agent is acquired, run, released, and its streamed
+// text is returned as the delegation result.
+func TestRuntime_DelegateRoundTrip(t *testing.T) {
+	var coderRuns atomic.Int32
+	var rtRef *Runtime
+
+	pool, cfg := makeDelegateRoundTripPool(t, &rtRef, &coderRuns)
 	rt, err := NewRuntime(cfg, pool, nil, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRuntime: %v", err)

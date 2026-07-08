@@ -49,7 +49,7 @@ func (c *AgentContent) Render(width int) []string {
 	if !ok {
 		return nil
 	}
-	if tab.Kind == TabConversation {
+	if tab.Kind == TabConversation || tab.Kind == TabAgent {
 		return nil
 	}
 	lines := c.renderStats(width)

@@ -178,18 +178,35 @@ func isErrorResult(s string) bool {
 //
 // It is distinct from multiagent.DelegateTool (the foreground-orchestrator
 // delegator) and lives here so core/orchestrator stays free of agentic imports.
+//
+// The tool keeps a short per-role conversation history so the orchestrator can
+// continue a specialist conversation across multiple delegate calls instead of
+// fire-and-forgetting each one. Each new call to the same role receives the
+// previous task/response pairs as context, capped to avoid flooding the model.
 type OrchestratorDelegateTool struct {
 	agentic.BaseTool
 	Runtime *orchestrator.Runtime
 	// Roles enumerates the roles the orchestrator may delegate to (excludes
 	// "orchestrator" itself), populated from config so the schema enum is exact.
 	Roles []string
+
+	// roleHistory remembers the last few exchanges for follow-up conversations.
+	// It is safe without locking because the orchestrator agent runs one turn
+	// at a time and delegate calls are sequential within that turn.
+	roleHistory map[string][]delegateExchange
+}
+
+// delegateExchange records one side of an orchestrator/specialist
+// conversation.
+type delegateExchange struct {
+	Task     string
+	Response string
 }
 
 func (t *OrchestratorDelegateTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "delegate",
-		Description: "Delegate a sub-task to a specialist agent role and return its answer.",
+		Description: "Delegate a sub-task to a specialist agent role and return its answer. Call this tool multiple times for the same role to continue a conversation or provide missing context.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -214,8 +231,8 @@ func (t *OrchestratorDelegateTool) Execute(input string) (string, error) {
 
 func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	var params struct {
-		Role string `json:"role"`
-		Task string `json:"task"`
+		Role    string `json:"role"`
+		Task    string `json:"task"`
 	}
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -226,14 +243,57 @@ func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input str
 	if t.Runtime == nil {
 		return "", fmt.Errorf("orchestrator runtime unavailable")
 	}
-	out, err := t.Runtime.Delegate(ctx, params.Role, params.Task)
+
+	// Continue the conversation: prepend the previous exchanges for this role
+	// so the new specialist instance has the context it needs for follow-up.
+	fullTask := t.priorExchanges(params.Role) + params.Task
+
+	out, err := t.Runtime.Delegate(ctx, params.Role, fullTask)
 	if err != nil {
 		return "", err
 	}
 	if out == "" {
-		return fmt.Sprintf("[%s] completed the task (no text output).", params.Role), nil
+		out = fmt.Sprintf("[%s] completed the task (no text output).", params.Role)
 	}
+	t.recordExchange(params.Role, params.Task, out)
 	return out, nil
+}
+
+// priorExchanges returns the formatted conversation history for a role, or an
+// empty string if there is none. The result is always empty for the first call.
+func (t *OrchestratorDelegateTool) priorExchanges(role string) string {
+	if t.roleHistory == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, ex := range t.roleHistory[role] {
+		b.WriteString("[previous task]\n")
+		b.WriteString(ex.Task)
+		b.WriteString("\n\n[previous response]\n")
+		b.WriteString(ex.Response)
+		b.WriteString("\n\n---\n\n")
+	}
+	return b.String()
+}
+
+// recordExchange appends a task/response pair to the per-role history,
+// keeping only the most recent entries so the context window stays bounded.
+func (t *OrchestratorDelegateTool) recordExchange(role, task, response string) {
+	if t.roleHistory == nil {
+		t.roleHistory = map[string][]delegateExchange{}
+	}
+	h := t.roleHistory[role]
+	const maxHistory = 3
+	if len(h) >= maxHistory {
+		h = h[len(h)-maxHistory+1:]
+	}
+	const maxResponse = 2000
+	r := response
+	if len(r) > maxResponse {
+		r = r[:maxResponse] + "\n... [truncated]"
+	}
+	h = append(h, delegateExchange{Task: task, Response: r})
+	t.roleHistory[role] = h
 }
 
 // delegateRoles returns the roles the orchestrator may delegate to (everything
