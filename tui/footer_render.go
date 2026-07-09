@@ -12,9 +12,11 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// Render renders two status lines with adaptive width.
-// When the terminal is too narrow, low-priority items are dropped to
-// maintain readability: token stats → git branch → thinking level → provider prefix.
+// Render renders two status lines with adaptive width, plus a third line for
+// orchestration stats when active. The third line is always emitted (as a
+// blank spacer when no orchestration stats are present) so the footer height
+// stays constant and the compositor avoids full redraws when the stats line
+// appears or disappears.
 func (f *Footer) Render(width int) []string {
 	if width <= 0 {
 		return nil
@@ -69,10 +71,16 @@ func (f *Footer) Render(width int) []string {
 
 	line2 := renderTwoCol(left2, right2, width, styler)
 
-	lines := []string{styler(line1), styler(line2)}
-	if f.data.OrchestrationStats != "" {
-		lines = append(lines, styler(truncateToWidth(f.data.OrchestrationStats, width, "")))
+	// Line 3: orchestration stats (blank spacer when inactive). Keeping the
+	// line count stable prevents compositor height changes and full redraws.
+	stats := f.data.OrchestrationStats
+	if stats == "" {
+		stats = strings.Repeat(" ", width)
+	} else {
+		stats = truncateToWidth(stats, width, "")
 	}
+
+	lines := []string{styler(line1), styler(line2), styler(stats)}
 	return lines
 }
 

@@ -6,6 +6,7 @@ package app
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -41,19 +42,19 @@ func (s *agentStreamState) endSegment() {
 type agentStreamRegistry struct {
 	mu      sync.Mutex
 	streams map[string]*agentStreamState // key = agentID
-	labels  map[string]int                // role → seen count for disambiguation
 }
 
 // newAgentStreamRegistry returns an empty registry.
 func newAgentStreamRegistry() *agentStreamRegistry {
 	return &agentStreamRegistry{
 		streams: map[string]*agentStreamState{},
-		labels:  map[string]int{},
 	}
 }
 
-// begin starts or reuses a stream for agentID. The label is disambiguated so
-// recurring roles get "coder", "coder·2", etc.
+// begin starts or reuses a stream for agentID. The label is disambiguated only
+// when another stream of the same role is currently active; when the previous
+// agent of that role has finished, the base role label is reused so the UI does
+// not create "coder·2", "coder·3" for sequential delegations to the same role.
 func (r *agentStreamRegistry) begin(role, agentID string) *agentStreamState {
 	if r == nil {
 		return nil
@@ -63,14 +64,39 @@ func (r *agentStreamRegistry) begin(role, agentID string) *agentStreamState {
 	if s, ok := r.streams[agentID]; ok {
 		return s
 	}
-	r.labels[role]++
-	label := role
-	if r.labels[role] > 1 {
-		label = fmt.Sprintf("%s·%d", role, r.labels[role])
-	}
+	label := r.nextLabel(role)
 	s := &agentStreamState{label: label, tools: map[string]*tui.ToolExecutionComponent{}}
 	r.streams[agentID] = s
 	return s
+}
+
+// nextLabel returns the smallest available label for role. It prefers the base
+// role name and only adds a ·N suffix when necessary for concurrent agents.
+func (r *agentStreamRegistry) nextLabel(role string) string {
+	used := map[int]struct{}{}
+	for _, s := range r.streams {
+		if s.label == role {
+			used[1] = struct{}{}
+			continue
+		}
+		if !strings.HasPrefix(s.label, role+"·") {
+			continue
+		}
+		suffix := strings.TrimPrefix(s.label, role+"·")
+		if n, err := strconv.Atoi(suffix); err == nil && n > 0 {
+			used[n] = struct{}{}
+		}
+	}
+	if _, ok := used[1]; !ok {
+		return role
+	}
+	n := 2
+	for {
+		if _, ok := used[n]; !ok {
+			return fmt.Sprintf("%s·%d", role, n)
+		}
+		n++
+	}
 }
 
 // get returns the stream for agentID, or nil if unknown.
@@ -83,7 +109,8 @@ func (r *agentStreamRegistry) get(agentID string) *agentStreamState {
 	return r.streams[agentID]
 }
 
-// end closes any open segment for agentID.
+// end closes any open segment for agentID and removes the stream so the label
+// can be reused for a later agent of the same role.
 func (r *agentStreamRegistry) end(agentID string) {
 	if r == nil {
 		return
@@ -92,6 +119,7 @@ func (r *agentStreamRegistry) end(agentID string) {
 	defer r.mu.Unlock()
 	if s, ok := r.streams[agentID]; ok {
 		s.endSegment()
+		delete(r.streams, agentID)
 	}
 }
 

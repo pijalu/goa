@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -49,50 +50,8 @@ func (a *OrchestratorAdapter) SetTelemetry(t orchestrator.Telemetry) { a.tel = t
 func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir string) (*orchestrator.Runtime, error) {
 	var rt *orchestrator.Runtime
 
-	factory := func(role, model string) (*orchestrator.AgentHandle, error) {
-		rcfg := oCfg.Roles[role]
-		maCfg := multiagent.AgentConfig{
-			ModelName:    model,
-			ProviderID:   rcfg.Provider,
-			AllowedTools: rcfg.AllowedTools,
-		}
-		// Fresh, isolated agent per Acquire (i.e. per delegation). Each worker
-		// gets its own conversation history, tool instances, and an observer
-		// bound to its own handle, so the orchestrator can delegate to a series
-		// of workers — including repeated or concurrent delegations to the
-		// SAME role — without shared-state leakage (R2/R3/R7/R12) and without
-		// inheriting the foreground orchestrator's companion observer, which
-		// the cached GetOrCreate path attached via OnAgentCreated (R10).
-		agent, err := a.pool.CreateEphemeralAgent(role, maCfg)
-		if err != nil {
-			return nil, err
-		}
-
-		h := orchestrator.NewAgentHandle("", role, model)
-		h.Provider = resolveRoleProvider(rcfg, a.cfg)
-		h.Thinking = string(agent.ReasoningEffort())
-		h.Run = func(ctx context.Context, prompt string) error {
-			return agent.Run(ctx, prompt)
-		}
-
-		// Only the orchestrator role drives specialists; workers receive just
-		// their allow-listed base tools (no delegate, no workflow tool).
-		if role == "orchestrator" {
-			cur := append([]agentic.Tool{}, agent.Tools()...)
-			cur = append(cur, &OrchestratorDelegateTool{Runtime: rt, Roles: delegateRoles(oCfg)})
-			agent.SetTools(cur)
-		}
-
-		// Attach the orchestrator observer to THIS fresh agent, bound to THIS
-		// handle. No dedupe is needed: every agent is distinct and dies with
-		// its handle when released, so there is no cross-run accumulation.
-		agent.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
-			applyOutputEvent(h, rt, ev)
-		}))
-		return h, nil
-	}
-
-	bounded := orchestrator.NewBoundedAgentPool(oCfg, factory)
+	fac := newRuntimeAgentFactory(a, oCfg, &rt)
+	bounded := orchestrator.NewBoundedAgentPool(oCfg, fac.build)
 	runID := internal.PrefixedHexID("run", 4)
 	store := orchestrator.NewFileEventStore(rootDir, runID)
 	var err error
@@ -105,6 +64,102 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 		rt.SetTelemetry(a.tel)
 	}
 	return rt, nil
+}
+
+// runtimeAgentFactory is the per-runtime state behind the AgentFactory passed
+// to the bounded agent pool. It owns a small pool of idle specialist agents so
+// sequential delegations to the same role can reuse an agent instead of
+// creating a new one each time.
+type runtimeAgentFactory struct {
+	adapter *OrchestratorAdapter
+	oCfg    config.OrchestratorConfig
+	rt      **orchestrator.Runtime
+	pool    map[string][]pooledAgent
+	mu      sync.Mutex
+}
+
+type pooledAgent struct {
+	agent *agentic.Agent
+	cfg   multiagent.AgentConfig
+}
+
+func newRuntimeAgentFactory(adapter *OrchestratorAdapter, oCfg config.OrchestratorConfig, rt **orchestrator.Runtime) *runtimeAgentFactory {
+	return &runtimeAgentFactory{adapter: adapter, oCfg: oCfg, rt: rt, pool: map[string][]pooledAgent{}}
+}
+
+func (f *runtimeAgentFactory) build(role, model string) (*orchestrator.AgentHandle, error) {
+	maCfg := f.agentConfig(role, model)
+	agent, err := f.acquire(role, maCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	h := f.newHandle(role, model, agent, maCfg)
+	removeObs := agent.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
+		applyOutputEvent(h, *f.rt, ev)
+	}))
+	go func() {
+		<-h.Done()
+		removeObs()
+		f.release(role, agent, maCfg)
+	}()
+	return h, nil
+}
+
+func (f *runtimeAgentFactory) agentConfig(role, model string) multiagent.AgentConfig {
+	rcfg := f.oCfg.Roles[role]
+	return multiagent.AgentConfig{
+		ModelName:    model,
+		ProviderID:   rcfg.Provider,
+		AllowedTools: rcfg.AllowedTools,
+	}
+}
+
+// acquire returns a reusable agent for non-orchestrator roles when one is
+// available, or creates a fresh agent via the multiagent pool.
+func (f *runtimeAgentFactory) acquire(role string, maCfg multiagent.AgentConfig) (*agentic.Agent, error) {
+	if role != "orchestrator" {
+		f.mu.Lock()
+		if pool := f.pool[role]; len(pool) > 0 {
+			pa := pool[0]
+			f.pool[role] = pool[1:]
+			f.mu.Unlock()
+			pa.agent.Clear()
+			return pa.agent, nil
+		}
+		f.mu.Unlock()
+	}
+	return f.adapter.pool.CreateEphemeralAgent(role, maCfg)
+}
+
+// release returns a non-orchestrator agent to the idle pool after its handle
+// is released.
+func (f *runtimeAgentFactory) release(role string, agent *agentic.Agent, maCfg multiagent.AgentConfig) {
+	if role == "orchestrator" {
+		return
+	}
+	f.mu.Lock()
+	f.pool[role] = append(f.pool[role], pooledAgent{agent: agent, cfg: maCfg})
+	f.mu.Unlock()
+}
+
+// newHandle creates a populated AgentHandle and, for the orchestrator role,
+// injects the delegate tool.
+func (f *runtimeAgentFactory) newHandle(role, model string, agent *agentic.Agent, maCfg multiagent.AgentConfig) *orchestrator.AgentHandle {
+	rcfg := f.oCfg.Roles[role]
+	h := orchestrator.NewAgentHandle("", role, model)
+	h.Provider = resolveRoleProvider(rcfg, f.adapter.cfg)
+	h.Thinking = string(agent.ReasoningEffort())
+	h.Run = func(ctx context.Context, prompt string) error {
+		return agent.Run(ctx, prompt)
+	}
+
+	if role == "orchestrator" {
+		cur := append([]agentic.Tool{}, agent.Tools()...)
+		cur = append(cur, &OrchestratorDelegateTool{Runtime: *f.rt, Roles: delegateRoles(f.oCfg)})
+		agent.SetTools(cur)
+	}
+	return h
 }
 
 // liveStatsInterval bounds how often in-flight token stats reach the TUI
