@@ -25,12 +25,15 @@ type agentStreamState struct {
 	tools       map[string]*tui.ToolExecutionComponent
 }
 
-// endSegment closes the current thinking/content segment so the next chunk of
-// a different kind starts a fresh block.
+// endSegment closes the current thinking/content segment so the next chunk
+// starts a fresh block. It resets the in-memory buffers and clears the view
+// references so the next chunk creates a new component.
 func (s *agentStreamState) endSegment() {
 	s.kind = 0
 	s.thinking.Reset()
 	s.content.Reset()
+	s.thinkView = nil
+	s.contentView = nil
 }
 
 // agentStreamRegistry owns per-agent streaming state. It is only non-nil during
@@ -216,6 +219,9 @@ func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
 		tc.SetStatus(status)
 		tc.SetPartial(false)
 		delete(state.tools, callID)
+		// Close any open segment so the next thinking/content chunk starts a
+		// fresh block rather than appending to the pre-tool block.
+		state.endSegment()
 		return
 	}
 	// Fallback: render a plain tool result entry if no matching widget exists.

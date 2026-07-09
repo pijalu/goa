@@ -9,6 +9,11 @@ Edit files using search/replace with fuzzy matching.
 Primary usage — search/replace (recommended):
   {"path": "file.go", "old_string": "text to find", "new_string": "replacement text"}
   Uses 3-tier matching: exact → trailing whitespace → fuzzy whitespace + reindent.
+  old_string must match a contiguous block of one or more lines in the file.
+
+Operation alias:
+  {"path": "file.go", "operation": "replace", "old_string": "text to find", "new_string": "replacement text"}
+  This is identical to the search/replace form above.
 
 Legacy operations: replace_lines, replace_pattern, insert_after, insert_before, delete_lines
 Indent modes: preserve (default), normalize, as-is
@@ -22,3 +27,5 @@ Troubleshooting search/replace errors:
     context to make it unique, or switch to 'replace_lines' with line numbers.
   • invalid_range: start_line/end_line are out of bounds. Use 'read' to confirm the file
     length before editing.
+  • missing_parameter: when using operation: 'replace', both old_string and new_string
+    are required. Provide the text to find and its replacement.

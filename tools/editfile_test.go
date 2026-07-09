@@ -140,6 +140,64 @@ func TestEditFileTool_Execute_InvalidOperation_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestEditFileTool_Execute_ReplaceOperation_ModifiesFile(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("hello world\nsecond line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir, AllowFuzz: true}
+	// Replace the whole first line so the block match finds it.
+	result, err := tool.Execute(`{"path": "` + filePath + `", "operation": "replace", "old_string": "hello world", "new_string": "hello goa"}`)
+	if err != nil {
+		t.Fatalf("operation 'replace' should succeed: %v", err)
+	}
+	if !strings.Contains(result, "goa") {
+		t.Errorf("Expected result to mention replacement, got: %q", result)
+	}
+	data, _ := os.ReadFile(filePath)
+	if !strings.Contains(string(data), "hello goa") {
+		t.Errorf("File was not modified by operation 'replace': %q", string(data))
+	}
+}
+
+func TestEditFileTool_Execute_ReplaceOperation_MissingOldString(t *testing.T) {
+	tool := &EditFileTool{}
+	_, err := tool.Execute(`{"path": "test.txt", "operation": "replace", "new_string": "x"}`)
+	if err == nil {
+		t.Error("operation 'replace' without old_string should return error")
+	}
+	if !strings.Contains(err.Error(), "old_string") {
+		t.Errorf("Error should mention old_string requirement, got: %v", err)
+	}
+}
+
+func TestEditFileTool_Execute_ReplaceOperation_AliasForOldStringNewString(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("alpha beta gamma\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir, AllowFuzz: true}
+	// Without explicit operation, old_string is the classic search/replace path.
+	classic, err := tool.Execute(`{"path": "` + filePath + `", "old_string": "alpha beta gamma", "new_string": "ALPHA BETA GAMMA"}`)
+	if err != nil {
+		t.Fatalf("classic search/replace failed: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("alpha beta gamma\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	replaceOp, err := tool.Execute(`{"path": "` + filePath + `", "operation": "replace", "old_string": "alpha beta gamma", "new_string": "ALPHA BETA GAMMA"}`)
+	if err != nil {
+		t.Fatalf("operation 'replace' failed: %v", err)
+	}
+	if classic != replaceOp {
+		t.Errorf("operation 'replace' should behave like old_string/new_string; got different results:\nclassic: %q\nreplace: %q", classic, replaceOp)
+	}
+}
+
 func TestEditFileTool_Execute_NonexistentFile_ReturnsError(t *testing.T) {
 	tool := &EditFileTool{}
 	_, err := tool.Execute(`{"path": "/nonexistent/path/file.txt", "operation": "delete_lines", "start_line": 1, "end_line": 1}`)

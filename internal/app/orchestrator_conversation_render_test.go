@@ -195,3 +195,42 @@ func TestOrchestratorConversation_TwoAgentsConcurrentThinking(t *testing.T) {
 		t.Fatalf("expected distinct thinking headers for both agents, got:\n%s", rendered)
 	}
 }
+
+// TestOrchestratorConversation_ThinkingSeparatedByToolCall asserts that a tool
+// call ends the previous thinking block and the post-tool thinking starts a
+// fresh block, rather than being appended to the pre-tool thinking block.
+func TestOrchestratorConversation_ThinkingSeparatedByToolCall(t *testing.T) {
+	sc := newOrchViewScenario(t, 100, 30)
+	sc.app.attachOrchView(newFakeOrchSource())
+	sc.flush()
+
+	events := []orchestrator.Event{
+		{Type: orchestrator.EventRunStarted, Payload: map[string]any{"objective": "fix it", "topology": "hub"}},
+		{Type: orchestrator.EventAgentStarted, AgentID: "c-1", Role: "coder", Model: "gemma"},
+		{Type: orchestrator.EventAgentThinking, AgentID: "c-1", Role: "coder", Payload: map[string]any{"text": "before "}},
+		{Type: orchestrator.EventAgentThinking, AgentID: "c-1", Role: "coder", Payload: map[string]any{"text": "tool"}},
+		{Type: orchestrator.EventAgentToolCall, AgentID: "c-1", Role: "coder", Payload: map[string]any{"tool": "bash", "input": `{"command":"ls"}`, "call_id": "t1"}},
+		{Type: orchestrator.EventAgentToolResult, AgentID: "c-1", Role: "coder", Payload: map[string]any{"call_id": "t1", "text": "ok", "ok": true}},
+		{Type: orchestrator.EventAgentThinking, AgentID: "c-1", Role: "coder", Payload: map[string]any{"text": "after "}},
+		{Type: orchestrator.EventAgentThinking, AgentID: "c-1", Role: "coder", Payload: map[string]any{"text": "tool"}},
+		{Type: orchestrator.EventAgentFinished, AgentID: "c-1", Role: "coder"},
+		{Type: orchestrator.EventRunFinished, Payload: map[string]any{"ok": true}},
+	}
+	film := captureOrchFilmstripOnConversationTab(t, sc, events)
+	node := chatViewportFromFilmstrip(t, film)
+	rendered := node.Text
+
+	// Pre-tool and post-tool thinking should be in separate blocks.
+	if strings.Count(rendered, "coder thinking...") < 2 {
+		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Fatalf("expected two distinct thinking blocks, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "before tool") {
+		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Fatalf("pre-tool thinking missing, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "after tool") {
+		t.Logf("Filmstrip:\n%s", film.Render())
+		t.Fatalf("post-tool thinking missing, got:\n%s", rendered)
+	}
+}

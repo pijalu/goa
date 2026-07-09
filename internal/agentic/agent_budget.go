@@ -5,6 +5,7 @@ package agentic
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -49,6 +50,34 @@ const toolRepeatedMessage = "[goa-system] This exact tool call (same tool with s
 // result. Callers (e.g. the TUI layer) use it to recognise synthetic budget
 // messages without duplicating the full string.
 const ToolBudgetResultPrefix = "[goa-system] Tool call budget exceeded"
+
+// ToolRepeatedMessagePrefix is the prefix of the soft duplicate hint returned
+// when the exact same tool call appears twice in the same turn. The TUI uses
+// this to recognise guardrail messages and render them as warnings rather than
+// successful tool results.
+const ToolRepeatedMessagePrefix = "[goa-system] This exact tool call"
+
+// ToolLoopMessagePrefix is the prefix of hard loop guardrails. The TUI uses
+// this to recognise guardrail messages and render them as warnings.
+const ToolLoopMessagePrefix = "[goa-system] Loop guardrail:"
+
+// IsGuardrailResult reports whether a tool result text is a synthetic
+// guardrail/budget message rather than a real tool execution result. The TUI
+// uses this to render repeated or looped tool calls as warnings instead of
+// success.
+func IsGuardrailResult(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	switch {
+	case strings.HasPrefix(trimmed, ToolBudgetResultPrefix):
+		return true
+	case strings.HasPrefix(trimmed, ToolRepeatedMessagePrefix):
+		return true
+	case strings.HasPrefix(trimmed, ToolLoopMessagePrefix):
+		return true
+	default:
+		return false
+	}
+}
 
 // defaultThinkingStallWarn is the default duration of pure thinking before a
 // stall warning is emitted, used when Config.ThinkingStallWarn is zero.

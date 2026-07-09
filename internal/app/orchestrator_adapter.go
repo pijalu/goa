@@ -166,10 +166,13 @@ func applyContent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agen
 	}
 }
 
-// isErrorResult reports whether a tool result text should be treated as failed.
+// isErrorResult reports whether a tool result text should be treated as failed
+// or as a synthetic guardrail message. Guardrail messages (budget exceeded,
+// duplicate call hints, loop guardrails) are not real tool results and are
+// rendered as warnings rather than successful results.
 func isErrorResult(s string) bool {
 	trimmed := strings.TrimSpace(s)
-	return strings.HasPrefix(trimmed, "Error:") || strings.HasPrefix(trimmed, agentic.ToolBudgetResultPrefix)
+	return strings.HasPrefix(trimmed, "Error:") || agentic.IsGuardrailResult(s)
 }
 
 // OrchestratorDelegateTool is the tool the orchestrator agent uses to delegate

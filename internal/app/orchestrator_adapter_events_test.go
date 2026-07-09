@@ -87,8 +87,8 @@ func findToolResultOK(got []orchestrator.Event, id string) *bool {
 }
 
 // TestOrchestratorAdapterEvents_ToolResultErrorStatus asserts that the adapter
-// marks tool results starting with Error: or the goa-system budget prefix as
-// not ok.
+// marks tool results starting with Error: or any goa-system guardrail/budget
+// prefix as not ok.
 func TestOrchestratorAdapterEvents_ToolResultErrorStatus(t *testing.T) {
 	var mu sync.Mutex
 	var received []orchestrator.Event
@@ -103,13 +103,15 @@ func TestOrchestratorAdapterEvents_ToolResultErrorStatus(t *testing.T) {
 	observer := func(ev agentic.OutputEvent) { applyOutputEvent(h, rt, ev) }
 	observer(agentic.OutputEvent{Type: agentic.EventToolResult, ToolCallID: "t1", Text: "Error: file not found"})
 	observer(agentic.OutputEvent{Type: agentic.EventToolResult, ToolCallID: "t2", Text: agentic.ToolBudgetResultPrefix})
+	observer(agentic.OutputEvent{Type: agentic.EventToolResult, ToolCallID: "t3", Text: agentic.ToolRepeatedMessagePrefix})
+	observer(agentic.OutputEvent{Type: agentic.EventToolResult, ToolCallID: "t4", Text: agentic.ToolLoopMessagePrefix})
 
 	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
 	got := append([]orchestrator.Event(nil), received...)
 	mu.Unlock()
 
-	for _, id := range []string{"t1", "t2"} {
+	for _, id := range []string{"t1", "t2", "t3", "t4"} {
 		ok := findToolResultOK(got, id)
 		if ok == nil || *ok {
 			t.Errorf("tool result %s should be ok=false, got ok=%v", id, ok)

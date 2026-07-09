@@ -21,11 +21,12 @@ import (
 type EditOperation string
 
 const (
-	OpReplaceLines   EditOperation = "replace_lines"
+	OpReplace       EditOperation = "replace"
+	OpReplaceLines  EditOperation = "replace_lines"
 	OpReplacePattern EditOperation = "replace_pattern"
-	OpInsertAfter    EditOperation = "insert_after"
-	OpInsertBefore   EditOperation = "insert_before"
-	OpDeleteLines    EditOperation = "delete_lines"
+	OpInsertAfter   EditOperation = "insert_after"
+	OpInsertBefore  EditOperation = "insert_before"
+	OpDeleteLines   EditOperation = "delete_lines"
 )
 
 type IndentMode string
@@ -150,7 +151,17 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 		return "", t.errProtected(p.Path)
 	}
 
-	if p.OldString != "" {
+	// The schema advertises `operation: "replace"` as a convenience alias for
+	// the classic `old_string`/`new_string` search/replace. Route it through the
+	// same implementation, requiring both fields.
+	if p.Operation == string(OpReplace) || p.OldString != "" {
+		if p.OldString == "" {
+			return "", &internal.ToolError{
+				Tool: "edit", Type: "missing_parameter",
+				Detail:   "operation 'replace' requires 'old_string' and 'new_string'",
+				HintText: "Provide the text to search for in 'old_string' and the replacement in 'new_string'.",
+			}
+		}
 		return t.searchReplace(resolvedPath, originalPath, p.OldString, p.NewString, t.AllowFuzz)
 	}
 
@@ -268,6 +279,10 @@ func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, s
 
 func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]string, int, error) {
 	switch op {
+	case OpReplace:
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "missing_parameter",
+			Detail:   "operation 'replace' requires 'old_string' and 'new_string'",
+			HintText: "Provide the text to search for in 'old_string' and the replacement in 'new_string'."}
 	case OpReplaceLines:
 		return t.replaceLines(lines, p.startLine, p.endLine, p.newLines, p.indentMode)
 	case OpReplacePattern:
@@ -281,7 +296,7 @@ func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]
 	default:
 		return nil, 0, &internal.ToolError{Tool: "edit", Type: "unknown_operation",
 			Detail:   fmt.Sprintf("Unknown operation: %s", op),
-			HintText: "Use one of: replace_lines, replace_pattern, insert_after, insert_before, delete_lines"}
+			HintText: "Use one of: replace, replace_lines, replace_pattern, insert_after, insert_before, delete_lines"}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pijalu/goa/internal/metrics"
 	"github.com/pijalu/goa/tui"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
@@ -52,17 +53,22 @@ func (a *App) updateOrchFooterStats() {
 	}
 	var parts []string
 	for _, r := range v.Rows() {
-		ch := "-"
-		if r.CacheRead > 0 {
-			ch = formatK(r.CacheRead)
-		}
-		parts = append(parts, fmt.Sprintf("%s ↑%s ↓%s CH=%s", r.Role, formatK(r.TokensIn), formatK(r.TokensOut), ch))
+		parts = append(parts, fmt.Sprintf("%s ↑%s ↓%s CH=%s", r.Role, formatK(r.TokensIn), formatK(r.TokensOut), cacheField(r.CacheRead, r.CacheCreation, r.TokensIn)))
 	}
 	stats := strings.Join(parts, " | ")
 	if stats == "" {
 		stats = "orchestration running"
 	}
 	a.subs.footer.SetData(tui.FooterData{OrchestrationStats: stats})
+}
+
+// cacheField mirrors the stats-table CH rendering: cache-hit percentage when
+// there is cache activity, "-" otherwise.
+func cacheField(cacheRead, cacheCreation, tokensIn int) string {
+	if cacheRead+cacheCreation <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.0f%%", metrics.CacheHitPct(cacheRead, cacheCreation, tokensIn))
 }
 
 func formatK(n int) string {

@@ -36,4 +36,13 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-No open bugs.
+4. **Delegate tool spawns new agents instead of reusing idle agents**
+   - Observed: session shows `coder`, `coder·2`, `coder·3` after sequential delegations.
+   - Expected: the orchestrator should reuse an idle agent of the same role when one is available.
+   - Fix: investigate `multiagent/orchestrator.go` / `foreground_orchestrator.go` agent pool / lifecycle logic; implement agent reuse in the orchestrator adapter so released agents are returned to a per-role pool and reused on the next `Delegate` of the same role.
+   - Test: orchestrator runtime test that a second delegation to the same role reuses the finished agent.
+
+5. **Screen tearing / spurious full redraws**
+   - Observed: compositor appears to redraw content with one line less, causing tearing.
+   - Fix: review `tui/compositor.go` diff / render logic to ensure only changed regions are redrawn; footer height changes (orchestration stats line) may be triggering full redraws.
+   - Test: golden / filmstrip diff test that footer height change does not cause chat viewport full redraw.
