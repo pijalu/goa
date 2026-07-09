@@ -10,7 +10,6 @@ import (
 
 	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/tui"
-	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
 // orchStreamEvents is a sequence of orchestrator events that represent one
@@ -31,7 +30,7 @@ func orchStreamEvents() []orchestrator.Event {
 	}
 }
 
-func captureOrchFilmstripOnTab(t *testing.T, sc *orchViewScenario, events []orchestrator.Event, tabKey string) *tui.Filmstrip {
+func captureOrchFilmstrip(t *testing.T, sc *orchViewScenario, events []orchestrator.Event) *tui.Filmstrip {
 	t.Helper()
 	film := tui.NewFilmstrip()
 	film.Capture("pre-run", sc.frame(), "")
@@ -59,11 +58,6 @@ func captureOrchFilmstripOnTab(t *testing.T, sc *orchViewScenario, events []orch
 		film.Capture(string(ev.Type), sc.frame(), sc.app.subs.statusMsg.Text())
 	}
 
-	if tabKey != "" {
-		sc.engine.ApplySync(func() { sc.app.selectAgentTab(tabKey) })
-		film.Capture("switch_"+tabKey, sc.frame(), sc.app.subs.statusMsg.Text())
-	}
-
 	for _, ev := range tail {
 		ne, ok := translateOrchEvent(ev)
 		if !ok {
@@ -75,10 +69,16 @@ func captureOrchFilmstripOnTab(t *testing.T, sc *orchViewScenario, events []orch
 	return film
 }
 
-// captureOrchFilmstripOnConversationTab is a convenience wrapper for the
-// common case where the conversation tab must be visible while replaying events.
+// captureOrchFilmstripOnConversationTab is a compatibility wrapper for the
+// simplified UI: there is only one chat view, so no tab switch is needed.
 func captureOrchFilmstripOnConversationTab(t *testing.T, sc *orchViewScenario, events []orchestrator.Event) *tui.Filmstrip {
-	return captureOrchFilmstripOnTab(t, sc, events, "conversation")
+	return captureOrchFilmstrip(t, sc, events)
+}
+
+// captureOrchFilmstripOnTab is a compatibility wrapper for the simplified UI:
+// tab switching was removed, so it behaves like captureOrchFilmstrip.
+func captureOrchFilmstripOnTab(t *testing.T, sc *orchViewScenario, events []orchestrator.Event, _ string) *tui.Filmstrip {
+	return captureOrchFilmstrip(t, sc, events)
 }
 
 // chatViewportFromFilmstrip returns the ChatViewport node from the final
@@ -147,21 +147,15 @@ func TestOrchestratorConversation_SingleAgentStreamsThinkingContentTool(t *testi
 		t.Logf("Filmstrip:\n%s", filmStr)
 		t.Fatalf("expected bash tool widget, got:\n%s", rendered)
 	}
-
-	assertConversationHasBookendTabs(t, sc)
+	assertChatAlwaysVisible(t, film)
 }
 
-func assertConversationHasBookendTabs(t *testing.T, sc *orchViewScenario) {
+func assertChatAlwaysVisible(t *testing.T, film *tui.Filmstrip) {
 	t.Helper()
-	if sc.app.subs.agentView == nil {
-		t.Fatal("agentView should still be attached")
-	}
-	haveBookends := map[orchpanel.AgentTabKind]bool{}
-	for _, tab := range sc.app.subs.agentView.Tabs() {
-		haveBookends[tab.Kind] = true
-	}
-	if !haveBookends[orchpanel.TabConversation] || !haveBookends[orchpanel.TabStats] {
-		t.Fatalf("missing Conversation/Stats bookends: %+v", sc.app.subs.agentView.Tabs())
+	for _, f := range film.Frames() {
+		if f.Frame.FindNode("ChatViewport") == nil {
+			t.Errorf("ChatViewport should be visible in every frame; missing in %s", f.Label)
+		}
 	}
 }
 

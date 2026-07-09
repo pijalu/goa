@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// TestView_TabOrder_Bug_ReportedOrder is a RED test for the tab-order bug
-// reported in bugs.md: the expected order is Stats, Conversation,
-// Orchestrator, then other agents.
+// TestView_TabOrder_Bug_ReportedOrder is a regression test for the simplified
+// tab bar: only the Stats and Conversation bookends remain; per-agent tabs are
+// replaced by ctrl-x steering targets.
 func TestView_TabOrder_Bug_ReportedOrder(t *testing.T) {
 	v := NewMultiAgentView("orchestration")
 	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
@@ -18,14 +18,26 @@ func TestView_TabOrder_Bug_ReportedOrder(t *testing.T) {
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "coder-1", Role: "coder"})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "reviewer-1", Role: "reviewer"})
 
-	want := []string{"stats", "conversation", "orch-1", "coder-1", "reviewer-1"}
+	want := []string{"stats", "conversation"}
 	got := tabKeys(v.Tabs())
+	if len(got) != len(want) {
+		t.Fatalf("tabs = %v, want %v", got, want)
+	}
 	for i, w := range want {
-		if i >= len(got) {
-			t.Fatalf("tabs truncated at %d: got %v", i, got)
-		}
 		if got[i] != w {
-			t.Errorf("tab %d = %q, want %q (got %v)", i, got[i], w, got)
+			t.Errorf("tab %d = %q, want %q", i, got[i], w)
+		}
+	}
+
+	// Steering targets still include all agents, with orchestrator first.
+	targets := v.SteerTargets()
+	wantTargets := []string{"all", "orch-1", "coder-1", "reviewer-1"}
+	if len(targets) != len(wantTargets) {
+		t.Fatalf("SteerTargets = %v, want %v", targets, wantTargets)
+	}
+	for i, w := range wantTargets {
+		if targets[i] != w {
+			t.Errorf("SteerTargets[%d] = %q, want %q", i, targets[i], w)
 		}
 	}
 }

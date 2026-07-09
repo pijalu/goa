@@ -304,11 +304,25 @@ func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occ
 		return nil, 0, &internal.ToolError{Tool: "edit", Type: "missing_pattern",
 			Detail: "Pattern is required for replace_pattern", HintText: "Provide a 'pattern' to search for."}
 	}
+	if occurrence <= 0 {
+		occurrence = 1
+	}
+
+	// Models sometimes double-escape literal newlines/backslashes/quotes when
+	// they meant to supply a multi-line block. Normalize those sequences so the
+	// edit can match the actual file content.
+	normalized := unescapePattern(pattern)
+
+	// Multi-line patterns are matched as a fuzzy block against the whole file.
+	if strings.Contains(normalized, "\n") {
+		return t.replacePatternBlock(lines, normalized, occurrence, newLines, indentMode)
+	}
+
 	caseSensitive := !strings.Contains(flags, "i")
 	found := 0
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if matchLine(line, pattern, caseSensitive) {
+		if matchLine(line, normalized, caseSensitive) {
 			found++
 			if found == occurrence {
 				adjusted := t.adjustIndent([]string{line}, newLines, indentMode)
@@ -324,6 +338,62 @@ func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occ
 			HintText: "Use 'read' to verify the file content and check the pattern for typos or try different flags."}
 	}
 	return result, len(newLines), nil
+}
+
+// replacePatternBlock replaces a multi-line pattern against the whole file
+// using fuzzy block matching. This catches the common model mistake of calling
+// replace_pattern with a double-escaped literal block.
+func (t *EditFileTool) replacePatternBlock(lines []string, pattern string, occurrence int, newLines []string, indentMode IndentMode) ([]string, int, error) {
+	if occurrence > 1 {
+		return nil, 0, &internal.ToolError{Tool: "edit", Type: "unsupported_occurrence",
+			Detail:   "Multi-line replace_pattern only supports occurrence=1",
+			HintText: "Use 'old_string'/'new_string' search/replace or 'replace_lines' for specific occurrences."}
+	}
+	fileText := strings.Join(lines, "\n")
+	newText := strings.Join(newLines, "\n")
+	result, err := fuzzyEdit(fileText, pattern, newText, true)
+	if err != nil {
+		return nil, 0, t.mapBlockPatternError(pattern, err)
+	}
+	return splitLines(result.NewContent), len(newLines), nil
+}
+
+func (t *EditFileTool) mapBlockPatternError(pattern string, err error) error {
+	switch {
+	case errors.Is(err, ErrAmbiguous):
+		return &internal.ToolError{Tool: "edit", Type: "ambiguous_match",
+			Detail:   fmt.Sprintf("Pattern %q matches multiple locations in file", truncateStr(pattern, 40)),
+			HintText: "Add more surrounding context to the pattern so only one location matches, or use 'old_string'/'new_string' search/replace."}
+	case errors.Is(err, ErrNotFound):
+		return &internal.ToolError{Tool: "edit", Type: "pattern_not_found",
+			Detail:   fmt.Sprintf("Pattern %q not found in file (tried exact, trailing whitespace, and fuzzy matching)", truncateStr(pattern, 40)),
+			HintText: "Use 'read' to verify the current file content (the file may have changed since your last read)."}
+	case errors.Is(err, ErrNoChange):
+		return &internal.ToolError{Tool: "edit", Type: "no_change",
+			Detail:   "Pattern and replacement are identical",
+			HintText: "Provide different 'new_content' content."}
+	case errors.Is(err, ErrEmptyOldStr):
+		return &internal.ToolError{Tool: "edit", Type: "empty_pattern",
+			Detail:   "Pattern must not be empty",
+			HintText: "Provide a non-empty pattern to search for."}
+	default:
+		return &internal.ToolError{Tool: "edit", Type: "edit_error",
+			Detail:   fmt.Sprintf("Edit failed: %v", err),
+			HintText: "Check the file content with 'read' and try again."}
+	}
+}
+
+// unescapePattern replaces common literal escape sequences that models often
+// emit when they meant to supply literal newlines, tabs, quotes, or
+// backslashes.
+func unescapePattern(s string) string {
+	s = strings.ReplaceAll(s, `\\\\`, "\x00")
+	s = strings.ReplaceAll(s, `\n`, "\n")
+	s = strings.ReplaceAll(s, `\t`, "\t")
+	s = strings.ReplaceAll(s, `\"`, `"`)
+	s = strings.ReplaceAll(s, `\'`, `'`)
+	s = strings.ReplaceAll(s, "\x00", `\\`)
+	return s
 }
 
 func (t *EditFileTool) insertAfter(lines []string, lineNum int, pattern string, newLines []string, indentMode IndentMode) ([]string, int, error) {

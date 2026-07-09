@@ -33,6 +33,7 @@ type FooterData struct {
 	GoalStatus             string // "active", "paused", "blocked", or empty when no goal
 	GoalObjective          string // truncated active/paused/blocked goal objective for the footer
 	SteeringPending        string // pending steering text displayed until consumed by the model
+	OrchestrationStats     string // per-model orchestration stats rendered as an extra footer line
 }
 
 // preserveFooterData merges new data with previously preserved fields so the

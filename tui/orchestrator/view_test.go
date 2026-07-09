@@ -33,27 +33,28 @@ func buildLifecycleView(t *testing.T) *MultiAgentView {
 	return v
 }
 
-// TestView_TabsAndOrdering asserts the Conversation + Stats bookends come
-// first, followed by one per-agent filter tab per started agent.
+// TestView_TabsAndOrdering asserts the tab bar only contains the Conversation
+// and Stats bookends; per-agent filter tabs were removed in favor of ctrl-x
+// steering targets.
 func TestView_TabsAndOrdering(t *testing.T) {
 	v := buildLifecycleView(t)
 	keys := tabKeys(v.Tabs())
-	if len(keys) != 4 {
-		t.Fatalf("tabs = %v, want 4 (conversation+stats+2 agents)", keys)
+	if len(keys) != 2 {
+		t.Fatalf("tabs = %v, want 2 (stats + conversation)", keys)
 	}
 	if keys[0] != "stats" || keys[1] != "conversation" {
-		t.Errorf("bookend tabs = %v, want stats,conversation first", keys[:2])
+		t.Errorf("bookend tabs = %v, want stats,conversation", keys)
 	}
 	if active, _ := v.ActiveTab(); active.Key != "stats" {
 		t.Errorf("active = %q, want stats", active.Key)
 	}
-	if got, want := v.TabIndex(), "1/4"; got != want {
+	if got, want := v.TabIndex(), "1/2"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
 	}
 }
 
 // TestView_Navigation exercises Cycle, SelectByKey (string + numeric), and the
-// unknown-key rejection.
+// unknown-key rejection with only two tabs.
 func TestView_Navigation(t *testing.T) {
 	v := buildLifecycleView(t)
 	v.Cycle(1)
@@ -66,7 +67,7 @@ func TestView_Navigation(t *testing.T) {
 	if active, _ := v.ActiveTab(); active.Key != "stats" {
 		t.Errorf("after SelectByKey(stats) active = %q, want stats", active.Key)
 	}
-	if got, want := v.TabIndex(), "1/4"; got != want {
+	if got, want := v.TabIndex(), "1/2"; got != want {
 		t.Errorf("TabIndex = %q, want %q", got, want)
 	}
 	if !v.SelectByKey("2") {
@@ -136,23 +137,25 @@ func TestView_FailedRun(t *testing.T) {
 	}
 }
 
-// TestView_ActiveAgentID verifies steering-target resolution: on the
-// Conversation tab it returns the most recently started agent; on Stats it
-// returns "" (meaning "steer all").
+// TestView_ActiveAgentID verifies the steering target is independent of the
+// active tab. By default it broadcasts to all (empty string); after cycling it
+// points at the selected agent.
 func TestView_ActiveAgentID(t *testing.T) {
 	v := NewMultiAgentView("orchestration")
 	v.ApplyEvent(AgentViewEvent{Kind: EvSourceStarted})
 	v.ApplyEvent(AgentViewEvent{Kind: EvAgentStarted, AgentID: "coder-1", Role: "coder"})
 
-	wantFor := func(sel, want string) {
-		t.Helper()
-		v.SelectByKey(sel)
-		if got := v.ActiveAgentID(); got != want {
-			t.Errorf("active %q AgentID = %q, want %q", sel, got, want)
-		}
+	if got := v.ActiveAgentID(); got != "" {
+		t.Errorf("default ActiveAgentID = %q, want empty (all)", got)
 	}
-	wantFor("conversation", "coder-1")
-	wantFor("stats", "")
+	v.CycleSteerTarget(1)
+	if got := v.ActiveAgentID(); got != "coder-1" {
+		t.Errorf("after CycleSteerTarget ActiveAgentID = %q, want coder-1", got)
+	}
+	v.CycleSteerTarget(-1)
+	if got := v.ActiveAgentID(); got != "" {
+		t.Errorf("after cycling back ActiveAgentID = %q, want empty (all)", got)
+	}
 }
 
 // TestView_DisambiguatesDuplicateRoles asserts that the DisambiguateLabel rule

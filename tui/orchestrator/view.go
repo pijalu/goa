@@ -109,10 +109,11 @@ type MultiAgentView struct {
 	tabs   []AgentTab
 	active int
 
-	rows      []AgentEnhancedRow
-	logs      map[string]*AgentLog
-	order     []string // agentIDs in first-seen order (stable tabs + "All")
-	roleCount map[string]int
+	rows        []AgentEnhancedRow
+	logs        map[string]*AgentLog
+	order       []string // agentIDs in first-seen order (stable)
+	roleCount   map[string]int
+	steerTarget string   // empty means "all"; otherwise an AgentID from order
 }
 
 // NewMultiAgentView returns an empty view tagged with the given source label
@@ -188,25 +189,13 @@ func (v *MultiAgentView) handleSourceFinished(ev AgentViewEvent) {
 func (v *MultiAgentView) handleAgentStarted(ev AgentViewEvent) {
 	v.ensureBookendTabs()
 	v.upsertRow(ev)
-	if ev.AgentID != "" {
-		v.order = append(v.order, ev.AgentID)
-		v.ensureLog(ev.AgentID, ev.Role)
-		label := v.DisambiguateLabel(ev.Role)
-		v.setRowLabel(ev.AgentID, label)
-		v.ensureAgentTab(ev.AgentID, label)
+	if ev.AgentID == "" {
+		return
 	}
-}
-
-// ensureAgentTab appends a per-agent filter tab for agentID (labelled with the
-// disambiguated role) the first time the agent is seen. Tabs stay ordered
-// [Conversation, Stats, <agent>…]. Idempotent per agentID.
-func (v *MultiAgentView) ensureAgentTab(agentID, label string) {
-	for _, t := range v.tabs {
-		if t.Key == agentID {
-			return
-		}
-	}
-	v.tabs = append(v.tabs, AgentTab{Key: agentID, Label: label, Kind: TabAgent})
+	v.order = append(v.order, ev.AgentID)
+	v.ensureLog(ev.AgentID, ev.Role)
+	label := v.DisambiguateLabel(ev.Role)
+	v.setRowLabel(ev.AgentID, label)
 }
 
 func (v *MultiAgentView) setRowLabel(agentID, label string) {
@@ -357,25 +346,78 @@ func (v *MultiAgentView) ActiveTab() (AgentTab, bool) {
 	return v.tabs[v.active], true
 }
 
-// ActiveAgentID returns the AgentID steering should target for the active
-// tab: the tab's own agent for a per-agent tab, the most recently started
-// agent for the Conversation tab, or "" on Stats (broadcast to all).
+// ActiveAgentID returns the AgentID steering should target, or "" when the
+// current target is the broadcast "all".
 func (v *MultiAgentView) ActiveAgentID() string {
-	tab, ok := v.ActiveTab()
-	if !ok {
+	if v.SteerTarget() == "all" {
 		return ""
 	}
-	switch tab.Kind {
-	case TabAgent:
-		return tab.Key
-	case TabConversation:
-		if len(v.order) == 0 {
-			return ""
+	return v.steerTarget
+}
+
+// SteerTarget returns the current steering target. The special value "all"
+// means broadcast to every agent.
+func (v *MultiAgentView) SteerTarget() string {
+	if v.steerTarget == "" {
+		return "all"
+	}
+	return v.steerTarget
+}
+
+// SetSteerTarget sets the steering target. The value "all" means broadcast to
+// every agent; an empty value is normalised to "all".
+func (v *MultiAgentView) SetSteerTarget(target string) {
+	if target == "" {
+		target = "all"
+	}
+	v.steerTarget = target
+}
+
+// SteerTargets returns the ordered list of steering targets: [all, orchestrator, ...agents].
+func (v *MultiAgentView) SteerTargets() []string {
+	targets := []string{"all"}
+	var orchID string
+	for _, id := range v.order {
+		if v.roleFor(id) == "orchestrator" {
+			orchID = id
+			break
 		}
-		return v.order[len(v.order)-1]
-	default:
-		return ""
 	}
+	if orchID != "" {
+		targets = append(targets, orchID)
+	}
+	for _, id := range v.order {
+		if id == orchID {
+			continue
+		}
+		targets = append(targets, id)
+	}
+	return targets
+}
+
+// CycleSteerTarget moves the steering target by dir positions (wrapping).
+func (v *MultiAgentView) CycleSteerTarget(dir int) {
+	targets := v.SteerTargets()
+	if len(targets) == 0 {
+		return
+	}
+	cur := 0
+	current := v.SteerTarget()
+	for i, t := range targets {
+		if t == current {
+			cur = i
+			break
+		}
+	}
+	next := ((cur+dir)%len(targets) + len(targets)) % len(targets)
+	v.steerTarget = targets[next]
+}
+
+func (v *MultiAgentView) roleFor(agentID string) string {
+	if l := v.LogFor(agentID); l != nil {
+		return l.Role
+	}
+	return ""
 }
 
 // SelectByKey selects the tab whose Key matches sel, or the 1-based numeric

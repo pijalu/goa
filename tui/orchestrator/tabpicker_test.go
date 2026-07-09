@@ -1,6 +1,4 @@
-// SPDX-License-Identifier-Identifier: GPL-3.0-or-later
-//
-// Copyright (C) 2026 Pierre Poissinger
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 package orchestrator
 
@@ -11,8 +9,7 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// buildPickerView creates a view with 2 tabs (Stats, Conversation) for picker
-// tests, with the Stats tab active initially.
+// buildPickerView creates a view with two agents for picker tests.
 func buildPickerView(t *testing.T) *MultiAgentView {
 	t.Helper()
 	v := NewMultiAgentView("orchestration")
@@ -22,69 +19,69 @@ func buildPickerView(t *testing.T) *MultiAgentView {
 	return v
 }
 
-func TestAgentTabPicker_DigitJumpPicksAndCloses(t *testing.T) {
+func TestSteerTargetPicker_DigitJumpPicksAndCloses(t *testing.T) {
 	v := buildPickerView(t)
 	var picked string
 	var closed bool
-	p := NewAgentTabPicker(v)
-	p.SetPickFunc(func(key string) { picked = key })
+	p := NewSteerTargetPicker(v)
+	p.SetPickFunc(func(target string) { picked = target })
 	p.SetCloseFunc(func() { closed = true })
 
-	p.HandleInput("2") // conversation (index 1)
-	if picked != "conversation" {
-		t.Errorf("digit 2 picked %q, want conversation", picked)
+	p.HandleInput("2") // coder (index 1)
+	if picked != "c-1" {
+		t.Errorf("digit 2 picked %q, want c-1", picked)
 	}
 	if !closed {
 		t.Error("picker did not close after pick")
 	}
 }
 
-func TestAgentTabPicker_DigitOnePicksStats(t *testing.T) {
+func TestSteerTargetPicker_DigitOnePicksAll(t *testing.T) {
 	v := buildPickerView(t)
 	var picked string
-	p := NewAgentTabPicker(v)
-	p.SetPickFunc(func(key string) { picked = key })
+	p := NewSteerTargetPicker(v)
+	p.SetPickFunc(func(target string) { picked = target })
 	p.SetCloseFunc(func() {})
 
-	p.HandleInput("1") // stats (index 0)
-	if picked != "stats" {
-		t.Errorf("digit 1 picked %q, want stats", picked)
+	p.HandleInput("1") // all (index 0)
+	if picked != "all" {
+		t.Errorf("digit 1 picked %q, want all", picked)
 	}
 }
 
-func TestAgentTabPicker_OutOfRangeDigitIgnored(t *testing.T) {
+func TestSteerTargetPicker_OutOfRangeDigitIgnored(t *testing.T) {
 	v := buildPickerView(t)
-	p := NewAgentTabPicker(v)
+	p := NewSteerTargetPicker(v)
 	called := false
 	p.SetPickFunc(func(string) { called = true })
 	p.SetCloseFunc(func() {})
 
-	p.HandleInput("9") // only 2 tabs
+	p.HandleInput("9") // only 3 targets
 	if called {
-		t.Error("digit 9 should not pick when only 2 tabs exist")
+		t.Error("digit 9 should not pick when only 3 targets exist")
 	}
 }
 
-func TestAgentTabPicker_ArrowThenEnter(t *testing.T) {
+func TestSteerTargetPicker_ArrowThenEnter(t *testing.T) {
 	v := buildPickerView(t)
 	var picked string
-	p := NewAgentTabPicker(v)
-	p.SetPickFunc(func(key string) { picked = key })
+	p := NewSteerTargetPicker(v)
+	p.SetPickFunc(func(target string) { picked = target })
 	p.SetCloseFunc(func() {})
 
-	p.HandleInput(tui.KeyDown) // Stats -> Conversation
+	p.HandleInput(tui.KeyDown) // all -> coder
 	p.HandleInput(tui.KeyEnter)
-	if picked != "conversation" {
-		t.Errorf("arrow+enter picked %q, want conversation", picked)
+	if picked != "c-1" {
+		t.Errorf("arrow+enter picked %q, want c-1", picked)
 	}
 }
 
-func TestAgentTabPicker_EscapeCancels(t *testing.T) {
+func TestSteerTargetPicker_EscapeCancels(t *testing.T) {
 	v := buildPickerView(t)
 	var picked string
 	closed := false
-	p := NewAgentTabPicker(v)
-	p.SetPickFunc(func(key string) { picked = key })
+	p := NewSteerTargetPicker(v)
+	p.SetPickFunc(func(target string) { picked = target })
 	p.SetCloseFunc(func() { closed = true })
 
 	p.HandleInput(tui.KeyEscape)
@@ -96,16 +93,29 @@ func TestAgentTabPicker_EscapeCancels(t *testing.T) {
 	}
 }
 
-func TestAgentTabPicker_RendersNumberedList(t *testing.T) {
+func TestSteerTargetPicker_RendersNumberedList(t *testing.T) {
 	v := buildPickerView(t)
-	p := NewAgentTabPicker(v)
+	p := NewSteerTargetPicker(v)
 	p.SetPickFunc(func(string) {})
 	p.SetCloseFunc(func() {})
 
 	joined := strings.Join(stripAll(p.Render(60)), "\n")
-	for _, want := range []string{"1", "2", "Conversation", "Stats", "jump"} {
+	for _, want := range []string{"1", "2", "3", "all", "coder", "reviewer", "jump"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("picker render missing %q:\n%s", want, joined)
 		}
+	}
+}
+
+func TestSteerTargetPicker_HighlightsActiveTarget(t *testing.T) {
+	v := buildPickerView(t)
+	v.SetSteerTarget("c-1")
+	p := NewSteerTargetPicker(v)
+	p.SetPickFunc(func(string) {})
+	p.SetCloseFunc(func() {})
+
+	joined := strings.Join(p.Render(60), "\n")
+	if !strings.Contains(joined, "●") {
+		t.Error("picker should highlight the active target")
 	}
 }

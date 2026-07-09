@@ -42,31 +42,21 @@ func (a *App) runOrchestratorViewForwarder(done <-chan struct{}) {
 	}
 }
 
-// attachOrchView creates the view for a new run and binds the render-only
-// components. The default active tab is Conversation, so the chat viewport is
-// visible and the AgentContent region is hidden. Ctrl+x toggles to Stats,
-// which suppresses the chat and shows the stats panel.
+// attachOrchView creates the view for a new run and wires it to the chat
+// viewport and footer. The chat is always visible in the simplified UI; stats
+// are shown in the footer below the input line.
 func (a *App) attachOrchView(src orchEventSource) {
 	view := orchpanel.NewMultiAgentView("orchestration")
 	a.apply(func() {
 		a.subs.agentView = view
-		if a.subs.agentContent != nil {
-			a.subs.agentContent.SetView(view)
-		}
-		if a.subs.agentTabBar != nil {
-			a.subs.agentTabBar.SetView(view)
-		}
 		if a.subs.chat != nil {
-			// Default to Stats: the persistent stats panel is visible and the
-			// chat viewport is suppressed until the user switches to Conversation.
-			a.subs.chat.SetSuppressed(true)
+			// The chat is the single persistent view; never suppress it.
+			a.subs.chat.SetSuppressed(false)
 		}
-		// Fresh stream registry per run, unconditionally. (The previous
-		// `if != nil` guard was inverted: it only reset when already set, and
-		// would have left a nil registry — rendering nothing — if the
-		// pre-init ever changed.)
+		// Fresh stream registry per run, unconditionally.
 		a.subs.agentStreams = newAgentStreamRegistry()
 		a.updateOrchInputPrompt()
+		a.updateOrchFooterStats()
 	})
 }
 
@@ -92,6 +82,7 @@ func (a *App) drainOrchView(done <-chan struct{}, src orchEventSource) {
 			a.apply(func() {
 				a.handleOrchViewEvent(ne)
 				a.updateOrchInputPrompt()
+				a.updateOrchFooterStats()
 			})
 		}
 	}

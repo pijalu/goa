@@ -133,13 +133,13 @@ func (a *App) stopBackgroundProcesses() {
 }
 
 func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, inp *tui.Editor, footer *tui.Footer) {
+	_ = agentContent
+	_ = agentTabBar
 	engine.AddChild(header)
 	engine.AddChild(chat)
-	engine.AddChild(agentContent)
 	engine.AddChild(pendingInputBox)
 	engine.AddChild(statusBar)
 	engine.AddChild(goalBubble)
-	engine.AddChild(agentTabBar)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)

@@ -9,17 +9,12 @@ import (
 	"github.com/pijalu/goa/core/orchestrator"
 )
 
-// TestOrchestratorPerAgentPane_ContentVisibleWithLargeTranscript is the
-// permanent regression gate for the "per-agent panes are empty" bug.
-//
-// The pre-existing TestOrchestratorPerAgentTab_ToolWidgetVisible used a tiny
-// transcript, so the former monotonically-growing stable-height padding never
-// ratcheted high enough to scroll the filtered content out of view — the test
-// was green while reality was broken. This test uses a LARGE transcript (each
-// agent produces well over a screen of content) and asserts that, after
-// switching to each per-agent tab, the agent's OWN content is actually visible
-// on screen (not scrolled off by stale padding, not replaced by the stats panel).
-func TestOrchestratorPerAgentPane_ContentVisibleWithLargeTranscript(t *testing.T) {
+// TestOrchestratorConversation_LargeTranscriptVisible is the regression gate
+// for the unified conversation view. Per-agent tabs were removed, so all
+// agent content (including tool widgets and source tags) must remain visible in
+// the single conversation view even when the transcript is larger than the
+// screen.
+func TestOrchestratorConversation_LargeTranscriptVisible(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
@@ -58,28 +53,37 @@ func TestOrchestratorPerAgentPane_ContentVisibleWithLargeTranscript(t *testing.T
 	}
 	sc.flush()
 
-	// Sanity: the Conversation tab holds a large transcript.
+	// Sanity: only the two bookend tabs exist.
 	sc.engine.ApplySync(func() { sc.app.selectAgentTab("conversation") })
+	view := sc.app.subs.agentView
+	if view == nil {
+		t.Fatal("agentView missing")
+	}
+	keys := make([]string, len(view.Tabs()))
+	for i, tab := range view.Tabs() {
+		keys[i] = tab.Key
+	}
+	if len(keys) != 2 {
+		t.Errorf("tabs = %v, want [stats conversation]", keys)
+	}
+
+	// The conversation view must hold a large transcript and show both agents.
 	convFrame := sc.frame()
 	convNode := convFrame.FindNode("ChatViewport")
 	if convNode == nil || lineCount(convNode.Text) < 30 {
 		t.Fatalf("conversation transcript too small: %v", convNode == nil)
 	}
-
-	// Each per-agent pane must show THAT agent's content on the visible screen.
-	for _, c := range []struct{ tabKey, marker string }{
-		{"orchestrator-1", "[orchestrator]"},
-		{"coder-2", "[coder]"},
-	} {
-		sc.engine.ApplySync(func() { sc.app.selectAgentTab(c.tabKey) })
-		frame := sc.frame()
-		vis := strings.Join(frame.Visible, "\n")
-		// AgentContent (stats) must NOT render on a per-agent tab.
-		if node := frame.FindNode("orchestrator.AgentContent"); node != nil && strings.TrimSpace(node.Text) != "" {
-			t.Errorf("tab %q: stats panel should be hidden on per-agent tabs", c.tabKey)
+	for _, marker := range []string{"[orchestrator]", "[coder]", "delegate", "write"} {
+		if !strings.Contains(convNode.Text, marker) {
+			t.Errorf("conversation view missing marker %q", marker)
 		}
-		if !strings.Contains(vis, c.marker) {
-			t.Errorf("tab %q: agent content %q not visible (scrolled off / blank pane);\nVISIBLE:\n%s", c.tabKey, c.marker, vis)
+	}
+
+	// No per-agent tab should exist for either agent.
+	for _, key := range []string{"orchestrator-1", "coder-2"} {
+		sc.engine.ApplySync(func() { sc.app.selectAgentTab(key) })
+		if tab, _ := sc.app.subs.agentView.ActiveTab(); tab.Key == key {
+			t.Errorf("per-agent tab %q should not exist", key)
 		}
 	}
 }

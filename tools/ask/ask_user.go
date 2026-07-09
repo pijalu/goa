@@ -77,8 +77,7 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"title":   map[string]any{"type": "string", "description": "Short label for the question card."},
-							"summary": map[string]any{"type": "string", "description": "Optional context explaining why the question is asked."},
+							"summary":  map[string]any{"type": "string", "description": "Optional context explaining why the question is asked."},
 							"question": map[string]any{"type": "string", "description": "The question itself (required)."},
 							"options": map[string]any{
 								"type":        "array",
@@ -121,8 +120,12 @@ func (t *AskUserQuestionTool) Execute(input string) (string, error) {
 	clarify := t.Clarify
 	t.mu.Unlock()
 
+	// Force a fixed title so the model cannot supply arbitrary labels.
+	const fixedTitle = "Clarifications needed"
+
 	answers := make([]clarifyAnswer, 0, len(p.Questions))
 	for _, q := range p.Questions {
+		q.Title = fixedTitle
 		ans, err := t.askOne(clarify, q)
 		if err != nil {
 			return "", err

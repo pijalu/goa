@@ -10,21 +10,18 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/core/orchestrator"
-	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 	"github.com/pijalu/goa/tui"
 )
 
 // orchViewScenario wires the production component tree to a fake terminal with
-// the persistent multi-agent view components (AgentContent, AgentTabBar)
-// inserted exactly as assembleEngine places them, so the forwarder can be
-// driven as data and inspected via AgentFrame.
+// the simplified multi-agent layout (chat + input + footer, no tab bar or stats
+// panel). This matches the real assembleEngine so the forwarder can be driven
+// as data and inspected via AgentFrame.
 type orchViewScenario struct {
-	tb           testing.TB
-	engine       *tui.TUI
-	chat         *tui.ChatViewport
-	agentContent *orchpanel.AgentContent
-	agentTabBar  *orchpanel.AgentTabBar
-	app          *App
+	tb     testing.TB
+	engine *tui.TUI
+	chat   *tui.ChatViewport
+	app    *App
 }
 
 func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
@@ -37,8 +34,6 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	tb.Cleanup(func() { engine.Stop() })
 
 	chat := tui.NewChatViewport()
-	agentContent := orchpanel.NewAgentContent()
-	agentTabBar := orchpanel.NewAgentTabBar()
 	pendingInputBox := tui.NewPendingInputBox()
 	inp := tui.NewEditor()
 	header := tui.NewHeader("goa", "test")
@@ -46,9 +41,7 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 
 	engine.AddChild(header)
 	engine.AddChild(chat)
-	engine.AddChild(agentContent)
 	engine.AddChild(pendingInputBox)
-	engine.AddChild(agentTabBar)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	inp.SetTUI(engine)
@@ -57,16 +50,12 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	subs := testSubsystems()
 	subs.tuiEngine = engine
 	subs.chat = chat
-	subs.agentContent = agentContent
-	subs.agentTabBar = agentTabBar
 	subs.inputEditor = inp
+	subs.footer = footer
 	subs.pendingInputBox = pendingInputBox
 	subs.agentStreams = newAgentStreamRegistry()
 
-	return &orchViewScenario{
-		tb: tb, engine: engine, chat: chat,
-		agentContent: agentContent, agentTabBar: agentTabBar, app: New(subs),
-	}
+	return &orchViewScenario{tb: tb, engine: engine, chat: chat, app: New(subs)}
 }
 
 // flush waits for the command loop to finish all queued applies.
@@ -127,15 +116,15 @@ func (s *orchViewScenario) applyOrchEvents(events []orchestrator.Event) {
 		s.engine.ApplySync(func() {
 			v.ApplyEvent(ev)
 			s.app.updateOrchInputPrompt()
+			s.app.updateOrchFooterStats()
 		})
 	}
 }
 
-// TestOrchestratorViewForwarder_RendersTabbedView is the canonical UI
-// validation: a full event sequence renders the tabbed view (AgentTabBar +
-// AgentContent present, ChatViewport suppressed), with the Stats tab showing
-// the CH column and the tab bar listing Stats + All.
-func TestOrchestratorViewForwarder_RendersTabbedView(t *testing.T) {
+// TestOrchestratorViewForwarder_RendersSimplifiedView is the canonical UI
+// validation: the simplified layout always shows the chat viewport and the
+// footer with per-model stats, but never shows the tab bar or stats panel.
+func TestOrchestratorViewForwarder_RendersSimplifiedView(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.chat.AddSystemMessage("hello") // so the chat renders a layer at baseline
 
@@ -151,21 +140,10 @@ func TestOrchestratorViewForwarder_RendersTabbedView(t *testing.T) {
 	sc.applyOrchEvents(lifecycleEvents())
 
 	frame := sc.frame()
-	checkNodeText(t, frame, "orchestrator.AgentTabBar", []string{"Stats", "Conversation", "[1/"})
-	checkNodeText(t, frame, "orchestrator.AgentContent", []string{"CH", "(google)", "gemma"})
-	checkAbsent(t, frame, "ChatViewport", "ChatViewport should be suppressed on Stats tab by default")
-
-	// Switch to Conversation tab and verify the chat viewport renders.
-	sc.app.selectAgentTab("conversation")
-	frame = sc.frame()
+	checkAbsent(t, frame, "orchestrator.AgentTabBar", "tab bar should not appear in simplified UI")
+	checkAbsent(t, frame, "orchestrator.AgentContent", "stats panel should not appear in simplified UI")
 	checkNodeText(t, frame, "ChatViewport", []string{"hello"})
-	checkAbsent(t, frame, "orchestrator.AgentContent", "AgentContent should be hidden on Conversation tab")
-
-	// Switch back to Stats tab and verify the stats panel renders.
-	sc.app.selectAgentTab("stats")
-	frame = sc.frame()
-	checkNodeText(t, frame, "orchestrator.AgentContent", []string{"CH", "(google)", "gemma"})
-	checkAbsent(t, frame, "ChatViewport", "ChatViewport should be suppressed on Stats tab")
+	checkNodeText(t, frame, "Footer", []string{"CH=", "coder"})
 
 	if sc.app.subs.agentView == nil || !sc.app.subs.agentView.Finished() {
 		t.Error("view not attached or not marked finished")
@@ -192,46 +170,45 @@ func checkNodeText(t *testing.T, f tui.AgentFrame, name string, want []string) {
 	}
 }
 
-// TestOrchestratorViewForwarder_TabPickerJumpsByNumber verifies the Ctrl+x
-// tab picker: opening it and pressing a number selects that tab and updates
-// the steering prompt.
-func TestOrchestratorViewForwarder_TabPickerJumpsByNumber(t *testing.T) {
+// TestOrchestratorViewForwarder_SteerPickerJumpsByNumber verifies the ctrl+x
+// steering target picker: opening it and pressing a number selects that target
+// and updates the input prompt. Per-agent tabs were removed; the picker shows
+// steering targets instead.
+func TestOrchestratorViewForwarder_SteerPickerJumpsByNumber(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
 	sc.applyOrchEvents(lifecycleEvents())
 
-	// Tabs: Stats(1), Conversation(2). Open picker + press 2 to select Conversation.
 	sc.engine.ApplySync(func() { sc.app.openAgentTabSelector() })
-	sc.engine.ApplySync(func() { sc.engine.SendKey("2") })
+	sc.engine.ApplySync(func() { sc.engine.SendKey("2") }) // coder (index 1)
 
-	if tab, ok := sc.app.subs.agentView.ActiveTab(); !ok || tab.Key != "conversation" {
-		t.Errorf("after picker digit 2 active = %+v, want conversation", tab)
+	if got := sc.app.subs.agentView.SteerTarget(); got != "c-1" {
+		t.Errorf("after picker digit 2 steer target = %q, want c-1", got)
 	}
-	if got := sc.app.subs.getInput().Title(); got != "steer reviewer" {
-		t.Errorf("prompt = %q, want 'steer reviewer'", got)
+	if got := sc.app.subs.getInput().Title(); got != "steer coder" {
+		t.Errorf("prompt = %q, want 'steer coder'", got)
 	}
 }
 
-// TestOrchestratorViewForwarder_SteerPromptReflectsActiveTab verifies the input
-// editor prompt follows the active tab (steer all: on Stats, steer coder: on
-// the coder tab).
-func TestOrchestratorViewForwarder_SteerPromptReflectsActiveTab(t *testing.T) {
+// TestOrchestratorViewForwarder_SteerPromptReflectsTarget verifies the input
+// editor prompt reflects the current ctrl-x steering target (default "all").
+func TestOrchestratorViewForwarder_SteerPromptReflectsTarget(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
 	sc.applyOrchEvents(lifecycleEvents())
 
 	inp := sc.app.subs.getInput()
-	// Default active tab is Stats; steering targets all agents.
 	if got := inp.Title(); got != "steer all" {
-		t.Errorf("stats-tab prompt = %q, want 'steer all'", got)
+		t.Errorf("default prompt = %q, want 'steer all'", got)
 	}
-	if !sc.app.selectAgentTab("conversation") {
-		t.Fatal("selectAgentTab(conversation) failed")
-	}
-	if got := inp.Title(); got != "steer reviewer" {
-		t.Errorf("conversation-tab prompt = %q, want 'steer reviewer'", got)
+
+	// Cycling the steering target to the first agent changes the prompt.
+	sc.app.subs.agentView.CycleSteerTarget(1)
+	sc.app.updateOrchInputPrompt()
+	if got := inp.Title(); got != "steer coder" {
+		t.Errorf("after cycling prompt = %q, want 'steer coder'", got)
 	}
 }
 
@@ -266,16 +243,21 @@ func TestOrchestratorViewForwarder_DrainsWithoutRace(t *testing.T) {
 	sc.flush()
 
 	var finished bool
-	var hasBar bool
 	sc.engine.ApplySync(func() {
 		finished = sc.app.subs.agentView != nil && sc.app.subs.agentView.Finished()
 	})
 	frame := sc.frame()
-	hasBar = frame.FindNode("orchestrator.AgentTabBar") != nil
+	hasBar := frame.FindNode("orchestrator.AgentTabBar") != nil
 	if !finished {
 		t.Error("view not finished after drain")
 	}
-	if !hasBar {
-		t.Error("tab bar not rendered after drain")
+	if hasBar {
+		t.Error("tab bar should not render in simplified UI after drain")
+	}
+	if frame.FindNode("ChatViewport") == nil {
+		t.Error("chat should be visible after drain")
+	}
+	if footer := frame.FindNode("Footer"); footer == nil || !strings.Contains(footer.Text, "CH=") {
+		t.Errorf("footer should show per-model stats after drain; footer=%v", footer)
 	}
 }

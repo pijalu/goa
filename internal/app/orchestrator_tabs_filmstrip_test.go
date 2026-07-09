@@ -1,4 +1,4 @@
-// SPDX-License-Identifier-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
 
@@ -12,17 +12,16 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// TestOrchestratorTabs_Filmstrip_PersistenceAndPerFrameBar drives the FULL
-// event sequence (start → stream → stats → steer → finish) through the
-// persistent view and records a Filmstrip, asserting:
-//   - the AgentTabBar layer is present in every frame after the run starts;
-//   - the Stats-tab content eventually reflects the CH column once stats arrive;
-//   - the view PERSISTS after finish (the last frame still has the bar) — the
-//     regression guard for the old "overlay disappears on run end" defect.
+// TestOrchestratorView_Filmstrip_PersistenceAndFooterStats drives the FULL
+// event sequence (start → stream → stats → finish) through the simplified
+// view and records a Filmstrip, asserting:
+//   - the tab bar is never present (it was removed in the simplified UI);
+//   - the chat viewport is always visible;
+//   - the footer eventually shows the per-model CH column once stats arrive;
+//   - the view PERSISTS after finish (the last frame still shows the footer).
 //
-// This is the §4.2 regression guard: a single-frame assertion cannot catch a
-// transient-hide regression, so we assert across the whole filmstrip.
-func TestOrchestratorTabs_Filmstrip_PersistenceAndPerFrameBar(t *testing.T) {
+// This is the regression guard for the simplified "single chat + stats" layout.
+func TestOrchestratorView_Filmstrip_PersistenceAndFooterStats(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
@@ -36,19 +35,19 @@ func TestOrchestratorTabs_Filmstrip_PersistenceAndPerFrameBar(t *testing.T) {
 
 	assertBarAbsent(t, frames[0], "pre-run frame should not show the tab bar")
 	for i := 1; i < len(frames); i++ {
-		assertBarPresent(t, frames[i], "frame %d (%s)", i, frames[i].Label)
+		assertBarAbsent(t, frames[i], "frame %d should not show the tab bar", i)
+		assertChatVisible(t, frames[i], "frame %d chat should be visible", i)
 	}
-	assertBarPresent(t, frames[len(frames)-1], "tab bar disappeared after run finished (view must persist)")
+	assertBarAbsent(t, frames[len(frames)-1], "tab bar should never appear after run finished")
 	if sc.app.subs.agentView == nil || !sc.app.subs.agentView.Finished() {
 		t.Error("view not finished after run_finished event")
 	}
 
-	// Switch to Stats tab and verify the CH column is visible there.
-	sc.engine.ApplySync(func() { sc.app.selectAgentTab("stats") })
+	// The footer should show per-model stats including the CH column.
 	frame := sc.frame()
-	c := frame.FindNode("orchestrator.AgentContent")
-	if c == nil || !strings.Contains(c.Text, "CH") {
-		t.Errorf("stats tab should show CH column; AgentContent = %v", c)
+	footer := frame.FindNode("Footer")
+	if footer == nil || !strings.Contains(footer.Text, "CH=") {
+		t.Errorf("footer should show per-model CH stats; footer=%v", footer)
 	}
 }
 
@@ -64,16 +63,27 @@ func captureLifecycleFilmstrip(t *testing.T, sc *orchViewScenario) *tui.Filmstri
 			continue
 		}
 		v := sc.app.subs.agentView
-		sc.engine.ApplySync(func() { v.ApplyEvent(ne); sc.app.updateOrchInputPrompt() })
+		sc.engine.ApplySync(func() {
+			v.ApplyEvent(ne)
+			sc.app.updateOrchInputPrompt()
+			sc.app.updateOrchFooterStats()
+		})
 		film.Capture(string(ev.Type), sc.frame(), "")
 	}
 	return film
 }
 
-func assertBarPresent(t *testing.T, s tui.Snapshot, format string, args ...any) {
+func assertBarAbsent(t *testing.T, s tui.Snapshot, format string, args ...any) {
 	t.Helper()
-	if s.Frame.FindNode("orchestrator.AgentTabBar") == nil {
-		t.Errorf("tab bar missing: "+format, args...)
+	if s.Frame.FindNode("orchestrator.AgentTabBar") != nil {
+		t.Errorf("tab bar should not appear: "+format, args...)
+	}
+}
+
+func assertChatVisible(t *testing.T, s tui.Snapshot, format string, args ...any) {
+	t.Helper()
+	if s.Frame.FindNode("ChatViewport") == nil {
+		t.Errorf("chat should be visible: "+format, args...)
 	}
 }
 
@@ -103,6 +113,7 @@ func TestOrchestratorTabs_SpinnerClearsOnRunFinish(t *testing.T) {
 		sc.engine.ApplySync(func() {
 			sc.app.handleOrchViewEvent(nev)
 			sc.app.updateOrchInputPrompt()
+			sc.app.updateOrchFooterStats()
 		})
 		film.Capture(string(ev.Type), sc.frame(), sc.app.subs.statusMsg.Text())
 	}
@@ -129,13 +140,11 @@ func TestOrchestratorTabs_SpinnerClearsOnRunFinish(t *testing.T) {
 	}
 }
 
-// TestOrchestratorTabs_PendingInputBoxSurvivesTabSwitch verifies Bug 3: the
-// pending-input prompt rendered by PendingInputBox stays visible when switching
-// from the Conversation tab to the Stats tab, even though ChatViewport (which
-// also holds the prompt as a system message) is suppressed on Stats. It also
-// verifies updateOrchInputPrompt no longer clobbers the prompt title mid-prompt,
-// and that cancelling removes the box.
-func TestOrchestratorTabs_PendingInputBoxSurvivesTabSwitch(t *testing.T) {
+// TestOrchestratorTabs_PendingInputBoxStaysVisible verifies Bug 3: the
+// pending-input prompt rendered by PendingInputBox stays visible in the
+// simplified UI. It also verifies updateOrchInputPrompt no longer clobbers the
+// prompt title mid-prompt, and that cancelling removes the box.
+func TestOrchestratorTabs_PendingInputBoxStaysVisible(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
@@ -153,38 +162,21 @@ func TestOrchestratorTabs_PendingInputBoxSurvivesTabSwitch(t *testing.T) {
 		t.Errorf("title clobbered mid-prompt = %q, want to retain prompt", got)
 	}
 
-	// Conversation tab: PendingInputBox renders the prompt.
-	sc.app.selectAgentTab("conversation")
-	convFrame := sc.frame()
-	if box := convFrame.FindNode("PendingInputBox"); box == nil || !strings.Contains(box.Text, "Describe the issue") {
-		t.Errorf("Conversation tab: PendingInputBox missing prompt; node=%v", box)
+	// The chat and pending input box are always visible in the simplified UI.
+	frame := sc.frame()
+	if frame.FindNode("ChatViewport") == nil {
+		t.Error("ChatViewport should be visible")
 	}
-
-	// Stats tab: ChatViewport suppressed, but PendingInputBox still shows prompt.
-	if !sc.app.selectAgentTab("stats") {
-		t.Fatal("selectAgentTab(stats) failed")
-	}
-	statsFrame := sc.frame()
-	if statsFrame.FindNode("ChatViewport") != nil {
-		t.Error("ChatViewport should be absent on Stats tab")
-	}
-	box := statsFrame.FindNode("PendingInputBox")
+	box := frame.FindNode("PendingInputBox")
 	if box == nil || !strings.Contains(box.Text, "Describe the issue") {
-		t.Errorf("Stats tab: PendingInputBox should still show prompt; node=%v", box)
+		t.Errorf("PendingInputBox should show prompt; node=%v", box)
 	}
 
-	// Cancel: the box must clear on all tabs.
+	// Cancel: the box must clear.
 	sc.engine.ApplySync(func() { sc.app.cancelPendingMainInput() })
 	cleared := sc.frame()
 	if node := cleared.FindNode("PendingInputBox"); node != nil {
 		t.Errorf("PendingInputBox should be absent after cancel; node=%v", node)
-	}
-}
-
-func assertBarAbsent(t *testing.T, s tui.Snapshot, msg string) {
-	t.Helper()
-	if s.Frame.FindNode("orchestrator.AgentTabBar") != nil {
-		t.Error(msg)
 	}
 }
 
@@ -193,7 +185,7 @@ func assertBarAbsent(t *testing.T, s tui.Snapshot, msg string) {
 // tool ("coder tool calling: glob") and the widget header shows the tool name
 // + formatted args instead of the literal "run tool". Drives events through
 // handleOrchViewEvent (the real forwarder path) so the status spinner is
-// exercised, unlike captureLifecycleFilmstrip which only drives the view.
+// exercised.
 func TestOrchestratorTabs_ToolCallShowsNameInStatusAndWidget(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
@@ -208,7 +200,7 @@ func TestOrchestratorTabs_ToolCallShowsNameInStatusAndWidget(t *testing.T) {
 			Payload: map[string]any{"tool": "glob", "input": `{"pattern":"**/*.go"}`, "call_id": "t1"}},
 	}
 
-	film := captureOrchFilmstripOnTab(t, sc, events, "conversation")
+	film := captureOrchFilmstripOnTab(t, sc, events, "")
 
 	trace := film.StatusTrace()
 	nameInStatus := false
@@ -224,7 +216,7 @@ func TestOrchestratorTabs_ToolCallShowsNameInStatusAndWidget(t *testing.T) {
 	frame := sc.frame()
 	chat := frame.FindNode("ChatViewport")
 	if chat == nil {
-		t.Fatal("ChatViewport missing on Conversation tab after tool call")
+		t.Fatal("ChatViewport missing after tool call")
 	}
 	if strings.Contains(chat.Text, "run tool") {
 		t.Errorf("generic tool widget should not show 'run tool'; got:\n%s", chat.Text)

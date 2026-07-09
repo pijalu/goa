@@ -144,3 +144,17 @@ func TestCanonicalize_OptionsCapped(t *testing.T) {
 	}}
 	_, _ = tool.Execute(`{"questions":[{"question":"q","options":["a","b","c","d","e","f","g","h"]}]}`)
 }
+
+func TestExecute_TitleNormalized(t *testing.T) {
+	var gotTitle string
+	tool := &AskUserQuestionTool{Clarify: func(title, _, _ string, _ []string) (string, bool) {
+		gotTitle = title
+		return "", false
+	}}
+	if _, err := tool.Execute(`{"questions":[{"title":"Target branch","question":"q"}]}`); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotTitle != "Clarifications needed" {
+		t.Errorf("title = %q, want 'Clarifications needed'", gotTitle)
+	}
+}

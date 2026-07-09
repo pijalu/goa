@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -463,5 +464,46 @@ func TestEditFileTool_FuzzyFilename_LegacyOperation(t *testing.T) {
 	data, _ := os.ReadFile(filePath)
 	if strings.Contains(string(data), "line2") {
 		t.Errorf("line2 should have been deleted, got: %q", string(data))
+	}
+}
+
+func TestEditFileTool_ReplacePattern_EscapedNewlinesAndQuotes(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "game.js")
+	original := `// Placeholder functions for key game components:
+// initGame(), drawMap(), updateGame(), and handleInput().
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+console.log("Game Initializing...");
+`
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	// Pattern contains literal \n and \" sequences as the model often emits them.
+	pattern := `// Placeholder functions for key game components:\n// initGame(), drawMap(), updateGame(), and handleInput().\n\nconst canvas = document.getElementById('gameCanvas');\nconst ctx = canvas.getContext('2d');\n\nconsole.log(\"Game Initializing...\");`
+	newContent := `// New header
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+console.log("Ready");`
+	input := fmt.Sprintf(`{"path": %q, "operation": "replace_pattern", "pattern": %q, "new_content": %q}`, filePath, pattern, newContent)
+	result, err := tool.Execute(input)
+	if err != nil {
+		t.Fatalf("Replace pattern with escaped newlines should succeed: %v", err)
+	}
+	data, _ := os.ReadFile(filePath)
+	content := string(data)
+	if !strings.Contains(content, "// New header") {
+		t.Errorf("File should contain replacement text, got: %q", content)
+	}
+	if strings.Contains(content, "Placeholder functions for key game components") {
+		t.Errorf("File should not contain old text, got: %q", content)
+	}
+	if !strings.Contains(result, "affected") {
+		t.Errorf("Expected result to mention affected lines, got: %q", result)
 	}
 }

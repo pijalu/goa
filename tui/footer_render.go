@@ -69,7 +69,11 @@ func (f *Footer) Render(width int) []string {
 
 	line2 := renderTwoCol(left2, right2, width, styler)
 
-	return []string{styler(line1), styler(line2)}
+	lines := []string{styler(line1), styler(line2)}
+	if f.data.OrchestrationStats != "" {
+		lines = append(lines, styler(truncateToWidth(f.data.OrchestrationStats, width, "")))
+	}
+	return lines
 }
 
 // buildLeftSide builds the left portion of the second status line

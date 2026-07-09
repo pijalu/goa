@@ -16,54 +16,56 @@ func buildMultiAgentView(t *testing.T) *MultiAgentView {
 	return v
 }
 
-// TestMultiAgentView_PerAgentTabsCreated is the RED regression for the tab
-// order bug: each started agent gets its own filter tab, ordered after the
-// Stats/Conversation bookends, with disambiguated labels.
-func TestMultiAgentView_PerAgentTabsCreated(t *testing.T) {
+// TestMultiAgentView_NoPerAgentTabsCreated asserts that the tab bar only
+// contains the Stats and Conversation bookends. Per-agent filter tabs were
+// removed in favor of ctrl-x steering targets.
+func TestMultiAgentView_NoPerAgentTabsCreated(t *testing.T) {
 	v := buildMultiAgentView(t)
 	tabs := v.Tabs()
-	if len(tabs) != 5 {
-		t.Fatalf("tabs = %d, want 5 (stats+conversation+3 agents): %+v", len(tabs), tabs)
+	if len(tabs) != 2 {
+		t.Fatalf("tabs = %d, want 2 (stats + conversation): %+v", len(tabs), tabs)
 	}
 	if tabs[0].Kind != TabStats || tabs[1].Kind != TabConversation {
 		t.Errorf("bookend tabs wrong: %+v %+v", tabs[0], tabs[1])
 	}
+}
 
-	byKey := map[string]AgentTab{}
-	for _, tb := range tabs {
-		byKey[tb.Key] = tb
+// TestMultiAgentView_SteerTargetsCreated asserts that steering targets include
+// "all" first, followed by every started agent in first-seen order.
+func TestMultiAgentView_SteerTargetsCreated(t *testing.T) {
+	v := buildMultiAgentView(t)
+	want := []string{"all", "coder-1", "reviewer-1", "coder-2"}
+	got := v.SteerTargets()
+	if len(got) != len(want) {
+		t.Fatalf("SteerTargets = %v, want %v", got, want)
 	}
-	if byKey["coder-1"].Kind != TabAgent || byKey["coder-1"].Label != "coder" {
-		t.Errorf("coder-1 tab = %+v, want TabAgent labelled coder", byKey["coder-1"])
-	}
-	if byKey["reviewer-1"].Label != "reviewer" {
-		t.Errorf("reviewer-1 label = %q", byKey["reviewer-1"].Label)
-	}
-	if byKey["coder-2"].Label != "coder·2" {
-		t.Errorf("coder-2 label = %q, want coder·2", byKey["coder-2"].Label)
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("SteerTargets[%d] = %q, want %q", i, got[i], w)
+		}
 	}
 }
 
-// TestMultiAgentView_TabSteeringTarget asserts that selecting a per-agent tab
-// targets that agent for steering, the Conversation tab targets the most
-// recently started agent, and the Stats tab broadcasts to all agents.
-func TestMultiAgentView_TabSteeringTarget(t *testing.T) {
+// TestMultiAgentView_SteerTargetCycling verifies that CycleSteerTarget advances
+// and wraps through "all" and every agent, including negative directions.
+func TestMultiAgentView_SteerTargetCycling(t *testing.T) {
 	v := buildMultiAgentView(t)
+	want := []string{"all", "coder-1", "reviewer-1", "coder-2"}
 
-	if !v.SelectByKey("reviewer-1") {
-		t.Fatal("SelectByKey(reviewer-1) failed")
+	for i, w := range want {
+		if got := v.SteerTarget(); got != w {
+			t.Errorf("cycle %d: SteerTarget = %q, want %q", i, got, w)
+		}
+		v.CycleSteerTarget(1)
 	}
-	if got := v.ActiveAgentID(); got != "reviewer-1" {
-		t.Errorf("ActiveAgentID on reviewer tab = %q, want reviewer-1", got)
-	}
-
-	v.SelectByKey("conversation")
-	if got := v.ActiveAgentID(); got != "coder-2" {
-		t.Errorf("ActiveAgentID on conversation = %q, want coder-2 (last started)", got)
+	if got := v.SteerTarget(); got != "all" {
+		t.Errorf("after full cycle SteerTarget = %q, want all", got)
 	}
 
-	v.SelectByKey("stats")
-	if got := v.ActiveAgentID(); got != "" {
-		t.Errorf("ActiveAgentID on stats = %q, want empty (broadcast)", got)
+	// Negative direction wraps backward.
+	v.SetSteerTarget("coder-2")
+	v.CycleSteerTarget(-1)
+	if got := v.SteerTarget(); got != "reviewer-1" {
+		t.Errorf("cycle back SteerTarget = %q, want reviewer-1", got)
 	}
 }

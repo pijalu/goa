@@ -11,10 +11,11 @@ import (
 	"github.com/pijalu/goa/core/orchestrator"
 )
 
-// TestOrchestratorPerAgentTab_ToolWidgetVisible is the RED regression for the
-// bug reported in bugs.md: when switching to a dedicated agent tab (e.g. coder),
-// the agent's tool calls should be visible, not just text/thinking blocks.
-func TestOrchestratorPerAgentTab_ToolWidgetVisible(t *testing.T) {
+// TestOrchestratorConversation_ToolWidgetVisible is the RED regression for the
+// bug reported in bugs.md: tool calls from agents must be visible in the unified
+// conversation view. Per-agent tabs were removed, so the conversation view is
+// the only place where agent activity is rendered.
+func TestOrchestratorConversation_ToolWidgetVisible(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
@@ -29,21 +30,17 @@ func TestOrchestratorPerAgentTab_ToolWidgetVisible(t *testing.T) {
 
 	captureOrchFilmstripOnTab(t, sc, events, "conversation")
 
-	// Switch to the dedicated coder tab.
-	if !sc.app.selectAgentTab("c-1") {
-		t.Fatal("selectAgentTab(c-1) failed")
-	}
 	frame := sc.frame()
 	node := frame.FindNode("ChatViewport")
 	if node == nil {
-		t.Fatal("ChatViewport missing on coder tab")
+		t.Fatal("ChatViewport missing on conversation view")
 	}
 	if !strings.Contains(node.Text, "write") {
-		t.Logf("coder tab visible text:\n%s", node.Text)
-		t.Errorf("coder tab should show the write tool widget")
+		t.Logf("conversation visible text:\n%s", node.Text)
+		t.Errorf("conversation view should show the write tool widget")
 	}
 	if !strings.Contains(node.Text, "Done.") {
-		t.Logf("coder tab visible text:\n%s", node.Text)
-		t.Errorf("coder tab should show the coder message")
+		t.Logf("conversation visible text:\n%s", node.Text)
+		t.Errorf("conversation view should show the coder message")
 	}
 }

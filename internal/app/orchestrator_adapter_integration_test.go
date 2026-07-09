@@ -141,7 +141,8 @@ func runLiveIntoView(t *testing.T, roles []string, topology string) (*orchpanel.
 
 // TestOrchestrator_LiveFanout_RendersTabbedView (§4.1) runs a 2-role fanout
 // against LMStudio, feeds events to a MultiAgentView, and asserts the view
-// shows the Conversation and Stats tabs and finishes.
+// shows the Conversation and Stats tabs and finishes. Per-agent filter tabs are
+// replaced by ctrl-x steering targets.
 func TestOrchestrator_LiveFanout_RendersTabbedView(t *testing.T) {
 	if !lmstudioReachable(t) {
 		t.Skip("LMStudio not reachable on :1234 — skipping live orchestrator integration test")
@@ -151,12 +152,8 @@ func TestOrchestrator_LiveFanout_RendersTabbedView(t *testing.T) {
 	for _, tab := range view.Tabs() {
 		keys = append(keys, tab.Key)
 	}
-	// Stats + Conversation bookends, plus one per-agent filter tab per role.
-	if len(keys) < 2 || keys[0] != "stats" || keys[1] != "conversation" {
-		t.Errorf("live fanout missing bookend tabs: %v", keys)
-	}
-	if len(keys) < 4 {
-		t.Errorf("live fanout tabs = %v, want at least 4 (bookends + 2 agents)", keys)
+	if len(keys) != 2 || keys[0] != "stats" || keys[1] != "conversation" {
+		t.Errorf("live fanout tabs = %v, want [stats conversation]", keys)
 	}
 	if !view.Finished() {
 		t.Error("live fanout view not finished")
