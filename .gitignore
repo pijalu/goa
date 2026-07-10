@@ -21,6 +21,8 @@ web/*.html
 
 # ── Session / runtime data ───────────────────────────────────────────────
 .goa/
+!.goa/skills/
+!.goa/command_stats.json
 sessions/
 memory/.goa/
 testgoa/
