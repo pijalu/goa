@@ -549,3 +549,35 @@ func TestOrchestrateCommand_AsyncErrorFlashed(t *testing.T) {
 		t.Errorf("expected no-active-run flash, got %v", flashes)
 	}
 }
+
+// TestOrchestrateRunTimeout_DefaultIsThirtyMinutes verifies the default wall-
+// clock budget for an orchestration run is 30 minutes, giving long-running
+// multi-agent tasks room to complete instead of crashing with a deadline.
+func TestOrchestrateRunTimeout_DefaultIsThirtyMinutes(t *testing.T) {
+	ctx := core.Context{Config: &config.Config{}}
+	if got := orchestrateRunTimeout(ctx); got != 30*time.Minute {
+		t.Errorf("default timeout = %v, want 30m", got)
+	}
+}
+
+// TestOrchestrateRunTimeout_Configurable verifies a custom run_timeout from
+// config is respected.
+func TestOrchestrateRunTimeout_Configurable(t *testing.T) {
+	ctx := core.Context{Config: &config.Config{Orchestrator: config.OrchestratorConfig{
+		Defaults: config.OrchestratorDefaultsConfig{RunTimeout: "5m"},
+	}}}
+	if got := orchestrateRunTimeout(ctx); got != 5*time.Minute {
+		t.Errorf("custom timeout = %v, want 5m", got)
+	}
+}
+
+// TestOrchestrateRunTimeout_FallsBackOnInvalid verifies malformed durations
+// fall back to the safe default rather than disabling the guard.
+func TestOrchestrateRunTimeout_FallsBackOnInvalid(t *testing.T) {
+	ctx := core.Context{Config: &config.Config{Orchestrator: config.OrchestratorConfig{
+		Defaults: config.OrchestratorDefaultsConfig{RunTimeout: "not-a-duration"},
+	}}}
+	if got := orchestrateRunTimeout(ctx); got != 30*time.Minute {
+		t.Errorf("invalid timeout fallback = %v, want 30m", got)
+	}
+}

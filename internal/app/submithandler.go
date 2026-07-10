@@ -13,6 +13,7 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
@@ -459,6 +460,10 @@ func (a *App) handleSlashCommand(input string) {
 		return
 	}
 
+	// Record non-internal slash commands in the session store so a session
+	// that consists only of commands (e.g. /orchestrate) is not empty on reload.
+	a.recordCommandInSessionStore(result, input)
+
 	ctx := coreContextForCommand(subs, a)
 	output, err := subs.cmdRouter.Execute(ctx, result)
 	if err != nil {
@@ -495,6 +500,24 @@ func (a *App) handleSlashCommand(input string) {
 		subs.chat.AddSystemMessage(output)
 		subs.tuiEngine.RequestRender()
 	}
+}
+
+// recordCommandInSessionStore writes a synthetic user content event for
+// non-internal slash commands so sessions that consist only of commands (e.g.
+// /orchestrate) are still reloadable and not silently empty.
+func (a *App) recordCommandInSessionStore(result *core.RouteResult, input string) {
+	if result == nil || result.Command == nil || core.IsInternal(result.Command) {
+		return
+	}
+	subs := a.subs
+	if subs == nil || subs.sessionStore == nil {
+		return
+	}
+	subs.sessionStore.WriteEvent(agentic.OutputEvent{
+		Type: agentic.EventContent,
+		Role: agentic.User,
+		Text: input,
+	})
 }
 
 func (a *App) handleHelpCommand() {

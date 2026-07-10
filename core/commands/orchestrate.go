@@ -570,12 +570,11 @@ func (c *OrchestrateCommand) launch(ctx core.Context, rt *orchestrator.Runtime, 
 }
 
 // orchestrateRunTimeout derives the per-run wall-clock budget from config
-// (orchestrator.defaults.run_timeout, e.g. "10m"). Empty or unparseable values
-// fall back to 10m so a misconfigured timeout never disables the guard. The
-// previous hard-coded 10m was the silent crash trigger when R1/R12 made runs
-// exceed it; making it configurable does not lower the guard, it makes it
-// visible and tunable.
-const defaultOrchestrateRunTimeout = 10 * time.Minute
+// (orchestrator.defaults.run_timeout, e.g. "30m"). Empty or unparseable values
+// fall back to 30m so long-running multi-agent runs are not killed mid-turn by
+// an overly aggressive default. The previous 10m default was a frequent crash
+// trigger for real-world tasks.
+const defaultOrchestrateRunTimeout = 30 * time.Minute
 
 func orchestrateRunTimeout(ctx core.Context) time.Duration {
 	if ctx.Config != nil {

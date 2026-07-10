@@ -7,7 +7,101 @@ package app
 import (
 	"reflect"
 	"testing"
+
+	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/tui"
 )
+
+type testRecordableCommand struct{}
+
+func (c *testRecordableCommand) Name() string      { return "testcmd" }
+func (c *testRecordableCommand) Aliases() []string { return nil }
+func (c *testRecordableCommand) ShortHelp() string { return "test command" }
+func (c *testRecordableCommand) LongHelp() string  { return "test command" }
+func (c *testRecordableCommand) Run(ctx core.Context, args []string) error {
+	return nil
+}
+
+type testInternalCommand2 struct{}
+
+func (c *testInternalCommand2) Name() string      { return "internalcmd" }
+func (c *testInternalCommand2) Aliases() []string { return nil }
+func (c *testInternalCommand2) ShortHelp() string { return "internal command" }
+func (c *testInternalCommand2) LongHelp() string  { return "internal command" }
+func (c *testInternalCommand2) Run(ctx core.Context, args []string) error { return nil }
+func (c *testInternalCommand2) IsInternal() bool                            { return true }
+
+func TestHandleSlashCommand_RecordsNonInternalCommandInSessionStore(t *testing.T) {
+	dir := t.TempDir()
+	store := core.NewSessionStore(dir)
+	store.StartSession()
+
+	registry := core.NewCommandRegistry()
+	if err := registry.Register(&testRecordableCommand{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(&testInternalCommand2{}); err != nil {
+		t.Fatal(err)
+	}
+
+	chat := tui.NewChatViewport()
+	a := &App{
+		subs: &subsystems{
+			cfg:          &config.Config{},
+			chat:         chat,
+			cmdRouter:    core.NewCommandRouter(registry, core.NewDocEngine(registry)),
+			sessionStore: store,
+			footer:       tui.NewFooter(),
+			tuiEngine:    tui.NewTUI(&testTerminal{w: 80, h: 24}),
+		},
+	}
+
+	a.handleSlashCommand("/testcmd")
+
+	store.Close()
+	info, err := store.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info) != 1 || info[0].EventCount != 1 {
+		t.Fatalf("expected 1 session with 1 event, got %d sessions: %+v", len(info), info)
+	}
+}
+
+func TestHandleSlashCommand_DoesNotRecordInternalCommandInSessionStore(t *testing.T) {
+	dir := t.TempDir()
+	store := core.NewSessionStore(dir)
+	store.StartSession()
+
+	registry := core.NewCommandRegistry()
+	if err := registry.Register(&testInternalCommand2{}); err != nil {
+		t.Fatal(err)
+	}
+
+	chat := tui.NewChatViewport()
+	a := &App{
+		subs: &subsystems{
+			cfg:          &config.Config{},
+			chat:         chat,
+			cmdRouter:    core.NewCommandRouter(registry, core.NewDocEngine(registry)),
+			sessionStore: store,
+			footer:       tui.NewFooter(),
+			tuiEngine:    tui.NewTUI(&testTerminal{w: 80, h: 24}),
+		},
+	}
+
+	a.handleSlashCommand("/internalcmd")
+
+	store.Close()
+	info, err := store.ListSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info) == 1 && info[0].EventCount != 0 {
+		t.Fatalf("expected internal command not to be recorded, got eventCount=%d", info[0].EventCount)
+	}
+}
 
 func TestExtractImagePaths(t *testing.T) {
 	tests := []struct {
