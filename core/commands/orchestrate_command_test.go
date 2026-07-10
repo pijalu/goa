@@ -550,13 +550,33 @@ func TestOrchestrateCommand_AsyncErrorFlashed(t *testing.T) {
 	}
 }
 
-// TestOrchestrateRunTimeout_DefaultIsThirtyMinutes verifies the default wall-
-// clock budget for an orchestration run is 30 minutes, giving long-running
-// multi-agent tasks room to complete instead of crashing with a deadline.
-func TestOrchestrateRunTimeout_DefaultIsThirtyMinutes(t *testing.T) {
+// TestOrchestrateRunTimeout_DefaultIsOneHour verifies the default absolute
+// wall-clock budget for an orchestration run is 1 hour, giving long-running
+// multi-agent tasks room to complete without crashing on a fixed deadline.
+func TestOrchestrateRunTimeout_DefaultIsOneHour(t *testing.T) {
 	ctx := core.Context{Config: &config.Config{}}
-	if got := orchestrateRunTimeout(ctx); got != 30*time.Minute {
-		t.Errorf("default timeout = %v, want 30m", got)
+	if got := orchestrateRunTimeout(ctx); got != 1*time.Hour {
+		t.Errorf("default timeout = %v, want 1h", got)
+	}
+}
+
+// TestOrchestrateActivityTimeout_DefaultIsTwoMinutes verifies the default
+// inactivity timeout is 2 minutes. Only a true stall (no events) cancels.
+func TestOrchestrateActivityTimeout_DefaultIsTwoMinutes(t *testing.T) {
+	ctx := core.Context{Config: &config.Config{}}
+	if got := orchestrateActivityTimeout(ctx); got != 2*time.Minute {
+		t.Errorf("default activity timeout = %v, want 2m", got)
+	}
+}
+
+// TestOrchestrateActivityTimeout_Configurable verifies a custom activity_timeout
+// from config is respected.
+func TestOrchestrateActivityTimeout_Configurable(t *testing.T) {
+	ctx := core.Context{Config: &config.Config{Orchestrator: config.OrchestratorConfig{
+		Defaults: config.OrchestratorDefaultsConfig{ActivityTimeout: "5m"},
+	}}}
+	if got := orchestrateActivityTimeout(ctx); got != 5*time.Minute {
+		t.Errorf("custom activity timeout = %v, want 5m", got)
 	}
 }
 
@@ -577,7 +597,84 @@ func TestOrchestrateRunTimeout_FallsBackOnInvalid(t *testing.T) {
 	ctx := core.Context{Config: &config.Config{Orchestrator: config.OrchestratorConfig{
 		Defaults: config.OrchestratorDefaultsConfig{RunTimeout: "not-a-duration"},
 	}}}
-	if got := orchestrateRunTimeout(ctx); got != 30*time.Minute {
-		t.Errorf("invalid timeout fallback = %v, want 30m", got)
+	if got := orchestrateRunTimeout(ctx); got != 1*time.Hour {
+		t.Errorf("invalid timeout fallback = %v, want 1h", got)
+	}
+}
+
+// TestOrchestrateActivityTimeout_FallsBackOnInvalid verifies malformed
+// activity durations fall back to the safe default.
+func TestOrchestrateActivityTimeout_FallsBackOnInvalid(t *testing.T) {
+	ctx := core.Context{Config: &config.Config{Orchestrator: config.OrchestratorConfig{
+		Defaults: config.OrchestratorDefaultsConfig{ActivityTimeout: "not-a-duration"},
+	}}}
+	if got := orchestrateActivityTimeout(ctx); got != 2*time.Minute {
+		t.Errorf("invalid activity timeout fallback = %v, want 2m", got)
+	}
+}
+
+// TestRunContextWithActivityTimeout_ResetsOnEvent verifies that emitting an
+// event resets the inactivity timer, allowing a run to outlive a fixed deadline
+// as long as it keeps producing events.
+func TestRunContextWithActivityTimeout_ResetsOnEvent(t *testing.T) {
+	cfg := config.OrchestratorConfig{
+		Roles: map[string]config.OrchestratorRole{"coder": {Model: "m"}},
+	}
+	pool := orchestrator.NewBoundedAgentPool(cfg, func(role, model string, _ orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
+		return orchestrator.NewAgentHandle("coder-1", role, model), nil
+	})
+	rt, err := orchestrator.NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.SetIDGenerator(func() string { return "test-run" })
+
+	ctx, cancel := runContextWithActivityTimeout(rt, 50*time.Millisecond, 1*time.Hour)
+	defer cancel()
+
+	// Emit an event every 30ms — well under the 50ms inactivity window.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 5; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Millisecond):
+			}
+			rt.RecordAgentMessage(&orchestrator.AgentHandle{ID: "coder-1", Role: "coder"}, "hi")
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("context cancelled despite activity")
+	case <-done:
+		// activity kept the context alive
+	}
+}
+
+// TestRunContextWithActivityTimeout_CancelsOnStall verifies the context is
+// cancelled when no events flow for the activity timeout.
+func TestRunContextWithActivityTimeout_CancelsOnStall(t *testing.T) {
+	cfg := config.OrchestratorConfig{
+		Roles: map[string]config.OrchestratorRole{"coder": {Model: "m"}},
+	}
+	pool := orchestrator.NewBoundedAgentPool(cfg, func(role, model string, _ orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
+		return orchestrator.NewAgentHandle("coder-1", role, model), nil
+	})
+	rt, err := orchestrator.NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.SetIDGenerator(func() string { return "test-run" })
+
+	ctx, cancel := runContextWithActivityTimeout(rt, 50*time.Millisecond, 1*time.Hour)
+	defer cancel()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected context cancelled on stall")
 	}
 }

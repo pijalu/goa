@@ -561,7 +561,11 @@ func (c *OrchestrateCommand) bindGoal(rt *orchestrator.Runtime, name, objective 
 func (c *OrchestrateCommand) launch(ctx core.Context, rt *orchestrator.Runtime, objective string) {
 	go c.forwardEvents(ctx, rt)
 	go func() {
-		runCtx, cancel := context.WithTimeout(context.Background(), orchestrateRunTimeout(ctx))
+		runCtx, cancel := runContextWithActivityTimeout(
+			rt,
+			orchestrateActivityTimeout(ctx),
+			orchestrateRunTimeout(ctx),
+		)
 		defer cancel()
 		_ = rt.Run(runCtx, objective)
 		<-rt.Done()
@@ -569,12 +573,69 @@ func (c *OrchestrateCommand) launch(ctx core.Context, rt *orchestrator.Runtime, 
 	}()
 }
 
-// orchestrateRunTimeout derives the per-run wall-clock budget from config
-// (orchestrator.defaults.run_timeout, e.g. "30m"). Empty or unparseable values
-// fall back to 30m so long-running multi-agent runs are not killed mid-turn by
-// an overly aggressive default. The previous 10m default was a frequent crash
-// trigger for real-world tasks.
-const defaultOrchestrateRunTimeout = 30 * time.Minute
+// runContextWithActivityTimeout returns a context that is cancelled only when
+// no orchestrator events flow for activityTimeout, or when the absolute
+// maxTimeout is reached. Any event from the runtime (agent messages, stats,
+// tool calls, thinking, ...) resets the activity timer, so long-running runs
+// that keep producing output are not killed by a fixed wall-clock limit.
+func runContextWithActivityTimeout(rt *orchestrator.Runtime, activityTimeout, maxTimeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	events := rt.Subscribe()
+	deadline := time.Now().Add(maxTimeout)
+
+	// Absolute maximum guard: no run may exceed maxTimeout, even with activity.
+	time.AfterFunc(maxTimeout, cancel)
+	go watchActivity(ctx, cancel, events, activityTimeout, deadline)
+
+	return ctx, cancel
+}
+
+// watchActivity resets the activity timer whenever an event arrives, and
+// cancels the context on either inactivity or context cancellation.
+func watchActivity(ctx context.Context, cancel context.CancelFunc, events <-chan orchestrator.Event, activityTimeout time.Duration, deadline time.Time) {
+	defer cancel()
+	activityTimer := time.NewTimer(activityTimeout)
+	defer activityTimer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-activityTimer.C:
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			if activityDeadlineReached(ev, deadline, activityTimer, activityTimeout) {
+				return
+			}
+		}
+	}
+}
+
+// activityDeadlineReached reports whether the absolute deadline has passed and,
+// if not, resets the activity timer. It discards a stale timer fire so the
+// reset is safe.
+func activityDeadlineReached(ev orchestrator.Event, deadline time.Time, timer *time.Timer, timeout time.Duration) bool {
+	_ = ev
+	if time.Now().After(deadline) {
+		return true
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(timeout)
+	return false
+}
+
+// orchestrateRunTimeout derives the per-run absolute wall-clock budget from
+// config (orchestrator.defaults.run_timeout, e.g. "1h"). Empty or unparseable
+// values fall back to 1h so long-running multi-agent runs are not killed
+// mid-turn, while still providing a hard safety ceiling.
+const defaultOrchestrateRunTimeout = 1 * time.Hour
 
 func orchestrateRunTimeout(ctx core.Context) time.Duration {
 	if ctx.Config != nil {
@@ -585,6 +646,23 @@ func orchestrateRunTimeout(ctx core.Context) time.Duration {
 		}
 	}
 	return defaultOrchestrateRunTimeout
+}
+
+// orchestrateActivityTimeout derives the inactivity budget from config
+// (orchestrator.defaults.activity_timeout, e.g. "2m"). The timer resets on
+// every event from the runtime; only a true stall (no events for this long)
+// cancels the run. Empty or unparseable values fall back to 2m.
+const defaultOrchestrateActivityTimeout = 2 * time.Minute
+
+func orchestrateActivityTimeout(ctx core.Context) time.Duration {
+	if ctx.Config != nil {
+		if s := ctx.Config.Orchestrator.Defaults.ActivityTimeout; s != "" {
+			if d, err := time.ParseDuration(s); err == nil && d > 0 {
+				return d
+			}
+		}
+	}
+	return defaultOrchestrateActivityTimeout
 }
 
 func (c *OrchestrateCommand) forwardEvents(ctx core.Context, rt *orchestrator.Runtime) {

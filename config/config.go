@@ -271,8 +271,9 @@ type OrchestratorPoolConfig struct {
 
 // OrchestratorDefaultsConfig holds default topology selection for new runs.
 type OrchestratorDefaultsConfig struct {
-	Topology   string `yaml:"topology"`
-	RunTimeout string `yaml:"run_timeout,omitempty"` // per-run wall-clock budget, e.g. "10m"; empty/invalid falls back to 10m
+	Topology        string `yaml:"topology"`
+	RunTimeout      string `yaml:"run_timeout,omitempty"`      // per-run absolute wall-clock budget, e.g. "1h"; empty/invalid falls back to 1h
+	ActivityTimeout string `yaml:"activity_timeout,omitempty"` // reset while events flow; empty/invalid falls back to 2m
 }
 
 // GoalsConfig controls the durable goal subsystem.
