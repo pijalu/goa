@@ -67,6 +67,7 @@ type Runtime struct {
 
 	cancelMu sync.Mutex
 	cancel   context.CancelFunc // cancels the run context; set by Run
+	runCtx   context.Context    // context passed to Run, used by async delegations
 
 	// lastByRole remembers the most recent finished turn's streamed text per
 	// role so MessageFor(role) (pipeline carry, tests) works WITHOUT the old
@@ -75,6 +76,12 @@ type Runtime struct {
 	// accumulator (AgentHandle.AppendMessage / Message), not this map.
 	lastMsgMu  sync.Mutex
 	lastByRole map[string]string
+
+	// pending tracks async delegations started by the hub orchestrator so the
+	// runtime can wait for them before the synthesis turn.
+	pendingMu   sync.Mutex
+	pending     map[string]struct{}
+	pendingDone chan struct{}
 
 	subMu sync.Mutex
 	subs  []chan Event
@@ -95,17 +102,18 @@ func NewRuntime(cfg config.OrchestratorConfig, pool *BoundedAgentPool, store Eve
 		return nil, errors.New("orchestrator: nil pool")
 	}
 	return &Runtime{
-		cfg:       cfg,
-		pool:      pool,
-		store:     store,
-		topology:  top,
-		rootDir:   rootDir,
-		bus:       make(chan Event, 256),
-		doneCh:    make(chan struct{}),
+		cfg:        cfg,
+		pool:       pool,
+		store:      store,
+		topology:   top,
+		rootDir:    rootDir,
+		bus:        make(chan Event, 256),
+		doneCh:     make(chan struct{}),
 		lastByRole: map[string]string{},
-		newID:     defaultRunID,
-		telemetry: nopTelemetry{},
-		sink:      newDurableSink(store),
+		pending:    map[string]struct{}{},
+		newID:      defaultRunID,
+		telemetry:  nopTelemetry{},
+		sink:       newDurableSink(store),
 	}, nil
 }
 
@@ -199,11 +207,13 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	r.cancelMu.Lock()
 	r.cancel = cancel
+	r.runCtx = runCtx
 	r.cancelMu.Unlock()
 	defer func() {
 		cancel()
 		r.cancelMu.Lock()
 		r.cancel = nil
+		r.runCtx = nil
 		r.cancelMu.Unlock()
 	}()
 
@@ -329,8 +339,9 @@ func (r *Runtime) runPipeline(ctx context.Context, objective string) error {
 	return nil
 }
 
-// runHub drives ONLY the orchestrator role; it delegates to specialists via
-// the DelegateTool (wired by the adapter). Falls back to fanout when no
+// runHub drives the orchestrator role. The orchestrator's planning turn may
+// delegate to specialists asynchronously; the runtime waits for every pending
+// delegation before running the synthesis turn. Falls back to fanout when no
 // orchestrator role is configured.
 func (r *Runtime) runHub(ctx context.Context, objective string) error {
 	if _, ok := r.cfg.Roles["orchestrator"]; !ok {
@@ -339,24 +350,17 @@ func (r *Runtime) runHub(ctx context.Context, objective string) error {
 	if err := r.driveOne(ctx, "orchestrator", objective); err != nil {
 		return err
 	}
-	// After the orchestrator's delegation turn, run a guaranteed synthesis
-	// turn that inlines every specialist's output. The delegate tool result
-	// already surfaces to the orchestrator within its first turn; this is a
-	// robustness guarantee for models that stop after delegating without
-	// summarizing. No-op when no specialist reported output.
+	// Wait for any async delegations from the orchestrator's planning turn to
+	// finish before the synthesis turn inlines their outputs.
+	r.WaitForDelegations()
+	// Run a guaranteed synthesis turn that inlines every specialist's output.
 	return r.synthesize(ctx, objective)
 }
 
 // synthesize runs a final orchestrator turn with a prompt that inlines every
-// specialist's reported output, so the user sees a visible synthesis even when
-// a model stops after delegating. Hub-only; no-op when no specialist reported
-// output OR when the orchestrator already produced a final message in its
-// delegation turn (the model followed the hub_orchestrator prompt's synthesis
-// step, so a forced second turn would be redundant).
+// specialist's reported output, so the user sees a visible synthesis. Hub-only;
+// no-op when no specialist reported output.
 func (r *Runtime) synthesize(ctx context.Context, objective string) error {
-	if strings.TrimSpace(r.MessageFor("orchestrator")) != "" {
-		return nil
-	}
 	specialists := r.collectSpecialistOutputs()
 	if specialists == "" {
 		return nil
@@ -572,40 +576,85 @@ func (r *Runtime) setLastMessage(role, msg string) {
 
 // Delegate acquires a role agent, runs a single turn for `task`, releases it,
 // and returns the agent's streamed answer. It is the runtime primitive behind
-// the hub topology's DelegateTool: the orchestrator agent calls it from within
-// its own turn to dispatch work to a specialist.
-//
-// This is the default form: it reuses the pooled agent for the role so the
-// specialist accumulates context across sequential delegations. Use
-// DelegateWith to request a brand-new agent (Fresh) for a clean-slate task.
+// Delegate is the default form of DelegateWith: it reuses the pooled agent
+// for the role so the specialist accumulates context across sequential
+// delegations.
 func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, error) {
 	return r.DelegateWith(ctx, role, task, AcquireOptions{})
 }
 
-// DelegateWith is the option-carrying form of Delegate. opts.Fresh forces a
-// brand-new specialist agent with no prior conversation; the default (zero
-// value) reuses the pooled agent and its accumulated context.
+// DelegateWith is the synchronous, option-carrying form of Delegate. It runs
+// one full specialist turn and returns the sub-agent's answer. It is still used
+// by tests and by callers that need a blocking result.
 func (r *Runtime) DelegateWith(ctx context.Context, role, task string, opts AcquireOptions) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	h, err := r.pool.Acquire(ctx, role, opts)
+	h, err := r.startDelegate(ctx, role, task, opts)
 	if err != nil {
 		return "", err
 	}
 	defer r.pool.Release(h)
+	return r.runDelegateTurn(ctx, h, task)
+}
 
+// DelegateAsync is the conversation-style hub form of Delegate. It starts the
+// specialist turn in a background goroutine and returns a placeholder so the
+// orchestrator can end its planning turn without blocking. The runtime waits
+// for all async delegations before the synthesis turn. The background goroutine
+// uses the runtime's run context, not the tool call context, so it survives
+// the end of the orchestrator's turn.
+func (r *Runtime) DelegateAsync(ctx context.Context, role, task string, opts AcquireOptions) (string, error) {
+	h, err := r.startDelegate(ctx, role, task, opts)
+	if err != nil {
+		return "", err
+	}
+	r.cancelMu.Lock()
+	runCtx := r.runCtx
+	r.cancelMu.Unlock()
+	if runCtx == nil {
+		runCtx = ctx
+	}
+	if err := runCtx.Err(); err != nil {
+		r.pool.Release(h)
+		return "", err
+	}
+	r.trackPending(h.ID)
+	go func() {
+		defer r.pool.Release(h)
+		_, _ = r.runDelegateTurn(runCtx, h, task)
+		r.untrackPending(h.ID)
+	}()
+	return fmt.Sprintf("[%s] task delegated; result will be synthesized", role), nil
+}
+
+// startDelegate acquires a specialist handle and emits its start event. The
+// caller must either run the turn (and release the handle) or start it in a
+// goroutine that releases when finished.
+func (r *Runtime) startDelegate(ctx context.Context, role, task string, opts AcquireOptions) (*AgentHandle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	h, err := r.pool.Acquire(ctx, role, opts)
+	if err != nil {
+		return nil, err
+	}
 	h.Stats.SetStatus(AgentRunning)
 	r.emit(Event{Type: EventAgentStarted, AgentID: h.ID, Role: h.Role, Model: h.Model,
 		Payload: map[string]any{"delegated": true, "provider": h.Provider, "thinking": h.Thinking}})
-
 	h.Stats.IncTurn()
+	return h, nil
+}
+
+// runDelegateTurn executes one specialist turn and emits its lifecycle
+// (stats, finished, errors). It returns the sub-agent's answer or the error.
+func (r *Runtime) runDelegateTurn(ctx context.Context, h *AgentHandle, task string) (string, error) {
 	runErr := h.RunTurn(ctx, task)
 
 	snap := h.Stats.Snapshot()
 	r.emit(Event{Type: EventAgentStats, AgentID: h.ID, Role: h.Role, Payload: statsPayloadWithMeta(snap, h.Thinking)})
 
 	if over, gerr := r.accrueGoalTokens(snap.TokensIn + snap.TokensOut); gerr != nil {
+		h.Stats.SetStatus(AgentCrashed)
+		r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
+			Payload: map[string]any{"outcome": "blocked", "reason": "goal token accounting: " + gerr.Error()}})
 		return "", fmt.Errorf("goal token accounting: %w", gerr)
 	} else if over {
 		h.Stats.SetStatus(AgentCrashed)
@@ -618,13 +667,51 @@ func (r *Runtime) DelegateWith(ctx context.Context, role, task string, opts Acqu
 		h.Stats.SetStatus(AgentCrashed)
 		r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
 			Payload: map[string]any{"outcome": "crashed", "error": runErr.Error()}})
-		return "", fmt.Errorf("delegate %s: %w", role, runErr)
+		return "", fmt.Errorf("delegate %s: %w", h.Role, runErr)
 	}
 	h.Stats.SetStatus(AgentFinished)
-	r.setLastMessage(role, h.Message())
+	r.setLastMessage(h.Role, h.Message())
 	r.emit(Event{Type: EventAgentFinished, AgentID: h.ID, Role: h.Role,
 		Payload: map[string]any{"outcome": "ok", "text": h.Message()}})
 	return h.Message(), nil
+}
+
+// trackPending records an in-flight async delegation so WaitForDelegations
+// can block until all specialists finish.
+func (r *Runtime) trackPending(id string) {
+	r.pendingMu.Lock()
+	if r.pending == nil {
+		r.pending = map[string]struct{}{}
+	}
+	r.pending[id] = struct{}{}
+	if r.pendingDone == nil {
+		r.pendingDone = make(chan struct{})
+	}
+	r.pendingMu.Unlock()
+}
+
+// untrackPending removes an in-flight async delegation. When the last pending
+// delegation finishes, it closes the pendingDone channel.
+func (r *Runtime) untrackPending(id string) {
+	r.pendingMu.Lock()
+	delete(r.pending, id)
+	if len(r.pending) == 0 && r.pendingDone != nil {
+		close(r.pendingDone)
+		r.pendingDone = nil
+	}
+	r.pendingMu.Unlock()
+}
+
+// WaitForDelegations blocks until all async delegations started in this
+// runtime have finished. It is safe to call when no delegations are pending.
+func (r *Runtime) WaitForDelegations() {
+	r.pendingMu.Lock()
+	done := r.pendingDone
+	r.pendingMu.Unlock()
+	if done == nil {
+		return
+	}
+	<-done
 }
 
 // Pool exposes the bounded pool so adapters can build tools (e.g. DelegateTool)

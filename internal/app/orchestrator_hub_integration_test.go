@@ -29,8 +29,7 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		done <- rt.Run(ctx,
-			"You must use the 'delegate' tool to ask the 'coder' role: \"Reply with the single word: ready\". "+
-				"After it returns, summarize its answer in one sentence.")
+			"Use the 'delegate' tool to ask the 'coder' role: \"Reply with the single word: ready\".")
 	}()
 
 	started, wait := drainAgentStarts(rt.Events())
@@ -55,7 +54,9 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 		t.Errorf("coder was never delegated to — orchestrator did not use the delegate tool; started=%v", started)
 	}
 
-	assertRunSnapshotFinished(t, rootDir, 2)
+	// With the conversation-style hub, the orchestrator runs twice: once for
+	// planning/delegation and once for synthesis. The coder runs once.
+	assertRunSnapshotFinished(t, rootDir, 3)
 }
 
 // drainAgentStarts reads events until the channel is closed and returns a map

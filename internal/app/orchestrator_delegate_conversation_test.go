@@ -54,10 +54,13 @@ func TestOrchestratorDelegateTool_DefaultReusesAndNewAgent(t *testing.T) {
 	}
 	tool := &OrchestratorDelegateTool{Runtime: rt, Roles: []string{"reviewer"}}
 
-	// Default: verbatim task, reuse (Fresh=false).
+	// Default: verbatim task, reuse (Fresh=false). The hub now delegates
+	// asynchronously, so the tool returns immediately and the specialist runs in
+	// the background; WaitForDelegations lets us observe the result.
 	if _, err := tool.ExecuteContext(context.Background(), `{"role":"reviewer","task":"review index.html"}`); err != nil {
 		t.Fatalf("default delegate: %v", err)
 	}
+	rt.WaitForDelegations()
 	if len(prompts) != 1 || prompts[0] != "review index.html" {
 		t.Fatalf("default should pass the task verbatim (no textual replay), got %v", prompts)
 	}
@@ -69,6 +72,7 @@ func TestOrchestratorDelegateTool_DefaultReusesAndNewAgent(t *testing.T) {
 	if _, err := tool.ExecuteContext(context.Background(), `{"role":"reviewer","task":"start over","new_agent":true}`); err != nil {
 		t.Fatalf("new_agent delegate: %v", err)
 	}
+	rt.WaitForDelegations()
 	if !lastOpts.Fresh {
 		t.Fatalf("new_agent=true should request a fresh agent (Fresh=true)")
 	}

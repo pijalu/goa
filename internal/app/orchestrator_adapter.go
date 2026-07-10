@@ -319,16 +319,17 @@ func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input str
 		return "", fmt.Errorf("orchestrator runtime unavailable")
 	}
 
-	// Default: reuse the role's pooled agent, which retains its conversation
-	// context across delegations. new_agent=true requests a fresh, clean-slate
-	// specialist instead. The agent's own history is the single source of
-	// truth for continuity, so no textual replay is prepended.
-	out, err := t.Runtime.DelegateWith(ctx, params.Role, params.Task, orchestrator.AcquireOptions{Fresh: params.NewAgent})
+	// Conversation-style hub: the specialist runs in a background goroutine
+	// after the orchestrator's planning turn ends. The runtime waits for all
+	// async delegations before the synthesis turn, so the orchestrator does not
+	// block here. Default to reusing the role's pooled agent; new_agent=true
+	// requests a fresh, clean-slate specialist.
+	out, err := t.Runtime.DelegateAsync(ctx, params.Role, params.Task, orchestrator.AcquireOptions{Fresh: params.NewAgent})
 	if err != nil {
 		return "", err
 	}
 	if out == "" {
-		out = fmt.Sprintf("[%s] completed the task (no text output).", params.Role)
+		out = fmt.Sprintf("[%s] task delegated.", params.Role)
 	}
 	return out, nil
 }
