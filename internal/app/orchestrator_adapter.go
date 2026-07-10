@@ -168,7 +168,11 @@ func (f *runtimeAgentFactory) newHandle(role, model string, agent *agentic.Agent
 
 	if role == "orchestrator" {
 		cur := append([]agentic.Tool{}, agent.Tools()...)
-		cur = append(cur, &OrchestratorDelegateTool{Runtime: *f.rt, Roles: delegateRoles(f.oCfg)})
+		cur = append(cur,
+			&OrchestratorDelegateTool{Runtime: *f.rt, Roles: delegateRoles(f.oCfg)},
+			&OrchestratorReworkTool{Runtime: *f.rt, Roles: delegateRoles(f.oCfg)},
+			&OrchestratorAskUserTool{Runtime: *f.rt},
+		)
 		agent.SetTools(cur)
 	}
 	return h
@@ -276,7 +280,7 @@ type OrchestratorDelegateTool struct {
 func (t *OrchestratorDelegateTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "delegate",
-		Description: "Delegate a sub-task to a specialist agent role and return its answer. By default the same agent is reused across calls to a role so it keeps the prior context; set new_agent=true to start a fresh, clean-slate specialist for this task.",
+		Description: "Delegate a sub-task to a specialist agent role. The specialist runs asynchronously; the tool returns immediately so you can end your turn. The specialist's output will be available in your next turn.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -335,7 +339,8 @@ func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input str
 }
 
 // delegateRoles returns the roles the orchestrator may delegate to (everything
-// except "orchestrator"), used to populate the DelegateTool schema enum.
+// except "orchestrator"), used to populate the DelegateTool and ReworkTool
+// schema enums.
 func delegateRoles(oCfg config.OrchestratorConfig) []string {
 	var roles []string
 	for name := range oCfg.Roles {
@@ -345,6 +350,119 @@ func delegateRoles(oCfg config.OrchestratorConfig) []string {
 		roles = append(roles, name)
 	}
 	return roles
+}
+
+// OrchestratorReworkTool is the tool the orchestrator agent uses to ask a
+// specialist to revise its previous output. It is a semantic variant of
+// delegate_to that makes the intent explicit.
+type OrchestratorReworkTool struct {
+	agentic.BaseTool
+	Runtime *orchestrator.Runtime
+	// Roles enumerates the roles the orchestrator may ask to rework.
+	Roles []string
+}
+
+func (t *OrchestratorReworkTool) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{
+		Name:        "rework",
+		Description: "Ask a specialist role to revise its previous output based on your feedback. The specialist runs asynchronously and its revised output will be available in the next turn.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"role": map[string]any{
+					"type":        "string",
+					"description": "The role to ask for a revision",
+					"enum":        t.Roles,
+				},
+				"feedback": map[string]any{
+					"type":        "string",
+					"description": "Concrete feedback explaining what needs to be changed",
+				},
+				"new_agent": map[string]any{
+					"type":        "boolean",
+					"description": "If true, use a brand-new agent with no prior context for this revision (default false: reuse the role's agent).",
+				},
+			},
+			"required": []string{"role", "feedback"},
+		},
+	}
+}
+
+func (t *OrchestratorReworkTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+func (t *OrchestratorReworkTool) ExecuteContext(ctx context.Context, input string) (string, error) {
+	var params struct {
+		Role     string `json:"role"`
+		Feedback string `json:"feedback"`
+		NewAgent bool   `json:"new_agent"`
+	}
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if params.Role == "" || params.Feedback == "" {
+		return "", fmt.Errorf("role and feedback are required")
+	}
+	if t.Runtime == nil {
+		return "", fmt.Errorf("orchestrator runtime unavailable")
+	}
+
+	out, err := t.Runtime.ReworkAsync(ctx, params.Role, params.Feedback, orchestrator.AcquireOptions{Fresh: params.NewAgent})
+	if err != nil {
+		return "", err
+	}
+	if out == "" {
+		out = fmt.Sprintf("[%s] rework requested.", params.Role)
+	}
+	return out, nil
+}
+
+// OrchestratorAskUserTool is the tool the orchestrator agent uses to ask the
+// user a clarifying question. The runtime pauses the loop until the user
+// answers.
+type OrchestratorAskUserTool struct {
+	agentic.BaseTool
+	Runtime *orchestrator.Runtime
+}
+
+func (t *OrchestratorAskUserTool) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{
+		Name:        "ask_user",
+		Description: "Ask the user a clarifying question when you need more information to proceed. The conversation will pause until the user answers.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"question": map[string]any{
+					"type":        "string",
+					"description": "The question to ask the user",
+				},
+			},
+			"required": []string{"question"},
+		},
+	}
+}
+
+func (t *OrchestratorAskUserTool) Execute(input string) (string, error) {
+	return t.ExecuteContext(context.Background(), input)
+}
+
+func (t *OrchestratorAskUserTool) ExecuteContext(ctx context.Context, input string) (string, error) {
+	var params struct {
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(input), &params); err != nil {
+		return "", fmt.Errorf("invalid input: %w", err)
+	}
+	if params.Question == "" {
+		return "", fmt.Errorf("question is required")
+	}
+	if t.Runtime == nil {
+		return "", fmt.Errorf("orchestrator runtime unavailable")
+	}
+
+	t.Runtime.AskUser(params.Question)
+	return "Question sent to user; the conversation will continue after they answer.", nil
 }
 
 // resolveRoleProvider returns the provider id for an orchestrator role. It

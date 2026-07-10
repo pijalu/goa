@@ -78,10 +78,23 @@ type Runtime struct {
 	lastByRole map[string]string
 
 	// pending tracks async delegations started by the hub orchestrator so the
-	// runtime can wait for them before the synthesis turn.
+	// runtime can wait for them before the next orchestrator turn.
 	pendingMu   sync.Mutex
 	pending     map[string]struct{}
 	pendingDone chan struct{}
+
+	// conversationLoop state for the persistent hub orchestrator.
+	loopMu          sync.Mutex
+	loopActive      bool
+	lastAction      toolAction
+	pendingUser     bool
+	pendingQuestion string
+	resumeCh        chan struct{}
+
+	// orchSteer buffers user answers (and other steering) for the orchestrator
+	// when no orchestrator handle is live (e.g., while the loop is paused).
+	orchSteerMu sync.Mutex
+	orchSteer   []string
 
 	subMu sync.Mutex
 	subs  []chan Event
@@ -89,6 +102,18 @@ type Runtime struct {
 	// newID generates a unique run id. Override in tests for determinism.
 	newID func() string
 }
+
+// toolAction records the highest-priority action the orchestrator took in its
+// last turn. The loop uses this to decide whether to pause, run specialists, or
+// finish.
+type toolAction int
+
+const (
+	actionNone toolAction = iota
+	actionDelegate
+	actionRework
+	actionAskUser
+)
 
 // NewRuntime constructs a Runtime. The pool must already wrap a factory that
 // attaches the adapter's observer (so Stats/Events flow during turns). The
@@ -339,40 +364,154 @@ func (r *Runtime) runPipeline(ctx context.Context, objective string) error {
 	return nil
 }
 
-// runHub drives the orchestrator role. The orchestrator's planning turn may
-// delegate to specialists asynchronously; the runtime waits for every pending
-// delegation before running the synthesis turn. Falls back to fanout when no
-// orchestrator role is configured.
+// runHub drives the orchestrator role in a persistent conversation loop. The
+// orchestrator may delegate to specialists, ask the user questions, or output a
+// final answer; the loop continues until a final answer is produced. Falls
+// back to fanout when no orchestrator role is configured.
 func (r *Runtime) runHub(ctx context.Context, objective string) error {
 	if _, ok := r.cfg.Roles["orchestrator"]; !ok {
 		return r.runFanout(ctx, objective)
 	}
-	if err := r.driveOne(ctx, "orchestrator", objective); err != nil {
-		return err
-	}
-	// Wait for any async delegations from the orchestrator's planning turn to
-	// finish before the synthesis turn inlines their outputs.
-	r.WaitForDelegations()
-	// Run a guaranteed synthesis turn that inlines every specialist's output.
-	return r.synthesize(ctx, objective)
+	return r.runOrchestratorLoop(ctx, objective)
 }
 
-// synthesize runs a final orchestrator turn with a prompt that inlines every
-// specialist's reported output, so the user sees a visible synthesis. Hub-only;
-// no-op when no specialist reported output.
-func (r *Runtime) synthesize(ctx context.Context, objective string) error {
+// runOrchestratorLoop runs the orchestrator role repeatedly, feeding specialist
+// outputs and user answers back as new context until the orchestrator outputs
+// a final answer. It is the user <-> orchestrator <-> sub-agent(s) conversation
+// model.
+func (r *Runtime) runOrchestratorLoop(ctx context.Context, objective string) error {
+	r.loopMu.Lock()
+	r.loopActive = true
+	r.loopMu.Unlock()
+	defer func() {
+		r.loopMu.Lock()
+		r.loopActive = false
+		r.pendingUser = false
+		r.pendingQuestion = ""
+		r.lastAction = actionNone
+		r.loopMu.Unlock()
+	}()
+
+	prompt := r.renderRolePrompt("orchestrator", objective)
+	if prompt == "" {
+		prompt = objective
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		// Reset the action recorder for this turn.
+		r.loopMu.Lock()
+		r.lastAction = actionNone
+		r.loopMu.Unlock()
+
+		if err := r.acquireAndRun(ctx, "orchestrator", prompt); err != nil {
+			return err
+		}
+
+		action, _ := r.loopAction()
+		if action == actionAskUser {
+			if err := r.waitForUserAnswer(ctx); err != nil {
+				return err
+			}
+			prompt = r.buildSpecialistResultsPrompt()
+			continue
+		}
+
+		if action == actionDelegate || action == actionRework {
+			// Wait for all async specialists to finish before the next turn.
+			r.WaitForDelegations()
+			prompt = r.buildSpecialistResultsPrompt()
+			continue
+		}
+
+		// No tools called: the orchestrator's output is the final answer.
+		return nil
+	}
+}
+
+// loopAction returns the highest-priority action recorded during the last
+// orchestrator turn.
+func (r *Runtime) loopAction() (toolAction, string) {
+	r.loopMu.Lock()
+	defer r.loopMu.Unlock()
+	return r.lastAction, r.pendingQuestion
+}
+
+// waitForUserAnswer blocks until the user answers via SteerOrchestrator or the
+// run context is cancelled. It emits a loop_state event so observers know the
+// orchestrator is paused.
+func (r *Runtime) waitForUserAnswer(ctx context.Context) error {
+	r.loopMu.Lock()
+	r.pendingUser = true
+	if r.resumeCh == nil {
+		r.resumeCh = make(chan struct{})
+	}
+	ch := r.resumeCh
+	r.loopMu.Unlock()
+
+	r.emit(Event{Type: EventLoopState, Role: "orchestrator",
+		Payload: map[string]any{"state": "paused_for_user"}})
+
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// buildSpecialistResultsPrompt builds the prompt for the next orchestrator turn
+// after specialist outputs are available. If no specialist reported output, it
+// returns a simple continuation prompt.
+func (r *Runtime) buildSpecialistResultsPrompt() string {
 	specialists := r.collectSpecialistOutputs()
 	if specialists == "" {
-		return nil
+		return "Continue."
 	}
-	prompt := r.renderPrompt("hub_synthesis", map[string]any{
-		"Objective":   objective,
-		"Specialists": specialists,
-	})
-	if prompt == "" {
-		return nil
+	return "Specialist outputs:\n" + specialists
+}
+
+// AskUser records that the orchestrator asked the user a question. The loop
+// will pause after the current turn and wait for the user to answer.
+func (r *Runtime) AskUser(question string) {
+	r.loopMu.Lock()
+	r.pendingQuestion = question
+	r.pendingUser = true
+	r.lastAction = actionAskUser
+	if r.resumeCh == nil {
+		r.resumeCh = make(chan struct{})
 	}
-	return r.acquireAndRun(ctx, "orchestrator", prompt)
+	r.loopMu.Unlock()
+	r.emit(Event{Type: EventAskUser, Role: "orchestrator",
+		Payload: map[string]any{"question": question}})
+}
+
+// ReworkAsync starts a specialist revision in the background and returns a
+// placeholder. It behaves like DelegateAsync but records the action as a
+// rework so the loop can report it accurately.
+func (r *Runtime) ReworkAsync(ctx context.Context, role, feedback string, opts AcquireOptions) (string, error) {
+	task := fmt.Sprintf("Revise your previous output based on this feedback: %s", feedback)
+	out, err := r.DelegateAsync(ctx, role, task, opts)
+	if err != nil {
+		return "", err
+	}
+	r.loopMu.Lock()
+	r.lastAction = actionRework
+	r.loopMu.Unlock()
+	return out, nil
+}
+
+// SetLastAction records the highest-priority action taken in the current turn.
+// Tools call this so the loop knows what to do after the turn ends.
+func (r *Runtime) SetLastAction(a toolAction) {
+	r.loopMu.Lock()
+	defer r.loopMu.Unlock()
+	if a > r.lastAction {
+		r.lastAction = a
+	}
 }
 
 // collectSpecialistOutputs formats the final message of every non-orchestrator
@@ -425,8 +564,10 @@ func (r *Runtime) renderRolePrompt(role, prompt string) string {
 
 // acquireAndRun acquires a role agent, emits Started, runs one turn with the
 // given (already-rendered) prompt, and emits Stats + Finished. It always
-// releases the handle. Shared by driveOne and the hub synthesis turn so both
+// releases the handle. Shared by driveOne and the hub conversation loop so both
 // follow the identical lifecycle (goal-token accounting, outcome events).
+// For the orchestrator role, pending user steering is drained into the handle
+// before the turn starts so answers survive across loop iterations.
 func (r *Runtime) acquireAndRun(ctx context.Context, role, renderedPrompt string) error {
 	h, err := r.pool.Acquire(ctx, role, AcquireOptions{})
 	if err != nil {
@@ -435,6 +576,20 @@ func (r *Runtime) acquireAndRun(ctx context.Context, role, renderedPrompt string
 		return err
 	}
 	defer r.pool.Release(h)
+
+	// For the orchestrator role, drain any pending user steering that arrived
+	// while no handle was live (e.g., during an ask_user pause or between
+	// turns). This keeps the conversation alive across loop iterations.
+	if role == "orchestrator" {
+		r.orchSteerMu.Lock()
+		for _, text := range r.orchSteer {
+			h.Steer(text)
+			r.emit(Event{Type: EventAgentSteered, AgentID: h.ID, Role: h.Role,
+				Payload: map[string]any{"from": "user", "text": text}})
+		}
+		r.orchSteer = nil
+		r.orchSteerMu.Unlock()
+	}
 
 	h.Stats.SetStatus(AgentRunning)
 	r.emit(Event{
@@ -616,6 +771,7 @@ func (r *Runtime) DelegateAsync(ctx context.Context, role, task string, opts Acq
 		r.pool.Release(h)
 		return "", err
 	}
+	r.SetLastAction(actionDelegate)
 	r.trackPending(h.ID)
 	go func() {
 		defer r.pool.Release(h)
@@ -881,15 +1037,35 @@ func (r *Runtime) SteerAll(text string) {
 
 // SteerOrchestrator targets the orchestrator-role handle only.
 func (r *Runtime) SteerOrchestrator(text string) bool {
+	// Buffer the steering for the orchestrator so it survives across loop
+	// iterations even when no orchestrator handle is currently live.
+	r.orchSteerMu.Lock()
+	r.orchSteer = append(r.orchSteer, text)
+	r.orchSteerMu.Unlock()
+
+	consumed := false
 	for _, h := range r.pool.Live() {
 		if h.Role == "orchestrator" {
 			h.Steer(text)
 			r.emit(Event{Type: EventAgentSteered, AgentID: h.ID, Role: h.Role,
 				Payload: map[string]any{"from": "user", "text": text}})
-			return true
+			consumed = true
+			break
 		}
 	}
-	return false
+
+	r.loopMu.Lock()
+	if r.loopActive {
+		consumed = true
+		if r.pendingUser && r.resumeCh != nil {
+			r.pendingUser = false
+			close(r.resumeCh)
+			r.resumeCh = nil
+		}
+	}
+	r.loopMu.Unlock()
+
+	return consumed
 }
 
 // AgentRow is one row of the Summary snapshot, used by the TUI table.

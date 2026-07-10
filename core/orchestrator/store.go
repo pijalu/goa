@@ -26,6 +26,8 @@ const (
 	EventAgentSteered    EventType = "agent_steered"
 	EventAgentStats      EventType = "agent_stats"
 	EventAgentFinished   EventType = "agent_finished"
+	EventAskUser         EventType = "ask_user"
+	EventLoopState       EventType = "loop_state"
 	EventRunFinished     EventType = "run_finished"
 )
 

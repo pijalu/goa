@@ -25,7 +25,8 @@ type synthesisFixture struct {
 }
 
 // makeOrchestratorRun returns a fake orchestrator Run that delegates to the
-// configured specialists and records the synthesis prompt.
+// configured specialists asynchronously and records the follow-up prompt that
+// contains their outputs.
 func (f *synthesisFixture) makeOrchestratorRun(h *AgentHandle) func(context.Context, string) error {
 	return func(ctx context.Context, prompt string) error {
 		if strings.Contains(prompt, "Specialist outputs:") {
@@ -34,10 +35,10 @@ func (f *synthesisFixture) makeOrchestratorRun(h *AgentHandle) func(context.Cont
 			return nil
 		}
 		f.orchTurns.Add(1)
-		if _, err := f.rtRef.Delegate(ctx, "coder", "write code"); err != nil {
+		if _, err := f.rtRef.DelegateAsync(ctx, "coder", "write code", AcquireOptions{}); err != nil {
 			return err
 		}
-		if _, err := f.rtRef.Delegate(ctx, "reviewer", "review code"); err != nil {
+		if _, err := f.rtRef.DelegateAsync(ctx, "reviewer", "review code", AcquireOptions{}); err != nil {
 			return err
 		}
 		return nil
@@ -137,12 +138,11 @@ func countOrchestratorStarts(got []Event) int {
 	return n
 }
 
-// TestRuntime_HubSynthesizesSpecialistOutputs verifies Bug 5: after the
-// orchestrator delegates to specialists, a second synthesis turn runs whose
-// prompt inlines every specialist's output, and a synthesis EventAgentMessage
-// is emitted. The delegate tool result already surfaces within the first turn;
-// this is the robustness guarantee for models that stop without summarizing.
-func TestRuntime_HubSynthesizesSpecialistOutputs(t *testing.T) {
+// TestRuntime_HubLoopsSpecialistOutputs verifies the conversation-style hub:
+// after the orchestrator delegates to specialists, the runtime starts a
+// second orchestrator turn whose prompt inlines every specialist's output,
+// and an EventAgentMessage is emitted from that turn.
+func TestRuntime_HubLoopsSpecialistOutputs(t *testing.T) {
 	rt, fix := newSynthesisRuntime(t)
 	got := collectSynthesisEvents(t, rt)
 
@@ -154,14 +154,13 @@ func TestRuntime_HubSynthesizesSpecialistOutputs(t *testing.T) {
 	}
 
 	if fix.synthPrompt == "" {
-		t.Fatal("synthesis turn never ran (no synthesis prompt captured)")
+		t.Fatal("follow-up turn never ran (no specialist-outputs prompt captured)")
 	}
 	assertPromptContains(t, fix.synthPrompt, "coder output: implemented feature X")
 	assertPromptContains(t, fix.synthPrompt, "reviewer output: found 2 issues")
-	assertPromptContains(t, fix.synthPrompt, "build feature X")
 
 	if got := countOrchestratorStarts(got); got != 2 {
-		t.Errorf("orchestrator EventAgentStarted = %d, want 2 (delegation + synthesis)", got)
+		t.Errorf("orchestrator EventAgentStarted = %d, want 2 (delegation + follow-up)", got)
 	}
 	assertSynthesisMessageSeen(t, got, "synthesis: all done")
 }

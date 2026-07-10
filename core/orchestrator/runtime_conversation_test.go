@@ -6,6 +6,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -170,6 +171,148 @@ func TestRuntime_HubConversationStyleRunsSynthesisEvenIfOrchestratorSpoke(t *tes
 	}
 	if !strings.Contains(synthPrompt, "coder output") {
 		t.Fatalf("synthesis prompt missing coder output: %s", synthPrompt)
+	}
+}
+
+// TestRuntime_HubLoop_PauseForUserAnswer verifies that the orchestrator can
+// ask the user a question, the loop pauses, and the conversation continues
+// after the user answers via SteerOrchestrator.
+func TestRuntime_HubLoop_PauseForUserAnswer(t *testing.T) {
+	var rtRef *Runtime
+	var orchRuns atomic.Int32
+	var finalMessage string
+	cfg := config.OrchestratorConfig{
+		Roles: map[string]config.OrchestratorRole{
+			"orchestrator": {Model: "m"},
+		},
+		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 2},
+		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
+	}
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		if role == "orchestrator" {
+			h.Run = func(ctx context.Context, prompt string) error {
+				orchRuns.Add(1)
+				if orchRuns.Load() == 1 {
+					rtRef.AskUser("what is your favorite color?")
+					return nil
+				}
+				rtRef.RecordAgentMessage(h, "final answer")
+				finalMessage = "final answer"
+				return nil
+			}
+		}
+		return h, nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	rtRef = rt
+
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(context.Background(), "objective") }()
+
+	askUserSeen := make(chan struct{})
+	go func() {
+		for ev := range rt.Events() {
+			if ev.Type == EventAskUser {
+				close(askUserSeen)
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-askUserSeen:
+		// good
+	case <-time.After(2 * time.Second):
+		t.Fatal("ask_user event was not emitted")
+	}
+
+	if !rtRef.SteerOrchestrator("blue") {
+		t.Fatal("SteerOrchestrator should consume the user answer")
+	}
+
+	// Drain the remaining events and wait for the run to finish.
+	for range rt.Events() {
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if orchRuns.Load() != 2 {
+		t.Fatalf("expected 2 orchestrator turns (ask + answer), got %d", orchRuns.Load())
+	}
+	if finalMessage == "" {
+		t.Fatal("final message was not produced after user answer")
+	}
+}
+
+// TestRuntime_HubLoop_Rework verifies that the orchestrator can delegate,
+// then request a rework, and the loop continues with the revised output.
+func TestRuntime_HubLoop_Rework(t *testing.T) {
+	var rtRef *Runtime
+	var orchRuns atomic.Int32
+	var coderRuns atomic.Int32
+	var finalMessage string
+	cfg := config.OrchestratorConfig{
+		Roles: map[string]config.OrchestratorRole{
+			"orchestrator": {Model: "m"},
+			"coder":        {Model: "m"},
+		},
+		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
+		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
+	}
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		switch role {
+		case "orchestrator":
+			h.Run = func(ctx context.Context, prompt string) error {
+				orchRuns.Add(1)
+				switch orchRuns.Load() {
+				case 1:
+					if _, err := rtRef.DelegateAsync(ctx, "coder", "write code", AcquireOptions{}); err != nil {
+						return err
+					}
+					return nil
+				case 2:
+					if _, err := rtRef.ReworkAsync(ctx, "coder", "add more tests", AcquireOptions{}); err != nil {
+						return err
+					}
+					return nil
+				default:
+					rtRef.RecordAgentMessage(h, "final answer")
+					finalMessage = "final answer"
+					return nil
+				}
+			}
+		case "coder":
+			h.Run = func(ctx context.Context, _ string) error {
+				coderRuns.Add(1)
+				rtRef.RecordAgentMessage(h, fmt.Sprintf("coder output v%d", coderRuns.Load()))
+				return nil
+			}
+		}
+		return h, nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	rtRef = rt
+
+	go func() { _ = rt.Run(context.Background(), "build feature") }()
+	drainEvents(rt.Events())
+
+	if coderRuns.Load() != 2 {
+		t.Fatalf("expected coder to run twice (delegate + rework), got %d", coderRuns.Load())
+	}
+	if orchRuns.Load() != 3 {
+		t.Fatalf("expected 3 orchestrator turns (delegate + rework + final), got %d", orchRuns.Load())
+	}
+	if finalMessage == "" {
+		t.Fatal("final message was not produced after rework")
 	}
 }
 

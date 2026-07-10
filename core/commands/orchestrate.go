@@ -678,6 +678,19 @@ func (c *OrchestrateCommand) handleOrchEvent(ctx core.Context, rt *orchestrator.
 		ctx.Flash(fmt.Sprintf("▷ orchestration %s started", rt.NameOrID()))
 	case orchestrator.EventAgentStarted:
 		ctx.InterAgent(ev.Role, "user", fmt.Sprintf("▶ %s (%s) started", ev.Role, ev.Model))
+	case orchestrator.EventAgentMessage:
+		if text := stringValOr(ev.Payload, "text", ""); text != "" {
+			ctx.InterAgent(ev.Role, "user", text)
+		}
+	case orchestrator.EventAskUser:
+		if q := stringValOr(ev.Payload, "question", ""); q != "" {
+			ctx.InterAgent(ev.Role, "user", fmt.Sprintf("? %s", q))
+		}
+	case orchestrator.EventLoopState:
+		state := stringValOr(ev.Payload, "state", "")
+		if state == "paused_for_user" {
+			ctx.Flash("⏸ orchestrator is waiting for your answer")
+		}
 	case orchestrator.EventAgentFinished:
 		emitAgentFinished(ctx, ev, seen)
 	case orchestrator.EventRunFinished:
