@@ -209,6 +209,10 @@ func (h *HeadlessApp) RunWithContext(ctx context.Context) int {
 		h.renderer.Error(err.Error())
 		return headlessExitConfigError
 	}
+	if prompt == "" && !h.opts.Goal && h.opts.Orchestrate == "" {
+		h.renderer.Error("empty prompt: provide a non-empty prompt with --prompt or use --goal or --orchestrate")
+		return headlessExitConfigError
+	}
 	h.renderer.UserPrompt(prompt)
 
 	if err := h.startSession(); err != nil {

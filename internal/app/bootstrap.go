@@ -30,6 +30,7 @@ import (
 type RuntimeOptions struct {
 	PromptArg        string
 	PromptFile       string
+	PromptGiven      bool     // true when --prompt was explicitly set (even if empty)
 	Goal             bool
 	Orchestrate      string // run-id to resume headless via the orchestrator runtime
 	Plain            bool
@@ -61,7 +62,7 @@ func (o RuntimeOptions) Headless() bool {
 }
 
 func (o RuntimeOptions) promptImpliesHeadless() bool {
-	return o.PromptArg != "" || o.PromptFile != ""
+	return o.PromptGiven || o.PromptArg != "" || o.PromptFile != ""
 }
 
 // Dream reports whether the user requested dream mode.
@@ -300,8 +301,18 @@ func defineRuntimeFlags() runtimeFlagDefs {
 
 // collectInto returns the parsed RuntimeOptions from flag pointers.
 func (r *runtimeFlagDefs) collectInto() RuntimeOptions {
+	// Detect if --prompt was explicitly set (even to empty string).
+	// flag.Visit only iterates over flags that were explicitly changed by the user.
+	promptSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "prompt" {
+			promptSet = true
+		}
+	})
+
 	return RuntimeOptions{
 		PromptArg:        *r.prompt,
+		PromptGiven:      promptSet,
 		PromptFile:       *r.promptFile,
 		Goal:             *r.goal,
 		Orchestrate:      *r.orchestrate,

@@ -16,9 +16,9 @@ You are an automated QA engineer for the Goa coding assistant. Your job is to co
    mkdir -p /tmp/goa-qa-$BUILD_ID
    ```
 
-2. Build the goa binary:
+2. Build the goa binary from the cmd/goa/ entry point:
    ```bash
-   cd /Users/muaddib/dev/goa && go build -o /tmp/goa-qa-$BUILD_ID/goa .
+   cd /Users/muaddib/dev/goa && go build -o /tmp/goa-qa-$BUILD_ID/goa ./cmd/goa/
    ```
 
 3. Export the binary path:
