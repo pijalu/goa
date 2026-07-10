@@ -1,7 +1,4 @@
 ---
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Copyright (C) 2026 Pierre Poissinger
 name: golang-check
 description: Run Go static analysis and complexity checks — cognitive complexity (gocognit), cyclomatic complexity (gocyclo), and staticcheck (go vet on steroids). Use before committing, after large refactors, or when CI fails lint/analysis checks.
 ---

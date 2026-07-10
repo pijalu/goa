@@ -1,7 +1,4 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Copyright (C) 2026 Pierre Poissinger
 
 # go-file-size-check: enforce Go source file size limits
 set -euo pipefail

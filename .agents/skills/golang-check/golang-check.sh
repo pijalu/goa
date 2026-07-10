@@ -1,7 +1,4 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Copyright (C) 2026 Pierre Poissinger
 
 # golang-check: run all Go static analysis and file-size checks
 set -euo pipefail

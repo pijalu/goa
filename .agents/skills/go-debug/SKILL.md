@@ -1,7 +1,4 @@
 ---
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Copyright (C) 2026 Pierre Poissinger
 name: go-debug
 description: Debug Go code using the Delve (dlv) debugger to inspect runtime behavior, trace execution flow, and diagnose issues by stepping through code rather than reading source. Use when investigating reproducible bugs, unexpected state, goroutine behavior, or when source code analysis is insufficient.
 ---
