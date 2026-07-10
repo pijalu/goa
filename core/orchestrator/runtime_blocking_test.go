@@ -45,7 +45,7 @@ func (s *slowStore) Close() error {
 // nopFactory returns handles whose Run is a no-op, sufficient to satisfy the
 // pool without a live provider.
 func nopFactory() AgentFactory {
-	return func(role, model string) (*AgentHandle, error) {
+	return func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		return h, nil
 	}

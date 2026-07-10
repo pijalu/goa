@@ -424,7 +424,7 @@ func (r *Runtime) renderRolePrompt(role, prompt string) string {
 // releases the handle. Shared by driveOne and the hub synthesis turn so both
 // follow the identical lifecycle (goal-token accounting, outcome events).
 func (r *Runtime) acquireAndRun(ctx context.Context, role, renderedPrompt string) error {
-	h, err := r.pool.Acquire(ctx, role)
+	h, err := r.pool.Acquire(ctx, role, AcquireOptions{})
 	if err != nil {
 		r.emit(Event{Type: EventAgentFinished, Role: role,
 			Payload: map[string]any{"outcome": "acquire_failed", "error": err.Error()}})
@@ -574,11 +574,22 @@ func (r *Runtime) setLastMessage(role, msg string) {
 // and returns the agent's streamed answer. It is the runtime primitive behind
 // the hub topology's DelegateTool: the orchestrator agent calls it from within
 // its own turn to dispatch work to a specialist.
+//
+// This is the default form: it reuses the pooled agent for the role so the
+// specialist accumulates context across sequential delegations. Use
+// DelegateWith to request a brand-new agent (Fresh) for a clean-slate task.
 func (r *Runtime) Delegate(ctx context.Context, role, task string) (string, error) {
+	return r.DelegateWith(ctx, role, task, AcquireOptions{})
+}
+
+// DelegateWith is the option-carrying form of Delegate. opts.Fresh forces a
+// brand-new specialist agent with no prior conversation; the default (zero
+// value) reuses the pooled agent and its accumulated context.
+func (r *Runtime) DelegateWith(ctx context.Context, role, task string, opts AcquireOptions) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	h, err := r.pool.Acquire(ctx, role)
+	h, err := r.pool.Acquire(ctx, role, opts)
 	if err != nil {
 		return "", err
 	}
@@ -622,13 +633,16 @@ func (r *Runtime) Pool() *BoundedAgentPool { return r.pool }
 
 func statsPayload(s AgentStatsSnapshot) map[string]any {
 	return map[string]any{
-		"turns":          s.Turns,
-		"tokens_in":      s.TokensIn,
-		"tokens_out":     s.TokensOut,
-		"cache_read":     s.CacheRead,
-		"cache_creation": s.CacheCreation,
-		"tool_calls":     s.ToolCalls,
-		"status":         string(s.Status),
+		"turns":            s.Turns,
+		"tokens_in":        s.TokensIn,
+		"tokens_out":       s.TokensOut,
+		"cache_read":       s.CacheRead,
+		"cache_creation":   s.CacheCreation,
+		"tool_calls":       s.ToolCalls,
+		"status":           string(s.Status),
+		"context_estimate": s.ContextEstimate,
+		"context_max":      s.ContextMax,
+		"context_auto_max": s.ContextAutoMax,
 	}
 }
 

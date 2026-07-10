@@ -15,6 +15,66 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
+// TestOrchestratorAdapterEvents_ForwardContextStats asserts that an
+// EventContextStats from the agent updates the handle's context counters and
+// emits a live EventAgentStats so the TUI can show per-agent context usage.
+func TestOrchestratorAdapterEvents_ForwardContextStats(t *testing.T) {
+	var mu sync.Mutex
+	var statsEvents []orchestrator.Event
+
+	h := orchestrator.NewAgentHandle("h-1", "coder", "gemma")
+	h.Provider = "google"
+
+	rt := newTestRuntimeForAdapter(t, func(evt orchestrator.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if evt.Type == orchestrator.EventAgentStats {
+			statsEvents = append(statsEvents, evt)
+		}
+	})
+
+	observer := func(ev agentic.OutputEvent) { applyOutputEvent(h, rt, ev) }
+	observer(agentic.OutputEvent{
+		Type: agentic.EventContextStats,
+		ContextStats: &agentic.ContextStats{
+			EstimatedTokens: 1234,
+			MaxTokens:       100000,
+			AutoMax:         true,
+		},
+	})
+
+	// Live stats are emitted asynchronously with a throttle; allow the goroutine to fire.
+	time.Sleep(50 * time.Millisecond)
+
+	snap := h.Stats.Snapshot()
+	if snap.ContextEstimate != 1234 {
+		t.Errorf("ContextEstimate = %d, want 1234", snap.ContextEstimate)
+	}
+	if snap.ContextMax != 100000 {
+		t.Errorf("ContextMax = %d, want 100000", snap.ContextMax)
+	}
+	if !snap.ContextAutoMax {
+		t.Error("ContextAutoMax = false, want true")
+	}
+
+	mu.Lock()
+	got := append([]orchestrator.Event(nil), statsEvents...)
+	mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("expected at least one EventAgentStats from context update")
+	}
+	last := got[len(got)-1].Payload
+	if orchInt(last, "context_estimate") != 1234 {
+		t.Errorf("stats payload context_estimate = %d, want 1234", orchInt(last, "context_estimate"))
+	}
+	if orchInt(last, "context_max") != 100000 {
+		t.Errorf("stats payload context_max = %d, want 100000", orchInt(last, "context_max"))
+	}
+	if !orchBool(last, "context_auto_max") {
+		t.Error("stats payload context_auto_max = false, want true")
+	}
+}
+
 // TestOrchestratorAdapterEvents_ForwardThinkingAndToolEvents asserts that the
 // adapter's observer emits EventAgentThinking, EventAgentToolCall and
 // EventAgentToolResult from the runtime in addition to the existing
@@ -122,7 +182,7 @@ func TestOrchestratorAdapterEvents_ToolResultErrorStatus(t *testing.T) {
 func newTestRuntimeForAdapter(t *testing.T, emitFn func(orchestrator.Event)) *orchestrator.Runtime {
 	t.Helper()
 	cfg := config.OrchestratorConfig{Roles: map[string]config.OrchestratorRole{"coder": {Model: "gemma"}}}
-	pool := orchestrator.NewBoundedAgentPool(cfg, func(role, model string) (*orchestrator.AgentHandle, error) {
+	pool := orchestrator.NewBoundedAgentPool(cfg, func(role, model string, _ orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
 		return orchestrator.NewAgentHandle("fake-"+role, role, model), nil
 	})
 	rt, err := orchestrator.NewRuntime(cfg, pool, nil, "")

@@ -29,7 +29,7 @@ type fakeBuilder struct {
 }
 
 func (b *fakeBuilder) NewRuntime(cfg config.OrchestratorConfig, rootDir string) (*orchestrator.Runtime, error) {
-	factory := func(role, model string) (*orchestrator.AgentHandle, error) {
+	factory := func(role, model string, _ orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
 		h := orchestrator.NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			h.Stats.AddUsage(5, 3, 0, 0)

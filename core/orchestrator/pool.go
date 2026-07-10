@@ -22,7 +22,19 @@ import (
 // to multiagent.AgentPool.GetOrCreate under the hood. Keeping it as a
 // callback lets the cap/block/release logic be unit-tested in isolation
 // (Hard Rule #6: depend on abstractions).
-type AgentFactory func(role, model string) (*AgentHandle, error)
+//
+// opts carries the caller's materialization preferences (e.g. requesting a
+// brand-new agent instead of reusing a pooled one) so the factory can honor
+// per-delegation intent without a side channel.
+type AgentFactory func(role, model string, opts AcquireOptions) (*AgentHandle, error)
+
+// AcquireOptions carries per-acquisition preferences. The zero value requests
+// the default behavior: reuse an existing pooled agent for the role (so a
+// specialist accumulates context across sequential delegations). Fresh forces
+// a brand-new agent with no prior conversation.
+type AcquireOptions struct {
+	Fresh bool
+}
 
 // BoundedAgentPool wraps an AgentFactory with two independent caps:
 //
@@ -52,7 +64,7 @@ type BoundedAgentPool struct {
 // role→model before billing against the per-model cap.
 func NewBoundedAgentPool(cfg config.OrchestratorConfig, factory AgentFactory) *BoundedAgentPool {
 	if factory == nil {
-		factory = func(_, _ string) (*AgentHandle, error) {
+		factory = func(_, _ string, _ AcquireOptions) (*AgentHandle, error) {
 			return nil, errors.New("orchestrator: no agent factory configured")
 		}
 	}
@@ -80,7 +92,7 @@ var ErrUnknownRole = errors.New("orchestrator: unknown role")
 // Acquire reserves a slot for the given role and materializes a handle.
 // It blocks while either cap is saturated, honoring ctx cancellation. The
 // caller MUST call Release exactly once with the returned handle.
-func (p *BoundedAgentPool) Acquire(ctx context.Context, role string) (*AgentHandle, error) {
+func (p *BoundedAgentPool) Acquire(ctx context.Context, role string, opts AcquireOptions) (*AgentHandle, error) {
 	rcfg, ok := p.roles[role]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownRole, role)
@@ -105,7 +117,7 @@ func (p *BoundedAgentPool) Acquire(ctx context.Context, role string) (*AgentHand
 		}
 	}
 
-	h, err := p.factory(role, model)
+	h, err := p.factory(role, model, opts)
 	if err != nil {
 		// Roll back the reservation and wake a waiter.
 		p.mu.Lock()

@@ -43,12 +43,15 @@ const (
 // AgentStatsDelta is the per-agent usage snapshot carried by EvAgentStats.
 // Values are absolute (latest reported totals), not incremental.
 type AgentStatsDelta struct {
-	Turns         int
-	TokensIn      int
-	TokensOut     int
-	CacheRead     int
-	CacheCreation int
-	ToolCalls     int
+	Turns           int
+	TokensIn        int
+	TokensOut       int
+	CacheRead       int
+	CacheCreation   int
+	ToolCalls       int
+	ContextEstimate int
+	ContextMax      int
+	ContextAutoMax  bool
 }
 
 // AgentViewEvent is the single neutral type any multi-agent source translates

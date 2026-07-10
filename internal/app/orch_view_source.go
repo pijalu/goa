@@ -71,12 +71,15 @@ func translateOrchEvent(ev orchestrator.Event) (orchpanel.AgentViewEvent, bool) 
 			Status:   orchStr(ev.Payload, "status"),
 			Thinking: orchStr(ev.Payload, "thinking"),
 			Stats: &orchpanel.AgentStatsDelta{
-				Turns:         orchInt(ev.Payload, "turns"),
-				TokensIn:      orchInt(ev.Payload, "tokens_in"),
-				TokensOut:     orchInt(ev.Payload, "tokens_out"),
-				CacheRead:     orchInt(ev.Payload, "cache_read"),
-				CacheCreation: orchInt(ev.Payload, "cache_creation"),
-				ToolCalls:     orchInt(ev.Payload, "tool_calls"),
+				Turns:           orchInt(ev.Payload, "turns"),
+				TokensIn:        orchInt(ev.Payload, "tokens_in"),
+				TokensOut:       orchInt(ev.Payload, "tokens_out"),
+				CacheRead:       orchInt(ev.Payload, "cache_read"),
+				CacheCreation:   orchInt(ev.Payload, "cache_creation"),
+				ToolCalls:       orchInt(ev.Payload, "tool_calls"),
+				ContextEstimate: orchInt(ev.Payload, "context_estimate"),
+				ContextMax:      orchInt(ev.Payload, "context_max"),
+				ContextAutoMax:  orchBool(ev.Payload, "context_auto_max"),
 			},
 		}, true
 	case orchestrator.EventAgentSteered:

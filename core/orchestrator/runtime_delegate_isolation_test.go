@@ -29,7 +29,7 @@ func TestRuntime_DelegateIsolatesConcurrentSameRole(t *testing.T) {
 	}
 
 	var rt *Runtime
-	factory := func(role, model string) (*AgentHandle, error) {
+	factory := func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			// Simulate a streamed answer that echoes this delegation's task,

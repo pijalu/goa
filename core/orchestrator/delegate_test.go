@@ -55,7 +55,7 @@ func makeDelegateRoundTripPool(t *testing.T, rtRef **Runtime, coderRuns *atomic.
 		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
 		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
 	}
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		switch role {
 		case "orchestrator":
@@ -98,7 +98,7 @@ func TestRuntime_DelegateUnknownRole(t *testing.T) {
 		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
 		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
 	}
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error { return nil }
 		return h, nil

@@ -117,7 +117,7 @@ func TestOrchestrateCommand_GoalBinding(t *testing.T) {
 func TestOrchestrateCommand_GoalAccrualViaRuntime(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	cfg := testCtx(t).Config.Orchestrator
-	factory := func(role, model string) (*orchestrator.AgentHandle, error) {
+	factory := func(role, model string, _ orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
 		h := orchestrator.NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			h.Stats.AddUsage(5, 5, 0, 0)

@@ -17,6 +17,10 @@ import (
 // blank spacer when no orchestration stats are present) so the footer height
 // stays constant and the compositor avoids full redraws when the stats line
 // appears or disappears.
+//
+// During orchestration, only the per-agent lines are rendered; the chrome
+// lines (workdir/mode and main stats/model) are suppressed because each
+// agent line carries its own model and role context.
 func (f *Footer) Render(width int) []string {
 	if width <= 0 {
 		return nil
@@ -27,6 +31,11 @@ func (f *Footer) Render(width int) []string {
 	// the terminal's default background. The footer's layout provides enough
 	// visual boundary without a dedicated background.
 	styler := func(s string) string { return fg + s + ansi.Reset }
+
+	// Orchestration mode: render only the per-agent lines.
+	if f.data.OrchestrationStats != "" {
+		return f.renderOrchStatsLines(width, styler)
+	}
 
 	// Line 1: working directory (left) / profile(minor) + mode badge (right)
 	workdir := f.formatWorkdirAdaptive(width)
@@ -71,17 +80,34 @@ func (f *Footer) Render(width int) []string {
 
 	line2 := renderTwoCol(left2, right2, width, styler)
 
-	// Line 3: orchestration stats (blank spacer when inactive). Keeping the
-	// line count stable prevents compositor height changes and full redraws.
-	stats := f.data.OrchestrationStats
-	if stats == "" {
-		stats = strings.Repeat(" ", width)
-	} else {
-		stats = truncateToWidth(stats, width, "")
-	}
-
-	lines := []string{styler(line1), styler(line2), styler(stats)}
+	lines := []string{styler(line1), styler(line2)}
+	lines = append(lines, f.renderOrchStatsLines(width, styler)...)
 	return lines
+}
+
+// renderOrchStatsLines renders the per-agent orchestration stats (one line per
+// active model, newline-separated) in the footer's status color. When no run
+// is active it returns a single blank spacer so the chrome height stays
+// constant (no jitter when a run starts or stops). Each agent line is fitted
+// to the terminal width.
+func (f *Footer) renderOrchStatsLines(width int, styler func(string) string) []string {
+	hadLine := false
+	var out []string
+	for _, raw := range strings.Split(f.data.OrchestrationStats, "\n") {
+		ol := strings.TrimSpace(raw)
+		if ol == "" {
+			continue
+		}
+		if vw := visibleWidth(ol); vw > width {
+			ol = truncateToWidth(ol, width, "")
+		}
+		out = append(out, styler(ol))
+		hadLine = true
+	}
+	if !hadLine {
+		return []string{strings.Repeat(" ", width)}
+	}
+	return out
 }
 
 // buildLeftSide builds the left portion of the second status line
@@ -213,7 +239,7 @@ func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 		if showLevel {
 			level = f.data.ThinkingLevel
 		}
-		part := f.formatModelPart(modelName, level, f.data.MainActivity, f.data.ModelBusy, true)
+		part := FormatModelPart(modelName, level, f.data.MainActivity, f.data.ModelBusy, true)
 		right2 = part
 	} else {
 		right2 = "no-model"
@@ -365,7 +391,7 @@ func (f *Footer) buildCompanionMainPart(vis companionVis) string {
 		mainLevel = f.data.ThinkingLevel
 	}
 	mainActive := !f.data.CompanionBusy
-	return f.formatModelPart(mainModel, mainLevel, f.data.MainActivity, f.data.ModelBusy, mainActive)
+	return FormatModelPart(mainModel, mainLevel, f.data.MainActivity, f.data.ModelBusy, mainActive)
 }
 
 func (f *Footer) buildCompanionSubPart(vis companionVis) string {
@@ -381,7 +407,7 @@ func (f *Footer) buildCompanionSubPart(vis companionVis) string {
 	if vis.showThinking {
 		compLevel = f.data.CompanionThinkingLevel
 	}
-	return f.formatModelPart(companionDisplay, compLevel, f.data.CompanionActivity, f.data.CompanionBusy, f.data.CompanionBusy)
+	return FormatModelPart(companionDisplay, compLevel, f.data.CompanionActivity, f.data.CompanionBusy, f.data.CompanionBusy)
 }
 
 func (f *Footer) applyCompanionProviderPrefix(companionDisplay string, showProvider bool) string {
@@ -408,11 +434,10 @@ func (f *Footer) companionCycleText(vis companionVis) string {
 	return fmt.Sprintf(" [%d/%d]", f.data.CompanionCycleCount, f.data.CompanionCycleMax)
 }
 
-// formatModelPart renders a model name with busy indicator and highlight.
-// The busy indicator shows an animated spinner frame when available, or a
-// static dot when idle. Activity text ("thinking", "tool", etc.) is shown
-// alongside the model name when the model is busy.
-func (f *Footer) formatModelPart(model, level, activity string, busy, active bool) string {
+// FormatModelPart renders a model name with busy indicator and highlight.
+// It is the package-level shared formatter used by both the normal footer
+// and the per-agent orchestration lines.
+func FormatModelPart(model, level, activity string, busy, active bool) string {
 	busyPrefix := ""
 	if busy {
 		if frame := CurrentSpinnerFrame(); frame != "" {
@@ -430,6 +455,36 @@ func (f *Footer) formatModelPart(model, level, activity string, busy, active boo
 		part += " " + ansi.Fg("#d29922") + activity + ansi.Reset + ansi.Fg("#8b949e")
 	}
 	return appendThinkingLevel(part, level)
+}
+
+// FormatFooterLine builds one rich footer line combining pre-formatted stats
+// and model metadata. It is used by the per-agent orchestration lines and
+// shares the same FormatModelPart primitive as the normal footer so the
+// styling (busy spinner, active green highlight, thinking badge, activity
+// text) stays identical across both contexts (DRY/SOLID).
+// The caller provides:
+//   - stats: pre-formatted stats string (e.g. from formatFooterStats)
+//   - model, provider: model display fields; provider is prepended only when
+//     model does not already include a provider prefix
+//   - thinking: thinking level badge ("" or "off" to omit)
+//   - activity: "streaming", "thinking", "tool", etc. (shown after model when busy)
+//   - busy: true → prepend animated spinner frame
+//   - active: true → model is green (the signal for "this agent is in flight")
+//
+// Returns the full styled line (SGR-encoded), width-capped by the caller.
+func FormatFooterLine(stats, model, provider, thinking, activity string, busy, active bool) string {
+	modelPart := FormatModelPart(model, thinking, activity, busy, active)
+	var b strings.Builder
+	if stats != "" {
+		b.WriteString(stats)
+		b.WriteByte(' ')
+	}
+	b.WriteString("- ")
+	if provider != "" && !strings.Contains(model, "(") && !strings.Contains(model, provider+"/") {
+		b.WriteString("(" + provider + ") ")
+	}
+	b.WriteString(modelPart)
+	return b.String()
 }
 
 func (f *Footer) modeColor() string {

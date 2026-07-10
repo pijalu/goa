@@ -28,7 +28,7 @@ func TestRuntime_ResumeSkipsFinishedRoles(t *testing.T) {
 
 	var rt *Runtime
 	var turns atomic.Int32
-	factory := func(role, model string) (*AgentHandle, error) {
+	factory := func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			turns.Add(1)
@@ -57,7 +57,7 @@ func TestRuntime_ResumeSkipsFinishedRoles(t *testing.T) {
 	}
 	turns.Store(0)
 	var rt2 *Runtime
-	factory2 := func(role, model string) (*AgentHandle, error) {
+	factory2 := func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			turns.Add(1)

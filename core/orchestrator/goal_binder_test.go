@@ -84,7 +84,7 @@ func goalTestCfg(topology string) config.OrchestratorConfig {
 
 func TestRuntime_GoalBinding_CompletesOnSuccess(t *testing.T) {
 	cfg := goalTestCfg("fanout")
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			h.Stats.AddUsage(20, 10, 0, 0) // 30 tokens
@@ -112,7 +112,7 @@ func TestRuntime_GoalBinding_CompletesOnSuccess(t *testing.T) {
 
 func TestRuntime_GoalBinding_BudgetExhaustionBlocks(t *testing.T) {
 	cfg := goalTestCfg("pipeline") // sequential so budget bites predictably
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			h.Stats.AddUsage(40, 10, 0, 0) // 50 tokens each
@@ -142,7 +142,7 @@ func TestRuntime_GoalBinding_BudgetExhaustionBlocks(t *testing.T) {
 
 func TestRuntime_GoalBinding_NoopWhenUnbound(t *testing.T) {
 	cfg := goalTestCfg("fanout")
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error { return nil }
 		return h, nil
@@ -167,7 +167,7 @@ func (r *recordingTelemetry) Track(event string, _ map[string]any) {
 
 func TestRuntime_TelemetryEmitted(t *testing.T) {
 	cfg := goalTestCfg("fanout")
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error { return nil }
 		return h, nil
@@ -191,7 +191,7 @@ func TestRuntime_TelemetryEmitted(t *testing.T) {
 
 func TestRuntime_SetTelemetryNilIsSafe(t *testing.T) {
 	cfg := goalTestCfg("fanout")
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error { return nil }
 		return h, nil

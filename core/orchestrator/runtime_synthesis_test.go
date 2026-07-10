@@ -68,7 +68,7 @@ func newSynthesisRuntime(t *testing.T) (*Runtime, *synthesisFixture) {
 		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 8},
 		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
 	}
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		switch role {
 		case "orchestrator":
@@ -210,7 +210,7 @@ func newFanoutRuntime(t *testing.T) (*Runtime, *fanoutFixture) {
 		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 8},
 		Defaults: config.OrchestratorDefaultsConfig{Topology: "fanout"},
 	}
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = fix.makeFanoutAgentRun(h, role)
 		return h, nil

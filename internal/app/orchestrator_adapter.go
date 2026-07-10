@@ -87,9 +87,9 @@ func newRuntimeAgentFactory(adapter *OrchestratorAdapter, oCfg config.Orchestrat
 	return &runtimeAgentFactory{adapter: adapter, oCfg: oCfg, rt: rt, pool: map[string][]pooledAgent{}}
 }
 
-func (f *runtimeAgentFactory) build(role, model string) (*orchestrator.AgentHandle, error) {
+func (f *runtimeAgentFactory) build(role, model string, opts orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
 	maCfg := f.agentConfig(role, model)
-	agent, err := f.acquire(role, maCfg)
+	agent, err := f.acquire(role, maCfg, opts.Fresh)
 	if err != nil {
 		return nil, err
 	}
@@ -115,16 +115,19 @@ func (f *runtimeAgentFactory) agentConfig(role, model string) multiagent.AgentCo
 	}
 }
 
-// acquire returns a reusable agent for non-orchestrator roles when one is
-// available, or creates a fresh agent via the multiagent pool.
-func (f *runtimeAgentFactory) acquire(role string, maCfg multiagent.AgentConfig) (*agentic.Agent, error) {
-	if role != "orchestrator" {
+// acquire returns the pooled agent for the role — reused WITH its accumulated
+// conversation content — or creates a fresh one. The default (fresh=false)
+// keeps specialist agents minimal and context-preserving: sequential
+// delegations to the same role continue the same conversation. fresh=true
+// forces a brand-new agent with no prior context, honoring the delegate
+// tool's explicit "new agent" choice.
+func (f *runtimeAgentFactory) acquire(role string, maCfg multiagent.AgentConfig, fresh bool) (*agentic.Agent, error) {
+	if role != "orchestrator" && !fresh {
 		f.mu.Lock()
 		if pool := f.pool[role]; len(pool) > 0 {
 			pa := pool[0]
 			f.pool[role] = pool[1:]
 			f.mu.Unlock()
-			pa.agent.Clear()
 			return pa.agent, nil
 		}
 		f.mu.Unlock()
@@ -132,14 +135,23 @@ func (f *runtimeAgentFactory) acquire(role string, maCfg multiagent.AgentConfig)
 	return f.adapter.pool.CreateEphemeralAgent(role, maCfg)
 }
 
-// release returns a non-orchestrator agent to the idle pool after its handle
-// is released.
+// release returns a non-orchestrator agent to the idle pool, keeping at most
+// ONE agent per role so the agent set stays minimal. The kept agent retains
+// its conversation content for reuse by the next default delegation; a
+// freshly-created agent replaces any previously-pooled one so the most
+// recently used specialist is the one retained.
+
 func (f *runtimeAgentFactory) release(role string, agent *agentic.Agent, maCfg multiagent.AgentConfig) {
 	if role == "orchestrator" {
 		return
 	}
+	pa := pooledAgent{agent: agent, cfg: maCfg}
 	f.mu.Lock()
-	f.pool[role] = append(f.pool[role], pooledAgent{agent: agent, cfg: maCfg})
+	if len(f.pool[role]) == 0 {
+		f.pool[role] = append(f.pool[role], pa)
+	} else {
+		f.pool[role][0] = pa
+	}
 	f.mu.Unlock()
 }
 
@@ -179,6 +191,8 @@ func applyOutputEvent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev 
 		applyToolResult(h, rt, ev)
 	case agentic.EventTokenStats:
 		applyTokenStats(h, rt, ev)
+	case agentic.EventContextStats:
+		applyContextStats(h, rt, ev)
 	case agentic.EventContent:
 		applyContent(h, rt, ev)
 	}
@@ -204,6 +218,16 @@ func applyTokenStats(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev a
 	}
 	// Push a throttled live stats event so the TUI table updates in real
 	// time during long turns (not just at turn end).
+	if rt != nil {
+		rt.EmitLiveStats(h, liveStatsInterval)
+	}
+}
+
+func applyContextStats(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
+	if ev.ContextStats == nil {
+		return
+	}
+	h.Stats.SetContext(ev.ContextStats.EstimatedTokens, ev.ContextStats.MaxTokens, ev.ContextStats.AutoMax)
 	if rt != nil {
 		rt.EmitLiveStats(h, liveStatsInterval)
 	}
@@ -247,24 +271,12 @@ type OrchestratorDelegateTool struct {
 	// Roles enumerates the roles the orchestrator may delegate to (excludes
 	// "orchestrator" itself), populated from config so the schema enum is exact.
 	Roles []string
-
-	// roleHistory remembers the last few exchanges for follow-up conversations.
-	// It is safe without locking because the orchestrator agent runs one turn
-	// at a time and delegate calls are sequential within that turn.
-	roleHistory map[string][]delegateExchange
-}
-
-// delegateExchange records one side of an orchestrator/specialist
-// conversation.
-type delegateExchange struct {
-	Task     string
-	Response string
 }
 
 func (t *OrchestratorDelegateTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "delegate",
-		Description: "Delegate a sub-task to a specialist agent role and return its answer. Call this tool multiple times for the same role to continue a conversation or provide missing context.",
+		Description: "Delegate a sub-task to a specialist agent role and return its answer. By default the same agent is reused across calls to a role so it keeps the prior context; set new_agent=true to start a fresh, clean-slate specialist for this task.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -276,6 +288,10 @@ func (t *OrchestratorDelegateTool) Schema() agentic.ToolSchema {
 				"task": map[string]any{
 					"type":        "string",
 					"description": "The concrete task for the sub-agent",
+				},
+				"new_agent": map[string]any{
+					"type":        "boolean",
+					"description": "If true, use a brand-new agent with no prior context for this task (default false: reuse the role's agent and its accumulated context).",
 				},
 			},
 			"required": []string{"role", "task"},
@@ -289,8 +305,9 @@ func (t *OrchestratorDelegateTool) Execute(input string) (string, error) {
 
 func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	var params struct {
-		Role    string `json:"role"`
-		Task    string `json:"task"`
+		Role     string `json:"role"`
+		Task     string `json:"task"`
+		NewAgent bool   `json:"new_agent"`
 	}
 	if err := json.Unmarshal([]byte(input), &params); err != nil {
 		return "", fmt.Errorf("invalid input: %w", err)
@@ -302,56 +319,18 @@ func (t *OrchestratorDelegateTool) ExecuteContext(ctx context.Context, input str
 		return "", fmt.Errorf("orchestrator runtime unavailable")
 	}
 
-	// Continue the conversation: prepend the previous exchanges for this role
-	// so the new specialist instance has the context it needs for follow-up.
-	fullTask := t.priorExchanges(params.Role) + params.Task
-
-	out, err := t.Runtime.Delegate(ctx, params.Role, fullTask)
+	// Default: reuse the role's pooled agent, which retains its conversation
+	// context across delegations. new_agent=true requests a fresh, clean-slate
+	// specialist instead. The agent's own history is the single source of
+	// truth for continuity, so no textual replay is prepended.
+	out, err := t.Runtime.DelegateWith(ctx, params.Role, params.Task, orchestrator.AcquireOptions{Fresh: params.NewAgent})
 	if err != nil {
 		return "", err
 	}
 	if out == "" {
 		out = fmt.Sprintf("[%s] completed the task (no text output).", params.Role)
 	}
-	t.recordExchange(params.Role, params.Task, out)
 	return out, nil
-}
-
-// priorExchanges returns the formatted conversation history for a role, or an
-// empty string if there is none. The result is always empty for the first call.
-func (t *OrchestratorDelegateTool) priorExchanges(role string) string {
-	if t.roleHistory == nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, ex := range t.roleHistory[role] {
-		b.WriteString("[previous task]\n")
-		b.WriteString(ex.Task)
-		b.WriteString("\n\n[previous response]\n")
-		b.WriteString(ex.Response)
-		b.WriteString("\n\n---\n\n")
-	}
-	return b.String()
-}
-
-// recordExchange appends a task/response pair to the per-role history,
-// keeping only the most recent entries so the context window stays bounded.
-func (t *OrchestratorDelegateTool) recordExchange(role, task, response string) {
-	if t.roleHistory == nil {
-		t.roleHistory = map[string][]delegateExchange{}
-	}
-	h := t.roleHistory[role]
-	const maxHistory = 3
-	if len(h) >= maxHistory {
-		h = h[len(h)-maxHistory+1:]
-	}
-	const maxResponse = 2000
-	r := response
-	if len(r) > maxResponse {
-		r = r[:maxResponse] + "\n... [truncated]"
-	}
-	h = append(h, delegateExchange{Task: task, Response: r})
-	t.roleHistory[role] = h
 }
 
 // delegateRoles returns the roles the orchestrator may delegate to (everything

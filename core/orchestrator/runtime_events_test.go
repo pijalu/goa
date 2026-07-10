@@ -70,7 +70,7 @@ func assertToolResultPayload(t *testing.T, ev Event, wantText string, wantOK boo
 // the right event types with payload fields and no-op on nil/empty inputs.
 func TestRuntimeRecordAgentEvents_ForwardThinkingToolCallResult(t *testing.T) {
 	cfg := testRuntimeConfig()
-	pool := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		return NewAgentHandle("fake-"+role, role, model), nil
 	})
 	rt, err := NewRuntime(cfg, pool, nil, "")

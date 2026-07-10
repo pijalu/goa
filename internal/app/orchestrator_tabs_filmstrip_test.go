@@ -46,7 +46,7 @@ func TestOrchestratorView_Filmstrip_PersistenceAndFooterStats(t *testing.T) {
 	// The footer should show per-model stats including the CH column.
 	frame := sc.frame()
 	footer := frame.FindNode("Footer")
-	if footer == nil || !strings.Contains(footer.Text, "CH=") {
+	if footer == nil || !strings.Contains(footer.Text, "CH") || !strings.Contains(footer.Text, "Coder") {
 		t.Errorf("footer should show per-model CH stats; footer=%v", footer)
 	}
 }

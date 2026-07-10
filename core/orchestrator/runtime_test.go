@@ -19,7 +19,7 @@ import (
 // fakeFactory builds handles whose Run func records calls and optionally
 // updates Stats to simulate a real observer.
 func fakeFactory(runs *atomic.Int32, failRole string, statsFn func(h *AgentHandle)) AgentFactory {
-	return func(role, model string) (*AgentHandle, error) {
+	return func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			runs.Add(1)
@@ -133,7 +133,7 @@ func TestRuntime_PipelineRunsSequentially(t *testing.T) {
 		order []string
 		runs  atomic.Int32
 	)
-	factory := func(role, model string) (*AgentHandle, error) {
+	factory := func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			mu.Lock()
@@ -161,7 +161,7 @@ func TestRuntime_PipelineRunsSequentially(t *testing.T) {
 func TestRuntime_PipelineCarryUsesEmbeddedTemplate(t *testing.T) {
 	var prompts []string
 	var mu sync.Mutex
-	factory := func(role, model string) (*AgentHandle, error) {
+	factory := func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(_ context.Context, p string) error {
 			mu.Lock()
@@ -231,7 +231,7 @@ func TestRuntime_PoolCapsBlockAndProceed(t *testing.T) {
 // blockOnGateFactory returns an AgentFactory whose Run funcs block on gate,
 // tracking inflight and max-inflight counts for pool-cap tests.
 func blockOnGateFactory(gate *atomic.Bool, inflight, maxInflight *atomic.Int32) AgentFactory {
-	return func(role, model string) (*AgentHandle, error) {
+	return func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			inflight.Add(1)
@@ -253,7 +253,7 @@ func blockOnGateFactory(gate *atomic.Bool, inflight, maxInflight *atomic.Int32) 
 
 func TestRuntime_SteeringDrainedIntoTurn(t *testing.T) {
 	var seen atomic.Value // string
-	rt, pool, _ := runtimeFor(t, "fanout", func(role, model string) (*AgentHandle, error) {
+	rt, pool, _ := runtimeFor(t, "fanout", func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			if role == "coder" {
@@ -269,7 +269,7 @@ func TestRuntime_SteeringDrainedIntoTurn(t *testing.T) {
 
 	// Acquire coder, steer, release so the factory caches nothing (pool is
 	// factory-based, not cache-based). Instead, drive a single turn manually.
-	h, err := pool.Acquire(context.Background(), "coder")
+	h, err := pool.Acquire(context.Background(), "coder", AcquireOptions{})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestRuntime_SnapshotCarriesCacheAndProvider(t *testing.T) {
 
 	// Acquire a live handle and populate it the way the adapter + observer do,
 	// then assert Snapshot() surfaces every field (incl. cache + provider).
-	h, err := pool.Acquire(context.Background(), "coder")
+	h, err := pool.Acquire(context.Background(), "coder", AcquireOptions{})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestRuntime_SnapshotCarriesCacheAndProvider(t *testing.T) {
 // record). This is what keeps the TUI stats table live during long turns.
 func TestRuntime_EmitLiveStatsThrottled(t *testing.T) {
 	rt, pool, store := runtimeFor(t, "fanout", fakeFactory(new(atomic.Int32), "", nil))
-	h, err := pool.Acquire(context.Background(), "coder")
+	h, err := pool.Acquire(context.Background(), "coder", AcquireOptions{})
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}

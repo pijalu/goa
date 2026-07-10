@@ -321,6 +321,11 @@ type Compositor struct {
 	maxLinesRendered    int
 	fullRedrawCount     int
 	firstScrollDone     bool // true after the first viewport scroll; affects scrollback population
+
+	// cursorVisible tracks the terminal's cursor-show state so we only emit
+	// \x1b[?25h / \x1b[?25l on a real transition, never as a redundant per-frame
+	// write. It is updated solely inside the synced frame buffers.
+	cursorVisible bool
 }
 
 // NewCompositor creates a Compositor bound to a Terminal.
@@ -510,7 +515,9 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	firstV, lastV := c.visibleRegionDiff(canvas, newVTop, fl)
 
 	if firstV < 0 {
-		c.positionHardwareCursor(cursor, len(canvas), fl.width)
+		// No visible content changed; only the cursor may need repositioning.
+		// Emit it in its own synced frame so even a cursor-only update is atomic.
+		c.renderCursorOnly(cursor, len(canvas), fl.width, newVTop, fl.height)
 		c.previousViewportTop = newVTop
 		c.prevH = fl.height
 		return
@@ -529,14 +536,17 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 		return
 	}
 	finalCursorRow := c.writeDifferential(canvas, firstChanged, lastChanged, fl.width,
-		&fl.prevViewportTop, &fl.viewportTop, fl.height)
+		&fl.prevViewportTop, &fl.viewportTop, fl.height, cursor)
 
 	c.cursorRow = max(0, len(canvas)-1)
-	c.hardwareCursorRow = finalCursorRow
+	if cursor == nil {
+		// writeDifferential's appendCursorSeq already set hardwareCursorRow when
+		// the cursor is shown; only fall back to finalCursorRow when hidden.
+		c.hardwareCursorRow = finalCursorRow
+	}
 	c.viewportTop = fl.viewportTop
 	c.maxLinesRendered = max(c.maxLinesRendered, len(canvas))
 	c.previousViewportTop = max(fl.prevViewportTop, finalCursorRow-fl.height+1)
-	c.positionHardwareCursor(cursor, len(canvas), fl.width)
 	c.prevLines = copySlice(canvas)
 	c.prevW = fl.width
 	c.prevH = fl.height
@@ -558,22 +568,27 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 		}
 		buf.WriteString(line)
 	}
+	bufferLength := max(height, len(canvas))
+	vtop := max(0, bufferLength-height)
+	// Cursor repositioning lives inside the sync (see writeDifferential).
+	c.appendCursorSeq(&buf, cursor, len(canvas), width, vtop, height)
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
 
 	c.cursorRow = max(0, len(canvas)-1)
-	c.hardwareCursorRow = c.cursorRow
+	if cursor == nil {
+		// appendCursorSeq already set hardwareCursorRow when the cursor is shown.
+		c.hardwareCursorRow = c.cursorRow
+	}
 	if clear {
 		c.maxLinesRendered = len(canvas)
 	} else {
 		c.maxLinesRendered = max(c.maxLinesRendered, len(canvas))
 	}
-	bufferLength := max(height, len(canvas))
-	c.previousViewportTop = max(0, bufferLength-height)
-	c.viewportTop = c.previousViewportTop
+	c.previousViewportTop = vtop
+	c.viewportTop = vtop
 	c.firstScrollDone = len(canvas) > height
 	c.prevH = height
-	c.positionHardwareCursor(cursor, len(canvas), width)
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
 }
@@ -712,7 +727,7 @@ func emitLargeScroll(buf *strings.Builder, canvas []string, firstChanged, width,
 }
 
 func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChanged, width int,
-	prevViewportTop, viewportTop *int, height int) int {
+	prevViewportTop, viewportTop *int, height int, cursor *CursorPos) int {
 
 	// Bottom-anchor the viewport to the new content tail before the CUP write
 	// loop. This is what makes streaming scroll instead of clobber.
@@ -720,10 +735,12 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	if desiredViewportTop < 0 {
 		desiredViewportTop = 0
 	}
+	scrolled := false
 	if desiredViewportTop > *prevViewportTop {
 		c.emitViewportScroll(canvas, firstChanged, width, *prevViewportTop, desiredViewportTop, height)
 		*prevViewportTop = desiredViewportTop
 		*viewportTop = desiredViewportTop
+		scrolled = true
 	}
 
 	var buf strings.Builder
@@ -741,6 +758,9 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	}
 	renderEnd := min(lastChanged, len(canvas)-1)
 	for i := renderStart; i <= renderEnd; i++ {
+		if !c.lineNeedsRedraw(canvas, i, scrolled) {
+			continue
+		}
 		screenRow := clampRow(i-vtop+1, height)
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
 		line := canvas[i]
@@ -764,6 +784,11 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 		}
 		finalCursorRow = max(0, len(canvas)-1)
 	}
+	// Fold the hardware-cursor repositioning into the SAME synced region so the
+	// cursor (and thus the input line visually) is restored atomically with the
+	// content under CSI 2026, instead of in a separate unsynchronized write
+	// after the sync closed (which caused a per-frame cursor flash).
+	c.appendCursorSeq(&buf, cursor, len(canvas), width, vtop, height)
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
 	return finalCursorRow
@@ -780,12 +805,41 @@ func clampRow(row, height int) int {
 	return row
 }
 
-// positionHardwareCursor moves the terminal cursor to the logical cursor
-// position (for IME) using ABSOLUTE CUP, so it is immune to the same auto-wrap
-// drift that relative moves suffer.
-func (c *Compositor) positionHardwareCursor(cp *CursorPos, totalLines, width int) {
+// lineNeedsRedraw reports whether canvas line i must be rewritten this frame.
+// When the viewport scrolled, screen-row mappings shifted (content moved
+// rows), so every line in the range is redrawn even if identical — the
+// no-scroll equality invariant no longer holds, and this keeps the delicate
+// scrollback/ghosting behavior untouched. When it did NOT scroll, a buffer line
+// that is byte-identical to the previous frame already occupies the same screen
+// row with the same content and is skipped. This per-line diff is the fix for
+// the separator/input-line jitter: stable lines sandwiched between two changing
+// regions (the editor between the status spinner and the footer busy-frame) are
+// no longer erased + redrawn every tick. Full-width separator lines were the
+// worst case because rewriting them arms the terminal's deferred auto-wrap.
+func (c *Compositor) lineNeedsRedraw(canvas []string, i int, scrolled bool) bool {
+	if scrolled || i >= len(c.prevLines) {
+		return true
+	}
+	return c.prevLines[i] != canvas[i]
+}
+
+// appendCursorSeq writes the hardware-cursor positioning into the SAME
+// synced buffer as the frame content (absolute CUP, immune to auto-wrap drift),
+// plus a show/hide transition only when the visibility actually changes. It is
+// the single place that emits cursor escapes, and it must run inside an open
+// \x1b[?2026h ... \x1b[?2026l region so the cursor is restored atomically with
+// the content — the root-cause fix for the input-line cursor flicker that the
+// former separate, unsynchronized positionHardwareCursor write caused.
+//
+// vtop/height are passed explicitly (rather than read from c.viewportTop /
+// c.prevH) because the cursor seq is emitted before those fields are updated
+// for the new frame.
+func (c *Compositor) appendCursorSeq(buf *strings.Builder, cp *CursorPos, totalLines, width, vtop, height int) {
 	if cp == nil || totalLines <= 0 {
-		c.terminal.HideCursor()
+		if c.cursorVisible {
+			buf.WriteString("\x1b[?25l")
+			c.cursorVisible = false
+		}
 		return
 	}
 	targetRow := max(0, min(cp.Row, totalLines-1))
@@ -797,10 +851,25 @@ func (c *Compositor) positionHardwareCursor(cp *CursorPos, totalLines, width int
 	if width > 0 && targetCol >= width {
 		targetCol = width - 1
 	}
-	screenRow := clampRow(targetRow-c.viewportTop+1, c.prevH)
-	c.terminal.Write([]byte(fmt.Sprintf("\x1b[%d;%dH", screenRow, targetCol+1)))
+	screenRow := clampRow(targetRow-vtop+1, height)
+	buf.WriteString(fmt.Sprintf("\x1b[%d;%dH", screenRow, targetCol+1))
+	if !c.cursorVisible {
+		buf.WriteString("\x1b[?25h")
+		c.cursorVisible = true
+	}
 	c.hardwareCursorRow = targetRow
-	c.terminal.ShowCursor()
+}
+
+// renderCursorOnly emits a cursor repositioning in its own minimal synced
+// frame, used on the no-visible-change path where only the cursor may have
+// moved. Keeping it synced avoids an unsynchronized cursor write leaking
+// between frames.
+func (c *Compositor) renderCursorOnly(cp *CursorPos, totalLines, width, vtop, height int) {
+	var buf strings.Builder
+	buf.WriteString("\x1b[?2026h")
+	c.appendCursorSeq(&buf, cp, totalLines, width, vtop, height)
+	buf.WriteString("\x1b[?2026l")
+	c.terminal.Write([]byte(buf.String()))
 }
 
 // applyLineResets appends a reset sequence to every non-image line so SGR

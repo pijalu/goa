@@ -29,18 +29,18 @@ func poolCfg(total int, perModel map[string]int, roles ...[2]string) config.Orch
 func TestBoundedAgentPool_TotalCap(t *testing.T) {
 	cfg := poolCfg(2, nil, [2]string{"coder", "m1"})
 	var created atomic.Int32
-	p := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		h := NewAgentHandle("", role, model)
 		created.Add(1)
 		return h, nil
 	})
 
 	ctx := context.Background()
-	h1, err := p.Acquire(ctx, "coder")
+	h1, err := p.Acquire(ctx, "coder", AcquireOptions{})
 	if err != nil {
 		t.Fatalf("acquire 1: %v", err)
 	}
-	h2, err := p.Acquire(ctx, "coder")
+	h2, err := p.Acquire(ctx, "coder", AcquireOptions{})
 	if err != nil {
 		t.Fatalf("acquire 2: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestBoundedAgentPool_TotalCap(t *testing.T) {
 	// Third acquire must block until a release.
 	acquired := make(chan error, 1)
 	go func() {
-		_, err := p.Acquire(ctx, "coder")
+		_, err := p.Acquire(ctx, "coder", AcquireOptions{})
 		acquired <- err
 	}()
 	select {
@@ -79,18 +79,18 @@ func TestBoundedAgentPool_PerModelCap(t *testing.T) {
 		[2]string{"planner", "m1"},
 		[2]string{"reviewer", "m2"},
 	)
-	p := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		return NewAgentHandle("", role, model), nil
 	})
 
 	ctx := context.Background()
-	if _, err := p.Acquire(ctx, "coder"); err != nil {
+	if _, err := p.Acquire(ctx, "coder", AcquireOptions{}); err != nil {
 		t.Fatalf("coder: %v", err)
 	}
 	// planner uses the same model — must block.
 	acquired := make(chan error, 1)
 	go func() {
-		_, err := p.Acquire(ctx, "planner")
+		_, err := p.Acquire(ctx, "planner", AcquireOptions{})
 		acquired <- err
 	}()
 	select {
@@ -99,7 +99,7 @@ func TestBoundedAgentPool_PerModelCap(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	// reviewer uses a different model — must succeed immediately.
-	if _, err := p.Acquire(ctx, "reviewer"); err != nil {
+	if _, err := p.Acquire(ctx, "reviewer", AcquireOptions{}); err != nil {
 		t.Fatalf("reviewer (different model): %v", err)
 	}
 
@@ -114,18 +114,18 @@ func TestBoundedAgentPool_PerModelCap(t *testing.T) {
 
 func TestBoundedAgentPool_CancelWhileBlocked(t *testing.T) {
 	cfg := poolCfg(1, nil, [2]string{"coder", "m1"})
-	p := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		return NewAgentHandle("", role, model), nil
 	})
 	ctx := context.Background()
-	if _, err := p.Acquire(ctx, "coder"); err != nil {
+	if _, err := p.Acquire(ctx, "coder", AcquireOptions{}); err != nil {
 		t.Fatalf("acquire 1: %v", err)
 	}
 
 	cctx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := p.Acquire(cctx, "coder")
+		_, err := p.Acquire(cctx, "coder", AcquireOptions{})
 		errCh <- err
 	}()
 	<-time.After(30 * time.Millisecond)
@@ -143,11 +143,11 @@ func TestBoundedAgentPool_CancelWhileBlocked(t *testing.T) {
 func TestBoundedAgentPool_FactoryErrorRollsBack(t *testing.T) {
 	cfg := poolCfg(1, nil, [2]string{"coder", "m1"})
 	calls := atomic.Int32{}
-	p := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		calls.Add(1)
 		return nil, errors.New("boom")
 	})
-	if _, err := p.Acquire(context.Background(), "coder"); err == nil {
+	if _, err := p.Acquire(context.Background(), "coder", AcquireOptions{}); err == nil {
 		t.Fatalf("expected factory error to propagate")
 	}
 	total, _ := p.Counts()
@@ -157,21 +157,21 @@ func TestBoundedAgentPool_FactoryErrorRollsBack(t *testing.T) {
 }
 
 func TestBoundedAgentPool_UnknownRole(t *testing.T) {
-	p := NewBoundedAgentPool(poolCfg(1, nil, [2]string{"coder", "m1"}), func(_, _ string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(poolCfg(1, nil, [2]string{"coder", "m1"}), func(_, _ string, _ AcquireOptions) (*AgentHandle, error) {
 		t.Fatalf("factory must not be called for unknown role")
 		return nil, nil
 	})
-	if _, err := p.Acquire(context.Background(), "ghost"); !errors.Is(err, ErrUnknownRole) {
+	if _, err := p.Acquire(context.Background(), "ghost", AcquireOptions{}); !errors.Is(err, ErrUnknownRole) {
 		t.Fatalf("expected ErrUnknownRole, got %v", err)
 	}
 }
 
 func TestBoundedAgentPool_ReleaseIdempotent(t *testing.T) {
 	cfg := poolCfg(1, nil, [2]string{"coder", "m1"})
-	p := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		return NewAgentHandle("", role, model), nil
 	})
-	h, err := p.Acquire(context.Background(), "coder")
+	h, err := p.Acquire(context.Background(), "coder", AcquireOptions{})
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestBoundedAgentPool_Concurrent(t *testing.T) {
 		[2]string{"c", "m2"},
 		[2]string{"d", "m2"},
 	)
-	p := NewBoundedAgentPool(cfg, func(role, model string) (*AgentHandle, error) {
+	p := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
 		return NewAgentHandle("", role, model), nil
 	})
 
@@ -212,7 +212,7 @@ func TestBoundedAgentPool_Concurrent(t *testing.T) {
 			case 3:
 				role = "d"
 			}
-			h, err := p.Acquire(ctx, role)
+			h, err := p.Acquire(ctx, role, AcquireOptions{})
 			if err != nil {
 				t.Errorf("acquire: %v", err)
 				return
