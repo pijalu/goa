@@ -3,58 +3,88 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Goa Workflows Demo</title>
+    <title>Goa Workflows — How-To Guide</title>
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            background: #1a1a2e;
+            background: #0f0f1a;
             color: #e0e0e0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            max-width: 900px;
-            margin: 0 auto;
-            padding: 2rem;
-            text-align: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            line-height: 1.7;
         }
-        h1 { color: #4fc3f7; margin-bottom: 0.5rem; }
-        .subtitle { color: #888; margin-bottom: 2rem; }
-        .demo-container {
-            background: #0d0d1a;
-            border-radius: 12px;
-            padding: 1rem;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
+        h1 {
+            font-size: 2rem;
+            background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
         }
-        .demo-container img {
-            max-width: 100%;
-            border-radius: 8px;
-            display: block;
-        }
-        .caption {
-            margin-top: 1.5rem;
-            color: #aaa;
-            font-size: 0.9rem;
-            line-height: 1.5;
-        }
-        .nav-links { margin-top: 2rem; }
-        .nav-links a {
-            color: #4fc3f7;
-            text-decoration: none;
-            margin: 0 1rem;
-        }
+        h2 { color: #4fc3f7; margin: 2rem 0 1rem; font-size: 1.4rem; border-bottom: 1px solid rgba(79,195,247,0.2); padding-bottom: 0.5rem; }
+        h3 { color: #81d4fa; margin: 1.5rem 0 0.75rem; font-size: 1.1rem; }
+        p { margin-bottom: 1rem; color: #ccc; }
+        .subtitle { color: #888; font-size: 1.05rem; margin-bottom: 2rem; }
+        .demo-box { background: #0d0d1a; border-radius: 12px; padding: 1rem; border: 1px solid rgba(79,195,247,0.15); margin: 2rem 0; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+        .demo-box img { max-width: 100%; border-radius: 8px; display: block; }
+        .demo-caption { margin-top: 1rem; color: #888; font-size: 0.9rem; text-align: center; }
+        .command { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9rem; overflow-x: auto; }
+        .command .prompt { color: #4fc3f7; }
+        .command .comment { color: #666; font-style: italic; }
+        .command .output { color: #aaa; }
+        .steps { counter-reset: step; list-style: none; padding: 0; }
+        .steps li { counter-increment: step; background: #1a1a2e; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; position: relative; padding-left: 3.5rem; }
+        .steps li::before { content: counter(step); position: absolute; left: 1rem; top: 1.25rem; width: 1.75rem; height: 1.75rem; background: rgba(79,195,247,0.15); color: #4fc3f7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; }
+        .steps li strong { color: #4fc3f7; }
+        .steps li code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+        .tip { background: rgba(79,195,247,0.08); border-left: 3px solid #4fc3f7; padding: 1rem; margin: 1rem 0; border-radius: 0 8px 8px 0; }
+        .tip strong { color: #4fc3f7; }
+        .nav-links { margin: 2rem 0; text-align: center; }
+        .nav-links a { color: #4fc3f7; text-decoration: none; margin: 0 1rem; }
         .nav-links a:hover { text-decoration: underline; }
+        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+        th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        th { color: #888; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        td { color: #ccc; }
+        footer { text-align: center; color: #555; font-size: 0.85rem; padding: 3rem 0 1rem; border-top: 1px solid rgba(255,255,255,0.06); }
     </style>
 </head>
 <body>
-    <h1>Goa Workflows Demo</h1>
-    <p class="subtitle">Listing, inspecting, and running built-in workflows</p>
-    <div class="demo-container">
+<div class="container">
+    <h1>⟡ How to Use Goa Workflows</h1>
+    <p class="subtitle">Multi-stage, multi-agent pipelines for structured task automation</p>
+
+    <div class="demo-box">
         <img src="workflows-demo.gif" alt="Goa Workflows Demo">
+        <div class="demo-caption">Demo: listing workflows, inspecting a workflow definition, and launching a real task</div>
     </div>
-    <div class="caption">
-        Demonstrates <code>/workflows:list</code>, <code>/workflows:show implement-feature</code>,
-        and launching a workflow with direct input.
-    </div>
-    <div class="nav-links">
-        <a href="index.html">← All Demos</a>
-        <a href="orchestrator-demo.html">Orchestrator Demo →</a>
-    </div>
+
+    <h2>Overview</h2>
+    <p>Workflows let you define <strong>multi-stage pipelines</strong> where different AI agent roles (planner, coder, reviewer) execute sequentially, each building on the previous stage's output.</p>
+
+    <div class="tip"><strong>When to use:</strong> You need a plan before writing code, a review after implementation, and want to use different LLM models for different roles.</div>
+
+    <h2>Step-by-Step</h2>
+    <ol class="steps">
+        <li><strong>List available workflows</strong><br>See what workflows are available with <code>/workflows:list</code><div class="command"><span class="prompt">/workflows:list</span></div>Each workflow is shown in a box with description, stages, and the run command.</li>
+        <li><strong>Inspect a workflow</strong><br>Check what a workflow does before running it:<div class="command"><span class="prompt">/workflows:show implement-feature</span></div>Shows all stages, agent roles, and system prompts.</li>
+        <li><strong>Run a workflow with a real task</strong><br>Start a workflow with a concrete objective — for example, generating a tic-tac-toe game:<div class="command"><span class="prompt">/workflows:implement-feature "Create a tic-tac-toe game in HTML"</span></div>The workflow runs Plan → Implement → Review stages automatically.</li>
+        <li><strong>Cancel if needed</strong><br>Abort a running workflow: <div class="command"><span class="prompt">/workflows:cancel</span></div></li>
+    </ol>
+
+    <h2>Built-in Workflows</h2>
+    <table><tr><th>Workflow</th><th>Stages</th><th>Description</th></tr>
+    <tr><td><code>implement-feature</code></td><td>Plan → Implement → Review</td><td>Full feature implementation pipeline</td></tr>
+    <tr><td><code>review-changes</code></td><td>Review</td><td>Quick review of uncommitted git changes</td></tr></table>
+
+    <h2>How It Works</h2>
+    <p>When a workflow runs, goa creates a pool of agents — one per role — registered on a shared <strong>AgentBus</strong>. Only the current stage's agent runs. When it calls <code>workflows:next</code>, the next stage starts with accumulated context. Agents can message each other using <code>send_message</code>/<code>receive_message</code>.</p>
+
+    <h2>Creating Custom Workflows</h2>
+    <p>Define your own under <code>workflows/&lt;name&gt;/</code> with a <code>definition.yaml</code> and stage prompts. See <a href="../WORKFLOWS.md" style="color:#4fc3f7;">WORKFLOWS.md</a> for full details.</p>
+
+    <div class="nav-links"><a href="index.html">← Gallery</a><a href="orchestrator-demo.html">Next: Orchestrator →</a></div>
+</div>
+<footer>Goa — Terminal-native AI coding agent · GNU GPLv3</footer>
 </body>
 </html>
