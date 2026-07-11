@@ -45,16 +45,6 @@ func (m *Manager) SetLogger(l *agentic.Logger) {
 	m.logger = l
 }
 
-// logf records a warning-level message when a logger is configured.
-func (m *Manager) logf(format string, args ...any) {
-	m.mu.RLock()
-	l := m.logger
-	m.mu.RUnlock()
-	if l != nil {
-		l.Log(agentic.Warn, format, args...)
-	}
-}
-
 func defaultFactory(cfg ServerConfig) (client.Client, error) {
 	c := client.NewStdioClient(cfg.Command, cfg.Args)
 	if err := c.Initialize(context.Background()); err != nil {

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
-	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/memory"
 )
@@ -45,7 +44,6 @@ func (p *dreamIntegrationProvider) StreamSimple(model provider.Model, ctx provid
 func TestRunDream_Headless(t *testing.T) {
 	api := provider.Api(fmt.Sprintf("test-dream-%d", time.Now().UnixNano()))
 	provider.RegisterApiProvider(&dreamIntegrationProvider{api: api})
-	core.ResetGlobalRegistry()
 
 	dir := t.TempDir()
 	store := memory.NewMemoryStore(dir, "")
@@ -106,7 +104,6 @@ func TestRunDream_Headless(t *testing.T) {
 func TestRunDream_WithApply(t *testing.T) {
 	api := provider.Api(fmt.Sprintf("test-dream-apply-%d", time.Now().UnixNano()))
 	provider.RegisterApiProvider(&dreamIntegrationProvider{api: api})
-	core.ResetGlobalRegistry()
 
 	dir := t.TempDir()
 	store := memory.NewMemoryStore(dir, "")

@@ -175,10 +175,12 @@ type Model struct {
 
 	VariantID string `json:"variant_id,omitempty"`
 
-	// Deprecated: these fields are variant-specific and are being moved into
+	// ThinkingLevelMap maps canonical thinking levels to provider-specific values.
+	// TODO: these fields are variant-specific and planned for migration into
 	// VariantProfile. They remain on Model during the migration so existing
-	// provider code continues to compile. New code should call
-	// schema.ResolveProfile(model) instead.
+	// provider code continues to compile. New code should prefer resolving the
+	// VariantProfile via schema.ResolveProfile(model) when only profile-level
+	// defaults are needed, but config-level overrides still populate this field.
 	ThinkingLevelMap ThinkingLevelMap `json:"thinking_level_map,omitempty"`
 	ThinkingBudgets  ThinkingBudgets  `json:"thinking_budgets,omitempty"`
 	ThinkingFormat   ThinkingFormat   `json:"thinking_format,omitempty"`

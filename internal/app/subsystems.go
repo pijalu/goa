@@ -128,6 +128,10 @@ type subsystems struct {
 
 	// dreamScheduler triggers automatic memory consolidation after sessions.
 	dreamScheduler *dreamScheduler
+
+	// registry holds the explicitly-injected command registry used across the
+	// app. Replaces the deprecated core.GlobalRegistry package variable.
+	registry *core.CommandRegistry
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
@@ -180,7 +184,8 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		registerGoalTools(subs.toolRegistry, goalManager)
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
-	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState)
+	registry := core.NewCommandRegistry()
+	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)
 	modeRegistry := core.NewModeRegistry(promptReg)
 	loadUserModes(modeRegistry, cfg.ConfigDir, projectDir)
@@ -219,7 +224,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		attachWebFetchSummarizer(subs.toolRegistry, &webFetchAgentPool{pool: agentPool})
 	}
 
-	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts)
+	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry)
 }
 
 func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
@@ -472,7 +477,7 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 	}
 }
 
-func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State) skillCommandBundle {
+func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
 	skillDirs := append(config.DefaultSkillDirs(projectDir), cfg.Skills.Dirs...)
 	skillRegistry := skills.NewSkillRegistry(skillDirs)
 	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
@@ -509,19 +514,19 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 		TrustManager:    trustMgr,
 		SwarmState:      swarmState,
 	}
-	if err := commands.RegisterAll(core.GlobalRegistry(), deps); err != nil {
+	if err := commands.RegisterAll(registry, deps); err != nil {
 		log.Fatalf("Failed to register commands: %v", err)
 	}
-	if warnings := commands.RegisterSkillShortcuts(core.GlobalRegistry(), skillRegistry); len(warnings) > 0 {
+	if warnings := commands.RegisterSkillShortcuts(registry, skillRegistry); len(warnings) > 0 {
 		for _, w := range warnings {
 			log.Printf("Warning: %s\n", w)
 		}
 	}
 
-	docEngine := core.NewDocEngine(core.GlobalRegistry())
+	docEngine := core.NewDocEngine(registry)
 	docEngine.SetToolRegistry(toolRegistry)
 	docEngine.SetSkillRegistry(skillRegistry)
-	cmdRouter := core.NewCommandRouter(core.GlobalRegistry(), docEngine)
+	cmdRouter := core.NewCommandRouter(registry, docEngine)
 	if cfg.Aliases != nil {
 		cmdRouter.SetAliases(cfg.Aliases)
 	}
@@ -789,7 +794,7 @@ func attachAgentDrivenToolPools(tools []agentic.Tool, pool *multiagent.AgentPool
 	}
 }
 
-func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions) *subsystems {
+func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions, registry *core.CommandRegistry) *subsystems {
 	s := &subsystems{
 		cfg:               cfg,
 		loader:            loader,
@@ -829,6 +834,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,
 		perfLoadDuration:  opts.PerfLoadDuration,
+		registry:          registry,
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
@@ -845,7 +851,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		RootDir:  filepath.Join(projectDir, ".goa", "orchestrator"),
 		GoalMode: s.goalManager.Mode,
 	}
-	_ = core.GlobalRegistry().Register(orchCmd)
+	_ = s.registry.Register(orchCmd)
 
 	s.dreamScheduler = newDreamScheduler(s)
 	_ = s.dreamScheduler.readSchedulerState()

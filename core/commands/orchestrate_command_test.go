@@ -41,26 +41,11 @@ func (b *fakeBuilder) NewRuntime(cfg config.OrchestratorConfig, rootDir string) 
 	if err != nil {
 		return nil, err
 	}
-	rt.SetIDGenerator(func() string { return "test-run" })
 	b.mu.Lock()
 	b.rt = rt
 	b.cfg = cfg
 	b.mu.Unlock()
 	return rt, nil
-}
-
-func baseCfg() config.Config {
-	return config.Config{
-		Orchestrator: config.OrchestratorConfig{
-			Roles: map[string]config.OrchestratorRole{
-				"orchestrator": {Model: "m"},
-				"coder":        {Model: "m"},
-				"reviewer":     {Model: "m"},
-			},
-			Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
-			Defaults: config.OrchestratorDefaultsConfig{Topology: config.OrchestratorTopologyFanout},
-		},
-	}
 }
 
 func testCtx(t *testing.T) core.Context {

@@ -64,7 +64,3 @@ type mcpContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
-
-type initializeResult struct {
-	ProtocolVersion string `json:"protocolVersion"`
-}

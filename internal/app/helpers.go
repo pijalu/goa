@@ -71,7 +71,7 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 		return 0, fmt.Errorf("reload skills: %w", err)
 	}
 	// Re-register skill shortcut commands
-	commands.RegisterSkillShortcuts(core.GlobalRegistry(), h.subs.skillRegistry)
+	commands.RegisterSkillShortcuts(h.subs.registry, h.subs.skillRegistry)
 	count := len(h.subs.skillRegistry.List())
 	return count, nil
 }

@@ -13,12 +13,10 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
-	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
 func TestMain(m *testing.M) {
-	core.ResetGlobalRegistry()
 	os.Exit(m.Run())
 }
 
@@ -61,7 +59,6 @@ func TestHeadlessApp_Run_EndToEnd(t *testing.T) {
 		},
 	}
 	provider.RegisterApiProvider(p)
-	core.ResetGlobalRegistry()
 
 	dir := t.TempDir()
 	cfg := &config.Config{

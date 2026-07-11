@@ -6,7 +6,6 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -204,7 +203,7 @@ func (w *wizardComponent) advancePostModel() bool {
 	case stateWebFetchSummary:
 		w.state = stateDreamModel
 	case stateDreamModel:
-		w.state = stateCompanionModel
+		w.advanceFromDreamModel()
 	case stateCompanionModelAdvanced:
 		w.state = stateMode
 	case stateCompanionModel:
@@ -268,6 +267,10 @@ func (w *wizardComponent) advanceFromEndpoint() {
 	w.commitTextInput()
 	s := w.currentSlot()
 	s.endpoint = w.editor.Text()
+	if s.selectedPresetIndex < 0 {
+		s.providerID = DeriveProviderID(s.endpoint)
+		s.providerName = deriveProviderName(s.endpoint)
+	}
 	w.editor.Clear()
 	if w.state == stateCompanionProviderEndpoint {
 		w.state = stateCompanionProviderKey
@@ -291,31 +294,8 @@ func (w *wizardComponent) advanceFromKey() {
 }
 
 func (w *wizardComponent) startKeyInput(s *modelSlot) {
-	if w.tui == nil {
-		return
-	}
-	ch := w.tui.ShowInput(fmt.Sprintf("API key for %s:", s.providerName), s.apiKey)
-	go func() {
-		result := <-ch
-		if result == "" {
-			return
-		}
-		w.tui.Apply(func() {
-			// Find the current slot again (the pointer might be stale if the wizard
-			// was restarted or companion was added during the wait).
-			cs := w.currentSlot()
-			cs.apiKey = result
-			w.editor.Clear()
-			w.inputMode = ""
-			// Advance to test state
-			if w.state == stateCompanionProviderKey {
-				w.state = stateCompanionProviderTest
-			} else {
-				w.state = stateProviderTest
-			}
-			w.fetchAvailableModels(cs)
-		})
-	}()
+	w.inputMode = "apikey"
+	w.editor.SetText(s.apiKey)
 }
 
 func (w *wizardComponent) advanceFromTest() {
@@ -336,58 +316,8 @@ func (w *wizardComponent) advanceFromTest() {
 }
 
 func (w *wizardComponent) startEndpointInput(s *modelSlot) {
-	if w.tui == nil {
-		return
-	}
-	ch := w.tui.ShowInput("API endpoint URL:", s.endpoint)
-	go func() {
-		result := <-ch
-		if result == "" {
-			return
-		}
-		w.tui.Apply(func() { w.applyEndpointResult(result) })
-	}()
-}
-
-func (w *wizardComponent) applyEndpointResult(result string) {
-	cs := w.currentSlot()
-	cs.endpoint = result
-	if cs.selectedPresetIndex < 0 {
-		cs.providerID = DeriveProviderID(result)
-		cs.providerName = deriveProviderName(result)
-	}
-	w.editor.Clear()
-	w.inputMode = ""
-	w.advanceEndpointResult(cs)
-}
-
-func (w *wizardComponent) advanceEndpointResult(cs *modelSlot) {
-	if endpointNeedsKey(cs) {
-		w.state = endpointKeyState(w.state)
-		w.startKeyInput(cs)
-		return
-	}
-	w.state = endpointTestState(w.state)
-	w.fetchAvailableModels(cs)
-}
-
-func endpointNeedsKey(cs *modelSlot) bool {
-	presets := PresetProviders()
-	return cs.selectedPresetIndex >= 0 && cs.selectedPresetIndex < len(presets) && presets[cs.selectedPresetIndex].NeedsAPIKey
-}
-
-func endpointKeyState(state wizardState) wizardState {
-	if state == stateCompanionProviderEndpoint {
-		return stateCompanionProviderKey
-	}
-	return stateProviderKey
-}
-
-func endpointTestState(state wizardState) wizardState {
-	if state == stateCompanionProviderEndpoint {
-		return stateCompanionProviderTest
-	}
-	return stateProviderTest
+	w.inputMode = "endpoint"
+	w.editor.SetText(s.endpoint)
 }
 
 func (w *wizardComponent) advanceFromModelSelect() {

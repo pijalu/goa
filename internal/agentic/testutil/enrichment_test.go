@@ -334,6 +334,9 @@ func TestRealLLM_SelfCorrection(t *testing.T) {
 
 	_, err = harness.RunConversation(ctx, "Reply with exactly: 'LLM is working'")
 	if err != nil {
+		if strings.Contains(err.Error(), "Failed to load model") {
+			t.Skipf("LLM model not loadable at %s: %v", endpoint, err)
+		}
 		t.Fatalf("RunConversation failed: %v", err)
 	}
 }
