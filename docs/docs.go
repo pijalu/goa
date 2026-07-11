@@ -103,6 +103,8 @@ func shortDescription(name string) string {
 
 var docDescriptions = map[string]string{
 	"AGENTIC-SDK":            "How Goa wraps the agentic SDK — integration points, observers, events",
+	"USER-GUIDE":             "User guide covering Workflows, Orchestrator, and Companion features",
+	"USER_GUIDE":             "User guide covering Workflows, Orchestrator, and Companion features",
 	"ARCHITECTURE":           "Full system architecture — component design, data flow, subsystem boundaries",
 	"COMMANDS":               "Complete command system reference — all built-in commands and usage",
 	"CONFIGURATION":          "Configuration cascade, all settings, environment overrides, schema",
