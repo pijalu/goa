@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Goa Normal / Solo Mode — How-To Guide</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; line-height: 1.7; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+        h1 { font-size: 2rem; background: linear-gradient(135deg, #4fc3f7, #29b6f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 0.5rem; }
+        h2 { color: #4fc3f7; margin: 2rem 0 1rem; font-size: 1.4rem; border-bottom: 1px solid #4fc3f733; padding-bottom: 0.5rem; }
+        h3 { color: #4fc3f7; opacity: 0.85; margin: 1.5rem 0 0.75rem; font-size: 1.1rem; }
+        p { margin-bottom: 1rem; color: #ccc; }
+        .subtitle { color: #888; font-size: 1.05rem; margin-bottom: 2rem; }
+        .demo-box { background: #0d0d1a; border-radius: 12px; padding: 1rem; border: 1px solid #4fc3f726; margin: 2rem 0; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+        .demo-box img { max-width: 100%; border-radius: 8px; display: block; }
+        .demo-caption { margin-top: 1rem; color: #888; font-size: 0.9rem; text-align: center; }
+        .command { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9rem; overflow-x: auto; }
+        .command .prompt { color: #4fc3f7; }
+        .command .comment { color: #666; font-style: italic; }
+        .command .output { color: #aaa; }
+        .steps { counter-reset: step; list-style: none; padding: 0; }
+        .steps li { counter-increment: step; background: #1a1a2e; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; position: relative; padding-left: 3.5rem; }
+        .steps li::before { content: counter(step); position: absolute; left: 1rem; top: 1.25rem; width: 1.75rem; height: 1.75rem; background: #4fc3f726; color: #4fc3f7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; }
+        .steps li strong { color: #4fc3f7; }
+        .steps li code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+        .tip { background: #4fc3f714; border-left: 3px solid #4fc3f7; padding: 1rem; margin: 1rem 0; border-radius: 0 8px 8px 0; }
+        .tip strong { color: #4fc3f7; }
+        .nav-links { margin: 2rem 0; text-align: center; }
+        .nav-links a { color: #4fc3f7; text-decoration: none; margin: 0 1rem; }
+        .nav-links a:hover { text-decoration: underline; }
+        .transcript { background: #0d0d1a; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; overflow-x: auto; }
+        .transcript summary { color: #4fc3f7; cursor: pointer; font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; }
+        .transcript pre { color: #aaa; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-top: 1rem; }
+        .transcript-note { color: #888; margin: 1rem 0; font-size: 0.85rem; }
+        .files { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; }
+        .files li { color: #ccc; margin: 0.25rem 0; }
+        .files strong { color: #4fc3f7; }
+        footer { text-align: center; color: #555; font-size: 0.85rem; padding: 3rem 0 1rem; border-top: 1px solid rgba(255,255,255,0.06); }
+    </style>
+</head>
+<body>
+<div class="container">
+<h1>⟡ How to Use Goa in Normal / Solo Mode</h1>
+<p class="subtitle">The simplest way to chat with an AI coding agent in your terminal</p>
+
+<div class="demo-box">
+    <img src="normal-demo.gif" alt="Goa Normal/Solo Mode Demo">
+    <div class="demo-caption">Demo: open goa, type the request, and watch the model write <code>tic-tac-toe.html</code></div>
+</div>
+
+<h2>Overview</h2>
+<p>In normal mode, goa behaves like a single-agent chat. You type a request, the agent chooses tools, and the result appears in the TUI.</p>
+
+<div class="tip"><strong>When to use:</strong> Quick coding tasks, solo exploration, or any task where a single agent is enough.</div>
+
+<h2>Step-by-Step</h2>
+<ol class="steps">
+    <li><strong>Launch goa</strong><br>Run <code>goa</code> in your project directory. The TUI opens with the status bar and input line.<div class="command"><span class="prompt">$ goa</span></div></li>
+    <li><strong>Type your request</strong><br>Press any key to focus the input line, then type a task:<div class="command"><span class="prompt">write a html tic-tac-toe game</span></div></li>
+    <li><strong>Watch the agent work</strong><br>The agent thinks, calls tools (<code>write</code>, <code>bash</code>, etc.), and streams the file into the workspace.</li>
+    <li><strong>Review the result</strong><br>Once the turn completes, the output is visible in the chat viewport and the file is on disk.</li>
+</ol>
+
+<h2>What Gets Created</h2>
+<ul class="files">
+    <li><strong>tic-tac-toe.html</strong> — a self-contained HTML/CSS/JS game</li>
+</ul>
+
+<h2>Key Slash Commands</h2>
+<div class="command"><span class="prompt">/quit</span> <span class="comment"># exit goa</span><br><span class="prompt">/mode &lt;name&gt;</span> <span class="comment"># switch persona (coder, architect, etc.)</span><br><span class="prompt">/model &lt;name&gt;</span> <span class="comment"># switch model at runtime</span></div>
+<h2>Transcript</h2>
+<div class="transcript">
+    <details>
+        <summary>▶ Curated transcript</summary>
+        <pre>$ goa
+
+[goa TUI opens]
+
+&gt; write a html tic-tac-toe game
+
+[coder] The user wants me to create an HTML file with a Tic-Tac-Toe game. I&#x27;ll write a complete, self-contained HTML file with embedded CSS and JavaScript that creates a functional Tic-Tac-Toe game.
+
+[coder] ■ tool calling: write tic-tac-toe.html
+[coder] ■ written — 6,983 bytes, 231 lines
+
+[coder] I&#x27;ve created a tic-tac-toe.html file containing a complete, self-contained Tic-Tac-Toe game with HTML, CSS, and JavaScript. The game includes a 3x3 grid, player turns, win/draw detection, a reset button, and a status display.</pre>
+        <p class="transcript-note">The raw terminal output (ANSI-stripped) is available as <a href="normal-demo.txt" style="color:#4fc3f7;">normal-demo.txt</a>.</p>
+    </details>
+</div>
+<div class="nav-links"><a href="index.html">← Gallery</a><a href="companion-demo.html">Next: Companion →</a></div>
+</div>
+<footer>Goa — Terminal-native AI coding agent · GNU GPLv3</footer>
+</body>
+</html>

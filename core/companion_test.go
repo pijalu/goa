@@ -42,6 +42,18 @@ func TestCompanionCoordinator_RunPostTurn_NoCompanionMode(t *testing.T) {
 	}
 }
 
+func TestCompanionCoordinator_SetMessageTimeout(t *testing.T) {
+	cc := NewCompanionCoordinator()
+	if cc.messageTimeout != 120*time.Second {
+		t.Errorf("default timeout = %s, want 120s", cc.messageTimeout)
+	}
+
+	cc.SetMessageTimeout(30 * time.Second)
+	if cc.messageTimeout != 30*time.Second {
+		t.Errorf("timeout after set = %s, want 30s", cc.messageTimeout)
+	}
+}
+
 func TestCompanionCoordinator_RunPostTurn_EmptyOutput(t *testing.T) {
 	cc := NewCompanionCoordinator()
 	pool := multiagent.NewAgentPool(agenticprovider.Model{}, agenticprovider.StreamOptions{}, nil)

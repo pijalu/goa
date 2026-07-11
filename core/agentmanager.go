@@ -672,6 +672,12 @@ func (am *AgentManager) SetForegroundOrchestrator(orch *multiagent.ForegroundOrc
 	am.companion.SetForegroundOrchestrator(orch)
 }
 
+// SetCompanionTimeout configures how long framework-driven companion reviews
+// are allowed to run before cancellation.
+func (am *AgentManager) SetCompanionTimeout(d time.Duration) {
+	am.companion.SetMessageTimeout(d)
+}
+
 // SetStateStore sets the state store for persisting mode changes. Guarded by
 // am.mu: the field is read concurrently from SetInputHistory/GetInputHistory/
 // persistState while a turn is driving (CORE-BUG-2).

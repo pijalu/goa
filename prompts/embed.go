@@ -11,6 +11,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 
 	"github.com/pijalu/goa/internal/embeddoc"
@@ -48,9 +49,17 @@ func LoadAgentDrivenPrompt() (string, error) {
 	return string(data), nil
 }
 
-// LoadOrchestratePrompt returns an orchestrator prompt template by name.
-func LoadOrchestratePrompt(name string) (string, error) {
+// LoadOrchestratePrompt returns an orchestrator prompt template by name. If
+// userPromptDir is non-empty and contains orchestrate/<name>.md, that file is
+// used instead of the embedded prompt.
+func LoadOrchestratePrompt(name, userPromptDir string) (string, error) {
 	path := filepath.Join("orchestrate", name+".md")
+	if userPromptDir != "" {
+		userPath := filepath.Join(userPromptDir, path)
+		if data, err := os.ReadFile(userPath); err == nil {
+			return string(data), nil
+		}
+	}
 	data, err := embeddedFS.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("orchestrate prompt %s not found: %w", name, err)

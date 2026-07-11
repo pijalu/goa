@@ -23,7 +23,7 @@ func TestOrchestrateCommand_LiveNewRun(t *testing.T) {
 	}
 	cfg, _, pool := loadLiveConfig(t)
 	rootDir := t.TempDir()
-	adapter := NewOrchestratorAdapter(pool, cfg)
+	adapter := NewOrchestratorAdapter(pool, cfg, "")
 	cmd := &commands.OrchestrateCommand{
 		Builder: adapter,
 		Active:  orchestrator.NewActiveRuntime(),

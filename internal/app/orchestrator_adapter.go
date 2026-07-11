@@ -29,16 +29,18 @@ import (
 // agent's output observer is translated into orchestrator AgentStats updates
 // and AgentMessage events, so the runtime and TUI see uniform progress.
 type OrchestratorAdapter struct {
-	pool *multiagent.AgentPool
-	cfg  *config.Config
-	tel  orchestrator.Telemetry
+	pool      *multiagent.AgentPool
+	cfg       *config.Config
+	promptDir string
+	tel       orchestrator.Telemetry
 }
 
 // NewOrchestratorAdapter constructs an adapter over an existing multiagent pool.
-func NewOrchestratorAdapter(pool *multiagent.AgentPool, cfg *config.Config) *OrchestratorAdapter {
+func NewOrchestratorAdapter(pool *multiagent.AgentPool, cfg *config.Config, promptDir string) *OrchestratorAdapter {
 	return &OrchestratorAdapter{
-		pool: pool,
-		cfg:  cfg,
+		pool:      pool,
+		cfg:       cfg,
+		promptDir: promptDir,
 	}
 }
 
@@ -60,6 +62,7 @@ func (a *OrchestratorAdapter) NewRuntime(oCfg config.OrchestratorConfig, rootDir
 		return nil, err
 	}
 	rt.SetIDGenerator(func() string { return runID })
+	rt.SetPromptDir(a.promptDir)
 	if a.tel != nil {
 		rt.SetTelemetry(a.tel)
 	}

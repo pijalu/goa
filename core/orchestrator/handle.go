@@ -216,7 +216,7 @@ func (h *AgentHandle) Done() <-chan struct{} { return h.done }
 // no-op turn so pure-logic tests can drive the runtime without an agent.
 func (h *AgentHandle) RunTurn(ctx context.Context, basePrompt string) error {
 	prompt := basePrompt
-	steeringPrefix, _ := prompts.LoadOrchestratePrompt("steering_prefix")
+	steeringPrefix, _ := prompts.LoadOrchestratePrompt("steering_prefix", "")
 	steeringPrefix = strings.TrimSpace(steeringPrefix)
 	if steeringPrefix == "" {
 		steeringPrefix = "[Steering]"

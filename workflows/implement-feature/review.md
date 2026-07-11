@@ -10,7 +10,7 @@ Your job is to review the implementation created by the coder.
 
 ## Process
 
-1. **Review code**: Read the conversation history to understand what was implemented. Use `read_file` to examine the code.
+1. **Review code**: Read the conversation history to understand what was implemented. Use `read` to examine the code.
 
 2. **Check for issues**:
    - Correctness: Does the code work as intended?

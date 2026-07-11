@@ -88,7 +88,7 @@ func TestOrchestratorDelegateTool_DefaultReusesAndNewAgent(t *testing.T) {
 // pool keeps at most one agent per role so the agent set stays minimal.
 func TestRuntimeAgentFactory_ReusesAgentWithContent(t *testing.T) {
 	pool := multiagent.NewAgentPool(provider.Model{}, provider.StreamOptions{}, nil)
-	adapter := NewOrchestratorAdapter(pool, nil)
+	adapter := NewOrchestratorAdapter(pool, nil, "")
 	oCfg := config.OrchestratorConfig{Roles: map[string]config.OrchestratorRole{"coder": {Model: "m"}}}
 	f := newRuntimeAgentFactory(adapter, oCfg, nil)
 	agentCfg := multiagent.AgentConfig{}

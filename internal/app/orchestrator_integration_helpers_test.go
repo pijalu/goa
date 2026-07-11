@@ -80,7 +80,7 @@ func newLiveRuntime(t *testing.T, roles []string, topology string) (*orchestrato
 	t.Helper()
 	cfg, _, pool := loadLiveConfig(t)
 	oCfg := buildOrchestratorConfig(cfg, roles, topology)
-	adapter := NewOrchestratorAdapter(pool, cfg)
+	adapter := NewOrchestratorAdapter(pool, cfg, "")
 	rootDir := t.TempDir()
 	rt, err := adapter.NewRuntime(oCfg, rootDir)
 	if err != nil {

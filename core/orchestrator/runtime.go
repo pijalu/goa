@@ -33,12 +33,13 @@ type Emitter func(Event)
 // HOW agentic output maps to events — those are supplied by an adapter
 // (internal/app) so this package is unit-testable without a live provider.
 type Runtime struct {
-	cfg      config.OrchestratorConfig
-	pool     *BoundedAgentPool
-	store    EventStore
-	topology Topology
-	runID    string
-	rootDir  string
+	cfg        config.OrchestratorConfig
+	pool       *BoundedAgentPool
+	store      EventStore
+	topology   Topology
+	runID      string
+	rootDir    string
+	promptDir  string // user prompt override directory; empty means embedded only
 
 	// resume, when set by Resume(), records the snapshot of a prior run so
 	// fanout/pipeline skip roles that already finished successfully and the
@@ -902,7 +903,7 @@ func statsPayloadWithMeta(s AgentStatsSnapshot, thinking string) map[string]any 
 // If the prompt or template execution fails, it returns an empty string so the
 // caller can fall back to the original prompt text.
 func (r *Runtime) renderPrompt(name string, data map[string]any) string {
-	tpl, err := prompts.LoadOrchestratePrompt(name)
+	tpl, err := prompts.LoadOrchestratePrompt(name, r.promptDir)
 	if err != nil {
 		return ""
 	}
@@ -915,6 +916,12 @@ func (r *Runtime) renderPrompt(name string, data map[string]any) string {
 		return ""
 	}
 	return buf.String()
+}
+
+// SetPromptDir configures the directory where user-provided orchestrator
+// prompt overrides are loaded from. Empty uses the embedded prompts.
+func (r *Runtime) SetPromptDir(dir string) {
+	r.promptDir = dir
 }
 
 // SetTelemetry attaches a tracker for lifecycle events (nil → no-op).

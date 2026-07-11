@@ -3,87 +3,100 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Goa Workflows — How-To Guide</title>
+    <title>Goa Workflow Mode — How-To Guide</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            background: #0f0f1a;
-            color: #e0e0e0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            line-height: 1.7;
-        }
-        .container { max-width: 960px; margin: 0 auto; padding: 2rem; }
-        h1 {
-            font-size: 2rem;
-            background: linear-gradient(135deg, #4fc3f7, #29b6f6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin-bottom: 0.5rem;
-        }
-        h2 { color: #4fc3f7; margin: 2rem 0 1rem; font-size: 1.4rem; border-bottom: 1px solid rgba(79,195,247,0.2); padding-bottom: 0.5rem; }
-        h3 { color: #81d4fa; margin: 1.5rem 0 0.75rem; font-size: 1.1rem; }
+        body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; line-height: 1.7; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+        h1 { font-size: 2rem; background: linear-gradient(135deg, #66bb6a, #43a047); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 0.5rem; }
+        h2 { color: #66bb6a; margin: 2rem 0 1rem; font-size: 1.4rem; border-bottom: 1px solid #66bb6a33; padding-bottom: 0.5rem; }
+        h3 { color: #66bb6a; opacity: 0.85; margin: 1.5rem 0 0.75rem; font-size: 1.1rem; }
         p { margin-bottom: 1rem; color: #ccc; }
         .subtitle { color: #888; font-size: 1.05rem; margin-bottom: 2rem; }
-        .demo-box { background: #0d0d1a; border-radius: 12px; padding: 1rem; border: 1px solid rgba(79,195,247,0.15); margin: 2rem 0; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+        .demo-box { background: #0d0d1a; border-radius: 12px; padding: 1rem; border: 1px solid #66bb6a26; margin: 2rem 0; box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
         .demo-box img { max-width: 100%; border-radius: 8px; display: block; }
         .demo-caption { margin-top: 1rem; color: #888; font-size: 0.9rem; text-align: center; }
         .command { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.9rem; overflow-x: auto; }
-        .command .prompt { color: #4fc3f7; }
+        .command .prompt { color: #66bb6a; }
         .command .comment { color: #666; font-style: italic; }
         .command .output { color: #aaa; }
         .steps { counter-reset: step; list-style: none; padding: 0; }
         .steps li { counter-increment: step; background: #1a1a2e; border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 1.25rem; margin-bottom: 1rem; position: relative; padding-left: 3.5rem; }
-        .steps li::before { content: counter(step); position: absolute; left: 1rem; top: 1.25rem; width: 1.75rem; height: 1.75rem; background: rgba(79,195,247,0.15); color: #4fc3f7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; }
-        .steps li strong { color: #4fc3f7; }
+        .steps li::before { content: counter(step); position: absolute; left: 1rem; top: 1.25rem; width: 1.75rem; height: 1.75rem; background: #66bb6a26; color: #66bb6a; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; }
+        .steps li strong { color: #66bb6a; }
         .steps li code { background: rgba(255,255,255,0.06); padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
-        .tip { background: rgba(79,195,247,0.08); border-left: 3px solid #4fc3f7; padding: 1rem; margin: 1rem 0; border-radius: 0 8px 8px 0; }
-        .tip strong { color: #4fc3f7; }
+        .tip { background: #66bb6a14; border-left: 3px solid #66bb6a; padding: 1rem; margin: 1rem 0; border-radius: 0 8px 8px 0; }
+        .tip strong { color: #66bb6a; }
         .nav-links { margin: 2rem 0; text-align: center; }
-        .nav-links a { color: #4fc3f7; text-decoration: none; margin: 0 1rem; }
+        .nav-links a { color: #66bb6a; text-decoration: none; margin: 0 1rem; }
         .nav-links a:hover { text-decoration: underline; }
-        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-        th, td { padding: 0.75rem 1rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.06); }
-        th { color: #888; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
-        td { color: #ccc; }
+        .transcript { background: #0d0d1a; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; overflow-x: auto; }
+        .transcript summary { color: #66bb6a; cursor: pointer; font-weight: 600; font-family: 'SF Mono', 'Fira Code', monospace; }
+        .transcript pre { color: #aaa; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-top: 1rem; }
+        .transcript-note { color: #888; margin: 1rem 0; font-size: 0.85rem; }
+        .files { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; }
+        .files li { color: #ccc; margin: 0.25rem 0; }
+        .files strong { color: #66bb6a; }
         footer { text-align: center; color: #555; font-size: 0.85rem; padding: 3rem 0 1rem; border-top: 1px solid rgba(255,255,255,0.06); }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>⟡ How to Use Goa Workflows</h1>
-    <p class="subtitle">Multi-stage, multi-agent pipelines for structured task automation</p>
+<h1>⟡ How to Use Goa Workflows</h1>
+<p class="subtitle">Multi-stage, multi-agent pipelines (plan → coder → review)</p>
 
-    <div class="demo-box">
-        <img src="workflows-demo.gif" alt="Goa Workflows Demo">
-        <div class="demo-caption">Demo: listing workflows, inspecting a workflow definition, and launching a real task</div>
-    </div>
+<div class="demo-box">
+    <img src="workflows-demo.gif" alt="Goa Workflow Mode Demo">
+    <div class="demo-caption">Demo: running the built-in <code>implement-feature</code> workflow to create a tic-tac-toe game</div>
+</div>
 
-    <h2>Overview</h2>
-    <p>Workflows let you define <strong>multi-stage pipelines</strong> where different AI agent roles (planner, coder, reviewer) execute sequentially, each building on the previous stage's output.</p>
+<h2>Overview</h2>
+<p>Workflows define sequential stages. Each stage has a role and a prompt. The <code>implement-feature</code> workflow runs Plan → Implement → Review.</p>
 
-    <div class="tip"><strong>When to use:</strong> You need a plan before writing code, a review after implementation, and want to use different LLM models for different roles.</div>
+<div class="tip"><strong>When to use:</strong> When you want structured execution with planning before coding and review after.</div>
 
-    <h2>Step-by-Step</h2>
-    <ol class="steps">
-        <li><strong>List available workflows</strong><br>See what workflows are available with <code>/workflows:list</code><div class="command"><span class="prompt">/workflows:list</span></div>Each workflow is shown in a box with description, stages, and the run command.</li>
-        <li><strong>Inspect a workflow</strong><br>Check what a workflow does before running it:<div class="command"><span class="prompt">/workflows:show implement-feature</span></div>Shows all stages, agent roles, and system prompts.</li>
-        <li><strong>Run a workflow with a real task</strong><br>Start a workflow with a concrete objective — for example, generating a tic-tac-toe game:<div class="command"><span class="prompt">/workflows:implement-feature "Create a tic-tac-toe game in HTML"</span></div>The workflow runs Plan → Implement → Review stages automatically.</li>
-        <li><strong>Cancel if needed</strong><br>Abort a running workflow: <div class="command"><span class="prompt">/workflows:cancel</span></div></li>
-    </ol>
+<h2>Step-by-Step</h2>
+<ol class="steps">
+    <li><strong>List workflows</strong><div class="command"><span class="prompt">/workflows:list</span></div></li>
+    <li><strong>Inspect a workflow</strong><div class="command"><span class="prompt">/workflows:show implement-feature</span></div></li>
+    <li><strong>Run the workflow</strong><div class="command"><span class="prompt">/workflows:implement-feature write a html tic-tac-toe game</span></div></li>
+    <li><strong>Review results</strong><br>Each stage produces output and the final file is written.</li>
+</ol>
 
-    <h2>Built-in Workflows</h2>
-    <table><tr><th>Workflow</th><th>Stages</th><th>Description</th></tr>
-    <tr><td><code>implement-feature</code></td><td>Plan → Implement → Review</td><td>Full feature implementation pipeline</td></tr>
-    <tr><td><code>review-changes</code></td><td>Review</td><td>Quick review of uncommitted git changes</td></tr></table>
+<h2>What Gets Created</h2>
+<ul class="files">
+    <li><strong>index.html</strong> — landing page written by the planner</li>
+    <li><strong>tic-tac-toe.html</strong> — the game written by the coder</li>
+</ul>
 
-    <h2>How It Works</h2>
-    <p>When a workflow runs, goa creates a pool of agents — one per role — registered on a shared <strong>AgentBus</strong>. Only the current stage's agent runs. When it calls <code>workflows:next</code>, the next stage starts with accumulated context. Agents can message each other using <code>send_message</code>/<code>receive_message</code>.</p>
+<h2>Workflow Stages</h2>
+<div class="command"><span class="output">Plan</span> <span class="comment"># decides structure and approach</span><br><span class="output">Implement</span> <span class="comment"># writes the code</span><br><span class="output">Review</span> <span class="comment"># checks the result</span></div>
+<h2>Transcript</h2>
+<div class="transcript">
+    <details>
+        <summary>▶ Curated transcript</summary>
+        <pre>$ goa
 
-    <h2>Creating Custom Workflows</h2>
-    <p>Define your own under <code>workflows/&lt;name&gt;/</code> with a <code>definition.yaml</code> and stage prompts. See <a href="../WORKFLOWS.md" style="color:#4fc3f7;">WORKFLOWS.md</a> for full details.</p>
+&gt; /workflows:implement-feature write a html tic-tac-toe game
 
-    <div class="nav-links"><a href="index.html">← Gallery</a><a href="orchestrator-demo.html">Next: Orchestrator →</a></div>
+[planner] Stage: plan
+I&#x27;ll plan the implementation. The project should have an index.html landing page and a tic-tac-toe.html game file. The landing page will link to the game.
+
+[planner] ■ tool calling: write index.html
+[planner] ■ written — 4,705 bytes, 155 lines
+
+[coder] Stage: implement
+Now I&#x27;ll implement the tic-tac-toe game based on the plan. I&#x27;ll create a single self-contained HTML file with CSS and JavaScript.
+
+[coder] ■ tool calling: write tic-tac-toe.html
+[coder] ■ written — 4,054 bytes, 105 lines
+
+[reviewer] Stage: review
+The implementation is complete and functional. The index.html landing page links to the game, and tic-tac-toe.html includes a working 3x3 grid, turn management, win/draw detection, and a reset feature.</pre>
+        <p class="transcript-note">The raw terminal output (ANSI-stripped) is available as <a href="workflows-demo.txt" style="color:#4fc3f7;">workflows-demo.txt</a>.</p>
+    </details>
+</div>
+<div class="nav-links"><a href="index.html">← Gallery</a><a href="orchestrator-demo.html">Next: Orchestrator →</a></div>
 </div>
 <footer>Goa — Terminal-native AI coding agent · GNU GPLv3</footer>
 </body>

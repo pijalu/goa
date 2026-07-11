@@ -735,12 +735,10 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	if desiredViewportTop < 0 {
 		desiredViewportTop = 0
 	}
-	scrolled := false
 	if desiredViewportTop > *prevViewportTop {
 		c.emitViewportScroll(canvas, firstChanged, width, *prevViewportTop, desiredViewportTop, height)
 		*prevViewportTop = desiredViewportTop
 		*viewportTop = desiredViewportTop
-		scrolled = true
 	}
 
 	var buf strings.Builder
@@ -758,7 +756,7 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	}
 	renderEnd := min(lastChanged, len(canvas)-1)
 	for i := renderStart; i <= renderEnd; i++ {
-		if !c.lineNeedsRedraw(canvas, i, scrolled) {
+		if !c.lineNeedsRedraw(canvas, i) {
 			continue
 		}
 		screenRow := clampRow(i-vtop+1, height)
@@ -806,18 +804,11 @@ func clampRow(row, height int) int {
 }
 
 // lineNeedsRedraw reports whether canvas line i must be rewritten this frame.
-// When the viewport scrolled, screen-row mappings shifted (content moved
-// rows), so every line in the range is redrawn even if identical — the
-// no-scroll equality invariant no longer holds, and this keeps the delicate
-// scrollback/ghosting behavior untouched. When it did NOT scroll, a buffer line
-// that is byte-identical to the previous frame already occupies the same screen
-// row with the same content and is skipped. This per-line diff is the fix for
-// the separator/input-line jitter: stable lines sandwiched between two changing
-// regions (the editor between the status spinner and the footer busy-frame) are
-// no longer erased + redrawn every tick. Full-width separator lines were the
-// worst case because rewriting them arms the terminal's deferred auto-wrap.
-func (c *Compositor) lineNeedsRedraw(canvas []string, i int, scrolled bool) bool {
-	if scrolled || i >= len(c.prevLines) {
+// Lines that were never drawn before, or whose bytes changed from the previous
+// frame, are redrawn. Unchanged lines are skipped so the input/footer stay
+// stable while streaming content scrolls above them.
+func (c *Compositor) lineNeedsRedraw(canvas []string, i int) bool {
+	if i >= len(c.prevLines) {
 		return true
 	}
 	return c.prevLines[i] != canvas[i]

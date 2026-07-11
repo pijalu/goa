@@ -16,14 +16,17 @@ import (
 // CompanionCoordinator manages the companion agent reference and triggers
 // framework-driven companion review after a main-agent turn completes.
 type CompanionCoordinator struct {
-	mu             sync.Mutex
-	companionAgent *agentic.Agent
-	foregroundOrch *multiagent.ForegroundOrchestrator
+	mu              sync.Mutex
+	companionAgent  *agentic.Agent
+	foregroundOrch  *multiagent.ForegroundOrchestrator
+	messageTimeout  time.Duration
 }
 
 // NewCompanionCoordinator creates a companion coordinator.
 func NewCompanionCoordinator() *CompanionCoordinator {
-	return &CompanionCoordinator{}
+	return &CompanionCoordinator{
+		messageTimeout: 120 * time.Second,
+	}
 }
 
 // SetForegroundOrchestrator sets the orchestrator used for companion workflows.
@@ -31,6 +34,13 @@ func (cc *CompanionCoordinator) SetForegroundOrchestrator(orch *multiagent.Foreg
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 	cc.foregroundOrch = orch
+}
+
+// SetMessageTimeout sets the timeout for companion review runs.
+func (cc *CompanionCoordinator) SetMessageTimeout(d time.Duration) {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	cc.messageTimeout = d
 }
 
 // SetCompanionAgent stores the companion agent and registers it on the bus.
@@ -56,6 +66,7 @@ func (cc *CompanionCoordinator) Agent() *agentic.Agent {
 func (cc *CompanionCoordinator) RunPostTurn(mainOutput string, emitFlash func(string)) {
 	cc.mu.Lock()
 	orch := cc.foregroundOrch
+	timeout := cc.messageTimeout
 	cc.mu.Unlock()
 
 	if orch == nil {
@@ -72,7 +83,7 @@ func (cc *CompanionCoordinator) RunPostTurn(mainOutput string, emitFlash func(st
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		if err := orch.AfterMainTurn(ctx, mainOutput); err != nil {
 			if emitFlash != nil {

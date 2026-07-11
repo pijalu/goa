@@ -39,7 +39,7 @@ func TestHeadless_OrchestrateRejectsFinishedRun(t *testing.T) {
 	subs := &subsystems{
 		cfg:         &config.Config{},
 		projectDir:  dir,
-		orchAdapter: NewOrchestratorAdapter(nil, &config.Config{}),
+		orchAdapter: NewOrchestratorAdapter(nil, &config.Config{}, ""),
 		orchActive:  orchestrator.NewActiveRuntime(),
 	}
 	h := &HeadlessApp{subs: subs, opts: RuntimeOptions{Orchestrate: "run-fin"}}
@@ -57,7 +57,7 @@ func TestHeadless_OrchestrateRejectsUnknownRun(t *testing.T) {
 	subs := &subsystems{
 		cfg:         &config.Config{},
 		projectDir:  t.TempDir(),
-		orchAdapter: NewOrchestratorAdapter(nil, &config.Config{}),
+		orchAdapter: NewOrchestratorAdapter(nil, &config.Config{}, ""),
 		orchActive:  orchestrator.NewActiveRuntime(),
 	}
 	h := &HeadlessApp{subs: subs, opts: RuntimeOptions{Orchestrate: "ghost"}}

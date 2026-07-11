@@ -26,7 +26,7 @@ func TestOrchestrateCommand_LiveHubGoal(t *testing.T) {
 	}
 	cfg, _, pool := loadLiveConfig(t)
 	rootDir := t.TempDir()
-	adapter := NewOrchestratorAdapter(pool, cfg)
+	adapter := NewOrchestratorAdapter(pool, cfg, "")
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	cmd := &commands.OrchestrateCommand{
 		Builder:  adapter,

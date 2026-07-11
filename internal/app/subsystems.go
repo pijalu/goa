@@ -170,6 +170,12 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	steeringQueue := core.NewSteeringQueue()
 	agentBundle.agentMgr.SetSteeringQueue(steeringQueue)
 
+	if cfg.MultiAgent.MessageTimeout != "" {
+		if d, err := time.ParseDuration(cfg.MultiAgent.MessageTimeout); err == nil {
+			agentBundle.agentMgr.SetCompanionTimeout(d)
+		}
+	}
+
 	agentBundle.agentMgr.SetLifecycleRegistry(subs.lifecycleRegistry)
 	agentBundle.agentMgr.SetContextWindowRefresher(func() int {
 		if subs.providerMgr == nil {
@@ -654,31 +660,46 @@ func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderMa
 		return providerMgr.ResolveModelForProvider(providerID, modelName)
 	}
 
-	configureRoleModels(pool, cfg)
+	configureRoleModels(pool, cfg, modeRegistry)
 	// Register AgentTool and AgentSwarmTool with ModeResolver so sub-agents
 	// get mode-appropriate prompts, tools, and temperature settings.
 	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus)
 	return pool
 }
 
-func configureRoleModels(pool *multiagent.AgentPool, cfg *config.Config) {
+func configureRoleModels(pool *multiagent.AgentPool, cfg *config.Config, modeRegistry *core.ModeRegistry) {
+	resolveAllowed := func(major internal.MajorMode) []string {
+		if modeRegistry == nil {
+			return nil
+		}
+		if spec, err := modeRegistry.Resolve(major); err == nil && len(spec.AllowedTools) > 0 {
+			return spec.AllowedTools
+		}
+		return nil
+	}
 	if cfg.MultiAgent.CompanionModel != "" {
+		allowed := resolveAllowed(internal.MajorReviewer)
 		pool.SetConfig("companion", multiagent.AgentConfig{
 			ModelName:       cfg.MultiAgent.CompanionModel,
 			ProviderID:      cfg.MultiAgent.CompanionProvider,
 			ReasoningEffort: agentic.ReasoningEffort(cfg.GetThinkingLevel("companion")),
+			AllowedTools:    allowed,
 		})
 	}
 	if cfg.MultiAgent.PlannerModel != "" {
+		allowed := resolveAllowed(internal.MajorPlanner)
 		pool.SetConfig("planner", multiagent.AgentConfig{
 			ModelName:       cfg.MultiAgent.PlannerModel,
 			ReasoningEffort: agentic.ReasoningEffort(cfg.GetThinkingLevel("planner")),
+			AllowedTools:    allowed,
 		})
 	}
 	if cfg.MultiAgent.CoderModel != "" {
+		allowed := resolveAllowed(internal.MajorCoder)
 		pool.SetConfig("coder", multiagent.AgentConfig{
 			ModelName:       cfg.MultiAgent.CoderModel,
 			ReasoningEffort: agentic.ReasoningEffort(cfg.GetThinkingLevel("coder")),
+			AllowedTools:    allowed,
 		})
 	}
 }
@@ -799,6 +820,10 @@ func attachAgentDrivenToolPools(tools []agentic.Tool, pool *multiagent.AgentPool
 }
 
 func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions) *subsystems {
+	promptDir := cfg.Prompts.Dir
+	if promptDir == "" {
+		promptDir = filepath.Join(projectDir, ".goa", "prompts")
+	}
 	s := &subsystems{
 		cfg:               cfg,
 		loader:            loader,
@@ -827,7 +852,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		stateStore:        ab.stateStore,
 		goalManager:       goalManager,
 		goalDriver:        goalDriver,
-		orchAdapter:       NewOrchestratorAdapter(agentPool, cfg),
+		orchAdapter:       NewOrchestratorAdapter(agentPool, cfg, promptDir),
 		orchActive:        orchestrator.NewActiveRuntime(),
 		contextFiles:      internal.LoadProjectContextFiles(projectDir, cfg.ConfigDir),
 		requestReviewTool: requestReviewTool,

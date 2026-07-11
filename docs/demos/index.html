@@ -3,309 +3,71 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Goa — Demo Gallery</title>
+    <title>Goa Demos</title>
     <style>
-        :root {
-            --bg: #0f0f1a;
-            --surface: #1a1a2e;
-            --card: #242440;
-            --text: #e0e0e0;
-            --muted: #888;
-            --accent-workflows: #4fc3f7;
-            --accent-orchestrator: #ff9800;
-            --accent-companion: #ab47bc;
-            --border: rgba(255,255,255,0.08);
-        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            background: var(--bg);
-            color: var(--text);
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            line-height: 1.6;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-        header {
-            text-align: center;
-            padding: 3rem 0 2rem;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 3rem;
-        }
-        header h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #4fc3f7, #ff9800, #ab47bc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        header p {
-            color: var(--muted);
-            font-size: 1.1rem;
-            margin-top: 0.5rem;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-            gap: 2rem;
-            margin-bottom: 3rem;
-        }
-        .card {
-            background: var(--card);
-            border-radius: 16px;
-            overflow: hidden;
-            border: 1px solid var(--border);
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        .card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-        }
-        .card-header {
-            padding: 1.5rem 1.5rem 0.5rem;
-        }
-        .card-header h2 {
-            font-size: 1.3rem;
-            margin-bottom: 0.25rem;
-        }
-        .card-header .tag {
-            display: inline-block;
-            font-size: 0.75rem;
-            padding: 0.15rem 0.6rem;
-            border-radius: 20px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .tag-workflows { background: rgba(79,195,247,0.15); color: var(--accent-workflows); }
-        .tag-orchestrator { background: rgba(255,152,0,0.15); color: var(--accent-orchestrator); }
-        .tag-companion { background: rgba(171,71,188,0.15); color: var(--accent-companion); }
-        .card-body {
-            padding: 0.5rem 1.5rem 1.5rem;
-        }
-        .card-body p {
-            color: var(--muted);
-            font-size: 0.9rem;
-            margin-bottom: 1rem;
-        }
-        .card-body .demo-preview {
-            background: var(--surface);
-            border-radius: 8px;
-            padding: 0.5rem;
-            margin-bottom: 1rem;
-            min-height: 120px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--muted);
-            font-size: 0.85rem;
-            text-align: center;
-        }
-        .card-body .demo-preview img {
-            max-width: 100%;
-            border-radius: 6px;
-            display: block;
-        }
-        .card-body .btn {
-            display: inline-block;
-            background: var(--surface);
-            color: var(--text);
-            text-decoration: none;
-            padding: 0.6rem 1.2rem;
-            border-radius: 8px;
-            font-size: 0.85rem;
-            font-weight: 500;
-            border: 1px solid var(--border);
-            transition: background 0.2s;
-        }
-        .card-body .btn:hover {
-            background: rgba(255,255,255,0.08);
-        }
-        .features {
-            background: var(--surface);
-            border-radius: 16px;
-            padding: 2rem;
-            margin-bottom: 3rem;
-            border: 1px solid var(--border);
-        }
-        .features h3 {
-            font-size: 1.1rem;
-            margin-bottom: 1rem;
-            color: var(--accent-workflows);
-        }
-        .features table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-        }
-        .features th, .features td {
-            padding: 0.75rem 1rem;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-        }
-        .features th {
-            color: var(--muted);
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            letter-spacing: 0.5px;
-        }
-        .features tr:last-child td {
-            border-bottom: none;
-        }
-        .features code {
-            background: rgba(255,255,255,0.06);
-            padding: 0.1rem 0.4rem;
-            border-radius: 4px;
-            font-size: 0.8rem;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #4fc3f7, #ab47bc) !important;
-            color: #fff !important;
-            border: none !important;
-            font-weight: 600 !important;
-        }
-        .btn-primary:hover {
-            opacity: 0.9;
-        }
-        footer {
-            text-align: center;
-            color: var(--muted);
-            font-size: 0.85rem;
-            padding: 2rem 0;
-            border-top: 1px solid var(--border);
-        }
-        footer a { color: var(--accent-workflows); text-decoration: none; }
-        footer a:hover { text-decoration: underline; }
+        body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; line-height: 1.7; }
+        .container { max-width: 1100px; margin: 0 auto; padding: 2rem; }
+        h1 { font-size: 2.2rem; background: linear-gradient(135deg, #4fc3f7, #ab47bc, #ff9800); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 0.5rem; text-align: center; }
+        .subtitle { text-align: center; color: #888; font-size: 1.1rem; margin-bottom: 2.5rem; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; }
+        .card { background: #0d0d1a; border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); transition: transform 0.2s, border-color 0.2s; text-decoration: none; color: #e0e0e0; }
+        .card:hover { transform: translateY(-4px); border-color: rgba(79,195,247,0.4); }
+        .card img { width: 100%; display: block; }
+        .card-body { padding: 1.25rem; }
+        .card h2 { color: #4fc3f7; font-size: 1.2rem; margin-bottom: 0.5rem; }
+        .card p { color: #aaa; font-size: 0.95rem; margin: 0; }
+        .card .meta { color: #666; font-size: 0.8rem; margin-top: 0.75rem; font-family: 'SF Mono', monospace; }
+        .intro { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 1.5rem; margin-bottom: 2.5rem; }
+        .intro p { margin: 0; color: #ccc; }
+        .intro code { background: rgba(255,255,255,0.06); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
+        footer { text-align: center; color: #555; font-size: 0.85rem; padding: 3rem 0 1rem; border-top: 1px solid rgba(255,255,255,0.06); margin-top: 2rem; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>⟡ Goa Demo Gallery</h1>
-            <p>Interactive demonstrations of Goa's multi-agent features</p>
-        </header>
+<div class="container">
+    <h1>⟡ Goa Demos</h1>
+    <p class="subtitle">Real terminal recordings of Goa in four modes</p>
 
-        <div class="grid">
-            <!-- Workflows -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="tag tag-workflows">Workflows</span>
-                    <h2>Multi-Stage Pipelines</h2>
-                </div>
-                <div class="card-body">
-                    <p>Structured multi-agent pipelines with planner, coder, and reviewer stages. Pre-defined and custom workflows for reproducible task automation.</p>
-                    <div class="demo-preview">
-                        <img src="workflows-demo.gif" alt="Workflows Demo GIF" onerror="this.style.display='none'; this.parentElement.textContent='Record this demo: bash docs/demos/record-workflows-demo.sh'">
-                    </div>
-                    <a href="workflows-demo.html" class="btn">Watch Demo →</a>
-                    <a href="../WORKFLOWS.md" class="btn" style="margin-left:0.5rem">Documentation</a>
-                </div>
-            </div>
-
-            <!-- Orchestrator -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="tag tag-orchestrator">Orchestrator</span>
-                    <h2>Multi-Agent Topologies</h2>
-                </div>
-                <div class="card-body">
-                    <p>Flexible multi-agent orchestration with hub, fanout, and pipeline topologies. Live TUI tabs, per-agent steering, goal binding, and full event sourcing.</p>
-                    <div class="demo-preview">
-                        <img src="orchestrator-demo.gif" alt="Orchestrator Demo GIF" onerror="this.style.display='none'; this.parentElement.textContent='Record this demo: bash docs/demos/record-orchestrator-demo.sh'">
-                    </div>
-                    <a href="orchestrator-demo.html" class="btn">Watch Demo →</a>
-                    <a href="../ORCHESTRATOR.md" class="btn" style="margin-left:0.5rem">Documentation</a>
-                </div>
-            </div>
-
-            <!-- Companion -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="tag tag-companion">Companion</span>
-                    <h2>Sub-Agent Code Review</h2>
-                </div>
-                <div class="card-body">
-                    <p>Dedicated review sub-agent in two modes: agent-driven (LLM decides when to request review) and framework-driven (automatic review after every turn).</p>
-                    <div class="demo-preview">
-                        <img src="companion-demo.gif" alt="Companion Demo GIF" onerror="this.style.display='none'; this.parentElement.textContent='Record this demo: bash docs/demos/record-companion-demo.sh'">
-                    </div>
-                    <a href="companion-demo.html" class="btn">Watch Demo →</a>
-                    <a href="../USER-GUIDE.html#3-companion--sub-agent-code-review" class="btn" style="margin-left:0.5rem">Documentation</a>
-                </div>
-            </div>
-        </div>
-
-        <div class="features">
-            <h3>Feature Comparison</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Aspect</th>
-                        <th>Workflows</th>
-                        <th>Orchestrator</th>
-                        <th>Companion</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td><strong>Purpose</strong></td>
-                        <td>Structured multi-stage pipelines</td>
-                        <td>Flexible multi-agent topologies</td>
-                        <td>Code review sub-agent</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Agents</strong></td>
-                        <td>Fixed by workflow definition</td>
-                        <td>Per-run role selection</td>
-                        <td>Single companion agent</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Execution</strong></td>
-                        <td>Sequential stages</td>
-                        <td>Hub / fanout / pipeline</td>
-                        <td>Post-turn or on-demand</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Persistence</strong></td>
-                        <td>Live only</td>
-                        <td>Event-sourced, resumable</td>
-                        <td>Live only</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Goal binding</strong></td>
-                        <td>—</td>
-                        <td>✅</td>
-                        <td>—</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Steering</strong></td>
-                        <td>—</td>
-                        <td>✅ (live, per-agent)</td>
-                        <td>—</td>
-                    </tr>
-                    <tr>
-                        <td><strong>Key commands</strong></td>
-                        <td><code>/workflows:list</code>, <code>/workflows:run:&lt;name&gt;</code></td>
-                        <td><code>/orchestrate new &lt;topology&gt;</code>, <code>/orchestrate steer</code></td>
-                        <td><code>/companion:agent</code>, <code>/companion:framework</code></td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <div style="text-align:center; margin-bottom: 3rem;">
-            <a href="../USER-GUIDE.md" class="btn btn-primary" style="padding:0.8rem 2rem;font-size:1rem;">
-                Read the Full User Guide →
-            </a>
-        </div>
-
-        <footer>
-            <p>Goa — Terminal-native AI coding agent · <a href="https://github.com/pijalu/goa">GitHub</a> · GNU GPLv3</p>
-        </footer>
+    <div class="intro">
+        <p>All recordings use the same request, <code>write a html tic-tac-toe game</code>, with the local model <code>qwen/qwen3.5-9b</code> via LM Studio on <code>localhost:1234</code>. Each how-to page includes the ANSI recording, a transcript, and step-by-step instructions.</p>
     </div>
+
+    <div class="grid">
+        <a class="card" href="normal-demo.html">
+            <img src="normal-demo.gif" alt="Normal/Solo Mode Demo">
+            <div class="card-body">
+                <h2>Normal / Solo</h2>
+                <p>Single-agent chat: type a request and watch the agent write the file.</p>
+                <div class="meta">Request: write a html tic-tac-toe game</div>
+            </div>
+        </a>
+        <a class="card" href="companion-demo.html">
+            <img src="companion-demo.gif" alt="Companion Mode Demo">
+            <div class="card-body">
+                <h2>Companion</h2>
+                <p>Framework-driven review after every main-agent turn.</p>
+                <div class="meta">/companion:framework</div>
+            </div>
+        </a>
+        <a class="card" href="workflows-demo.html">
+            <img src="workflows-demo.gif" alt="Workflow Mode Demo">
+            <div class="card-body">
+                <h2>Workflow</h2>
+                <p>Plan → Implement → Review pipeline with multiple agents.</p>
+                <div class="meta">/workflows:implement-feature</div>
+            </div>
+        </a>
+        <a class="card" href="orchestrator-demo.html">
+            <img src="orchestrator-demo.gif" alt="Orchestrator Mode Demo">
+            <div class="card-body">
+                <h2>Orchestrator</h2>
+                <p>Hub-topology delegation from orchestrator to a coder specialist.</p>
+                <div class="meta">/orchestrate:new:topology=hub</div>
+            </div>
+        </a>
+    </div>
+</div>
+<footer>Goa — Terminal-native AI coding agent · GNU GPLv3</footer>
 </body>
 </html>
