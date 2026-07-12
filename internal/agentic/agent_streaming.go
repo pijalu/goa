@@ -913,7 +913,7 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 	msgs := a.buildProviderHistory()
 	sp := a.buildSystemPrompt()
-	mergeGoalProgress(msgs, a.cfg.GoalStateProvider)
+	msgs = mergeGoalProgress(msgs, a.cfg.GoalStateProvider)
 
 	return provider.Context{
 		Context:      ctx,
@@ -949,24 +949,45 @@ func (a *Agent) buildSystemPrompt() string {
 	return sp
 }
 
-func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) {
+// mergeGoalProgress injects the dynamic per-turn goal progress as a dedicated
+// system message placed immediately before the last user message, returning the
+// (possibly grown) slice.
+//
+// It deliberately does NOT mutate the last user message's content. The previous
+// implementation prepended the progress text to the last user message each turn;
+// because that message joins the cached prefix on the next turn, and because it
+// lost its prefix once it was no longer last, its bytes were turn-specific and
+// busted the provider's prompt cache from that point on. A separate progress
+// slot keeps every history message byte-stable across turns, so the cached
+// prefix survives and only the volatile trailing progress is re-sent.
+func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.Message {
 	if p == nil {
-		return
+		return msgs
 	}
 	progress := p.ActiveGoalProgress()
 	if progress == "" {
-		return
+		return msgs
 	}
-	prefix := provider.ContentBlock{
-		Type: provider.ContentBlockText,
-		Text: "[goal progress]\n" + progress + "\n\n",
+	progressMsg := provider.Message{
+		Role: provider.RoleSystem,
+		Content: []provider.ContentBlock{{
+			Type: provider.ContentBlockText,
+			Text: "[goal progress]\n" + progress,
+		}},
 	}
+	// Insert just before the last user message so the conversation still ends
+	// on a user turn (required by most providers).
+	insertAt := len(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == provider.RoleUser {
-			msgs[i].Content = append([]provider.ContentBlock{prefix}, msgs[i].Content...)
+			insertAt = i
 			break
 		}
 	}
+	msgs = append(msgs, provider.Message{}) // grow by one
+	copy(msgs[insertAt+1:], msgs[insertAt:])
+	msgs[insertAt] = progressMsg
+	return msgs
 }
 
 // logProviderContext writes a concise summary of the context to the debug log.

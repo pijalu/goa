@@ -68,7 +68,7 @@ type mockGoalProvider struct {
 func (m *mockGoalProvider) ActiveGoalReminder() string { return m.staticReminder }
 func (m *mockGoalProvider) ActiveGoalProgress() string { return m.dynamicProgress }
 
-func TestBuildProviderContext_GoalProgressInUserMessage(t *testing.T) {
+func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 	cap := registerCapturingProvider("goal-progress")
 
 	agent := NewAgent(Config{
@@ -94,25 +94,39 @@ func TestBuildProviderContext_GoalProgressInUserMessage(t *testing.T) {
 		t.Errorf("system prompt should NOT contain dynamic progress, got %q", pctx.SystemPrompt)
 	}
 
-	var userMsgs []provider.Message
-	for _, m := range pctx.Messages {
+	// The dynamic progress must be injected as a separate system message placed
+	// immediately before the last user message, NOT baked into the user
+	// message's content. Prepending to the user message made its bytes
+	// turn-specific, busting the cached prefix on the next turn.
+	progressIdx, lastUserIdx := -1, -1
+	for i, m := range pctx.Messages {
+		if m.Role == provider.RoleSystem {
+			for _, b := range m.Content {
+				if strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") {
+					progressIdx = i
+				}
+			}
+		}
 		if m.Role == provider.RoleUser {
-			userMsgs = append(userMsgs, m)
+			lastUserIdx = i
 		}
 	}
-	if len(userMsgs) == 0 {
+	if progressIdx < 0 {
+		t.Fatalf("dynamic progress should be injected as a system message; messages: %+v", pctx.Messages)
+	}
+	if lastUserIdx < 0 {
 		t.Fatal("expected at least one user message")
 	}
-	lastUser := userMsgs[len(userMsgs)-1]
-	found := false
-	for _, block := range lastUser.Content {
-		if block.Type == provider.ContentBlockText && strings.Contains(block.Text, "DYNAMIC PROGRESS LINE") {
-			found = true
-			break
-		}
+	if progressIdx != lastUserIdx-1 {
+		t.Errorf("progress system message should immediately precede the last user message: progress@%d lastUser@%d",
+			progressIdx, lastUserIdx)
 	}
-	if !found {
-		t.Errorf("dynamic progress should be in the last user message, got %+v", lastUser.Content)
+	// The last user message must carry only the verbatim user text.
+	lastUser := pctx.Messages[lastUserIdx]
+	for _, b := range lastUser.Content {
+		if strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") {
+			t.Errorf("last user message must not contain progress (cache-stable verbatim text): %q", b.Text)
+		}
 	}
 }
 
