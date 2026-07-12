@@ -286,3 +286,69 @@ func dumpEmu(emu *screenEmulator, h int) string {
 	}
 	return b.String()
 }
+
+// TestPlaceLayer_OnlyWritesVisibleSubrange verifies placeLayer is O(visible):
+// it writes only the content lines whose absolute Y falls inside the visible
+// region and leaves off-screen canvas rows untouched, even when the layer's
+// Content is far larger than the viewport (the chat-transcript case).
+func TestPlaceLayer_OnlyWritesVisibleSubrange(t *testing.T) {
+	const canvasH = 1000
+	const rectY = 0
+	const vStart = 990 // viewport shows the last 10 rows
+	const vEnd = 1000
+
+	content := make([]string, canvasH)
+	for i := range content {
+		content[i] = "line-" + itoaStr(i)
+	}
+	canvas := make([]string, canvasH)
+
+	l := Layer{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: rectY, W: 80, H: canvasH}, Content: content}
+	placeLayer(canvas, l, 80, vStart, vEnd)
+
+	// Visible rows populated.
+	for y := vStart; y < vEnd; y++ {
+		if canvas[y] != content[y] {
+			t.Errorf("visible row %d = %q, want %q", y, canvas[y], content[y])
+		}
+	}
+	// Off-screen rows untouched (still empty).
+	for y := 0; y < vStart; y++ {
+		if canvas[y] != "" {
+			t.Errorf("off-screen row %d should be empty, got %q", y, canvas[y])
+		}
+	}
+}
+
+// TestPlaceLayer_LayerOffsetBelowViewport verifies a layer whose Rect.Y starts
+// above the viewport still maps its tail content into the visible region.
+func TestPlaceLayer_LayerOffsetBelowViewport(t *testing.T) {
+	const canvasH = 50
+	const rectY = 40 // layer occupies rows 40..44
+	content := []string{"a", "b", "c", "d", "e"}
+	canvas := make([]string, canvasH)
+	l := Layer{Name: "x", Kind: LayerBase, Rect: Rect{X: 0, Y: rectY, W: 80, H: 5}, Content: content}
+	placeLayer(canvas, l, 80, 42, 50) // visible 42..49
+	// rows 42,43,44 visible -> c,d,e ; rows 40,41 off-screen -> untouched
+	if canvas[42] != "c" || canvas[43] != "d" || canvas[44] != "e" {
+		t.Errorf("visible tail wrong: %q %q %q", canvas[42], canvas[43], canvas[44])
+	}
+	if canvas[40] != "" || canvas[41] != "" {
+		t.Errorf("off-screen rows should be empty: %q %q", canvas[40], canvas[41])
+	}
+}
+
+// itoaStr avoids pulling in strconv just for one test helper.
+func itoaStr(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}

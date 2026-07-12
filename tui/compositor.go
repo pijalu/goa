@@ -145,12 +145,34 @@ func placeOverlays(canvas []string, overlays []Layer, baseHeight, termH, termW i
 // placeLayer writes a layer's Content onto the canvas at its Rect, padding
 // each content line to the layer's width and truncating overwidth lines.
 // Lines outside the visible region [viewportStart, visibleEnd) are skipped.
+//
+// Rather than iterating every content line and bounds-checking, it computes
+// the content-index subrange that maps into the visible canvas rows and
+// iterates only that. This keeps placeLayer O(visible) even when a layer's
+// Content is the full conversation transcript (the chat layer), so streaming
+// frames do not pay O(history) per layer.
 func placeLayer(canvas []string, l Layer, termW, viewportStart, visibleEnd int) {
-	for i, line := range l.Content {
+	if len(l.Content) == 0 {
+		return
+	}
+	// y = l.Rect.Y + i must satisfy viewportStart <= y < visibleEnd.
+	start := viewportStart - l.Rect.Y
+	end := visibleEnd - l.Rect.Y
+	if start < 0 {
+		start = 0
+	}
+	if end > len(l.Content) {
+		end = len(l.Content)
+	}
+	if start >= end {
+		return
+	}
+	for i := start; i < end; i++ {
 		y := l.Rect.Y + i
-		if y < viewportStart || y >= visibleEnd || y < 0 || y >= len(canvas) {
+		if y < 0 || y >= len(canvas) {
 			continue
 		}
+		line := l.Content[i]
 		if vw := visibleWidth(line); vw > termW {
 			line = truncateToWidth(line, termW, "")
 		}
