@@ -396,3 +396,33 @@ func TestCompositor_ResizePreservesScrollbackAndEmitsViewportOnly(t *testing.T) 
 		t.Errorf("resize re-emitted the whole transcript (%d \\r\\n, want < 30): %q", crlf, resize)
 	}
 }
+
+// TestCompositor_InViewportShrinkSkipsFullRedraw verifies the review 2.4
+// refinement: a content shrink that never involved scrollback (everything
+// fit on screen) must NOT force an O(history) full redraw. The differential
+// path clears the stale trailing rows instead. Only scrollback-affecting
+// shrinks (maxLinesRendered > height) need a full redraw.
+func TestCompositor_InViewportShrinkSkipsFullRedraw(t *testing.T) {
+	term := &fakeTerminal{w: 40, h: 12}
+	comp := NewCompositor(term)
+
+	makeScene := func(n int) *Scene {
+		content := make([]string, n)
+		for i := range content {
+			content[i] = "row " + itoaStr(i)
+		}
+		return &Scene{
+			TerminalW: 40, TerminalH: 12,
+			Layers: []Layer{
+				{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 40, H: n}, Content: content},
+			},
+		}
+	}
+	comp.Render(makeScene(8)) // fits on 12-row screen; no scrollback
+	before := comp.FullRedrawCount()
+	comp.Render(makeScene(4)) // in-viewport shrink
+	after := comp.FullRedrawCount()
+	if after != before {
+		t.Errorf("in-viewport shrink triggered a full redraw (before=%d after=%d); the differential path should handle it", before, after)
+	}
+}

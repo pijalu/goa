@@ -454,7 +454,7 @@ func (c *Compositor) Render(scene *Scene) {
 	fullRender := func(clear bool) { c.fullFrame(canvas, scene.Cursor, width, height, clear) }
 	resizeRender := func() { c.resizeFrame(canvas, scene.Cursor, width, height) }
 
-	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, fullRender, resizeRender) {
+	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, height, fullRender, resizeRender) {
 		return
 	}
 	c.renderChangePath(canvas, hasOverlay, scene.Cursor, fl, fullRender)
@@ -495,7 +495,7 @@ func (c *Compositor) computeFrameLocals(width, height int) *frameLocals {
 	return fl
 }
 
-func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, fullRender func(bool), resizeRender func()) bool {
+func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, height int, fullRender func(bool), resizeRender func()) bool {
 	if len(c.prevLines) == 0 && !widthChanged && !heightChanged {
 		fullRender(false)
 		return true
@@ -506,7 +506,14 @@ func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChang
 		resizeRender()
 		return true
 	}
-	if c.clearOnShrink && len(canvas) < c.maxLinesRendered && !hasOverlay {
+	// Shrink guard: a full redraw is only required when the shrink could have
+	// left the SCROLLBACK stale, i.e. when we have previously rendered more
+	// lines than fit on screen (maxLinesRendered > height). Pure in-viewport
+	// shrinks are handled correctly by the differential path's trailing-line
+	// clear (writeDifferential), so they no longer force an O(history) full
+	// redraw on every later frame. !hasOverlay because overlays are
+	// viewport-relative and must not be disturbed by a base clear.
+	if c.clearOnShrink && len(canvas) < c.maxLinesRendered && c.maxLinesRendered > height && !hasOverlay {
 		fullRender(true)
 		return true
 	}
