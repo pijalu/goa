@@ -71,16 +71,13 @@ type ChatViewport struct {
 		width int
 		lines []string
 	}
-	// tailCache is the visible tail of renderCache that is actually handed to
-	// the compositor. Keeping it separate lets Render return the tail without
-	// rebuilding the full frame cache when only the viewport height changes.
-	tailCache struct {
-		width  int
-		height int
-		lines  []string
-	}
-	// viewportH is the maximum number of lines to return from Render. A value
-	// <= 0 means "return everything" (used by tests and narrow terminals).
+	// viewportH is a viewport-height hint set by the host via SetViewportHeight.
+	// Render does NOT truncate to it: culling of off-screen rows happens at the
+	// compositor level (placeLayer only iterates the visible subrange of a
+	// layer's content), and returning a tail here would starve the
+	// scrollback-population paths (emitFirstScroll/emitLargeScroll) that read
+	// historical canvas rows. The field is retained so the host can advertise
+	// the viewport size and so a future line-addressable history can use it.
 	viewportH int
 	// generation increments on every mutation (append, update, invalidate).
 	// Render compares it to lastRenderGen: when they match and the cache is
@@ -96,9 +93,12 @@ type ChatViewport struct {
 	toolWidgetsDirty atomic.Bool
 }
 
-// SetViewportHeight sets a hint for the maximum number of chat lines that
-// should be rendered. Currently unused; kept for future viewport-aware
-// culling without breaking the public API.
+// SetViewportHeight records the terminal viewport height. It is called by
+// the host each frame. ChatViewport does NOT truncate its rendered output to
+// this height: off-screen culling is handled by the compositor (placeLayer
+// iterates only the visible subrange of a layer's content), and returning a
+// tail would starve scrollback-population paths. The hint is retained for a
+// future line-addressable history and is a no-op today.
 func (cv *ChatViewport) SetViewportHeight(h int) {
 	if h < 0 {
 		h = 0
@@ -162,7 +162,6 @@ func (cv *ChatViewport) rebuildFrame(width int, dirty []int) {
 func (cv *ChatViewport) Invalidate() {
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
-	cv.tailCache.lines = nil
 	cv.generation++
 	cv.pendingSteering = -1
 	for i := range cv.entries {
@@ -184,7 +183,6 @@ func (cv *ChatViewport) Clear() {
 	cv.pendingSteering = -1
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
-	cv.tailCache.lines = nil
 	cv.generation++
 }
 
@@ -247,7 +245,6 @@ func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool)
 		}
 		cv.renderCache.width = 0
 		cv.renderCache.lines = nil
-		cv.tailCache.lines = nil
 		cv.generation++
 		return e, true
 	}
@@ -273,7 +270,6 @@ func (cv *ChatViewport) ClearSteeringPending() {
 func (cv *ChatViewport) resetRenderCaches(width int) {
 	cv.renderCache.width = width
 	cv.renderCache.lines = nil
-	cv.tailCache.lines = nil
 	cv.generation++
 	for i := range cv.entries {
 		cv.entries[i].renderedWidth = 0
