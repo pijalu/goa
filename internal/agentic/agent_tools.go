@@ -133,10 +133,31 @@ func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[stri
 	}
 	output := r.Output
 	if limit := a.toolResultSizeLimit(); limit > 0 && len(output) > limit {
-		truncated := output[:limit]
-		return fmt.Sprintf("%s\n[goa-system] Tool result was truncated to %d bytes (original %d bytes). The read succeeded but the result is limited to fit the available context; use a narrower query, smaller line range, or filters to see more.", truncated, limit, len(output))
+		return truncateToolResult(output, limit)
 	}
 	return output
+}
+
+// truncateToolResult caps a tool result to roughly limit bytes while preserving
+// both the start and the end. The beginning matters for tools like read_file
+// (structure/context at the top); the end matters for bash/webfetch (errors and
+// final results live at the tail). The middle is elided with a clear marker so
+// the model knows content was dropped and can re-read a narrower range. This
+// caps tool output at the source so it never inflates the prefix that later
+// compaction would have to elide anyway.
+func truncateToolResult(output string, limit int) string {
+	const markerFmt = "\n[goa-system] Tool result was truncated to ~%d bytes (original %d bytes); the middle was elided, the beginning and end are preserved.\n"
+	marker := fmt.Sprintf(markerFmt, limit, len(output))
+	half := (limit - len(marker)) / 2
+	if half < 1 {
+		half = 1
+	}
+	if len(output) <= half*2+len(marker) {
+		return output
+	}
+	head := output[:half]
+	tail := output[len(output)-half:]
+	return head + marker + tail
 }
 
 // toolResultSizeLimit returns a heuristic byte limit for a single tool result.
