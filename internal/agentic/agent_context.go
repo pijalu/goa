@@ -50,6 +50,13 @@ func (a *Agent) enforceContextCeiling() {
 	const hardCeilingPercent = 95
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 
+	// History is mutated here; hold the agent mutex for the whole transaction.
+	// The rest of the agent uniformly guards a.history with a.mu, and this
+	// last-resort safety net must too (it runs on the turn goroutine, but an
+	// off-turn history reader would otherwise race it under -race).
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	hist := a.history
 	if len(hist) <= 1 {
 		return
@@ -138,7 +145,10 @@ func (a *Agent) checkContextLimit() error {
 	}
 	const hardCeilingPercent = 95
 	hardCeiling := maxTokens * hardCeilingPercent / 100
-	if estimateTokensFromHistory(a.history) > hardCeiling {
+	a.mu.Lock()
+	estimated := estimateTokensFromHistory(a.history)
+	a.mu.Unlock()
+	if estimated > hardCeiling {
 		return fmt.Errorf("context window full: estimated tokens exceed %d (%d%% of %d); compress or reset the conversation", hardCeiling, hardCeilingPercent, maxTokens)
 	}
 	return nil

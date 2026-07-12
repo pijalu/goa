@@ -33,8 +33,14 @@ func (a *Agent) Compact(ctx context.Context) error {
 }
 
 func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
+	// Snapshot history under the mutex, then run the (network) summarization
+	// off-lock so a slow provider call does not block off-turn history readers.
+	a.mu.Lock()
+	snapshot := append([]Message(nil), a.history...)
+	a.mu.Unlock()
+
 	var msgs []Message
-	for _, m := range a.history {
+	for _, m := range snapshot {
 		if m.Role != System {
 			msgs = append(msgs, m)
 		}
@@ -95,7 +101,10 @@ func (a *Agent) MaybeCompress(ctx context.Context) error {
 // per-strategy thresholds are bypassed so manual invocations always perform
 // work. No-op if the history is empty.
 func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrategy, force bool) error {
-	if a == nil || len(a.history) == 0 {
+	a.mu.Lock()
+	n := len(a.history)
+	a.mu.Unlock()
+	if a == nil || n == 0 {
 		return nil
 	}
 	if a.cfg.Logger != nil {
@@ -123,7 +132,9 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 		if threshold == 0 {
 			threshold = 90
 		}
+		a.mu.Lock()
 		stats := a.computeContextStatsForMax(maxTokens)
+		a.mu.Unlock()
 		if stats.UsagePercent < threshold {
 			return nil
 		}
@@ -141,8 +152,8 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 		return err
 	}
 
-	// Emit stats after compression
-	newStats := a.computeContextStats()
+	// Emit stats after compression (public ContextStats acquires the mutex).
+	newStats := a.ContextStats()
 	a.emitEvent(OutputEvent{
 		Type:         EventContextStats,
 		ContextStats: &newStats,
@@ -171,17 +182,25 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 
 	switch strategy {
 	case CompressionToolElision:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	case CompressionSelective:
+		a.mu.Lock()
 		a.compressSelective()
+		a.mu.Unlock()
 	case CompressionSummarize:
 		return a.Compact(ctx)
 	case CompressionHybrid:
 		return a.compressHybrid(ctx)
 	case CompressionMicro:
+		a.mu.Lock()
 		a.microCompactForced(force)
+		a.mu.Unlock()
 	default:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	}
 	return nil
 }
@@ -383,6 +402,12 @@ func (a *Agent) handleContextError(err error) {
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "Context length error — applying compression (strategy=%s)", strategy)
 	}
+
+	// The reactive compression (compressHistoryWithStrategy + the selective
+	// escalation below) is all in-memory; hold the mutex for the whole
+	// transaction. Those helpers assume the lock is held.
+	a.mu.Lock()
+	defer a.mu.Unlock()
 
 	// Apply the configured strategy.  We pass force=true so the strategy
 	// runs even when internal thresholds aren't met (overflow is an emergency).
