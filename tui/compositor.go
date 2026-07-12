@@ -452,8 +452,9 @@ func (c *Compositor) Render(scene *Scene) {
 
 	fl := c.computeFrameLocals(width, height)
 	fullRender := func(clear bool) { c.fullFrame(canvas, scene.Cursor, width, height, clear) }
+	resizeRender := func() { c.resizeFrame(canvas, scene.Cursor, width, height) }
 
-	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, fullRender) {
+	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, fullRender, resizeRender) {
 		return
 	}
 	c.renderChangePath(canvas, hasOverlay, scene.Cursor, fl, fullRender)
@@ -494,13 +495,15 @@ func (c *Compositor) computeFrameLocals(width, height int) *frameLocals {
 	return fl
 }
 
-func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, fullRender func(bool)) bool {
+func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, fullRender func(bool), resizeRender func()) bool {
 	if len(c.prevLines) == 0 && !widthChanged && !heightChanged {
 		fullRender(false)
 		return true
 	}
 	if widthChanged || heightChanged {
-		fullRender(true)
+		// Resize: repaint only the visible viewport and preserve scrollback
+		// (no \x1b[3J, no full re-emit of the transcript). See resizeFrame.
+		resizeRender()
 		return true
 	}
 	if c.clearOnShrink && len(canvas) < c.maxLinesRendered && !hasOverlay {
@@ -618,7 +621,48 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
 
-	c.cursorRow = max(0, len(canvas)-1)
+	c.applyFrameTracking(canvas, cursor, width, height, clear)
+}
+
+// resizeFrame repaints only the visible viewport after a terminal size change.
+// Unlike fullFrame(clear=true), it does NOT emit \x1b[3J (so existing
+// scrollback is preserved) and writes only the last `height` canvas rows
+// instead of the whole transcript. On resize the terminal already holds the
+// prior scrollback; the reflowed visible rows are all that must be repainted,
+// so we avoid re-emitting the entire history (which was slow on long sessions
+// and discarded the user's scroll position).
+func (c *Compositor) resizeFrame(canvas []string, cursor *CursorPos, width, height int) {
+	c.fullRedrawCount++
+	var buf strings.Builder
+	buf.WriteString("\x1b[?2026h")
+	buf.WriteString("\x1b[2J\x1b[H") // clear screen only; keep scrollback (no \x1b[3J)
+	start := len(canvas) - height
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(canvas); i++ {
+		if i > start {
+			buf.WriteString("\r\n")
+		}
+		line := canvas[i]
+		if vw := visibleWidth(line); vw > width {
+			line = truncateToWidth(line, width, "")
+		}
+		buf.WriteString(line)
+	}
+	buf.WriteString("\x1b[?2026l")
+	c.terminal.Write([]byte(buf.String()))
+
+	// clear=false so maxLinesRendered (the shrink-detection high-water mark) is
+	// preserved rather than reset to the visible-only length.
+	c.applyFrameTracking(canvas, cursor, width, height, false)
+}
+
+// applyFrameTracking updates the compositor's diff baseline and viewport
+// anchors after a full-screen repaint (fullFrame or resizeFrame). It is the
+// shared tail of both paths so they cannot drift in what they record.
+func (c *Compositor) applyFrameTracking(canvas []string, cursor *CursorPos, width, height int, clear bool) {
+	c.cursorRow = max(0, len(canvas) - 1)
 	c.hardwareCursorRow = c.cursorRow
 	if clear {
 		c.maxLinesRendered = len(canvas)
