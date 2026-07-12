@@ -7,6 +7,7 @@ package tools
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -124,4 +125,27 @@ func (s *staticRunner) Name() string { return "static" }
 
 func (s *staticRunner) Run(ctx context.Context) (verify.Report, error) {
 	return s.report, s.err
+}
+
+// TestVerifyRunnerFactory_RoutesByFramework verifies the factory dispatches to
+// the concrete framework runner type for each known name (F4 cleanup).
+func TestVerifyRunnerFactory_RoutesByFramework(t *testing.T) {
+	dir := t.TempDir()
+	cases := []struct {
+		name string
+		want any
+	}{
+		{"go", &verify.GoTestRunner{}},
+		{"npm", &verify.NPMTestRunner{}},
+		{"pytest", &verify.PytestRunner{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := verifyRunnerFactory(tc.name)
+			r := builder(dir, nil)
+			if reflect.TypeOf(r) != reflect.TypeOf(tc.want) {
+				t.Errorf("%q: runner type = %T, want %T", tc.name, r, tc.want)
+			}
+		})
+	}
 }

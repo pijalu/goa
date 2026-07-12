@@ -356,3 +356,47 @@ func TestParseGoFailures_TailingFailure(t *testing.T) {
 		t.Errorf("expected TestTail, got %q", failures[0].Test)
 	}
 }
+
+// TestGoTestRunner_DurationIsWallClock verifies DurationMs reflects elapsed
+// wall-clock time, not CPU user time (F2).
+func TestGoTestRunner_DurationIsWallClock(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module durltest\n\ngo 1.25\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dur_test.go"), []byte("package durltest\n\nimport (\n\t\"testing\"\n\t\"time\"\n)\n\nfunc TestSleep(t *testing.T) { time.Sleep(120 * time.Millisecond) }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &GoTestRunner{Dir: dir, Args: []string{"-timeout", "30s"}}
+	report, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !report.Passed {
+		t.Fatalf("expected pass, got report: %+v", report)
+	}
+	// A 120ms sleep should produce >= 100ms of wall-clock duration; CPU user
+	// time for a sleeping test is near zero, which is what this guards against.
+	if report.DurationMs < 100 {
+		t.Errorf("DurationMs = %d, want >= 100 (wall clock)", report.DurationMs)
+	}
+}
+
+func TestParseNPMFailures(t *testing.T) {
+	output := "  ✓ works\n  ✕ broken thing\n  2 passing\n  1 failing\n"
+	failures := parseNPMFailures(output)
+	if len(failures) < 2 {
+		t.Fatalf("expected at least 2 failures, got %d: %v", len(failures), failures)
+	}
+}
+
+func TestParsePytestFailures(t *testing.T) {
+	output := "test_a.py::test_ok PASSED\nservice/test_x.py::test_bad FAILED\n"
+	failures := parsePytestFailures(output)
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 failure, got %d: %v", len(failures), failures)
+	}
+	if !strings.Contains(failures[0].Message, "test_bad") {
+		t.Errorf("failure message = %q", failures[0].Message)
+	}
+}

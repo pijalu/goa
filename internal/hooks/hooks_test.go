@@ -51,6 +51,31 @@ func TestEngine_FireAfterTool_DoesNotVeto(t *testing.T) {
 	}
 }
 
+// TestEngine_NonexistentCommand_RecordsFailure verifies a hook whose command
+// cannot be started is recorded in the audit log with a non-zero exit code and
+// a non-empty error message, instead of being masked as success (F1).
+func TestEngine_NonexistentCommand_RecordsFailure(t *testing.T) {
+	cfg := &Config{
+		Hooks: []Hook{
+			{Event: EventAfterTool, Command: "/no/such/binary/goa-hook"},
+		},
+	}
+	engine := NewEngine(cfg, NewStore("")) // in-memory audit
+	if err := engine.FireAfterTool(context.Background(), ToolPayload{ToolName: "bash"}); err != nil {
+		t.Fatalf("afterTool must not veto on launch failure: %v", err)
+	}
+	entries := engine.Store().Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(entries))
+	}
+	if entries[0].ExitCode == 0 {
+		t.Errorf("expected non-zero exit code for failed launch, got 0")
+	}
+	if entries[0].Output == "" {
+		t.Errorf("expected non-empty output describing the launch failure")
+	}
+}
+
 func TestEngine_FireBeforeTool_ReceivesPayload(t *testing.T) {
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "out.json")

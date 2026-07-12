@@ -159,8 +159,13 @@ func (e *Engine) fire(ctx context.Context, h Hook, payload any) error {
 	out, err := cmd.CombinedOutput()
 	entry.Output = string(out)
 	entry.ExitCode = exitCode(cmd, err)
+	if err != nil && entry.Output == "" {
+		// Record the launch failure reason (e.g. binary not found) so the audit
+		// entry is not silently empty with a success-looking exit code.
+		entry.Output = err.Error()
+	}
 	if err != nil && h.Event == EventBeforeTool {
-		return fmt.Errorf("beforeTool hook %q vetoed: %w\n%s", h.Command, err, string(out))
+		return fmt.Errorf("beforeTool hook %q vetoed: %w\n%s", h.Command, err, entry.Output)
 	}
 	return nil
 }
@@ -171,6 +176,11 @@ func exitCode(cmd *exec.Cmd, err error) int {
 	}
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		return exitErr.ExitCode()
+	}
+	if err != nil {
+		// Failed to start (e.g. binary not found) or another non-exit error:
+		// surface a distinct non-zero code instead of masking as success (0).
+		return -1
 	}
 	return 0
 }

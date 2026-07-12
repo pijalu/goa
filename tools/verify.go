@@ -125,24 +125,24 @@ func runnerFromCommand(command string, args []string, projectDir string) (verify
 
 // verifyRunnerFactory returns a builder that wraps the named framework with
 // explicit arguments, so the tool can honor a custom command while still using
-// framework-specific parsing and reporting.
-func verifyRunnerFactory(name string) func(string, []string, string) verify.Runner {
+// framework-specific parsing and reporting. The builder takes (dir, args).
+func verifyRunnerFactory(name string) func(dir string, args []string) verify.Runner {
 	switch name {
 	case "go":
-		return func(dir string, args []string, raw string) verify.Runner {
+		return func(dir string, args []string) verify.Runner {
 			return &verify.GoTestRunner{Dir: dir, Args: args}
 		}
 	case "npm":
-		return func(dir string, args []string, raw string) verify.Runner {
+		return func(dir string, args []string) verify.Runner {
 			return &verify.NPMTestRunner{Dir: dir, Args: args}
 		}
 	case "pytest":
-		return func(dir string, args []string, raw string) verify.Runner {
+		return func(dir string, args []string) verify.Runner {
 			return &verify.PytestRunner{Dir: dir, Args: args}
 		}
 	default:
-		return func(dir string, args []string, raw string) verify.Runner {
-			return &genericRunner{name: raw, args: args, dir: dir}
+		return func(dir string, args []string) verify.Runner {
+			return &genericRunner{name: name, args: args, dir: dir}
 		}
 	}
 }
@@ -152,14 +152,14 @@ type genericRunner struct {
 	name    string
 	args    []string
 	dir     string
-	factory func(string, []string, string) verify.Runner
+	factory func(string, []string) verify.Runner
 }
 
 func (g *genericRunner) Name() string { return g.name }
 
 func (g *genericRunner) Run(ctx context.Context) (verify.Report, error) {
 	if g.factory != nil {
-		return g.factory(g.dir, g.args, g.name).Run(ctx)
+		return g.factory(g.dir, g.args).Run(ctx)
 	}
 	return verify.Report{}, fmt.Errorf("verify: unsupported command %q", g.name)
 }

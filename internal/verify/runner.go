@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Runner executes the project's test suite and returns a structured report.
@@ -103,7 +104,9 @@ func (g *GoTestRunner) Run(ctx context.Context) (Report, error) {
 
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
 
 	stdout := string(out)
 	report := Report{
@@ -112,10 +115,7 @@ func (g *GoTestRunner) Run(ctx context.Context) (Report, error) {
 		ExitCode:   exitCode(cmd, err),
 		Stdout:     stdout,
 		Failures:   parseGoFailures(stdout),
-		DurationMs: 0,
-	}
-	if cmd.ProcessState != nil {
-		report.DurationMs = cmd.ProcessState.UserTime().Milliseconds()
+		DurationMs: elapsed.Milliseconds(),
 	}
 	return report, nil
 }
@@ -268,12 +268,17 @@ func (n *NPMTestRunner) Run(ctx context.Context) (Report, error) {
 	args := append([]string{"test"}, n.Args...)
 	cmd := exec.CommandContext(ctx, "npm", args...)
 	cmd.Dir = n.Dir
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	stdout := string(out)
 	return Report{
-		Framework: "npm",
-		Passed:    cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0,
-		ExitCode:  exitCode(cmd, err),
-		Stdout:    string(out),
+		Framework:  "npm",
+		Passed:     cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0,
+		ExitCode:   exitCode(cmd, err),
+		Stdout:     stdout,
+		Failures:   parseNPMFailures(stdout),
+		DurationMs: elapsed.Milliseconds(),
 	}, nil
 }
 
@@ -289,11 +294,47 @@ func (p *PytestRunner) Run(ctx context.Context) (Report, error) {
 	args := append([]string{"-v"}, p.Args...)
 	cmd := exec.CommandContext(ctx, "pytest", args...)
 	cmd.Dir = p.Dir
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(start)
+	stdout := string(out)
 	return Report{
-		Framework: "pytest",
-		Passed:    cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0,
-		ExitCode:  exitCode(cmd, err),
-		Stdout:    string(out),
+		Framework:  "pytest",
+		Passed:     cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 0,
+		ExitCode:   exitCode(cmd, err),
+		Stdout:     stdout,
+		Failures:   parsePytestFailures(stdout),
+		DurationMs: elapsed.Milliseconds(),
 	}, nil
+}
+
+// parseNPMFailures extracts best-effort failure summaries from npm test output
+// (mocha/jest). It is intentionally lenient: partial extraction still gives a
+// remediator something to work with.
+func parseNPMFailures(output string) []Failure {
+	var failures []Failure
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "✕"), strings.Contains(trimmed, "failing"), strings.Contains(trimmed, "failed"):
+			if trimmed == "" {
+				continue
+			}
+			failures = append(failures, Failure{Message: trimmed, Raw: line})
+		}
+	}
+	return failures
+}
+
+// parsePytestFailures extracts FAILED lines from pytest -v output.
+func parsePytestFailures(output string) []Failure {
+	var failures []Failure
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "FAILED") {
+			continue
+		}
+		msg := strings.TrimSpace(line)
+		failures = append(failures, Failure{Message: msg, Raw: line})
+	}
+	return failures
 }
