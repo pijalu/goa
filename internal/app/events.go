@@ -223,7 +223,7 @@ func (a *App) handleSteeringInputControl(si *event.SteeringInput) bool {
 		return true
 	}
 	a.subs.foregroundOrch.InjectSteering(si.Text)
-	a.subs.chat.AddSystemMessage(fmt.Sprintf("[steering] %s", si.Text))
+	a.subs.chat.AddSteeringPending(si.Text)
 	if a.subs.footer != nil {
 		a.subs.footer.SetData(tui.FooterData{SteeringPending: si.Text})
 	}
@@ -323,6 +323,7 @@ func (a *App) handleSteeringInjected(injected *event.SteeringInput) {
 	}
 	subs := a.subs
 	if subs.chat != nil {
+		subs.chat.ClearSteeringPending()
 		subs.chat.AddSystemMessage(fmt.Sprintf("[steering injected] %s", injected.Text))
 	}
 	if subs.footer != nil {

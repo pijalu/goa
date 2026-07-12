@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -56,6 +58,8 @@ type EditFileTool struct {
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
 	FileChangeNotifier func(path string)
+	// LSPManager, when set, is notified of content changes for .go files.
+	LSPManager LSPDocumentManager
 }
 
 func (t *EditFileTool) Schema() agentic.ToolSchema {
@@ -195,6 +199,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(targetPath)
 	}
+	t.notifyLSP(context.Background(), targetPath)
 
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
@@ -235,6 +240,18 @@ func (t *EditFileTool) Access(input string) ToolAccess {
 
 //go:embed editfile.short.md editfile.long.md
 var editfileDocs embed.FS
+
+func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) {
+	if t.LSPManager == nil || !strings.HasSuffix(resolvedPath, ".go") {
+		return
+	}
+	content, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return
+	}
+	_ = t.LSPManager.DidChange(ctx, resolvedPath, string(content))
+	time.Sleep(50 * time.Millisecond)
+}
 
 func (t *EditFileTool) ShortDoc() string { return readDoc(editfileDocs, "editfile.short.md") }
 func (t *EditFileTool) LongDoc() string  { return readDoc(editfileDocs, "editfile.long.md") }
@@ -573,6 +590,7 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(targetPath)
 	}
+	t.notifyLSP(context.Background(), targetPath)
 
 	// Build a clear result message
 	matchDesc := "exact match"

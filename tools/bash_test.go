@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/sandbox"
+	"github.com/pijalu/goa/internal/secrets"
 )
 
 func TestBashTool_Schema_ReturnsValidSchema(t *testing.T) {
@@ -724,3 +726,159 @@ func TestBashTool_ExecuteContext_CancelInterruptsLongCommand(t *testing.T) {
 		t.Errorf("cancellation did not interrupt promptly: elapsed=%v", elapsed)
 	}
 }
+
+// Analyzer integration tests. These exercise the AST-based analysis layer
+// wired into BashTool when Analyzer is set.
+
+func TestBashTool_Analyzer_BlocksCommand(t *testing.T) {
+	tool := &BashTool{
+		Analyzer: sandbox.NewAnalyzer([]string{"rm"}, nil),
+	}
+	_, err := tool.Execute(`{"command": "FOO=bar rm -rf /tmp"}`)
+	if err == nil {
+		t.Fatal("expected analyzer to block rm command")
+	}
+	if !strings.Contains(err.Error(), "blocked_command") {
+		t.Errorf("expected blocked_command error, got: %v", err)
+	}
+}
+
+func TestBashTool_Analyzer_EnforcesAllowedList(t *testing.T) {
+	tool := &BashTool{
+		Analyzer: sandbox.NewAnalyzer(nil, []string{"echo"}),
+	}
+	_, err := tool.Execute(`{"command": "cat file"}`)
+	if err == nil {
+		t.Fatal("expected analyzer to reject cat command")
+	}
+	if !strings.Contains(err.Error(), "command_not_allowed") {
+		t.Errorf("expected command_not_allowed error, got: %v", err)
+	}
+}
+
+func TestBashTool_Analyzer_CatchesObfuscatedBlocked(t *testing.T) {
+	tool := &BashTool{
+		Analyzer: sandbox.NewAnalyzer([]string{"rm"}, nil),
+	}
+	// firstCommandToken extracts "rm" directly here, but the analyzer also
+	// sees it clearly. The main value is that env prefixes and chained
+	// commands are parsed rather than regexed.
+	_, err := tool.Execute(`{"command": "echo clean && rm -rf /tmp"}`)
+	if err == nil {
+		t.Fatal("expected analyzer to block chained rm command")
+	}
+	if !strings.Contains(err.Error(), "blocked_command") {
+		t.Errorf("expected blocked_command error, got: %v", err)
+	}
+}
+
+func TestBashTool_Analyzer_RejectsDynamicCommand(t *testing.T) {
+	tool := &BashTool{
+		Analyzer: sandbox.NewAnalyzer(nil, []string{"echo"}),
+	}
+	_, err := tool.Execute(`{"command": "echo ok && $CMD"}`)
+	if err == nil {
+		t.Fatal("expected analyzer to reject dynamic command")
+	}
+	if !strings.Contains(err.Error(), "command_too_complex") {
+		t.Errorf("expected command_too_complex error, got: %v", err)
+	}
+}
+
+func TestBashTool_Analyzer_AllowedCommandSucceeds(t *testing.T) {
+	tool := &BashTool{
+		Analyzer: sandbox.NewAnalyzer(nil, []string{"echo"}),
+	}
+	result, err := tool.Execute(`{"command": "echo hello"}`)
+	if err != nil {
+		t.Fatalf("expected allowed command to succeed: %v", err)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("expected output to contain hello, got: %q", result)
+	}
+}
+
+func TestBashTool_Analyzer_Nil_DoesNotAnalyze(t *testing.T) {
+	tool := &BashTool{} // Analyzer is nil
+	result, err := tool.Execute(`{"command": "echo hello"}`)
+	if err != nil {
+		t.Fatalf("expected command to succeed without analyzer: %v", err)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("expected output to contain hello, got: %q", result)
+	}
+}
+
+func TestBashTool_Analyzer_ReportsDestructiveCategory(t *testing.T) {
+	tool := &BashTool{Analyzer: &sandbox.Analyzer{}}
+	res, err := tool.Analyzer.Analyze("rm -rf /tmp")
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if !res.Destructive {
+		t.Errorf("expected rm to be flagged as destructive")
+	}
+}
+
+// Redactor integration tests. These exercise the secret scanner wired into
+// BashTool to scrub credentials from command output.
+
+func TestBashTool_Redactor_RemovesSecrets(t *testing.T) {
+	tool := &BashTool{
+		Redactor: secrets.DefaultRedactor(),
+	}
+	key := "AKIAIOSFODNN7EXAMPLE"
+	result, err := tool.Execute(fmt.Sprintf(`{"command": "echo %s"}`, key))
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if strings.Contains(result, key) {
+		t.Errorf("expected secret to be redacted, got: %q", result)
+	}
+	if !strings.Contains(result, "***") {
+		t.Errorf("expected placeholder in output, got: %q", result)
+	}
+}
+
+func TestBashTool_Redactor_Nil_DoesNotChange(t *testing.T) {
+	tool := &BashTool{}
+	result, err := tool.Execute(`{"command": "echo hello"}`)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("expected output unchanged, got: %q", result)
+	}
+}
+
+func TestBashTool_Redactor_PreservesEnvMasking(t *testing.T) {
+	tool := &BashTool{
+		EnvMaskPatterns: []string{"*SECRET*"},
+		Redactor:        secrets.DefaultRedactor(),
+	}
+	result, err := tool.Execute(`{"command": "echo secret_value_and_AKIAIOSFODNN7EXAMPLE", "env": {"MY_SECRET": "secret_value"}}`)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if strings.Contains(result, "secret_value") {
+		t.Errorf("expected env secret to be masked, got: %q", result)
+	}
+	if strings.Contains(result, "AKIAIOSFODNN7EXAMPLE") {
+		t.Errorf("expected detected secret to be redacted, got: %q", result)
+	}
+}
+
+func TestBashTool_Redactor_TypeLabels(t *testing.T) {
+	tool := &BashTool{
+		Redactor: secrets.DefaultRedactor().WithTypeLabels(true),
+	}
+	result, err := tool.Execute(`{"command": "echo AKIAIOSFODNN7EXAMPLE"}`)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(result, "<aws_access_key_id:***>") {
+		t.Errorf("expected type label, got: %q", result)
+	}
+}
+
+

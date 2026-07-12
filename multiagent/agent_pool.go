@@ -82,6 +82,13 @@ func (p *AgentPool) SetOrchestrator(orch *ForegroundOrchestrator) {
 	p.orch = orch
 }
 
+// Orchestrator returns the orchestrator associated with this pool.
+func (p *AgentPool) Orchestrator() *ForegroundOrchestrator {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.orch
+}
+
 // NewAgentPool creates an AgentPool with the given default model and stream options.
 func NewAgentPool(defaultModel provider.Model, defaultOpts provider.StreamOptions, tools []agentic.Tool) *AgentPool {
 	return &AgentPool{

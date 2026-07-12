@@ -23,6 +23,7 @@ const (
 	ConsoleCompanionMessage       // companion output with purple gutter
 	ConsoleCompanionThinkingBlock // companion thinking with gray gutter
 	ConsoleInfoMessage            // plain informational text (no box/background)
+	ConsoleSteeringPending        // pending steering input shown until consumed by the model
 )
 
 // ModeChangeMsg is emitted when the agent's mode changes.

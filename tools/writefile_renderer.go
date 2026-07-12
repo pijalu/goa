@@ -17,6 +17,10 @@ type WriteFileRenderer struct {
 	KeyExpand string
 }
 
+// writeFilePreviewLines is the default number of content lines shown for a
+// write result. Large enough to display typical writes without truncation.
+const writeFilePreviewLines = 1000
+
 var _ tuirender.ToolRenderer = (*WriteFileRenderer)(nil)
 
 func NewWriteFileRenderer() *WriteFileRenderer {
@@ -28,6 +32,24 @@ func (r *WriteFileRenderer) RenderCall(args map[string]any, ctx tuirender.Render
 	pathDisplay := shortenHome(path)
 	if pathDisplay == "" {
 		pathDisplay = "..."
+	}
+
+	// During streaming (ArgsComplete == false), show useful progress info.
+	if !ctx.ArgsComplete {
+		// Count approximate content bytes/lines from partial args.
+		if content, ok := args["content"].(string); ok && content != "" {
+			lines := strings.Count(content, "\n") + 1
+			if lines > 1 {
+				return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(fmt.Sprintf(" (%d lines...)", lines))
+			}
+			// Show partial content snippet when no newlines yet.
+			snippet := content
+			if len(snippet) > 30 {
+				snippet = snippet[:27] + "..."
+			}
+			return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(fmt.Sprintf(" (\"%s\")", snippet))
+		}
+		return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(" (streaming...)")
 	}
 	return rToolTitle("write") + " " + rAccent(pathDisplay)
 }
@@ -49,7 +71,7 @@ func (r *WriteFileRenderer) RenderResult(output string, ctx tuirender.RenderCont
 	}
 	lines = trimTrailingEmptyLines(lines)
 
-	maxLines := 10
+	maxLines := r.PreviewLines()
 	if ctx.Expanded {
 		maxLines = len(lines)
 	}
@@ -79,7 +101,7 @@ func (r *WriteFileRenderer) RenderResult(output string, ctx tuirender.RenderCont
 	return b.String()
 }
 
-func (r *WriteFileRenderer) PreviewLines() int             { return 10 }
+func (r *WriteFileRenderer) PreviewLines() int             { return writeFilePreviewLines }
 func (r *WriteFileRenderer) HideResultWhenCollapsed() bool { return false }
 
 // extractWriteContent pulls the fenced code block out of write output.

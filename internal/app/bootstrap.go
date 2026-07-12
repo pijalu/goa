@@ -5,6 +5,7 @@
 package app
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -19,6 +20,8 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/netutil"
 	"github.com/pijalu/goa/internal/sandbox"
+	"github.com/pijalu/goa/internal/secrets"
+	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tools"
 	ask "github.com/pijalu/goa/tools/ask"
@@ -424,11 +427,14 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	notifyChanged := func(path string) { changeTracker.MarkChanged(path) }
 
 	reg.Register(&tools.ReadFileTool{WorktreeMgr: wm, Config: cfg.Tools.ReadFile})
+	lspMgr := newLSPManager(projectDir)
+
 	reg.Register(&tools.WriteFileTool{
 		WorktreeMgr:        wm,
 		ProjectDir:         projectDir,
 		GitStager:          gitStager,
 		FileChangeNotifier: notifyChanged,
+		LSPManager:         lspMgr,
 	})
 	reg.Register(&tools.EditFileTool{
 		WorktreeMgr:        wm,
@@ -437,6 +443,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		AllowFuzz:          cfg.Tools.Edit.AllowFuzzOnEdits,
 		Config:             cfg.Tools.Edit.FileToolConfig,
 		FileChangeNotifier: notifyChanged,
+		LSPManager:         lspMgr,
 	})
 	reg.Register(&tools.SearchTool{
 		WorktreeMgr: wm,
@@ -469,7 +476,10 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		Jail:            cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
 		MaxOutputBytes:  cfg.Tools.Bash.MaxOutputBytes,
 		CompressionResolver: resolveCompression,
+		Analyzer:        analyzerForBash(cfg.Tools.Bash.BlockedCommands, cfg.Tools.Bash.AllowedCommands),
+		Redactor:        secrets.DefaultRedactor(),
 	})
+	reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
 	reg.Register(&tools.TerminalTool{
 		WorktreeMgr:    wm,
 		SandboxMgr:     sandboxMgr,
@@ -522,12 +532,38 @@ func defaultInt(val, defaultVal int) int {
 	return val
 }
 
+// newLSPManager starts a gopls-based LSP manager for Go projects.
+func newLSPManager(projectDir string) *lsp.Manager {
+	goModPath := filepath.Join(projectDir, "go.mod")
+	if _, err := os.Stat(goModPath); err != nil {
+		return nil
+	}
+	mgr := lsp.NewManager(projectDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := mgr.Start(ctx); err != nil {
+		log.Printf("Warning: failed to start LSP manager: %v", err)
+		return nil
+	}
+	return mgr
+}
+
 // ptrBool dereferences a *bool, returning false when nil.
 func ptrBool(v *bool) bool {
 	if v == nil {
 		return false
 	}
 	return *v
+}
+
+// analyzerForBash creates an AST-based analyzer when blocked or allowed
+// command lists are configured. This catches obfuscated or dynamic commands
+// that simple first-token matching misses.
+func analyzerForBash(blocked, allowed []string) *sandbox.Analyzer {
+	if len(blocked) == 0 && len(allowed) == 0 {
+		return nil
+	}
+	return sandbox.NewAnalyzer(blocked, allowed)
 }
 
 // defaultFloat returns val if non-zero, otherwise defaultVal.

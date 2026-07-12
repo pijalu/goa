@@ -31,6 +31,9 @@ type AgentSwarmTool struct {
 	ModeResolver multiagent.ModeResolver
 	TaskBus      *tasks.Bus
 	SwarmState   *swarm.State
+	// CurrentMode returns the caller's current mode. Planner mode may only
+	// spawn plan sub-agents to prevent escaping planner restrictions.
+	CurrentMode func() internal.ModeState
 }
 
 const (
@@ -94,6 +97,18 @@ func (t *AgentSwarmTool) Execute(input string) (string, error) {
 	// already calling agent_swarm), matching kimi-code.
 	if t.SwarmState != nil {
 		t.SwarmState.Enter(swarm.ToolTrigger, p.Task)
+	}
+
+	// Planner mode is restricted to planning sub-agents only.
+	if t.CurrentMode != nil {
+		mode := t.CurrentMode()
+		if mode.Major == internal.MajorPlanner && p.SubagentType != "" && p.SubagentType != "plan" {
+			return "", &internal.ToolError{
+				Tool: "agent_swarm", Type: "forbidden_subagent",
+				Detail:   fmt.Sprintf("planner mode may only spawn plan sub-agents, not %q", p.SubagentType),
+				HintText: "Use subagent_type=\"plan\" or switch to a coding mode.",
+			}
+		}
 	}
 
 	cfg := t.prepareConfig(p.SubagentType)

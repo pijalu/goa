@@ -429,10 +429,10 @@ func TestVisualCursorPos_TrailingSpaces_Multiple(t *testing.T) {
 
 func TestVisualCursorPos_TrailingSpaces_Wrapped(t *testing.T) {
 	// "hello world  " cursor at end (13) — two trailing spaces after "world", width=5
-	// Word-wrap: "hello" (line 0), "world" (line 1), trailing spaces count
+	// Word-wrap: "hello" (line 0), "world" (line 1), trailing spaces wrap onto line 2.
 	line, col := visualCursorPos("hello world  ", 13, 5)
-	if line != 1 || col != 7 {
-		t.Errorf("\"hello world  \" pos=13 w=5: expected (1,7), got (%d,%d)", line, col)
+	if line != 2 || col != 2 {
+		t.Errorf("\"hello world  \" pos=13 w=5: expected (2,2), got (%d,%d)", line, col)
 	}
 }
 func TestVisualCursorPos_MultiLineWithWrap(t *testing.T) {

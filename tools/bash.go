@@ -18,6 +18,8 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/sandbox"
+	"github.com/pijalu/goa/internal/secrets"
 )
 
 // BashTool executes shell commands locally with security controls:
@@ -32,6 +34,14 @@ type BashTool struct {
 	CompressOutput  bool
 	ProjectDir      string
 	Jail            bool
+	// Analyzer performs AST-based static analysis of shell commands when
+	// non-nil. It catches command obfuscation, dynamic command construction,
+	// and category-based risks (destructive, network, interactive) that simple
+	// first-token matching misses.
+	Analyzer *sandbox.Analyzer
+	// Redactor removes secrets from command output before it is returned to
+	// the model. When nil, no secret scanning is performed.
+	Redactor *secrets.Redactor
 	// MaxOutputLines caps the number of lines returned to the agent.
 	// Zero defaults to DefaultMaxLines.
 	MaxOutputLines int
@@ -125,6 +135,9 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 			return "", err
 		}
 	}
+	if err := t.checkAnalyzed(p.Command); err != nil {
+		return "", err
+	}
 	if err := t.checkJail(&p); err != nil {
 		return "", err
 	}
@@ -211,6 +224,7 @@ func (t *BashTool) formatOutput(p *bashParams, output []byte, cmdErr error, dura
 
 	if len(output) > 0 {
 		masked := maskOutput(string(output), t.buildMasks(p.Env))
+		masked = t.redactOutput(masked)
 		masked = t.applyCompression(p.Command, masked)
 		maxLines := t.MaxOutputLines
 		if maxLines <= 0 {
@@ -274,6 +288,14 @@ func (t *BashTool) applyCompression(command, output string) string {
 		return compressed
 	}
 	return output
+}
+
+func (t *BashTool) redactOutput(output string) string {
+	if t.Redactor == nil {
+		return output
+	}
+	redacted, _ := t.Redactor.Redact(output)
+	return redacted
 }
 
 func (t *BashTool) IsRetryable(err error) bool {
@@ -390,6 +412,41 @@ func (t *BashTool) checkAllowed(cmd string) error {
 		Detail:   fmt.Sprintf("Command %q is not in the allowed list", program),
 		HintText: "Use one of the allowed commands or update tools.bash.allowed_commands in config.",
 	}
+}
+
+// checkAnalyzed runs the AST-based analyzer when configured and rejects
+// blocked commands, commands outside the allowed list, and commands that
+// cannot be analyzed statically (e.g. dynamic command construction).
+func (t *BashTool) checkAnalyzed(cmd string) error {
+	if t.Analyzer == nil {
+		return nil
+	}
+	res, err := t.Analyzer.Analyze(cmd)
+	if err != nil {
+		return toolErr("bash", "analysis_error", fmt.Sprintf("Failed to analyze command: %v", err))
+	}
+	if res.TooComplex {
+		return &internal.ToolError{
+			Tool: "bash", Type: "command_too_complex",
+			Detail:   fmt.Sprintf("Command cannot be analyzed statically: %s", res.Reason),
+			HintText: "Simplify the command or avoid dynamic command construction (command substitution, variables in command position).",
+		}
+	}
+	if res.Blocked {
+		return &internal.ToolError{
+			Tool: "bash", Type: "blocked_command",
+			Detail:   fmt.Sprintf("Blocked command detected: %s", res.Reason),
+			HintText: "This command is not allowed for security reasons.",
+		}
+	}
+	if !res.Allowed {
+		return &internal.ToolError{
+			Tool: "bash", Type: "command_not_allowed",
+			Detail:   fmt.Sprintf("Command not in allowed list: %s", res.Reason),
+			HintText: "Use one of the allowed commands or update tools.bash.allowed_commands in config.",
+		}
+	}
+	return nil
 }
 
 // checkJail enforces project-directory containment when Jail is enabled.

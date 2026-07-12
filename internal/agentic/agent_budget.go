@@ -123,10 +123,21 @@ func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 	}
 
 	// First occurrence: emit tool call event for TUI, then buffer.
-	a.emitEvent(OutputEvent{
-		Type: EventToolCall, State: StateToolCall,
-		ToolName: tc.ToolName, ToolInput: tc.ToolArguments, ToolCallID: tc.ToolCallID,
-	})
+	// If a streaming partial was already emitted from handleToolCallPartial,
+	// emit a final event (IsDelta=false) so the TUI transitions to running.
+	if _, streaming := a.streamingToolCalls[tc.ToolCallID]; streaming {
+		a.emitEvent(OutputEvent{
+			Type: EventToolCall, State: StateToolCall,
+			ToolName: tc.ToolName, ToolInput: tc.ToolArguments, ToolCallID: tc.ToolCallID,
+			IsDelta: false,
+		})
+		delete(a.streamingToolCalls, tc.ToolCallID)
+	} else {
+		a.emitEvent(OutputEvent{
+			Type: EventToolCall, State: StateToolCall,
+			ToolName: tc.ToolName, ToolInput: tc.ToolArguments, ToolCallID: tc.ToolCallID,
+		})
+	}
 	a.bufferedToolCalls = append(a.bufferedToolCalls, tc)
 	return true
 }

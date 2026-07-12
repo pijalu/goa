@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -56,12 +57,12 @@ func TestEditFileRenderer_RenderResult_MultilineDiff(t *testing.T) {
 func TestEditFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	r := NewEditFileRenderer()
 	var lines []string
-	for i := 1; i <= 20; i++ {
+	for i := 1; i <= editDiffPreviewLines+10; i++ {
 		lines = append(lines, " line")
 	}
-	output := "@@ -1,20 +1,20 @@\n" + strings.Join(lines, "\n") + "\n"
+	output := fmt.Sprintf("@@ -1,%d +1,%d @@\n", len(lines), len(lines)) + strings.Join(lines, "\n") + "\n"
 	result := r.RenderResult(output, tuirender.RenderContext{Expanded: false})
-	if strings.Count(result, "\n") >= 20 {
+	if strings.Count(result, "\n") >= len(lines) {
 		t.Errorf("expected preview truncation, got %d newlines", strings.Count(result, "\n"))
 	}
 	if !strings.Contains(ansi.Strip(result), "to expand") {
@@ -93,8 +94,8 @@ func TestEditFileRenderer_RenderResult_TabsExpanded(t *testing.T) {
 
 func TestEditFileRenderer_PreviewLines(t *testing.T) {
 	r := NewEditFileRenderer()
-	if got := r.PreviewLines(); got != 8 {
-		t.Errorf("PreviewLines = %d, want 8", got)
+	if got := r.PreviewLines(); got != editDiffPreviewLines {
+		t.Errorf("PreviewLines = %d, want %d", got, editDiffPreviewLines)
 	}
 }
 

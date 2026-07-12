@@ -207,8 +207,9 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		if mdl, err := subs.providerMgr.ResolveActiveModel(); err == nil {
 			agentDrivenTools := multiagent.AgentDrivenTools(nil, nil)
 			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg)
-			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus)
+			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr)
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
+			agentPool.SetOrchestrator(foregroundOrch)
 			wireCompanionCreation(agentPool, agentBundle.agentMgr, agentBundle.stateSnapshot)
 			registerSkillRunnerIfNeeded(subs.toolRegistry, skillBundle.skillRegistry, agentPool, promptReg, cfg)
 			registerBuiltinWorkflows(workflowReg)
@@ -278,7 +279,7 @@ type baseSubsystems struct {
 func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 	sessionStore := core.NewSessionStore(filepath.Join(projectDir, ".goa"))
 	loopDetector := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
-	eventBus := event.MakeBus(100, 32, 32, 32)
+	eventBus := event.MakeBus(1024, 32, 32, 32)
 
 	stateStore := core.NewStateStore(projectDir)
 	snap, _ := stateStore.Load()
@@ -636,7 +637,7 @@ func registerAgentDrivenTools(toolRegistry *tools.ToolRegistry, tools []agentic.
 	return requestReviewTool, delegateTool
 }
 
-func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, promptReg *prompts.Registry, cfg *config.Config, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus) *multiagent.AgentPool {
+func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, promptReg *prompts.Registry, cfg *config.Config, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager) *multiagent.AgentPool {
 	allTools := toolRegistry.All()
 	streamOpts := providerMgr.BuildStreamOptions()
 	pool := multiagent.NewAgentPool(mdl, streamOpts, allTools)
@@ -653,7 +654,7 @@ func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderMa
 	configureRoleModels(pool, cfg)
 	// Register AgentTool and AgentSwarmTool with ModeResolver so sub-agents
 	// get mode-appropriate prompts, tools, and temperature settings.
-	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus)
+	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus, agentMgr)
 	return pool
 }
 
@@ -890,13 +891,20 @@ func (a *modeResolverAdapter) Resolve(major string) (multiagent.ModeSpec, error)
 // registerSubAgentTools creates and registers AgentTool and AgentSwarmTool
 // with the tool registry, providing them with the AgentPool and ModeResolver
 // needed to spawn sub-agents with mode-appropriate configuration.
-func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus) {
+func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager) {
 	resolver := &modeResolverAdapter{reg: modeRegistry}
+	currentMode := func() internal.ModeState {
+		if agentMgr == nil {
+			return internal.ModeState{}
+		}
+		return agentMgr.CurrentMode()
+	}
 
 	agentTool := &multiagent.AgentTool{
 		Pool:         pool,
 		ModeResolver: resolver,
 		TaskBus:      taskBus,
+		CurrentMode:  currentMode,
 	}
 	reg.Register(agentTool)
 
@@ -905,6 +913,7 @@ func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, 
 		ModeResolver: resolver,
 		TaskBus:      taskBus,
 		SwarmState:   swarmState,
+		CurrentMode:  currentMode,
 	}
 	reg.Register(swarmTool)
 }

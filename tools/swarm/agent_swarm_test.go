@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core/swarm"
+	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/multiagent"
 )
 
 func TestAgentSwarmToolSchema(t *testing.T) {
@@ -16,6 +18,22 @@ func TestAgentSwarmToolSchema(t *testing.T) {
 	schema := tool.Schema()
 	if schema.Name != "agent_swarm" {
 		t.Errorf("name = %q, want agent_swarm", schema.Name)
+	}
+}
+
+func TestAgentSwarmTool_Execute_PlannerBlocksNonPlanSubagents(t *testing.T) {
+	pool := &multiagent.AgentPool{}
+	tool := &AgentSwarmTool{
+		Pool:        pool,
+		CurrentMode: func() internal.ModeState { return internal.ModeState{Major: internal.MajorPlanner} },
+		SwarmState:  swarm.NewState(),
+	}
+	_, err := tool.Execute(`{"task":"code","items":["a.go"],"subagent_type":"coder","prompt_template":"Fix {{item}}"}`)
+	if err == nil {
+		t.Fatal("expected planner mode to reject coder sub-agents in agent_swarm")
+	}
+	if !strings.Contains(err.Error(), "plan") {
+		t.Errorf("error should mention plan sub-agents, got: %v", err)
 	}
 }
 

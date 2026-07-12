@@ -50,9 +50,22 @@ func (p *panicRunner) RunWithImages(ctx context.Context, input string, images []
 	panic("simulated agent panic")
 }
 
+// cancelRunner is an agentRunner that always returns context.Canceled. It is
+// used to exercise the error path of executeRunner without a real provider.
+type cancelRunner struct{}
+
+func (c *cancelRunner) Run(ctx context.Context, input string) error {
+	return context.Canceled
+}
+
+func (c *cancelRunner) RunWithImages(ctx context.Context, input string, images []string) error {
+	return context.Canceled
+}
+
 func TestAgentManager_TurnPanic_EmitsEndEvent(t *testing.T) {
 	cfg := &config.Config{}
 	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	am.SetForwardInternalEvents(true)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -78,6 +91,51 @@ func TestAgentManager_TurnPanic_EmitsEndEvent(t *testing.T) {
 	<-done
 	if am.IsRunning() {
 		t.Fatal("expected agent manager to stop running after panic")
+	}
+}
+
+func TestAgentManager_ExecuteRunner_DoesNotBlockInternalChannelInTUIMode(t *testing.T) {
+	cfg := &config.Config{}
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(cfg, nil, nil, nil, tuiEvents, "")
+	// TUI mode: forwardInternalEvents is false and am.events is not consumed.
+
+	// Drain the TUI-bound channel so the only remaining potential block is
+	// the internal am.events channel.
+	stopDrain := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-tuiEvents.Agent:
+			case <-stopDrain:
+				return
+			}
+		}
+	}()
+	defer close(stopDrain)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled so the runner returns immediately
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 150; i++ {
+			am.executeRunner(ctx, &cancelRunner{}, "hello", nil)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executeRunner blocked on the undrained internal events channel")
+	}
+
+	// No internal events should have been queued in TUI mode.
+	select {
+	case ev := <-am.events:
+		t.Fatalf("unexpected internal event sent in TUI mode: %v", ev)
+	default:
 	}
 }
 

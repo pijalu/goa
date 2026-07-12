@@ -21,10 +21,19 @@ type AgentTool struct {
 	agentic.BaseTool
 	Pool         *AgentPool
 	ModeResolver ModeResolver
+	// Orchestrator receives lifecycle messages when a foreground sub-agent
+	// starts and finishes, so the TUI can show it in the orchestration view.
+	Orchestrator interface {
+		Emit(from, to, content string)
+	}
 	// TaskBus tracks background agents and delivers lifecycle events.
 	TaskBus *tasks.Bus
 	// OnBackgroundResult is called when a background agent completes.
 	OnBackgroundResult func(taskID, result string, err error)
+	// CurrentMode returns the caller's current mode. When the active major
+	// mode is planner, only plan sub-agents may be spawned to prevent the
+	// planner from escaping its restrictions via a coder/reviewer sub-agent.
+	CurrentMode func() internal.ModeState
 }
 
 // agentToolInput is the JSON input schema for the Agent tool.
@@ -73,33 +82,20 @@ func (t *AgentTool) Schema() agentic.ToolSchema {
 
 // Execute runs the sub-agent and returns its result.
 func (t *AgentTool) Execute(input string) (string, error) {
-	var p agentToolInput
-	if err := json.Unmarshal([]byte(input), &p); err != nil {
-		return "", &internal.ToolError{
-			Tool: "agent", Type: "invalid_input",
-			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
-			HintText: "Provide valid JSON with prompt and description.",
-		}
-	}
-	if strings.TrimSpace(p.Prompt) == "" {
-		return "", &internal.ToolError{
-			Tool: "agent", Type: "missing_prompt",
-			Detail:   "prompt is required",
-			HintText: "Provide a task description in the prompt field.",
-		}
-	}
-	if strings.TrimSpace(p.Description) == "" {
-		return "", &internal.ToolError{
-			Tool: "agent", Type: "missing_description",
-			Detail:   "description is required",
-			HintText: "Provide a short 3-5 word summary in the description field.",
-		}
+	p, err := t.parseAndValidate(input)
+	if err != nil {
+		return "", err
 	}
 	// Resume only queries the task bus; it does not need a pool. Handle it
 	// before the not-configured guard so resume of an existing task works
 	// even if the pool was torn down.
 	if p.Resume != "" {
 		return t.resumeAgent(p.Resume)
+	}
+
+	agentType := t.resolveAgentType(p.SubagentType)
+	if err := t.checkPlannerRestriction(agentType); err != nil {
+		return "", err
 	}
 	if t.Pool == nil {
 		return "", &internal.ToolError{
@@ -109,12 +105,7 @@ func (t *AgentTool) Execute(input string) (string, error) {
 		}
 	}
 
-	agentType := p.SubagentType
-	if agentType == "" {
-		agentType = "coder"
-	}
 	cfg := t.agentConfig(agentType)
-
 	taskID := fmt.Sprintf("task-%d", time.Now().UnixNano())
 	role := fmt.Sprintf("%s-%s", agentType, taskID)
 	agent, err := t.Pool.CreateTaskAgent(role, cfg)
@@ -127,22 +118,87 @@ func (t *AgentTool) Execute(input string) (string, error) {
 	}
 
 	if p.RunInBackground {
-		if t.TaskBus != nil {
-			t.TaskBus.Register(taskID, "agent", role, p.Description)
-		}
+		return t.startBackground(taskID, role, agent, p.Description, p.Prompt)
+	}
+	return t.runForeground(role, agent, agentType, p.Description, p.Prompt)
+}
 
-		// Eviction happens at the end of runBackground so the one-shot agent is
-		// released once the background task finishes (BUG-10).
-		go t.runBackground(taskID, role, agent, p.Prompt)
-		return fmt.Sprintf("[agent] Background task started: %s\nDescription: %s", taskID, p.Description), nil
+func (t *AgentTool) parseAndValidate(input string) (agentToolInput, error) {
+	var p agentToolInput
+	if err := json.Unmarshal([]byte(input), &p); err != nil {
+		return p, &internal.ToolError{
+			Tool: "agent", Type: "invalid_input",
+			Detail:   fmt.Sprintf("Cannot parse parameters: %v", err),
+			HintText: "Provide valid JSON with prompt and description.",
+		}
+	}
+	if strings.TrimSpace(p.Prompt) == "" {
+		return p, &internal.ToolError{
+			Tool: "agent", Type: "missing_prompt",
+			Detail:   "prompt is required",
+			HintText: "Provide a task description in the prompt field.",
+		}
+	}
+	if strings.TrimSpace(p.Description) == "" {
+		return p, &internal.ToolError{
+			Tool: "agent", Type: "missing_description",
+			Detail:   "description is required",
+			HintText: "Provide a short 3-5 word summary in the description field.",
+		}
+	}
+	return p, nil
+}
+
+func (t *AgentTool) resolveAgentType(subagentType string) string {
+	if subagentType == "" {
+		return "coder"
+	}
+	return subagentType
+}
+
+func (t *AgentTool) checkPlannerRestriction(agentType string) error {
+	if t.CurrentMode == nil {
+		return nil
+	}
+	mode := t.CurrentMode()
+	if mode.Major == internal.MajorPlanner && agentType != "plan" {
+		return &internal.ToolError{
+			Tool: "agent", Type: "forbidden_subagent",
+			Detail:   fmt.Sprintf("planner mode may only spawn plan sub-agents, not %q", agentType),
+			HintText: "Use subagent_type=\"plan\" or switch to a coding mode.",
+		}
+	}
+	return nil
+}
+
+func (t *AgentTool) startBackground(taskID, role string, agent *agentic.Agent, description, prompt string) (string, error) {
+	if t.TaskBus != nil {
+		t.TaskBus.Register(taskID, "agent", role, description)
 	}
 
+	// Eviction happens at the end of runBackground so the one-shot agent is
+	// released once the background task finishes (BUG-10).
+	go t.runBackground(taskID, role, agent, prompt)
+	return fmt.Sprintf("[agent] Background task started: %s\nDescription: %s", taskID, description), nil
+}
+
+func (t *AgentTool) runForeground(role string, agent *agentic.Agent, agentType, description, prompt string) (string, error) {
 	// Foreground path: evict the one-shot agent once the task completes so it
 	// does not accumulate in the pool (BUG-10).
 	defer t.Pool.Evict(role)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	result, err := agent.RunAndCollect(ctx, p.Prompt)
+	if orch := t.orchestrator(); orch != nil {
+		orch.Emit("system", "user", fmt.Sprintf("Sub-agent %s started: %s", agentType, description))
+	}
+	result, err := agent.RunAndCollect(ctx, prompt)
+	if orch := t.orchestrator(); orch != nil {
+		if err != nil {
+			orch.Emit("system", "user", fmt.Sprintf("Sub-agent %s failed: %v", agentType, err))
+		} else {
+			orch.Emit("system", "user", fmt.Sprintf("Sub-agent %s completed: %s", agentType, description))
+		}
+	}
 	if err != nil {
 		return "", &internal.ToolError{
 			Tool: "agent", Type: "execution_failed",
@@ -150,7 +206,21 @@ func (t *AgentTool) Execute(input string) (string, error) {
 			HintText: "Retry the task or check the sub-agent configuration.",
 		}
 	}
-	return fmt.Sprintf("[agent] %s\n\n%s", p.Description, result), nil
+	return fmt.Sprintf("[agent] %s\n\n%s", description, result), nil
+}
+
+func (t *AgentTool) orchestrator() interface {
+	Emit(from, to, content string)
+} {
+	if t.Orchestrator != nil {
+		return t.Orchestrator
+	}
+	if t.Pool != nil {
+		if o := t.Pool.Orchestrator(); o != nil {
+			return o
+		}
+	}
+	return nil
 }
 
 func (t *AgentTool) agentConfig(agentType string) AgentConfig {

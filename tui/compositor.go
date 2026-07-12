@@ -54,33 +54,46 @@ type Scene struct {
 
 // compose builds the virtual-buffer canvas from the Scene's layers: each
 // layer's Content is placed at its Rect, higher Z overwriting lower Z where
-// they overlap. Returns the canvas lines (height = max Y+H over layers) and
-// whether any overlay layer is present (affects the diff strategy).
+// they overlap. Only the region that is currently visible or was visible in
+// the previous frame is actually written, so large off-screen histories do
+// not burn CPU per frame, while large scrolls still have the gap lines
+// needed to populate the terminal scrollback. Returns the canvas and whether
+// any overlay layer is present.
 //
 // This is the single place that decides pixel placement. Keeping it here (in
 // the Compositor) means components only declare position/size/content and
 // never reason about overlaps or composition order.
-func (s *Scene) compose() (canvas []string, hasOverlay bool) {
+func (s *Scene) compose(prevViewportTop int) (canvas []string, hasOverlay bool) {
 	height := baseCanvasHeight(s.Layers)
 	if height == 0 {
 		height = 1
 	}
 	canvas = make([]string, height)
 
+	viewportStart := max(0, height-s.TerminalH)
+	visibleEnd := min(height, viewportStart+s.TerminalH)
+	if visibleEnd <= viewportStart {
+		visibleEnd = viewportStart + 1
+	}
+	placeStart := viewportStart
+	if prevViewportTop >= 0 && prevViewportTop < viewportStart {
+		placeStart = prevViewportTop
+	}
+
 	// Base layers first.
 	for _, l := range s.Layers {
 		if l.Kind != LayerOverlay {
-			placeLayer(canvas, l, s.TerminalW)
+			placeLayer(canvas, l, s.TerminalW, placeStart, visibleEnd)
 		}
 	}
 
 	// Overlays, positioned relative to the visible viewport.
 	overlays := overlaysOf(s.Layers)
 	if len(overlays) == 0 {
-		return canvas, false
+		return applyLineResets(canvas, placeStart, visibleEnd), false
 	}
 	canvas = placeOverlays(canvas, overlays, height, s.TerminalH, s.TerminalW)
-	return canvas, true
+	return applyLineResets(canvas, placeStart, visibleEnd), true
 }
 
 // baseCanvasHeight returns the canvas height needed for base (non-overlay)
@@ -124,17 +137,18 @@ func placeOverlays(canvas []string, overlays []Layer, baseHeight, termH, termW i
 		}
 		placed := l
 		placed.Rect = Rect{X: l.Rect.X, Y: absY, W: l.Rect.W, H: l.Rect.H}
-		placeLayer(canvas, placed, termW)
+		placeLayer(canvas, placed, termW, viewportStart, viewportStart+termH)
 	}
 	return canvas
 }
 
 // placeLayer writes a layer's Content onto the canvas at its Rect, padding
 // each content line to the layer's width and truncating overwidth lines.
-func placeLayer(canvas []string, l Layer, termW int) {
+// Lines outside the visible region [viewportStart, visibleEnd) are skipped.
+func placeLayer(canvas []string, l Layer, termW, viewportStart, visibleEnd int) {
 	for i, line := range l.Content {
 		y := l.Rect.Y + i
-		if y < 0 || y >= len(canvas) {
+		if y < viewportStart || y >= visibleEnd || y < 0 || y >= len(canvas) {
 			continue
 		}
 		if vw := visibleWidth(line); vw > termW {
@@ -190,7 +204,7 @@ type AgentFrame struct {
 // AgentFrame produces the plain-text structured view of the Scene.
 // viewportH is the terminal height (number of visible rows).
 func (s *Scene) AgentFrame(viewportH int) AgentFrame {
-	canvas, _ := s.compose()
+	canvas, _ := s.compose(0)
 	height := len(canvas)
 	vTop := height - viewportH
 	if vTop < 0 {
@@ -388,9 +402,7 @@ func (c *Compositor) Render(scene *Scene) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	canvas, hasOverlay := scene.compose()
-	// Append per-line resets so SGR attributes / OSC 8 links do not bleed.
-	canvas = applyLineResets(canvas)
+	canvas, hasOverlay := scene.compose(c.previousViewportTop)
 
 	fl := c.computeFrameLocals(width, height)
 	fullRender := func(clear bool) { c.fullFrame(canvas, scene.Cursor, width, height, clear) }
@@ -796,11 +808,22 @@ func (c *Compositor) positionHardwareCursor(cp *CursorPos, totalLines, width int
 	c.terminal.ShowCursor()
 }
 
-// applyLineResets appends a reset sequence to every non-image line so SGR
-// attributes and OSC 8 hyperlinks do not bleed across lines.
-func applyLineResets(lines []string) []string {
+// applyLineResets appends a reset sequence to every non-image line in the
+// visible region [viewportStart, visibleEnd) so SGR attributes and OSC 8
+// links do not bleed across lines. Off-screen lines are left untouched.
+func applyLineResets(lines []string, viewportStart, visibleEnd int) []string {
 	const reset = SEGMENT_RESET
-	for i, line := range lines {
+	if viewportStart < 0 {
+		viewportStart = 0
+	}
+	if visibleEnd > len(lines) {
+		visibleEnd = len(lines)
+	}
+	if visibleEnd <= viewportStart {
+		return lines
+	}
+	for i := viewportStart; i < visibleEnd; i++ {
+		line := lines[i]
 		if isImageLine(line) {
 			continue
 		}

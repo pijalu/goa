@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/spinner"
 )
 
 func TestFormatToolArgs_ReadFile(t *testing.T) {

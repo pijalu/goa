@@ -201,6 +201,16 @@ type Agent struct {
 	recentToolCalls []string
 }
 
+// partialToolCall tracks a tool call whose arguments are still being
+// streamed from the provider. Used to emit incremental EventToolCall
+// updates to observers so the TUI can display partial progress.
+type partialToolCall struct {
+	toolName      string
+	toolCallID    string
+	argsBuf       strings.Builder
+	widgetCreated bool
+}
+
 // ContextStats holds the current context window usage of an Agent.
 //
 // EstimatedTokens uses a language-aware heuristic (ASCII ≈ 0.25 tokens,

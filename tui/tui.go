@@ -926,17 +926,34 @@ func (t *TUI) renderNow() []string {
 // overlay into a positioned overlay Layer, producing the protocol-free Scene
 // consumed by both the Compositor and the AgentView. Layer Rect.Y accumulates
 // for base layers; overlays are positioned relative to the visible viewport.
+// Components that expose a viewport height or total height are culled so the
+// compositor only sees the visible tail, while the absolute Y accounting
+// preserves the full virtual buffer height for correct scrolling.
 // The focused editor's CURSOR_MARKER is extracted into Scene.Cursor (explicit,
 // grapheme-aware) and stripped from layer content.
 func (t *TUI) buildScene(w, h int) *Scene {
 	scene := &Scene{TerminalW: w, TerminalH: h}
 	y := 0
 	for _, child := range t.children {
+		if vh, ok := child.(interface{ SetViewportHeight(int) }); ok {
+			vh.SetViewportHeight(h)
+		}
 		lines := child.Render(w)
+		totalH := len(lines)
+		if hr, ok := child.(interface{ TotalHeight() int }); ok {
+			if th := hr.TotalHeight(); th > totalH {
+				totalH = th
+			}
+		}
 		if len(lines) == 0 {
+			y += totalH
 			continue
 		}
-		rect := Rect{X: 0, Y: y, W: w, H: len(lines)}
+		rectY := y
+		if totalH > len(lines) {
+			rectY = y + totalH - len(lines)
+		}
+		rect := Rect{X: 0, Y: rectY, W: w, H: len(lines)}
 		scene.Layers = append(scene.Layers, Layer{
 			Name:    componentLayerName(child),
 			Kind:    LayerBase,
@@ -944,7 +961,7 @@ func (t *TUI) buildScene(w, h int) *Scene {
 			Content: lines,
 		})
 		scene.Nodes = append(scene.Nodes, agentNodeFor(child, rect, lines))
-		y += len(lines)
+		y += totalH
 	}
 	for _, ov := range t.overlayStack {
 		olines := ov.comp.Render(w)

@@ -552,15 +552,44 @@ func visualCursorInParagraph(para string, offset, width int) (line, col int) {
 	}
 
 	words := buildWordPositions(runes)
-	visLine, visCol := simulateWordWrap(runes, words, offset, width)
+	if len(words) == 0 {
+		return cursorInSpaceOnly(runes, offset, width)
+	}
 
-	// Account for trailing spaces after the last word.
-	if len(words) > 0 {
-		lastWordEnd := words[len(words)-1].end
-		for j := lastWordEnd; j < len(runes); j++ {
-			if runes[j] == ' ' {
-				visCol++
+	visLine, visCol := simulateWordWrap(runes, words, offset, width)
+	return cursorAfterLastWord(runes, offset, words[len(words)-1].end, visLine, visCol, width)
+}
+
+// cursorInSpaceOnly computes the visual position for a paragraph that
+// contains only spaces (no words).
+func cursorInSpaceOnly(runes []rune, offset, width int) (visLine, visCol int) {
+	for j := 0; j < offset; j++ {
+		if runes[j] == ' ' {
+			if visCol >= width {
+				visLine++
+				visCol = 0
 			}
+			visCol++
+		}
+	}
+	return visLine, visCol
+}
+
+// cursorAfterLastWord accounts for trailing spaces after the last word,
+// wrapping them onto subsequent visual lines so that cursor placement matches
+// the rendered text (which preserves trailing spaces rather than dropping them).
+func cursorAfterLastWord(runes []rune, offset, lastWordEnd, startLine, startCol, width int) (visLine, visCol int) {
+	visLine, visCol = startLine, startCol
+	if offset <= lastWordEnd {
+		return visLine, visCol
+	}
+	for j := lastWordEnd; j < offset; j++ {
+		if runes[j] == ' ' {
+			if visCol >= width {
+				visLine++
+				visCol = 0
+			}
+			visCol++
 		}
 	}
 	return visLine, visCol

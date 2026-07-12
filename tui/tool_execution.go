@@ -222,10 +222,12 @@ func (tc *ToolExecutionComponent) SetArgs(args map[string]any) {
 }
 
 // SetArgsJSON parses JSON arguments and stores them for the renderer.
+// When the JSON is successfully parsed, args are marked as complete.
 func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
 		tc.args = args
+		tc.argsComplete = true
 	}
 	tc.toolArgs = FormatToolArgs(tc.toolName, argsJSON)
 	tc.updateBox()

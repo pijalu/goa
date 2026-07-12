@@ -16,32 +16,32 @@
 ### Progress
 
 #### Z1 — Secrets scanner & redaction
-- [ ] Add pattern-based secret detection (API keys, tokens, private keys, JWTs)
-- [ ] Redaction engine to strip from tool outputs before sending to model
-- [ ] Tests for detection + redaction
-- [ ] Gates + commit
+- [x] Add pattern-based secret detection (API keys, tokens, private keys, JWTs)
+- [x] Redaction engine to strip from tool outputs before sending to model
+- [x] Tests for detection + redaction
+- [x] Gates + commit
 
 #### Z2 — LSP integration
-- [ ] LSP client (JSON-RPC 2.0, Content-Length framing)
-- [ ] gopls lifecycle management
-- [ ] Diagnostics gathering on file writes
-- [ ] Navigation tools (go to definition, find references, hover)
-- [ ] Tests for each component
-- [ ] Gates + commit
+- [x] LSP client (JSON-RPC 2.0, Content-Length framing)
+- [x] gopls lifecycle management
+- [x] Diagnostics gathering on file writes
+- [x] Navigation tools (go to definition, find references, hover)
+- [x] Tests for each component
+- [x] Gates + commit
 
 #### Z3 — Self-verify loop
-- [ ] Test framework discovery (Go test, pytest, jest, etc.)
-- [ ] Run tests → capture structured output → feed to model
-- [ ] Remediation loop: fix attempt → re-run → repeat
-- [ ] Configurable max attempts, stop-on-pass
-- [ ] Gates + commit
+- [x] Test framework discovery (Go test, pytest, jest, etc.)
+- [x] Run tests → capture structured output → feed to model
+- [x] Remediation loop: fix attempt → re-run → repeat (agent-driven via repeated tool calls)
+- [x] Configurable max attempts, stop-on-pass (via verify package RunLoop; tool exposes basic run)
+- [x] Gates + commit
 
 #### Z4 — Sandbox shell analysis
-- [ ] Add `mvdan.cc/sh/v3` AST-based command analysis to existing sandbox
-- [ ] Classify commands: destructive, network, interactive, safe
-- [ ] Permission-gated execution in `bash` tool
-- [ ] Tests for analysis + enforcement
-- [ ] Gates + commit
+- [x] Add `mvdan.cc/sh/v3` AST-based command analysis to existing sandbox
+- [x] Classify commands: destructive, network, interactive, safe
+- [x] Permission-gated execution in `bash` tool
+- [x] Tests for analysis + enforcement
+- [x] Gates + commit
 
 #### Z5 — Hooks system
 - [ ] Lifecycle events: beforeTool, afterTool, sessionStart, sessionEnd

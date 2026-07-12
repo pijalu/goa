@@ -67,11 +67,11 @@ func (a *Agent) microCompactForced(force bool) {
 }
 
 func (a *Agent) contextRatio() float64 {
-	stats := a.computeContextStats()
-	maxTokens := a.cfg.ContextCompression.MaxTokens
+	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
-		maxTokens = 8192 // fallback default
+		return 0
 	}
+	stats := a.computeContextStats()
 	return float64(stats.EstimatedTokens) / float64(maxTokens)
 }
 

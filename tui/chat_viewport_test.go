@@ -209,18 +209,63 @@ func TestChatViewport_InvalidateRunningToolWidgets(t *testing.T) {
 
 	cv.Render(80)
 	genBefore := cv.generation
+	cacheBefore := cv.renderCache.lines
 
+	currentSpinnerFrame = "1"
 	cv.InvalidateRunningToolWidgets()
-	if cv.generation <= genBefore {
-		t.Errorf("generation did not increment after invalidating running tools")
+	cv.Render(80) // patch happens on the render goroutine
+	rendered1 := tc.Render(80)
+	if len(rendered1) < 2 {
+		t.Fatalf("tool widget rendered fewer than 2 lines: %v", rendered1)
+	}
+
+	currentSpinnerFrame = "2"
+	cv.InvalidateRunningToolWidgets()
+	cv.Render(80) // patch happens on the render goroutine
+	rendered2 := tc.Render(80)
+	if len(rendered2) < 2 {
+		t.Fatalf("tool widget rendered fewer than 2 lines: %v", rendered2)
+	}
+	if rendered1[1] == rendered2[1] {
+		t.Errorf("running tool widget header did not change after spinner tick: %q", rendered1[1])
+	}
+	if cv.generation != genBefore {
+		t.Errorf("InvalidateRunningToolWidgets should not increment generation; got %d, want %d", cv.generation, genBefore)
+	}
+	if &cv.renderCache.lines[0] != &cacheBefore[0] {
+		t.Errorf("InvalidateRunningToolWidgets should patch the frame cache in place, not reallocate")
 	}
 
 	// Non-running tools should not be invalidated again.
 	tc.SetStatus(ToolSuccess)
 	genBefore = cv.generation
 	cv.InvalidateRunningToolWidgets()
+	cv.Render(80)
 	if cv.generation != genBefore {
 		t.Errorf("non-running tools should not be invalidated")
+	}
+}
+
+func TestChatViewport_SteeringPending_StaysAtBottom(t *testing.T) {
+	cv := NewChatViewport()
+	cv.AddUserMessage("hello")
+	cv.AddSteeringPending("fix this")
+	if cv.pendingSteering < 0 {
+		t.Fatal("expected pending steering entry")
+	}
+	cv.AddAssistantMessage("working...")
+	if cv.pendingSteering < 0 {
+		t.Fatal("pending steering index should remain after adding message")
+	}
+	if cv.entries[cv.pendingSteering].Data.Type != ConsoleSteeringPending {
+		t.Errorf("last entry should be steering pending, got %d", cv.entries[cv.pendingSteering].Data.Type)
+	}
+	if cv.entries[cv.pendingSteering].Data.Text != "fix this" {
+		t.Errorf("pending text wrong: %q", cv.entries[cv.pendingSteering].Data.Text)
+	}
+	cv.ClearSteeringPending()
+	if cv.pendingSteering >= 0 {
+		t.Error("pending steering should be cleared")
 	}
 }
 

@@ -325,8 +325,8 @@ func (am *AgentManager) recoverTurnPanic() {
 			Type: agentic.EventEnd,
 			Text: fmt.Sprintf("agent stopped unexpectedly: %v", r),
 		}
-		am.events <- ev
 		am.emitAgentEvent(ev)
+		am.emitInternalEvent(ev)
 	}
 }
 
@@ -351,8 +351,8 @@ func (am *AgentManager) executeRunner(ctx context.Context, runner agentRunner, i
 		}
 		// EventEnd must always reach the UI so the turn is marked complete; do
 		// not drop it under load (CORE-BUG-3). Block (backpressure) instead.
-		am.events <- ev
 		am.emitAgentEvent(ev)
+		am.emitInternalEvent(ev)
 	}
 }
 
@@ -928,6 +928,12 @@ func (am *AgentManager) persistState() error {
 		snap.CompanionHistory = hist
 	}
 	return ss.Save(snap)
+}
+
+func (am *AgentManager) emitInternalEvent(ev agentic.OutputEvent) {
+	if am.forwardInternalEvents {
+		am.events <- ev
+	}
 }
 
 func (am *AgentManager) emitAgentEvent(ev agentic.OutputEvent) {

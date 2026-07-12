@@ -5,12 +5,14 @@
 package tools
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -22,6 +24,12 @@ import (
 // resolution can redirect writes to the wrong file, causing irreversible
 // data loss. Unlike edit/read which handle existing files, write's
 // destructive nature requires exact path fidelity.
+// LSPDocumentManager is the subset of the LSP manager used by file tools.
+type LSPDocumentManager interface {
+	OpenDocument(ctx context.Context, path, text string) error
+	DidChange(ctx context.Context, path, text string) error
+}
+
 type WriteFileTool struct {
 	WorktreeMgr        *internal.WorktreeManager
 	ProjectDir         string
@@ -30,6 +38,9 @@ type WriteFileTool struct {
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
 	FileChangeNotifier func(path string)
+	// LSPManager, when set, is notified of the new document and diagnostics
+	// are queried after a short delay.
+	LSPManager LSPDocumentManager
 }
 
 // Schema returns the tool schema for write.
@@ -91,8 +102,19 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(resolvedPath)
 	}
+	t.notifyLSP(context.Background(), resolvedPath, processedContent)
 
 	return buildWritePreview(originalPath, processedContent), nil
+}
+
+func (t *WriteFileTool) notifyLSP(ctx context.Context, resolvedPath, content string) {
+	if t.LSPManager == nil || !strings.HasSuffix(resolvedPath, ".go") {
+		return
+	}
+	_ = t.LSPManager.OpenDocument(ctx, resolvedPath, content)
+	// Diagnostics are published asynchronously; give the server a moment to
+	// publish them before the next tool call or model turn.
+	time.Sleep(50 * time.Millisecond)
 }
 
 func parseWriteFileParams(input string) (writeFileParams, error) {
