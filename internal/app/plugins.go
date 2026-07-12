@@ -26,6 +26,12 @@ func loadEnabledPlugins(s *subsystems) {
 	if len(enabled) == 0 {
 		return
 	}
+	for _, id := range enabled {
+		if err := s.pluginMgr.Verify(id); err != nil {
+			log.Printf("Warning: skipping plugin %s: %v\n", id, err)
+			return
+		}
+	}
 	loader := plugins.NewPluginLoader([]string{s.pluginMgr.Root()}, enabled)
 	ctx := pluginContextFor(s)
 	bridges, err := loader.LoadAll(ctx)

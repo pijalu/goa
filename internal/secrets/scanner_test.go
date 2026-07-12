@@ -260,3 +260,40 @@ func TestScanner_DedupeAndSort_Single(t *testing.T) {
 func regexpMust(expr string) *regexp.Regexp {
 	return regexp.MustCompile(expr)
 }
+
+// TestScanner_GitSHANotFlagged verifies that a 40-char hex git commit SHA is
+// not redacted as an AWS secret key. Previously the bare 40-char base64
+// pattern matched any 40-char hex string, which clobbered git log output.
+func TestScanner_GitSHANotFlagged(t *testing.T) {
+	s := DefaultScanner()
+	sha := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4" // 40 hex chars
+	matches := s.Scan("commit " + sha + " (HEAD)")
+	for _, m := range matches {
+		if m.SecretType == "aws_secret_access_key" {
+			t.Errorf("git SHA %q wrongly matched %s", sha, m.SecretType)
+		}
+	}
+}
+
+// TestScanner_AWSSecretWithContext verifies a real-looking AWS secret key is
+// still caught when it appears with a contextual key name.
+func TestScanner_AWSSecretWithContext(t *testing.T) {
+	s := DefaultScanner()
+	secret := "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" // 40 base64 chars
+	text := "aws_secret_access_key=" + secret
+	matches := s.Scan(text)
+	found := false
+	for _, m := range matches {
+		if m.SecretType == "aws_secret_access_key" && m.Value == secret {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected AWS secret with context to match; got %v", matches)
+	}
+	// And it should be redacted.
+	red, _ := DefaultRedactor().Redact(text)
+	if strings.Contains(red, secret) {
+		t.Errorf("expected AWS secret redacted, got %q", red)
+	}
+}

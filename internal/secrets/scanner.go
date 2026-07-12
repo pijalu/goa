@@ -51,7 +51,7 @@ var (
 	}
 	awsSecretAccessKey = Pattern{
 		Name:   "aws_secret_access_key",
-		Regexp: regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Za-z0-9/+=]{40})(?:$|[^A-Za-z0-9])`),
+		Regexp: regexp.MustCompile(`(?i)(?:aws_secret_access_key|secret_access_key|aws_secret)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?`),
 		Group:  1,
 		MinLen: 40,
 	}

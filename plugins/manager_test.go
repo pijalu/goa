@@ -5,8 +5,11 @@
 package plugins
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pijalu/goa/internal/trust"
@@ -222,5 +225,117 @@ func TestManager_HashDetectsChanges(t *testing.T) {
 	}
 	if newHash == entry1.Hash {
 		t.Fatal("hash should change after plugin files are modified")
+	}
+}
+
+// TestManager_RejectsHTTP verifies plaintext-HTTP plugin sources are refused
+// (plugins execute code; MITM would be RCE).
+func TestManager_RejectsHTTP(t *testing.T) {
+	m := newTestManager(t, nil)
+	if _, err := m.Install("http://example.com/plugin.git"); err == nil {
+		t.Fatal("expected error for http:// plugin source")
+	}
+}
+
+// TestManager_ConcurrentAccess exercises concurrent Install/Enable/Disable/List
+// under -race (D3: Manager/Lockfile now mutex-guarded).
+func TestManager_ConcurrentAccess(t *testing.T) {
+	m := newTestManager(t, nil)
+	var counter atomic.Int64
+	m.cloneFunc = func(url, dir string) error {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+		writeManifest(t, dir, fmt.Sprintf("p-%d", counter.Add(1)))
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = m.Install("https://example.com/p.git")
+		}()
+		go func() {
+			defer wg.Done()
+			_ = m.List()
+			_ = m.EnabledIDs()
+			_ = m.EnabledSkillDirs()
+		}()
+	}
+	wg.Wait()
+
+	// Enable/disable every installed plugin concurrently.
+	ids := m.List()
+	for range ids {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for _, e := range m.List() {
+				_ = m.Enable(e.ID)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for _, e := range m.List() {
+				_ = m.Disable(e.ID)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestMoveDir_Portable verifies moveDir works across independent temp
+// directories (the cross-device fallback path) preserving content and mode.
+func TestMoveDir_Portable(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	dstFinal := filepath.Join(dst, "moved")
+
+	content := []byte("plugin body")
+	srcFile := filepath.Join(src, "plugin.js")
+	if err := os.WriteFile(srcFile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveDir(src, dstFinal); err != nil {
+		t.Fatalf("moveDir: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dstFinal, "plugin.js"))
+	if err != nil {
+		t.Fatalf("read moved file: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("content mismatch: got %q", got)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("expected source removed after move, got err=%v", err)
+	}
+}
+
+// TestManager_EnableDetectsTamper verifies Enable re-verifies the content hash
+// and refuses a plugin modified after install (D5).
+func TestManager_EnableDetectsTamper(t *testing.T) {
+	m := newTestManagerWithClone(t, "tamper-plugin")
+	id, err := m.Install("https://example.com/plugin.git")
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// Tamper with the installed content.
+	pluginFile := filepath.Join(m.root, id, "plugin.js")
+	f, err := os.OpenFile(pluginFile, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+	if _, err := f.Write([]byte("// tampered")); err != nil {
+		t.Fatalf("tamper write: %v", err)
+	}
+	f.Close()
+	if err := m.Enable(id); err == nil {
+		t.Fatal("expected Enable to fail after tampering")
+	}
+	if err := m.Verify(id); err == nil {
+		t.Fatal("expected Verify to fail after tampering")
 	}
 }

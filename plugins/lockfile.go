@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -25,9 +26,11 @@ type LockEntry struct {
 	Updated time.Time `json:"updated"`
 }
 
-// Lockfile tracks installed plugins and their content hashes.
+// Lockfile tracks installed plugins and their content hashes. All methods
+// are safe for concurrent use.
 type Lockfile struct {
-	path    string
+	mu     sync.RWMutex
+	path   string
 	Plugins map[string]LockEntry `json:"plugins"`
 }
 
@@ -41,6 +44,8 @@ func NewLockfile(path string) *Lockfile {
 
 // Load reads the lockfile from disk.
 func (l *Lockfile) Load() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	data, err := os.ReadFile(l.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -62,7 +67,11 @@ func (l *Lockfile) Load() error {
 
 // Save persists the lockfile to disk.
 func (l *Lockfile) Save() error {
-	data, err := json.MarshalIndent(l, "", "  ")
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	data, err := json.MarshalIndent(struct {
+		Plugins map[string]LockEntry `json:"plugins"`
+	}{Plugins: l.Plugins}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -74,22 +83,30 @@ func (l *Lockfile) Save() error {
 
 // Get returns the entry for a plugin, if present.
 func (l *Lockfile) Get(id string) (LockEntry, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	entry, ok := l.Plugins[id]
 	return entry, ok
 }
 
 // Set records or updates an entry.
 func (l *Lockfile) Set(entry LockEntry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.Plugins[entry.ID] = entry
 }
 
 // Remove deletes an entry.
 func (l *Lockfile) Remove(id string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	delete(l.Plugins, id)
 }
 
 // InstalledIDs returns sorted plugin IDs.
 func (l *Lockfile) InstalledIDs() []string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	ids := make([]string, 0, len(l.Plugins))
 	for id := range l.Plugins {
 		ids = append(ids, id)
