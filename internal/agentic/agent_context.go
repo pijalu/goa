@@ -49,6 +49,9 @@ func (a *Agent) enforceContextCeiling() {
 
 	const hardCeilingPercent = 95
 	hardCeiling := maxTokens * hardCeilingPercent / 100
+	// The fixed per-turn cost (system prompt + tool schemas) is always present;
+	// history must fit in the remainder or the outgoing request still overflows.
+	historyCeiling := hardCeiling - a.fixedCostTokens()
 
 	// History is mutated here; hold the agent mutex for the whole transaction.
 	// The rest of the agent uniformly guards a.history with a.mu, and this
@@ -72,13 +75,13 @@ func (a *Agent) enforceContextCeiling() {
 		tok[i] = messageTokenCount(&hist[i])
 		total += tok[i]
 	}
-	if total <= hardCeiling {
+	if total <= historyCeiling {
 		return
 	}
 
 	// Keep the system prompt (index 0) plus the most-recent contiguous tail
 	// whose tokens fit under the ceiling. Find the smallest cut k in [1, n]
-	// such that tok[0] + sum(tok[k:]) <= hardCeiling. This produces the same
+	// such that tok[0] + sum(tok[k:]) <= historyCeiling. This produces the same
 	// retained set as dropping oldest messages one at a time, but in one pass.
 	system := tok[0]
 	nonSystem := total - system // sum(tok[1:])
@@ -86,7 +89,7 @@ func (a *Agent) enforceContextCeiling() {
 	droppedTokens := 0
 	for k := 1; k < len(hist); k++ {
 		keptHere := system + (nonSystem - droppedTokens) // tok[0] + sum(tok[k:])
-		if keptHere <= hardCeiling {
+		if keptHere <= historyCeiling {
 			cut = k
 			break
 		}
@@ -102,8 +105,8 @@ func (a *Agent) enforceContextCeiling() {
 	kept := append(hist[:1:1], hist[cut:]...)
 	a.history = kept
 
-	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > hardCeiling {
-		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history exceeds %d tokens", hardCeiling)
+	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > historyCeiling {
+		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history + fixed cost exceeds %d tokens", hardCeiling)
 	}
 }
 
@@ -119,7 +122,7 @@ func (a *Agent) computeContextStatsForMax(maxTokens int) ContextStats {
 		}
 	}
 
-	estimated := estimateTokensFromHistory(a.history)
+	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()
 	usagePercent := 0
 	if maxTokens > 0 {
 		usagePercent = estimated * 100 / maxTokens
@@ -146,7 +149,7 @@ func (a *Agent) checkContextLimit() error {
 	const hardCeilingPercent = 95
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	a.mu.Lock()
-	estimated := estimateTokensFromHistory(a.history)
+	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()
 	a.mu.Unlock()
 	if estimated > hardCeiling {
 		return fmt.Errorf("context window full: estimated tokens exceed %d (%d%% of %d); compress or reset the conversation", hardCeiling, hardCeilingPercent, maxTokens)
