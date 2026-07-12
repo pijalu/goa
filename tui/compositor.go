@@ -216,6 +216,7 @@ func (s *Scene) AgentFrame(viewportH int) AgentFrame {
 	}
 
 	frame := AgentFrame{Width: s.TerminalW, Height: viewportH, Cursor: s.Cursor, Nodes: s.Nodes}
+	frame.Nodes = fillNodeText(frame.Nodes, s.Layers)
 
 	// Layers, base then overlays by Z, all ANSI-stripped.
 	ordered := make([]Layer, 0, len(s.Layers))
@@ -285,6 +286,29 @@ func (f *AgentFrame) CursorNode() *AgentNode {
 		}
 	}
 	return nil
+}
+
+// fillNodeText sets each node's Text by ANSI-stripping its matching layer's
+// content. agentNodeFor defers this O(n) Join+Strip so the live render path
+// (which never builds an AgentFrame) does not pay it every frame for the chat
+// layer; it is paid once here, only when AI tooling requests the DOM.
+func fillNodeText(nodes []AgentNode, layers []Layer) []AgentNode {
+	if len(nodes) == 0 {
+		return nodes
+	}
+	textByLayer := make(map[string]string, len(layers))
+	for _, l := range layers {
+		if _, ok := textByLayer[l.Name]; ok {
+			continue
+		}
+		textByLayer[l.Name] = ansi.Strip(strings.Join(l.Content, "\n"))
+	}
+	for i := range nodes {
+		if text, ok := textByLayer[nodes[i].Name]; ok {
+			nodes[i].Text = text
+		}
+	}
+	return nodes
 }
 
 // Dump returns a human-readable description of the agentic screen model for

@@ -11,8 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pijalu/goa/internal/ansi"
 )
 
 // CURSOR_MARKER is a zero-width escape sequence emitted by focused components.
@@ -984,13 +982,17 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	return scene
 }
 
-// agentNodeFor builds an AgentNode from a component and its rendered layer.
+// agentNodeFor builds a lightweight AgentNode (Name, Type, Rect, Focused)
+// from a component and its rendered layer. It intentionally does NOT compute
+// the node's Text (an O(n) ansi.Strip+Join over the layer's lines): that text
+// is only consumed by AI tooling via AgentFrame, never by the live render
+// path, so it is filled lazily in Scene.AgentFrame to avoid an O(history)
+// string allocation every streaming frame for the chat layer.
 func agentNodeFor(c Component, rect Rect, lines []string) AgentNode {
 	node := AgentNode{
 		Name: componentLayerName(c),
 		Type: fmt.Sprintf("%T", c),
 		Rect: rect,
-		Text: ansi.Strip(strings.Join(lines, "\n")),
 	}
 	if f, ok := c.(Focusable); ok {
 		node.Focused = f.Focused()
