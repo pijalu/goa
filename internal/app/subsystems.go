@@ -26,6 +26,7 @@ import (
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/role"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/telemetry"
@@ -160,6 +161,7 @@ func (s *subsystems) effectiveModeState() internal.ModeState {
 func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, opts RuntimeOptions) *subsystems {
 	subs := initBaseSubsystems(cfg, projectDir)
 	agentBundle := initAgentBundle(cfg, projectDir)
+	initHookEngine(cfg, projectDir, agentBundle.agentMgr)
 
 	// Steering queue: shared between AgentManager (consumes at turn end) and
 	// TUI submit handler (appends while a turn is running).
@@ -323,6 +325,19 @@ func initAgentLogger(cfg *config.Config, projectDir string, agentMgr *core.Agent
 	nullLogger := agentic.NewLogger(agentic.Error)
 	agentMgr.SetLogger(nullLogger)
 	return nullLogger
+}
+
+func initHookEngine(cfg *config.Config, projectDir string, agentMgr *core.AgentManager) {
+	hookCfg, err := hooks.LoadConfig(cfg.ConfigDir, projectDir)
+	if err != nil {
+		log.Printf("Warning: failed to load hooks config: %v\n", err)
+		return
+	}
+	if hookCfg == nil || len(hookCfg.Hooks) == 0 {
+		return
+	}
+	hookStore := hooks.NewStore(filepath.Join(projectDir, ".goa", "hooks.log"))
+	agentMgr.SetHookEngine(hooks.NewEngine(hookCfg, hookStore))
 }
 
 func newAutonomySwitcher(agentMgr *core.AgentManager, cfg *config.Config, setJail func(bool)) commands.AutonomySwitcher {

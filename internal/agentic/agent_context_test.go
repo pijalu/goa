@@ -45,7 +45,7 @@ func TestExecuteToolWithResult_ContextToolForwardsCtx(t *testing.T) {
 
 	done := make(chan ToolResult, 1)
 	go func() {
-		res, _ := agent.executeToolWithResult(ctx, "blocker", "{}")
+		res, _ := agent.executeToolWithResult(ctx, "blocker", "{}", "call_1")
 		done <- res
 	}()
 
@@ -80,7 +80,7 @@ func TestExecuteToolWithResult_FallsBackToExecute(t *testing.T) {
 		}},
 	})
 
-	res, err := agent.executeToolWithResult(context.Background(), "plain", "{}")
+	res, err := agent.executeToolWithResult(context.Background(), "plain", "{}", "call_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

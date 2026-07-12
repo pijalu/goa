@@ -17,6 +17,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/prompts"
 )
@@ -130,6 +131,7 @@ type AgentManager struct {
 	baseSystemPrompt       string
 	companionReviewEnabled bool
 	companionReviewSet     bool
+	hookEngine             hooks.AgentHookEngine
 
 	// disableToolBudget is a session-level flag that disables the per-turn
 	// tool-call budget check. When set, the agent allows unlimited tool calls
@@ -174,6 +176,7 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 		sessionID := am.sessionStore.StartSession()
 		if sessionID != "" {
 			opts.SessionID = sessionID
+			am.fireSessionStart(sessionID)
 		}
 	}
 
@@ -380,7 +383,30 @@ func (am *AgentManager) StopSession() error {
 
 	am.activeAgent = nil
 	am.dispatchLifecycle("shutdown", map[string]any{})
+	am.fireSessionEnd()
 	return nil
+}
+
+func (am *AgentManager) fireSessionStart(sessionID string) {
+	if am.hookEngine == nil {
+		return
+	}
+	_ = am.hookEngine.FireSessionStart(context.Background(), hooks.SessionPayload{
+		Event:      string(hooks.EventSessionStart),
+		SessionID:  sessionID,
+		ProjectDir: am.projectDir,
+	})
+}
+
+func (am *AgentManager) fireSessionEnd() {
+	if am.hookEngine == nil {
+		return
+	}
+	_ = am.hookEngine.FireSessionEnd(context.Background(), hooks.SessionPayload{
+		Event:      string(hooks.EventSessionEnd),
+		SessionID:  "",
+		ProjectDir: am.projectDir,
+	})
 }
 
 // Interrupt cancels the current agent turn.

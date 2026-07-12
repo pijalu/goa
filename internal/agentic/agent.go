@@ -17,6 +17,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 )
 
@@ -401,6 +402,10 @@ type Config struct {
 	// ThinkingStallStop is the duration of pure thinking before the stream
 	// is interrupted. Zero means the default of 120s.
 	ThinkingStallStop time.Duration
+
+	// HookEngine executes user-defined lifecycle hooks (beforeTool, afterTool,
+	// sessionStart, sessionEnd). When nil, no hooks run.
+	HookEngine hooks.AgentHookEngine
 }
 
 // NewAgent creates a new Agent with the given configuration.

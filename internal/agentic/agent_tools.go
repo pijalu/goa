@@ -8,6 +8,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 	"github.com/pijalu/goa/internal/toolaccess"
 )
@@ -84,7 +85,7 @@ func (a *Agent) newToolCallTask(tc provider.ContentBlock) *ToolCallTask {
 		CallID: tc.ToolCallID,
 		Access: a.resolveToolAccess(tc.ToolName, tc.ToolArguments),
 		Execute: func(ctx context.Context) (ToolResult, error) {
-			return a.executeToolWithResult(ctx, tc.ToolName, tc.ToolArguments)
+			return a.executeToolWithResult(ctx, tc.ToolName, tc.ToolArguments, tc.ToolCallID)
 		},
 	}
 }
@@ -163,11 +164,6 @@ func (a *Agent) resolveToolAccess(name, input string) toolaccess.Access {
 	return toolaccess.Access{}
 }
 
-// executeToolWithResult executes a tool and preserves control signals such as
-// StopTurn. The turn ctx is forwarded to tools that implement ContextTool so
-// long-running/hung tools can be cancelled. Tools implementing ResultTool are
-// called directly; otherwise the string output of Execute is wrapped into a
-// ToolResult.
 func (a *Agent) enforceSoloPolicy(name, input string) error {
 	if a.cfg.GetAutonomy == nil || a.cfg.ProjectDir == "" {
 		return nil
@@ -223,7 +219,50 @@ func (a *Agent) confirmToolIfNeeded(ctx context.Context, name, input string) err
 	return nil
 }
 
-func (a *Agent) executeToolWithResult(ctx context.Context, name, input string) (ToolResult, error) {
+func (a *Agent) executeToolWithResult(ctx context.Context, name, input, callID string) (ToolResult, error) {
+	if err := a.fireBeforeToolHook(ctx, name, input, callID); err != nil {
+		return ToolResult{}, err
+	}
+	result, err := a.runTool(ctx, name, input)
+	a.fireAfterToolHook(ctx, name, input, callID, result, err)
+	return result, err
+}
+
+func (a *Agent) fireBeforeToolHook(ctx context.Context, name, input, callID string) error {
+	if a.cfg.HookEngine == nil {
+		return nil
+	}
+	return a.cfg.HookEngine.FireBeforeTool(ctx, hooks.ToolPayload{
+		Event:     string(hooks.EventBeforeTool),
+		ToolName:  name,
+		ToolInput: input,
+		CallID:    callID,
+	})
+}
+
+func (a *Agent) fireAfterToolHook(ctx context.Context, name, input, callID string, result ToolResult, runErr error) {
+	if a.cfg.HookEngine == nil {
+		return
+	}
+	payload := hooks.ToolPayload{
+		Event:     string(hooks.EventAfterTool),
+		ToolName:  name,
+		ToolInput: input,
+		CallID:    callID,
+		Output:    result.Output,
+	}
+	if runErr != nil {
+		payload.Error = runErr.Error()
+	}
+	_ = a.cfg.HookEngine.FireAfterTool(ctx, payload)
+}
+
+// runTool executes the tool and preserves control signals such as StopTurn.
+// The turn ctx is forwarded to tools that implement ContextTool so
+// long-running/hung tools can be cancelled. Tools implementing ResultTool are
+// called directly; otherwise the string output of Execute is wrapped into a
+// ToolResult.
+func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, error) {
 	if err := a.enforceGuardPolicy(name, input); err != nil {
 		return ToolResult{}, err
 	}

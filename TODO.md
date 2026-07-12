@@ -44,12 +44,12 @@
 - [x] Gates + commit
 
 #### Z5 — Hooks system
-- [ ] Lifecycle events: beforeTool, afterTool, sessionStart, sessionEnd
-- [ ] Dispatch engine (fire hooks with JSON payload to stdin of command)
-- [ ] Blocking hooks that can veto tool execution
-- [ ] Cascading config: user + project level
-- [ ] Audit store for hook execution history
-- [ ] Gates + commit
+- [x] Lifecycle events: beforeTool, afterTool, sessionStart, sessionEnd
+- [x] Dispatch engine (fire hooks with JSON payload to stdin of command)
+- [x] Blocking hooks that can veto tool execution
+- [x] Cascading config: user + project level
+- [x] Audit store for hook execution history
+- [x] Tests + gates + commit
 
 #### Z6 — Background process manager
 - [ ] Durable task registry (JSON on disk) for background processes
