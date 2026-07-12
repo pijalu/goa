@@ -61,6 +61,27 @@
 - [x] TUI sidebar integration for live status
 - [x] Gates + commit
 
+#### Z7 — Swarm mailbox (Tier 3)
+- [x] Agent-to-agent messaging bus (`internal/agentic.AgentBus`)
+- [x] `send_message` / `receive_message` tools
+- [x] `CommConnector` for auto-receive wiring into `AgentPool`
+- [x] Tests for bus, tools, and connector
+- [x] Gates + commit
+
+#### Z8 — OAuth flow (Tier 3)
+- [ ] Device-code / authorization-code flow for supported providers
+- [ ] Encrypted token storage
+- [ ] Auto-refresh integration
+- [ ] Tests + gates + commit
+
+#### Z9 — Plugin system (Tier 3)
+- [ ] Git-based plugin distribution (`plugins install <git-url>`)
+- [ ] Manifest validation
+- [ ] Lockfile with content-hash tracking
+- [ ] Permission-gated activation
+- [ ] Plugin-scoped skills
+- [ ] Tests + gates + commit
+
 ## Gates
 All changes must pass the 5 gates run **separately**:
 1. `go vet ./...`
