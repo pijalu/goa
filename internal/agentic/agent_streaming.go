@@ -15,6 +15,9 @@ import (
 
 func (a *Agent) processTurnWithStream(ctx context.Context) error {
 	a.cfg.Logger.Log(Debug, "Agent.processTurnWithStream started")
+	// Strip transient (ephemeral) system nudges at turn end so recovery/repeat
+	// hints inform the model during this turn but do not pollute future turns.
+	defer a.stripEphemeralSystemMessages()
 
 	model, opts, initCtx := a.prepareTurn(ctx)
 	if err := a.checkContextLimit(); err != nil {
@@ -120,7 +123,10 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opts provider.StreamOptions, limit int) error {
 	a.cfg.Logger.Log(Warn, "per-turn stream round limit (%d) reached; sending recovery hint", limit)
 	recovery := "[goa-system] The per-turn tool-call round limit was reached. Stop calling tools and complete the task using the information you have already gathered."
-	a.InjectSystemMessage(recovery)
+	// The recovery hint is a transient nudge for the recovery rounds only; mark
+	// it ephemeral so it is stripped at turn end and does not pollute future
+	// turns' context.
+	a.InjectEphemeralSystemMessage(recovery)
 
 	// Allow up to 3 additional recovery rounds if the model still calls tools
 	// despite the recovery hint. Prevents runaway recovery while still giving

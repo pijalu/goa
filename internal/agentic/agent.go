@@ -537,6 +537,50 @@ func (a *Agent) InjectSystemMessage(content string) {
 	a.emitMessage(msg)
 }
 
+// metaEphemeral marks a history message as transient: it is sent to the model
+// during the turn it is injected but stripped before the next turn so it does
+// not pollute future context (e.g. the recovery hint or the repeat-loop nudge).
+// The tag lives in Message.Metadata, which migrateMessage does not forward, so
+// the model never sees the tag itself (only the message content, during its turn).
+const metaEphemeral = "ephemeral"
+
+// InjectEphemeralSystemMessage appends a system message that is relevant only
+// for the current turn. It is sent to the model now but stripped from history
+// at turn end so it is not re-sent (and does not add noise/context) on future
+// turns. Use for transient nudges (e.g. the recovery hint); use
+// InjectSystemMessage for durable runtime notices (tool changes).
+func (a *Agent) InjectEphemeralSystemMessage(content string) {
+	msg := Message{
+		Type:    Content,
+		Role:    System,
+		Content: content,
+		Metadata: map[string]string{metaEphemeral: "true"},
+	}
+	a.mu.Lock()
+	a.history = append(a.history, msg)
+	a.mu.Unlock()
+	a.emitMessage(msg)
+}
+
+// stripEphemeralSystemMessages removes ephemeral system messages from history.
+// Called at turn end so transient nudges (e.g. the recovery hint) do not persist
+// into the next turn's context.
+func (a *Agent) stripEphemeralSystemMessages() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.history) == 0 {
+		return
+	}
+	filtered := a.history[:0]
+	for _, m := range a.history {
+		if m.Role == System && m.Metadata != nil && m.Metadata[metaEphemeral] == "true" {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	a.history = filtered
+}
+
 // Model returns the active model configuration.
 func (a *Agent) Model() provider.Model {
 	a.mu.Lock()
