@@ -9,9 +9,6 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -42,16 +39,10 @@ func NewBGExecToolWithPath(path string) (*BGExecTool, error) {
 
 // NewBGExecToolWithManager creates a BGExecTool using the provided manager.
 // This lets the host share a single durable manager between the tool and the
-// TUI status panel.
+// TUI status panel. The tool does not install process-signal handlers;
+// shutdown ordering is owned by the host, which calls StopAll() on teardown.
 func NewBGExecToolWithManager(mgr *background.Manager) *BGExecTool {
-	t := &BGExecTool{mgr: mgr}
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-c
-		t.StopAll()
-	}()
-	return t
+	return &BGExecTool{mgr: mgr}
 }
 
 // Schema returns the tool schema for bg_exec.

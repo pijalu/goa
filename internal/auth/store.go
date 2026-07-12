@@ -27,19 +27,39 @@ type Store struct {
 }
 
 // NewStore creates a credential store at the given path. The encryption key is
-// stored next to the token file with a `.key` suffix.
-func NewStore(path string) *Store {
+// stored next to the token file with a `.key` suffix. All key/credential
+// loading happens here so later Save/Get calls never mutate key material under
+// a read lock. If path is empty, the store is in-memory only.
+//
+// Returns an error if the key cannot be generated/loaded or the existing
+// store cannot be decrypted; callers must handle this rather than operate on a
+// silently-broken store.
+func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path:    path,
 		keyPath: path + ".key",
 		creds:   make(map[string]Credential),
 	}
-	_ = s.loadKey()
-	_ = s.Load()
-	return s
+	if path == "" {
+		// In-memory mode: generate an ephemeral key, never touch disk.
+		key, err := generateKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate ephemeral key: %w", err)
+		}
+		s.key = key
+		return s, nil
+	}
+	if err := s.loadKey(); err != nil {
+		return nil, fmt.Errorf("load key: %w", err)
+	}
+	if err := s.Load(); err != nil {
+		return nil, fmt.Errorf("load credentials: %w", err)
+	}
+	return s, nil
 }
 
-// loadKey loads or generates the AES encryption key.
+// loadKey loads or generates the AES encryption key. It must only be called
+// before the store is shared between goroutines (i.e. from NewStore).
 func (s *Store) loadKey() error {
 	data, err := os.ReadFile(s.keyPath)
 	if err == nil {
@@ -60,14 +80,15 @@ func (s *Store) loadKey() error {
 	if err := os.MkdirAll(filepath.Dir(s.keyPath), 0o700); err != nil {
 		return fmt.Errorf("mkdir key: %w", err)
 	}
-	if err := os.WriteFile(s.keyPath, []byte(encodeKey(key)), 0o600); err != nil {
+	if err := writeFileAtomic(s.keyPath, []byte(encodeKey(key)), 0o600); err != nil {
 		return fmt.Errorf("write key: %w", err)
 	}
 	s.key = key
 	return nil
 }
 
-// Load reads credentials from disk and decrypts them.
+// Load reads credentials from disk and decrypts them. The caller holds the
+// write lock; the encryption key must already be loaded by NewStore.
 func (s *Store) Load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,9 +127,7 @@ func (s *Store) loadLegacy(data []byte, parseErr error) error {
 
 func (s *Store) loadEncrypted(store map[string]string) error {
 	if s.key == nil {
-		if err := s.loadKey(); err != nil {
-			return fmt.Errorf("load key: %w", err)
-		}
+		return fmt.Errorf("encryption key not loaded")
 	}
 
 	s.creds = make(map[string]Credential, len(store))
@@ -126,15 +145,18 @@ func (s *Store) loadEncrypted(store map[string]string) error {
 	return nil
 }
 
-// Save persists encrypted credentials to disk.
+// Save persists encrypted credentials to disk atomically. The key must already
+// be loaded by NewStore; this method takes only a read lock and never performs
+// lazy key generation (which previously raced with concurrent readers).
 func (s *Store) Save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if s.key == nil {
-		if err := s.loadKey(); err != nil {
-			return fmt.Errorf("load key: %w", err)
-		}
+		return fmt.Errorf("encryption key not loaded")
+	}
+	if s.path == "" {
+		return nil // in-memory mode
 	}
 
 	store := make(map[string]string, len(s.creds))
@@ -157,7 +179,7 @@ func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("mkdir auth store: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	return writeFileAtomic(s.path, data, 0o600)
 }
 
 // Get returns the credential for a provider, if any.
@@ -227,4 +249,28 @@ func (s *Store) Providers() []string {
 func (s *Store) HasAuth(provider string) bool {
 	_, ok := s.Get(provider)
 	return ok
+}
+
+// writeFileAtomic writes data to path via a temp file + rename so a crash
+// mid-write cannot leave a truncated credentials file.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op if rename succeeded
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+	return os.Rename(tmpName, path)
 }

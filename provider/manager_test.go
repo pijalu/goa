@@ -853,8 +853,18 @@ func TestDetectFromModelMeta_LlamaCPP_FallsBackToTrain(t *testing.T) {
 	}
 }
 
+// mustAuthStore builds an auth store in a temp dir, failing the test on error.
+func mustAuthStore(t *testing.T) *auth.Store {
+	t.Helper()
+	s, err := auth.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err != nil {
+		t.Fatalf("auth store: %v", err)
+	}
+	return s
+}
+
 func TestBuildStreamOptions_UsesAuthStoreAPIKey(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	store := mustAuthStore(t)
 	_ = store.SetAPIKey("openai", "stored-key")
 
 	cfg := &config.Config{
@@ -876,7 +886,7 @@ func TestBuildStreamOptions_UsesAuthStoreAPIKey(t *testing.T) {
 }
 
 func TestBuildStreamOptions_UsesAuthStoreOAuthAccessToken(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	store := mustAuthStore(t)
 	_ = store.SetOAuth("openai", &oauth.Tokens{AccessToken: "oauth-access-token", TokenType: "bearer"})
 
 	cfg := &config.Config{

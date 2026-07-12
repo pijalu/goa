@@ -8,16 +8,28 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 )
 
+// mustStore builds a store at path, failing the test on any load error so
+// tests do not silently operate on a broken store.
+func mustStore(t *testing.T, path string) *Store {
+	t.Helper()
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore(%q): %v", path, err)
+	}
+	return s
+}
+
 func TestStore_EncryptsOAuthTokens(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "auth.json")
-	store := NewStore(path)
+	store := mustStore(t, path)
 
 	tokens := &oauth.Tokens{
 		AccessToken: "secret-token",
@@ -39,7 +51,7 @@ func TestStore_EncryptsOAuthTokens(t *testing.T) {
 		t.Fatal("token stored in plaintext")
 	}
 
-	store2 := NewStore(path)
+	store2 := mustStore(t, path)
 	got, ok := store2.GetOAuth("copilot")
 	if !ok {
 		t.Fatal("token not found after reload")
@@ -52,7 +64,7 @@ func TestStore_EncryptsOAuthTokens(t *testing.T) {
 func TestStore_EncryptsAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "auth.json")
-	store := NewStore(path)
+	store := mustStore(t, path)
 
 	if err := store.SetAPIKey("kimi", "sk-abc123"); err != nil {
 		t.Fatalf("set api key: %v", err)
@@ -86,7 +98,7 @@ func TestStore_LegacyOAuthMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store := NewStore(path)
+	store := mustStore(t, path)
 	got, ok := store.GetOAuth("copilot")
 	if !ok {
 		t.Fatal("legacy token not found")
@@ -107,7 +119,7 @@ func TestStore_LegacyOAuthMigration(t *testing.T) {
 func TestStore_Delete(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "auth.json")
-	store := NewStore(path)
+	store := mustStore(t, path)
 	_ = store.SetAPIKey("copilot", "x")
 	if err := store.Delete("copilot"); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -120,7 +132,7 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_OverwriteOAuthWithAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "auth.json")
-	store := NewStore(path)
+	store := mustStore(t, path)
 	_ = store.SetOAuth("kimi", &oauth.Tokens{AccessToken: "tok"})
 	_ = store.SetAPIKey("kimi", "key")
 
@@ -133,6 +145,63 @@ func TestStore_OverwriteOAuthWithAPIKey(t *testing.T) {
 	}
 	if _, ok := store.GetOAuth("kimi"); ok {
 		t.Fatal("oauth still present after overwrite")
+	}
+}
+
+// TestStore_NewStorePropagatesLoadError ensures the constructor does not
+// swallow a corrupt-store error (regression for the swallowed _ = Load() bug).
+func TestStore_NewStorePropagatesLoadError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.json")
+	// Pre-seed a valid key file, then an undecryptable store body.
+	store := mustStore(t, path)
+	_ = store.SetAPIKey("p", "v")
+
+	// Corrupt the ciphertext so Load() cannot decrypt it.
+	if err := os.WriteFile(path, []byte("{\"p\":\"not-valid-base64-%%\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path); err == nil {
+		t.Fatal("expected NewStore to return an error for a corrupt store")
+	}
+}
+
+// TestStore_InMemoryModeNeverTouchesDisk verifies that an empty path yields a
+// usable in-memory store that does not create files.
+func TestStore_InMemoryModeNeverTouchesDisk(t *testing.T) {
+	store, err := NewStore("")
+	if err != nil {
+		t.Fatalf("in-memory store: %v", err)
+	}
+	if err := store.SetAPIKey("p", "v"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if got, ok := store.GetAPIKey("p"); !ok || got != "v" {
+		t.Fatalf("in-memory get = %q, %v", got, ok)
+	}
+}
+
+// TestStore_ConcurrentSaveNoRace exercises concurrent Set/Save and read paths
+// under -race. Previously Save took an RLock and then wrote s.key via
+// loadKey(), racing with readers.
+func TestStore_ConcurrentSaveNoRace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.json")
+	store := mustStore(t, path)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(4)
+		go func() { defer wg.Done(); _ = store.SetAPIKey("p", "k") }()
+		go func() { defer wg.Done(); _ = store.Save() }()
+		go func() { defer wg.Done(); _, _ = store.GetAPIKey("p") }()
+		go func() { defer wg.Done(); _ = store.Providers() }()
+	}
+	wg.Wait()
+
+	// After concurrent writes, the persisted store must still decrypt.
+	if _, err := NewStore(path); err != nil {
+		t.Fatalf("store unreadable after concurrent writes: %v", err)
 	}
 }
 

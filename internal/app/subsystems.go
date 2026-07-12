@@ -546,7 +546,11 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 	// Wire the queue as the goal name pool so newly created active goals pick
 	// a friendly alias that does not collide with queued goals.
 	goalManager.Mode.SetNamePool(goalManager.Queue)
-	authStore := auth.NewStore(filepath.Join(cfgDir, "auth.json"))
+	authStore, err := auth.NewStore(filepath.Join(cfgDir, "auth.json"))
+	if err != nil {
+		log.Printf("Warning: auth store unavailable, falling back to in-memory: %v", err)
+		authStore, _ = auth.NewStore("")
+	}
 	if providerMgr != nil {
 		providerMgr.SetAuthStore(authStore)
 	}

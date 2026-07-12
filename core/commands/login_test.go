@@ -31,8 +31,18 @@ func (f *fakeWriter) Writef(format string, args ...any) {
 	_ = args
 }
 
+// mustStore builds an auth store in a temp dir for login command tests.
+func mustStore(t *testing.T) *auth.Store {
+	t.Helper()
+	s, err := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatalf("auth store: %v", err)
+	}
+	return s
+}
+
 func TestLoginCommandStoreAPIKey(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store}
 	if err := cmd.Run(core.Context{}, []string{"github", "apikey", "mytoken"}); err != nil {
 		t.Fatalf("login: %v", err)
@@ -44,7 +54,7 @@ func TestLoginCommandStoreAPIKey(t *testing.T) {
 }
 
 func TestLoginCommandLegacyTokenAsAPIKey(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store}
 	if err := cmd.Run(core.Context{}, []string{"github", "mytoken"}); err != nil {
 		t.Fatalf("login: %v", err)
@@ -56,7 +66,7 @@ func TestLoginCommandLegacyTokenAsAPIKey(t *testing.T) {
 }
 
 func TestLoginCommandList(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	_ = store.SetAPIKey("github", "x")
 	cmd := &LoginCommand{Store: store}
 	if err := cmd.Run(core.Context{}, nil); err != nil {
@@ -72,7 +82,7 @@ func TestLoginCommandNoStore(t *testing.T) {
 }
 
 func TestLoginCommandListKinds(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store}
 	w := &fakeWriter{}
 	ctx := core.Context{}
@@ -86,7 +96,7 @@ func TestLoginCommandListKinds(t *testing.T) {
 }
 
 func TestLoginCommandOAuthUnsupported(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store}
 	if err := cmd.Run(core.Context{}, []string{"kimi", "oauth"}); err == nil {
 		t.Fatal("expected error for unsupported OAuth provider")
@@ -94,7 +104,7 @@ func TestLoginCommandOAuthUnsupported(t *testing.T) {
 }
 
 func TestLoginCommandPromptedAPIKey(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store, prompter: &fakePrompter{value: "prompted-key", ok: true}}
 	if err := cmd.Run(core.Context{}, []string{"kimi", "apikey"}); err != nil {
 		t.Fatalf("login: %v", err)
@@ -106,7 +116,7 @@ func TestLoginCommandPromptedAPIKey(t *testing.T) {
 }
 
 func TestLoginCommandPromptCancelled(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store, prompter: &fakePrompter{ok: false}}
 	if err := cmd.Run(core.Context{}, []string{"kimi", "apikey"}); err != nil {
 		t.Fatalf("login: %v", err)
@@ -117,7 +127,7 @@ func TestLoginCommandPromptCancelled(t *testing.T) {
 }
 
 func TestLoginCommandFakeOAuthFlow(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{Store: store, prompter: &fakePrompter{ok: true}}
 	if err := cmd.Run(core.Context{}, []string{"openai", "apikey", "sk-test"}); err != nil {
 		t.Fatalf("login: %v", err)
@@ -138,7 +148,7 @@ func (f *fakeOAuthFlow) Run(_ context.Context, _ uiWriter, _ prompter) (*oauth.T
 }
 
 func TestLoginCommandOAuthStoresTokens(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	expected := &oauth.Tokens{AccessToken: "oauth-token", TokenType: "bearer"}
 	cmd := &LoginCommand{
 		Store:       store,
@@ -154,7 +164,7 @@ func TestLoginCommandOAuthStoresTokens(t *testing.T) {
 }
 
 func TestLoginCommandOAuthFlowError(t *testing.T) {
-	store := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	store := mustStore(t)
 	cmd := &LoginCommand{
 		Store:       store,
 		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{err: fmt.Errorf("boom")} },

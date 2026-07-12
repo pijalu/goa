@@ -5,8 +5,10 @@
 package background
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -71,8 +73,11 @@ func TestManager_Stop(t *testing.T) {
 	if _, err := mgr.Stop(task.ID, 100*time.Millisecond); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := mgr.Get(task.ID); got.Status != StatusKilled && got.Status != StatusError {
-		t.Errorf("expected killed or error status, got %v", got.Status)
+	if got := mgr.Get(task.ID); got.Status != StatusKilled {
+		t.Errorf("expected killed status, got %v", got.Status)
+	}
+	if got := mgr.Get(task.ID); got.ExitCode >= 0 {
+		t.Errorf("expected negative exit code for killed task, got %d", got.ExitCode)
 	}
 }
 
@@ -210,4 +215,165 @@ func TestManager_OutputDir(t *testing.T) {
 		t.Errorf("expected output dir to exist: %v", err)
 	}
 	mgr.StopAll(time.Second)
+}
+
+// TestManager_ReturnedTaskIsSnapshot verifies Start returns a defensive copy
+// (A2): mutating the returned task must not affect the manager's view.
+func TestManager_ReturnedTaskIsSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := NewManager(filepath.Join(dir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	task, err := mgr.Start("sleep 30", "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer mgr.StopAll(time.Second)
+
+	original := task.Status
+	task.Status = StatusCompleted // mutate the caller's copy
+	if got := mgr.Get(task.ID); got.Status != original {
+		t.Errorf("manager status changed to %v after caller mutated returned task", got.Status)
+	}
+}
+
+// TestManager_PersistIsAtomic verifies the registry file stays valid JSON
+// under concurrent starts/stops (A3).
+func TestManager_PersistIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.json")
+	mgr, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tk, err := mgr.Start("echo hi", "", nil)
+			if err == nil && tk != nil {
+				_, _ = mgr.Stop(tk.ID, 100*time.Millisecond)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// The file must parse as valid JSON into the tasks map.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read registry: %v", err)
+	}
+	var parsed map[string]*Task
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("registry not valid JSON after concurrent writes: %v", err)
+	}
+}
+
+// TestManager_RestartReconstructsCounter verifies the ID counter is rebuilt
+// from persisted task IDs so a post-restart Start does not collide (B2).
+func TestManager_RestartReconstructsCounter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.json")
+	mgr, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	first, err := mgr.Start("echo one", "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	mgr.StopAll(time.Second)
+
+	mgr2, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	// Existing task must be present (no collision/overwrite by next Start).
+	if got := mgr2.Get(first.ID); got == nil {
+		t.Fatalf("task %s missing after reload", first.ID)
+	}
+	second, err := mgr2.Start("echo two", "", nil)
+	if err != nil {
+		t.Fatalf("Start after reload: %v", err)
+	}
+	defer mgr2.StopAll(time.Second)
+	if second.ID == first.ID {
+		t.Fatalf("ID collision after restart: both %s", first.ID)
+	}
+	if got := mgr2.Get(first.ID); got == nil {
+		t.Fatalf("first task %s was overwritten by %s", first.ID, second.ID)
+	}
+}
+
+// TestManager_OutputPersistsAcrossRestart verifies teed output is readable
+// from a fresh manager that never captured the original pipes (B3).
+func TestManager_OutputPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.json")
+	mgr, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	task, err := mgr.Start("printf 'alpha\\nbeta\\n'", "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Wait for the process to finish and output to flush.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := mgr.Get(task.ID); got != nil && got.Status == StatusCompleted {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mgr2, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	stdout, _ := mgr2.ReadOutput(task.ID, 10)
+	found := false
+	for _, line := range stdout {
+		if line == "alpha" || line == "beta" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("persisted output not readable after restart; got %v", stdout)
+	}
+}
+
+// TestManager_StopAfterRestart verifies a reattached live task can be killed
+// by PID even though its pipes are gone (B3).
+func TestManager_StopAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks.json")
+	mgr, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	task, err := mgr.Start("sleep 60", "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Reload: the running task is reattached (no captured proc handle).
+	mgr2, err := NewManager(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	loaded := mgr2.Get(task.ID)
+	if loaded == nil || loaded.Status != StatusRunning {
+		t.Fatalf("expected reattached running task, got %+v", loaded)
+	}
+	if _, err := mgr2.Stop(task.ID, 500*time.Millisecond); err != nil {
+		t.Fatalf("Stop reattached: %v", err)
+	}
+	got := mgr2.Get(task.ID)
+	if got == nil || got.Status != StatusKilled {
+		t.Fatalf("expected killed after reattached stop, got %+v", got)
+	}
 }
