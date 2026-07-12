@@ -175,16 +175,21 @@ func (m *Manager) List() []*Task {
 	defer m.mu.RUnlock()
 	out := make([]*Task, 0, len(m.tasks))
 	for _, t := range m.tasks {
-		out = append(out, t)
+		cp := *t
+		out = append(out, &cp)
 	}
 	return out
 }
 
-// Get returns a task by ID or nil if not found.
+// Get returns a copy of a task by ID or nil if not found.
 func (m *Manager) Get(id string) *Task {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.tasks[id]
+	if t := m.tasks[id]; t != nil {
+		cp := *t
+		return &cp
+	}
+	return nil
 }
 
 // ReadOutput returns the last n lines of stdout and stderr for a task.

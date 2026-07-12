@@ -494,7 +494,12 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		reg.Register(&tools.SSHBashTool{Hosts: sshHosts(cfg)})
 	}
 	if cfg.Tools.Enabled.BGExec {
-		reg.Register(tools.NewBGExecTool())
+		bgExecTool, err := tools.NewBGExecToolWithPath(filepath.Join(projectDir, ".goa", "bgexec.json"))
+		if err != nil {
+			log.Printf("Warning: failed to create durable bg_exec manager: %v\n", err)
+			bgExecTool = tools.NewBGExecTool()
+		}
+		reg.Register(bgExecTool)
 	}
 	if cfg.Tools.Enabled.Memento {
 		reg.Register(&tools.MementoTool{ProjectDir: projectDir, GlobalDir: cfg.ConfigDir})

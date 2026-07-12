@@ -17,6 +17,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/background"
 )
 
 // --- BUG-01: editfile out-of-range end_line must return a ToolError, not panic. ---
@@ -163,12 +164,7 @@ func TestBGExec_StopAlreadyExited_NoPanic(t *testing.T) {
 	}
 	id := parseProcID(t, startOut)
 	// wait for it to exit
-	proc := getProc(t, tool, id)
-	select {
-	case <-proc.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("process did not exit")
-	}
+	waitForTaskExit(t, tool.Manager(), id, 3*time.Second)
 	out, err := tool.Execute(`{"action":"stop","id":"` + id + `"}`)
 	if err != nil {
 		t.Fatalf("stop on exited process returned error: %v", err)
@@ -192,12 +188,7 @@ func TestBGExec_ReadOutput_LongLinePreserved(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	id := parseProcID(t, startOut)
-	proc := getProc(t, tool, id)
-	select {
-	case <-proc.done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("cat did not exit")
-	}
+	waitForTaskExit(t, tool.Manager(), id, 3*time.Second)
 	out, err := tool.Execute(`{"action":"read","id":"` + id + `","tail_lines":5}`)
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -389,13 +380,15 @@ func parseProcID(t *testing.T, startOut string) string {
 	return startOut[i+len("Process ") : j]
 }
 
-func getProc(t *testing.T, tool *BGExecTool, id string) *BGProcess {
+func waitForTaskExit(t *testing.T, mgr *background.Manager, id string, timeout time.Duration) {
 	t.Helper()
-	tool.mu.RLock()
-	defer tool.mu.RUnlock()
-	p, ok := tool.procs[id]
-	if !ok {
-		t.Fatalf("proc %q not found", id)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		task := mgr.Get(id)
+		if task != nil && task.Status != background.StatusRunning {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return p
+	t.Fatalf("task %q did not exit within %v", id, timeout)
 }

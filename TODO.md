@@ -57,9 +57,9 @@
 - [x] PID tracking, output ring-buffer capture, exit code recording
 - [x] Cross-platform process termination (SIGTERM → SIGKILL)
 - [x] Tests for the manager package
-- [ ] Integrate manager into `bg_exec` tool for persistent task tracking
+- [x] Integrate manager into `bg_exec` tool for persistent task tracking
 - [ ] TUI sidebar integration for live status
-- [ ] Gates + commit
+- [x] Gates + commit
 
 ## Gates
 All changes must pass the 5 gates run **separately**:
