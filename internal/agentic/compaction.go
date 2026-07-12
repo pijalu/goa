@@ -55,6 +55,23 @@ func (a *Agent) microCompactForced(force bool) {
 		return
 	}
 
+	// Cache-aware gating (resurrects the previously-dead CacheMissThreshold).
+	// In-place truncation of old tool results mutates the provider's cached
+	// prefix, flipping a hot cache into a full re-process on the next turn.
+	// When invoked proactively (not a manual /compress), defer the mutation
+	// unless the cache is presumed cold (inter-turn idle gap exceeded
+	// CacheMissThreshold) or usage is at the hard ceiling where skipping the
+	// mutation risks an overflow. force=true (explicit /compress) always
+	// mutates so a manual invocation always does visible work.
+	const hardCeilingRatio = 0.95
+	if !force && contextRatio < hardCeilingRatio && !a.cacheAssumedCold() {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Debug, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%)",
+				cfg.CacheMissThreshold, contextRatio*100)
+		}
+		return
+	}
+
 	keepIdx := computeKeepIdx(history, cfg.KeepRecentMessages, force)
 	changed := a.truncateToolResults(history, keepIdx, cfg)
 	if changed > 0 {
@@ -64,6 +81,31 @@ func (a *Agent) microCompactForced(force bool) {
 		}
 		a.emitEvent(OutputEvent{Type: EventCompact, Text: "micro"})
 	}
+}
+
+// cacheAssumedCold reports whether the provider prefix cache is presumed cold
+// for the upcoming request, justifying in-place history mutation that would
+// otherwise churn a hot cache. The cache is assumed cold when either
+//   - CacheMissThreshold <= 0 (cache protection disabled; legacy behavior), or
+//   - the agent has been idle (no completed turn) for longer than the threshold,
+//     or no previous turn has completed yet (first turn / fresh resume).
+//
+// The idle gap is measured from lastTurnEnd (updated in finishProcessing) to
+// the start of the current turn, so an interactive session with short
+// inter-turn gaps is treated as hot and a resumed session after a long pause
+// is treated as cold.
+func (a *Agent) cacheAssumedCold() bool {
+	threshold := a.cfg.ContextCompression.MicroCompaction.CacheMissThreshold
+	if threshold <= 0 {
+		return true
+	}
+	a.mu.Lock()
+	last := a.lastTurnEnd
+	a.mu.Unlock()
+	if last.IsZero() {
+		return true
+	}
+	return time.Since(last) >= threshold
 }
 
 func (a *Agent) contextRatio() float64 {

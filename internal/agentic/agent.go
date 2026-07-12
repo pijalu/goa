@@ -174,6 +174,14 @@ type Agent struct {
 	// prepareTurn.
 	overflowRecoveryAttempted bool
 
+	// lastTurnEnd records when the previous conversation turn finished. It is
+	// used by cache-aware compaction (see compaction.go): in-place mutation of
+	// old messages (micro compaction / tool_elision) churns the provider prefix
+	// cache, so such mutation is deferred until the inter-turn idle gap exceeds
+	// MicroCompaction.CacheMissThreshold (i.e. the cache is presumed cold) or
+	// usage hits the hard ceiling. Updated under mu in finishProcessing.
+	lastTurnEnd time.Time
+
 	// lastAssistantHash and assistantRepeatCount detect assistant-message
 	// loops where the model emits the same text/thinking across consecutive
 	// turns without making progress.
@@ -757,6 +765,7 @@ func (a *Agent) finishProcessing() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.processing = false
+	a.lastTurnEnd = time.Now()
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil
