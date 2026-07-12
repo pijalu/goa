@@ -217,6 +217,18 @@ func (a *Agent) handleStreamEvent(ctx context.Context, stream *provider.Assistan
 			a.resetThinkingStall()
 			a.shouldBufferToolCall(*event.ToolCall)
 		}
+	case provider.EventToolCallStart:
+		if event.Partial != nil && len(event.Partial.Content) > 0 {
+			a.markGenStart()
+			a.resetThinkingStall()
+			a.handleToolCallPartial(event.Partial.Content[0], true)
+		}
+	case provider.EventToolCallDelta:
+		if event.Partial != nil && len(event.Partial.Content) > 0 {
+			a.markGenStart()
+			a.resetThinkingStall()
+			a.handleToolCallPartial(event.Partial.Content[0], true)
+		}
 	case provider.EventDone:
 		// Capture provider Usage from the stream result.
 		// The usage chunk (stream_options.include_usage) is attached to
@@ -487,10 +499,62 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	if clean != "" && !containsToolXMLTag(clean) {
 		a.emitEvent(OutputEvent{Type: EventContent, State: StateThinking, Role: Assistant, Text: clean, IsDelta: true})
 		a.thinkingDisplayBuf.Reset()
+		}
 	}
-}
 
-// containsToolXMLTag reports whether text still contains any raw tool-call XML
+	// handleToolCallPartial processes an incremental tool call event during
+	// streaming (EventToolCallStart or EventToolCallDelta). It accumulates
+	// partial arguments and emits EventToolCall updates to observers so the
+	// TUI can display live progress as the model constructs the tool call.
+	//
+	// On the first partial event for a tool call ID, a new partialToolCall
+	// entry is created in streamingToolCalls and an EventToolCall with
+	// IsDelta=true is emitted. On subsequent deltas, the accumulated args are
+	// updated and a new EventToolCall is emitted. When the full tool call
+	// arrives via EventToolCallEnd, shouldBufferToolCall handles the final
+	// transition.
+	func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, isPartial bool) {
+		id := tc.ToolCallID
+		if id == "" {
+			id = tc.ToolName // fallback: some providers omit the ID on start
+		}
+
+		a.mu.Lock()
+		ptc, exists := a.streamingToolCalls[id]
+		if !exists {
+			ptc = &partialToolCall{
+				toolName:   tc.ToolName,
+				toolCallID: tc.ToolCallID,
+			}
+			if a.streamingToolCalls == nil {
+				a.streamingToolCalls = make(map[string]*partialToolCall)
+			}
+			a.streamingToolCalls[id] = ptc
+		}
+		if tc.ToolName != "" {
+			ptc.toolName = tc.ToolName
+		}
+		if tc.ToolCallID != "" {
+			ptc.toolCallID = tc.ToolCallID
+		}
+		ptc.argsBuf.WriteString(tc.ToolArguments)
+		accumulated := ptc.argsBuf.String()
+		ptc.widgetCreated = true
+		a.mu.Unlock()
+
+		// Emit partial EventToolCall to observers (TUI will show ◉ pending icon).
+		a.emitEvent(OutputEvent{
+			Type:       EventToolCall,
+			State:      StateToolCall,
+			Role:       Assistant,
+			ToolName:   tc.ToolName,
+			ToolInput:  accumulated,
+			ToolCallID: tc.ToolCallID,
+			IsDelta:    true,
+		})
+	}
+
+	// containsToolXMLTag reports whether text still contains any raw tool-call XML
 // tag (open or close). It is used while streaming thinking text so that
 // multi-line tool-call markup that spans multiple deltas is suppressed until
 // the whole block is closed and stripped.
@@ -525,6 +589,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.bufferedToolCallCount = 0
 	a.streamLoopDetected = false
 	a.resetThinkingStall()
+	a.streamingToolCalls = nil
 }
 
 // checkStreamLoop detects immediate repetition of a suffix within the current

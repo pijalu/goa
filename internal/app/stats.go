@@ -562,9 +562,13 @@ func (a *App) toolCallProgressLabel() string {
 func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	oldText := a.subs.statusMsg.Text()
 	// Finalize any active thinking/content stream before rendering a tool call.
-	// The streaming path emits EventToolCall without a preceding state change,
-	// so the stream state machine must be broken here.
 	a.endStreamIfDifferent(agentic.StateToolCall)
+
+	// Check if this is a streaming update (IsDelta=true) for an existing tool call.
+	if ev.IsDelta {
+		a.handleStreamingToolCallUpdate(ev)
+		return
+	}
 
 	a.statsMu.Lock()
 	a.toolCallsTotal++
@@ -586,9 +590,7 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	a.subs.statusMsg.Show(label)
 	tc.SetStatus(tui.ToolRunning)
 
-	// Keep the footer busy indicator spinning during the tool call. The
-	// streaming path may emit EventToolCall without a preceding state change,
-	// so the footer must be updated here as well as in handleStateChange.
+	// Keep the footer busy indicator spinning during the tool call.
 	subs := a.subs
 	subs.footer.SetData(tui.FooterData{
 		Workdir:                subs.projectDir,
@@ -622,6 +624,45 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 		a.subs.logger.Log(agentic.Info, "[status] handleToolCall: tool=%s oldText=%q newText=%q visible=%v",
 			ev.ToolName, oldText, a.subs.statusMsg.Text(), a.subs.statusMsg.IsVisible())
 	}
+}
+
+// handleStreamingToolCallUpdate processes a streaming tool call update
+// (IsDelta=true). It creates or updates a tool widget with partial args.
+func (a *App) handleStreamingToolCallUpdate(ev *agentic.OutputEvent) {
+	var tc *tui.ToolExecutionComponent
+
+	// Look up existing streaming widget by tool call ID or tool name.
+	if ev.ToolCallID != "" && a.subs.activeTools != nil {
+		if existing, ok := a.subs.activeTools[ev.ToolCallID]; ok {
+			tc = existing
+		}
+	}
+	if tc == nil && ev.ToolName != "" && a.subs.activeTool != nil && a.subs.activeTool.ToolName() == ev.ToolName && a.subs.activeTool.Status() == tui.ToolPending {
+		tc = a.subs.activeTool
+	}
+
+	if tc != nil {
+		// Update existing widget with partial args.
+		tc.SetArgsPartial(ev.ToolInput)
+		return
+	}
+
+	// No existing widget: create a new one in pending state (◉ icon).
+	tc = a.subs.chat.AddToolExecution(ev.ToolName, ev.ToolInput)
+	if ev.ToolCallID != "" {
+		if a.subs.activeTools == nil {
+			a.subs.activeTools = make(map[string]*tui.ToolExecutionComponent)
+		}
+		a.subs.activeTools[ev.ToolCallID] = tc
+	} else {
+		a.subs.activeTool = tc
+	}
+	// Show pending (◉) while args are still streaming — not running (⟳).
+	label := "Streaming tool call..."
+	if ev.ToolName != "" {
+		label = "Calling " + ev.ToolName + "..."
+	}
+	a.subs.statusMsg.Show(label)
 }
 
 func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {

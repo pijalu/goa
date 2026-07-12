@@ -77,6 +77,12 @@ type Agent struct {
 	// within a rolling window.
 	turnToolCallCount int
 
+	// streamingToolCalls tracks tool calls that are still being streamed
+	// (arguments not yet complete). Maps tool call ID to accumulated partial
+	// state so EventToolCallDelta can update the TUI incrementally.
+	// Cleared at the start of each stream round via resetStreamRoundState.
+	streamingToolCalls map[string]*partialToolCall
+
 	// thinkingBuf accumulates delta thinking tokens from the current assistant
 	// response so they can be included in the assistant message when a tool call
 	// is handled. DeepSeek requires reasoning_content to be passed back.

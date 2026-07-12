@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -373,9 +374,16 @@ func (cv *ChatViewport) AddClarifyCard(card *ClarifyCard) {
 }
 
 // AddToolExecution adds an interactive tool component and returns it.
+// If argsJSON contains incomplete/partial JSON (during streaming), args
+// parsing is skipped but the tool name/header are still set.
 func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionComponent {
 	tc := NewToolExecution(name, FormatToolArgs(name, argsJSON))
-	tc.SetArgsJSON(argsJSON)
+	// Attempt to parse args; partial JSON during streaming will fail silently.
+	if err := json.Unmarshal([]byte(argsJSON), &tc.args); err != nil {
+		// Partial/incomplete args during streaming: keep args nil,
+		// the renderer will handle ArgsComplete=false via RenderContext.
+		tc.argsComplete = false
+	}
 	tc.SetOnInvalidate(func() {
 		for i := range cv.entries {
 			if cv.entries[i].View == tc {
