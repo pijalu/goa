@@ -81,6 +81,7 @@ type subsystems struct {
 	orchActive        *orchestrator.ActiveRuntime
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
+	pluginMgr         *plugins.Manager
 	runWizard         bool // set when /setup command requests wizard
 
 	// TUI components (set after InitSubsystems)
@@ -513,7 +514,16 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 }
 
 func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
+	pluginRoot := filepath.Join(cfg.ConfigDir, "plugins")
+	pluginMgr, err := plugins.NewManager(pluginRoot, trustMgr)
+	if err != nil {
+		log.Printf("Warning: failed to create plugin manager: %v\n", err)
+	}
+
 	skillDirs := append(config.DefaultSkillDirs(projectDir), cfg.Skills.Dirs...)
+	if pluginMgr != nil {
+		skillDirs = append(skillDirs, pluginMgr.EnabledSkillDirs()...)
+	}
 	skillRegistry := skills.NewSkillRegistry(skillDirs)
 	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
@@ -542,6 +552,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 	deps := commands.CommandDependencies{
 		GoalCommand:     goalCmd,
 		AuthStore:       authStore,
+		PluginManager:   pluginMgr,
 		SessionTree:     sessTree,
 		ThemeStore:      themeStore,
 		UpdateChecker:   updateChecker,
@@ -578,6 +589,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 		docEngine:     docEngine,
 		cmdRouter:     cmdRouter,
 		goaTool:       goaTool,
+		pluginMgr:     pluginMgr,
 	}
 }
 
@@ -627,6 +639,7 @@ type skillCommandBundle struct {
 	cmdRouter     *core.CommandRouter
 	modeRegistry  *core.ModeRegistry
 	goaTool       *core.GoaCommandTool
+	pluginMgr     *plugins.Manager
 }
 
 func initPromptAndWorkflowLayer(cfg *config.Config, projectDir string) (*prompts.Registry, *multiagent.WorkflowRegistry) {
@@ -865,6 +878,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		delegateTool:      delegateTool,
 		logger:            ab.agentLogger,
 		lifecycleRegistry: base.lifecycleRegistry,
+		pluginMgr:         sc.pluginMgr,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,
@@ -897,6 +911,8 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	if s.modelValidator != nil {
 		s.modelValidator.Start(context.Background(), 5*time.Minute)
 	}
+
+	loadEnabledPlugins(s)
 
 	s.startOrchestratorCleanup()
 

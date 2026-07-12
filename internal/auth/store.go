@@ -82,23 +82,29 @@ func (s *Store) Load() error {
 
 	var store map[string]string
 	if err := json.Unmarshal(data, &store); err != nil {
-		// Fall back to legacy plaintext format for migration.
-		var legacyTokens map[string]*oauth.Tokens
-		if lerr := json.Unmarshal(data, &legacyTokens); lerr == nil && legacyTokens != nil {
-			s.creds = make(map[string]Credential, len(legacyTokens))
-			for provider, tokens := range legacyTokens {
-				s.creds[provider] = NewOAuthCredential(provider, tokens)
-			}
-			return nil
-		}
-		var legacyCreds map[string]Credential
-		if lerr := json.Unmarshal(data, &legacyCreds); lerr == nil && legacyCreds != nil {
-			s.creds = legacyCreds
-			return nil
-		}
-		return fmt.Errorf("parse auth store: %w", err)
+		return s.loadLegacy(data, err)
 	}
+	return s.loadEncrypted(store)
+}
 
+func (s *Store) loadLegacy(data []byte, parseErr error) error {
+	var legacyTokens map[string]*oauth.Tokens
+	if lerr := json.Unmarshal(data, &legacyTokens); lerr == nil && legacyTokens != nil {
+		s.creds = make(map[string]Credential, len(legacyTokens))
+		for provider, tokens := range legacyTokens {
+			s.creds[provider] = NewOAuthCredential(provider, tokens)
+		}
+		return nil
+	}
+	var legacyCreds map[string]Credential
+	if lerr := json.Unmarshal(data, &legacyCreds); lerr == nil && legacyCreds != nil {
+		s.creds = legacyCreds
+		return nil
+	}
+	return fmt.Errorf("parse auth store: %w", parseErr)
+}
+
+func (s *Store) loadEncrypted(store map[string]string) error {
 	if s.key == nil {
 		if err := s.loadKey(); err != nil {
 			return fmt.Errorf("load key: %w", err)

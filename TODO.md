@@ -69,18 +69,19 @@
 - [x] Gates + commit
 
 #### Z8 — OAuth flow (Tier 3)
-- [ ] Device-code / authorization-code flow for supported providers
-- [ ] Encrypted token storage
-- [ ] Auto-refresh integration
-- [ ] Tests + gates + commit
+- [x] Device-code / authorization-code flow for supported providers
+- [x] Encrypted token storage
+- [x] Auto-refresh support via oauth.TokenSource
+- [x] Tests + gates + commit
 
 #### Z9 — Plugin system (Tier 3)
-- [ ] Git-based plugin distribution (`plugins install <git-url>`)
-- [ ] Manifest validation
-- [ ] Lockfile with content-hash tracking
-- [ ] Permission-gated activation
-- [ ] Plugin-scoped skills
-- [ ] Tests + gates + commit
+- [x] Git-based plugin distribution (`plugins install <git-url>`)
+- [x] Manifest validation
+- [x] Lockfile with content-hash tracking
+- [x] Permission-gated activation via trust manager
+- [x] Plugin-scoped skills (skills_dir in manifest)
+- [x] Runtime plugin loading for enabled plugins
+- [x] Tests + gates + commit
 
 ## Gates
 All changes must pass the 5 gates run **separately**:

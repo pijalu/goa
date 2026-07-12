@@ -20,12 +20,14 @@ import (
 
 // PluginDef describes a plugin's manifest.
 type PluginDef struct {
-	ID            string `yaml:"id"`
-	Name          string `yaml:"name"`
-	Version       string `yaml:"version"`
-	Entry         string `yaml:"entry"`
-	Description   string `yaml:"description"`
-	GoaMinVersion string `yaml:"goa_min_version"`
+	ID            string   `yaml:"id"`
+	Name          string   `yaml:"name"`
+	Version       string   `yaml:"version"`
+	Entry         string   `yaml:"entry"`
+	Description   string   `yaml:"description"`
+	GoaMinVersion string   `yaml:"goa_min_version"`
+	SkillsDir     string   `yaml:"skills_dir,omitempty"`
+	Permissions   []string `yaml:"permissions,omitempty"`
 }
 
 // ToolHandler is called when a JS plugin registers a tool via goa.registerTool.

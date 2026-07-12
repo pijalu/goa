@@ -13,6 +13,7 @@ import (
 	"github.com/pijalu/goa/internal/telemetry"
 	"github.com/pijalu/goa/internal/trust"
 	"github.com/pijalu/goa/internal/update"
+	"github.com/pijalu/goa/plugins"
 )
 
 // CommandDependencies holds the runtime dependencies needed by commands.
@@ -21,6 +22,7 @@ import (
 type CommandDependencies struct {
 	GoalCommand *GoalCommand
 	AuthStore   *auth.Store
+	PluginManager *plugins.Manager
 	SessionTree     *sessiontree.Manager
 	ThemeStore      *config.ThemeStore
 	UpdateChecker   *update.Checker
@@ -114,6 +116,8 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		// login / logout
 		&LoginCommand{Store: dep.AuthStore},
 		&LogoutCommand{Store: dep.AuthStore},
+		// plugin
+		&PluginCommand{Manager: dep.PluginManager},
 		// trust
 		&TrustCommand{Manager: dep.TrustManager},
 		// session tree
