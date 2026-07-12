@@ -8,15 +8,18 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 )
 
 // Manager manages a gopls language server instance for a Go project.
 type Manager struct {
+	mu         sync.Mutex
 	server     *Server
 	diags      *Diagnostics
 	rootDir    string
 	rootURI    string
 	started    bool
+	versions   map[string]int
 	// serverFactory creates the underlying LSP server. Defaults to Start.
 	serverFactory func(ctx context.Context) (*Server, error)
 }
@@ -25,8 +28,9 @@ type Manager struct {
 // gopls until Start is called.
 func NewManager(rootDir string) *Manager {
 	m := &Manager{
-		diags:   NewDiagnostics(),
-		rootDir: rootDir,
+		diags:    NewDiagnostics(),
+		rootDir:  rootDir,
+		versions: make(map[string]int),
 	}
 	m.rootURI = m.fileURI(rootDir)
 	m.serverFactory = func(ctx context.Context) (*Server, error) {
@@ -65,12 +69,17 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// OpenDocument notifies gopls that a document has been opened.
+// OpenDocument notifies gopls that a document has been opened. The per-file
+// version counter is (re)initialized so subsequent DidChange calls send
+// strictly increasing versions as the LSP requires.
 func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
 	if !m.started || m.server == nil {
 		return fmt.Errorf("lsp manager: not started")
 	}
 	uri := m.fileURI(path)
+	m.mu.Lock()
+	m.versions[uri] = 1
+	m.mu.Unlock()
 	return m.server.Client().DidOpen(DidOpenTextDocumentParams{
 		TextDocument: TextDocumentItem{
 			URI:        uri,
@@ -82,16 +91,19 @@ func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
 }
 
 // DidChange notifies gopls of a content change. The version is incremented
-// from the previous value for this path; a separate tracker is required for
-// precise version tracking, so this uses a simple increment based on the
-// current diagnostics state.
+// per document so gopls receives a monotonically increasing sequence (a
+// fixed version previously caused out-of-order / rejected updates).
 func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 	if !m.started || m.server == nil {
 		return fmt.Errorf("lsp manager: not started")
 	}
 	uri := m.fileURI(path)
+	m.mu.Lock()
+	m.versions[uri]++
+	version := m.versions[uri]
+	m.mu.Unlock()
 	return m.server.Client().DidChange(DidChangeTextDocumentParams{
-		TextDocument: VersionedTextDocumentIdentifier{URI: uri, Version: 2},
+		TextDocument: VersionedTextDocumentIdentifier{URI: uri, Version: version},
 		ContentChanges: []TextDocumentContentChangeEvent{
 			{Text: text},
 		},
@@ -99,7 +111,7 @@ func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 }
 
 // DiagnosticsFor returns the latest diagnostics for a file path.
-func (m *Manager) DiagnosticsFor(path string) []Diagnostic {
+func (m *Manager) DiagnosticsFor(ctx context.Context, path string) []Diagnostic {
 	return m.diags.Get(m.fileURI(path))
 }
 

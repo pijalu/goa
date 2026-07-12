@@ -5,9 +5,11 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -122,11 +124,16 @@ func (a *App) handleEscape() {
 
 func (a *App) stopBackgroundProcesses() {
 	bg, ok := a.subs.toolRegistry.Get("bg_exec")
-	if !ok {
-		return
+	if ok {
+		if stopper, ok := bg.(interface{ StopAll() }); ok {
+			stopper.StopAll()
+		}
 	}
-	if stopper, ok := bg.(interface{ StopAll() }); ok {
-		stopper.StopAll()
+	// Shut down gopls so it does not leak across restarts/reloads.
+	if a.subs.lspMgr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.subs.lspMgr.Close(ctx)
+		cancel()
 	}
 }
 

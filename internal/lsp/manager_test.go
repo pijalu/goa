@@ -51,7 +51,7 @@ func TestManager_NotStarted(t *testing.T) {
 func TestManager_DiagnosticFor(t *testing.T) {
 	mgr := NewManager(t.TempDir())
 	mgr.diags.Set("file:///tmp/main.go", []Diagnostic{{Message: "err", Severity: 1}})
-	if diags := mgr.DiagnosticsFor("/tmp/main.go"); len(diags) != 1 {
+	if diags := mgr.DiagnosticsFor(context.Background(), "/tmp/main.go"); len(diags) != 1 {
 		t.Errorf("expected 1 diagnostic, got %d", len(diags))
 	}
 	if !mgr.HasErrors() {
@@ -87,5 +87,39 @@ func TestManager_Close_NilServer(t *testing.T) {
 	mgr := NewManager(t.TempDir())
 	if err := mgr.Close(context.Background()); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestManager_DidChangeIncrementsVersion verifies the per-document version
+// counter increases monotonically so gopls does not reject out-of-order
+// updates (regression for the hardcoded Version: 2 bug).
+func TestManager_DidChangeIncrementsVersion(t *testing.T) {
+	buf := &bytes.Buffer{}
+	mgr := NewManager("/tmp/project")
+	mgr.server = &Server{client: NewClient(&fakeConn{Writer: buf})}
+	mgr.started = true
+
+	ctx := context.Background()
+	if err := mgr.OpenDocument(ctx, "main.go", "package main"); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	uri := mgr.fileURI("main.go")
+	if v := mgr.versions[uri]; v != 1 {
+		t.Fatalf("version after open = %d, want 1", v)
+	}
+	for i := 0; i < 3; i++ {
+		if err := mgr.DidChange(ctx, "main.go", "package main\n"); err != nil {
+		t.Fatalf("didChange %d: %v", i, err)
+	}
+	}
+	if v := mgr.versions[uri]; v != 4 {
+		t.Errorf("version after 3 changes = %d, want 4", v)
+	}
+	// The wire payload must carry increasing versions, not a fixed value.
+	for want := 2; want <= 4; want++ {
+		needle := fmt.Sprintf(`"version":%d`, want)
+		if !bytes.Contains(buf.Bytes(), []byte(needle)) {
+			t.Errorf("expected DidChange to send %s", needle)
+		}
 	}
 }

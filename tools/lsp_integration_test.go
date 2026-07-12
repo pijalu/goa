@@ -11,11 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal/lsp"
 )
 
 type fakeLSPManager struct {
-	opened  map[string]string
-	changed map[string]string
+	opened   map[string]string
+	changed  map[string]string
+	diags    map[string][]lsp.Diagnostic
+	nextDiag []lsp.Diagnostic
 }
 
 func (f *fakeLSPManager) OpenDocument(ctx context.Context, path, text string) error {
@@ -26,6 +30,13 @@ func (f *fakeLSPManager) OpenDocument(ctx context.Context, path, text string) er
 func (f *fakeLSPManager) DidChange(ctx context.Context, path, text string) error {
 	f.changed[path] = text
 	return nil
+}
+
+func (f *fakeLSPManager) DiagnosticsFor(ctx context.Context, path string) []lsp.Diagnostic {
+	if f.diags != nil {
+		return f.diags[path]
+	}
+	return f.nextDiag
 }
 
 func TestWriteFileTool_LSPManager_Notify(t *testing.T) {
@@ -159,5 +170,57 @@ func TestEditFileTool_LSPManager_Nil(t *testing.T) {
 	_, err := tool.Execute(input)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
+	}
+}
+
+// TestWriteFileTool_LSPDiagnosticsAppended verifies diagnostics from the LSP
+// manager are surfaced to the model in the tool result (regression for the
+// dead-end diagnostics pipeline).
+func TestWriteFileTool_LSPDiagnosticsAppended(t *testing.T) {
+	dir := t.TempDir()
+	mgr := &fakeLSPManager{
+		opened: make(map[string]string),
+		nextDiag: []lsp.Diagnostic{
+			{Severity: 1, Message: "undefined: x", Range: lsp.Range{Start: lsp.Position{Line: 2, Character: 4}}},
+		},
+	}
+	tool := &WriteFileTool{ProjectDir: dir, LSPManager: mgr}
+
+	path := filepath.Join(dir, "main.go")
+	out, err := tool.Execute(`{"path": "` + path + `", "content": "package main\n\nfunc main(){ x }"}`)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(out, "Diagnostics (gopls)") {
+		t.Errorf("expected diagnostics block in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "undefined: x") {
+		t.Errorf("expected diagnostic message in output, got:\n%s", out)
+	}
+}
+
+// TestEditFileTool_LSPDiagnosticsAppended verifies edit results surface LSP
+// diagnostics too.
+func TestEditFileTool_LSPDiagnosticsAppended(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := &fakeLSPManager{
+		changed: make(map[string]string),
+		nextDiag: []lsp.Diagnostic{
+			{Severity: 2, Message: "unused variable y", Range: lsp.Range{Start: lsp.Position{Line: 0, Character: 0}}},
+		},
+	}
+	tool := &EditFileTool{ProjectDir: dir, LSPManager: mgr}
+
+	input := fmt.Sprintf(`{"path": "%s", "old_string": "func main() {}", "new_string": "func main() { y := 1 }"}`, path)
+	out, err := tool.Execute(input)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if !strings.Contains(out, "unused variable y") {
+		t.Errorf("expected diagnostic message in edit output, got:\n%s", out)
 	}
 }

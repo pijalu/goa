@@ -28,6 +28,7 @@ import (
 	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/hooks"
+	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/internal/role"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/telemetry"
@@ -140,6 +141,9 @@ type subsystems struct {
 
 	// Background task manager shared by the bg_exec tool and the status panel.
 	bgMgr *background.Manager
+
+	// lspMgr runs gopls for Go diagnostics; closed on shutdown to avoid leaks.
+	lspMgr *lsp.Manager
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
@@ -258,7 +262,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	}
 
 	toolRegistry := tools.NewToolRegistry()
-	registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
+	lspMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
 	if cfg.Tools.Enabled.PTYExec {
 		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
 	}
@@ -273,6 +277,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 		trustMgr:          trustMgr,
 		lifecycleRegistry: plugins.NewLifecycleRegistry(),
 		bgMgr:             bgMgr,
+		lspMgr:            lspMgr,
 	}
 }
 
@@ -286,6 +291,7 @@ type baseSubsystems struct {
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
 	bgMgr             *background.Manager
+	lspMgr            *lsp.Manager
 }
 
 func createBackgroundManager(projectDir string) *background.Manager {
@@ -896,6 +902,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		perfLoadDuration:  opts.PerfLoadDuration,
 		registry:          registry,
 		bgMgr:             base.bgMgr,
+		lspMgr:            base.lspMgr,
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })

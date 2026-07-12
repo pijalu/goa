@@ -420,7 +420,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 
 // registerTools registers the built-in filesystem and execution tools.
 // Optional tools are skipped when disabled in configuration.
-func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager) {
+func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager) *lsp.Manager {
 	gitStager := tools.NewGitStager(projectDir)
 
 	// Shared change tracker for edit/write → smartsearch index refresh.
@@ -523,6 +523,8 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		}
 		reg.Register(ss)
 	}
+
+	return lspMgr
 }
 
 // defaultInt returns val if non-zero, otherwise defaultVal.
