@@ -167,8 +167,8 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	if key := pm.effectiveAPIKey(provider); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := pm.client.Do(req)
@@ -735,10 +735,30 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	return opts
 }
 
+// effectiveAPIKey resolves the API key to use for a provider: the explicit
+// config key wins, otherwise fall back to the auth store (API key or OAuth).
+func (pm *ProviderManager) effectiveAPIKey(provider *config.ProviderConfig) string {
+	if provider.APIKey != "" {
+		return provider.APIKey
+	}
+	if pm.authStore == nil {
+		return ""
+	}
+	return resolveAPIKey(pm.authStore, provider.ID)
+}
+
 func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
 	if pCfg == nil {
 		return
 	}
+	applyProviderAPIKey(opts, pCfg, authStore)
+	applyProviderTimeoutRetries(opts, pCfg)
+	applyProviderTransportCache(opts, pCfg)
+	applyProviderSessionMetadata(opts, pCfg)
+}
+
+// applyProviderAPIKey resolves the key from config or the auth store.
+func applyProviderAPIKey(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
 	apiKey := pCfg.APIKey
 	if apiKey == "" && authStore != nil {
 		apiKey = resolveAPIKey(authStore, pCfg.ID)
@@ -746,6 +766,10 @@ func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *confi
 	if apiKey != "" {
 		opts.APIKey = apiKey
 	}
+}
+
+// applyProviderTimeoutRetries applies timeout and retry overrides.
+func applyProviderTimeoutRetries(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
 	if d := parsePositiveDuration(pCfg.Timeout); d > 0 {
 		opts.Timeout = d
 	}
@@ -755,12 +779,20 @@ func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *confi
 	if d := parsePositiveDuration(pCfg.MaxRetryDelay); d > 0 {
 		opts.MaxRetryDelay = d
 	}
+}
+
+// applyProviderTransportCache applies transport and cache-retention overrides.
+func applyProviderTransportCache(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
 	if pCfg.Transport != "" {
 		opts.Transport = agenticprovider.Transport(pCfg.Transport)
 	}
 	if pCfg.CacheRetention != "" {
 		opts.CacheRetention = agenticprovider.CacheRetention(pCfg.CacheRetention)
 	}
+}
+
+// applyProviderSessionMetadata applies session id and metadata overrides.
+func applyProviderSessionMetadata(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
 	if pCfg.SessionID != "" {
 		opts.SessionID = pCfg.SessionID
 	}
@@ -1012,14 +1044,32 @@ func resolveAPIKey(store *auth.Store, providerID string) string {
 	if !ok {
 		return ""
 	}
+	// Without a refresh token (or a known provider), we cannot refresh: return
+	// the current access token as-is.
 	prov := oauthProviderFor(providerID)
-	if prov == nil || tokens.RefreshToken == "" {
+	if prov == nil || tokens.RefreshToken == "" || !tokens.IsExpired() {
 		return tokens.AccessToken
 	}
 	ts := oauth.NewTokenSource(prov, tokens)
-	token, err := ts.Token(context.Background())
+	return refreshAndPersist(context.Background(), prov, store, providerID, ts, tokens)
+}
+
+// refreshAndPersist obtains a (possibly refreshed) access token from ts and
+// writes the refreshed tokens back to the store so a rotated refresh token
+// survives. It returns the access token; on refresh failure it falls back to
+// the previously stored access token. Split out so it can be unit-tested with
+// a fake provider (no network).
+func refreshAndPersist(ctx context.Context, prov oauth.OAuthProvider, store *auth.Store, providerID string, ts *oauth.TokenSource, fallback *oauth.Tokens) string {
+	token, err := ts.Token(ctx)
 	if err != nil {
-		return tokens.AccessToken
+		return fallback.AccessToken
+	}
+	if refreshed := ts.Current(); refreshed != nil && refreshed.AccessToken != "" {
+		toStore := *refreshed
+		if toStore.RefreshToken == "" {
+			toStore.RefreshToken = fallback.RefreshToken
+		}
+		_ = store.SetOAuth(providerID, &toStore)
 	}
 	return token
 }

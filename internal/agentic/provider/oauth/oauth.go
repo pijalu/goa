@@ -82,6 +82,15 @@ func (ts *TokenSource) Token(ctx context.Context) (string, error) {
 	return newTokens.AccessToken, nil
 }
 
+// Current returns the tokens currently held by the source. If Token refreshed,
+// these are the refreshed tokens (possibly with a rotated refresh token) so
+// callers can persist them.
+func (ts *TokenSource) Current() *Tokens {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.tokens
+}
+
 // ---------------------------------------------------------------------------
 // PKCE utilities
 // ---------------------------------------------------------------------------

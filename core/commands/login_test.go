@@ -103,6 +103,24 @@ func TestLoginCommandOAuthUnsupported(t *testing.T) {
 	}
 }
 
+// TestSupportedAuthKinds_AnthropicApikeyOnly verifies Anthropic does not
+// advertise OAuth (which the flow factory cannot fulfil), keeping the
+// advertised kinds consistent with newOAuthFlow (E4).
+func TestSupportedAuthKinds_AnthropicApikeyOnly(t *testing.T) {
+	kinds := supportedAuthKinds("anthropic")
+	if len(kinds) != 1 || kinds[0] != "apikey" {
+		t.Errorf("anthropic kinds = %v, want [apikey]", kinds)
+	}
+}
+
+func TestLoginCommand_AnthropicOauth_Rejected(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	if err := cmd.Run(core.Context{}, []string{"anthropic", "oauth"}); err == nil {
+		t.Fatal("expected error for /login anthropic oauth")
+	}
+}
+
 func TestLoginCommandPromptedAPIKey(t *testing.T) {
 	store := mustStore(t)
 	cmd := &LoginCommand{Store: store, prompter: &fakePrompter{value: "prompted-key", ok: true}}

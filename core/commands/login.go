@@ -227,7 +227,7 @@ func supportedAuthKinds(provider string) []string {
 	case "codex":
 		return []string{"oauth"}
 	case "anthropic":
-		return []string{"oauth", "apikey"}
+		return []string{"apikey"}
 	case "openai", "kimi":
 		return []string{"apikey"}
 	default:
