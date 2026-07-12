@@ -9,13 +9,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/pijalu/goa/config"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/auth"
 )
-
 // TestProviderManagerActive verifies active provider selection.
 func TestProviderManagerActive(t *testing.T) {
 	cfg := &config.Config{
@@ -848,5 +850,49 @@ func TestDetectFromModelMeta_LlamaCPP_FallsBackToTrain(t *testing.T) {
 	nCtx := detectFromModelMeta(&http.Client{Timeout: 5 * time.Second}, baseURL, "my-model", "")
 	if nCtx != 131072 {
 		t.Errorf("detectFromModelMeta = %d, want 131072", nCtx)
+	}
+}
+
+func TestBuildStreamOptions_UsesAuthStoreAPIKey(t *testing.T) {
+	store := auth.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	_ = store.SetAPIKey("openai", "stored-key")
+
+	cfg := &config.Config{
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Endpoint: "https://api.openai.com/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "gpt-4o", ProviderID: "openai", Model: "gpt-4o"},
+		},
+	}
+	cfg.ActiveModel = "gpt-4o"
+	pm := NewProviderManager(cfg)
+	pm.SetAuthStore(store)
+	opts := pm.BuildStreamOptions()
+	if opts.APIKey != "stored-key" {
+		t.Errorf("APIKey = %q, want stored-key", opts.APIKey)
+	}
+}
+
+func TestBuildStreamOptions_UsesAuthStoreOAuthAccessToken(t *testing.T) {
+	store := auth.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	_ = store.SetOAuth("openai", &oauth.Tokens{AccessToken: "oauth-access-token", TokenType: "bearer"})
+
+	cfg := &config.Config{
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Endpoint: "https://api.openai.com/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "gpt-4o", ProviderID: "openai", Model: "gpt-4o"},
+		},
+	}
+	cfg.ActiveModel = "gpt-4o"
+	pm := NewProviderManager(cfg)
+	pm.SetAuthStore(store)
+	opts := pm.BuildStreamOptions()
+	if opts.APIKey != "oauth-access-token" {
+		t.Errorf("APIKey = %q, want oauth-access-token", opts.APIKey)
 	}
 }

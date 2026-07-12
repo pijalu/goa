@@ -194,7 +194,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
-	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry)
+	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)
 	modeRegistry := core.NewModeRegistry(promptReg)
 	loadUserModes(modeRegistry, cfg.ConfigDir, projectDir)
@@ -513,7 +513,7 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 	}
 }
 
-func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
+func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
 	cfgDir := cfg.ConfigDir
 	if cfgDir == "" {
 		cfgDir = filepath.Join(projectDir, ".goa")
@@ -547,6 +547,9 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 	// a friendly alias that does not collide with queued goals.
 	goalManager.Mode.SetNamePool(goalManager.Queue)
 	authStore := auth.NewStore(filepath.Join(cfgDir, "auth.json"))
+	if providerMgr != nil {
+		providerMgr.SetAuthStore(authStore)
+	}
 	sessTree := sessiontree.NewManager(sessiontree.NewJSONStore(filepath.Join(cfgDir, "session-tree.json")))
 	themeStore := config.NewThemeStore(filepath.Join(cfgDir, "themes"))
 	currentVer := version.Version()

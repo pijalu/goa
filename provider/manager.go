@@ -7,6 +7,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	_ "github.com/pijalu/goa/internal/agentic/provider/openai"
 )
@@ -35,9 +38,10 @@ type ModelListResponse struct {
 // ProviderManager manages active provider selection, model listing,
 // and connection testing.
 type ProviderManager struct {
-	cfg    *config.Config
-	client *http.Client
-	Cache  *ModelCache
+	cfg       *config.Config
+	client    *http.Client
+	Cache     *ModelCache
+	authStore *auth.Store
 }
 
 // NewProviderManager creates a provider manager.
@@ -49,6 +53,13 @@ func NewProviderManager(cfg *config.Config) *ProviderManager {
 		},
 		Cache: NewModelCache(),
 	}
+}
+
+// SetAuthStore wires the encrypted credential store so the provider manager
+// can use stored OAuth tokens or API keys when the provider config does not
+// specify an explicit API key.
+func (pm *ProviderManager) SetAuthStore(store *auth.Store) {
+	pm.authStore = store
 }
 
 // Active returns the currently active provider config and resolved model name.
@@ -715,7 +726,7 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	}
 
 	opts := agenticprovider.StreamOptions{MaxRetries: 2}
-	applyProviderStreamOptions(&opts, pCfg)
+	applyProviderStreamOptions(&opts, pCfg, pm.authStore)
 	applyModelStreamOptions(&opts, mCfg)
 	if opts.CacheRetention == "" {
 		opts.CacheRetention = agenticprovider.CacheRetentionShort
@@ -724,12 +735,16 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	return opts
 }
 
-func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
+func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
 	if pCfg == nil {
 		return
 	}
-	if pCfg.APIKey != "" {
-		opts.APIKey = pCfg.APIKey
+	apiKey := pCfg.APIKey
+	if apiKey == "" && authStore != nil {
+		apiKey = resolveAPIKey(authStore, pCfg.ID)
+	}
+	if apiKey != "" {
+		opts.APIKey = apiKey
 	}
 	if d := parsePositiveDuration(pCfg.Timeout); d > 0 {
 		opts.Timeout = d
@@ -987,4 +1002,36 @@ func detectFromModelMeta(client *http.Client, baseURL *url.URL, modelName, apiKe
 		}
 	}
 	return 0
+}
+
+func resolveAPIKey(store *auth.Store, providerID string) string {
+	if key, ok := store.GetAPIKey(providerID); ok {
+		return key
+	}
+	tokens, ok := store.GetOAuth(providerID)
+	if !ok {
+		return ""
+	}
+	prov := oauthProviderFor(providerID)
+	if prov == nil || tokens.RefreshToken == "" {
+		return tokens.AccessToken
+	}
+	ts := oauth.NewTokenSource(prov, tokens)
+	token, err := ts.Token(context.Background())
+	if err != nil {
+		return tokens.AccessToken
+	}
+	return token
+}
+
+func oauthProviderFor(id string) oauth.OAuthProvider {
+	switch id {
+	case "copilot", "github":
+		return oauth.NewGitHubCopilotOAuth()
+	case "anthropic":
+		// Anthropic OAT requires client credentials; no auto-refresh without config.
+		return nil
+	default:
+		return nil
+	}
 }

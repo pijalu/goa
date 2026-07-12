@@ -287,7 +287,10 @@ type authCodeFlow struct {
 }
 
 func (f *authCodeFlow) Run(ctx context.Context, writer uiWriter, prompter prompter) (*oauth.Tokens, error) {
-	url := f.provider.AuthURL()
+	url, err := f.provider.AuthURL(context.Background())
+	if err != nil {
+		return nil, err
+	}
 	writer.Writef("Open this URL in your browser:\n%s\n", url)
 	code, ok := prompter.Prompt("OAuth code", "Paste the authorization code and press Enter:")
 	if !ok {
