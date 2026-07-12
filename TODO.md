@@ -52,12 +52,14 @@
 - [x] Tests + gates + commit
 
 #### Z6 — Background process manager
-- [ ] Durable task registry (JSON on disk) for background processes
-- [ ] Task lifecycle: started → running → completed/error/killed
-- [ ] PID tracking, output file capture, exit code recording
+- [x] Durable task registry package (`internal/background`) with JSON persistence
+- [x] Task lifecycle: started → running → completed/error/killed
+- [x] PID tracking, output ring-buffer capture, exit code recording
+- [x] Cross-platform process termination (SIGTERM → SIGKILL)
+- [x] Tests for the manager package
+- [ ] Integrate manager into `bg_exec` tool for persistent task tracking
 - [ ] TUI sidebar integration for live status
-- [ ] Cross-platform process termination
-- [ ] Tests + gates + commit
+- [ ] Gates + commit
 
 ## Gates
 All changes must pass the 5 gates run **separately**:
