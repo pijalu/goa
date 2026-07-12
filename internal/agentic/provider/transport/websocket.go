@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//
-// Copyright (C) 2026 Pierre Poissinger
 
 package transport
 
@@ -33,15 +31,37 @@ const (
 	defaultIdleTimeout = 5 * time.Minute
 	maxMessageSize     = 1 << 20 // 1 MiB
 	maxStreamFailures  = 3
+
+	// wsStreamIdleTimeout is the maximum gap between WebSocket messages before
+	// the stream is treated as stalled. It mirrors the SSE idle guard so a
+	// half-open WS connection (proxy timeout, dropped route) cannot hang a
+	// whole agent turn. The agent classifies the resulting error as transient
+	// (its message contains "idle timeout") and retries.
+	wsStreamIdleTimeout = 2 * time.Minute
 )
+
+// ErrWSStreamIdle is returned when no WebSocket message arrives within the
+// idle timeout. Its text contains "idle timeout" so the agent's transient-
+// error classifier treats it as retryable, matching SSE semantics.
+var ErrWSStreamIdle = errors.New("websocket stream idle timeout: no message received within deadline")
 
 // WebSocketConnection wraps a gorilla websocket connection with metadata.
 type WebSocketConnection struct {
 	conn      *websocket.Conn
 	createdAt time.Time
-	lastUsed  time.Time
-	failures  int
-	mu        sync.Mutex
+
+	// mu guards lastUsed and failures.
+	mu       sync.Mutex
+	lastUsed time.Time
+	failures int
+
+	// inUse is held for the lifetime of a single request stream (write request
+	// + read all response messages). A WebSocket connection is a framed,
+	// non-multiplexed protocol: two concurrent streams sharing one conn would
+	// interleave Read/Write frames and corrupt the protocol. Holding this lock
+	// serializes per-connection use; a concurrent Do that resolves to the same
+	// pooled conn blocks until the in-flight stream finishes.
+	inUse sync.Mutex
 }
 
 // IsExpired reports whether the connection has exceeded its maximum age.
@@ -57,6 +77,16 @@ func (c *WebSocketConnection) IsIdle(timeout time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return time.Since(c.lastUsed) > timeout
+}
+
+// recordFailure increments the failure counter under mu and returns the new
+// count. Callers decide whether the count exceeds the threshold to evict the
+// connection.
+func (c *WebSocketConnection) recordFailure() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failures++
+	return c.failures
 }
 
 // WebSocketPool manages reusable WebSocket connections keyed by session ID.
@@ -95,16 +125,6 @@ func (p *WebSocketPool) Remove(sessionID string) {
 	delete(p.connections, sessionID)
 }
 
-// SSEFallbackError indicates WebSocket streaming failed and a fallback to
-// Server-Sent Events should be attempted.
-type SSEFallbackError struct {
-	Reason string
-}
-
-func (e *SSEFallbackError) Error() string {
-	return fmt.Sprintf("websocket fallback to sse: %s", e.Reason)
-}
-
 // MessageTooBigError is returned when a WebSocket message exceeds the
 // configured maximum size.
 type MessageTooBigError struct {
@@ -120,28 +140,36 @@ type WebSocketTransport struct {
 	Pool           *WebSocketPool
 	HeaderTimeout  time.Duration
 	StreamFailures int
-	SSEEndpoint    string
+	// IdleTimeout bounds the gap between received messages. Zero falls back to
+	// wsStreamIdleTimeout. A stalled connection is closed with ErrWSStreamIdle
+	// so the agent can retry instead of hanging.
+	IdleTimeout time.Duration
 }
 
-// Do implements Transport for WebSocket.
+// Do implements Transport.
+//
+// A single connection serves one request stream at a time: Do takes the
+// connection's inUse lock for the whole stream (write + background read), so
+// concurrent requests on the same session serialize rather than corrupt the
+// WebSocket framing. The background reader (copyMessages) releases the lock.
 func (t *WebSocketTransport) Do(ctx context.Context, req *TransportRequest) (*TransportResponse, error) {
 	pool := t.pool()
 	sessionID := req.Headers["X-Session-ID"]
 
 	conn, err := t.acquireConnection(ctx, pool, sessionID, req.URL)
 	if err != nil {
-		if errors.Is(err, websocket.ErrBadHandshake) || isHeaderTimeout(err, t.HeaderTimeout) || isDialFailure(err) {
-			return nil, t.fallbackError("handshake failed")
-		}
-		return nil, err
+		// Handshake / dial failure: surface a clear, descriptive error. The
+		// agent classifies dial/header failures as transient and retries.
+		return nil, fmt.Errorf("websocket connect failed: %w", err)
 	}
 
+	// Serialize per-connection use (see WebSocketConnection.inUse).
+	conn.inUse.Lock()
+
 	if err := conn.conn.WriteMessage(websocket.TextMessage, req.Body); err != nil {
+		conn.inUse.Unlock() // no reader goroutine started; release here.
 		t.removeOnFailure(pool, sessionID, conn)
-		if conn.failures >= t.maxFailures() {
-			return nil, t.fallbackError("max stream failures reached")
-		}
-		return nil, err
+		return nil, fmt.Errorf("websocket write failed: %w", err)
 	}
 	conn.mu.Lock()
 	conn.lastUsed = time.Now()
@@ -164,11 +192,13 @@ func (t *WebSocketTransport) maxFailures() int {
 	return maxStreamFailures
 }
 
-func (t *WebSocketTransport) fallbackError(reason string) error {
-	if t.SSEEndpoint != "" {
-		return &SSEFallbackError{Reason: reason}
+// idleTimeout returns the configured message-idle deadline, defaulting to
+// wsStreamIdleTimeout.
+func (t *WebSocketTransport) idleTimeout() time.Duration {
+	if t.IdleTimeout > 0 {
+		return t.IdleTimeout
 	}
-	return errors.New(reason)
+	return wsStreamIdleTimeout
 }
 
 func (t *WebSocketTransport) acquireConnection(ctx context.Context, pool *WebSocketPool, sessionID, url string) (*WebSocketConnection, error) {
@@ -210,10 +240,15 @@ func (t *WebSocketTransport) dialConnection(ctx context.Context, pool *WebSocket
 	return conn, nil
 }
 
+// removeOnFailure bumps the connection's failure counter and, if it exceeds
+// the threshold or has no session affinity, evicts it from the pool. The
+// failure counter is mutated under conn.mu to avoid the data race with the
+// background reader goroutine.
 func (t *WebSocketTransport) removeOnFailure(pool *WebSocketPool, sessionID string, conn *WebSocketConnection) {
-	conn.failures++
-	if sessionID != "" {
-		pool.Remove(sessionID)
+	if conn.recordFailure() >= t.maxFailures() {
+		if sessionID != "" {
+			pool.Remove(sessionID)
+		}
 	}
 }
 
@@ -227,11 +262,25 @@ func (t *WebSocketTransport) streamResponse(conn *WebSocketConnection, sessionID
 	}
 }
 
+// copyMessages reads frames from the WebSocket into the pipe until the stream
+// ends. It enforces an idle deadline (so a stalled connection surfaces
+// ErrWSStreamIdle instead of hanging forever) and releases the connection's
+// inUse lock when done so the next request on that session can proceed.
 func (t *WebSocketTransport) copyMessages(conn *WebSocketConnection, pw *io.PipeWriter, sessionID string, pool *WebSocketPool) {
 	defer pw.Close()
+	defer conn.inUse.Unlock()
+
+	idle := t.idleTimeout()
 	for {
+		if idle > 0 {
+			_ = conn.conn.SetReadDeadline(time.Now().Add(idle))
+		}
 		_, msg, err := conn.conn.ReadMessage()
 		if err != nil {
+			if isDeadlineTimeout(err) {
+				_ = pw.CloseWithError(ErrWSStreamIdle)
+				return
+			}
 			if websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
 				_ = pw.CloseWithError(&MessageTooBigError{Size: len(msg)})
 				return
@@ -248,20 +297,18 @@ func (t *WebSocketTransport) copyMessages(conn *WebSocketConnection, pw *io.Pipe
 	}
 }
 
-func isHeaderTimeout(err error, timeout time.Duration) bool {
-	if timeout <= 0 {
-		return false
-	}
+// isDeadlineTimeout reports whether err is a network read-deadline timeout
+// (gorilla surfaces a *net.OpError whose Timeout() is true when the
+// SetReadDeadline fires).
+func isDeadlineTimeout(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "timeout")
-}
-
-func isDialFailure(err error) bool {
-	if err == nil {
-		return false
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
 	}
-	var opErr *net.OpError
-	return errors.As(err, &opErr)
+	// Some close paths wrap the timeout in a generic close error whose text
+	// mentions the deadline; match defensively.
+	return strings.Contains(strings.ToLower(err.Error()), "timeout")
 }
