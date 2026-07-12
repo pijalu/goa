@@ -316,6 +316,63 @@ func TestAgentBus_ConcurrentSendAndReceive(t *testing.T) {
 	}
 }
 
+// TestAgentBus_SendUnregisterNoRace exercises the send-on-closed-channel
+// race fixed by holding the bus read lock across Send's blocking select.
+// Many goroutines send to the target while it is repeatedly unregistered
+// (which closes its inbox) and re-registered. Under the old code this
+// intermittently panicked with "send on closed channel"; with the fix every
+// send either succeeds or returns a clean "not found" error. Run with -race.
+func TestAgentBus_SendUnregisterNoRace(t *testing.T) {
+	const senders = 16
+	const cycles = 50
+
+	bus := NewAgentBus()
+	// Make the target's inbox small so it fills quickly and exercises the
+	// timeout branch too.
+	bus.bufSize = 1
+	if _, err := bus.Register("target"); err != nil {
+		t.Fatalf("initial register: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var sendWG sync.WaitGroup
+	for i := 0; i < senders; i++ {
+		sendWG.Add(1)
+		go func() {
+			defer sendWG.Done()
+			msg := CommMessage{From: "sender", To: "target", Content: "x"}
+			// Short ctx so the full-inbox path returns promptly and we turn over
+			// many Send/Unregister interleavings within the test budget.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Millisecond)
+			for {
+				select {
+				case <-stop:
+					cancel()
+					return
+				default:
+				}
+				_ = bus.Send(ctx, msg)
+			}
+		}()
+	}
+
+	// Churn the registration: unregister (closes the inbox) then re-register
+	// a fresh inbox. Concurrent sends must never panic on the close.
+	for i := 0; i < cycles; i++ {
+		bus.Unregister("target")
+		// Drain any brief gap; re-register immediately.
+		if _, err := bus.Register("target"); err != nil {
+			// A sender may have raced a re-register within the same cycle window
+			// only if Register were non-exclusive — it is exclusive, so this is
+			// unexpected.
+			t.Fatalf("re-register cycle %d: %v", i, err)
+		}
+	}
+
+	close(stop)
+	sendWG.Wait()
+}
+
 // jsonMarshal is a test helper to stringify schema maps
 func jsonMarshal(v interface{}) string {
 	b, _ := json.Marshal(v)

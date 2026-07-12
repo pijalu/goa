@@ -67,21 +67,32 @@ func (b *AgentBus) Unregister(name string) {
 // Send delivers a CommMessage to the target agent's inbox channel, bounded by
 // ctx. It returns an error if the target is not registered, ctx is cancelled,
 // or the inbox stays full for longer than the send timeout (5s).
+//
+// Send holds the bus read lock for the whole send (including the blocking
+// select). Unregister takes the write lock, so it cannot close the inbox
+// channel while a Send is mid-flight on it. This closes the previous
+// send-on-closed-channel race (Send read the channel under RLock, released
+// the lock, then sent — allowing Unregister to close the channel in between
+// and panic the sender). Multiple Sends run concurrently (RLock); only
+// Unregister is serialized behind in-flight Sends, bounded by the send
+// timeout.
 func (b *AgentBus) Send(ctx context.Context, msg CommMessage) error {
 	b.mu.RLock()
 	ch, ok := b.agents[msg.To]
-	b.mu.RUnlock()
-
 	if !ok {
+		b.mu.RUnlock()
 		return fmt.Errorf("agent %q not found on bus", msg.To)
 	}
 
 	select {
 	case ch <- msg:
+		b.mu.RUnlock()
 		return nil
 	case <-ctx.Done():
+		b.mu.RUnlock()
 		return ctx.Err()
 	case <-time.After(5 * time.Second):
+		b.mu.RUnlock()
 		return fmt.Errorf("inbox for %q is full (timeout)", msg.To)
 	}
 }
