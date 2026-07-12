@@ -416,7 +416,7 @@ func TestAgentManager_OnEvent_ForwardsToTUI(t *testing.T) {
 		if received.Event.Text != "Hello" {
 			t.Errorf("Text = %q, want %q", received.Event.Text, "Hello")
 		}
-	default:
+	case <-time.After(2 * time.Second):
 		t.Fatal("expected message on agent channel, got nothing")
 	}
 }

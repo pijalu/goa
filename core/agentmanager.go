@@ -137,6 +137,10 @@ type AgentManager struct {
 	// tool-call budget check. When set, the agent allows unlimited tool calls
 	// per turn. Not persisted — resets on restart.
 	disableToolBudget bool
+
+	// eventFwd decouples the streaming goroutine's event emission from the
+	// bounded app event bus (see eventForwarder). nil when eventsOut is nil.
+	eventFwd *eventForwarder
 }
 
 // NewAgentManager creates a new agent manager.
@@ -155,6 +159,9 @@ func NewAgentManager(cfg *config.Config, sessionStore *SessionStore, loopDetecto
 		companion:    NewCompanionCoordinator(),
 		steering:     NewSteeringQueue(),
 		projectDir:   projectDir,
+	}
+	if eventsOut != nil {
+		am.eventFwd = newEventForwarder(eventsOut.Agent)
 	}
 
 	return am
@@ -385,6 +392,19 @@ func (am *AgentManager) StopSession() error {
 	am.dispatchLifecycle("shutdown", map[string]any{})
 	am.fireSessionEnd()
 	return nil
+}
+
+// Close releases long-lived resources (the event forwarder goroutine). It is
+// idempotent and safe to call at shutdown. StopSession should be called first
+// to stop any active turn; Close does not cancel an in-flight turn.
+func (am *AgentManager) Close() {
+	am.mu.Lock()
+	fwd := am.eventFwd
+	am.eventFwd = nil
+	am.mu.Unlock()
+	if fwd != nil {
+		fwd.close()
+	}
 }
 
 func (am *AgentManager) fireSessionStart(sessionID string) {
@@ -963,10 +983,13 @@ func (am *AgentManager) emitInternalEvent(ev agentic.OutputEvent) {
 }
 
 func (am *AgentManager) emitAgentEvent(ev agentic.OutputEvent) {
-	if am.eventsOut == nil {
+	if am.eventsOut == nil || am.eventFwd == nil {
 		return
 	}
-	am.eventsOut.Agent <- event.AgentEvent{Event: ev}
+	// Forward through an unbounded queue so the LLM stream goroutine never
+	// blocks on the bounded app bus. A slow TUI falls behind in the forwarder,
+	// not in token generation.
+	am.eventFwd.push(event.AgentEvent{Event: ev})
 }
 
 func (am *AgentManager) emitFlash(text string) {
