@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/pijalu/goa/internal/toolaccess"
 )
@@ -30,10 +31,22 @@ type ToolCallResult struct {
 	StopTurn bool
 }
 
+// defaultMaxParallel caps how many tool calls run at once when the caller has
+// not set one. It bounds goroutine and resource (file descriptor, disk,
+// provider rate-limit) pressure when the model emits a large batch of
+// independent (non-conflicting) tool calls, which the conflict matrix alone
+// would otherwise launch all at once.
+const defaultMaxParallel = 8
+
 // ToolScheduler manages concurrent tool execution with conflict detection.
 // Tools with non-conflicting resource accesses run in parallel.
 // Tools with conflicting accesses are serialized.
 // Results are returned in submission order via Collect().
+//
+// Admission is two-layered: (1) a MaxParallel cap bounds total concurrency,
+// and (2) the conflict matrix serializes overlapping resource accesses. A
+// task starts only when a slot is free under the cap AND it does not conflict
+// with any running task; otherwise it waits in pending.
 type ToolScheduler struct {
 	mu      sync.Mutex
 	active  []*scheduledTask
@@ -41,6 +54,14 @@ type ToolScheduler struct {
 	tasks   []*scheduledTask // all tasks in submission order
 	ctx     context.Context
 	cancel  context.CancelFunc
+
+	// maxParallel caps concurrent execution; <=0 falls back to
+	// defaultMaxParallel.
+	maxParallel int
+	// taskTimeout, when >0, bounds each tool call. A watchdog closes the
+	// task's done channel at the deadline even if Execute ignores its context,
+	// so Collect() cannot hang on a misbehaving tool. Zero disables it.
+	taskTimeout time.Duration
 }
 
 type scheduledTask struct {
@@ -59,6 +80,22 @@ func NewToolScheduler(ctx context.Context) *ToolScheduler {
 	}
 }
 
+// SetMaxParallel overrides the concurrency cap. n<=0 restores the default.
+func (s *ToolScheduler) SetMaxParallel(n int) { s.maxParallel = n }
+
+// SetTaskTimeout sets a per-tool-call deadline. When d>0, a watchdog closes
+// each task's done channel at the deadline (independently of Execute), so
+// Collect() returns even if a tool ignores its context. Zero disables it.
+func (s *ToolScheduler) SetTaskTimeout(d time.Duration) { s.taskTimeout = d }
+
+// maxPar returns the effective concurrency cap.
+func (s *ToolScheduler) maxPar() int {
+	if s.maxParallel > 0 {
+		return s.maxParallel
+	}
+	return defaultMaxParallel
+}
+
 // Add queues a tool call for execution and returns immediately.
 // Results are collected in submission order via Collect().
 func (s *ToolScheduler) Add(task *ToolCallTask) {
@@ -69,15 +106,18 @@ func (s *ToolScheduler) Add(task *ToolCallTask) {
 	s.tasks = append(s.tasks, st)
 
 	s.mu.Lock()
-	blocked := s.isBlockedLocked(task)
-	if blocked {
+	// A task can start now only when there is a free slot under the cap AND
+	// it does not conflict with anything running or already queued.
+	canStart := !s.isBlockedLocked(task) && len(s.active) < s.maxPar()
+	if !canStart {
 		s.pending = append(s.pending, st)
 		s.mu.Unlock()
 		// Only pending tasks need a cancellation watcher: a blocked task
-		// would otherwise wait for its conflicting active tasks to drain,
-		// so without a watcher it could not fail fast on cancellation.
-		// Tasks that start immediately are cancelled via their execution
-		// goroutine (which receives s.ctx), so they need no extra watcher.
+		// would otherwise wait for its conflicting active tasks to drain or
+		// for a concurrency slot to free, so without a watcher it could not
+		// fail fast on cancellation. Tasks that start immediately are
+		// cancelled via their execution goroutine (which receives s.ctx),
+		// so they need no extra watcher.
 		s.watchCancellation(st)
 		return
 	}
@@ -126,10 +166,17 @@ func (s *ToolScheduler) start(st *scheduledTask) {
 	s.active = append(s.active, st)
 	s.mu.Unlock()
 
+	ctx := s.ctx
+	if s.taskTimeout > 0 {
+		var taskCancel context.CancelFunc
+		ctx, taskCancel = context.WithTimeout(s.ctx, s.taskTimeout)
+		s.watchDeadline(st, taskCancel)
+	}
+
 	go func() {
-		result, err := s.runTask(st)
-		if err != nil && s.ctx.Err() != nil {
-			err = s.ctx.Err()
+		result, err := s.runTask(ctx, st)
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
 		}
 		if err != nil {
 			result.Error = err
@@ -150,7 +197,7 @@ func (s *ToolScheduler) start(st *scheduledTask) {
 
 // runTask executes a tool task and recovers from panics so a single tool bug
 // cannot hang Collect() or break the agent turn.
-func (s *ToolScheduler) runTask(st *scheduledTask) (ToolResult, error) {
+func (s *ToolScheduler) runTask(ctx context.Context, st *scheduledTask) (ToolResult, error) {
 	defer func() {
 		if r := recover(); r != nil {
 			st.once.Do(func() {
@@ -163,7 +210,34 @@ func (s *ToolScheduler) runTask(st *scheduledTask) (ToolResult, error) {
 			})
 		}
 	}()
-	return st.Execute(s.ctx)
+	return st.Execute(ctx)
+}
+
+// watchDeadline enforces the per-task timeout independently of Execute: when
+// the deadline fires it marks the task done (via once) so Collect() returns
+// even if Execute is ignoring its context, then cancels the deadline context
+// to unblock cancellation-aware tools. The timer is also stopped on normal
+// completion so the deadline context is released promptly.
+func (s *ToolScheduler) watchDeadline(st *scheduledTask, taskCancel context.CancelFunc) {
+	go func() {
+		t := time.NewTimer(s.taskTimeout)
+		select {
+		case <-t.C:
+			st.once.Do(func() {
+				st.result = ToolCallResult{
+					Name:   st.Name,
+					CallID: st.CallID,
+					Err:    fmt.Errorf("tool %q exceeded %s deadline", st.Name, s.taskTimeout),
+				}
+				close(st.done)
+			})
+			taskCancel()
+		case <-st.done:
+			// task finished before the deadline
+		}
+		t.Stop()
+		taskCancel() // idempotent; release the deadline context
+	}()
 }
 
 // finish removes a completed task from active and starts unblocked pending tasks.
@@ -196,20 +270,22 @@ func (s *ToolScheduler) removeActive(completed *scheduledTask) {
 // collectUnblocked selects pending tasks that can start right now.
 //
 // A task is runnable when it does not conflict with any currently active
-// task. Among runnable tasks we greedily pick the ones that also do not
-// conflict with each other, so conflicting tasks are still serialized but
-// at least one task always makes progress when nothing is active.
-//
-// The previous implementation marked any task conflicting with another
-// pending task as blocked, which deadlocked when every pending task
-// shared a category (e.g. three bash calls all in the "shell" category):
-// with no active task to drain the conflict set, none of them could start.
+// task and there is a free slot under the MaxParallel cap. Among runnable
+// tasks we greedily pick the ones that also do not conflict with each other,
+// so conflicting tasks are still serialized but at least one task always
+// makes progress when nothing is active.
 func (s *ToolScheduler) collectUnblocked() []*scheduledTask {
 	var unblocked, remaining []*scheduledTask
 	picked := make(map[*scheduledTask]bool, len(s.pending))
+	budget := len(s.active) // already-running tasks count toward the cap
+	maxPar := s.maxPar()
 
 	for _, t := range s.pending {
 		if s.conflictsWithAny(t.Access, s.active) {
+			remaining = append(remaining, t)
+			continue
+		}
+		if budget >= maxPar {
 			remaining = append(remaining, t)
 			continue
 		}
@@ -219,6 +295,7 @@ func (s *ToolScheduler) collectUnblocked() []*scheduledTask {
 		}
 		picked[t] = true
 		unblocked = append(unblocked, t)
+		budget++
 	}
 	s.pending = remaining
 	return unblocked
