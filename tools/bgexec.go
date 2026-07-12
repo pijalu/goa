@@ -27,15 +27,7 @@ type BGExecTool struct {
 // NewBGExecTool creates a new BGExecTool with an in-memory manager.
 func NewBGExecTool() *BGExecTool {
 	mgr, _ := background.NewManager("")
-	t := &BGExecTool{mgr: mgr}
-	// Register cleanup on exit
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-c
-		t.StopAll()
-	}()
-	return t
+	return NewBGExecToolWithManager(mgr)
 }
 
 // NewBGExecToolWithPath creates a BGExecTool that persists task metadata to
@@ -45,6 +37,13 @@ func NewBGExecToolWithPath(path string) (*BGExecTool, error) {
 	if err != nil {
 		return nil, err
 	}
+	return NewBGExecToolWithManager(mgr), nil
+}
+
+// NewBGExecToolWithManager creates a BGExecTool using the provided manager.
+// This lets the host share a single durable manager between the tool and the
+// TUI status panel.
+func NewBGExecToolWithManager(mgr *background.Manager) *BGExecTool {
 	t := &BGExecTool{mgr: mgr}
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
@@ -52,7 +51,7 @@ func NewBGExecToolWithPath(path string) (*BGExecTool, error) {
 		<-c
 		t.StopAll()
 	}()
-	return t, nil
+	return t
 }
 
 // Schema returns the tool schema for bg_exec.

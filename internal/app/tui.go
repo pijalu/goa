@@ -13,19 +13,21 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
+	bgpanel "github.com/pijalu/goa/tui/background"
 	goaltui "github.com/pijalu/goa/tui/goal"
 )
 
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
-	engine, chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter := a.createTUIComponents()
+	engine, chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter, bgPanel := a.createTUIComponents()
 	subs.goalBubble = goalBubble
 	a.configureKeyLogging(engine)
 	a.attachInputHandlers(inp, engine)
-	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter)
+	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, pendingMsgs, statusBar, goalBubble, bgPanel, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
 	a.loadInputHistory(inp)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
@@ -35,7 +37,7 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 		os.Exit(1)
 	}
 
-	a.finalizeTUI(engine, chat, statusFooter, pendingMsgs, statusBar, inp)
+	a.finalizeTUI(engine, chat, statusFooter, pendingMsgs, statusBar, inp, bgPanel)
 	return engine, chat, inp
 }
 
@@ -44,7 +46,7 @@ func headerFrom(projectDir string) *tui.Header {
 	return h
 }
 
-func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer) {
+func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
 	projectDir := a.subs.projectDir
 	ft := tui.NewProcessTerminal()
 	engine := tui.NewTUI(ft)
@@ -56,7 +58,8 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg
 	statusFooter := tui.NewFooter()
 	statusFooter.SetData(tui.FooterData{Workdir: projectDir})
 	statusFooter.RefreshGit()
-	return engine, chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter
+	bgPanel := bgpanel.NewPanel(nil)
+	return engine, chat, pendingMsgs, statusBar, goalBubble, inp, statusFooter, bgPanel
 }
 
 func (a *App) configureKeyLogging(engine *tui.TUI) {
@@ -127,12 +130,13 @@ func (a *App) stopBackgroundProcesses() {
 	}
 }
 
-func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, pendingMsgs, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, inp *tui.Editor, footer *tui.Footer) {
+func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, pendingMsgs, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
 	engine.AddChild(header)
 	engine.AddChild(chat)
 	engine.AddChild(pendingMsgs)
 	engine.AddChild(statusBar)
 	engine.AddChild(goalBubble)
+	engine.AddChild(bgPanel)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)
@@ -148,7 +152,7 @@ func (a *App) configureInputEditor(inp *tui.Editor, engine *tui.TUI) {
 	inp.SetTUI(engine)
 }
 
-func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.Footer, pendingMsgs, statusBar *tui.StatusMsg, inp *tui.Editor) {
+func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.Footer, pendingMsgs, statusBar *tui.StatusMsg, inp *tui.Editor, bgPanel *bgpanel.Panel) {
 	subs := a.subs
 	pendingMsgs.SetTUI(engine)
 	statusBar.SetTUI(engine)
@@ -158,6 +162,12 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.F
 		}
 	})
 
+	if subs.bgMgr != nil && bgPanel != nil {
+		bgPanel.SetSnapshot(func() []bgpanel.Task {
+			return taskSnapshotsFromManager(subs.bgMgr)
+		})
+	}
+
 	engine.SetTitle("goa - " + filepath.Base(subs.projectDir))
 
 	subs.chat = chat
@@ -165,8 +175,23 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, footer *tui.F
 	subs.tuiEngine = engine
 	subs.statusMsg = statusBar
 	subs.pendingMsgs = pendingMsgs
+	subs.bgPanel = bgPanel
 
 	footer.SetData(a.initialFooterData())
+}
+
+func taskSnapshotsFromManager(mgr *background.Manager) []bgpanel.Task {
+	tasks := mgr.List()
+	out := make([]bgpanel.Task, len(tasks))
+	for i, t := range tasks {
+		out[i] = bgpanel.Task{
+			ID:      t.ID,
+			Command: t.Command,
+			Status:  string(t.Status),
+			PID:     t.PID,
+		}
+	}
+	return out
 }
 
 func (a *App) initialFooterData() tui.FooterData {

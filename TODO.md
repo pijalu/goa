@@ -58,7 +58,7 @@
 - [x] Cross-platform process termination (SIGTERM → SIGKILL)
 - [x] Tests for the manager package
 - [x] Integrate manager into `bg_exec` tool for persistent task tracking
-- [ ] TUI sidebar integration for live status
+- [x] TUI sidebar integration for live status
 - [x] Gates + commit
 
 ## Gates

@@ -18,6 +18,7 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/netutil"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/secrets"
@@ -419,7 +420,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 
 // registerTools registers the built-in filesystem and execution tools.
 // Optional tools are skipped when disabled in configuration.
-func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config) {
+func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager) {
 	gitStager := tools.NewGitStager(projectDir)
 
 	// Shared change tracker for edit/write → smartsearch index refresh.
@@ -494,12 +495,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		reg.Register(&tools.SSHBashTool{Hosts: sshHosts(cfg)})
 	}
 	if cfg.Tools.Enabled.BGExec {
-		bgExecTool, err := tools.NewBGExecToolWithPath(filepath.Join(projectDir, ".goa", "bgexec.json"))
-		if err != nil {
-			log.Printf("Warning: failed to create durable bg_exec manager: %v\n", err)
-			bgExecTool = tools.NewBGExecTool()
-		}
-		reg.Register(bgExecTool)
+		reg.Register(tools.NewBGExecToolWithManager(bgMgr))
 	}
 	if cfg.Tools.Enabled.Memento {
 		reg.Register(&tools.MementoTool{ProjectDir: projectDir, GlobalDir: cfg.ConfigDir})

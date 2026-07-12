@@ -5,7 +5,6 @@
 package app
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/pijalu/goa/core"
@@ -167,8 +166,8 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 }
 
 func makeBGExecTool(subs *subsystems) agentic.Tool {
-	if t, err := tools.NewBGExecToolWithPath(filepath.Join(subs.projectDir, ".goa", "bgexec.json")); err == nil {
-		return t
+	if subs.bgMgr != nil {
+		return tools.NewBGExecToolWithManager(subs.bgMgr)
 	}
 	return tools.NewBGExecTool()
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/auth"
+	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/role"
@@ -43,6 +44,7 @@ import (
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
 	goaltui "github.com/pijalu/goa/tui/goal"
+	bgpanel "github.com/pijalu/goa/tui/background"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
@@ -86,6 +88,7 @@ type subsystems struct {
 	goalBubble *goaltui.Bubble
 	footer     *tui.Footer
 	tuiEngine  *tui.TUI
+	bgPanel    *bgpanel.Panel
 
 	// Logger for structured stats output
 	logger      *agentic.Logger
@@ -133,6 +136,9 @@ type subsystems struct {
 	// registry holds the explicitly-injected command registry used across the
 	// app. Replaces the deprecated core.GlobalRegistry package variable.
 	registry *core.CommandRegistry
+
+	// Background task manager shared by the bg_exec tool and the status panel.
+	bgMgr *background.Manager
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
@@ -242,6 +248,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	trustMgr := trust.NewManager(filepath.Join(cfg.ConfigDir, "trust.json"))
 	providerMgr := provider.NewProviderManager(cfg)
 	modelValidator := provider.NewModelValidator(providerMgr, cfg)
+	bgMgr := createBackgroundManager(projectDir)
 
 	sandboxMgr, err := sandbox.NewManager("", worktreeMgr)
 	if err != nil {
@@ -250,7 +257,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	}
 
 	toolRegistry := tools.NewToolRegistry()
-	registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg)
+	registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
 	if cfg.Tools.Enabled.PTYExec {
 		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
 	}
@@ -264,6 +271,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 		toolRegistry:      toolRegistry,
 		trustMgr:          trustMgr,
 		lifecycleRegistry: plugins.NewLifecycleRegistry(),
+		bgMgr:             bgMgr,
 	}
 }
 
@@ -276,6 +284,17 @@ type baseSubsystems struct {
 	toolRegistry      *tools.ToolRegistry
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
+	bgMgr             *background.Manager
+}
+
+func createBackgroundManager(projectDir string) *background.Manager {
+	path := filepath.Join(projectDir, ".goa", "bgexec.json")
+	mgr, err := background.NewManager(path)
+	if err != nil {
+		log.Printf("Warning: failed to create durable background manager at %s: %v\n", path, err)
+		mgr, _ = background.NewManager("")
+	}
+	return mgr
 }
 
 func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
@@ -851,6 +870,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		perfLoad:          opts.PerfLoad,
 		perfLoadDuration:  opts.PerfLoadDuration,
 		registry:          registry,
+		bgMgr:             base.bgMgr,
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })

@@ -13,7 +13,7 @@ import (
 
 func TestRegisterTools_ClarifyDefaultOn(t *testing.T) {
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), &config.Config{})
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
 	if _, ok := reg.Get("ask_user_question"); !ok {
 		t.Fatal("ask_user_question should be registered by default")
 	}
@@ -23,7 +23,7 @@ func TestRegisterTools_ClarifyDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tools.Enabled.SetEnabled("clarify_disabled", true)
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), cfg)
+	registerTools(reg, nil, nil, t.TempDir(), cfg, nil)
 	if _, ok := reg.Get("ask_user_question"); ok {
 		t.Fatal("ask_user_question should NOT be registered when clarify_disabled is true")
 	}
@@ -31,7 +31,7 @@ func TestRegisterTools_ClarifyDisabled(t *testing.T) {
 
 func TestAttachClarifyTool(t *testing.T) {
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), &config.Config{})
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
 	called := false
 	attachClarifyTool(reg, func(title, summary, question string, options []string) (string, bool) {
 		called = true
@@ -56,7 +56,7 @@ func TestAttachClarifyTool(t *testing.T) {
 
 func TestAttachClarifyTool_NilSafe(t *testing.T) {
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), &config.Config{})
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
 	attachClarifyTool(reg, nil) // must not panic
 }
 
@@ -65,14 +65,14 @@ func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 	cfg.Tools.SmartSearch.Enabled = false
 
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), cfg)
+	registerTools(reg, nil, nil, t.TempDir(), cfg, nil)
 	if _, ok := reg.Get("smartsearch"); ok {
 		t.Fatal("smartsearch should NOT be registered when disabled")
 	}
 
 	cfg.Tools.SmartSearch.Enabled = true
 	reg = tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), cfg)
+	registerTools(reg, nil, nil, t.TempDir(), cfg, nil)
 	if _, ok := reg.Get("smartsearch"); !ok {
 		t.Fatal("smartsearch should be registered when enabled")
 	}
