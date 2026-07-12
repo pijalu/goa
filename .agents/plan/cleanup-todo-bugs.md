@@ -93,6 +93,6 @@ All changes must pass the 5 gates run **separately**:
 until fixed. No content changes needed. Just verify it's clean.
 
 ## Verification
-- [ ] `TODO.md` has clear Track 3 with Zero gap analysis items
-- [ ] `bugs.md` still has the open bug entry
-- [ ] Both files pass `go vet` (they're not Go files, but no syntax errors)
+- [x] `TODO.md` has clear Track 3 with Zero gap analysis items
+- [x] `bugs.md` still has the open bug entry
+- [x] Both files pass `go vet` (they're not Go files, but no syntax errors)
