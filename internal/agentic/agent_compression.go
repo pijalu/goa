@@ -11,9 +11,37 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
 
+// compactSummaryRequestPrompt is the stable user turn that precedes the
+// generated summary in compacted history. Carrying the summary as an assistant
+// reply to a user turn keeps the role sequence valid for strict providers
+// (DeepSeek, some OpenAI deployments) that reject an assistant-first history,
+// and ends on an assistant turn so the next user input alternates correctly.
+const compactSummaryRequestPrompt = "Summarize our conversation so far, preserving key facts, decisions, and context."
+
 func (a *Agent) Compact(ctx context.Context) error {
-	if len(a.history) == 0 {
+	a.mu.Lock()
+	empty := len(a.history) == 0
+	a.mu.Unlock()
+	if empty {
 		return nil
+	}
+
+	// Pre-flight: summarizeHistory sends the entire non-system history to the
+	// model. If that input is itself near the window, the summarization request
+	// returns the same context_length_exceeded and Compact fails exactly when
+	// it is needed most. Shrink in-memory (selective) first so the summarize
+	// call operates on a smaller input. Reserve headroom for the summarization
+	// instruction plus the generated summary output.
+	if maxTokens := a.effectiveMaxTokens(); maxTokens > 0 {
+		const summarizeHeadroomPercent = 90
+		if a.summarizationInputTokens() > maxTokens*summarizeHeadroomPercent/100 {
+			if a.cfg.Logger != nil {
+				a.cfg.Logger.Log(Info, "Compact: pre-shrinking history (selective) before summarization to avoid self-overflow")
+			}
+			a.mu.Lock()
+			a.compressSelective()
+			a.mu.Unlock()
+		}
 	}
 
 	summary, err := a.summarizeHistory(ctx)
@@ -21,15 +49,37 @@ func (a *Agent) Compact(ctx context.Context) error {
 		return err
 	}
 
+	// Replace history with a valid, cache-stable role sequence. The system
+	// prompt is NOT stored here: buildProviderContext sends it via
+	// Context.SystemPrompt, so storing it would duplicate it on the next turn.
+	// Previously Compact stored [system, assistant] (assistant-first after the
+	// index-0 system skip, rejected by strict providers) and obliterated the
+	// provider's prompt cache by wholesale prefix replacement.
 	a.mu.Lock()
 	a.history = []Message{
-		{Type: Content, Role: System, Content: a.cfg.SystemPrompt},
+		{Type: Content, Role: User, Content: compactSummaryRequestPrompt},
 		{Type: Content, Role: Assistant, Content: summary},
 	}
 	a.mu.Unlock()
 
 	a.emitEvent(OutputEvent{Type: EventCompact, Text: summary})
 	return nil
+}
+
+// summarizationInputTokens estimates the token cost of the input
+// summarizeHistory will send to the model (all non-system history), snapshotted
+// under the mutex. Used by Compact's pre-flight overflow check.
+func (a *Agent) summarizationInputTokens() int {
+	a.mu.Lock()
+	snapshot := append([]Message(nil), a.history...)
+	a.mu.Unlock()
+	var total int
+	for i := range snapshot {
+		if snapshot[i].Role != System {
+			total += messageTokenCount(&snapshot[i])
+		}
+	}
+	return total
 }
 
 func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
@@ -104,7 +154,7 @@ func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrat
 	a.mu.Lock()
 	n := len(a.history)
 	a.mu.Unlock()
-	if a == nil || n == 0 {
+	if n == 0 {
 		return nil
 	}
 	if a.cfg.Logger != nil {
