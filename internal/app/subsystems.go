@@ -514,7 +514,11 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 }
 
 func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
-	pluginRoot := filepath.Join(cfg.ConfigDir, "plugins")
+	cfgDir := cfg.ConfigDir
+	if cfgDir == "" {
+		cfgDir = filepath.Join(projectDir, ".goa")
+	}
+	pluginRoot := filepath.Join(cfgDir, "plugins")
 	pluginMgr, err := plugins.NewManager(pluginRoot, trustMgr)
 	if err != nil {
 		log.Printf("Warning: failed to create plugin manager: %v\n", err)
@@ -542,12 +546,12 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 	// Wire the queue as the goal name pool so newly created active goals pick
 	// a friendly alias that does not collide with queued goals.
 	goalManager.Mode.SetNamePool(goalManager.Queue)
-	authStore := auth.NewStore(filepath.Join(cfg.ConfigDir, "auth.json"))
-	sessTree := sessiontree.NewManager(sessiontree.NewJSONStore(filepath.Join(cfg.ConfigDir, "session-tree.json")))
-	themeStore := config.NewThemeStore(filepath.Join(cfg.ConfigDir, "themes"))
+	authStore := auth.NewStore(filepath.Join(cfgDir, "auth.json"))
+	sessTree := sessiontree.NewManager(sessiontree.NewJSONStore(filepath.Join(cfgDir, "session-tree.json")))
+	themeStore := config.NewThemeStore(filepath.Join(cfgDir, "themes"))
 	currentVer := version.Version()
-	updateChecker := update.NewChecker(currentVer, cfg.ConfigDir)
-	telClient := telemetry.NewClient(telemetryEnabled, cfg.ConfigDir)
+	updateChecker := update.NewChecker(currentVer, cfgDir)
+	telClient := telemetry.NewClient(telemetryEnabled, cfgDir)
 
 	deps := commands.CommandDependencies{
 		GoalCommand:     goalCmd,
