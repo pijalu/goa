@@ -244,9 +244,9 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 	case CompressionHybrid:
 		return a.compressHybrid(ctx)
 	case CompressionMicro:
-		a.mu.Lock()
+		// microCompactForced self-manages a.mu (it emits after unlock), so do
+		// not wrap it in a held lock here.
 		a.microCompactForced(force)
-		a.mu.Unlock()
 	default:
 		a.mu.Lock()
 		a.compressToolElision(force)
@@ -256,25 +256,26 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 }
 
 // compressHybrid applies tool_elision then selective if still over threshold.
+// The in-memory steps run under a.mu; Compact (network) runs off-lock.
 func (a *Agent) compressHybrid(ctx context.Context) error {
-	a.compressToolElision(true)
-
-	stats := a.computeContextStats()
 	threshold := a.cfg.ContextCompression.ThresholdPercent
 	if threshold == 0 {
 		threshold = 100
 	}
-	if stats.UsagePercent < threshold {
+
+	a.mu.Lock()
+	a.compressToolElision(true)
+	stats := a.computeContextStats()
+	needMore := stats.UsagePercent >= threshold
+	if needMore {
+		a.compressSelective()
+		stats = a.computeContextStats()
+		needMore = stats.UsagePercent >= threshold
+	}
+	a.mu.Unlock()
+	if !needMore {
 		return nil
 	}
-
-	a.compressSelective()
-
-	stats = a.computeContextStats()
-	if stats.UsagePercent < threshold {
-		return nil
-	}
-
 	return a.Compact(ctx)
 }
 
@@ -453,14 +454,9 @@ func (a *Agent) handleContextError(err error) {
 		a.cfg.Logger.Log(Info, "Context length error — applying compression (strategy=%s)", strategy)
 	}
 
-	// The reactive compression (compressHistoryWithStrategy + the selective
-	// escalation below) is all in-memory; hold the mutex for the whole
-	// transaction. Those helpers assume the lock is held.
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// Apply the configured strategy.  We pass force=true so the strategy
-	// runs even when internal thresholds aren't met (overflow is an emergency).
+	// compressHistoryWithStrategy self-manages a.mu per strategy branch (micro
+	// emits after unlock; the pure strategies take the lock around their
+	// mutation), so do not hold the lock across it here.
 	a.compressHistoryWithStrategy(string(strategy), true)
 
 	// If the configured strategy is tool_elision or micro and context is
@@ -468,14 +464,16 @@ func (a *Agent) handleContextError(err error) {
 	// This handles text-heavy conversations where eliding tool data leaves
 	// all user+assistant messages intact.
 	if strategy == "" || strategy == CompressionToolElision || strategy == CompressionMicro {
-		stats := a.computeContextStats()
+		stats := a.ContextStats()
 		maxTokens := a.effectiveMaxTokens()
 		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
 			if a.cfg.Logger != nil {
 				a.cfg.Logger.Log(Info, "Tool elision/micro freed insufficient space (%d/%d tokens) — escalating to selective",
 					stats.EstimatedTokens, maxTokens)
 			}
+			a.mu.Lock()
 			a.compressSelective()
+			a.mu.Unlock()
 		}
 	}
 }
@@ -489,20 +487,29 @@ func (a *Agent) compressHistoryWithStrategy(strategy string, force bool) {
 	// useful emergency strategy anyway since it costs an LLM call).
 	switch CompressionStrategy(strategy) {
 	case CompressionSelective:
+		a.mu.Lock()
 		a.compressSelective()
+		a.mu.Unlock()
 	case CompressionToolElision:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	case CompressionMicro:
+		// microCompactForced self-manages a.mu (it emits after unlock).
 		a.microCompactForced(force)
 	case CompressionHybrid:
+		a.mu.Lock()
 		a.compressToolElision(true)
 		stats := a.computeContextStats()
 		maxTokens := a.effectiveMaxTokens()
 		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
 			a.compressSelective()
 		}
+		a.mu.Unlock()
 	default:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	}
 }
 

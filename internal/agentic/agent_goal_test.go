@@ -98,19 +98,8 @@ func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 	// immediately before the last user message, NOT baked into the user
 	// message's content. Prepending to the user message made its bytes
 	// turn-specific, busting the cached prefix on the next turn.
-	progressIdx, lastUserIdx := -1, -1
-	for i, m := range pctx.Messages {
-		if m.Role == provider.RoleSystem {
-			for _, b := range m.Content {
-				if strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") {
-					progressIdx = i
-				}
-			}
-		}
-		if m.Role == provider.RoleUser {
-			lastUserIdx = i
-		}
-	}
+	progressIdx := indexOfSystemContaining(pctx.Messages, "DYNAMIC PROGRESS LINE")
+	lastUserIdx := indexOfLastRole(pctx.Messages, provider.RoleUser)
 	if progressIdx < 0 {
 		t.Fatalf("dynamic progress should be injected as a system message; messages: %+v", pctx.Messages)
 	}
@@ -148,4 +137,31 @@ func TestBuildProviderContext_NoGoalProvider_NoInjection(t *testing.T) {
 	if pctx.SystemPrompt != "system prompt" {
 		t.Errorf("system prompt should be unchanged, got %q", pctx.SystemPrompt)
 	}
+}
+
+// indexOfSystemContaining returns the index of the first system message whose
+// content contains needle, or -1.
+func indexOfSystemContaining(msgs []provider.Message, needle string) int {
+	for i, m := range msgs {
+		if m.Role != provider.RoleSystem {
+			continue
+		}
+		for _, b := range m.Content {
+			if strings.Contains(b.Text, needle) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// indexOfLastRole returns the index of the last message with the given role,
+// or -1.
+func indexOfLastRole(msgs []provider.Message, role provider.Role) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == role {
+			return i
+		}
+	}
+	return -1
 }
