@@ -4,7 +4,6 @@ package agentic
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -794,37 +793,8 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	return model, opts, pCtx
 }
 
-// formatRetryMessage turns a stream error into a concise user-facing
-// message that includes the HTTP status, provider message, and error code
-// when available.
-func formatRetryMessage(err error) string {
-	var respErr provider.HTTPResponseError
-	if errors.As(err, &respErr) {
-		status := respErr.StatusCode()
-		body := respErr.ResponseBody()
-		var parsed struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    string `json:"code"`
-				Type    string `json:"type"`
-			} `json:"error"`
-		}
-		msg := ""
-		code := ""
-		if json.Unmarshal([]byte(body), &parsed) == nil && parsed.Error.Message != "" {
-			msg = parsed.Error.Message
-			code = parsed.Error.Code
-		}
-		if msg == "" {
-			msg = body
-		}
-		if code != "" {
-			return fmt.Sprintf("Error: %d - %s (%s) - retrying", status, msg, code)
-		}
-		return fmt.Sprintf("Error: %d - %s - retrying", status, msg)
-	}
-	return fmt.Sprintf("Error: %s - retrying", err.Error())
-}
+// formatRetryMessage and formatFatalStreamMessage now live in retry_classify.go,
+// alongside the retry-decision helpers (shouldRetryStreamError / retryBackoff).
 
 // handleStreamFailure handles a stream error, retrying when appropriate.
 // Returns true if the failure was fully handled (caller should return retErr).
@@ -855,6 +825,23 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 		a.cfg.Logger.Log(Info, "Overflow recovery: compressing context and retrying once")
 	}
 
+	// Classify before retrying. Non-retryable errors (HTTP 400/401/403,
+	// malformed request, auth failure) cannot succeed on a second attempt, so
+	// surface them immediately with a clear, final message instead of burning
+	// the retry budget and delaying the user-visible failure. Overflow is
+	// always retryable here (the once-only guard above bounds it).
+	if !shouldRetryStreamError(streamErr) {
+		a.cfg.Logger.Log(Warn, "stream error not retryable; surfacing immediately: %v", streamErr)
+		a.emitEvent(OutputEvent{
+			Type:     EventContent,
+			Role:     System,
+			Text:     formatFatalStreamMessage(streamErr),
+			Metadata: map[string]string{"category": "system-notification"},
+		})
+		a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+		return true, fmt.Errorf("LLM request failed (not retryable): %w", streamErr)
+	}
+
 	a.cfg.Logger.Log(Warn, "stream error, retrying: %v", streamErr)
 
 	// Surface the failure as a system chat bubble so the user can see the
@@ -863,7 +850,7 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 		Type:     EventContent,
 		Role:     System,
 		Text:     formatRetryMessage(streamErr),
-		Metadata: map[string]string{"category": "system-notification"},
+		Metadata: map[string]string{"category": "system-notification", "transient": "true"},
 	})
 
 	toolCallEncountered, retried := a.retryStream(ctx, streamErr, model, opts)
@@ -892,8 +879,10 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 		a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d/2)...", retry+1)})
 
 		// Sleep with context awareness so Ctrl+C isn't ignored during backoff.
+		// retryBackoff honors a server-supplied Retry-After for rate limits and
+		// otherwise uses bounded exponential backoff with jitter.
 		select {
-		case <-time.After(time.Duration(retry+1) * time.Second):
+		case <-time.After(retryBackoff(originalErr, retry)):
 		case <-ctx.Done():
 			return false, false
 		}
