@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -367,13 +368,19 @@ func (m *Manager) markReattached(id string, status Status) {
 
 func (m *Manager) collectOutput(proc *runningProc, r io.ReadCloser, w *teeWriter) {
 	defer proc.wg.Done()
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		w.line(scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		w.line(fmt.Sprintf("[background: read error: %v]", err))
+	reader := bufio.NewReader(r)
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			line = strings.TrimRight(line, "\r\n")
+			w.line(line)
+		}
+		if err != nil {
+			if err != io.EOF {
+				w.line(fmt.Sprintf("[background: read error: %v]", err))
+			}
+			return
+		}
 	}
 }
 
