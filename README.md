@@ -109,14 +109,15 @@ On first run, Goa walks you through:
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full system architecture |
 | [SETUP.md](docs/SETUP.md) | Installation & setup guide |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Config cascade & all settings |
-| [COMMANDS.md](docs/COMMANDS.md) | Command system reference |
+| [COMMANDS.md](docs/COMMANDS.md) | Complete command system reference |
 | [TOOLS.md](docs/TOOLS.md) | Tool system reference |
 | [SKILLS.md](docs/SKILLS.md) | Skills system reference |
 | [PROFILES.md](docs/PROFILES.md) | Agent profiles & resolution |
 | [TUI.md](docs/TUI.md) | TUI layout & usage |
+| [HOTKEYS.md](docs/HOTKEYS.md) | Keyboard shortcuts reference |
 | [AGENTIC-SDK.md](docs/AGENTIC-SDK.md) | How Goa wraps the agentic SDK |
 | [WORKFLOWS.md](docs/WORKFLOWS.md) | Workflow system reference |
-| [ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Orchestrator: multi-agent topology selector, goal binding, live Summary, headless resume |
+| [ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Multi-agent topology selector, goal binding, headless resume |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development guide |
 | [bugs.md](bugs.md) | Known issues and roadmap |
 | [AGENTS.md](AGENTS.md) | AI agent coding guidelines |

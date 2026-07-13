@@ -186,6 +186,55 @@ tools:
       - SECRET
       - TOKEN
       - PASSWORD
+    max_output_bytes: 10485760       # Max output before truncation (10MB)
+    compress_output: null            # null = auto (local=on, remote=off)
+    enable_complexity_analysis: false # AST-based command complexity analysis
+    max_complexity_score: 5          # Max complexity score (0=disabled)
+    jail: false                      # Force project-directory jail
+  smartsearch:
+    enabled: false                   # Enable BM25 relevance search (default: false)
+    max_results: 20                  # Max results per query
+    min_score: 0.0                   # Minimum relevance score threshold
+    exclude_dirs: []                 # Additional exclusion dirs
+    k1: 1.5                          # BM25 k1 parameter (term frequency saturation)
+    b: 0.75                          # BM25 b parameter (length normalisation)
+  terminal:
+    sandbox:
+      enabled: true                  # Enable sandbox (default: true)
+      blocked_commands:              # Never execute these in sandbox
+        - rm -rf /
+        - sudo
+        - curl
+        - ssh
+      allowed_commands: []           # Empty = allow all (except blocked)
+      timeout_seconds: 60            # Default timeout
+      max_output_chars: 100000       # Max output characters
+      bypass_allowed: false          # Allow bypassing sandbox via config
+  webfetch:
+    enabled: true                    # Enable web fetching
+    max_lines_default: 250           # Default max lines per fetch
+    max_lines_hard: 4096             # Absolute max lines per fetch
+    max_total_bytes: 20971520        # Max response body size (20MB)
+    timeout_seconds: 30              # Request timeout
+    user_agent: "Goa/1.0"            # Custom User-Agent header
+    max_redirects: 5                 # Max redirects to follow
+    allowed_schemes:                 # Allowed URL schemes
+      - https
+      - http
+    blocked_hosts: []                # Hosts to block
+    cache:
+      enabled: true                  # Cache fetched pages
+      dir: ""                        # Cache dir (default: .goa/cache/webfetch)
+      ttl_hours: 24                  # Cache TTL
+      max_entries: 1000              # Max cache entries per session
+      max_bytes: 524288000           # Max cache size (500MB)
+      cleanup_interval_hours: 24     # Cleanup interval
+    summary:
+      enabled: false                 # Enable sub-agent summarization
+      sub_agent_role: "companion"    # Role for summarization
+      max_input_lines: 1000          # Max lines for summarization
+      default_prompt: |              # Default summarization prompt
+        Summarize the following web page in 3-5 concise paragraphs...
   ssh:
     hosts:
       - id: server1

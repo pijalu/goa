@@ -362,6 +362,158 @@ disable with `tools.enabled.clarify_disabled: true`.
 }
 ```
 
+### `verify` — Run project test suite
+
+Runs the project's test suite and returns a structured report with pass/fail
+status and failure summaries. Supports Go (`go test`), Node (`npm test`),
+and Python (`pytest`) projects. Framework auto-detection from project root.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `command` | string | Optional explicit test command |
+| `args` | array | Optional extra arguments to pass to the test command |
+| `timeout_seconds` | number | Maximum time in seconds (default: 60) |
+
+**Example:**
+```json
+{
+  "command": "go test ./...",
+  "timeout_seconds": 120
+}
+```
+
+### `terminal` — Sandboxed shell execution
+
+Executes shell commands in a hardened sandbox environment with process group
+isolation, credential stripping, and a command-position blocklist. Unlike
+the `bash` tool, `terminal` runs in a per-session sandbox directory with
+repointed HOME/TMPDIR and stricter security defaults.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `command` | string | Shell command to execute (required) |
+| `timeout` | number | Timeout in seconds (optional) |
+
+**Security:**
+- Runs in a per-session sandbox directory with repointed HOME/TMPDIR
+- Command-position blocklist (rm, sudo, curl, ssh, etc.)
+- Credential stripping from child environment
+- Process group isolation and timeout enforcement
+
+### `read_media` — Read media files for multimodal models
+
+Reads image and video files and returns base64-encoded content for vision-
+and multimodal-capable models. Only available when the active model supports
+image inputs (`input_types: [text, image]` in model config).
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | Path to the media file (required) |
+
+### `smartsearch` — BM25 relevance-ranked code search
+
+Performs relevance-ranked code search using BM25Okapi ranking. Unlike the
+regex-based `search` tool, `smartsearch` accepts natural language queries
+and returns files ranked by topical relevance. It builds and maintains a
+persistent BM25 index under `.goa/smartsearch/` that refreshes incrementally
+as files change (via edit/write tools).
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `query` | string | Natural language query (required) |
+| `glob` | string | File glob filter (e.g. `"*.go"`) |
+| `path` | string | Root directory to search (default: project root) |
+| `max_results` | number | Maximum results to return (default: 20) |
+| `min_score` | float | Minimum relevance score threshold (0.0–1.0) |
+
+**Configuration:**
+```yaml
+tools:
+  smartsearch:
+    enabled: true             # Enable smartsearch (default: false)
+    max_results: 20           # Max results per query
+    min_score: 0.0            # Minimum relevance score threshold
+    exclude_dirs: []          # Additional exclusion dirs
+    k1: 1.5                   # BM25 k1 parameter (term frequency saturation)
+    b: 0.75                   # BM25 b parameter (length normalisation)
+```
+
+**Best for:**
+- Finding code by what it does, not by an exact pattern
+- Broad concept queries ("database migration", "error handling")
+- Exploring unfamiliar codebases
+
+For exact pattern matching (regex, function names), use `search` instead.
+
+### `webfetch` — Fetch web pages as Markdown
+
+Fetches any URL and converts the HTML page to structured Markdown. Acts like
+a remote `read` tool with session-scoped caching, line-range requests, and
+optional AI summarization via sub-agent.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `url` | string | Absolute URL to fetch (required) |
+| `action` | string | `fetch` (default) or `summarize` |
+| `start_line` | number | First line to return, 1-indexed |
+| `end_line` | number | Last line to return, 1-indexed |
+| `max_lines` | number | Maximum lines to return |
+| `prompt` | string | Steering prompt for summarize action |
+
+**Actions:**
+- `fetch` (default): download URL, convert HTML to Markdown, cache, return lines
+- `summarize`: ask configured sub-agent to summarize cached Markdown
+
+**Example:**
+```json
+{"url": "https://example.com", "start_line": 1, "end_line": 50}
+```
+
+See `docs/tools/webfetch.md` for full configuration reference.
+
+### `agent` — Spawn a sub-agent
+
+Spawns a focused sub-agent in an isolated context to execute a specific task.
+Returns the sub-agent's final result. Supports running in background mode
+for concurrent task processing.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `description` | string | Short task summary (3-5 words) for UI display |
+| `prompt` | string | Complete task description for the sub-agent |
+| `subagent_type` | string | `coder` (default), `explore`, or `plan` |
+| `run_in_background` | boolean | If true, return immediately with a task_id |
+| `resume` | string | Optional task ID to resume a background agent |
+
+### `agent_swarm` — Spawn parallel sub-agents
+
+Spawns a swarm of sub-agents to process multiple items in parallel. Each
+item launches one sub-agent, and all run concurrently. The `prompt_template`
+uses `{{item}}` as a placeholder replaced with each item value.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `task` | string | Overall swarm task description (required) |
+| `items` | array | List of items to process (required) |
+| `subagent_type` | string | `coder` (default), `explore`, or `plan` |
+| `prompt_template` | string | Template with `{{item}}` placeholder |
+
+**Example:**
+```json
+{
+  "task": "Review files for issues",
+  "items": ["src/main.go", "src/utils.go"],
+  "subagent_type": "reviewer"
+}
+```
+
 ## Documentable Tool Update
 
 To make a tool self-documenting, implement the `Documentable` interface:

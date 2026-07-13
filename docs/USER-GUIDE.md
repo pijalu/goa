@@ -8,19 +8,88 @@ Copyright (C) 2026 Pierre Poissinger
 
 > **Terminal-native AI coding agent with multi-agent collaboration, workflow automation, and full LLM transparency.**
 
-Welcome to the Goa user guide. This document covers the three most powerful
-multi-agent features of Goa: **Workflows**, **Orchestrator**, and **Companion**.
-Each section explains what the feature is, how to use it, and when to choose it.
+Welcome to the Goa user guide. This document covers core usage, the three most
+powerful multi-agent features (Workflows, Orchestrator, Companion), and
+configuration references.
 
----
+If you're new to Goa, start with the [Quick Start](#0-quick-start) section
+below, then explore the features that match your workflow.
 
 ## Table of Contents
 
+0. [Quick Start](#0-quick-start)
 1. [Workflows — Multi-Stage Pipelines](#1-workflows--multi-stage-pipelines)
 2. [Orchestrator — Multi-Agent Topologies](#2-orchestrator--multi-agent-topologies)
 3. [Companion — Sub-Agent Code Review](#3-companion--sub-agent-code-review)
 4. [Feature Comparison](#4-feature-comparison)
 5. [Configuration Reference](#5-configuration-reference)
+
+---
+
+## 0. Quick Start
+
+### First Run
+
+```bash
+# Build from source
+make build
+
+# Start Goa — first run launches the setup wizard
+./goa
+```
+
+The setup wizard walks you through:
+1. Configuring an LLM provider (endpoint, model, API key)
+2. Selecting an agent profile (coder, planner, reviewer)
+3. Choosing an execution mode (yolo, confirm, review)
+
+After setup, you'll see the main TUI screen with a chat viewport, status bar,
+and input line at the bottom.
+
+### Basic Usage
+
+Type your request at the prompt and press `Enter`. Goa sends your message to
+the configured LLM, which streams its response, thinking blocks, and tool calls
+into the chat viewport.
+
+**Example conversation:**
+```
+> read the file cmd/goa/main.go and explain it
+```
+
+The agent will:
+1. Read the file using the `read` tool
+2. Analyze the code
+3. Return a formatted explanation
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| **Slash Commands** | Type `/` to access commands (help, mode, model, skills, etc.) |
+| **Execution Mode** | Controls tool approval: `yolo` (auto), `confirm` (pause before tools), `review` (queue writes) |
+| **Agent Mode** | Your role: `coder` (default), `planner`, `reviewer` |
+| **Tools** | Agent capabilities: read, write, edit, search, bash, and more |
+| **Skills** | Reusable prompt templates for specialized tasks |
+
+### Common First Commands
+
+```
+/help                  → List all commands and setup tips
+/mode:coder            → Switch to coder mode
+/model gpt-4o          → Switch models
+/session:new           → Start a fresh session
+```
+
+### Getting Help
+
+- `/help` — list all commands
+- `/help <command>` — detailed help for a specific command
+- `/docs` — list all embedded documentation
+- `/docs:TOPIC` — read a specific document (e.g., `/docs:TOOLS`)
+- `/hotkeys` — show keyboard shortcuts
+- `/cmd?` — short help for any command
+- `/cmd??` — long help for any command
 
 ---
 

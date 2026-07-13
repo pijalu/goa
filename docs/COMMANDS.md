@@ -76,6 +76,106 @@ func init() {
 
 ## Command Reference
 
+### `/clone` — Branch session tree
+
+```
+Usage: /clone:<parent-node-id>
+Aliases: (none)
+
+Create a new branch in the session tree from the given parent node.
+See also `/tree`, `/fork`.
+  /clone:node-abc    → Branch from node-abc
+```
+
+### `/companion` — Toggle companion sub-agent
+
+```
+Usage: /companion [:on|:off|:agent|:framework]
+Aliases: (none)
+
+Enable or disable the companion sub-agent for code review.
+  /companion              → Show current status
+  /companion:on           → Enable companion (agent-driven mode)
+  /companion:agent        → Enable agent-driven mode (default)
+  /companion:framework    → Enable framework-driven mode (auto-review)
+  /companion:off          → Disable companion entirely
+```
+
+See [USER-GUIDE.md](USER-GUIDE.md#3-companion--sub-agent-code-review) for full documentation.
+
+### `/compress` — Force context compression
+
+```
+Usage: /compress[:strategy][:force]
+Aliases: (none)
+
+Trigger context compression on the active agent session. Reduces token
+usage by summarizing older conversation turns or eliding tool results.
+A manual invocation always forces compression, bypassing configured thresholds.
+
+Available strategies:
+  tool_elision  → Replace old tool args/results with placeholders
+  selective     → Drop oldest messages, keep system + recent turns
+  summarize     → Ask the LLM to summarize older turns
+  hybrid        → Tool elision → selective → summarize
+  micro         → Truncate old tool result bodies (default, after 1h idle)
+
+Examples:
+  /compress              Compress with configured strategy (forced)
+  /compress:micro        Force micro compaction
+  /compress:summarize    Force summarization
+```
+
+### `/copy` — Copy last response to clipboard
+
+```
+Usage: /copy
+Aliases: (none)
+
+Copies the most recent agent response text to your system clipboard
+using platform-native tools or OSC 52 escape sequence.
+```
+
+### `/debug` — Toggle debug mode
+
+```
+Usage: /debug
+Aliases: /dbg
+
+Toggle debug mode or show debug information about the current session.
+Useful for diagnosing agent behavior and tool execution flow.
+```
+
+### `/docs` — Browse embedded documentation
+
+```
+Usage: /docs:topic
+Aliases: (none)
+
+List all available embedded documentation, or show a specific document.
+Documents cover architecture, commands, configuration, tools, profiles,
+orchestrator, workflows, and more.
+
+Examples:
+  /docs                  List all available documents
+  /docs:ARCHITECTURE     Show the architecture document
+  /docs:TOOLS            Show the tools reference
+```
+
+### `/exchange` — Show LLM exchange details
+
+```
+Usage: /exchange[:turn-number]
+Aliases: (none)
+
+Dump the complete LLM exchange for a turn, including stats, user input,
+thinking blocks, tool calls/results, and assistant responses.
+
+Examples:
+  /exchange         Show last turn
+  /exchange:3       Show turn 3
+```
+
 ### `/export` — Export diagnostic bundle
 
 ```
@@ -126,6 +226,44 @@ echo "Wrong model used" | goa -export-session s_abc123 -export-output ./debug.zi
 echo "TUI input issue" | goa -export-output ./debug.zip -include-global-log=false
 ```
 
+### `/fork` — Branch session tree from node
+
+```
+Usage: /fork:<parent-node-id>
+Aliases: (none)
+
+Create a new branch in the session tree from a specific parent node.
+Similar to `/clone` but explicitly selects a branching operation.
+See `/tree` to list available nodes.
+
+Examples:
+  /fork:node-abc    → Create branch from node-abc
+```
+
+### `/go` — Continue paused pipeline
+
+```
+Usage: /go
+Aliases: (none)
+
+Continues a paused pipeline by approving the current gate.
+Only works when a pipeline is paused at an approval gate.
+See also `/pipeline`.
+
+Examples:
+  /go    → Approve current gate and continue pipeline
+```
+
+### `/goa` — Show Goa information
+
+```
+Usage: /goa
+Aliases: (none)
+
+Show information about the Goa agent itself, including version,
+configuration, and available subsystems.
+```
+
 ### `/goal` — Manage coding goals
 
 ```
@@ -146,26 +284,6 @@ Track long-running coding tasks. Goals persist across session restarts.
 
 When a goal is active, it is injected into the system prompt so the LLM
 tracks progress.
-
-### `/cron` — Manage scheduled tasks
-
-```
-Usage: /cron <subcommand> [args]
-Subcommands: create, list, delete, pause, resume
-```
-
-Run agent tasks on a schedule. Schedules use standard 5-field cron syntax
-or shortcuts (@daily, @weekly, @every <duration>).
-
-```
-/cron create "0 9 * * 1" "Review code quality"   → Weekly Monday 9AM
-/cron create "@daily" "Check for dependency updates" → Every midnight
-/cron create "@every 30m" "Run health checks"      → Every 30 minutes
-/cron list                                            → List all jobs
-/cron delete cron-1                                   → Delete job
-/cron pause cron-1                                    → Pause without deleting
-/cron resume cron-1                                   → Re-enable
-```
 
 ### `/help` — Show help
 
@@ -411,6 +529,344 @@ Manage JS plugins.
   /plugins        → List all loaded plugins
   /plugins reload → Reload all plugins from disk
 ```
+
+### `/hotkeys` — Show keyboard shortcuts
+
+```
+Usage: /hotkeys
+Aliases: (none)
+
+Display every keyboard shortcut grouped by category (navigation, editing,
+application actions). Shortcuts come from the default keybinding set.
+  /hotkeys     Show the shortcut table
+```
+
+### `/login` — OAuth login for providers
+
+```
+Usage: /login[:<provider>[:<token>]]
+Aliases: (none)
+
+Manage OAuth tokens for authentication-required providers.
+  /login                    → List stored providers
+  /login:<provider>         → Start OAuth login for a provider
+  /login:<provider>:<token> → Store a token for a provider
+```
+
+### `/logout` — Clear provider tokens
+
+```
+Usage: /logout:<provider>
+Aliases: (none)
+
+Remove stored authentication tokens for the specified provider.
+  /logout:openai    → Remove OpenAI tokens
+```
+
+### `/pair` — Pair programming mode
+
+```
+Usage: /pair:<task description>
+Aliases: (none)
+
+Enable pair programming mode with planner + coder agents.
+The planner decomposes the task and the coder implements it.
+
+Examples:
+  /pair:Implement user authentication
+  /pair:Refactor the database layer
+```
+
+### `/permission` — Manage tool permission rules
+
+```
+Usage: /permission [list|add|remove|clear]
+Aliases: (none)
+
+Manage access control rules for tool execution. Patterns support
+`*` (single-segment) and `**` (multi-segment) wildcards.
+  /permission                          → Show current rules
+  /permission:list                      → Alias for show
+  /permission:add:<pattern>:<decision>  → Add a rule (allow|deny|ask)
+  /permission:remove:<id>               → Remove a rule by index
+  /permission:clear                     → Remove all rules
+```
+
+### `/pipeline` — Multi-agent pipeline management
+
+```
+Usage: /pipeline [subcommand]
+Aliases: (none)
+
+Manage multi-agent pipeline runs. A pipeline executes stages sequentially
+(planner → coder → reviewer) with each agent building on the previous output.
+
+  /pipeline                   → List active pipelines
+  /pipeline:list              → List all pipeline runs
+  /pipeline:cancel            → Cancel the current pipeline
+```
+
+See [WORKFLOWS.md](WORKFLOWS.md) for workflow-based pipelines.
+
+### `/prompt` — Show assembled system prompt
+
+```
+Usage: /prompt
+Aliases: /sp
+
+Display the assembled system prompt including the active profile,
+memory injections, and skill content. Useful for debugging what
+the agent currently sees.
+Also accessible via Ctrl+P and the side panel prompt tab.
+```
+
+### `/pty` — Manage Pseudo-Terminal sessions
+
+```
+Usage: /pty[:subcommand[:args]]
+Aliases: (none)
+
+Manage pseudo-terminal sessions started by the agent via pty_exec tool.
+  /pty                    → List active PTY sessions
+  /pty:ps                 → List active PTY sessions
+  /pty:kill:<id>          → Terminate a session (SIGTERM → SIGKILL)
+  /pty:read:<id>          → Read last 100 lines of output
+  /pty:read:<id>:<N>      → Read last N lines
+  /pty:read:<id>:N:ansi   → Read last N lines with ANSI codes preserved
+  /pty:monitor:<id>       → Open live monitor overlay
+  /pty:write:<id>:<text>  → Send input to a session
+```
+
+### `/quit` — Exit Goa
+
+```
+Usage: /quit
+Aliases: /q, /exit
+
+Exit Goa. If an agent session is running, you will be prompted to confirm.
+```
+
+### `/reload` — Reload skills and context
+
+```
+Usage: /reload
+Aliases: (none)
+
+Reloads all skill directories and context files (AGENTS.md) from disk,
+updates the skill registry, and rebuilds the system prompt. No restart needed.
+
+What gets reloaded:
+  - Skills: re-scans all SKILL.md directories
+  - Context: re-scans for AGENTS.md/CLAUDE.md files (ancestor walk)
+  - Shortcuts: re-registers /<command> shortcuts for skills with
+    "command:" frontmatter
+```
+
+### `/review` — Interactive code review
+
+```
+Usage: /review[:commit]
+Aliases: (none)
+
+Start an interactive code review against a git commit or working tree changes.
+Opens a pager where you can scroll, add comments, and submit to the agent.
+
+  /review              → Review working tree vs HEAD (or HEAD^1..HEAD)
+  /review:<commit>     → Review against a specific base commit
+  /review:list         → List last 10 commits
+  /review:status       → Show active review sessions
+  /review:submit       → Send the review to the main agent
+  /review:export       → Export review to review_<base>_<timestamp>.md
+
+Pager keys: ↑/↓ (scroll), c (comment), e (edit comment), d (delete comment),
+b (change base), s (submit), x (export), q/Esc (close).
+```
+
+### `/reviewer` — Code review with coder+reviewer cycle
+
+```
+Usage: /reviewer:<task description>
+Aliases: /rev
+
+Enable code review mode with coder + reviewer agent cycle.
+The coder implements and the reviewer checks for correctness, security, and style.
+
+Examples:
+  /reviewer:Add input validation
+  /reviewer:Fix the sorting algorithm
+```
+
+### `/setup` — Launch setup wizard
+
+```
+Usage: /setup
+Aliases: /init, /wizard
+
+Launch the interactive setup wizard to configure providers, profiles,
+execution mode, and project initialization. Automatically shown on first run.
+Use at any time to reconfigure.
+```
+
+### `/stats` — Show token usage breakdown
+
+```
+Usage: /stats[:turn-number]
+Aliases: /tokens, /tok
+
+Show detailed token usage breakdown per turn. With a turn number,
+show a detailed tree for that turn.
+  /stats        → Show per-turn overview
+  /stats:3      → Show detailed breakdown for turn 3
+```
+
+### `/swarm` — Swarm mode
+
+```
+Usage: /swarm[:on|:off|:<task>]
+Aliases: (none)
+
+Enable or disable swarm mode for parallel multi-agent task processing.
+
+  /swarm:on           → Enable swarm mode
+  /swarm:off          → Disable swarm mode
+  /swarm:<task>       → Run a one-off swarm task
+```
+
+### `/telemetry` — Anonymous telemetry
+
+```
+Usage: /telemetry [:on|:off]
+Aliases: (none)
+
+Control anonymous usage telemetry for improving Goa.
+  /telemetry       → Show current status
+  /telemetry:on    → Enable anonymous telemetry
+  /telemetry:off   → Disable anonymous telemetry
+```
+
+### `/theme` — Manage themes
+
+```
+Usage: /theme [:set:<name>|:edit:<name>]
+Aliases: (none)
+
+List, switch, or edit color themes.
+
+  /theme                  → List available themes
+  /theme:set:<name>        → Activate a theme (dark, light, custom)
+  /theme:edit:<name>       → Open theme JSON in $EDITOR
+```
+
+### `/thinking` — Set reasoning effort level
+
+```
+Usage: /thinking [level]
+Aliases: (none)
+
+Set the reasoning effort level for the current agent.
+
+Levels:
+  off     — No reasoning
+  minimal — Very brief reasoning (~1k tokens)
+  low     — Light reasoning (~2k tokens)
+  medium  — Moderate reasoning (~8k tokens)
+  high    — Deep reasoning (~16k tokens)
+  xhigh   — Maximum reasoning (~32k tokens)
+
+Examples:
+  /thinking       → Show current level
+  /thinking:high  → Set deep reasoning
+```
+
+### `/thinking-blocks` — Toggle thinking block visibility
+
+```
+Usage: /thinking-blocks[:on|:off]
+Aliases: (none)
+
+Toggle the visibility of main-agent thinking/reasoning blocks.
+
+  /thinking-blocks       → Show current status
+  /thinking-blocks:on    → Expand thinking blocks
+  /thinking-blocks:off   → Collapse thinking blocks
+```
+
+### `/tree` — Session tree viewer
+
+```
+Usage: /tree
+Aliases: (none)
+
+Display the session tree showing branches and forks.
+See also `/fork`, `/clone`.
+```
+
+### `/trust` — Manage trust decisions
+
+```
+Usage: /trust [list|allow|deny|prompt]
+Aliases: (none)
+
+Manage trust decisions for external domains and resources.
+
+  /trust                        → List trust decisions
+  /trust:list                    → List trust decisions
+  /trust:allow:<domain>          → Trust a domain
+  /trust:deny:<domain>           → Deny a domain
+  /trust:prompt:<domain>         → Prompt for a domain
+```
+
+### `/ui` — UI control commands
+
+```
+Usage: /ui:action[:args]
+Aliases: (none)
+
+Fine-grained UI control actions.
+
+  /ui:theme:set:<token>:<color>   → Change a theme token color
+  /ui:pane:show:<id>              → Show a pane
+  /ui:pane:hide:<id>              → Hide a pane
+  /ui:flash:<message>             → Show a flash message
+
+Examples:
+  /ui:theme:set:accent:#ff6600
+  /ui:flash:Task completed
+```
+
+### `/update` — Check for updates
+
+```
+Usage: /update
+Aliases: (none)
+
+Check for a newer Goa release.
+```
+
+### `/version` — Show version
+
+```
+Usage: /version
+Aliases: /v, /ver
+
+Show the Goa version number and build information.
+```
+
+### `/workflows` — Run multi-stage workflows
+
+```
+Usage: /workflows [:list|:show:<name>|:run:<name>|:cancel]
+Aliases: (none)
+
+Run multi-stage, multi-agent pipelines with pre-defined roles.
+  /workflows:list                              → List available workflows
+  /workflows:show:implement-feature            → Show workflow details
+  /workflows:run:implement-feature "Add auth"  → Run a workflow with input
+  /workflows:implement-feature                 → Shorthand (same as :run:)
+  /workflows:cancel                            → Cancel running workflow
+```
+
+See [USER-GUIDE.md](USER-GUIDE.md#1-workflows--multi-stage-pipelines) for full documentation.
 
 ## Registering a New Command
 
