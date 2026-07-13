@@ -47,6 +47,11 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, body)
 	}
 
+	// 1a. Tool usage principles — global guidance shared by all modes.
+	if toolUsage := buildToolUsageSection(); toolUsage != "" {
+		parts = append(parts, toolUsage)
+	}
+
 	// 2. AGENTS.md context files
 	if len(subs.contextFiles) > 0 {
 		parts = append(parts, renderContextFiles(subs.contextFiles))
@@ -230,6 +235,17 @@ func buildSelfDocSection() string {
 	}
 	b.WriteString("</goa_documentation>")
 	return b.String()
+}
+
+// buildToolUsageSection returns a <tool_usage> paragraph with general
+// guidance about how to use the available tools. This section is shared
+// by all modes and injected early in the system prompt.
+func buildToolUsageSection() string {
+	return `<tool_usage>
+Always favor specialized tools over bash commands — they handle errors,
+cross-platform quirks, and structured output better than piping through
+shell. Use bash only when no dedicated tool covers the task.
+</tool_usage>`
 }
 
 // showStartupBanner displays startup information in the chat viewport:

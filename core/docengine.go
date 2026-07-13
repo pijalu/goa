@@ -55,10 +55,10 @@ func (d *DocEngine) ShortDoc(name string) (string, error) {
 		return cmd.ShortHelp(), nil
 
 	case "tool":
-		return toolShortDoc(actualName)
+		return d.toolShortDoc(actualName)
 
 	case "skill":
-		return skillShortDoc(actualName)
+		return d.skillShortDoc(actualName)
 
 	case "docs":
 		content, err := docs.Get(actualName)
@@ -86,10 +86,10 @@ func (d *DocEngine) LongDoc(name string) (string, error) {
 		return cmd.LongHelp(), nil
 
 	case "tool":
-		return toolLongDoc(actualName)
+		return d.toolLongDoc(actualName)
 
 	case "skill":
-		return skillLongDoc(actualName)
+		return d.skillLongDoc(actualName)
 
 	case "docs":
 		content, err := docs.Get(actualName)
@@ -103,84 +103,108 @@ func (d *DocEngine) LongDoc(name string) (string, error) {
 	}
 }
 
-// toolShortDoc returns a short description for a tool.
-func toolShortDoc(name string) (string, error) {
-	switch name {
-	case "read":
-		return "Read file contents with line range support and binary detection", nil
-	case "write":
-		return "Write or overwrite a complete file", nil
-	case "edit":
-		return "Edit a file using pattern or line-based operations", nil
-	case "search":
-		return "Search file contents with regex, glob filters, and context lines", nil
-	case "bash":
-		return "Execute shell commands with security controls", nil
-	case "ssh_bash":
-		return "Execute commands on remote hosts via SSH", nil
-	case "bg_exec":
-		return "Manage background processes with pipe I/O", nil
-	case "memento":
-		return "Read/write persistent memory files", nil
-	case "goa_command":
-		return "Execute Goa commands from the LLM", nil
-	case "run_skill":
-		return "Execute a skill with a specific task", nil
-	default:
-		return fmt.Sprintf("Tool '%s' — see /tools for details", name), nil
+// toolShortDoc returns a short description for a tool, preferring the
+// tool's own embedded short.md via the registry, falling back to
+// docs/TOOLS.md section extraction, then to a generic placeholder.
+func (d *DocEngine) toolShortDoc(name string) (string, error) {
+	// 1. Prefer the tool's own embedded short.md via the registry.
+	if d.toolRegistry != nil {
+		if tool, ok := d.toolRegistry.Get(name); ok {
+			if sd, ok := tool.(interface{ ShortDoc() string }); ok {
+				if doc := sd.ShortDoc(); doc != "" {
+					return doc, nil
+				}
+			}
+			// Fallback to Schema().Description if not documentable.
+			if desc := tool.Schema().Description; desc != "" {
+				return desc, nil
+			}
+		}
 	}
+
+	// 2. Try embedded docs/TOOLS.md section extraction.
+	if content, err := docs.Get("TOOLS"); err == nil {
+		if section := extractSection(content, name); section != "" {
+			return summarize(firstLine(section)), nil
+		}
+	}
+
+	return fmt.Sprintf("Tool '%s' — see /tools for details", name), nil
 }
 
-// toolLongDoc returns detailed documentation for a tool.
-func toolLongDoc(name string) (string, error) {
-	// Try embedded docs/TOOLS.md first for deep content
+// toolLongDoc returns detailed documentation for a tool, preferring
+// the tool's own embedded long.md, then docs/TOOLS.md section extraction.
+func (d *DocEngine) toolLongDoc(name string) (string, error) {
+	// 1. Prefer the tool's own embedded long.md via the registry.
+	if d.toolRegistry != nil {
+		if tool, ok := d.toolRegistry.Get(name); ok {
+			if ld, ok := tool.(interface{ LongDoc() string }); ok {
+				if doc := ld.LongDoc(); doc != "" {
+					return fmt.Sprintf("# Tool: %s\n\n%s\n\n(see /docs tools? for full tool reference)", name, doc), nil
+				}
+			}
+			// Fallback to embedded short.md.
+			if sd, ok := tool.(interface{ ShortDoc() string }); ok {
+				if doc := sd.ShortDoc(); doc != "" {
+					return doc + "\n\nSee /docs TOOLS for the full tool system reference.", nil
+				}
+			}
+		}
+	}
+
+	// 2. Try embedded docs/TOOLS.md section extraction.
 	content, err := docs.Get("TOOLS")
 	if err == nil {
-		// Extract the section for this tool
-		section := extractSection(content, name)
-		if section != "" {
+		if section := extractSection(content, name); section != "" {
 			return fmt.Sprintf("# Tool: %s\n\n%s\n\n(see /docs tools? for full tool reference)", name, section), nil
 		}
 	}
 
-	// Fallback to built-in descriptions
-	short, _ := toolShortDoc(name)
-	return short + "\n\nSee /docs TOOLS for the full tool system reference.", nil
+	// 3. Generic fallback.
+	return fmt.Sprintf("Tool '%s' — see /tools for details", name), nil
 }
 
-// skillShortDoc returns a short description for a skill.
-func skillShortDoc(name string) (string, error) {
-	switch name {
-	case "refactor":
-		return "Refactor code for clarity, performance, and correctness", nil
-	case "test-gen":
-		return "Generate comprehensive unit tests for Go code", nil
-	case "document":
-		return "Add documentation comments and improve code readability", nil
-	case "review":
-		return "Analyze code for issues, bugs, and improvement opportunities", nil
-	case "explain":
-		return "Explain code in detail with architectural context", nil
-	case "commit-msg":
-		return "Generate conventional commit messages from staged changes", nil
-	case "debug":
-		return "Analyze and debug code issues step by step", nil
-	default:
-		return fmt.Sprintf("Skill '%s' — see /skills for details", name), nil
+// skillShortDoc returns a short description for a skill, preferring the
+// skill's embedded SKILL.md frontmatter description via the registry.
+func (d *DocEngine) skillShortDoc(name string) (string, error) {
+	if d.skillRegistry != nil {
+		if skill, ok := d.skillRegistry.Get(name); ok {
+			if desc := skill.Meta.Description; desc != "" {
+				return desc, nil
+			}
+		}
 	}
+
+	// Fallback: try embedded docs/SKILLS.md section extraction.
+	if content, err := docs.Get("SKILLS"); err == nil {
+		if section := extractSection(content, name); section != "" {
+			return summarize(firstLine(section)), nil
+		}
+	}
+
+	return fmt.Sprintf("Skill '%s' — see /skills for details", name), nil
 }
 
-// skillLongDoc returns detailed documentation for a skill.
-func skillLongDoc(name string) (string, error) {
+// skillLongDoc returns detailed documentation for a skill, preferring
+// the skill's embedded SKILL.md body via the registry, then docs/SKILLS.md.
+func (d *DocEngine) skillLongDoc(name string) (string, error) {
+	if d.skillRegistry != nil {
+		if skill, ok := d.skillRegistry.Get(name); ok {
+			if body := skill.Body; body != "" {
+				return fmt.Sprintf("# Skill: %s\n\n%s\n\n(see /docs skills? for full skill reference)", name, body), nil
+			}
+		}
+	}
+
+	// Fallback: try embedded docs/SKILLS.md section extraction.
 	content, err := docs.Get("SKILLS")
 	if err == nil {
-		section := extractSection(content, name)
-		if section != "" {
+		if section := extractSection(content, name); section != "" {
 			return fmt.Sprintf("# Skill: %s\n\n%s\n\n(see /docs skills? for full skill reference)", name, section), nil
 		}
 	}
-	short, _ := skillShortDoc(name)
-	return short + "\n\nSee /docs SKILLS for the full skills system reference.", nil
+
+	return fmt.Sprintf("Skill '%s' — see /skills for details", name), nil
 }
 
 // parseNamespace splits a name like "cmd:help" into namespace and actual name.
