@@ -23,9 +23,9 @@ func (a *App) updateOrchInputPrompt() {
 	if inp == nil {
 		return
 	}
-	// A pending main-input request owns the editor title (and the
-	// PendingInputBox); do not clobber it with the steer prompt on every
-	// orchestration event. The title is restored by clearMainInputRequest.
+	// A pending main-input request owns the editor title; do not clobber it
+	// with the steer prompt on every orchestration event. The title is
+	// restored by clearMainInputRequest.
 	if a.pendingInput != nil {
 		return
 	}

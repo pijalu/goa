@@ -245,29 +245,26 @@ func handleShutdown() {
 
 // requestMainInput asks the user to type a value on the main input line.
 // The next non-empty submit will invoke onSubmit with the typed text.
-// The prompt is shown both as a chat system message (persistent context) and
-// as a title on the input separator (live visual cue).
+// The prompt is shown as the input editor's bordered title (the single cue).
 func (a *App) requestMainInput(prompt string, onSubmit func(string)) {
-	a.requestMainInputWithCancel(prompt, onSubmit, nil, false)
+	a.requestMainInputWithCancel(prompt, onSubmit, nil)
 }
 
 // requestMainInputWithCancel registers a main-input request with a cancel
 // handler. onCancel runs if the user cancels (Ctrl+C), letting the caller
 // restore prior UI state. This is the single mechanism — review overlay
 // restore is expressed as an onCancel, not a separate field.
-func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), onCancel func(), silent bool) {
+//
+// The prompt is shown in exactly ONE place: the input editor's bordered title
+// ("┨ <prompt> ┠"), right where the user types. It is NOT also emitted as a
+// chat system message or a separate pending-input line — those duplicated the
+// instruction up to three times (a boxed note, a plain line, and the title).
+// The editor is always rendered (even on orchestrator tabs), so the title
+// alone is a sufficient, persistent cue. `silent` is retained for callers but
+// no longer adds a chat message.
+func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), onCancel func()) {
 	a.pendingInput = &inputRequest{prompt: prompt, onSubmit: onSubmit, onCancel: onCancel}
-	if !silent && a.subs.chat != nil {
-		a.subs.chat.AddSystemMessage(prompt)
-	}
-	// The prompt is also shown in the persistent PendingInputBox so it survives
-	// tab switches (the chat system message is hidden when ChatViewport is
-	// suppressed on Stats/agent tabs). Shown regardless of `silent` because
-	// silent callers (e.g. clarify) still need the question visible off the
-	// Conversation tab.
-	if box := a.subs.pendingInputBox; box != nil {
-		box.SetPrompt(prompt)
-	}
+	// Single source of truth for the prompt: the input editor's bordered title.
 	if inp := a.subs.getInput(); inp != nil {
 		inp.SetTitle(prompt)
 	}
@@ -306,7 +303,7 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 			resCh <- result{text, true}
 		}, func() {
 			resCh <- result{"", false}
-		}, true)
+		})
 		if a.subs.tuiEngine != nil {
 			a.subs.tuiEngine.RequestRender()
 		}
@@ -322,9 +319,6 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 func (a *App) clearMainInputRequest() {
 	a.pendingInput = nil
 	if a.subs != nil {
-		if box := a.subs.pendingInputBox; box != nil {
-			box.Clear()
-		}
 		// Restore the input title for the active context (steer prompt during
 		// orchestration, empty otherwise). pendingInput is already nil so
 		// updateOrchInputPrompt will not early-return.

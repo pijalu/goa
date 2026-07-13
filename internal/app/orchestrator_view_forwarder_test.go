@@ -34,14 +34,12 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	tb.Cleanup(func() { engine.Stop() })
 
 	chat := tui.NewChatViewport()
-	pendingInputBox := tui.NewPendingInputBox()
 	inp := tui.NewEditor()
 	header := tui.NewHeader("goa", "test")
 	footer := tui.NewFooter()
 
 	engine.AddChild(header)
 	engine.AddChild(chat)
-	engine.AddChild(pendingInputBox)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	inp.SetTUI(engine)
@@ -52,7 +50,6 @@ func newOrchViewScenario(tb testing.TB, w, h int) *orchViewScenario {
 	subs.chat = chat
 	subs.inputEditor = inp
 	subs.footer = footer
-	subs.pendingInputBox = pendingInputBox
 	subs.agentStreams = newAgentStreamRegistry()
 
 	return &orchViewScenario{tb: tb, engine: engine, chat: chat, app: New(subs)}

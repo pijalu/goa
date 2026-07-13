@@ -800,6 +800,14 @@ func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, pr
 	buf.WriteString("\x1b[?2026h")
 	buf.WriteString(fmt.Sprintf("\x1b[%d;1H", height))
 	if !c.firstScrollDone {
+		// First viewport advance of the session: scrollback is empty and the
+		// screen may be only partially filled, so bare newlines would push
+		// blank rows into scrollback and lose gap content. emitFirstScroll
+		// re-writes the canvas TOP-DOWN from row 1: rows already on screen
+		// (the header/mascot) are re-written in place (no visible change) and
+		// scroll off the TOP naturally as new content fills the screen — they
+		// are never painted at the BOTTOM, which is what caused the
+		// logo/mascot to flash across the screen during the first scroll.
 		emitFirstScroll(&buf, canvas, width)
 	} else if scroll > height && height > 0 {
 		// prevLen = old canvas length. For a pure tail-append (the common large
@@ -817,17 +825,30 @@ func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, pr
 	c.firstScrollDone = true
 }
 
-// emitFirstScroll writes the whole canvas from the top with \r\n so the
-// terminal naturally scrolls and populates scrollback. Used for the first
-// viewport advance of a session when there is no prior full viewport to push.
+// emitFirstScroll populates scrollback on the first viewport advance of a
+// session by re-writing the whole canvas starting at the TOP row (row 1) and
+// advancing downward with newlines. Because the write begins at the top,
+// rows that are already on screen — notably the header/mascot/logo — are
+// rewritten in place (identical content, no visible change) and then scroll
+// off the top naturally once the screen fills. This is the no-flash
+// replacement for the old bottom-anchored first-scroll write, which painted
+// the off-screen header at the bottom row and made the mascot roll visibly
+// across the screen.
+//
+// Each line is cleared before writing so stale wider content does not leak,
+// and \n (not \r\n) is used so that once the cursor reaches the bottom row the
+// terminal scrolls the top row into scrollback automatically. The final state
+// has canvas[0..newVtop-1] in scrollback and canvas[newVtop..] on screen.
 func emitFirstScroll(buf *strings.Builder, canvas []string, width int) {
+	buf.WriteString("\x1b[1;1H")
 	for i := 0; i < len(canvas); i++ {
+		if i > 0 {
+			buf.WriteString("\n")
+		}
+		buf.WriteString("\r\x1b[2K")
 		line := canvas[i]
 		if vw := visibleWidth(line); vw > width {
 			line = truncateToWidth(line, width, "")
-		}
-		if i > 0 {
-			buf.WriteString("\r\n")
 		}
 		buf.WriteString(line)
 	}

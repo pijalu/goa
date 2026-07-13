@@ -46,7 +46,7 @@ func (c *ExportCommand) Run(ctx core.Context, args []string) error {
 		return runExport(ctx, outputPath, issue)
 	}
 
-	ctx.RequestMainInput("Describe the issue (optional), then press Enter:", func(value string) {
+	ctx.RequestMainInput("Export: describe the issue (optional)", func(value string) {
 		if err := runExport(ctx, outputPath, value); err != nil {
 			ctx.Flash(fmt.Sprintf("Export failed: %v", err))
 		}

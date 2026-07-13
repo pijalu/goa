@@ -109,19 +109,44 @@ func (r *ToolRegistry) AllDocumented() []DocumentedTool {
 	return result
 }
 
+// ConfigurableTool describes a tool whose registration can be toggled at
+// runtime through configuration. It is the single source of truth for the
+// /config → Tools screen and the docs/on-off commands, so the list of
+// toggleable tools lives in exactly one place.
+type ConfigurableTool struct {
+	Name        string
+	Description string
+	Default     bool // default enabled state (true = opt-out, false = opt-in)
+}
+
+// ConfigurableTools returns every runtime-toggleable tool with a short
+// description and its default enabled state. Adding a tool here is the only
+// change needed for it to show up in the Tools config screen and docs.
+func ConfigurableTools() []ConfigurableTool {
+	return []ConfigurableTool{
+		{Name: "verify", Description: "Run the test suite, report pass/fail", Default: true},
+		{Name: "ask_user_question", Description: "Ask the user a question", Default: true},
+		{Name: "bg_exec", Description: "Background process execution", Default: false},
+		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
+		{Name: "goal", Description: "Goal tracking", Default: false},
+		{Name: "memento", Description: "Persistent memory files", Default: false},
+		{Name: "pty_exec", Description: "Pseudo-terminal sessions", Default: false},
+		{Name: "request_review", Description: "Request companion review", Default: false},
+		{Name: "smartsearch", Description: "BM25 code search (needs restart)", Default: false},
+		{Name: "ssh_bash", Description: "Remote SSH command execution", Default: false},
+		{Name: "webfetch", Description: "URL content fetching", Default: false},
+	}
+}
+
 // ConfigurableToolNames returns the names of tools whose registration can
 // be toggled at runtime through configuration.
 func ConfigurableToolNames() []string {
-	return []string{
-		"bg_exec",
-		"delegate_to",
-		"memento",
-		"pty_exec",
-		"request_review",
-		"smartsearch",
-		"ssh_bash",
-		"webfetch",
+	list := ConfigurableTools()
+	names := make([]string, len(list))
+	for i, t := range list {
+		names[i] = t.Name
 	}
+	return names
 }
 
 // sortedKeys returns the keys of a string-keyed map sorted alphabetically.

@@ -115,3 +115,18 @@ func TestDefaultSkillDirs(t *testing.T) {
 		t.Errorf("Expected project dir '/tmp/test-project/.agents/skills' in dirs, got %v", dirs)
 	}
 }
+
+// TestDefaultConfig_VerifyToolEnabled verifies the verify tool is opt-OUT:
+// enabled by default via the embedded config, so the model can run the test
+// suite unless the user explicitly disables it.
+func TestDefaultConfig_VerifyToolEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Tools.Enabled.Verify {
+		t.Errorf("Tools.Enabled.Verify = false, want true (verify is opt-out)")
+	}
+}

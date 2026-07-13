@@ -77,7 +77,7 @@ func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 			if onSubmit != nil {
 				onSubmit("", false)
 			}
-		}, true)
+		})
 	}
 	ctx.RequestMainInput = func(prompt string, onSubmit func(string)) {
 		app.requestMainInput(prompt, onSubmit)

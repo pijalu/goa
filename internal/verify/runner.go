@@ -26,6 +26,14 @@ type Runner interface {
 	Name() string
 }
 
+// ArgSetter is implemented by runners whose command line can be customized
+// with extra arguments (flags/package patterns) beyond the framework's
+// built-in defaults. The verify tool uses it to forward the caller-provided
+// args to a discovered runner.
+type ArgSetter interface {
+	SetArgs(args []string)
+}
+
 // Report is the structured output of a test run.
 type Report struct {
 	// Framework is the detected test framework (go, pytest, jest, etc.).
@@ -70,16 +78,22 @@ func (r Report) Summary() string {
 	return fmt.Sprintf("%s tests failed (%d failure(s))", r.Framework, len(r.Failures))
 }
 
-// GoTestRunner runs `go test ./...` in a directory.
+// GoTestRunner runs `go test` in a directory.
 type GoTestRunner struct {
 	// Dir is the working directory for the test command.
 	Dir string
-	// Args are extra arguments passed to go test.
+	// Args are extra arguments appended after `go test`. When non-empty they
+	// REPLACE the default target (`./...`), so a caller that passes
+	// `[-race ./internal/app/...]` gets exactly `go test -race ./internal/app/...`
+	// rather than `go test ./... -race ./internal/app/...`.
 	Args []string
 }
 
 // Name returns "go".
 func (g *GoTestRunner) Name() string { return "go" }
+
+// SetArgs sets the extra arguments.
+func (g *GoTestRunner) SetArgs(args []string) { g.Args = args }
 
 // Run executes `go test` and parses the output.
 func (g *GoTestRunner) Run(ctx context.Context) (Report, error) {
@@ -95,11 +109,11 @@ func (g *GoTestRunner) Run(ctx context.Context) (Report, error) {
 		return Report{}, fmt.Errorf("verify: no go.mod in %q", dir)
 	}
 
-	args := []string{"test", "./..."}
+	args := []string{"test"}
 	if len(g.Args) > 0 {
 		args = append(args, g.Args...)
 	} else {
-		args = append(args, "-timeout", "60s")
+		args = append(args, "./...", "-timeout", "60s")
 	}
 
 	cmd := exec.CommandContext(ctx, "go", args...)
@@ -233,6 +247,96 @@ func parseGoFileLine(line string) (string, int) {
 	return line[start : idx+3], lineNo
 }
 
+// NewFrameworkRunner returns a fresh runner for a known framework name
+// ("go", "npm", "pytest"). It does NOT auto-discover; the caller has already
+// determined the framework (e.g. from an explicit command). Returns nil for
+// unknown frameworks.
+func NewFrameworkRunner(name, dir string) Runner {
+	switch name {
+	case "go":
+		return &GoTestRunner{Dir: dir}
+	case "npm":
+		return &NPMTestRunner{Dir: dir}
+	case "pytest":
+		return &PytestRunner{Dir: dir}
+	}
+	return nil
+}
+
+// FrameworkBaseCommand returns the canonical base test command for a known
+// framework ("go test", "npm test", "pytest"), or "" for unknown frameworks.
+// It is the single source of truth for both runner construction and display.
+func FrameworkBaseCommand(name string) string {
+	switch name {
+	case "go":
+		return "go test"
+	case "npm":
+		return "npm test"
+	case "pytest":
+		return "pytest"
+	}
+	return ""
+}
+
+// ResolveFramework determines the test framework and the extra arguments to
+// pass to its runner from the user inputs (an optional explicit command plus
+// optional extra args) and the project directory.
+//
+//   - With an explicit command whose first token is a known framework, the
+//     framework is that token and the extra args are the command's remaining
+//     tokens (after the framework's base subcommand, e.g. "test") followed by
+//     the user-provided extra args. So "go test -race ./pkg" + ["-count=1"]
+//     yields framework "go", extra ["-race", "./pkg", "-count=1"].
+//   - With no command, the framework is discovered from dir and the extra args
+//     are exactly the user-provided extra args (these used to be silently
+//     dropped — the root cause of verify running the whole suite).
+//   - With an explicit command whose first token is NOT a known framework,
+//     framework is "" and extra is nil, signalling the caller should run the
+//     raw command verbatim.
+func ResolveFramework(dir, command string, extra []string) (framework string, resolvedExtra []string, err error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		r, derr := DiscoverRunner(dir)
+		if derr != nil {
+			return "", nil, derr
+		}
+		return r.Name(), extra, nil
+	}
+	fields := strings.Fields(command)
+	name := fields[0]
+	if FrameworkBaseCommand(name) == "" {
+		return "", nil, nil // arbitrary command
+	}
+	baseTokens := strings.Fields(FrameworkBaseCommand(name))
+	rest := trimTokenPrefix(fields[1:], baseTokens[1:])
+	resolvedExtra = append(append([]string{}, rest...), extra...)
+	return name, resolvedExtra, nil
+}
+
+// trimTokenPrefix removes leading tokens of rest that match prefix
+// token-for-token (used to strip a framework's "test" subcommand).
+func trimTokenPrefix(rest, prefix []string) []string {
+	i := 0
+	for i < len(prefix) && i < len(rest) && rest[i] == prefix[i] {
+		i++
+	}
+	return rest[i:]
+}
+
+// DisplayCommandLine returns the human-readable command line for a resolved
+// framework and extra args (e.g. "go test -race ./pkg"), mirroring what the
+// runner will execute. For an unknown framework it returns "".
+func DisplayCommandLine(framework string, extra []string) string {
+	base := FrameworkBaseCommand(framework)
+	if base == "" {
+		return ""
+	}
+	if len(extra) == 0 {
+		return base
+	}
+	return base + " " + strings.Join(extra, " ")
+}
+
 // DiscoverRunner selects a Runner implementation for the project in dir.
 func DiscoverRunner(dir string) (Runner, error) {
 	if dir == "" {
@@ -264,8 +368,15 @@ type NPMTestRunner struct {
 
 func (n *NPMTestRunner) Name() string { return "npm" }
 
+// SetArgs sets the extra arguments passed after `npm test --`.
+func (n *NPMTestRunner) SetArgs(args []string) { n.Args = args }
+
 func (n *NPMTestRunner) Run(ctx context.Context) (Report, error) {
-	args := append([]string{"test"}, n.Args...)
+	args := []string{"test"}
+	if len(n.Args) > 0 {
+		args = append(args, "--")
+		args = append(args, n.Args...)
+	}
 	cmd := exec.CommandContext(ctx, "npm", args...)
 	cmd.Dir = n.Dir
 	start := time.Now()
@@ -290,8 +401,14 @@ type PytestRunner struct {
 
 func (p *PytestRunner) Name() string { return "pytest" }
 
+// SetArgs sets the extra arguments passed to pytest.
+func (p *PytestRunner) SetArgs(args []string) { p.Args = args }
+
 func (p *PytestRunner) Run(ctx context.Context) (Report, error) {
-	args := append([]string{"-v"}, p.Args...)
+	args := p.Args
+	if len(args) == 0 {
+		args = []string{"-v"}
+	}
 	cmd := exec.CommandContext(ctx, "pytest", args...)
 	cmd.Dir = p.Dir
 	start := time.Now()

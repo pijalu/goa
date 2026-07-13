@@ -485,7 +485,7 @@ func (a *App) makeReviewCommentRequestHandler(handlePtr **tui.OverlayHandle) fun
 				a.reviewSetTitle(reviewHelpTitle)
 				a.reviewCaptureInput(handle)
 			}
-		}, restore, true)
+		}, restore)
 	}
 }
 
@@ -510,7 +510,7 @@ func (a *App) makeReviewConfirmHandler(handlePtr **tui.OverlayHandle) func(quest
 				a.reviewSetTitle(reviewHelpTitle)
 				a.reviewCaptureInput(handle)
 			}
-		}, restore, true)
+		}, restore)
 	}
 }
 

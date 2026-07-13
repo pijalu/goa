@@ -368,6 +368,10 @@ type ToolEnabledConfig struct {
 	RequestReview bool `yaml:"request_review"`
 	SSHBash       bool `yaml:"ssh_bash"`
 	WebFetch      bool `yaml:"webfetch"`
+	// Verify controls the `verify` tool (run the test suite). Opt-OUT: defaults
+	// to true (set in the embedded default config) so the model can run tests
+	// unless the user explicitly disables it.
+	Verify bool `yaml:"verify"`
 	// ClarifyDisabled, when true, removes the ask_user_question tool from the
 	// model's toolset. It is an inverted flag: the default (false/unset) leaves
 	// the tool ENABLED by default, matching the requested behavior. All other
@@ -415,6 +419,8 @@ func (t *ToolEnabledConfig) SetEnabled(name string, value bool) {
 		t.SSHBash = value
 	case "webfetch":
 		t.WebFetch = value
+	case "verify":
+		t.Verify = value
 	case "clarify_disabled":
 		t.ClarifyDisabled = value
 	default:
@@ -445,6 +451,7 @@ func (t *ToolEnabledConfig) ApplyTo(target *ToolEnabledConfig) {
 		{"request_review", t.RequestReview, &target.RequestReview},
 		{"ssh_bash", t.SSHBash, &target.SSHBash},
 		{"webfetch", t.WebFetch, &target.WebFetch},
+		{"verify", t.Verify, &target.Verify},
 		{"clarify_disabled", t.ClarifyDisabled, &target.ClarifyDisabled},
 	}
 	for _, f := range fields {

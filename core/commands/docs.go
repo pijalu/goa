@@ -342,6 +342,8 @@ func getToolEnabled(cfg *config.Config, name string) bool {
 		return cfg.Tools.Enabled.BGExec
 	case "delegate_to":
 		return cfg.Tools.Enabled.DelegateTo
+	case "goal":
+		return cfg.Tools.Enabled.Goal
 	case "memento":
 		return cfg.Tools.Enabled.Memento
 	case "pty_exec":
@@ -352,6 +354,10 @@ func getToolEnabled(cfg *config.Config, name string) bool {
 		return cfg.Tools.Enabled.SSHBash
 	case "webfetch":
 		return cfg.Tools.Enabled.WebFetch
+	case "verify":
+		return cfg.Tools.Enabled.Verify
+	case "ask_user_question":
+		return !cfg.Tools.Enabled.ClarifyDisabled
 	case "smartsearch":
 		return cfg.Tools.SmartSearch.Enabled
 	}
@@ -360,19 +366,28 @@ func getToolEnabled(cfg *config.Config, name string) bool {
 
 // setToolEnabled updates the enabled flag for a configurable tool.
 func setToolEnabled(cfg *config.Config, name string, enabled bool) {
-	if name == "smartsearch" {
+	switch name {
+	case "smartsearch":
 		cfg.Tools.SmartSearch.Enabled = enabled
+		return
+	case "ask_user_question":
+		cfg.Tools.Enabled.SetEnabled("clarify_disabled", !enabled)
 		return
 	}
 	cfg.Tools.Enabled.SetEnabled(name, enabled)
 }
 
-// toolSavePath returns the config saver path for a tool's enabled flag.
-func toolSavePath(name string) []string {
-	if name == "smartsearch" {
-		return []string{"tools", "smartsearch", "enabled"}
+// toolSaveKeyValue returns the config-saver path and YAML value for a tool's
+// enabled flag. Most tools map 1:1, but ask_user_question is stored on the
+// inverted clarify_disabled flag (enabled=true → clarify_disabled=false).
+func toolSaveKeyValue(name string, enabled bool) (path []string, value bool) {
+	switch name {
+	case "smartsearch":
+		return []string{"tools", "smartsearch", "enabled"}, enabled
+	case "ask_user_question":
+		return []string{"tools", "enabled", "clarify_disabled"}, !enabled
 	}
-	return []string{"tools", "enabled", name}
+	return []string{"tools", "enabled", name}, enabled
 }
 
 // toggleTool enables or disables a configurable tool, persists the change,
@@ -393,7 +408,8 @@ func toggleTool(ctx core.Context, name, onOff string) error {
 	setToolEnabled(ctx.Config, name, enabled)
 
 	if ctx.ConfigSaver != nil {
-		if err := ctx.ConfigSaver.SaveHomeField(toolSavePath(name), enabled); err != nil {
+		path, value := toolSaveKeyValue(name, enabled)
+		if err := ctx.ConfigSaver.SaveHomeField(path, value); err != nil {
 			ctx.Writef("Failed to save config: %v\n", err)
 			return nil
 		}

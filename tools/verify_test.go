@@ -127,9 +127,9 @@ func (s *staticRunner) Run(ctx context.Context) (verify.Report, error) {
 	return s.report, s.err
 }
 
-// TestVerifyRunnerFactory_RoutesByFramework verifies the factory dispatches to
-// the concrete framework runner type for each known name (F4 cleanup).
-func TestVerifyRunnerFactory_RoutesByFramework(t *testing.T) {
+// TestNewFrameworkRunner_RoutesByFramework verifies NewFrameworkRunner
+// returns the concrete framework runner type for each known name.
+func TestNewFrameworkRunner_RoutesByFramework(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {
 		name string
@@ -141,11 +141,13 @@ func TestVerifyRunnerFactory_RoutesByFramework(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			builder := verifyRunnerFactory(tc.name)
-			r := builder(dir, nil)
+			r := verify.NewFrameworkRunner(tc.name, dir)
 			if reflect.TypeOf(r) != reflect.TypeOf(tc.want) {
 				t.Errorf("%q: runner type = %T, want %T", tc.name, r, tc.want)
 			}
 		})
+	}
+	if r := verify.NewFrameworkRunner("unknown", dir); r != nil {
+		t.Errorf("unknown framework should return nil, got %T", r)
 	}
 }

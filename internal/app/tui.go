@@ -26,11 +26,11 @@ import (
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
-	engine, chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter, bgPanel := a.createTUIComponents()
+	engine, chat, agentContent, agentTabBar, statusBar, goalBubble, inp, statusFooter, bgPanel := a.createTUIComponents()
 	subs.goalBubble = goalBubble
 	a.configureKeyLogging(engine)
 	a.attachInputHandlers(inp, engine)
-	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, bgPanel, inp, statusFooter)
+	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, statusBar, goalBubble, bgPanel, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
 	a.loadInputHistory(inp)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
@@ -40,7 +40,7 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 		os.Exit(1)
 	}
 
-	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, pendingInputBox, statusBar, bgPanel, inp)
+	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, statusBar, bgPanel, inp)
 	return engine, chat, inp
 }
 
@@ -49,14 +49,13 @@ func headerFrom(projectDir string) *tui.Header {
 	return h
 }
 
-func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.PendingInputBox, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
+func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
 	projectDir := a.subs.projectDir
 	ft := tui.NewProcessTerminal()
 	engine := tui.NewTUI(ft)
 	chat := tui.NewChatViewport()
 	agentContent := orchpanel.NewAgentContent()
 	agentTabBar := orchpanel.NewAgentTabBar()
-	pendingInputBox := tui.NewPendingInputBox()
 	statusBar := tui.NewStatusMsg()
 	inp := tui.NewEditor()
 	goalBubble := goaltui.NewBubble()
@@ -64,7 +63,7 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 	statusFooter.SetData(tui.FooterData{Workdir: projectDir})
 	statusFooter.RefreshGit()
 	bgPanel := bgpanel.NewPanel(nil)
-	return engine, chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter, bgPanel
+	return engine, chat, agentContent, agentTabBar, statusBar, goalBubble, inp, statusFooter, bgPanel
 }
 
 func (a *App) configureKeyLogging(engine *tui.TUI) {
@@ -142,12 +141,11 @@ func (a *App) stopBackgroundProcesses() {
 	}
 }
 
-func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
+func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
 	_ = agentContent
 	_ = agentTabBar
 	engine.AddChild(header)
 	engine.AddChild(chat)
-	engine.AddChild(pendingInputBox)
 	engine.AddChild(statusBar)
 	engine.AddChild(goalBubble)
 	engine.AddChild(bgPanel)
@@ -166,7 +164,7 @@ func (a *App) configureInputEditor(inp *tui.Editor, engine *tui.TUI) {
 	inp.SetTUI(engine)
 }
 
-func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, footer *tui.Footer, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, bgPanel *bgpanel.Panel, inp *tui.Editor) {
+func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, footer *tui.Footer, statusBar *tui.StatusMsg, bgPanel *bgpanel.Panel, inp *tui.Editor) {
 	subs := a.subs
 	statusBar.SetTUI(engine)
 	statusBar.SetOnFrameChange(func() {
@@ -187,12 +185,12 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 	subs.footer = footer
 	subs.tuiEngine = engine
 	subs.statusMsg = statusBar
-	subs.pendingInputBox = pendingInputBox
 	subs.agentContent = agentContent
 	subs.agentTabBar = agentTabBar
 	subs.bgPanel = bgPanel
 
 	footer.SetData(a.initialFooterData())
+	tui.SetToolProjectDir(subs.projectDir)
 }
 
 func taskSnapshotsFromManager(mgr *background.Manager) []bgpanel.Task {

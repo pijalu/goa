@@ -180,6 +180,7 @@ tools:
     request_review: false
     ssh_bash: false
     webfetch: true
+    verify: true
   search:
     threads: 4
     max_results: 30

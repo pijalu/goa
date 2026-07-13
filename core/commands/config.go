@@ -728,25 +728,13 @@ func (m *configMenu) settingTools() {
 }
 
 func buildToolItems(cfg *config.Config) []tui.SelectorItem {
-	toolList := []struct {
-		name string
-		desc string
-	}{
-		{"bg_exec", "Background process execution"},
-		{"delegate_to", "Delegate tasks to sub-agents"},
-		{"memento", "Persistent memory files"},
-		{"pty_exec", "Pseudo-terminal sessions"},
-		{"request_review", "Request companion review"},
-		{"smartsearch", "BM25 code search (needs restart to enable)"},
-		{"ssh_bash", "Remote SSH command execution"},
-		{"webfetch", "URL content fetching"},
-	}
+	toolList := tools.ConfigurableTools()
 	items := make([]tui.SelectorItem, len(toolList))
 	for i, t := range toolList {
 		items[i] = tui.SelectorItem{
-			Value:       t.name,
-			Label:       t.name,
-			Description: boolLabel(getToolEnabled(cfg, t.name)),
+			Value:       t.Name,
+			Label:       t.Name,
+			Description: boolLabel(getToolEnabled(cfg, t.Name)),
 		}
 	}
 	return items
@@ -793,11 +781,8 @@ func (m *configMenu) saveToolToggle(toolName string, enabled bool) {
 	if m.ctx.ConfigSaver == nil {
 		return
 	}
-	path := []string{"tools", "enabled", toolName}
-	if toolName == "smartsearch" {
-		path = []string{"tools", "smartsearch", "enabled"}
-	}
-	if err := m.ctx.ConfigSaver.SaveHomeField(path, enabled); err != nil {
+	path, value := toolSaveKeyValue(toolName, enabled)
+	if err := m.ctx.ConfigSaver.SaveHomeField(path, value); err != nil {
 		m.flash("Failed to save config: " + err.Error())
 	}
 }

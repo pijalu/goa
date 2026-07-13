@@ -114,3 +114,23 @@ func TestToolRegistryUnregister(t *testing.T) {
 		t.Fatalf("All = %d, want 1 after unregistering unknown", len(reg.All()))
 	}
 }
+
+// TestConfigurableTools_IncludesVerifyAndClarify ensures the runtime-toggleable
+// list (which drives the /config → Tools screen and docs) covers verify and
+// ask_user_question, the two opt-out tools, in addition to the opt-in extras.
+func TestConfigurableTools_IncludesVerifyAndClarify(t *testing.T) {
+	names := ConfigurableToolNames()
+	want := map[string]bool{"verify": true, "ask_user_question": true, "bg_exec": true, "webfetch": true}
+	for n := range want {
+		found := false
+		for _, got := range names {
+			if got == n {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ConfigurableToolNames missing %q: %v", n, names)
+		}
+	}
+}

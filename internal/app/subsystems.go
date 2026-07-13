@@ -96,7 +96,6 @@ type subsystems struct {
 	// Logger for structured stats output
 	logger      *agentic.Logger
 	statusMsg   *tui.StatusMsg
-	pendingInputBox *tui.PendingInputBox
 
 	// Perf-load mode settings.
 	perfLoad         bool

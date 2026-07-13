@@ -140,17 +140,17 @@ func TestOrchestratorTabs_SpinnerClearsOnRunFinish(t *testing.T) {
 	}
 }
 
-// TestOrchestratorTabs_PendingInputBoxStaysVisible verifies Bug 3: the
-// pending-input prompt rendered by PendingInputBox stays visible in the
-// simplified UI. It also verifies updateOrchInputPrompt no longer clobbers the
-// prompt title mid-prompt, and that cancelling removes the box.
-func TestOrchestratorTabs_PendingInputBoxStaysVisible(t *testing.T) {
+// TestOrchestratorTabs_PromptTitleStaysVisible verifies Bug 3: a pending
+// main-input prompt stays visible (as the input editor's bordered title)
+// across orchestration events, and updateOrchInputPrompt no longer clobbers
+// the prompt title mid-prompt. Cancelling restores the prior title.
+func TestOrchestratorTabs_PromptTitleStaysVisible(t *testing.T) {
 	sc := newOrchViewScenario(t, 100, 30)
 	sc.app.attachOrchView(newFakeOrchSource())
 	sc.flush()
 	sc.applyOrchEvents(lifecycleEvents())
 
-	const prompt = "Describe the issue (optional), then press Enter:"
+	const prompt = "Export: describe the issue (optional)"
 	sc.engine.ApplySync(func() {
 		sc.app.requestMainInput(prompt, func(string) {})
 	})
@@ -158,25 +158,21 @@ func TestOrchestratorTabs_PendingInputBoxStaysVisible(t *testing.T) {
 	// An orchestration event fires updateOrchInputPrompt; it must NOT overwrite
 	// the pending-input title with the steer prompt.
 	sc.engine.ApplySync(func() { sc.app.updateOrchInputPrompt() })
-	if got := sc.app.subs.getInput().Title(); !strings.Contains(got, "Describe the issue") {
+	if got := sc.app.subs.getInput().Title(); !strings.Contains(got, "describe the issue") {
 		t.Errorf("title clobbered mid-prompt = %q, want to retain prompt", got)
 	}
 
-	// The chat and pending input box are always visible in the simplified UI.
+	// The single cue is the editor title; the prompt must NOT also appear as a
+	// duplicate pending-input line (the old PendingInputBox was removed).
 	frame := sc.frame()
-	if frame.FindNode("ChatViewport") == nil {
-		t.Error("ChatViewport should be visible")
-	}
-	box := frame.FindNode("PendingInputBox")
-	if box == nil || !strings.Contains(box.Text, "Describe the issue") {
-		t.Errorf("PendingInputBox should show prompt; node=%v", box)
+	if node := frame.FindNode("PendingInputBox"); node != nil {
+		t.Errorf("PendingInputBox component should not exist; node=%v", node)
 	}
 
-	// Cancel: the box must clear.
+	// Cancel: the title is restored to the orchestration steer prompt (or "").
 	sc.engine.ApplySync(func() { sc.app.cancelPendingMainInput() })
-	cleared := sc.frame()
-	if node := cleared.FindNode("PendingInputBox"); node != nil {
-		t.Errorf("PendingInputBox should be absent after cancel; node=%v", node)
+	if got := sc.app.subs.getInput().Title(); strings.Contains(got, "describe the issue") {
+		t.Errorf("title should be cleared after cancel = %q", got)
 	}
 }
 

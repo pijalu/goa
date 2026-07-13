@@ -16,6 +16,7 @@ func init() {
 	RegisterToolRenderer("write", tools.NewWriteFileRenderer())
 	RegisterToolRenderer("edit", tools.NewEditFileRenderer())
 	RegisterToolRenderer("bash", tools.NewBashRenderer())
+	RegisterToolRenderer("verify", tools.NewVerifyRenderer())
 	RegisterToolRenderer("terminal", tools.TerminalRenderer{})
 	RegisterToolRenderer("webfetch", tools.NewWebFetchRenderer())
 	RegisterToolRenderer("search", tools.NewSearchRenderer())
@@ -32,4 +33,14 @@ func init() {
 // after switching themes at runtime.
 func SyncToolTheme() {
 	tools.Themer = TheTheme
+}
+
+// SetToolProjectDir forwards the workspace directory to tool renderers that
+// need it to display project-relative information (e.g. the verify renderer,
+// which auto-detects the test framework for its command-line display). Call
+// this once the engine and project directory are known.
+func SetToolProjectDir(dir string) {
+	if r, ok := ToolRendererRegistry["verify"].(*tools.VerifyRenderer); ok {
+		r.SetProjectDir(dir)
+	}
 }

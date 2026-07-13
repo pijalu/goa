@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -92,76 +93,62 @@ func (v *VerifyTool) resolveRunner(args verifyInput) (verify.Runner, error) {
 	if v.Runner != nil {
 		return v.Runner, nil
 	}
-	if args.Command != "" {
-		return runnerFromCommand(args.Command, args.Args, v.ProjectDir)
+	framework, extra, err := verify.ResolveFramework(v.ProjectDir, args.Command, args.Args)
+	if err != nil {
+		return nil, err
 	}
-	return verify.DiscoverRunner(v.ProjectDir)
+	// Unknown / arbitrary command: run it verbatim as a raw shell command so the
+	// model can verify with any runner (make, cargo, ...), not just the three
+	// with structured parsing.
+	if framework == "" {
+		return newRawCommandRunner(args.Command, args.Args, v.ProjectDir), nil
+	}
+	runner := verify.NewFrameworkRunner(framework, v.ProjectDir)
+	if runner == nil {
+		return newRawCommandRunner(args.Command, args.Args, v.ProjectDir), nil
+	}
+	if as, ok := runner.(verify.ArgSetter); ok && len(extra) > 0 {
+		as.SetArgs(extra)
+	}
+	return runner, nil
 }
 
-func runnerFromCommand(command string, args []string, projectDir string) (verify.Runner, error) {
-	cmd := strings.TrimSpace(command)
-	if cmd == "" {
-		return nil, fmt.Errorf("verify: empty command")
-	}
-	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
-		return nil, fmt.Errorf("verify: empty command")
-	}
-	name := fields[0]
-	var runnerArgs []string
-	if len(fields) > 1 {
-		runnerArgs = fields[1:]
-	}
-	if len(args) > 0 {
-		runnerArgs = append(runnerArgs, args...)
-	}
-	return &genericRunner{
-		name:    name,
-		args:    runnerArgs,
-		dir:     projectDir,
-		factory: verifyRunnerFactory(name),
-	}, nil
-}
-
-// verifyRunnerFactory returns a builder that wraps the named framework with
-// explicit arguments, so the tool can honor a custom command while still using
-// framework-specific parsing and reporting. The builder takes (dir, args).
-func verifyRunnerFactory(name string) func(dir string, args []string) verify.Runner {
-	switch name {
-	case "go":
-		return func(dir string, args []string) verify.Runner {
-			return &verify.GoTestRunner{Dir: dir, Args: args}
-		}
-	case "npm":
-		return func(dir string, args []string) verify.Runner {
-			return &verify.NPMTestRunner{Dir: dir, Args: args}
-		}
-	case "pytest":
-		return func(dir string, args []string) verify.Runner {
-			return &verify.PytestRunner{Dir: dir, Args: args}
-		}
-	default:
-		return func(dir string, args []string) verify.Runner {
-			return &genericRunner{name: name, args: args, dir: dir}
-		}
-	}
-}
-
-// genericRunner runs an arbitrary shell-style command and returns a raw report.
-type genericRunner struct {
-	name    string
+// rawCommandRunner executes an arbitrary command line and returns a raw
+// report (no structured failure parsing) so verify supports custom runners.
+type rawCommandRunner struct {
+	command string
 	args    []string
 	dir     string
-	factory func(string, []string) verify.Runner
 }
 
-func (g *genericRunner) Name() string { return g.name }
+func newRawCommandRunner(command string, args []string, dir string) *rawCommandRunner {
+	return &rawCommandRunner{command: command, args: args, dir: dir}
+}
 
-func (g *genericRunner) Run(ctx context.Context) (verify.Report, error) {
-	if g.factory != nil {
-		return g.factory(g.dir, g.args).Run(ctx)
+func (r *rawCommandRunner) Name() string { return "command" }
+
+func (r *rawCommandRunner) Run(ctx context.Context) (verify.Report, error) {
+	fields := strings.Fields(strings.TrimSpace(r.command))
+	if len(fields) == 0 {
+		return verify.Report{}, fmt.Errorf("verify: empty command")
 	}
-	return verify.Report{}, fmt.Errorf("verify: unsupported command %q", g.name)
+	args := append(append([]string{}, fields[1:]...), r.args...)
+	cmd := exec.CommandContext(ctx, fields[0], args...)
+	if r.dir != "" {
+		cmd.Dir = r.dir
+	}
+	out, err := cmd.CombinedOutput()
+	report := verify.Report{
+		Framework: "command",
+		Stdout:    string(out),
+	}
+	if cmd.ProcessState != nil {
+		report.ExitCode = cmd.ProcessState.ExitCode()
+		report.Passed = report.ExitCode == 0
+	} else if err != nil {
+		return report, fmt.Errorf("verify: %w", err)
+	}
+	return report, nil
 }
 
 func timeoutForVerify(seconds int) time.Duration {

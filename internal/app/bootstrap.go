@@ -509,7 +509,9 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		Analyzer:         analyzerForBash(cfg.Tools.Bash),
 		Redactor:         secrets.DefaultRedactor(),
 	})
-	reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
+	if cfg.Tools.Enabled.Verify {
+		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
+	}
 	reg.Register(&tools.TerminalTool{
 		WorktreeMgr:    wm,
 		SandboxMgr:     sandboxMgr,
