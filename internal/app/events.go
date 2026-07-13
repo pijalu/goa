@@ -84,31 +84,37 @@ func (a *App) apply(fn func()) {
 }
 
 func (a *App) runAgentEventReader(done chan struct{}, ch <-chan event.AgentEvent) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[events] runAgentEventReader panicked: %v\n%s", r, debug.Stack())
-			a.showPanicError("render", r, debug.Stack())
+	runWithPanicRestart(readerMaxRestarts,
+		func(r any, stack []byte) {
+			log.Printf("[events] runAgentEventReader panicked: %v\n%s", r, stack)
 			// Recover from rendering panics so the agent event loop survives.
 			// Without this, a single bad render kills all agent output delivery.
-			a.runAgentEventReader(done, ch)
-		}
-	}()
-	for {
-		select {
-		case <-done:
-			return
-		case ev, ok := <-ch:
-			if !ok {
-				return
-			}
-			a.apply(func() {
-				a.handleAgentOutputEvent(&ev.Event)
-				if ev.GoalUpdate != nil {
-					a.handleGoalUpdate(ev.GoalUpdate)
+			a.showPanicError("render", r, stack)
+		},
+		func() {
+			log.Printf("[events] runAgentEventReader exceeded %d consecutive restarts; stopping", readerMaxRestarts)
+			a.showPanicError("render",
+				fmt.Errorf("render loop repeatedly panicked (%d consecutive times)", readerMaxRestarts),
+				debug.Stack())
+		},
+		func() {
+			for {
+				select {
+				case <-done:
+					return
+				case ev, ok := <-ch:
+					if !ok {
+						return
+					}
+					a.apply(func() {
+						a.handleAgentOutputEvent(&ev.Event)
+						if ev.GoalUpdate != nil {
+							a.handleGoalUpdate(ev.GoalUpdate)
+						}
+					})
 				}
-			})
-		}
-	}
+			}
+		})
 }
 
 func (a *App) runControlEventReader(done chan struct{}, ch <-chan event.ControlEvent) {
@@ -130,26 +136,32 @@ func (a *App) runControlEventReader(done chan struct{}, ch <-chan event.ControlE
 }
 
 func (a *App) runChatEventReader(done chan struct{}, ch <-chan event.ChatEvent) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("[events] runChatEventReader panicked: %v\n%s", r, debug.Stack())
-			a.showPanicError("chat", r, debug.Stack())
-			a.runChatEventReader(done, ch)
-		}
-	}()
-	for {
-		select {
-		case <-done:
-			return
-		case ev, ok := <-ch:
-			if !ok {
-				return
+	runWithPanicRestart(readerMaxRestarts,
+		func(r any, stack []byte) {
+			log.Printf("[events] runChatEventReader panicked: %v\n%s", r, stack)
+			a.showPanicError("chat", r, stack)
+		},
+		func() {
+			log.Printf("[events] runChatEventReader exceeded %d consecutive restarts; stopping", readerMaxRestarts)
+			a.showPanicError("chat",
+				fmt.Errorf("chat loop repeatedly panicked (%d consecutive times)", readerMaxRestarts),
+				debug.Stack())
+		},
+		func() {
+			for {
+				select {
+				case <-done:
+					return
+				case ev, ok := <-ch:
+					if !ok {
+						return
+					}
+					a.apply(func() {
+						a.handleChatEvent(ev)
+					})
+				}
 			}
-			a.apply(func() {
-				a.handleChatEvent(ev)
-			})
-		}
-	}
+		})
 }
 
 func (a *App) runFooterEventReader(done chan struct{}, ch <-chan event.FooterEvent) {
@@ -224,7 +236,7 @@ func (a *App) handleSteeringInputControl(si *event.SteeringInput) bool {
 		return true
 	}
 	a.subs.foregroundOrch.InjectSteering(si.Text)
-	a.subs.chat.AddSystemMessage(fmt.Sprintf("[steering] %s", si.Text))
+	a.subs.chat.AddSteeringPending(si.Text)
 	if a.subs.footer != nil {
 		a.subs.footer.SetData(tui.FooterData{SteeringPending: si.Text})
 	}
@@ -324,6 +336,7 @@ func (a *App) handleSteeringInjected(injected *event.SteeringInput) {
 	}
 	subs := a.subs
 	if subs.chat != nil {
+		subs.chat.ClearSteeringPending()
 		subs.chat.AddSystemMessage(fmt.Sprintf("[steering injected] %s", injected.Text))
 	}
 	if subs.footer != nil {

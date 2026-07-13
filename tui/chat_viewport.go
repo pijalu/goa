@@ -5,8 +5,10 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/pijalu/goa/internal/ansi"
 )
@@ -64,6 +66,11 @@ type ChatViewport struct {
 	// Set on the command loop via SetSuppressed.
 	suppressed bool
 
+	// pendingSteering is the index of the ConsoleSteeringPending entry, or -1
+	// if none is present. It is kept so new messages are inserted above the
+	// pending bubble instead of pushing it up.
+	pendingSteering int
+
 	// renderCache holds the concatenated output of the last Render call.
 	renderCache struct {
 		width int
@@ -77,6 +84,15 @@ type ChatViewport struct {
 	// lastRenderFilter is the filter used to build renderCache; a change forces
 	// a full rebuild even when no entry is dirty (filter-only view switch).
 	lastRenderFilter string
+
+	// viewportH is a viewport-height hint set by the host via SetViewportHeight.
+	// Render does NOT truncate to it: culling of off-screen rows happens at the
+	// compositor level (placeLayer only iterates the visible subrange of a
+	// layer's content), and returning a tail here would starve the
+	// scrollback-population paths (emitFirstScroll/emitLargeScroll) that read
+	// historical canvas rows. The field is retained so the host can advertise
+	// the viewport size and so a future line-addressable history can use it.
+	viewportH int
 
 	// generation increments on every mutation (append, update, invalidate).
 	// Render compares it to lastRenderGen: when they match and the cache is
@@ -96,11 +112,37 @@ type ChatViewport struct {
 	// no anchoring — render the content at its natural height.
 	allocatedHeight int
 	lastRenderWidth int
+
+	// toolWidgetsDirty is set by the animation ticker to request an in-place
+	// update of running tool widgets on the next Render call. It is an atomic
+	// flag so the ticker (which may run on a different goroutine) can safely
+	// request the patch without mutating shared render caches directly.
+	toolWidgetsDirty atomic.Bool
+}
+
+// SetViewportHeight records the terminal viewport height. It is called by
+// the host each frame. ChatViewport does NOT truncate its rendered output to
+// this height: off-screen culling is handled by the compositor (placeLayer
+// iterates only the visible subrange of a layer's content), and returning a
+// tail would starve scrollback-population paths. The hint is retained for a
+// future line-addressable history and is a no-op today.
+func (cv *ChatViewport) SetViewportHeight(h int) {
+	if h < 0 {
+		h = 0
+	}
+	cv.viewportH = h
+}
+
+// TotalHeight returns the total number of lines in the full frame cache, or 0
+// when the cache has not been built yet. This lets the compositor place the
+// visible tail at the correct absolute Y in the virtual buffer.
+func (cv *ChatViewport) TotalHeight() int {
+	return len(cv.renderCache.lines)
 }
 
 // NewChatViewport creates a ChatViewport backed by a fresh Conversation.
 func NewChatViewport() *ChatViewport {
-	return &ChatViewport{Conversation: NewConversation()}
+	return &ChatViewport{Conversation: NewConversation(), pendingSteering: -1}
 }
 
 // SetAgentFilter scopes the viewport to one agent's blocks (label as stamped
@@ -132,11 +174,10 @@ func (cv *ChatViewport) IsSuppressed() bool { return cv.suppressed }
 // vertical budget reserved for this viewport. See HeightAllocated.
 func (cv *ChatViewport) SetAllocatedHeight(height int) { cv.allocatedHeight = height }
 
-// Render draws every entry's view. Per-entry caches avoid re-rendering
+// Render draws the conversation. Per-entry caches avoid re-rendering
 // unchanged entries; the total frame cache is updated incrementally when only
-// the last entry changed, which is the common case during streaming. The
-// rendered content is finally bottom-anchored to the allocated height so the
-// input/footer stay pinned.
+// the last entry changed. The rendered content is finally bottom-anchored to
+// the allocated height so the input/footer stay pinned.
 func (cv *ChatViewport) Render(width int) []string {
 	if cv.suppressed {
 		return nil
@@ -148,15 +189,14 @@ func (cv *ChatViewport) Render(width int) []string {
 		cv.lastRenderWidth = width
 		cv.resetRenderCaches(width)
 	}
-	// Fast path: when no mutations have occurred since the last render and
-	// the frame cache is valid, return it immediately without scanning all
-	// entries for dirty indices. The common typing scenario (only the input
-	// editor changes) hits this path.
-	if cv.generation == cv.lastRenderGen && cv.renderCache.lines != nil {
+	// Fast path: when no mutations have occurred since the last render, the
+	// frame cache is valid, and no tool animation is pending, return it
+	// immediately without scanning all entries.
+	if cv.generation == cv.lastRenderGen && cv.renderCache.lines != nil && !cv.toolWidgetsDirty.Load() {
 		return cv.bottomAlign(cv.renderCache.lines)
 	}
 	cv.lastRenderGen = cv.generation
-	cv.renderChanges(width)
+	cv.rebuildFrame(width)
 	return cv.bottomAlign(cv.renderCache.lines)
 }
 
@@ -178,28 +218,25 @@ func (cv *ChatViewport) bottomAlign(lines []string) []string {
 	return append(out, lines...)
 }
 
-// renderChanges applies pending mutations to the frame cache and returns it.
-// Extracted from Render to keep both under the TUI complexity budget. A
-// per-agent filter (active or just switched) changes entry visibility, so it
-// always fully rebuilds; otherwise the dirty fast paths apply.
-func (cv *ChatViewport) renderChanges(width int) []string {
+// rebuildFrame chooses between full and incremental rebuilds and applies any
+// pending tool-widget animation patches.
+func (cv *ChatViewport) rebuildFrame(width int) {
 	if cv.agentFilter != "" || cv.agentFilter != cv.lastRenderFilter || cv.renderCache.lines == nil {
 		cv.fullRebuild(width)
-		return cv.renderCache.lines
+		return
 	}
 	dirty := cv.dirtyIndices()
-	if len(dirty) == 0 {
-		return cv.renderCache.lines
+	if len(dirty) == 0 && cv.renderCache.lines != nil && !cv.toolWidgetsDirty.Load() {
+		return
 	}
-	// Fast path: only the last entry changed AND it renders at the bottom of
-	// the two-zone frame (no active entries sort after it). Otherwise the
-	// active/inactive reordering requires a full rebuild.
 	if len(dirty) == 1 && dirty[0] == len(cv.entries)-1 && cv.lastEntryAtBottom() {
 		cv.updateLastEntry(width)
-		return cv.renderCache.lines
+	} else {
+		cv.fullRebuild(width)
 	}
-	cv.fullRebuild(width)
-	return cv.renderCache.lines
+	if cv.toolWidgetsDirty.CompareAndSwap(true, false) {
+		cv.patchRunningToolWidgets(width)
+	}
 }
 
 // lastEntryAtBottom reports whether the last entry renders at the bottom of
@@ -214,6 +251,7 @@ func (cv *ChatViewport) Invalidate() {
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
 	cv.generation++
+	cv.pendingSteering = -1
 	for i := range cv.entries {
 		cv.entries[i].View.Invalidate()
 		cv.entries[i].renderedWidth = 0
@@ -230,6 +268,7 @@ func (cv *ChatViewport) HandleInput(string) {}
 // Clear removes all entries and invalidates the render cache.
 func (cv *ChatViewport) Clear() {
 	cv.Conversation.Clear()
+	cv.pendingSteering = -1
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
 	cv.generation++
@@ -238,7 +277,20 @@ func (cv *ChatViewport) Clear() {
 // ── Generic Model delegates (composable primitives) ──
 
 // Append adds an entry to the conversation and marks the new entry dirty.
+// If a steering-pending entry is present, the new entry is inserted directly
+// above it so the pending bubble stays at the bottom until it is consumed.
 func (cv *ChatViewport) Append(e MessageEntry) int {
+	if cv.pendingSteering >= 0 && e.Data.Type != ConsoleSteeringPending {
+		pending := cv.entries[cv.pendingSteering]
+		cv.pendingSteering = -1
+		cv.RemoveLast([]ConsoleItemType{ConsoleSteeringPending})
+		id := cv.Append(e)
+		cv.Append(pending)
+		return id
+	}
+	if e.Data.Type == ConsoleSteeringPending {
+		cv.pendingSteering = len(cv.entries)
+	}
 	e.dirty = true
 	e.renderedWidth = 0
 	e.renderedLines = nil
@@ -274,12 +326,32 @@ func (cv *ChatViewport) UpdateLast(types []ConsoleItemType, fn func(*MessageEntr
 // frame cache so the next Render rebuilds it.
 func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool) {
 	if e, ok := cv.Conversation.RemoveLast(types); ok {
+		if e.Data.Type == ConsoleSteeringPending {
+			cv.pendingSteering = -1
+		} else if cv.pendingSteering >= len(cv.entries) {
+			cv.pendingSteering = -1
+		}
 		cv.renderCache.width = 0
 		cv.renderCache.lines = nil
 		cv.generation++
 		return e, true
 	}
 	return MessageEntry{}, false
+}
+
+// AddSteeringPending adds or updates a pending steering bubble that stays at
+// the bottom of the chat until ClearSteeringPending is called.
+func (cv *ChatViewport) AddSteeringPending(text string) {
+	cv.ClearSteeringPending()
+	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleSteeringPending, Text: text}, View: newSteeringPending(text)})
+}
+
+// ClearSteeringPending removes the pending steering bubble, if any.
+func (cv *ChatViewport) ClearSteeringPending() {
+	if cv.pendingSteering < 0 {
+		return
+	}
+	cv.RemoveLast([]ConsoleItemType{ConsoleSteeringPending})
 }
 
 // resetRenderCaches invalidates every entry's cache and clears the frame cache.
@@ -498,9 +570,18 @@ func (cv *ChatViewport) AddClarifyCard(card *ClarifyCard) {
 }
 
 // AddToolExecution adds an interactive tool component and returns it.
+// If argsJSON contains incomplete/partial JSON (during streaming), args
+// parsing is skipped but the tool name/header are still set.
 func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionComponent {
 	tc := NewToolExecution(name, FormatToolArgs(name, argsJSON))
-	tc.SetArgsJSON(argsJSON)
+	// Attempt to parse args; partial JSON during streaming will fail silently.
+	if err := json.Unmarshal([]byte(argsJSON), &tc.args); err != nil {
+		// Partial/incomplete args during streaming: keep args nil,
+		// the renderer will handle ArgsComplete=false via RenderContext.
+		tc.argsComplete = false
+	} else {
+		tc.argsComplete = true
+	}
 	tc.SetOnInvalidate(func() {
 		for i := range cv.entries {
 			if cv.entries[i].View == tc {
@@ -608,18 +689,57 @@ func (cv *ChatViewport) AddAgentToolExecution(label, name, argsJSON string) *Too
 	return tc
 }
 
-// InvalidateRunningToolWidgets marks tool widgets that are still running as
-// dirty so the next render re-renders them. Used by the status spinner to
-// keep the shared animation frame in sync across the chat viewport.
+// InvalidateRunningToolWidgets requests an in-place update of every running
+// tool widget on the next Render call. The actual cache patch happens in
+// Render so all shared state mutations stay on the render goroutine.
 func (cv *ChatViewport) InvalidateRunningToolWidgets() {
-	for i := range cv.entries {
-		if tc, ok := cv.entries[i].View.(*ToolExecutionComponent); ok && tc.Status() == ToolRunning {
-			tc.updateBox()
-			tc.Invalidate()
-			cv.entries[i].dirty = true
-			cv.generation++
-		}
+	cv.toolWidgetsDirty.Store(true)
+}
+
+// patchRunningToolWidgets updates the spinner frame for every running tool
+// widget without marking the whole conversation dirty. The per-entry rendered
+// lines and the frame cache are patched in place, so the compositor never has
+// to reprocess the full chat history on every spinner tick.
+func (cv *ChatViewport) patchRunningToolWidgets(width int) {
+	if width == 0 || cv.renderCache.lines == nil {
+		return
 	}
+	for i := range cv.entries {
+		tc, ok := cv.entries[i].View.(*ToolExecutionComponent)
+		if !ok || tc.Status() != ToolRunning {
+			continue
+		}
+		tc.updateBox()
+		tc.Invalidate()
+		cv.updateEntryInCache(i, width)
+	}
+}
+
+// updateEntryInCache re-renders a single entry and patches its lines into the
+// full frame cache at the stored lineOffset. If the entry's line count
+// changed or its offset is stale, the caches are invalidated so the next
+// Render performs a full rebuild.
+func (cv *ChatViewport) updateEntryInCache(i, width int) {
+	e := &cv.entries[i]
+	oldLen := len(e.renderedLines)
+	newLines := e.View.Render(width)
+	e.renderedLines = newLines
+	e.renderedWidth = width
+	e.dirty = false
+
+	if cv.renderCache.lines == nil {
+		return
+	}
+	if len(newLines) != oldLen {
+		cv.renderCache.lines = nil
+		return
+	}
+	start := e.lineOffset
+	if start < 0 || start+oldLen > len(cv.renderCache.lines) {
+		cv.renderCache.lines = nil
+		return
+	}
+	copy(cv.renderCache.lines[start:start+oldLen], newLines)
 }
 
 // ── Mutation primitives ──
@@ -689,16 +809,10 @@ func (cv *ChatViewport) buildMessageComponent(msg *ChatMessage) Component {
 		return newUserMessage(msg.Content)
 	case ConsoleAssistantMessage:
 		return newAssistantMessage(msg.Content)
-	case ConsoleCompanionMessage:
-		return newCollapsibleComponent("companion", msg.Content)
-	case ConsoleCompanionThinkingBlock:
-		return newCompanionThinkingBlock(msg.Content)
 	case ConsoleSystemMessage:
 		return newSystemMessage(msg.Content)
 	case ConsoleInfoMessage:
 		return newInfoMessage(msg.Content)
-	case ConsoleThinkingBlock:
-		return newThinkingBlock(msg.Content)
 	case ConsoleToolCall:
 		return newToolCall(msg.Content)
 	case ConsoleToolResult:
@@ -709,7 +823,23 @@ func (cv *ChatViewport) buildMessageComponent(msg *ChatMessage) Component {
 			agent = msg.Meta["agent"]
 		}
 		return newAgentMessage(msg.Content, agent)
+	case ConsoleCompanionMessage, ConsoleCompanionThinkingBlock, ConsoleSteeringPending, ConsoleThinkingBlock:
+		return cv.buildSpecialMessageComponent(msg)
 	default:
 		return NewText(msg.Content, 0, 0)
 	}
+}
+
+func (cv *ChatViewport) buildSpecialMessageComponent(msg *ChatMessage) Component {
+	switch msg.Type {
+	case ConsoleCompanionMessage:
+		return newCollapsibleComponent("companion", msg.Content)
+	case ConsoleCompanionThinkingBlock:
+		return newCompanionThinkingBlock(msg.Content)
+	case ConsoleSteeringPending:
+		return newSteeringPending(msg.Content)
+	case ConsoleThinkingBlock:
+		return newThinkingBlock(msg.Content)
+	}
+	return NewText(msg.Content, 0, 0)
 }

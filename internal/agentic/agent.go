@@ -17,6 +17,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 )
 
@@ -77,6 +78,12 @@ type Agent struct {
 	// within a rolling window.
 	turnToolCallCount int
 
+	// streamingToolCalls tracks tool calls that are still being streamed
+	// (arguments not yet complete). Maps tool call ID to accumulated partial
+	// state so EventToolCallDelta can update the TUI incrementally.
+	// Cleared at the start of each stream round via resetStreamRoundState.
+	streamingToolCalls map[string]*partialToolCall
+
 	// thinkingBuf accumulates delta thinking tokens from the current assistant
 	// response so they can be included in the assistant message when a tool call
 	// is handled. DeepSeek requires reasoning_content to be passed back.
@@ -123,6 +130,12 @@ type Agent struct {
 	// concurrent readers (e.g. effectiveMaxTokens) can read it without taking mu.
 	contextWindow atomic.Int64
 
+	// toolSchemaTokens caches the token cost of the registered tool schemas,
+	// computed once (the registry is stable for the agent's lifetime). Used by
+	// fixedCostTokens to include the per-turn fixed cost in context usage.
+	toolSchemaTokensOnce sync.Once
+	toolSchemaTokens     int
+
 	// thinkingStall records when the current thinking-only phase started
 	// (zero value = not in a thinking stall). Used to detect models that
 	// emit reasoning tokens indefinitely without producing content or tool calls.
@@ -167,6 +180,14 @@ type Agent struct {
 	// prepareTurn.
 	overflowRecoveryAttempted bool
 
+	// lastTurnEnd records when the previous conversation turn finished. It is
+	// used by cache-aware compaction (see compaction.go): in-place mutation of
+	// old messages (micro compaction / tool_elision) churns the provider prefix
+	// cache, so such mutation is deferred until the inter-turn idle gap exceeds
+	// MicroCompaction.CacheMissThreshold (i.e. the cache is presumed cold) or
+	// usage hits the hard ceiling. Updated under mu in finishProcessing.
+	lastTurnEnd time.Time
+
 	// lastAssistantHash and assistantRepeatCount detect assistant-message
 	// loops where the model emits the same text/thinking across consecutive
 	// turns without making progress.
@@ -193,6 +214,16 @@ type Agent struct {
 	// duplicate tool calls within the rolling budget window (MaxToolCalls /
 	// ToolCallLimitResetWindow). It is reset at the start of each turn.
 	recentToolCalls []string
+}
+
+// partialToolCall tracks a tool call whose arguments are still being
+// streamed from the provider. Used to emit incremental EventToolCall
+// updates to observers so the TUI can display partial progress.
+type partialToolCall struct {
+	toolName      string
+	toolCallID    string
+	argsBuf       strings.Builder
+	widgetCreated bool
 }
 
 // ContextStats holds the current context window usage of an Agent.
@@ -385,6 +416,10 @@ type Config struct {
 	// ThinkingStallStop is the duration of pure thinking before the stream
 	// is interrupted. Zero means the default of 120s.
 	ThinkingStallStop time.Duration
+
+	// HookEngine executes user-defined lifecycle hooks (beforeTool, afterTool,
+	// sessionStart, sessionEnd). When nil, no hooks run.
+	HookEngine hooks.AgentHookEngine
 }
 
 // NewAgent creates a new Agent with the given configuration.
@@ -500,6 +535,50 @@ func (a *Agent) InjectSystemMessage(content string) {
 	a.history = append(a.history, msg)
 	a.mu.Unlock()
 	a.emitMessage(msg)
+}
+
+// metaEphemeral marks a history message as transient: it is sent to the model
+// during the turn it is injected but stripped before the next turn so it does
+// not pollute future context (e.g. the recovery hint or the repeat-loop nudge).
+// The tag lives in Message.Metadata, which migrateMessage does not forward, so
+// the model never sees the tag itself (only the message content, during its turn).
+const metaEphemeral = "ephemeral"
+
+// InjectEphemeralSystemMessage appends a system message that is relevant only
+// for the current turn. It is sent to the model now but stripped from history
+// at turn end so it is not re-sent (and does not add noise/context) on future
+// turns. Use for transient nudges (e.g. the recovery hint); use
+// InjectSystemMessage for durable runtime notices (tool changes).
+func (a *Agent) InjectEphemeralSystemMessage(content string) {
+	msg := Message{
+		Type:    Content,
+		Role:    System,
+		Content: content,
+		Metadata: map[string]string{metaEphemeral: "true"},
+	}
+	a.mu.Lock()
+	a.history = append(a.history, msg)
+	a.mu.Unlock()
+	a.emitMessage(msg)
+}
+
+// stripEphemeralSystemMessages removes ephemeral system messages from history.
+// Called at turn end so transient nudges (e.g. the recovery hint) do not persist
+// into the next turn's context.
+func (a *Agent) stripEphemeralSystemMessages() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.history) == 0 {
+		return
+	}
+	filtered := a.history[:0]
+	for _, m := range a.history {
+		if m.Role == System && m.Metadata != nil && m.Metadata[metaEphemeral] == "true" {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	a.history = filtered
 }
 
 // Model returns the active model configuration.
@@ -736,6 +815,7 @@ func (a *Agent) finishProcessing() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.processing = false
+	a.lastTurnEnd = time.Now()
 	if a.cancel != nil {
 		a.cancel()
 		a.cancel = nil

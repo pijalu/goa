@@ -35,12 +35,15 @@ func TestWriteFileRenderer_RenderResult(t *testing.T) {
 func TestWriteFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	r := NewWriteFileRenderer()
 	var content []string
-	for i := 1; i <= 15; i++ {
+	for i := 1; i <= writeFilePreviewLines+10; i++ {
 		content = append(content, "line")
 	}
 	out := "[write: big.txt]\n✓ Written\n```\n" + strings.Join(content, "\n") + "\n```\n"
 	result := r.RenderResult(out, tuirender.RenderContext{Expanded: false})
-	if strings.Count(result, "\n") >= 15 {
+	if strings.Count(result, "\n") >= len(content) {
 		t.Errorf("expected preview truncation, got %d lines", strings.Count(result, "\n"))
+	}
+	if !strings.Contains(ansi.Strip(result), "to expand") {
+		t.Errorf("expected expand hint, got %q", ansi.Strip(result))
 	}
 }

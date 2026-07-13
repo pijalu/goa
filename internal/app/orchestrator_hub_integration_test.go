@@ -25,6 +25,20 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 	}
 	rt, rootDir := newLiveRuntime(t, []string{"orchestrator", "coder"}, "hub")
 
+	done := runLiveHubAsync(rt)
+	started, wait := drainAgentStarts(rt.Events())
+
+	err := waitForRunWithTimeout(done, rt, 40*time.Second)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("hub Run: %v", err)
+	}
+
+	wait()
+	assertAgentsStarted(t, started)
+	logFinishedAgentCount(t, rootDir, 3)
+}
+
+func runLiveHubAsync(rt *orchestrator.Runtime) <-chan error {
 	done := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -32,41 +46,36 @@ func TestOrchestratorAdapter_LiveHub(t *testing.T) {
 		done <- rt.Run(ctx,
 			"Use the 'delegate' tool to ask the 'coder' role: \"Reply with the single word: ready\".")
 	}()
+	return done
+}
 
-	started, wait := drainAgentStarts(rt.Events())
-
+func waitForRunWithTimeout(done <-chan error, rt *orchestrator.Runtime, timeout time.Duration) error {
 	select {
 	case err := <-done:
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("hub Run: %v", err)
-		}
-	case <-time.After(40 * time.Second):
-		// Cancel the run and inspect what was started. Live-model behavior is
-		// variable; the important thing is that the orchestrator delegated to
-		// the coder before the timeout.
+		return err
+	case <-time.After(timeout):
 		rt.Cancel()
-		t.Logf("hub run timed out; checking partial progress")
+		return context.DeadlineExceeded
 	}
+}
 
-	wait()
-	// The orchestrator must have started, AND the coder must have been
-	// delegated to (started via the DelegateTool). This is the proof of real
-	// tool-driven delegation rather than the orchestrator just answering alone.
+func assertAgentsStarted(t *testing.T, started map[string]int) {
 	if started["orchestrator"] == 0 {
 		t.Errorf("orchestrator agent never started")
 	}
 	if started["coder"] == 0 {
 		t.Errorf("coder was never delegated to — orchestrator did not use the delegate tool; started=%v", started)
 	}
+}
 
-	// If the run finished, the conversation-style hub should have produced two
-	// orchestrator turns and one coder turn. If it only started those agents,
-	// that is still acceptable for a live-model test.
-	if runs, err := orchestrator.ListRuns(rootDir); err == nil && len(runs) == 1 && runs[0].Finished {
-		snap, _ := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runs[0].RunID))
-		if snap != nil && len(snap.Agents) != 3 {
-			t.Logf("expected 3 finished agents when run completes, got %d", len(snap.Agents))
-		}
+func logFinishedAgentCount(t *testing.T, rootDir string, want int) {
+	runs, err := orchestrator.ListRuns(rootDir)
+	if err != nil || len(runs) != 1 || !runs[0].Finished {
+		return
+	}
+	snap, _ := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runs[0].RunID))
+	if snap != nil && len(snap.Agents) != want {
+		t.Logf("expected %d finished agents when run completes, got %d", want, len(snap.Agents))
 	}
 }
 

@@ -42,7 +42,6 @@ func (b *fakeBuilder) NewRuntime(cfg config.OrchestratorConfig, rootDir string) 
 	if err != nil {
 		return nil, err
 	}
-	rt.SetIDGenerator(func() string { return "test-run" })
 	b.mu.Lock()
 	b.rt = rt
 	b.cfg = cfg

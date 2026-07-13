@@ -70,7 +70,7 @@ func TestGoalBinder_EphemeralManagedGoal(t *testing.T) {
 	}
 
 	// Re-create and delete explicitly.
-	id, err := gb.CreateWithName("ship it", "happy.hare", 0)
+	_, err = gb.CreateWithName("ship it", "happy.hare", 0)
 	if err != nil {
 		t.Fatalf("CreateWithName 2: %v", err)
 	}
@@ -80,7 +80,6 @@ func TestGoalBinder_EphemeralManagedGoal(t *testing.T) {
 	if mode.GetGoal().Goal != nil {
 		t.Errorf("managed goal should be cleared after delete, got %+v", mode.GetGoal().Goal)
 	}
-	_ = id
 }
 
 // TestOrchestrateCommand_GoalBinding end-to-end (fake builder + real GoalMode):
@@ -117,7 +116,7 @@ func TestOrchestrateCommand_GoalBinding(t *testing.T) {
 func TestOrchestrateCommand_GoalAccrualViaRuntime(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	cfg := testCtx(t).Config.Orchestrator
-	factory := func(role, model string, _ orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
+	factory := func(role, model string, opts orchestrator.AcquireOptions) (*orchestrator.AgentHandle, error) {
 		h := orchestrator.NewAgentHandle("", role, model)
 		h.Run = func(ctx context.Context, prompt string) error {
 			h.Stats.AddUsage(5, 5, 0, 0)

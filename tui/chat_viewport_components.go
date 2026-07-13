@@ -620,6 +620,42 @@ func (m *infoMessage) Render(width int) []string {
 	return []string{padToWidth(content, width)}
 }
 
+// steeringPending renders a pending steering message that stays pinned at the
+// bottom of the chat until it is consumed by the model.
+type steeringPending struct{ text string }
+
+func newSteeringPending(text string) *steeringPending { return &steeringPending{text: text} }
+func (m *steeringPending) SetText(t string)            { m.text = t }
+func (m *steeringPending) HandleInput(string)          {}
+func (m *steeringPending) Invalidate()                 {}
+func (m *steeringPending) Render(width int) []string {
+	if width <= 0 || m.text == "" {
+		return nil
+	}
+	bg := ansi.Bg(TheTheme.ColorHex("input_bg"))
+	fg := ansi.Fg(TheTheme.ColorHex("system_msg"))
+	border := ansi.Fg(TheTheme.ColorHex("border_default"))
+	reset := ansi.Reset
+
+	clean := ansi.Strip(m.text)
+	innerWidth := width - 4
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+	wrapped := ansi.Wrap(fmt.Sprintf("✎ steering: %s", clean), innerWidth)
+
+	var lines []string
+	top := border + "┌" + strings.Repeat("─", width-2) + "┐" + reset
+	bot := border + "└" + strings.Repeat("─", width-2) + "┘" + reset
+	lines = append(lines, padToWidth(top, width))
+	for _, raw := range wrapped {
+		body := " " + padToWidth(raw, innerWidth) + " "
+		lines = append(lines, padToWidth(bg+fg+body+reset, width))
+	}
+	lines = append(lines, padToWidth(bot, width))
+	return lines
+}
+
 // LastToolComponent returns the last ToolExecutionComponent in the
 // conversation, if any. Uses the Model's generic LastWhere primitive.
 func (cv *ChatViewport) LastToolComponent() *ToolExecutionComponent {

@@ -82,6 +82,15 @@ func (ts *TokenSource) Token(ctx context.Context) (string, error) {
 	return newTokens.AccessToken, nil
 }
 
+// Current returns the tokens currently held by the source. If Token refreshed,
+// these are the refreshed tokens (possibly with a rotated refresh token) so
+// callers can persist them.
+func (ts *TokenSource) Current() *Tokens {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.tokens
+}
+
 // ---------------------------------------------------------------------------
 // PKCE utilities
 // ---------------------------------------------------------------------------
@@ -370,16 +379,6 @@ func NewOpenAICodexOAuth() (*OpenAICodexOAuth, error) {
 	return &OpenAICodexOAuth{ClientID: "codex", pkce: pkce}, nil
 }
 
-func (o *OpenAICodexOAuth) AuthURL() string {
-	params := url.Values{
-		"response_type":         {"code"},
-		"client_id":             {o.ClientID},
-		"code_challenge":        {o.pkce.CodeChallenge},
-		"code_challenge_method": {"S256"},
-	}
-	return "https://github.com/login/oauth/authorize?" + params.Encode()
-}
-
 func (o *OpenAICodexOAuth) Exchange(ctx context.Context, code string) (*Tokens, error) {
 	data := url.Values{
 		"client_id":     {o.ClientID},
@@ -408,3 +407,42 @@ func (o *OpenAICodexOAuth) Exchange(ctx context.Context, code string) (*Tokens, 
 	}
 	return &Tokens{AccessToken: result.AccessToken, TokenType: result.TokenType}, nil
 }
+
+func (g *GitHubCopilotOAuth) Name() string { return "github" }
+
+func (g *GitHubCopilotOAuth) AuthURL(ctx context.Context) (string, error) {
+	return "", fmt.Errorf("GitHub Copilot uses device-code flow; use RequestDeviceCode")
+}
+
+func (g *GitHubCopilotOAuth) Exchange(ctx context.Context, code string) (*Tokens, error) {
+	return nil, fmt.Errorf("GitHub Copilot uses device-code flow; use RequestDeviceCode and PollForToken")
+}
+
+func (g *GitHubCopilotOAuth) Refresh(ctx context.Context, refreshToken string) (*Tokens, error) {
+	return nil, fmt.Errorf("GitHub Copilot does not support refresh tokens")
+}
+
+func (g *GitHubCopilotOAuth) TokenSource(ctx context.Context, tokens *Tokens) (*TokenSource, error) {
+	return NewTokenSource(g, tokens), nil
+}
+
+func (o *OpenAICodexOAuth) Name() string { return "codex" }
+
+func (o *OpenAICodexOAuth) AuthURL(ctx context.Context) (string, error) {
+	params := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {o.ClientID},
+		"code_challenge":        {o.pkce.CodeChallenge},
+		"code_challenge_method": {"S256"},
+	}
+	return "https://github.com/login/oauth/authorize?" + params.Encode(), nil
+}
+
+func (o *OpenAICodexOAuth) Refresh(ctx context.Context, refreshToken string) (*Tokens, error) {
+	return nil, fmt.Errorf("OpenAI Codex does not support refresh tokens")
+}
+
+func (o *OpenAICodexOAuth) TokenSource(ctx context.Context, tokens *Tokens) (*TokenSource, error) {
+	return NewTokenSource(o, tokens), nil
+}
+

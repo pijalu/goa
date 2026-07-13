@@ -316,6 +316,8 @@ func (e *escapeTracker) update(ch rune) bool {
 // IMPORTANT: When text fits within width without wrapping, spaces are preserved
 // as-is. When wrapping is required, spaces are preserved as individual tokens
 // to avoid collapsing multiple spaces or dropping leading/trailing whitespace.
+// Trailing spaces are never dropped: they are wrapped onto the last line(s)
+// so that editor cursor placement and rendered text stay in agreement.
 func Wrap(text string, width int) []string {
 	if width <= 0 {
 		return []string{text}
@@ -326,77 +328,182 @@ func Wrap(text string, width int) []string {
 		return []string{text}
 	}
 
-	words := splitWords(text)
+	// Split trailing spaces from the body so they are not dropped by splitWords.
+	body, trailing := splitBodyTrailing(text)
+
+	if body == "" {
+		if trailing == "" {
+			return []string{""}
+		}
+		return wrapSpaces(trailing, width)
+	}
+
+	words := splitWords(body)
 	if len(words) == 0 {
-		return []string{""}
+		return []string{body}
 	}
 
-	var lines []string
-	var line strings.Builder
-	lineWidth := 0
-	state := &AnsiState{}
-
-	for i, w := range words {
-		// Capture state BEFORE processing this word's ANSI sequences
-		// (the word may contain reset codes that shouldn't affect the
-		// current line's header state)
-		preState := state.GetActiveCodes()
-
-		// Update state from any ANSI sequences embedded in this word
-		updateStateFromSGR(state, w)
-
-		ww := Width(w)
-		space := 0
-		if i > 0 {
-			space = 1
-		}
-
-		if ww > width {
-			lines, lineWidth = flushAndBreakLong2(lines, &line, lineWidth, preState, w, width)
-			continue
-		}
-
-		if lineWidth+space+ww > width && lineWidth > 0 {
-			// Flush with line-end reset for underline/hyperlink bleed
-			line.WriteString(state.GetLineEndReset())
-			lines = append(lines, line.String())
-			line.Reset()
-			line.WriteString(preState) // Use PRE-word state for continuation header
-			lineWidth = 0
-			space = 0
-		}
-
-		if space > 0 {
-			line.WriteString(" ")
-			lineWidth++
-		}
-		line.WriteString(w)
-		lineWidth += ww
+	w := newLineWrapper(width)
+	for i, word := range words {
+		w.addWord(word, i == 0)
 	}
+	lines := w.result()
 
-	if line.Len() > 0 {
-		lines = append(lines, line.String())
+	if trailing != "" {
+		lines = appendTrailingSpaces(lines, trailing, width, w.state)
 	}
 	return lines
 }
 
-// flushAndBreakLong2 handles a word that exceeds the line width, using AnsiState.
-func flushAndBreakLong2(lines []string, line *strings.Builder, lineWidth int, preState, word string, width int) ([]string, int) {
-	if lineWidth > 0 {
-		lines = append(lines, line.String())
-		line.Reset()
-		lineWidth = 0
+// splitBodyTrailing splits text into its non-trailing-space body and any
+// trailing spaces.
+func splitBodyTrailing(text string) (body, trailing string) {
+	runes := []rune(text)
+	bodyEnd := len(runes)
+	for bodyEnd > 0 && runes[bodyEnd-1] == ' ' {
+		bodyEnd--
 	}
-	broken := breakLongWord(word, width)
+	return string(runes[:bodyEnd]), string(runes[bodyEnd:])
+}
+
+// lineWrapper accumulates wrapped lines for a single paragraph. It tracks the
+// active ANSI state so continuation lines can re-emit open attributes.
+type lineWrapper struct {
+	width     int
+	lines     []string
+	line      strings.Builder
+	lineWidth int
+	state     *AnsiState
+}
+
+func newLineWrapper(width int) *lineWrapper {
+	return &lineWrapper{width: width, state: &AnsiState{}}
+}
+
+func (w *lineWrapper) addWord(word string, isFirst bool) {
+	preState := w.state.GetActiveCodes()
+	updateStateFromSGR(w.state, word)
+	ww := Width(word)
+
+	if ww > w.width {
+		w.addWideWord(word, preState)
+		return
+	}
+	w.addFittingWord(word, ww, isFirst, preState)
+}
+
+func (w *lineWrapper) addWideWord(word, preState string) {
+	if w.lineWidth > 0 {
+		w.flushLine()
+	}
+	broken := breakLongWord(word, w.width)
 	for j, bw := range broken {
 		if j < len(broken)-1 {
-			lines = append(lines, preState+bw+Reset)
-		} else {
-			line.WriteString(preState + bw)
-			lineWidth = Width(bw)
+			w.lines = append(w.lines, preState+bw+Reset)
+			continue
 		}
+		w.line.WriteString(preState + bw)
+		w.lineWidth = Width(bw)
 	}
-	return lines, lineWidth
+}
+
+func (w *lineWrapper) addFittingWord(word string, ww int, isFirst bool, preState string) {
+	space := 0
+	if !isFirst {
+		space = 1
+	}
+	if w.lineWidth+space+ww > w.width && w.lineWidth > 0 {
+		// Flush with line-end reset for underline/hyperlink bleed.
+		w.line.WriteString(w.state.GetLineEndReset())
+		w.lines = append(w.lines, w.line.String())
+		w.line.Reset()
+		w.line.WriteString(preState) // Use PRE-word state for continuation header.
+		w.lineWidth = 0
+		space = 0
+	}
+	if space > 0 {
+		w.line.WriteString(" ")
+		w.lineWidth++
+	}
+	w.line.WriteString(word)
+	w.lineWidth += ww
+}
+
+func (w *lineWrapper) flushLine() {
+	if w.lineWidth > 0 {
+		w.lines = append(w.lines, w.line.String())
+		w.line.Reset()
+		w.lineWidth = 0
+	}
+}
+
+func (w *lineWrapper) result() []string {
+	if w.line.Len() > 0 {
+		w.lines = append(w.lines, w.line.String())
+	}
+	return w.lines
+}
+
+// wrapSpaces wraps a string composed only of spaces to the given width.
+func wrapSpaces(text string, width int) []string {
+	var lines []string
+	var line strings.Builder
+	lineWidth := 0
+	for _, ch := range text {
+		if ch != ' ' {
+			continue
+		}
+		if lineWidth+1 > width {
+			if line.Len() > 0 {
+				lines = append(lines, line.String())
+			}
+			line.Reset()
+			lineWidth = 0
+		}
+		line.WriteRune(ch)
+		lineWidth++
+	}
+	if line.Len() > 0 {
+		lines = append(lines, line.String())
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
+}
+
+// appendTrailingSpaces wraps trailing spaces onto the last line(s), preserving
+// the active ANSI state so continuation lines carry open attributes.
+func appendTrailingSpaces(lines []string, trailing string, width int, state *AnsiState) []string {
+	if len(lines) == 0 {
+		lines = append(lines, "")
+	}
+	lastIdx := len(lines) - 1
+	var cur strings.Builder
+	cur.WriteString(lines[lastIdx])
+	curWidth := Width(lines[lastIdx])
+	preState := state.GetActiveCodes()
+	for _, ch := range trailing {
+		if ch != ' ' {
+			continue
+		}
+		if curWidth+1 > width {
+			// Flush the current line and start a new one with the active state.
+			cur.WriteString(state.GetLineEndReset())
+			lines[lastIdx] = cur.String()
+			cur.Reset()
+			cur.WriteString(preState)
+			curWidth = 0
+			lines = append(lines, "")
+			lastIdx = len(lines) - 1
+		}
+		cur.WriteRune(ch)
+		curWidth++
+	}
+	if cur.Len() > 0 {
+		lines[lastIdx] = cur.String()
+	}
+	return lines
 }
 
 // updateStateFromSGR scans s for ANSI SGR and OSC 8 hyperlink sequences

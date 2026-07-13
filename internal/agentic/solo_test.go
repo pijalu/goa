@@ -36,7 +36,7 @@ func TestAgent_SoloMode_BlocksBashOutsidePath(t *testing.T) {
 	base := t.TempDir()
 	a := makeSoloAgent(base, internal.AutonomySolo)
 
-	_, err := a.executeToolWithResult(context.Background(), "bash", "cat /etc/passwd")
+	_, err := a.executeToolWithResult(context.Background(), "bash", "cat /etc/passwd", "call_1")
 	if err == nil {
 		t.Fatal("expected SOLO mode to block bash outside path")
 	}
@@ -52,7 +52,7 @@ func TestAgent_SoloMode_AllowsBashInsidePath(t *testing.T) {
 	// The SOLO guard should allow the command; because no "bash" tool is
 	// registered, execution then fails with "unknown tool" rather than the
 	// SOLO restriction error.
-	_, err := a.executeToolWithResult(context.Background(), "bash", "cat file.txt")
+	_, err := a.executeToolWithResult(context.Background(), "bash", "cat file.txt", "call_1")
 	if err == nil {
 		t.Fatal("expected error because bash tool is not registered")
 	}
@@ -65,7 +65,7 @@ func TestAgent_SoloMode_BlocksGitPush(t *testing.T) {
 	base := t.TempDir()
 	a := makeSoloAgent(base, internal.AutonomySolo)
 
-	_, err := a.executeToolWithResult(context.Background(), "git", "push origin main")
+	_, err := a.executeToolWithResult(context.Background(), "git", "push origin main", "call_1")
 	if err == nil {
 		t.Fatal("expected SOLO mode to block git push")
 	}
@@ -80,7 +80,7 @@ func TestAgent_SoloMode_NotActiveWhenOtherAutonomy(t *testing.T) {
 
 	// Outside path is allowed outside SOLO mode; tool lookup fails because
 	// no "bash" tool is registered.
-	_, err := a.executeToolWithResult(context.Background(), "bash", "cat /etc/passwd")
+	_, err := a.executeToolWithResult(context.Background(), "bash", "cat /etc/passwd", "call_1")
 	if err == nil {
 		t.Fatal("expected error because bash tool is not registered")
 	}
@@ -104,7 +104,7 @@ func TestAgent_ConfirmMode_CallsConfirmTool(t *testing.T) {
 	})
 
 	// bash inside project in confirm mode should trigger ConfirmTool.
-	_, err := a.executeToolWithResult(context.Background(), "bash", `{"command":"ls"}`)
+	_, err := a.executeToolWithResult(context.Background(), "bash", `{"command":"ls"}`, "call_1")
 	if err == nil {
 		t.Fatal("expected error because bash tool is not registered")
 	}
@@ -125,7 +125,7 @@ func TestAgent_ConfirmMode_DeniesWhenConfirmToolReturnsFalse(t *testing.T) {
 		},
 	})
 
-	_, err := a.executeToolWithResult(context.Background(), "bash", `{"command":"ls"}`)
+	_, err := a.executeToolWithResult(context.Background(), "bash", `{"command":"ls"}`, "call_1")
 	if err == nil {
 		t.Fatal("expected error when ConfirmTool denies")
 	}
@@ -164,7 +164,7 @@ func TestAgent_PlanMode_BlocksWriteOutsidePlanDir(t *testing.T) {
 	base := t.TempDir()
 	a := makePlanAgent(base)
 
-	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"/etc/passwd"}`)
+	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"/etc/passwd"}`, "call_1")
 	if err == nil {
 		t.Fatal("expected plan mode to block write outside plan dir")
 	}
@@ -179,7 +179,7 @@ func TestAgent_PlanMode_AllowsWriteInsidePlanDir(t *testing.T) {
 
 	// The plan guard allows the write; because no "write" tool is registered,
 	// execution fails with "unknown tool" rather than the plan restriction.
-	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"`+base+`/.goa/plan/notes.md"}`)
+	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"`+base+`/.goa/plan/notes.md"}`, "call_1")
 	if err == nil {
 		t.Fatal("expected error because write tool is not registered")
 	}
@@ -194,7 +194,7 @@ func TestAgent_PlanMode_AllowsPlanMarkdown(t *testing.T) {
 
 	// The plan guard allows PLAN.md; because no "write" tool is registered,
 	// execution fails with "unknown tool" rather than the plan restriction.
-	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"`+base+`/PLAN.md"}`)
+	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"`+base+`/PLAN.md"}`, "call_1")
 	if err == nil {
 		t.Fatal("expected error because write tool is not registered")
 	}
@@ -212,7 +212,7 @@ func TestAgent_PlanMode_NotActiveWithoutGuard(t *testing.T) {
 		GetGuardConfig: func() perms.GuardConfig { return perms.GuardConfig{} },
 	})
 
-	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"/etc/passwd"}`)
+	_, err := a.executeToolWithResult(context.Background(), "write", `{"path":"/etc/passwd"}`, "call_1")
 	if err == nil {
 		t.Fatal("expected error because write tool is not registered")
 	}

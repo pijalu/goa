@@ -102,6 +102,7 @@ func (c *OrchestrateCommand) Run(ctx core.Context, args []string) error {
 	case "browser":
 		return c.runBrowser(ctx)
 	default:
+		c.usage(ctx)
 		return fmt.Errorf("unknown /orchestrate subcommand: %s", in.Subcommand)
 	}
 }

@@ -7,7 +7,6 @@ package app
 import (
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -265,8 +264,8 @@ func TestHandleToolCall_FooterBusyIndicator(t *testing.T) {
 	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`})
 	engine.RenderNow()
 
-	if !app.subs.footer.Data().ModelBusy {
-		t.Error("expected footer ModelBusy to be true during a tool call")
+	if app.subs.footer.Data().ModelBusy {
+		t.Error("expected footer ModelBusy to be false during a tool call (only the chat spinner should run)")
 	}
 
 	rendered := strings.Join(app.subs.footer.Render(80), "\n")
@@ -277,8 +276,8 @@ func TestHandleToolCall_FooterBusyIndicator(t *testing.T) {
 			break
 		}
 	}
-	if !hasFrame {
-		t.Errorf("expected footer render to contain animated spinner frame, got:\n%s", rendered)
+	if hasFrame {
+		t.Errorf("expected footer render to NOT contain animated spinner frame during a tool call, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "tool calling") {
 		t.Errorf("expected footer render to contain 'tool calling' activity, got:\n%s", rendered)
@@ -452,17 +451,42 @@ func TestHandleToolCall_StatusBarSpinnerVisible_AfterAnswering(t *testing.T) {
 	}
 }
 
-func findFrame(render string, frames []string) string {
-	for _, f := range frames {
-		if strings.Contains(render, f) {
-			return f
-		}
+func TestHandleToolCall_ToolWidgetAnimates(t *testing.T) {
+	anim := spinner.Definition{
+		Interval: 1,
+		Frames:   []string{"◜", "◠", "◝", "◞", "◡", "◟"},
 	}
-	return ""
+	tui.SetSpinner(anim)
+	defer tui.SetSpinner(spinner.Definition{})
+
+	engine, chat, statusBar, app, cleanup := newToolAnimationApp(t)
+	defer cleanup()
+
+	statusBar.SetOnFrameChange(func() {
+		chat.InvalidateRunningToolWidgets()
+	})
+
+	engine.ApplySync(func() {
+		app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`})
+	})
+
+	render1 := strings.Join(engine.AgentFrame().Visible, "\n")
+	frame1 := findFrameInString(render1, anim.Frames)
+	if frame1 == "" {
+		t.Fatalf("expected tool widget to render a spinner frame, got:\n%s", render1)
+	}
+
+	frame2 := waitForToolFrameChange(t, engine, anim.Frames, frame1, 500*time.Millisecond)
+	if frame1 == frame2 {
+		render2 := strings.Join(engine.AgentFrame().Visible, "\n")
+		t.Fatalf("tool widget spinner did not animate: frame stayed %q\nrender1:\n%s\n\nrender2:\n%s", frame1, render1, render2)
+	}
 }
 
-func setupToolCallAnimationTest(t *testing.T, anim spinner.Definition) (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg, *App, func()) {
-	t.Helper()
+// newToolAnimationApp builds a TUI engine with the full production component
+// tree and an App configured for the tool animation tests. The caller must
+// invoke the returned cleanup function.
+func newToolAnimationApp(t *testing.T) (*tui.TUI, *tui.ChatViewport, *tui.StatusMsg, *App, func()) {
 	term := &testTerminal{w: 80, h: 24}
 	engine := tui.NewTUI(term)
 	if err := engine.Start(); err != nil {
@@ -500,7 +524,6 @@ func setupToolCallAnimationTest(t *testing.T, anim spinner.Definition) (*tui.TUI
 	app := New(subs)
 
 	cleanup := func() {
-		engine.ApplySync(func() { statusBar.Clear() })
 		engine.Stop()
 		select {
 		case <-engine.Stopped():
@@ -508,63 +531,122 @@ func setupToolCallAnimationTest(t *testing.T, anim spinner.Definition) (*tui.TUI
 			t.Fatal("engine did not stop")
 		}
 	}
-
 	return engine, chat, statusBar, app, cleanup
 }
 
-func TestHandleToolCall_ToolWidgetAnimates(t *testing.T) {
-	// Use a 2-frame spinner with a 20ms interval. The interval is long enough
-	// that only one tick can fire between detecting the first tick and
-	// capturing the second render, making the frame-difference assertion
-	// deterministic.
-	anim := spinner.Definition{
-		Interval: 20,
-		Frames:   []string{"◜", "◠"},
-	}
-	tui.SetSpinner(anim)
-	defer tui.SetSpinner(spinner.Definition{})
-
-	engine, chat, statusBar, app, cleanup := setupToolCallAnimationTest(t, anim)
-	defer cleanup()
-
-	tickCh := make(chan struct{})
-	var ticks int
-	var mu sync.Mutex
-	statusBar.SetOnFrameChange(func() {
-		chat.InvalidateRunningToolWidgets()
-		mu.Lock()
-		ticks++
-		if ticks == 2 {
-			close(tickCh)
+// findFrameInString returns the first spinner frame from frames that appears
+// in s, or the empty string if none is found.
+func findFrameInString(s string, frames []string) string {
+	for _, f := range frames {
+		if strings.Contains(s, f) {
+			return f
 		}
-		mu.Unlock()
-	})
-
-	engine.ApplySync(func() {
-		app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`})
-	})
-
-	render1 := strings.Join(engine.AgentFrame().Visible, "\n")
-	frame1 := findFrame(render1, anim.Frames)
-	if frame1 == "" {
-		t.Fatalf("expected tool widget to render a spinner frame, got:\n%s", render1)
 	}
+	return ""
+}
 
-	select {
-	case <-tickCh:
-	case <-time.After(500 * time.Millisecond):
-		mu.Lock()
-		c := ticks
-		mu.Unlock()
-		t.Fatalf("spinner did not tick within 500ms (ticks=%d)", c)
+// waitForToolFrameChange polls the TUI engine until a spinner frame different
+// from avoid is rendered. It returns the first frame found, which may equal
+// avoid if the timeout expires without a change.
+func waitForToolFrameChange(t *testing.T, engine *tui.TUI, frames []string, avoid string, timeout time.Duration) string {
+	var frame2 string
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		render2 := strings.Join(engine.AgentFrame().Visible, "\n")
+		frame2 = findFrameInString(render2, frames)
+		if frame2 != "" && frame2 != avoid {
+			break
+		}
+		frame2 = ""
 	}
-
-	render2 := strings.Join(engine.AgentFrame().Visible, "\n")
-	frame2 := findFrame(render2, anim.Frames)
 	if frame2 == "" {
+		render2 := strings.Join(engine.AgentFrame().Visible, "\n")
 		t.Fatalf("expected tool widget to render a spinner frame after tick, got:\n%s", render2)
 	}
-	if frame1 == frame2 {
-		t.Fatalf("tool widget spinner did not animate: frame stayed %q\nrender1:\n%s\n\nrender2:\n%s", frame1, render1, render2)
+	return frame2
+}
+
+func TestHandleToolCall_IsDeltaCreatesPendingWidget(t *testing.T) {
+	app := New(testSubsystems())
+
+	// Send a streaming (IsDelta=true) tool call event.
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "write",
+		ToolInput:  `{"path":"test.go","content":"package main`,
+		ToolCallID: "call_1",
+		IsDelta:    true,
+	})
+
+	// Widget should exist but be in Pending state (not Running).
+	tc, ok := app.subs.activeTools["call_1"]
+	if !ok {
+		t.Fatal("expected streaming tool widget to be created in activeTools")
+	}
+	if tc.Status() != tui.ToolPending {
+		t.Errorf("expected ToolPending for streaming tool, got %v", tc.Status())
+	}
+
+	// Status message should reflect streaming, not "Tool calling".
+	if !strings.Contains(app.subs.statusMsg.Text(), "Calling write") {
+		t.Errorf("expected status message to show 'Calling write', got %q", app.subs.statusMsg.Text())
+	}
+}
+
+func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
+	app := New(testSubsystems())
+
+	// Step 1: Streaming event (IsDelta=true).
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "write",
+		ToolInput:  `{"path":"test.go","content":"pa`,
+		ToolCallID: "call_2",
+		IsDelta:    true,
+	})
+
+	tc, ok := app.subs.activeTools["call_2"]
+	if !ok {
+		t.Fatal("expected streaming tool widget in activeTools after delta")
+	}
+	if tc.Status() != tui.ToolPending {
+		t.Errorf("expected ToolPending after delta, got %v", tc.Status())
+	}
+
+	// Step 2: Final event (IsDelta=false).
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "write",
+		ToolInput:  `{"path":"test.go","content":"package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n"}`,
+		ToolCallID: "call_2",
+		IsDelta:    false,
+	})
+
+	// Now the widget should transition to Running.
+	if tc.Status() != tui.ToolRunning {
+		t.Errorf("expected ToolRunning after final event, got %v", tc.Status())
+	}
+	if !tc.ArgsComplete() {
+		t.Error("expected ArgsComplete after final event")
+	}
+}
+
+func TestHandleToolCall_NonDeltaCreatesRunningWidget(t *testing.T) {
+	app := New(testSubsystems())
+
+	// Non-delta (legacy path): widget should be created in Running state directly.
+	app.handleToolCall(&agentic.OutputEvent{
+		Type:      agentic.EventToolCall,
+		ToolName:  "bash",
+		ToolInput: `{"command":"ls"}`,
+		// IsDelta defaults to false
+	})
+
+	if app.subs.activeTool == nil {
+		t.Fatal("expected activeTool after non-delta tool call")
+	}
+	if app.subs.activeTool.Status() != tui.ToolRunning {
+		t.Errorf("expected ToolRunning for non-delta tool call, got %v", app.subs.activeTool.Status())
 	}
 }

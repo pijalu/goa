@@ -10,6 +10,7 @@ import (
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 )
 
@@ -57,6 +58,14 @@ func (am *AgentManager) SetLifecycleRegistry(r LifecycleRegistry) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.lifecycleRegistry = r
+}
+
+// SetHookEngine wires the user-defined lifecycle hook engine. When nil, no
+// hooks run. The engine is passed to every agent created by this manager.
+func (am *AgentManager) SetHookEngine(e hooks.AgentHookEngine) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.hookEngine = e
 }
 
 // SetContextWindowRefresher sets a callback that re-detects the active local
@@ -141,6 +150,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		ThinkingStallWarn: time.Duration(cfg.Execution.ThinkingStallWarnSeconds) * time.Second,
 		ThinkingStallStop: time.Duration(cfg.Execution.ThinkingStallStopSeconds) * time.Second,
 		ConfirmTool:       am.confirmTool,
+		HookEngine:        am.hookEngine,
 	}
 	compressionCfg := am.buildCompressionConfig(cfg, mdl.ContextWindow)
 	if cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {

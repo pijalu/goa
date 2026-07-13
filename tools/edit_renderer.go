@@ -18,6 +18,11 @@ type EditFileRenderer struct {
 	KeyExpand string
 }
 
+// editDiffPreviewLines is the default number of diff lines shown before
+// collapsing. It is large enough that ordinary edits are fully visible, while
+// still offering the expand action for exceptionally large diffs.
+const editDiffPreviewLines = 1000
+
 var _ tuirender.ToolRenderer = (*EditFileRenderer)(nil)
 
 func NewEditFileRenderer() *EditFileRenderer {
@@ -54,11 +59,11 @@ func (r *EditFileRenderer) RenderResult(output string, ctx tuirender.RenderConte
 		return ""
 	}
 
-	return formatDiffOutput(rendered, ctx.Expanded, r.KeyExpand)
+	return r.formatDiffOutput(rendered, ctx.Expanded, r.KeyExpand)
 }
 
-func formatDiffOutput(rendered []string, expanded bool, key string) string {
-	maxLines := 8
+func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, key string) string {
+	maxLines := r.PreviewLines()
 	if expanded {
 		maxLines = len(rendered)
 	}
@@ -82,8 +87,12 @@ func formatDiffOutput(rendered []string, expanded bool, key string) string {
 	return b.String()
 }
 
-func (r *EditFileRenderer) PreviewLines() int             { return 8 }
+func (r *EditFileRenderer) PreviewLines() int             { return editDiffPreviewLines }
 func (r *EditFileRenderer) HideResultWhenCollapsed() bool { return false }
+
+// editDiffPreviewLines is the default number of diff lines shown before
+// collapsing. It is large enough that ordinary edits are fully visible, while
+// still offering the expand action for exceptionally large diffs.
 
 // diffInfo holds the parsed unified-diff hunk.
 type diffInfo struct {

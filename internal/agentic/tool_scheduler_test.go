@@ -330,3 +330,120 @@ func TestToolScheduler_Panic_ReturnsError(t *testing.T) {
 type assertAnError string
 
 func (e assertAnError) Error() string { return string(e) }
+
+// TestToolScheduler_MaxParallelCap verifies the concurrency cap: with
+// MaxParallel=2 and four independent (non-conflicting) tasks, at most two are
+// ever running at once; the rest start only as slots free.
+func TestToolScheduler_MaxParallelCap(t *testing.T) {
+	s := NewToolScheduler(context.Background())
+	s.SetMaxParallel(2)
+
+	var inflight, maxInflight int32
+	release := make(chan struct{})
+
+	mkTask := func(name, path string) *ToolCallTask {
+		return &ToolCallTask{
+			Name:   name,
+			Access: toolaccess.Access{ReadPaths: []string{path}},
+			Execute: func(ctx context.Context) (ToolResult, error) {
+				cur := atomic.AddInt32(&inflight, 1)
+				for {
+					old := atomic.LoadInt32(&maxInflight)
+					if cur <= old || atomic.CompareAndSwapInt32(&maxInflight, old, cur) {
+						break
+					}
+				}
+				defer atomic.AddInt32(&inflight, -1)
+				<-release
+				return ToolResult{Output: name}, nil
+			},
+		}
+	}
+
+	for _, tsk := range []*ToolCallTask{
+		mkTask("t1", "/1"), mkTask("t2", "/2"),
+		mkTask("t3", "/3"), mkTask("t4", "/4"),
+	} {
+		s.Add(tsk)
+	}
+
+	// Let the first wave of two start. Poll until we observe two in flight.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&inflight) < 2 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&inflight); got != 2 {
+		t.Fatalf("expected exactly 2 in flight under cap, got %d", got)
+	}
+
+	// Allow the first wave to finish; the second wave must then start.
+	close(release)
+
+	results := s.Collect()
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results, got %d", len(results))
+	}
+	if got := atomic.LoadInt32(&maxInflight); got > 2 {
+		t.Errorf("MaxParallel=2 violated: peak concurrency = %d", got)
+	}
+	if got := atomic.LoadInt32(&maxInflight); got < 2 {
+		t.Errorf("expected parallelism to reach 2, peak = %d", got)
+	}
+}
+
+// TestToolScheduler_TaskTimeoutUnblocksCollect verifies that a tool which
+// ignores its context (blocks forever) does not hang Collect when a per-task
+// timeout is set: the watchdog closes the task's done channel at the deadline
+// and surfaces a timeout error.
+func TestToolScheduler_TaskTimeoutUnblocksCollect(t *testing.T) {
+	s := NewToolScheduler(context.Background())
+	s.SetTaskTimeout(100 * time.Millisecond)
+
+	forever := make(chan struct{}) // never closed
+	s.Add(&ToolCallTask{
+		Name:   "hung",
+		Access: toolaccess.Access{},
+		Execute: func(ctx context.Context) (ToolResult, error) {
+			<-forever // deliberately ignores ctx
+			return ToolResult{}, nil
+		},
+	})
+
+	done := make(chan []ToolCallResult, 1)
+	go func() { done <- s.Collect() }()
+
+	select {
+	case results := <-done:
+		if len(results) != 1 {
+			t.Fatalf("expected 1 result, got %d", len(results))
+		}
+		if results[0].Err == nil {
+			t.Fatal("expected timeout error, got nil")
+		}
+		if !strings.Contains(results[0].Err.Error(), "deadline") {
+			t.Errorf("expected deadline error, got %q", results[0].Err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Collect hung: task timeout watchdog did not fire")
+	}
+}
+
+// TestToolScheduler_TaskTimeout_AllowsFastTools verifies the timeout does not
+// interfere with tools that complete normally before the deadline.
+func TestToolScheduler_TaskTimeout_AllowsFastTools(t *testing.T) {
+	s := NewToolScheduler(context.Background())
+	s.SetTaskTimeout(5 * time.Second)
+
+	s.Add(&ToolCallTask{
+		Name:   "fast",
+		Access: toolaccess.Access{ReadPaths: []string{"/a"}},
+		Execute: func(ctx context.Context) (ToolResult, error) {
+			return ToolResult{Output: "ok"}, nil
+		},
+	})
+
+	results := s.Collect()
+	if len(results) != 1 || results[0].Output != "ok" || results[0].Err != nil {
+		t.Fatalf("unexpected result: %+v", results)
+	}
+}

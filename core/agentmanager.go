@@ -17,6 +17,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/prompts"
 )
@@ -130,11 +131,16 @@ type AgentManager struct {
 	baseSystemPrompt       string
 	companionReviewEnabled bool
 	companionReviewSet     bool
+	hookEngine             hooks.AgentHookEngine
 
 	// disableToolBudget is a session-level flag that disables the per-turn
 	// tool-call budget check. When set, the agent allows unlimited tool calls
 	// per turn. Not persisted — resets on restart.
 	disableToolBudget bool
+
+	// eventFwd decouples the streaming goroutine's event emission from the
+	// bounded app event bus (see eventForwarder). nil when eventsOut is nil.
+	eventFwd *eventForwarder
 }
 
 // NewAgentManager creates a new agent manager.
@@ -153,6 +159,9 @@ func NewAgentManager(cfg *config.Config, sessionStore *SessionStore, loopDetecto
 		companion:    NewCompanionCoordinator(),
 		steering:     NewSteeringQueue(),
 		projectDir:   projectDir,
+	}
+	if eventsOut != nil {
+		am.eventFwd = newEventForwarder(eventsOut.Agent)
 	}
 
 	return am
@@ -174,6 +183,7 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 		sessionID := am.sessionStore.StartSession()
 		if sessionID != "" {
 			opts.SessionID = sessionID
+			am.fireSessionStart(sessionID)
 		}
 	}
 
@@ -325,8 +335,8 @@ func (am *AgentManager) recoverTurnPanic() {
 			Type: agentic.EventEnd,
 			Text: fmt.Sprintf("agent stopped unexpectedly: %v", r),
 		}
-		am.events <- ev
 		am.emitAgentEvent(ev)
+		am.emitInternalEvent(ev)
 	}
 }
 
@@ -351,8 +361,8 @@ func (am *AgentManager) executeRunner(ctx context.Context, runner agentRunner, i
 		}
 		// EventEnd must always reach the UI so the turn is marked complete; do
 		// not drop it under load (CORE-BUG-3). Block (backpressure) instead.
-		am.events <- ev
 		am.emitAgentEvent(ev)
+		am.emitInternalEvent(ev)
 	}
 }
 
@@ -380,7 +390,43 @@ func (am *AgentManager) StopSession() error {
 
 	am.activeAgent = nil
 	am.dispatchLifecycle("shutdown", map[string]any{})
+	am.fireSessionEnd()
 	return nil
+}
+
+// Close releases long-lived resources (the event forwarder goroutine). It is
+// idempotent and safe to call at shutdown. StopSession should be called first
+// to stop any active turn; Close does not cancel an in-flight turn.
+func (am *AgentManager) Close() {
+	am.mu.Lock()
+	fwd := am.eventFwd
+	am.eventFwd = nil
+	am.mu.Unlock()
+	if fwd != nil {
+		fwd.close()
+	}
+}
+
+func (am *AgentManager) fireSessionStart(sessionID string) {
+	if am.hookEngine == nil {
+		return
+	}
+	_ = am.hookEngine.FireSessionStart(context.Background(), hooks.SessionPayload{
+		Event:      string(hooks.EventSessionStart),
+		SessionID:  sessionID,
+		ProjectDir: am.projectDir,
+	})
+}
+
+func (am *AgentManager) fireSessionEnd() {
+	if am.hookEngine == nil {
+		return
+	}
+	_ = am.hookEngine.FireSessionEnd(context.Background(), hooks.SessionPayload{
+		Event:      string(hooks.EventSessionEnd),
+		SessionID:  "",
+		ProjectDir: am.projectDir,
+	})
 }
 
 // Interrupt cancels the current agent turn.
@@ -936,11 +982,20 @@ func (am *AgentManager) persistState() error {
 	return ss.Save(snap)
 }
 
+func (am *AgentManager) emitInternalEvent(ev agentic.OutputEvent) {
+	if am.forwardInternalEvents {
+		am.events <- ev
+	}
+}
+
 func (am *AgentManager) emitAgentEvent(ev agentic.OutputEvent) {
-	if am.eventsOut == nil {
+	if am.eventsOut == nil || am.eventFwd == nil {
 		return
 	}
-	am.eventsOut.Agent <- event.AgentEvent{Event: ev}
+	// Forward through an unbounded queue so the LLM stream goroutine never
+	// blocks on the bounded app bus. A slow TUI falls behind in the forwarder,
+	// not in token generation.
+	am.eventFwd.push(event.AgentEvent{Event: ev})
 }
 
 func (am *AgentManager) emitFlash(text string) {

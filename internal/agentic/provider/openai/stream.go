@@ -199,6 +199,23 @@ func (a *streamAccum) handleToolCall(msg agentic.Message) {
 			}
 			if msg.ToolInput != "" {
 				ta.Args += msg.ToolInput
+				// Emit incremental args delta so the TUI can show progress
+				// as the tool call arguments are being streamed in.
+				a.Stream.Push(provider.AssistantMessageEvent{
+					Type:         provider.EventToolCallDelta,
+					ContentIndex: idx,
+					Delta:        msg.ToolInput,
+					Partial: &provider.AssistantMessage{
+						Content: []provider.ContentBlock{
+							{
+								Type:          provider.ContentBlockToolCall,
+								ToolCallID:    ta.ID,
+								ToolName:      ta.Name,
+								ToolArguments: ta.Args,
+							},
+						},
+					},
+				})
 			}
 			if msg.ToolCallID != "" {
 				ta.ID = msg.ToolCallID
@@ -206,10 +223,26 @@ func (a *streamAccum) handleToolCall(msg agentic.Message) {
 			return
 		}
 	}
+	// New tool call: emit EventToolCallStart with what we know so far.
 	a.ToolAccums = append(a.ToolAccums, &toolCallAccum{
 		Index: idx, ID: msg.ToolCallID, Name: msg.ToolName, Args: msg.ToolInput,
 	})
 	a.HasContent = true
+	a.ensureStarted()
+	a.Stream.Push(provider.AssistantMessageEvent{
+		Type:         provider.EventToolCallStart,
+		ContentIndex: idx,
+		Partial: &provider.AssistantMessage{
+			Content: []provider.ContentBlock{
+				{
+					Type:          provider.ContentBlockToolCall,
+					ToolCallID:    msg.ToolCallID,
+					ToolName:      msg.ToolName,
+					ToolArguments: msg.ToolInput,
+				},
+			},
+		},
+	})
 }
 
 func (a *streamAccum) flushToolCalls() {

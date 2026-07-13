@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/spinner"
 )
 
 func TestFormatToolArgs_ReadFile(t *testing.T) {
@@ -335,4 +336,65 @@ func TestToolExecution_GenericRendererShowsNameAndArgs(t *testing.T) {
 	if !strings.Contains(stripped, "**/*.go") {
 		t.Errorf("expected header to contain formatted arg '**/*.go'; got:\n%s", stripped)
 	}
+}
+
+func TestToolExecution_PartialArgs_ShowsPendingState(t *testing.T) {
+	_, def := spinner.Default()
+	SetSpinner(def)
+	defer SetSpinner(spinner.Definition{})
+
+	tc := NewToolExecution("write", "write path/to/file (streaming...)")
+
+	// Tool should start in Pending state (not Running) with argsComplete=false.
+	if tc.Status() != ToolPending {
+		t.Errorf("expected ToolPending after creation with partial args, got %v", tc.Status())
+	}
+	if tc.argsComplete {
+		t.Error("expected argsComplete=false for partial args")
+	}
+
+	// Set partial args incrementally (simulating streaming).
+	tc.SetArgsPartial(`{"path":"test.go","content":"packa`)
+	lines := tc.Render(80)
+	rendered := strings.Join(lines, "\n")
+
+	// Should show the tool header even with incomplete args.
+	if !strings.Contains(rendered, "write") {
+		t.Errorf("expected write header in render, got:\n%s", rendered)
+	}
+}
+
+func TestToolExecution_PartialArgs_TransitionToComplete(t *testing.T) {
+	tc := NewToolExecution("write", "write test.go")
+	tc.SetArgsJSON(`{"path":"test.go","content":"package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"}`)
+
+	// Simulate streaming: initial partial, then complete.
+	tc.SetArgsPartial(`{"path":"test.go","content":"package"}`)
+	tc.SetArgsComplete()
+	tc.SetStatus(ToolRunning)
+
+	if tc.Status() != ToolRunning {
+		t.Errorf("expected ToolRunning after args complete, got %v", tc.Status())
+	}
+	if !tc.argsComplete {
+		t.Error("expected argsComplete=true after SetArgsComplete")
+	}
+
+	lines := tc.Render(80)
+	rendered := strings.Join(lines, "\n")
+	if !strings.Contains(rendered, "write") {
+		t.Errorf("expected write header after transition, got:\n%s", rendered)
+	}
+}
+
+func TestToolExecution_PartialArgs_RenderContextWiredCorrectly(t *testing.T) {
+	tc := NewToolExecution("write", "write test.go")
+
+	// Before completion: ArgsComplete should be false.
+	tc.SetArgsPartial(`{"path":"test.go","content":"par"}`)
+	tc.updateBox()
+
+	// After completion: ArgsComplete should be true.
+	tc.SetArgsComplete()
+	tc.SetArgsJSON(`{"path":"test.go","content":"package main"}`)
 }

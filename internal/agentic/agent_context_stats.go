@@ -18,7 +18,7 @@ func (a *Agent) computeContextStats() ContextStats {
 		}
 	}
 
-	estimated := estimateTokensFromHistory(a.history)
+	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()
 
 	// The UI should always reflect the model's actual capacity. Prefer the
 	// runtime-refreshed context window, then the configured model window, and

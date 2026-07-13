@@ -286,3 +286,143 @@ func dumpEmu(emu *screenEmulator, h int) string {
 	}
 	return b.String()
 }
+
+// TestPlaceLayer_OnlyWritesVisibleSubrange verifies placeLayer is O(visible):
+// it writes only the content lines whose absolute Y falls inside the visible
+// region and leaves off-screen canvas rows untouched, even when the layer's
+// Content is far larger than the viewport (the chat-transcript case).
+func TestPlaceLayer_OnlyWritesVisibleSubrange(t *testing.T) {
+	const canvasH = 1000
+	const rectY = 0
+	const vStart = 990 // viewport shows the last 10 rows
+	const vEnd = 1000
+
+	content := make([]string, canvasH)
+	for i := range content {
+		content[i] = "line-" + itoaStr(i)
+	}
+	canvas := make([]string, canvasH)
+
+	l := Layer{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: rectY, W: 80, H: canvasH}, Content: content}
+	placeLayer(canvas, l, 80, vStart, vEnd)
+
+	// Visible rows populated.
+	for y := vStart; y < vEnd; y++ {
+		if canvas[y] != content[y] {
+			t.Errorf("visible row %d = %q, want %q", y, canvas[y], content[y])
+		}
+	}
+	// Off-screen rows untouched (still empty).
+	for y := 0; y < vStart; y++ {
+		if canvas[y] != "" {
+			t.Errorf("off-screen row %d should be empty, got %q", y, canvas[y])
+		}
+	}
+}
+
+// TestPlaceLayer_LayerOffsetBelowViewport verifies a layer whose Rect.Y starts
+// above the viewport still maps its tail content into the visible region.
+func TestPlaceLayer_LayerOffsetBelowViewport(t *testing.T) {
+	const canvasH = 50
+	const rectY = 40 // layer occupies rows 40..44
+	content := []string{"a", "b", "c", "d", "e"}
+	canvas := make([]string, canvasH)
+	l := Layer{Name: "x", Kind: LayerBase, Rect: Rect{X: 0, Y: rectY, W: 80, H: 5}, Content: content}
+	placeLayer(canvas, l, 80, 42, 50) // visible 42..49
+	// rows 42,43,44 visible -> c,d,e ; rows 40,41 off-screen -> untouched
+	if canvas[42] != "c" || canvas[43] != "d" || canvas[44] != "e" {
+		t.Errorf("visible tail wrong: %q %q %q", canvas[42], canvas[43], canvas[44])
+	}
+	if canvas[40] != "" || canvas[41] != "" {
+		t.Errorf("off-screen rows should be empty: %q %q", canvas[40], canvas[41])
+	}
+}
+
+// itoaStr avoids pulling in strconv just for one test helper.
+func itoaStr(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
+// TestCompositor_ResizePreservesScrollbackAndEmitsViewportOnly verifies the
+// resize path (review 2.3): on a size change the compositor must NOT emit
+// \x1b[3J (which would wipe scrollback) and must repaint only the visible
+// viewport instead of re-emitting the whole transcript.
+func TestCompositor_ResizePreservesScrollbackAndEmitsViewportOnly(t *testing.T) {
+	term := &fakeTerminal{w: 20, h: 10}
+	comp := NewCompositor(term)
+
+	// 30-line transcript on a 10-row terminal.
+	content := make([]string, 30)
+	for i := range content {
+		content[i] = "line " + itoaStr(i)
+	}
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 30}, Content: content},
+		},
+	}
+	comp.Render(scene) // first frame populates scrollback
+
+	// Resize to 30 cols x 16 rows (both above the clamp thresholds).
+	scene.TerminalW = 30
+	scene.TerminalH = 16
+	beforeWrites := len(term.writes)
+	comp.Render(scene) // resize frame
+	if len(term.writes) <= beforeWrites {
+		t.Fatalf("no resize frame emitted")
+	}
+	resize := term.writes[len(term.writes)-1]
+
+	if strings.Contains(resize, "\x1b[3J") {
+		t.Errorf("resize wiped scrollback (emitted \\x1b[3J): %q", resize)
+	}
+	if !strings.Contains(resize, "\x1b[2J") {
+		t.Errorf("resize did not clear the screen (missing \\x1b[2J)")
+	}
+	// The resize frame should repaint at most the new viewport height (16) rows,
+	// not all 30 transcript lines.
+	if crlf := strings.Count(resize, "\r\n"); crlf >= 30 {
+		t.Errorf("resize re-emitted the whole transcript (%d \\r\\n, want < 30): %q", crlf, resize)
+	}
+}
+
+// TestCompositor_InViewportShrinkSkipsFullRedraw verifies the review 2.4
+// refinement: a content shrink that never involved scrollback (everything
+// fit on screen) must NOT force an O(history) full redraw. The differential
+// path clears the stale trailing rows instead. Only scrollback-affecting
+// shrinks (maxLinesRendered > height) need a full redraw.
+func TestCompositor_InViewportShrinkSkipsFullRedraw(t *testing.T) {
+	term := &fakeTerminal{w: 40, h: 12}
+	comp := NewCompositor(term)
+
+	makeScene := func(n int) *Scene {
+		content := make([]string, n)
+		for i := range content {
+			content[i] = "row " + itoaStr(i)
+		}
+		return &Scene{
+			TerminalW: 40, TerminalH: 12,
+			Layers: []Layer{
+				{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 40, H: n}, Content: content},
+			},
+		}
+	}
+	comp.Render(makeScene(8)) // fits on 12-row screen; no scrollback
+	before := comp.FullRedrawCount()
+	comp.Render(makeScene(4)) // in-viewport shrink
+	after := comp.FullRedrawCount()
+	if after != before {
+		t.Errorf("in-viewport shrink triggered a full redraw (before=%d after=%d); the differential path should handle it", before, after)
+	}
+}

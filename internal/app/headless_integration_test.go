@@ -7,6 +7,7 @@ package app
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,10 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
+
+func TestMain(m *testing.M) {
+	os.Exit(m.Run())
+}
 
 // headlessTestProvider is a mock API provider that emits predetermined events.
 type headlessTestProvider struct {

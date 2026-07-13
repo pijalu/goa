@@ -8,6 +8,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/perms"
 	"github.com/pijalu/goa/internal/toolaccess"
 )
@@ -84,7 +85,7 @@ func (a *Agent) newToolCallTask(tc provider.ContentBlock) *ToolCallTask {
 		CallID: tc.ToolCallID,
 		Access: a.resolveToolAccess(tc.ToolName, tc.ToolArguments),
 		Execute: func(ctx context.Context) (ToolResult, error) {
-			return a.executeToolWithResult(ctx, tc.ToolName, tc.ToolArguments)
+			return a.executeToolWithResult(ctx, tc.ToolName, tc.ToolArguments, tc.ToolCallID)
 		},
 	}
 }
@@ -132,10 +133,31 @@ func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[stri
 	}
 	output := r.Output
 	if limit := a.toolResultSizeLimit(); limit > 0 && len(output) > limit {
-		truncated := output[:limit]
-		return fmt.Sprintf("%s\n[goa-system] Tool result was truncated to %d bytes (original %d bytes). The read succeeded but the result is limited to fit the available context; use a narrower query, smaller line range, or filters to see more.", truncated, limit, len(output))
+		return truncateToolResult(output, limit)
 	}
 	return output
+}
+
+// truncateToolResult caps a tool result to roughly limit bytes while preserving
+// both the start and the end. The beginning matters for tools like read_file
+// (structure/context at the top); the end matters for bash/webfetch (errors and
+// final results live at the tail). The middle is elided with a clear marker so
+// the model knows content was dropped and can re-read a narrower range. This
+// caps tool output at the source so it never inflates the prefix that later
+// compaction would have to elide anyway.
+func truncateToolResult(output string, limit int) string {
+	const markerFmt = "\n[goa-system] Tool result was truncated to ~%d bytes (original %d bytes); the middle was elided, the beginning and end are preserved.\n"
+	marker := fmt.Sprintf(markerFmt, limit, len(output))
+	half := (limit - len(marker)) / 2
+	if half < 1 {
+		half = 1
+	}
+	if len(output) <= half*2+len(marker) {
+		return output
+	}
+	head := output[:half]
+	tail := output[len(output)-half:]
+	return head + marker + tail
 }
 
 // toolResultSizeLimit returns a heuristic byte limit for a single tool result.
@@ -163,11 +185,6 @@ func (a *Agent) resolveToolAccess(name, input string) toolaccess.Access {
 	return toolaccess.Access{}
 }
 
-// executeToolWithResult executes a tool and preserves control signals such as
-// StopTurn. The turn ctx is forwarded to tools that implement ContextTool so
-// long-running/hung tools can be cancelled. Tools implementing ResultTool are
-// called directly; otherwise the string output of Execute is wrapped into a
-// ToolResult.
 func (a *Agent) enforceSoloPolicy(name, input string) error {
 	if a.cfg.GetAutonomy == nil || a.cfg.ProjectDir == "" {
 		return nil
@@ -223,7 +240,50 @@ func (a *Agent) confirmToolIfNeeded(ctx context.Context, name, input string) err
 	return nil
 }
 
-func (a *Agent) executeToolWithResult(ctx context.Context, name, input string) (ToolResult, error) {
+func (a *Agent) executeToolWithResult(ctx context.Context, name, input, callID string) (ToolResult, error) {
+	if err := a.fireBeforeToolHook(ctx, name, input, callID); err != nil {
+		return ToolResult{}, err
+	}
+	result, err := a.runTool(ctx, name, input)
+	a.fireAfterToolHook(ctx, name, input, callID, result, err)
+	return result, err
+}
+
+func (a *Agent) fireBeforeToolHook(ctx context.Context, name, input, callID string) error {
+	if a.cfg.HookEngine == nil {
+		return nil
+	}
+	return a.cfg.HookEngine.FireBeforeTool(ctx, hooks.ToolPayload{
+		Event:     string(hooks.EventBeforeTool),
+		ToolName:  name,
+		ToolInput: input,
+		CallID:    callID,
+	})
+}
+
+func (a *Agent) fireAfterToolHook(ctx context.Context, name, input, callID string, result ToolResult, runErr error) {
+	if a.cfg.HookEngine == nil {
+		return
+	}
+	payload := hooks.ToolPayload{
+		Event:     string(hooks.EventAfterTool),
+		ToolName:  name,
+		ToolInput: input,
+		CallID:    callID,
+		Output:    result.Output,
+	}
+	if runErr != nil {
+		payload.Error = runErr.Error()
+	}
+	_ = a.cfg.HookEngine.FireAfterTool(ctx, payload)
+}
+
+// runTool executes the tool and preserves control signals such as StopTurn.
+// The turn ctx is forwarded to tools that implement ContextTool so
+// long-running/hung tools can be cancelled. Tools implementing ResultTool are
+// called directly; otherwise the string output of Execute is wrapped into a
+// ToolResult.
+func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, error) {
 	if err := a.enforceGuardPolicy(name, input); err != nil {
 		return ToolResult{}, err
 	}

@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -57,6 +59,8 @@ type EditFileTool struct {
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
 	FileChangeNotifier func(path string)
+	// LSPManager, when set, is notified of content changes for .go files.
+	LSPManager LSPDocumentManager
 }
 
 func (t *EditFileTool) Schema() agentic.ToolSchema {
@@ -206,6 +210,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(targetPath)
 	}
+	diagBlock := t.notifyLSP(context.Background(), targetPath)
 
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
@@ -213,6 +218,9 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 	resultMsg := fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, affected, diff)
 	if fuzzyNote != "" {
 		resultMsg = fuzzyNote + "\n" + resultMsg
+	}
+	if diagBlock != "" {
+		resultMsg += diagBlock
 	}
 	return resultMsg, nil
 }
@@ -246,6 +254,21 @@ func (t *EditFileTool) Access(input string) ToolAccess {
 
 //go:embed editfile.short.md editfile.long.md
 var editfileDocs embed.FS
+
+func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) string {
+	if t.LSPManager == nil || !strings.HasSuffix(resolvedPath, ".go") {
+		return ""
+	}
+	content, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return ""
+	}
+	_ = t.LSPManager.DidChange(ctx, resolvedPath, string(content))
+	// Diagnostics are published asynchronously; give gopls a moment to settle.
+	time.Sleep(150 * time.Millisecond)
+	diags := t.LSPManager.DiagnosticsFor(ctx, resolvedPath)
+	return formatLSPDiagnostics(resolvedPath, diags)
+}
 
 func (t *EditFileTool) ShortDoc() string { return readDoc(editfileDocs, "editfile.short.md") }
 func (t *EditFileTool) LongDoc() string  { return readDoc(editfileDocs, "editfile.long.md") }
@@ -658,6 +681,7 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(targetPath)
 	}
+	diagBlock := t.notifyLSP(context.Background(), targetPath)
 
 	// Build a clear result message
 	matchDesc := "exact match"
@@ -670,6 +694,9 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 
 	resultMsg := fmt.Sprintf("[edit: %s] search/replace applied — lines %d-%d, match: %s\n%s",
 		originalPath, result.StartLine, result.EndLine, matchDesc, result.Diff)
+	if diagBlock != "" {
+		resultMsg += diagBlock
+	}
 	if targetPath != resolvedPath {
 		resultMsg = fmt.Sprintf("Note: file not found, used closest match: %s\n%s", targetPath, resultMsg)
 	}

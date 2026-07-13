@@ -203,7 +203,7 @@ func (w *wizardComponent) advancePostModel() bool {
 	case stateWebFetchSummary:
 		w.state = stateDreamModel
 	case stateDreamModel:
-		w.state = stateCompanionModel
+		w.advanceFromDreamModel()
 	case stateCompanionModelAdvanced:
 		w.state = stateMode
 	case stateCompanionModel:
@@ -236,6 +236,10 @@ func (w *wizardComponent) advanceFromCompanionModel() {
 	}
 }
 
+func (w *wizardComponent) advanceFromDreamModel() {
+	w.state = stateCompanionModel
+}
+
 func (w *wizardComponent) advanceFromCompanionModelSetup() {
 	w.companion.modelName = w.editor.Text()
 	if w.companion.modelName == "" {
@@ -263,6 +267,10 @@ func (w *wizardComponent) advanceFromEndpoint() {
 	w.commitTextInput()
 	s := w.currentSlot()
 	s.endpoint = w.editor.Text()
+	if s.selectedPresetIndex < 0 {
+		s.providerID = DeriveProviderID(s.endpoint)
+		s.providerName = deriveProviderName(s.endpoint)
+	}
 	w.editor.Clear()
 	if w.state == stateCompanionProviderEndpoint {
 		w.state = stateCompanionProviderKey

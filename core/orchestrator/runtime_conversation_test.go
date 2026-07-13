@@ -178,9 +178,36 @@ func TestRuntime_HubConversationStyleRunsSynthesisEvenIfOrchestratorSpoke(t *tes
 // ask the user a question, the loop pauses, and the conversation continues
 // after the user answers via SteerOrchestrator.
 func TestRuntime_HubLoop_PauseForUserAnswer(t *testing.T) {
+	rt, orchRuns, final := setupPauseRuntime(t)
+
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(context.Background(), "objective") }()
+
+	waitForAskUserEvent(t, rt)
+
+	if !rt.SteerOrchestrator("blue") {
+		t.Fatal("SteerOrchestrator should consume the user answer")
+	}
+
+	drainEvents(rt.Events())
+	if err := <-done; err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+
+	if orchRuns.Load() != 2 {
+		t.Fatalf("expected 2 orchestrator turns (ask + answer), got %d", orchRuns.Load())
+	}
+	if final.value == "" {
+		t.Fatal("final message was not produced after user answer")
+	}
+}
+
+type stringHolder struct{ value string }
+
+func setupPauseRuntime(t *testing.T) (*Runtime, *atomic.Int32, *stringHolder) {
 	var rtRef *Runtime
 	var orchRuns atomic.Int32
-	var finalMessage string
+	final := &stringHolder{}
 	cfg := config.OrchestratorConfig{
 		Roles: map[string]config.OrchestratorRole{
 			"orchestrator": {Model: "m"},
@@ -198,7 +225,7 @@ func TestRuntime_HubLoop_PauseForUserAnswer(t *testing.T) {
 					return nil
 				}
 				rtRef.RecordAgentMessage(h, "final answer")
-				finalMessage = "final answer"
+				final.value = "final answer"
 				return nil
 			}
 		}
@@ -209,10 +236,10 @@ func TestRuntime_HubLoop_PauseForUserAnswer(t *testing.T) {
 		t.Fatalf("NewRuntime: %v", err)
 	}
 	rtRef = rt
+	return rt, &orchRuns, final
+}
 
-	done := make(chan error, 1)
-	go func() { done <- rt.Run(context.Background(), "objective") }()
-
+func waitForAskUserEvent(t *testing.T, rt *Runtime) {
 	askUserSeen := make(chan struct{})
 	go func() {
 		for ev := range rt.Events() {
@@ -229,78 +256,12 @@ func TestRuntime_HubLoop_PauseForUserAnswer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("ask_user event was not emitted")
 	}
-
-	if !rtRef.SteerOrchestrator("blue") {
-		t.Fatal("SteerOrchestrator should consume the user answer")
-	}
-
-	// Drain the remaining events and wait for the run to finish.
-	for range rt.Events() {
-	}
-	if err := <-done; err != nil {
-		t.Fatalf("run failed: %v", err)
-	}
-
-	if orchRuns.Load() != 2 {
-		t.Fatalf("expected 2 orchestrator turns (ask + answer), got %d", orchRuns.Load())
-	}
-	if finalMessage == "" {
-		t.Fatal("final message was not produced after user answer")
-	}
 }
 
 // TestRuntime_HubLoop_Rework verifies that the orchestrator can delegate,
 // then request a rework, and the loop continues with the revised output.
 func TestRuntime_HubLoop_Rework(t *testing.T) {
-	var rtRef *Runtime
-	var orchRuns atomic.Int32
-	var coderRuns atomic.Int32
-	var finalMessage string
-	cfg := config.OrchestratorConfig{
-		Roles: map[string]config.OrchestratorRole{
-			"orchestrator": {Model: "m"},
-			"coder":        {Model: "m"},
-		},
-		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
-		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
-	}
-	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
-		h := NewAgentHandle("", role, model)
-		switch role {
-		case "orchestrator":
-			h.Run = func(ctx context.Context, prompt string) error {
-				orchRuns.Add(1)
-				switch orchRuns.Load() {
-				case 1:
-					if _, err := rtRef.DelegateAsync(ctx, "coder", "write code", AcquireOptions{}); err != nil {
-						return err
-					}
-					return nil
-				case 2:
-					if _, err := rtRef.ReworkAsync(ctx, "coder", "add more tests", AcquireOptions{}); err != nil {
-						return err
-					}
-					return nil
-				default:
-					rtRef.RecordAgentMessage(h, "final answer")
-					finalMessage = "final answer"
-					return nil
-				}
-			}
-		case "coder":
-			h.Run = func(ctx context.Context, _ string) error {
-				coderRuns.Add(1)
-				rtRef.RecordAgentMessage(h, fmt.Sprintf("coder output v%d", coderRuns.Load()))
-				return nil
-			}
-		}
-		return h, nil
-	})
-	rt, err := NewRuntime(cfg, pool, nil, t.TempDir())
-	if err != nil {
-		t.Fatalf("NewRuntime: %v", err)
-	}
-	rtRef = rt
+	rt, orchRuns, coderRuns, final := setupReworkRuntime(t)
 
 	go func() { _ = rt.Run(context.Background(), "build feature") }()
 	drainEvents(rt.Events())
@@ -311,8 +272,64 @@ func TestRuntime_HubLoop_Rework(t *testing.T) {
 	if orchRuns.Load() != 3 {
 		t.Fatalf("expected 3 orchestrator turns (delegate + rework + final), got %d", orchRuns.Load())
 	}
-	if finalMessage == "" {
+	if final.value == "" {
 		t.Fatal("final message was not produced after rework")
+	}
+}
+
+func setupReworkRuntime(t *testing.T) (*Runtime, *atomic.Int32, *atomic.Int32, *stringHolder) {
+	var rtRef *Runtime
+	var orchRuns atomic.Int32
+	var coderRuns atomic.Int32
+	final := &stringHolder{}
+	cfg := config.OrchestratorConfig{
+		Roles: map[string]config.OrchestratorRole{
+			"orchestrator": {Model: "m"},
+			"coder":        {Model: "m"},
+		},
+		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 4},
+		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
+	}
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		h := NewAgentHandle("", role, model)
+		if role == "orchestrator" {
+			h.Run = makeReworkOrchestratorRun(rtRef, &orchRuns, final, h)
+		} else if role == "coder" {
+			h.Run = makeReworkCoderRun(rtRef, &coderRuns, h)
+		}
+		return h, nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	rtRef = rt
+	return rt, &orchRuns, &coderRuns, final
+}
+
+func makeReworkOrchestratorRun(rtRef *Runtime, orchRuns *atomic.Int32, final *stringHolder, h *AgentHandle) func(context.Context, string) error {
+	return func(ctx context.Context, prompt string) error {
+		orchRuns.Add(1)
+		switch orchRuns.Load() {
+		case 1:
+			_, err := rtRef.DelegateAsync(ctx, "coder", "write code", AcquireOptions{})
+			return err
+		case 2:
+			_, err := rtRef.ReworkAsync(ctx, "coder", "add more tests", AcquireOptions{})
+			return err
+		default:
+			rtRef.RecordAgentMessage(h, "final answer")
+			final.value = "final answer"
+			return nil
+		}
+	}
+}
+
+func makeReworkCoderRun(rtRef *Runtime, coderRuns *atomic.Int32, h *AgentHandle) func(context.Context, string) error {
+	return func(ctx context.Context, _ string) error {
+		coderRuns.Add(1)
+		rtRef.RecordAgentMessage(h, fmt.Sprintf("coder output v%d", coderRuns.Load()))
+		return nil
 	}
 }
 

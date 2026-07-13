@@ -43,20 +43,45 @@ type MicroCompactionConfig struct {
 // microCompactForced is the forced variant of micro compaction. When force is
 // true, the MinContextRatio check is skipped so a manual /compress invocation
 // can run even when usage is below the configured ratio.
+//
+// It self-manages the agent mutex: the history read, cache gate, and in-place
+// truncation run under a.mu; the EventCompact emission runs after unlock
+// (emitEvent acquires a.mu itself, so emitting under the lock would self-deadlock).
 func (a *Agent) microCompactForced(force bool) {
 	cfg := a.cfg.ContextCompression.MicroCompaction
-	history := a.history
-	if len(history) == 0 {
+	a.mu.Lock()
+	if len(a.history) == 0 {
+		a.mu.Unlock()
 		return
 	}
-
 	contextRatio := a.contextRatio()
 	if !force && contextRatio < cfg.MinContextRatio {
+		a.mu.Unlock()
 		return
 	}
 
-	keepIdx := computeKeepIdx(history, cfg.KeepRecentMessages, force)
-	changed := a.truncateToolResults(history, keepIdx, cfg)
+	// Cache-aware gating (resurrects the previously-dead CacheMissThreshold).
+	// In-place truncation of old tool results mutates the provider's cached
+	// prefix, flipping a hot cache into a full re-process on the next turn.
+	// When invoked proactively (not a manual /compress), defer the mutation
+	// unless the cache is presumed cold (inter-turn idle gap exceeded
+	// CacheMissThreshold) or usage is at the hard ceiling where skipping the
+	// mutation risks an overflow. force=true (explicit /compress) always
+	// mutates so a manual invocation always does visible work.
+	const hardCeilingRatio = 0.95
+	if !force && contextRatio < hardCeilingRatio && !a.cacheAssumedCold() {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Debug, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%)",
+				cfg.CacheMissThreshold, contextRatio*100)
+		}
+		a.mu.Unlock()
+		return
+	}
+
+	keepIdx := computeKeepIdx(a.history, cfg.KeepRecentMessages, force)
+	changed := a.truncateToolResults(a.history, keepIdx, cfg)
+	a.mu.Unlock()
+
 	if changed > 0 {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Info, "Applied micro compaction: truncated %d tool results, keepIdx=%d, ratio=%.1f%%",
@@ -66,12 +91,33 @@ func (a *Agent) microCompactForced(force bool) {
 	}
 }
 
-func (a *Agent) contextRatio() float64 {
-	stats := a.computeContextStats()
-	maxTokens := a.cfg.ContextCompression.MaxTokens
-	if maxTokens == 0 {
-		maxTokens = 8192 // fallback default
+// cacheAssumedCold reports whether the provider prefix cache is presumed cold
+// for the upcoming request, justifying in-place history mutation that would
+// otherwise churn a hot cache. The cache is assumed cold when either
+//   - CacheMissThreshold <= 0 (cache protection disabled; legacy behavior), or
+//   - the agent has been idle (no completed turn) for longer than the threshold,
+//     or no previous turn has completed yet (first turn / fresh resume).
+//
+// The caller must hold a.mu: lastTurnEnd is guarded by it (written in
+// finishProcessing under the lock).
+func (a *Agent) cacheAssumedCold() bool {
+	threshold := a.cfg.ContextCompression.MicroCompaction.CacheMissThreshold
+	if threshold <= 0 {
+		return true
 	}
+	last := a.lastTurnEnd
+	if last.IsZero() {
+		return true
+	}
+	return time.Since(last) >= threshold
+}
+
+func (a *Agent) contextRatio() float64 {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens == 0 {
+		return 0
+	}
+	stats := a.computeContextStats()
 	return float64(stats.EstimatedTokens) / float64(maxTokens)
 }
 

@@ -5,15 +5,18 @@
 package tools
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/lsp"
 )
 
 // WriteFileTool creates or overwrites a file with the given content.
@@ -22,6 +25,47 @@ import (
 // resolution can redirect writes to the wrong file, causing irreversible
 // data loss. Unlike edit/read which handle existing files, write's
 // destructive nature requires exact path fidelity.
+// formatLSPDiagnostics renders diagnostics as a compact, model-readable block
+// appended to tool output. Returns "" when there is nothing to report.
+func formatLSPDiagnostics(path string, diags []lsp.Diagnostic) string {
+	if len(diags) == 0 {
+		return ""
+	}
+	name := filepath.Base(path)
+	var b strings.Builder
+	b.WriteString("\nDiagnostics (gopls):\n")
+	for _, d := range diags {
+		fmt.Fprintf(&b, "  %s:%d:%d: %s: %s\n", name, d.Range.Start.Line+1, d.Range.Start.Character+1, lspSeverityName(d.Severity), d.Message)
+	}
+	return b.String()
+}
+
+// lspSeverityName maps an LSP severity integer to a short label.
+func lspSeverityName(sev int) string {
+	switch sev {
+	case 1:
+		return "error"
+	case 2:
+		return "warning"
+	case 3:
+		return "info"
+	case 4:
+		return "hint"
+	default:
+		return fmt.Sprintf("sev%d", sev)
+	}
+}
+
+// LSPDiagnostic is the subset of an LSP diagnostic surfaced to tool output.
+// Severity follows LSP: 1=Error, 2=Warning, 3=Info, 4=Hint. Line/Col are 0-indexed.
+// LSPDocumentManager is the subset of the LSP manager used by file tools.
+type LSPDocumentManager interface {
+	OpenDocument(ctx context.Context, path, text string) error
+	DidChange(ctx context.Context, path, text string) error
+	// DiagnosticsFor returns the latest diagnostics published for path, or nil.
+	DiagnosticsFor(ctx context.Context, path string) []lsp.Diagnostic
+}
+
 type WriteFileTool struct {
 	WorktreeMgr        *internal.WorktreeManager
 	ProjectDir         string
@@ -30,6 +74,9 @@ type WriteFileTool struct {
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
 	FileChangeNotifier func(path string)
+	// LSPManager, when set, is notified of the new document and diagnostics
+	// are queried after a short delay.
+	LSPManager LSPDocumentManager
 }
 
 // Schema returns the tool schema for write.
@@ -91,8 +138,32 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(resolvedPath)
 	}
+	diagBlock := t.lspDiagnostics(context.Background(), resolvedPath, processedContent, true)
 
-	return buildWritePreview(originalPath, processedContent), nil
+	preview := buildWritePreview(originalPath, processedContent)
+	if diagBlock != "" {
+		preview += diagBlock
+	}
+	return preview, nil
+}
+
+// lspDiagnostics notifies the LSP server of a document change (open or edit)
+// and returns a formatted diagnostics block for the tool result. It is a
+// no-op for non-Go files or when no manager is configured. The open flag
+// selects DidOpen (write) vs DidChange (edit).
+func (t *WriteFileTool) lspDiagnostics(ctx context.Context, resolvedPath, content string, open bool) string {
+	if t.LSPManager == nil || !strings.HasSuffix(resolvedPath, ".go") {
+		return ""
+	}
+	if open {
+		_ = t.LSPManager.OpenDocument(ctx, resolvedPath, content)
+	} else {
+		_ = t.LSPManager.DidChange(ctx, resolvedPath, content)
+	}
+	// Diagnostics are published asynchronously; give gopls a moment to settle.
+	time.Sleep(150 * time.Millisecond)
+	diags := t.LSPManager.DiagnosticsFor(ctx, resolvedPath)
+	return formatLSPDiagnostics(resolvedPath, diags)
 }
 
 func parseWriteFileParams(input string) (writeFileParams, error) {

@@ -11,8 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/pijalu/goa/internal/ansi"
 )
 
 // CURSOR_MARKER is a zero-width escape sequence emitted by focused components.
@@ -964,62 +962,106 @@ func (t *TUI) renderNow() []string {
 // overlay into a positioned overlay Layer, producing the protocol-free Scene
 // consumed by both the Compositor and the AgentView. Layer Rect.Y accumulates
 // for base layers; overlays are positioned relative to the visible viewport.
+// Components that expose a viewport height or total height are culled so the
+// compositor only sees the visible tail, while the absolute Y accounting
+// preserves the full virtual buffer height for correct scrolling.
 // The focused editor's CURSOR_MARKER is extracted into Scene.Cursor (explicit,
 // grapheme-aware) and stripped from layer content.
 func (t *TUI) buildScene(w, h int) *Scene {
 	scene := &Scene{TerminalW: w, TerminalH: h}
+	rendered, _ := t.renderChildren(w, h)
+	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w)
+	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
+	extractCursorMarker(scene)
+	return scene
+}
 
-	// Layout pass: measure the fixed chrome and push the remaining vertical
-	// slack (terminal height minus chrome) into any fill component
-	// (HeightAllocated, e.g. the conversation viewport) BEFORE rendering it.
-	// The fill bottom-anchors its content within that slack, so the
-	// input/status/footer stay pinned at the screen bottom and growth scrolls
-	// the oldest content into scrollback instead of pushing the footer down.
-	// This is the correct replacement for the former monotonically-growing
-	// stable-height padding.
+// renderChildren renders all base children, setting viewport/allocated heights
+// first and returning the per-child rendered lines plus the total chrome height.
+func (t *TUI) renderChildren(w, h int) ([][]string, int) {
 	rendered := make([][]string, len(t.children))
 	chromeHeight := 0
 	var fills []int
+
 	for i, child := range t.children {
 		if _, ok := child.(HeightAllocated); ok {
 			fills = append(fills, i)
 			continue
 		}
+		t.setViewportHeight(child, h)
 		rendered[i] = child.Render(w)
 		chromeHeight += len(rendered[i])
 	}
-	for _, idx := range fills {
+	if len(fills) > 0 {
 		budget := (h - chromeHeight) / len(fills)
 		if budget < 0 {
 			budget = 0
 		}
-		t.children[idx].(HeightAllocated).SetAllocatedHeight(budget)
-		rendered[idx] = t.children[idx].Render(w)
+		for _, idx := range fills {
+			t.children[idx].(HeightAllocated).SetAllocatedHeight(budget)
+			t.setViewportHeight(t.children[idx], h)
+			rendered[idx] = t.children[idx].Render(w)
+			chromeHeight += len(rendered[idx])
+		}
 	}
+	return rendered, chromeHeight
+}
 
+func (t *TUI) setViewportHeight(c Component, h int) {
+	if vh, ok := c.(interface{ SetViewportHeight(int) }); ok {
+		vh.SetViewportHeight(h)
+	}
+}
+
+func (t *TUI) totalHeight(c Component, renderedLen int) int {
+	if hr, ok := c.(interface{ TotalHeight() int }); ok {
+		if th := hr.TotalHeight(); th > renderedLen {
+			return th
+		}
+	}
+	return renderedLen
+}
+
+// buildBaseLayers converts rendered children into base layers and agent nodes.
+func (t *TUI) buildBaseLayers(rendered [][]string, w int) ([]Layer, []AgentNode) {
+	var layers []Layer
+	var nodes []AgentNode
 	y := 0
 	for i, child := range t.children {
 		lines := rendered[i]
+		totalH := t.totalHeight(child, len(lines))
 		if len(lines) == 0 {
+			y += totalH
 			continue
 		}
-		rect := Rect{X: 0, Y: y, W: w, H: len(lines)}
-		scene.Layers = append(scene.Layers, Layer{
+		rectY := y
+		if totalH > len(lines) {
+			rectY = y + totalH - len(lines)
+		}
+		rect := Rect{X: 0, Y: rectY, W: w, H: len(lines)}
+		layers = append(layers, Layer{
 			Name:    componentLayerName(child),
 			Kind:    LayerBase,
 			Rect:    rect,
 			Content: lines,
 		})
-		scene.Nodes = append(scene.Nodes, agentNodeFor(child, rect, lines))
-		y += len(lines)
+		nodes = append(nodes, agentNodeFor(child, rect, lines))
+		y += totalH
 	}
+	return layers, nodes
+}
+
+// buildOverlayLayers appends overlay layers to the scene and reports whether any
+// overlay captures input.
+func (t *TUI) buildOverlayLayers(scene *Scene, w, h int) bool {
+	captures := false
 	for _, ov := range t.overlayStack {
 		olines := ov.comp.Render(w)
 		if len(olines) == 0 {
 			continue
 		}
 		if ov.opts.CaptureInput {
-			scene.OverlayCapturesInput = true
+			captures = true
 		}
 		oh := clampOverlayHeight(len(olines), h)
 		startRow := overlayStartRow(ov.opts, oh, h)
@@ -1027,23 +1069,26 @@ func (t *TUI) buildScene(w, h int) *Scene {
 		scene.Layers = append(scene.Layers, Layer{
 			Name:    componentLayerName(ov.comp),
 			Kind:    LayerOverlay,
-			Z:       1 + len(scene.Layers), // stable, above base
+			Z:       1 + len(scene.Layers),
 			Rect:    rect,
 			Content: append([]string(nil), olines[:oh]...),
 		})
 		scene.Nodes = append(scene.Nodes, agentNodeFor(ov.comp, rect, olines[:oh]))
 	}
-	extractCursorMarker(scene)
-	return scene
+	return captures
 }
 
-// agentNodeFor builds an AgentNode from a component and its rendered layer.
+// agentNodeFor builds a lightweight AgentNode (Name, Type, Rect, Focused)
+// from a component and its rendered layer. It intentionally does NOT compute
+// the node's Text (an O(n) ansi.Strip+Join over the layer's lines): that text
+// is only consumed by AI tooling via AgentFrame, never by the live render
+// path, so it is filled lazily in Scene.AgentFrame to avoid an O(history)
+// string allocation every streaming frame for the chat layer.
 func agentNodeFor(c Component, rect Rect, lines []string) AgentNode {
 	node := AgentNode{
 		Name: componentLayerName(c),
 		Type: fmt.Sprintf("%T", c),
 		Rect: rect,
-		Text: ansi.Strip(strings.Join(lines, "\n")),
 	}
 	if f, ok := c.(Focusable); ok {
 		node.Focused = f.Focused()

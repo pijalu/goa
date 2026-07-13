@@ -152,31 +152,53 @@ func loopDetectorFrom(subs *subsystems) *core.LoopDetector {
 // on demand when the user enables them at runtime via /tools:name:on.
 func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 	return func(name string) (agentic.Tool, bool) {
-		cfg := subs.cfg
 		switch name {
 		case "bg_exec":
-			return tools.NewBGExecTool(), true
+			return makeBGExecTool(subs), true
 		case "memento":
-			return &tools.MementoTool{ProjectDir: subs.projectDir, GlobalDir: cfg.ConfigDir}, true
+			return makeMementoTool(subs), true
 		case "ssh_bash":
-			return &tools.SSHBashTool{Hosts: sshHosts(cfg)}, true
+			return makeSSHBashTool(subs), true
 		case "pty_exec":
-			if subs.ptyMgr == nil {
-				return nil, false
-			}
-			return &tools.PTYExecTool{Mgr: subs.ptyMgr}, true
+			return makePTYExecTool(subs)
 		case "request_review", "delegate_to":
-			if subs.agentPool == nil {
-				return nil, false
-			}
-			toolsList := multiagent.AgentDrivenTools(subs.foregroundOrch, subs.agentPool)
-			for _, t := range toolsList {
-				if t.Schema().Name == name {
-					return t, true
-				}
-			}
-			return nil, false
+			return makeAgentDrivenTool(subs, name)
 		}
 		return nil, false
 	}
+}
+
+func makeBGExecTool(subs *subsystems) agentic.Tool {
+	if subs.bgMgr != nil {
+		return tools.NewBGExecToolWithManager(subs.bgMgr)
+	}
+	return tools.NewBGExecTool()
+}
+
+func makeMementoTool(subs *subsystems) agentic.Tool {
+	return &tools.MementoTool{ProjectDir: subs.projectDir, GlobalDir: subs.cfg.ConfigDir}
+}
+
+func makeSSHBashTool(subs *subsystems) agentic.Tool {
+	return &tools.SSHBashTool{Hosts: sshHosts(subs.cfg)}
+}
+
+func makePTYExecTool(subs *subsystems) (agentic.Tool, bool) {
+	if subs.ptyMgr == nil {
+		return nil, false
+	}
+	return &tools.PTYExecTool{Mgr: subs.ptyMgr}, true
+}
+
+func makeAgentDrivenTool(subs *subsystems, name string) (agentic.Tool, bool) {
+	if subs.agentPool == nil {
+		return nil, false
+	}
+	toolsList := multiagent.AgentDrivenTools(subs.foregroundOrch, subs.agentPool)
+	for _, t := range toolsList {
+		if t.Schema().Name == name {
+			return t, true
+		}
+	}
+	return nil, false
 }

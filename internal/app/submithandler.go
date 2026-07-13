@@ -125,7 +125,7 @@ func (a *App) maybeSteerOrchestrator(engine *tui.TUI, chat *tui.ChatViewport, te
 	if id := subs.agentView.ActiveAgentID(); id != "" {
 		target = id
 	}
-	chat.AddSystemMessage(fmt.Sprintf("[steer %s] %s", target, text))
+	chat.AddSteeringPending(text)
 	ctx := coreContextForCommand(subs, a)
 	cmd := &commands.OrchestrateCommand{
 		Builder:  subs.orchAdapter,
@@ -149,7 +149,7 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 	if sq := subs.agentMgr.SteeringQueue(); sq != nil {
 		sq.Append(text)
 	}
-	chat.AddSystemMessage(fmt.Sprintf("[steering] %s", text))
+	chat.AddSteeringPending(text)
 	data := subs.footer.Data()
 	data.SteeringPending = text
 	subs.footer.SetData(data)
@@ -166,7 +166,7 @@ func (a *App) maybeSteerWorkflow(engine *tui.TUI, chat *tui.ChatViewport, text s
 	if progress.Status != "running" && progress.Status != "gate" {
 		return false
 	}
-	chat.AddSystemMessage(fmt.Sprintf("[steering] %s", text))
+	chat.AddSteeringPending(text)
 	subs.foregroundOrch.InjectSteering(text)
 	// Show pending indicator in footer until steering is consumed by the model.
 	subs.footer.SetData(tui.FooterData{SteeringPending: text})
@@ -524,7 +524,7 @@ func (a *App) handleHelpCommand() {
 	subs := a.subs
 	var b strings.Builder
 	b.WriteString("# Goa Commands\n\n")
-	for _, cmd := range a.subs.cmdRouter.Registry().All() {
+	for _, cmd := range subs.registry.All() {
 		name := cmd.Name()
 		desc := cmd.ShortHelp()
 		if desc == "" {

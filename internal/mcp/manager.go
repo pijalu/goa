@@ -22,6 +22,7 @@ type Manager struct {
 	clients map[string]client.Client
 	reg     *tools.ToolRegistry
 	factory ClientFactory
+	logger  *agentic.Logger
 }
 
 // ClientFactory creates a client for a server config.
@@ -34,6 +35,14 @@ func NewManager(reg *tools.ToolRegistry) *Manager {
 		reg:     reg,
 		factory: defaultFactory,
 	}
+}
+
+// SetLogger configures a logger used to surface non-fatal errors such as
+// server Close() failures. Passing nil disables logging.
+func (m *Manager) SetLogger(l *agentic.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = l
 }
 
 func defaultFactory(cfg ServerConfig) (client.Client, error) {

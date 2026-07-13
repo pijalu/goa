@@ -55,33 +55,46 @@ type Scene struct {
 
 // compose builds the virtual-buffer canvas from the Scene's layers: each
 // layer's Content is placed at its Rect, higher Z overwriting lower Z where
-// they overlap. Returns the canvas lines (height = max Y+H over layers) and
-// whether any overlay layer is present (affects the diff strategy).
+// they overlap. Only the region that is currently visible or was visible in
+// the previous frame is actually written, so large off-screen histories do
+// not burn CPU per frame, while large scrolls still have the gap lines
+// needed to populate the terminal scrollback. Returns the canvas and whether
+// any overlay layer is present.
 //
 // This is the single place that decides pixel placement. Keeping it here (in
 // the Compositor) means components only declare position/size/content and
 // never reason about overlaps or composition order.
-func (s *Scene) compose() (canvas []string, hasOverlay bool) {
+func (s *Scene) compose(prevViewportTop int) (canvas []string, hasOverlay bool) {
 	height := baseCanvasHeight(s.Layers)
 	if height == 0 {
 		height = 1
 	}
 	canvas = make([]string, height)
 
+	viewportStart := max(0, height-s.TerminalH)
+	visibleEnd := min(height, viewportStart+s.TerminalH)
+	if visibleEnd <= viewportStart {
+		visibleEnd = viewportStart + 1
+	}
+	placeStart := viewportStart
+	if prevViewportTop >= 0 && prevViewportTop < viewportStart {
+		placeStart = prevViewportTop
+	}
+
 	// Base layers first.
 	for _, l := range s.Layers {
 		if l.Kind != LayerOverlay {
-			placeLayer(canvas, l, s.TerminalW)
+			placeLayer(canvas, l, s.TerminalW, placeStart, visibleEnd)
 		}
 	}
 
 	// Overlays, positioned relative to the visible viewport.
 	overlays := overlaysOf(s.Layers)
 	if len(overlays) == 0 {
-		return canvas, false
+		return applyLineResets(canvas, placeStart, visibleEnd), false
 	}
 	canvas = placeOverlays(canvas, overlays, height, s.TerminalH, s.TerminalW)
-	return canvas, true
+	return applyLineResets(canvas, placeStart, visibleEnd), true
 }
 
 // baseCanvasHeight returns the canvas height needed for base (non-overlay)
@@ -125,19 +138,42 @@ func placeOverlays(canvas []string, overlays []Layer, baseHeight, termH, termW i
 		}
 		placed := l
 		placed.Rect = Rect{X: l.Rect.X, Y: absY, W: l.Rect.W, H: l.Rect.H}
-		placeLayer(canvas, placed, termW)
+		placeLayer(canvas, placed, termW, viewportStart, viewportStart+termH)
 	}
 	return canvas
 }
 
 // placeLayer writes a layer's Content onto the canvas at its Rect, padding
 // each content line to the layer's width and truncating overwidth lines.
-func placeLayer(canvas []string, l Layer, termW int) {
-	for i, line := range l.Content {
+// Lines outside the visible region [viewportStart, visibleEnd) are skipped.
+//
+// Rather than iterating every content line and bounds-checking, it computes
+// the content-index subrange that maps into the visible canvas rows and
+// iterates only that. This keeps placeLayer O(visible) even when a layer's
+// Content is the full conversation transcript (the chat layer), so streaming
+// frames do not pay O(history) per layer.
+func placeLayer(canvas []string, l Layer, termW, viewportStart, visibleEnd int) {
+	if len(l.Content) == 0 {
+		return
+	}
+	// y = l.Rect.Y + i must satisfy viewportStart <= y < visibleEnd.
+	start := viewportStart - l.Rect.Y
+	end := visibleEnd - l.Rect.Y
+	if start < 0 {
+		start = 0
+	}
+	if end > len(l.Content) {
+		end = len(l.Content)
+	}
+	if start >= end {
+		return
+	}
+	for i := start; i < end; i++ {
 		y := l.Rect.Y + i
 		if y < 0 || y >= len(canvas) {
 			continue
 		}
+		line := l.Content[i]
 		if vw := visibleWidth(line); vw > termW {
 			line = truncateToWidth(line, termW, "")
 		}
@@ -191,7 +227,7 @@ type AgentFrame struct {
 // AgentFrame produces the plain-text structured view of the Scene.
 // viewportH is the terminal height (number of visible rows).
 func (s *Scene) AgentFrame(viewportH int) AgentFrame {
-	canvas, _ := s.compose()
+	canvas, _ := s.compose(0)
 	height := len(canvas)
 	vTop := height - viewportH
 	if vTop < 0 {
@@ -203,6 +239,7 @@ func (s *Scene) AgentFrame(viewportH int) AgentFrame {
 	}
 
 	frame := AgentFrame{Width: s.TerminalW, Height: viewportH, Cursor: s.Cursor, Nodes: s.Nodes}
+	frame.Nodes = fillNodeText(frame.Nodes, s.Layers)
 
 	// Layers, base then overlays by Z, all ANSI-stripped.
 	ordered := make([]Layer, 0, len(s.Layers))
@@ -274,6 +311,29 @@ func (f *AgentFrame) CursorNode() *AgentNode {
 	return nil
 }
 
+// fillNodeText sets each node's Text by ANSI-stripping its matching layer's
+// content. agentNodeFor defers this O(n) Join+Strip so the live render path
+// (which never builds an AgentFrame) does not pay it every frame for the chat
+// layer; it is paid once here, only when AI tooling requests the DOM.
+func fillNodeText(nodes []AgentNode, layers []Layer) []AgentNode {
+	if len(nodes) == 0 {
+		return nodes
+	}
+	textByLayer := make(map[string]string, len(layers))
+	for _, l := range layers {
+		if _, ok := textByLayer[l.Name]; ok {
+			continue
+		}
+		textByLayer[l.Name] = ansi.Strip(strings.Join(l.Content, "\n"))
+	}
+	for i := range nodes {
+		if text, ok := textByLayer[nodes[i].Name]; ok {
+			nodes[i].Text = text
+		}
+	}
+	return nodes
+}
+
 // Dump returns a human-readable description of the agentic screen model for
 // debugging test failures. It includes the terminal size, cursor, and every
 // node with its bounds and content.
@@ -321,6 +381,7 @@ type Compositor struct {
 	maxLinesRendered    int
 	fullRedrawCount     int
 	firstScrollDone     bool // true after the first viewport scroll; affects scrollback population
+	clearOnShrink       bool // when true, shrinks that overflow scrollback trigger a full redraw
 
 	// cursorVisible tracks the terminal's cursor-show state so we only emit
 	// \x1b[?25h / \x1b[?25l on a real transition, never as a redundant per-frame
@@ -393,14 +454,13 @@ func (c *Compositor) Render(scene *Scene) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	canvas, hasOverlay := scene.compose()
-	// Append per-line resets so SGR attributes / OSC 8 links do not bleed.
-	canvas = applyLineResets(canvas)
+	canvas, hasOverlay := scene.compose(c.previousViewportTop)
 
 	fl := c.computeFrameLocals(width, height)
 	fullRender := func(clear bool) { c.fullFrame(canvas, scene.Cursor, width, height, clear) }
+	resizeRender := func() { c.resizeFrame(canvas, scene.Cursor, width, height) }
 
-	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, fullRender) {
+	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, height, fullRender, resizeRender) {
 		return
 	}
 	c.renderChangePath(canvas, hasOverlay, scene.Cursor, fl, fullRender)
@@ -441,20 +501,28 @@ func (c *Compositor) computeFrameLocals(width, height int) *frameLocals {
 	return fl
 }
 
-func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, fullRender func(bool)) bool {
+func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, height int, fullRender func(bool), resizeRender func()) bool {
 	if len(c.prevLines) == 0 && !widthChanged && !heightChanged {
 		fullRender(false)
 		return true
 	}
 	if widthChanged || heightChanged {
+		// Resize: repaint only the visible viewport and preserve scrollback
+		// (no \x1b[3J, no full re-emit of the transcript). See resizeFrame.
+		resizeRender()
+		return true
+	}
+	// Shrink guard: a full redraw is only required when the shrink could have
+	// left the SCROLLBACK stale, i.e. when we have previously rendered more
+	// lines than fit on screen (maxLinesRendered > height). Pure in-viewport
+	// shrinks are handled correctly by the differential path's trailing-line
+	// clear (writeDifferential), so they no longer force an O(history) full
+	// redraw on every later frame. !hasOverlay because overlays are
+	// viewport-relative and must not be disturbed by a base clear.
+	if c.clearOnShrink && len(canvas) < c.maxLinesRendered && c.maxLinesRendered > height && !hasOverlay {
 		fullRender(true)
 		return true
 	}
-	// The differential path (renderChangePath) handles shrink by clearing just
-	// the freed trailing lines, preserving terminal scrollback. A former
-	// full-erase-on-shrink branch lived here; it only worked because a
-	// now-removed padding hack kept the canvas artificially at its max height,
-	// and without that it wiped scrollback on every legitimate shrink.
 	return false
 }
 
@@ -575,16 +643,57 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
 
-	c.cursorRow = max(0, len(canvas)-1)
-	if cursor == nil {
-		// appendCursorSeq already set hardwareCursorRow when the cursor is shown.
-		c.hardwareCursorRow = c.cursorRow
+	c.applyFrameTracking(canvas, cursor, width, height, clear)
+}
+
+// resizeFrame repaints only the visible viewport after a terminal size change.
+// Unlike fullFrame(clear=true), it does NOT emit \x1b[3J (so existing
+// scrollback is preserved) and writes only the last `height` canvas rows
+// instead of the whole transcript. On resize the terminal already holds the
+// prior scrollback; the reflowed visible rows are all that must be repainted,
+// so we avoid re-emitting the entire history (which was slow on long sessions
+// and discarded the user's scroll position).
+func (c *Compositor) resizeFrame(canvas []string, cursor *CursorPos, width, height int) {
+	c.fullRedrawCount++
+	var buf strings.Builder
+	buf.WriteString("\x1b[?2026h")
+	buf.WriteString("\x1b[2J\x1b[H") // clear screen only; keep scrollback (no \x1b[3J)
+	start := len(canvas) - height
+	if start < 0 {
+		start = 0
 	}
+	for i := start; i < len(canvas); i++ {
+		if i > start {
+			buf.WriteString("\r\n")
+		}
+		line := canvas[i]
+		if vw := visibleWidth(line); vw > width {
+			line = truncateToWidth(line, width, "")
+		}
+		buf.WriteString(line)
+	}
+	vtop := max(0, len(canvas)-height)
+	c.appendCursorSeq(&buf, cursor, len(canvas), width, vtop, height)
+	buf.WriteString("\x1b[?2026l")
+	c.terminal.Write([]byte(buf.String()))
+
+	// clear=false so maxLinesRendered (the shrink-detection high-water mark) is
+	// preserved rather than reset to the visible-only length.
+	c.applyFrameTracking(canvas, cursor, width, height, false)
+}
+
+// applyFrameTracking updates the compositor's diff baseline and viewport
+// anchors after a full-screen repaint (fullFrame or resizeFrame). It is the
+// shared tail of both paths so they cannot drift in what they record.
+func (c *Compositor) applyFrameTracking(canvas []string, cursor *CursorPos, width, height int, clear bool) {
+	c.cursorRow = max(0, len(canvas)-1)
+	c.hardwareCursorRow = c.cursorRow
 	if clear {
 		c.maxLinesRendered = len(canvas)
 	} else {
 		c.maxLinesRendered = max(c.maxLinesRendered, len(canvas))
 	}
+	vtop := max(0, len(canvas)-height)
 	c.previousViewportTop = vtop
 	c.viewportTop = vtop
 	c.firstScrollDone = len(canvas) > height
@@ -863,11 +972,22 @@ func (c *Compositor) renderCursorOnly(cp *CursorPos, totalLines, width, vtop, he
 	c.terminal.Write([]byte(buf.String()))
 }
 
-// applyLineResets appends a reset sequence to every non-image line so SGR
-// attributes and OSC 8 hyperlinks do not bleed across lines.
-func applyLineResets(lines []string) []string {
+// applyLineResets appends a reset sequence to every non-image line in the
+// visible region [viewportStart, visibleEnd) so SGR attributes and OSC 8
+// links do not bleed across lines. Off-screen lines are left untouched.
+func applyLineResets(lines []string, viewportStart, visibleEnd int) []string {
 	const reset = SEGMENT_RESET
-	for i, line := range lines {
+	if viewportStart < 0 {
+		viewportStart = 0
+	}
+	if visibleEnd > len(lines) {
+		visibleEnd = len(lines)
+	}
+	if visibleEnd <= viewportStart {
+		return lines
+	}
+	for i := viewportStart; i < visibleEnd; i++ {
+		line := lines[i]
 		if isImageLine(line) {
 			continue
 		}

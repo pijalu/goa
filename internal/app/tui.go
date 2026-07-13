@@ -5,16 +5,20 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
+	bgpanel "github.com/pijalu/goa/tui/background"
 	goaltui "github.com/pijalu/goa/tui/goal"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
@@ -22,11 +26,11 @@ import (
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
-	engine, chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter := a.createTUIComponents()
+	engine, chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter, bgPanel := a.createTUIComponents()
 	subs.goalBubble = goalBubble
 	a.configureKeyLogging(engine)
 	a.attachInputHandlers(inp, engine)
-	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter)
+	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, bgPanel, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
 	a.loadInputHistory(inp)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
@@ -36,7 +40,7 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 		os.Exit(1)
 	}
 
-	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, pendingInputBox, statusBar, inp)
+	a.finalizeTUI(engine, chat, agentContent, agentTabBar, statusFooter, pendingInputBox, statusBar, bgPanel, inp)
 	return engine, chat, inp
 }
 
@@ -45,7 +49,7 @@ func headerFrom(projectDir string) *tui.Header {
 	return h
 }
 
-func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.PendingInputBox, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer) {
+func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.PendingInputBox, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
 	projectDir := a.subs.projectDir
 	ft := tui.NewProcessTerminal()
 	engine := tui.NewTUI(ft)
@@ -59,7 +63,8 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 	statusFooter := tui.NewFooter()
 	statusFooter.SetData(tui.FooterData{Workdir: projectDir})
 	statusFooter.RefreshGit()
-	return engine, chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter
+	bgPanel := bgpanel.NewPanel(nil)
+	return engine, chat, agentContent, agentTabBar, pendingInputBox, statusBar, goalBubble, inp, statusFooter, bgPanel
 }
 
 func (a *App) configureKeyLogging(engine *tui.TUI) {
@@ -124,15 +129,20 @@ func (a *App) handleEscape() {
 
 func (a *App) stopBackgroundProcesses() {
 	bg, ok := a.subs.toolRegistry.Get("bg_exec")
-	if !ok {
-		return
+	if ok {
+		if stopper, ok := bg.(interface{ StopAll() }); ok {
+			stopper.StopAll()
+		}
 	}
-	if stopper, ok := bg.(interface{ StopAll() }); ok {
-		stopper.StopAll()
+	// Shut down gopls so it does not leak across restarts/reloads.
+	if a.subs.lspMgr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = a.subs.lspMgr.Close(ctx)
+		cancel()
 	}
 }
 
-func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, inp *tui.Editor, footer *tui.Footer) {
+func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
 	_ = agentContent
 	_ = agentTabBar
 	engine.AddChild(header)
@@ -140,6 +150,7 @@ func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.Chat
 	engine.AddChild(pendingInputBox)
 	engine.AddChild(statusBar)
 	engine.AddChild(goalBubble)
+	engine.AddChild(bgPanel)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)
@@ -155,7 +166,7 @@ func (a *App) configureInputEditor(inp *tui.Editor, engine *tui.TUI) {
 	inp.SetTUI(engine)
 }
 
-func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, footer *tui.Footer, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, inp *tui.Editor) {
+func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, footer *tui.Footer, pendingInputBox *tui.PendingInputBox, statusBar *tui.StatusMsg, bgPanel *bgpanel.Panel, inp *tui.Editor) {
 	subs := a.subs
 	statusBar.SetTUI(engine)
 	statusBar.SetOnFrameChange(func() {
@@ -163,6 +174,12 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 			chat.InvalidateRunningToolWidgets()
 		}
 	})
+
+	if subs.bgMgr != nil && bgPanel != nil {
+		bgPanel.SetSnapshot(func() []bgpanel.Task {
+			return taskSnapshotsFromManager(subs.bgMgr)
+		})
+	}
 
 	engine.SetTitle("goa - " + filepath.Base(subs.projectDir))
 
@@ -173,8 +190,23 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 	subs.pendingInputBox = pendingInputBox
 	subs.agentContent = agentContent
 	subs.agentTabBar = agentTabBar
+	subs.bgPanel = bgPanel
 
 	footer.SetData(a.initialFooterData())
+}
+
+func taskSnapshotsFromManager(mgr *background.Manager) []bgpanel.Task {
+	tasks := mgr.List()
+	out := make([]bgpanel.Task, len(tasks))
+	for i, t := range tasks {
+		out[i] = bgpanel.Task{
+			ID:      t.ID,
+			Command: t.Command,
+			Status:  string(t.Status),
+			PID:     t.PID,
+		}
+	}
+	return out
 }
 
 func (a *App) initialFooterData() tui.FooterData {
@@ -194,7 +226,7 @@ func (a *App) initialFooterData() tui.FooterData {
 }
 
 func (a *App) buildCommandCompleter() *tui.CommandCompleter {
-	cmdNames, descriptions := collectCmdNames(a.subs.cmdRouter.Registry())
+	cmdNames, descriptions := collectCmdNames(a.subs.registry)
 	addAliases(cmdNames, descriptions, a.subs.cfg.Aliases)
 
 	cmdCompleter := tui.NewCommandCompleter(cmdNames, descriptions)
@@ -239,7 +271,7 @@ func addAliases(cmdNames []string, descriptions map[string]string, aliases map[s
 func (a *App) buildArgCompleter() func(cmdName, argPrefix string) []tui.Completion {
 	return func(cmdName, argPrefix string) []tui.Completion {
 		name := strings.TrimPrefix(cmdName, "/")
-		cmd, found := resolveCommandOrAlias(name, a.subs.cfg.Aliases, a.subs.cmdRouter.Registry())
+		cmd, found := resolveCommandOrAlias(a.subs.registry, name, a.subs.cfg.Aliases)
 		if !found {
 			return nil
 		}
@@ -268,7 +300,7 @@ func (a *App) buildArgCompleter() func(cmdName, argPrefix string) []tui.Completi
 }
 
 // resolveCommandOrAlias looks up a command by name, resolving aliases if not found.
-func resolveCommandOrAlias(name string, aliases map[string]string, registry *core.CommandRegistry) (core.Command, bool) {
+func resolveCommandOrAlias(registry *core.CommandRegistry, name string, aliases map[string]string) (core.Command, bool) {
 	cmd, found := registry.Resolve(name)
 	if found {
 		return cmd, true

@@ -5,7 +5,6 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -108,14 +107,6 @@ func (a *App) recordCompact(kind string) {
 	} else {
 		a.compacts++
 	}
-}
-
-// maxToolCallLevel returns the maximum of two ToolCallLevel values.
-func maxToolCallLevel(a, b ToolCallLevel) ToolCallLevel {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func (a *App) clearStats() {
@@ -336,14 +327,6 @@ func (a *App) findPendingTool() *tui.ToolExecutionComponent {
 	return nil
 }
 
-func (a *App) clearToolBusy() {
-	// After a tool result the harness sends the updated context back to the
-	// LLM. Show "Sending request..." so the UI does not prematurely report
-	// "Answering..." while the model is still being prepared.
-	a.subs.statusMsg.Show("Sending request...")
-	a.subs.footer.SetModelBusy(false)
-}
-
 // setStreamingStatus shows the most informative status label for the current
 // phase. When a tool batch is in progress it shows "Tool calling (X/Y)",
 // otherwise "Answering...".
@@ -381,19 +364,6 @@ func (a *App) failPendingTools() {
 	if interrupted > 0 && a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
-}
-
-func (a *App) toolStatusFromResult(text string) tui.ToolStatus {
-	trimmed := strings.TrimSpace(text)
-	// Budget-exceeded calls did not actually run; surface them as errors (✗)
-	// so the user is not misled into thinking the tool succeeded.
-	if strings.HasPrefix(trimmed, agentic.ToolBudgetResultPrefix) {
-		return tui.ToolError
-	}
-	if strings.HasPrefix(trimmed, "Error:") {
-		return tui.ToolError
-	}
-	return tui.ToolSuccess
 }
 
 func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
@@ -505,8 +475,11 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 		a.subs.statusMsg.Show("Answering...")
 	case agentic.StateToolCall:
 		activity = "tool calling"
-		mainActivity = a.toolCallProgressLabel()
-		a.subs.statusMsg.Show(mainActivity)
+		// Keep the chat spinner busy, but the footer model spinner is not
+		// the model generating — it is a tool running. The tool progress is
+		// shown in the chat status spinner instead.
+		mainActivity = ""
+		a.subs.statusMsg.Show(a.toolCallProgressLabel())
 	case agentic.StateToolResult:
 		// The harness is sending tool results back to the LLM. Keep the
 		// spinner active with the most accurate label: tool progress if
@@ -534,38 +507,36 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
-	subs.footer.SetModelBusy(true)
-}
-
-// toolCallProgressLabel returns "Tool calling (X/Y)" when we know how many
-// calls are in the current batch and how many have been seen so far.
-func (a *App) toolCallProgressLabel() string {
-	total := 0
-	seen := 0
-	if a.subs.agentMgr != nil {
-		if agent := a.subs.agentMgr.CurrentAgent(); agent != nil {
-			total = agent.BufferedToolCallCount()
-		}
-	}
-	a.statsMu.Lock()
-	seen = a.toolResultsSeen
-	a.statsMu.Unlock()
-
-	if total > 1 {
-		return fmt.Sprintf("Tool calling (%d/%d)", min(seen+1, total), total)
-	}
-	if total == 1 {
-		return "Tool calling (1/1)"
-	}
-	return "Tool calling"
+	// Only the main model spinner for actual model generation states;
+	// tool calls are surfaced by the chat status spinner, not the model
+	// spinner in the footer.
+	subs.footer.SetModelBusy(mainActivity != "")
 }
 
 func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	oldText := a.subs.statusMsg.Text()
 	// Finalize any active thinking/content stream before rendering a tool call.
-	// The streaming path emits EventToolCall without a preceding state change,
-	// so the stream state machine must be broken here.
 	a.endStreamIfDifferent(agentic.StateToolCall)
+
+	// Check if this is a streaming update (IsDelta=true) for an existing tool call.
+	if ev.IsDelta {
+		a.handleStreamingToolCallUpdate(ev)
+		return
+	}
+
+	// Check if a streaming widget already exists for this tool call ID.
+	// If so, transition it to "running" instead of creating a new one.
+	if ev.ToolCallID != "" && a.subs.activeTools != nil {
+		if existing, ok := a.subs.activeTools[ev.ToolCallID]; ok {
+			existing.SetArgsComplete()
+			existing.SetStatus(tui.ToolRunning)
+			existing.SetArgsJSON(ev.ToolInput)
+			label := a.toolCallProgressLabel()
+			a.subs.statusMsg.Show(label)
+			a.setToolCallingFooter(label)
+			return
+		}
+	}
 
 	a.statsMu.Lock()
 	a.toolCallsTotal++
@@ -587,42 +558,59 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	a.subs.statusMsg.Show(label)
 	tc.SetStatus(tui.ToolRunning)
 
-	// Keep the footer busy indicator spinning during the tool call. The
-	// streaming path may emit EventToolCall without a preceding state change,
-	// so the footer must be updated here as well as in handleStateChange.
-	subs := a.subs
-	subs.footer.SetData(tui.FooterData{
-		Workdir:                subs.projectDir,
-		Model:                  activeModelDisplay(subs),
-		Profile:                string(subs.effectiveModeState().Major),
-		Mode:                   string(subs.effectiveModeState().Autonomy),
-		Activity:               "tool calling",
-		MainActivity:           label,
-		CompanionModel:         companionModelDisplay(subs),
-		Provider:               subs.cfg.ActiveProvider,
-		ThinkingLevel:          mainThinkingLevel(subs),
-		CompanionThinkingLevel: companionThinkingLevel(subs),
-	})
-	subs.footer.SetModelBusy(true)
-
-	// Update terminal title for bash commands
-	if ev.ToolName == "bash" && a.subs.tuiEngine != nil {
-		var params struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal([]byte(ev.ToolInput), &params); err == nil && params.Command != "" {
-			cmd := params.Command
-			if len(cmd) > 60 {
-				cmd = cmd[:57] + "..."
-			}
-			a.subs.tuiEngine.SetTitle("goa - $ " + cmd)
-		}
-	}
+	// The footer model spinner is not used during a tool call; only the chat
+	// status spinner shows the tool's progress.
+	a.setToolCallingFooter(label)
+	a.setBashTitle(ev.ToolName, ev.ToolInput)
 
 	if a.subs.logger != nil {
 		a.subs.logger.Log(agentic.Info, "[status] handleToolCall: tool=%s oldText=%q newText=%q visible=%v",
 			ev.ToolName, oldText, a.subs.statusMsg.Text(), a.subs.statusMsg.IsVisible())
 	}
+}
+
+// handleStreamingToolCallUpdate processes a streaming tool call update
+// (IsDelta=true). It creates or updates a tool widget with partial args.
+func (a *App) handleStreamingToolCallUpdate(ev *agentic.OutputEvent) {
+	if tc := a.findActiveToolWidget(ev.ToolCallID, ev.ToolName); tc != nil {
+		tc.SetArgsPartial(ev.ToolInput)
+		return
+	}
+	a.createStreamingToolWidget(ev.ToolCallID, ev.ToolName, ev.ToolInput)
+}
+
+// findActiveToolWidget returns an existing widget for the given tool call ID
+// or tool name when it is still pending.
+func (a *App) findActiveToolWidget(toolCallID, toolName string) *tui.ToolExecutionComponent {
+	if toolCallID != "" && a.subs.activeTools != nil {
+		if existing, ok := a.subs.activeTools[toolCallID]; ok {
+			return existing
+		}
+	}
+	active := a.subs.activeTool
+	if active != nil && active.ToolName() == toolName && active.Status() == tui.ToolPending {
+		return active
+	}
+	return nil
+}
+
+// createStreamingToolWidget creates a new pending tool widget for a streaming
+// tool call and updates the status label.
+func (a *App) createStreamingToolWidget(toolCallID, toolName, toolInput string) {
+	tc := a.subs.chat.AddToolExecution(toolName, toolInput)
+	if toolCallID != "" {
+		if a.subs.activeTools == nil {
+			a.subs.activeTools = make(map[string]*tui.ToolExecutionComponent)
+		}
+		a.subs.activeTools[toolCallID] = tc
+	} else {
+		a.subs.activeTool = tc
+	}
+	label := "Streaming tool call..."
+	if toolName != "" {
+		label = "Calling " + toolName + "..."
+	}
+	a.subs.statusMsg.Show(label)
 }
 
 func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {

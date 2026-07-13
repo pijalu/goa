@@ -5,102 +5,44 @@
 package tools
 
 import (
-	"bufio"
 	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
-	"os/signal"
-	"sync"
-	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/background"
 )
 
-// BGProcess represents a running background process.
-type BGProcess struct {
-	ID        string
-	Command   string
-	PID       int
-	StartTime time.Time
-	Cmd       *exec.Cmd
-	Stdout    *ringBuffer
-	Stderr    *ringBuffer
-	Stdin     io.WriteCloser
-	done      chan struct{}
-	exitCode  atomic.Int32 // valid after done is closed
-	scannerWg sync.WaitGroup // tracks output scanner goroutines
-}
-
-// ringBuffer is a circular buffer for process output.
-type ringBuffer struct {
-	mu    sync.Mutex
-	buf   []string
-	size  int
-	pos   int
-	count int
-}
-
-func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{
-		buf:  make([]string, size),
-		size: size,
-	}
-}
-
-func (rb *ringBuffer) Write(line string) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	rb.buf[rb.pos] = line
-	rb.pos = (rb.pos + 1) % rb.size
-	if rb.count < rb.size {
-		rb.count++
-	}
-}
-
-func (rb *ringBuffer) ReadLast(n int) []string {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if n > rb.count {
-		n = rb.count
-	}
-	result := make([]string, n)
-	for i := 0; i < n; i++ {
-		idx := (rb.pos - n + i) % rb.size
-		if idx < 0 {
-			idx += rb.size
-		}
-		result[i] = rb.buf[idx]
-	}
-	return result
-}
-
-// BGExecTool manages background processes with pipe I/O and ring buffer output.
+// BGExecTool manages background processes using a durable task manager.
 type BGExecTool struct {
-	mu      sync.RWMutex
-	procs   map[string]*BGProcess
-	counter int
+	mgr *background.Manager
 }
 
-// NewBGExecTool creates a new BGExecTool.
+// NewBGExecTool creates a new BGExecTool with an in-memory manager.
 func NewBGExecTool() *BGExecTool {
-	t := &BGExecTool{
-		procs: make(map[string]*BGProcess),
+	mgr, _ := background.NewManager("")
+	return NewBGExecToolWithManager(mgr)
+}
+
+// NewBGExecToolWithPath creates a BGExecTool that persists task metadata to
+// the given JSON path.
+func NewBGExecToolWithPath(path string) (*BGExecTool, error) {
+	mgr, err := background.NewManager(path)
+	if err != nil {
+		return nil, err
 	}
-	// Register cleanup on exit
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-c
-		t.StopAll()
-	}()
-	return t
+	return NewBGExecToolWithManager(mgr), nil
+}
+
+// NewBGExecToolWithManager creates a BGExecTool using the provided manager.
+// This lets the host share a single durable manager between the tool and the
+// TUI status panel. The tool does not install process-signal handlers;
+// shutdown ordering is owned by the host, which calls StopAll() on teardown.
+func NewBGExecToolWithManager(mgr *background.Manager) *BGExecTool {
+	return &BGExecTool{mgr: mgr}
 }
 
 // Schema returns the tool schema for bg_exec.
@@ -140,7 +82,7 @@ func (t *BGExecTool) Schema() agentic.ToolSchema {
 	}
 }
 
-// bgExecCommon holds fields common across all bg_exec actions.
+// bgExecParams holds fields common across all bg_exec actions.
 type bgExecParams struct {
 	Action    string            `json:"action"`
 	ID        string            `json:"id"`
@@ -208,110 +150,11 @@ func (t *BGExecTool) start(p bgExecParams) (string, error) {
 		}
 	}
 
-	t.mu.Lock()
-	t.counter++
-	id := fmt.Sprintf("proc-%d", t.counter)
-	t.mu.Unlock()
-
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
-	}
-	cmd := exec.Command(shell, "-c", p.Command)
-
-	if p.Workdir != "" {
-		cmd.Dir = p.Workdir
-	}
-
-	// Set up pipes
-	stdout, err := cmd.StdoutPipe()
+	task, err := t.mgr.Start(p.Command, p.Workdir, p.Env)
 	if err != nil {
-		return "", bgErr("pipe_error", fmt.Sprintf("stdout pipe: %v", err))
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return "", bgErr("pipe_error", fmt.Sprintf("stderr pipe: %v", err))
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", bgErr("pipe_error", fmt.Sprintf("stdin pipe: %v", err))
-	}
-
-	if err := cmd.Start(); err != nil {
 		return "", bgErr("start_failed", err.Error())
 	}
-
-	proc := &BGProcess{
-		ID:        id,
-		Command:   p.Command,
-		PID:       cmd.Process.Pid,
-		StartTime: time.Now(),
-		Cmd:       cmd,
-		Stdout:    newRingBuffer(10000),
-		Stderr:    newRingBuffer(10000),
-		Stdin:     stdin,
-		done:      make(chan struct{}),
-	}
-
-	// Start output readers
-	proc.scannerWg.Add(2)
-	go func() {
-		defer proc.scannerWg.Done()
-		t.readOutput(proc, stdout, proc.Stdout)
-	}()
-	go func() {
-		defer proc.scannerWg.Done()
-		t.readOutput(proc, stderr, proc.Stderr)
-	}()
-
-	// Wait in background
-	go func() {
-		// Wait for the scanner goroutines to finish reading the stdout/stderr
-		// pipes before calling cmd.Wait(). Wait() closes the read end of the
-		// pipes, which races with the scanners and can produce a spurious
-		// "file already closed" error that truncates output.
-		proc.scannerWg.Wait()
-		// Reap the process and collect its exit code.
-		_ = proc.Cmd.Wait()
-		if proc.Cmd.ProcessState != nil {
-			proc.exitCode.Store(int32(proc.Cmd.ProcessState.ExitCode()))
-		}
-		close(proc.done)
-	}()
-
-	t.mu.Lock()
-	t.procs[id] = proc
-	t.mu.Unlock()
-
-	return fmt.Sprintf("[bg_exec: start] Process %s started — PID %d\nCommand: %s", id, proc.PID, p.Command), nil
-}
-
-// maxScanLineLen is the largest single line readOutput will buffer.
-// The default bufio.Scanner token size is 64 KiB, which silently corrupts
-// long lines (e.g. minified bundles). 1 MiB covers those without unbounded
-// memory growth.
-const maxScanLineLen = 1 << 20
-
-// readScanBufSize is the initial buffer size for the scanner used in
-// readOutput. A zero-length initial buffer (< 1.21) was known to confuse
-// the scanner's growth logic on some platforms, causing lines near the
-// buffer boundary to be silently truncated. Using a full-size initial
-// buffer ensures the first read fills it completely before any grow
-// decision is made.
-const readScanBufSize = 64 * 1024
-
-func (t *BGExecTool) readOutput(proc *BGProcess, reader io.ReadCloser, buf *ringBuffer) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, readScanBufSize), maxScanLineLen)
-	for scanner.Scan() {
-		buf.Write(scanner.Text())
-	}
-	// Surface scanner failures (e.g. a line exceeding maxScanLineLen) instead
-	// of dropping them silently. There is no logger here, so record a marker
-	// so consumers know output may be truncated.
-	if err := scanner.Err(); err != nil {
-		buf.Write(fmt.Sprintf("[bg_exec: read error: %v]", err))
-	}
+	return fmt.Sprintf("[bg_exec: start] Process %s started — PID %d\nCommand: %s", task.ID, task.PID, p.Command), nil
 }
 
 func (t *BGExecTool) status(p bgExecParams) (string, error) {
@@ -320,11 +163,8 @@ func (t *BGExecTool) status(p bgExecParams) (string, error) {
 		return "", bgErr("missing_id", "id is required for status action")
 	}
 
-	t.mu.RLock()
-	proc, ok := t.procs[id]
-	t.mu.RUnlock()
-
-	if !ok {
+	task := t.mgr.Get(id)
+	if task == nil {
 		return "", &internal.ToolError{
 			Tool: "bg_exec", Type: "process_not_found",
 			Detail:   fmt.Sprintf("Process %q not found", id),
@@ -332,14 +172,12 @@ func (t *BGExecTool) status(p bgExecParams) (string, error) {
 		}
 	}
 
-	select {
-	case <-proc.done:
+	if task.Status == background.StatusCompleted || task.Status == background.StatusError || task.Status == background.StatusKilled {
 		return fmt.Sprintf("[bg_exec: status] %s — exited with code %d (ran for %s)",
-			id, proc.exitCode.Load(), time.Since(proc.StartTime).Round(time.Second)), nil
-	default:
-		return fmt.Sprintf("[bg_exec: status] %s — running (PID %d, uptime %s)",
-			id, proc.PID, time.Since(proc.StartTime).Round(time.Second)), nil
+			id, task.ExitCode, time.Since(task.StartTime).Round(time.Second)), nil
 	}
+	return fmt.Sprintf("[bg_exec: status] %s — running (PID %d, uptime %s)",
+		id, task.PID, time.Since(task.StartTime).Round(time.Second)), nil
 }
 
 func (t *BGExecTool) read(p bgExecParams) (string, error) {
@@ -353,11 +191,7 @@ func (t *BGExecTool) read(p bgExecParams) (string, error) {
 		return "", bgErr("missing_id", "id is required for read action")
 	}
 
-	t.mu.RLock()
-	proc, ok := t.procs[id]
-	t.mu.RUnlock()
-
-	if !ok {
+	if t.mgr.Get(id) == nil {
 		return "", &internal.ToolError{
 			Tool: "bg_exec", Type: "process_not_found",
 			Detail:   fmt.Sprintf("Process %q not found", id),
@@ -365,8 +199,7 @@ func (t *BGExecTool) read(p bgExecParams) (string, error) {
 		}
 	}
 
-	stdoutLines := proc.Stdout.ReadLast(tailLines)
-	stderrLines := proc.Stderr.ReadLast(tailLines)
+	stdoutLines, stderrLines := t.mgr.ReadOutput(id, tailLines)
 
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "[bg_exec: read] %s — last %d lines\n", id, tailLines)
@@ -389,19 +222,7 @@ func (t *BGExecTool) write(p bgExecParams) (string, error) {
 		return "", bgErr("missing_id", "id is required for write action")
 	}
 
-	t.mu.RLock()
-	proc, ok := t.procs[id]
-	t.mu.RUnlock()
-
-	if !ok {
-		return "", &internal.ToolError{
-			Tool: "bg_exec", Type: "process_not_found",
-			Detail:   fmt.Sprintf("Process %q not found", id),
-			HintText: "Use list action to see active processes.",
-		}
-	}
-
-	if _, err := io.WriteString(proc.Stdin, text+"\n"); err != nil {
+	if err := t.mgr.WriteInput(id, text); err != nil {
 		return "", bgErr("write_failed", fmt.Sprintf("write to stdin: %v", err))
 	}
 	return fmt.Sprintf("[bg_exec: write] %s — wrote %d bytes to stdin", id, len(text)), nil
@@ -413,61 +234,37 @@ func (t *BGExecTool) stop(p bgExecParams) (string, error) {
 		return "", bgErr("missing_id", "id is required for stop action")
 	}
 
-	t.mu.Lock()
-	proc, ok := t.procs[id]
-	delete(t.procs, id)
-	t.mu.Unlock()
-
-	if !ok {
-		return "", bgErr("process_not_found", fmt.Sprintf("Process %q not found", id))
+	task, err := t.mgr.Stop(id, sigkillGrace)
+	if err != nil {
+		if task == nil {
+			return "", bgErr("process_not_found", fmt.Sprintf("Process %q not found", id))
+		}
+		return "", bgErr("signal_failed", err.Error())
 	}
 
-	return terminateProc(proc, id)
+	if task.Status == background.StatusCompleted || task.Status == background.StatusError {
+		return fmt.Sprintf("[bg_exec: stop] %s — already exited (code %d)", id, task.ExitCode), nil
+	}
+	return fmt.Sprintf("[bg_exec: stop] %s — terminated", id), nil
 }
 
-// sigkillGrace is the time terminateProc waits after SIGTERM before SIGKILL.
+// sigkillGrace is the time stop waits after SIGTERM before SIGKILL.
 const sigkillGrace = 5 * time.Second
 
-// terminateProc sends SIGTERM then SIGKILL (after a grace period) to a process
-// and reports the outcome. It is safe to call on a process that has already
-// exited. Signal errors are surfaced instead of being discarded.
-func terminateProc(proc *BGProcess, id string) (string, error) {
-	select {
-	case <-proc.done:
-		return fmt.Sprintf("[bg_exec: stop] %s — already exited (code %d)", id, proc.exitCode.Load()), nil
-	default:
-	}
-	if err := proc.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		return "", bgErr("signal_failed", fmt.Sprintf("SIGTERM %s: %v", id, err))
-	}
-	select {
-	case <-proc.done:
-		return fmt.Sprintf("[bg_exec: stop] %s — terminated (SIGTERM)", id), nil
-	case <-time.After(sigkillGrace):
-	}
-	if err := proc.Cmd.Process.Kill(); err != nil {
-		return "", bgErr("signal_failed", fmt.Sprintf("SIGKILL %s: %v", id, err))
-	}
-	<-proc.done
-	return fmt.Sprintf("[bg_exec: stop] %s — force killed (SIGKILL)", id), nil
-}
-
 func (t *BGExecTool) list() (string, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if len(t.procs) == 0 {
+	tasks := t.mgr.List()
+	if len(tasks) == 0 {
 		return "[bg_exec: list] No active processes", nil
 	}
 
 	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "[bg_exec: list] %d active process(es)\n", len(t.procs))
-	for id, proc := range t.procs {
-		select {
-		case <-proc.done:
-			fmt.Fprintf(&buf, "  %s — exited (%d), ran %s\n", id, proc.exitCode.Load(), time.Since(proc.StartTime).Round(time.Second))
+	fmt.Fprintf(&buf, "[bg_exec: list] %d process(es)\n", len(tasks))
+	for _, task := range tasks {
+		switch task.Status {
+		case background.StatusRunning:
+			fmt.Fprintf(&buf, "  %s — PID %d, running %s\n", task.ID, task.PID, time.Since(task.StartTime).Round(time.Second))
 		default:
-			fmt.Fprintf(&buf, "  %s — PID %d, running %s\n", id, proc.PID, time.Since(proc.StartTime).Round(time.Second))
+			fmt.Fprintf(&buf, "  %s — %s (%d), ran %s\n", task.ID, task.Status, task.ExitCode, time.Since(task.StartTime).Round(time.Second))
 		}
 	}
 	return buf.String(), nil
@@ -475,30 +272,11 @@ func (t *BGExecTool) list() (string, error) {
 
 // StopAll terminates all running background processes.
 func (t *BGExecTool) StopAll() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	for id, proc := range t.procs {
-		stopProcGraceful(proc, 3*time.Second)
-		delete(t.procs, id)
-	}
+	t.mgr.StopAll(3 * time.Second)
 }
 
-// stopProcGraceful signals a process (skipping if already exited) and waits
-// up to grace for it to terminate before escalating to SIGKILL.
-func stopProcGraceful(proc *BGProcess, grace time.Duration) {
-	select {
-	case <-proc.done:
-		return
-	default:
-	}
-	_ = proc.Cmd.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-proc.done:
-	case <-time.After(grace):
-		_ = proc.Cmd.Process.Kill()
-	}
-}
+// Manager returns the underlying background manager. Exported for tests.
+func (t *BGExecTool) Manager() *background.Manager { return t.mgr }
 
 // bgErr builds a *internal.ToolError for bg_exec actions.
 func bgErr(typ, detail string) *internal.ToolError {

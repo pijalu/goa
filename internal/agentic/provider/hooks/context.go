@@ -94,6 +94,9 @@ type ProviderError struct {
 }
 
 func (e *ProviderError) Error() string {
+	if e == nil || e.Err == nil {
+		return "provider error"
+	}
 	return e.Err.Error()
 }
 

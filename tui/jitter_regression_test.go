@@ -124,30 +124,39 @@ func rowErased(diff string, row int) bool {
 // frame content under synchronized output.
 func cursorSeqIsSynced(writes []string) bool {
 	for _, w := range writes {
-		open := strings.Index(w, "\x1b[?2026h")
-		close := strings.Index(w, "\x1b[?2026l")
-		if open < 0 || close < open {
+		if writeHasCursorInSync(w) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeHasCursorInSync(w string) bool {
+	open := strings.Index(w, "\x1b[?2026h")
+	close := strings.Index(w, "\x1b[?2026l")
+	if open < 0 || close < open {
+		return false
+	}
+	body := w[open:close]
+	return bodyHasCursorCUP(body)
+}
+
+func bodyHasCursorCUP(body string) bool {
+	for i := 0; i < len(body); i++ {
+		if !strings.HasPrefix(body[i:], "\x1b[") {
 			continue
 		}
-		body := w[open:close]
-		// Find a CUP that is not immediately a line-erase (content clears are
-		// \x1b[r;1H\x1b[2K; the cursor CUP has a non-1 column or no trailing 2K).
-		for i := 0; i < len(body); i++ {
-			if !strings.HasPrefix(body[i:], "\x1b[") {
-				continue
-			}
-			end := strings.IndexByte(body[i:], 'H')
-			if end < 0 {
-				break
-			}
-			cup := body[i : i+end+1]
-			i += end + 1
-			if !strings.Contains(cup, ";") {
-				continue
-			}
-			if !strings.HasSuffix(cup, ";1H") || !strings.HasPrefix(body[i:], "\x1b[2K") {
-				return true // a CUP that is not a content-line clear = cursor seq
-			}
+		end := strings.IndexByte(body[i:], 'H')
+		if end < 0 {
+			break
+		}
+		cup := body[i : i+end+1]
+		i += end + 1
+		if !strings.Contains(cup, ";") {
+			continue
+		}
+		if !strings.HasSuffix(cup, ";1H") || !strings.HasPrefix(body[i:], "\x1b[2K") {
+			return true // a CUP that is not a content-line clear = cursor seq
 		}
 	}
 	return false

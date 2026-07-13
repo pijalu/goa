@@ -7,6 +7,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
+	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	_ "github.com/pijalu/goa/internal/agentic/provider/openai"
 )
@@ -35,9 +38,10 @@ type ModelListResponse struct {
 // ProviderManager manages active provider selection, model listing,
 // and connection testing.
 type ProviderManager struct {
-	cfg    *config.Config
-	client *http.Client
-	Cache  *ModelCache
+	cfg       *config.Config
+	client    *http.Client
+	Cache     *ModelCache
+	authStore *auth.Store
 }
 
 // NewProviderManager creates a provider manager.
@@ -49,6 +53,13 @@ func NewProviderManager(cfg *config.Config) *ProviderManager {
 		},
 		Cache: NewModelCache(),
 	}
+}
+
+// SetAuthStore wires the encrypted credential store so the provider manager
+// can use stored OAuth tokens or API keys when the provider config does not
+// specify an explicit API key.
+func (pm *ProviderManager) SetAuthStore(store *auth.Store) {
+	pm.authStore = store
 }
 
 // Active returns the currently active provider config and resolved model name.
@@ -156,8 +167,8 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	if provider.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	if key := pm.effectiveAPIKey(provider); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
 	resp, err := pm.client.Do(req)
@@ -702,7 +713,7 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	}
 
 	opts := agenticprovider.StreamOptions{MaxRetries: 2}
-	applyProviderStreamOptions(&opts, pCfg)
+	applyProviderStreamOptions(&opts, pCfg, pm.authStore)
 	applyModelStreamOptions(&opts, mCfg)
 	if opts.CacheRetention == "" {
 		opts.CacheRetention = agenticprovider.CacheRetentionShort
@@ -711,13 +722,41 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	return opts
 }
 
-func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
+// effectiveAPIKey resolves the API key to use for a provider: the explicit
+// config key wins, otherwise fall back to the auth store (API key or OAuth).
+func (pm *ProviderManager) effectiveAPIKey(provider *config.ProviderConfig) string {
+	if provider.APIKey != "" {
+		return provider.APIKey
+	}
+	if pm.authStore == nil {
+		return ""
+	}
+	return resolveAPIKey(pm.authStore, provider.ID)
+}
+
+func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
 	if pCfg == nil {
 		return
 	}
-	if pCfg.APIKey != "" {
-		opts.APIKey = pCfg.APIKey
+	applyProviderAPIKey(opts, pCfg, authStore)
+	applyProviderTimeoutRetries(opts, pCfg)
+	applyProviderTransportCache(opts, pCfg)
+	applyProviderSessionMetadata(opts, pCfg)
+}
+
+// applyProviderAPIKey resolves the key from config or the auth store.
+func applyProviderAPIKey(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
+	apiKey := pCfg.APIKey
+	if apiKey == "" && authStore != nil {
+		apiKey = resolveAPIKey(authStore, pCfg.ID)
 	}
+	if apiKey != "" {
+		opts.APIKey = apiKey
+	}
+}
+
+// applyProviderTimeoutRetries applies timeout and retry overrides.
+func applyProviderTimeoutRetries(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
 	if d := parsePositiveDuration(pCfg.Timeout); d > 0 {
 		opts.Timeout = d
 	}
@@ -727,12 +766,20 @@ func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *confi
 	if d := parsePositiveDuration(pCfg.MaxRetryDelay); d > 0 {
 		opts.MaxRetryDelay = d
 	}
+}
+
+// applyProviderTransportCache applies transport and cache-retention overrides.
+func applyProviderTransportCache(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
 	if pCfg.Transport != "" {
 		opts.Transport = agenticprovider.Transport(pCfg.Transport)
 	}
 	if pCfg.CacheRetention != "" {
 		opts.CacheRetention = agenticprovider.CacheRetention(pCfg.CacheRetention)
 	}
+}
+
+// applyProviderSessionMetadata applies session id and metadata overrides.
+func applyProviderSessionMetadata(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
 	if pCfg.SessionID != "" {
 		opts.SessionID = pCfg.SessionID
 	}
@@ -791,187 +838,52 @@ func parsePositiveDuration(s string) time.Duration {
 	return d
 }
 
-func (pm *ProviderManager) IsLocalProvider() bool {
-	pCfg, _ := pm.Active()
-	if pCfg == nil {
-		return false
+func resolveAPIKey(store *auth.Store, providerID string) string {
+	if key, ok := store.GetAPIKey(providerID); ok {
+		return key
 	}
-	return isLocalProvider(pCfg.Endpoint)
+	tokens, ok := store.GetOAuth(providerID)
+	if !ok {
+		return ""
+	}
+	// Without a refresh token (or a known provider), we cannot refresh: return
+	// the current access token as-is.
+	prov := oauthProviderFor(providerID)
+	if prov == nil || tokens.RefreshToken == "" || !tokens.IsExpired() {
+		return tokens.AccessToken
+	}
+	ts := oauth.NewTokenSource(prov, tokens)
+	return refreshAndPersist(context.Background(), prov, store, providerID, ts, tokens)
 }
 
-// isLocalProvider returns true if the endpoint points to a local LLM server
-// (LM Studio, llama.cpp, Ollama) that may expose context window metadata.
-func isLocalProvider(endpoint string) bool {
-	e := strings.ToLower(endpoint)
-	return strings.Contains(e, "localhost:1234") || strings.Contains(e, "127.0.0.1:1234") ||
-		strings.Contains(e, "localhost:11434") || strings.Contains(e, "127.0.0.1:11434") ||
-		strings.Contains(e, "localhost") || strings.Contains(e, "127.0.0.1")
-}
-
-// detectFromLMStudioModels queries LM Studio's /api/v0/models endpoint for the
-// loaded context length of the active model, falling back to context_length
-// and then max_context_length.
-func detectFromLMStudioModels(client *http.Client, baseURL *url.URL, modelName, apiKey string) int {
-	modelsURL := baseURL.ResolveReference(&url.URL{Path: "/api/v0/models"})
-	req, err := http.NewRequest("GET", modelsURL.String(), nil)
+// refreshAndPersist obtains a (possibly refreshed) access token from ts and
+// writes the refreshed tokens back to the store so a rotated refresh token
+// survives. It returns the access token; on refresh failure it falls back to
+// the previously stored access token. Split out so it can be unit-tested with
+// a fake provider (no network).
+func refreshAndPersist(ctx context.Context, prov oauth.OAuthProvider, store *auth.Store, providerID string, ts *oauth.TokenSource, fallback *oauth.Tokens) string {
+	token, err := ts.Token(ctx)
 	if err != nil {
-		return 0
+		return fallback.AccessToken
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0
-	}
-	body, _ := io.ReadAll(resp.Body)
-	type modelEntry struct {
-		ID                  string `json:"id"`
-		MaxContextLength    int    `json:"max_context_length"`
-		LoadedContextLength int    `json:"loaded_context_length"`
-		ContextLength       int    `json:"context_length"`
-	}
-	var result struct {
-		Data []modelEntry `json:"data"`
-	}
-	if json.Unmarshal(body, &result) != nil {
-		return 0
-	}
-	for _, m := range result.Data {
-		if m.ID == modelName {
-			return firstPositive(m.LoadedContextLength, m.ContextLength, m.MaxContextLength)
+	if refreshed := ts.Current(); refreshed != nil && refreshed.AccessToken != "" {
+		toStore := *refreshed
+		if toStore.RefreshToken == "" {
+			toStore.RefreshToken = fallback.RefreshToken
 		}
+		_ = store.SetOAuth(providerID, &toStore)
 	}
-	return 0
+	return token
 }
 
-// firstPositive returns the first positive value from the provided arguments.
-func firstPositive(values ...int) int {
-	for _, v := range values {
-		if v > 0 {
-			return v
-		}
+func oauthProviderFor(id string) oauth.OAuthProvider {
+	switch id {
+	case "copilot", "github":
+		return oauth.NewGitHubCopilotOAuth()
+	case "anthropic":
+		// Anthropic OAT requires client credentials; no auto-refresh without config.
+		return nil
+	default:
+		return nil
 	}
-	return 0
-}
-
-// detectLocalContextWindow queries a local LLM provider to discover the context
-// window size. Uses the provider identity to pick the right strategy:
-//  1. LM Studio /api/v0/models — reads loaded_context_length, context_length, max_context_length
-//  2. llama.cpp /props endpoint — reads default_generation_settings.n_ctx
-//  3. llama.cpp /v1/models endpoint — reads meta.n_ctx (then meta.n_ctx_train)
-//
-// Returns 0 if detection fails or the provider doesn't expose this info.
-func detectLocalContextWindow(pCfg config.ProviderConfig, modelName, apiKey string) int {
-	endpoint := pCfg.Endpoint
-	baseURL, err := url.Parse(endpoint)
-	if err != nil {
-		return 0
-	}
-	baseURL.Path = stripAPIPath(baseURL.Path)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-
-	// LM Studio exposes /api/v0/models with loaded_context_length.
-	if prov, _ := inferProviderIdentity(pCfg); prov == agenticprovider.ProviderLMStudio {
-		if nCtx := detectFromLMStudioModels(client, baseURL, modelName, apiKey); nCtx > 0 {
-			return nCtx
-		}
-	}
-
-	// llama.cpp exposes the loaded context via /props and /v1/models.
-	if nCtx := detectFromProps(client, baseURL, apiKey); nCtx > 0 {
-		return nCtx
-	}
-	if nCtx := detectFromModelMeta(client, baseURL, modelName, apiKey); nCtx > 0 {
-		return nCtx
-	}
-
-	return 0
-}
-
-// stripAPIPath removes /v1/chat/completions or /v1 suffix from a URL path.
-func stripAPIPath(path string) string {
-	path = strings.TrimSuffix(path, "/v1/chat/completions")
-	path = strings.TrimSuffix(path, "/v1")
-	return strings.TrimSuffix(path, "/")
-}
-
-// detectFromProps queries the /props endpoint (llama.cpp) for n_ctx.
-func detectFromProps(client *http.Client, baseURL *url.URL, apiKey string) int {
-	propsURL := baseURL.ResolveReference(&url.URL{Path: "/props"})
-	req, err := http.NewRequest("GET", propsURL.String(), nil)
-	if err != nil {
-		return 0
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0
-	}
-	body, _ := io.ReadAll(resp.Body)
-	var result struct {
-		DefaultGenerationSettings struct {
-			NCtx int `json:"n_ctx"`
-		} `json:"default_generation_settings"`
-	}
-	if json.Unmarshal(body, &result) != nil || result.DefaultGenerationSettings.NCtx <= 0 {
-		return 0
-	}
-	return result.DefaultGenerationSettings.NCtx
-}
-
-// detectFromModelMeta queries the /v1/models endpoint for meta.n_ctx_train.
-func detectFromModelMeta(client *http.Client, baseURL *url.URL, modelName, apiKey string) int {
-	modelsURL := baseURL.ResolveReference(&url.URL{Path: "/v1/models"})
-	req, err := http.NewRequest("GET", modelsURL.String(), nil)
-	if err != nil {
-		return 0
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0
-	}
-	body, _ := io.ReadAll(resp.Body)
-	type modelEntry struct {
-		ID   string `json:"id"`
-		Meta struct {
-			NCtx      int `json:"n_ctx"`
-			NCtxTrain int `json:"n_ctx_train"`
-		} `json:"meta"`
-	}
-	var result struct {
-		Data []modelEntry `json:"data"`
-	}
-	if json.Unmarshal(body, &result) != nil {
-		return 0
-	}
-	for _, m := range result.Data {
-		if m.ID == modelName {
-			if m.Meta.NCtx > 0 {
-				return m.Meta.NCtx
-			}
-			if m.Meta.NCtxTrain > 0 {
-				return m.Meta.NCtxTrain
-			}
-		}
-	}
-	return 0
 }

@@ -4,7 +4,6 @@ package agentic
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +15,9 @@ import (
 
 func (a *Agent) processTurnWithStream(ctx context.Context) error {
 	a.cfg.Logger.Log(Debug, "Agent.processTurnWithStream started")
+	// Strip transient (ephemeral) system nudges at turn end so recovery/repeat
+	// hints inform the model during this turn but do not pollute future turns.
+	defer a.stripEphemeralSystemMessages()
 
 	model, opts, initCtx := a.prepareTurn(ctx)
 	if err := a.checkContextLimit(); err != nil {
@@ -121,7 +123,10 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opts provider.StreamOptions, limit int) error {
 	a.cfg.Logger.Log(Warn, "per-turn stream round limit (%d) reached; sending recovery hint", limit)
 	recovery := "[goa-system] The per-turn tool-call round limit was reached. Stop calling tools and complete the task using the information you have already gathered."
-	a.InjectSystemMessage(recovery)
+	// The recovery hint is a transient nudge for the recovery rounds only; mark
+	// it ephemeral so it is stripped at turn end and does not pollute future
+	// turns' context.
+	a.InjectEphemeralSystemMessage(recovery)
 
 	// Allow up to 3 additional recovery rounds if the model still calls tools
 	// despite the recovery hint. Prevents runaway recovery while still giving
@@ -204,39 +209,87 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 // handleStreamEvent dispatches a single stream event. The returned done flag is
 // true when the stream has reached a terminal state (success or error).
 func (a *Agent) handleStreamEvent(ctx context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (done bool, toolCallsEncountered bool, err error) {
-	switch event.Type {
-	case provider.EventTextDelta:
-		a.markGenStart()
-		a.handleTextDelta(event)
-	case provider.EventThinkingDelta:
-		a.markGenStart()
-		a.handleThinkingDelta(event)
-	case provider.EventToolCallEnd:
-		if event.ToolCall != nil {
-			a.markGenStart()
-			a.resetThinkingStall()
-			a.shouldBufferToolCall(*event.ToolCall)
-		}
-	case provider.EventDone:
-		// Capture provider Usage from the stream result.
-		// The usage chunk (stream_options.include_usage) is attached to
-		// the stream result via End() or UpdateResult().
-		if result := stream.Result(); result != nil && result.Usage != nil && !a.turnStatsEmitted {
-			a.mu.Lock()
-			a.providerUsage = result.Usage
-			a.mu.Unlock()
-		}
-		a.recordGenDuration()
-		return true, a.completeStreamTurn(ctx), nil
-	case provider.EventError:
-		return true, false, a.resolveStreamError(stream, event.Error)
+	if handler, ok := streamEventHandlers[event.Type]; ok {
+		return handler(a, ctx, stream, event)
 	}
-
 	if a.streamLoopDetected {
 		a.cfg.Logger.Log(Warn, "Stopping stream because a loop was detected inside the assistant response")
 		return true, false, fmt.Errorf("stream loop detected: the assistant started repeating the same text; turn stopped to prevent runaway context usage")
 	}
 	return false, false, nil
+}
+
+// streamEventHandler processes a single stream event and reports whether the
+// stream has reached a terminal state.
+type streamEventHandler func(*Agent, context.Context, *provider.AssistantMessageEventStream, provider.AssistantMessageEvent) (done bool, toolCallsEncountered bool, err error)
+
+var streamEventHandlers = map[provider.EventType]streamEventHandler{
+	provider.EventTextDelta:       (*Agent).handleStreamTextDelta,
+	provider.EventThinkingDelta:   (*Agent).handleStreamThinkingDelta,
+	provider.EventToolCallEnd:     (*Agent).handleStreamToolCallEnd,
+	provider.EventToolCallStart:   (*Agent).handleStreamToolCallStart,
+	provider.EventToolCallDelta:   (*Agent).handleStreamToolCallDelta,
+	provider.EventDone:            (*Agent).handleStreamDone,
+	provider.EventError:           (*Agent).handleStreamError,
+}
+
+func (a *Agent) handleStreamTextDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	a.markGenStart()
+	a.handleTextDelta(event)
+	return false, false, nil
+}
+
+func (a *Agent) handleStreamThinkingDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	a.markGenStart()
+	a.handleThinkingDelta(event)
+	return false, false, nil
+}
+
+func (a *Agent) handleStreamToolCallEnd(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	if event.ToolCall == nil {
+		return false, false, nil
+	}
+	a.markGenStart()
+	a.resetThinkingStall()
+	a.shouldBufferToolCall(*event.ToolCall)
+	return false, false, nil
+}
+
+func (a *Agent) handleStreamToolCallStart(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	if event.Partial == nil || len(event.Partial.Content) == 0 {
+		return false, false, nil
+	}
+	a.markGenStart()
+	a.resetThinkingStall()
+	a.handleToolCallPartial(event.Partial.Content[0], true)
+	return false, false, nil
+}
+
+func (a *Agent) handleStreamToolCallDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	if event.Partial == nil || len(event.Partial.Content) == 0 {
+		return false, false, nil
+	}
+	a.markGenStart()
+	a.resetThinkingStall()
+	a.handleToolCallPartial(event.Partial.Content[0], true)
+	return false, false, nil
+}
+
+func (a *Agent) handleStreamDone(ctx context.Context, stream *provider.AssistantMessageEventStream, _ provider.AssistantMessageEvent) (bool, bool, error) {
+	// Capture provider Usage from the stream result.
+	// The usage chunk (stream_options.include_usage) is attached to
+	// the stream result via End() or UpdateResult().
+	if result := stream.Result(); result != nil && result.Usage != nil && !a.turnStatsEmitted {
+		a.mu.Lock()
+		a.providerUsage = result.Usage
+		a.mu.Unlock()
+	}
+	a.recordGenDuration()
+	return true, a.completeStreamTurn(ctx), nil
+}
+
+func (a *Agent) handleStreamError(_ context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	return true, false, a.resolveStreamError(stream, event.Error)
 }
 
 // tryAutoHealToolCalls parses the accumulated assistant text for XML tool
@@ -490,6 +543,58 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	}
 }
 
+// handleToolCallPartial processes an incremental tool call event during
+// streaming (EventToolCallStart or EventToolCallDelta). It accumulates
+// partial arguments and emits EventToolCall updates to observers so the
+// TUI can display live progress as the model constructs the tool call.
+//
+// On the first partial event for a tool call ID, a new partialToolCall
+// entry is created in streamingToolCalls and an EventToolCall with
+// IsDelta=true is emitted. On subsequent deltas, the accumulated args are
+// updated and a new EventToolCall is emitted. When the full tool call
+// arrives via EventToolCallEnd, shouldBufferToolCall handles the final
+// transition.
+func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, isPartial bool) {
+	id := tc.ToolCallID
+	if id == "" {
+		id = tc.ToolName // fallback: some providers omit the ID on start
+	}
+
+	a.mu.Lock()
+	ptc, exists := a.streamingToolCalls[id]
+	if !exists {
+		ptc = &partialToolCall{
+			toolName:   tc.ToolName,
+			toolCallID: tc.ToolCallID,
+		}
+		if a.streamingToolCalls == nil {
+			a.streamingToolCalls = make(map[string]*partialToolCall)
+		}
+		a.streamingToolCalls[id] = ptc
+	}
+	if tc.ToolName != "" {
+		ptc.toolName = tc.ToolName
+	}
+	if tc.ToolCallID != "" {
+		ptc.toolCallID = tc.ToolCallID
+	}
+	ptc.argsBuf.WriteString(tc.ToolArguments)
+	accumulated := ptc.argsBuf.String()
+	ptc.widgetCreated = true
+	a.mu.Unlock()
+
+	// Emit partial EventToolCall to observers (TUI will show ◉ pending icon).
+	a.emitEvent(OutputEvent{
+		Type:       EventToolCall,
+		State:      StateToolCall,
+		Role:       Assistant,
+		ToolName:   tc.ToolName,
+		ToolInput:  accumulated,
+		ToolCallID: tc.ToolCallID,
+		IsDelta:    true,
+	})
+}
+
 // containsToolXMLTag reports whether text still contains any raw tool-call XML
 // tag (open or close). It is used while streaming thinking text so that
 // multi-line tool-call markup that spans multiple deltas is suppressed until
@@ -525,6 +630,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.bufferedToolCallCount = 0
 	a.streamLoopDetected = false
 	a.resetThinkingStall()
+	a.streamingToolCalls = nil
 }
 
 // checkStreamLoop detects immediate repetition of a suffix within the current
@@ -693,37 +799,8 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	return model, opts, pCtx
 }
 
-// formatRetryMessage turns a stream error into a concise user-facing
-// message that includes the HTTP status, provider message, and error code
-// when available.
-func formatRetryMessage(err error) string {
-	var respErr provider.HTTPResponseError
-	if errors.As(err, &respErr) {
-		status := respErr.StatusCode()
-		body := respErr.ResponseBody()
-		var parsed struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    string `json:"code"`
-				Type    string `json:"type"`
-			} `json:"error"`
-		}
-		msg := ""
-		code := ""
-		if json.Unmarshal([]byte(body), &parsed) == nil && parsed.Error.Message != "" {
-			msg = parsed.Error.Message
-			code = parsed.Error.Code
-		}
-		if msg == "" {
-			msg = body
-		}
-		if code != "" {
-			return fmt.Sprintf("Error: %d - %s (%s) - retrying", status, msg, code)
-		}
-		return fmt.Sprintf("Error: %d - %s - retrying", status, msg)
-	}
-	return fmt.Sprintf("Error: %s - retrying", err.Error())
-}
+// formatRetryMessage and formatFatalStreamMessage now live in retry_classify.go,
+// alongside the retry-decision helpers (shouldRetryStreamError / retryBackoff).
 
 // handleStreamFailure handles a stream error, retrying when appropriate.
 // Returns true if the failure was fully handled (caller should return retErr).
@@ -754,6 +831,23 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 		a.cfg.Logger.Log(Info, "Overflow recovery: compressing context and retrying once")
 	}
 
+	// Classify before retrying. Non-retryable errors (HTTP 400/401/403,
+	// malformed request, auth failure) cannot succeed on a second attempt, so
+	// surface them immediately with a clear, final message instead of burning
+	// the retry budget and delaying the user-visible failure. Overflow is
+	// always retryable here (the once-only guard above bounds it).
+	if !shouldRetryStreamError(streamErr) {
+		a.cfg.Logger.Log(Warn, "stream error not retryable; surfacing immediately: %v", streamErr)
+		a.emitEvent(OutputEvent{
+			Type:     EventContent,
+			Role:     System,
+			Text:     formatFatalStreamMessage(streamErr),
+			Metadata: map[string]string{"category": "system-notification"},
+		})
+		a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+		return true, fmt.Errorf("LLM request failed (not retryable): %w", streamErr)
+	}
+
 	a.cfg.Logger.Log(Warn, "stream error, retrying: %v", streamErr)
 
 	// Surface the failure as a system chat bubble so the user can see the
@@ -762,7 +856,7 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 		Type:     EventContent,
 		Role:     System,
 		Text:     formatRetryMessage(streamErr),
-		Metadata: map[string]string{"category": "system-notification"},
+		Metadata: map[string]string{"category": "system-notification", "transient": "true"},
 	})
 
 	toolCallEncountered, retried := a.retryStream(ctx, streamErr, model, opts)
@@ -791,8 +885,10 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 		a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d/2)...", retry+1)})
 
 		// Sleep with context awareness so Ctrl+C isn't ignored during backoff.
+		// retryBackoff honors a server-supplied Retry-After for rate limits and
+		// otherwise uses bounded exponential backoff with jitter.
 		select {
-		case <-time.After(time.Duration(retry+1) * time.Second):
+		case <-time.After(retryBackoff(originalErr, retry)):
 		case <-ctx.Done():
 			return false, false
 		}
@@ -823,7 +919,7 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 	msgs := a.buildProviderHistory()
 	sp := a.buildSystemPrompt()
-	mergeGoalProgress(msgs, a.cfg.GoalStateProvider)
+	msgs = mergeGoalProgress(msgs, a.cfg.GoalStateProvider)
 
 	return provider.Context{
 		Context:      ctx,
@@ -859,24 +955,45 @@ func (a *Agent) buildSystemPrompt() string {
 	return sp
 }
 
-func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) {
+// mergeGoalProgress injects the dynamic per-turn goal progress as a dedicated
+// system message placed immediately before the last user message, returning the
+// (possibly grown) slice.
+//
+// It deliberately does NOT mutate the last user message's content. The previous
+// implementation prepended the progress text to the last user message each turn;
+// because that message joins the cached prefix on the next turn, and because it
+// lost its prefix once it was no longer last, its bytes were turn-specific and
+// busted the provider's prompt cache from that point on. A separate progress
+// slot keeps every history message byte-stable across turns, so the cached
+// prefix survives and only the volatile trailing progress is re-sent.
+func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.Message {
 	if p == nil {
-		return
+		return msgs
 	}
 	progress := p.ActiveGoalProgress()
 	if progress == "" {
-		return
+		return msgs
 	}
-	prefix := provider.ContentBlock{
-		Type: provider.ContentBlockText,
-		Text: "[goal progress]\n" + progress + "\n\n",
+	progressMsg := provider.Message{
+		Role: provider.RoleSystem,
+		Content: []provider.ContentBlock{{
+			Type: provider.ContentBlockText,
+			Text: "[goal progress]\n" + progress,
+		}},
 	}
+	// Insert just before the last user message so the conversation still ends
+	// on a user turn (required by most providers).
+	insertAt := len(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == provider.RoleUser {
-			msgs[i].Content = append([]provider.ContentBlock{prefix}, msgs[i].Content...)
+			insertAt = i
 			break
 		}
 	}
+	msgs = append(msgs, provider.Message{}) // grow by one
+	copy(msgs[insertAt+1:], msgs[insertAt:])
+	msgs[insertAt] = progressMsg
+	return msgs
 }
 
 // logProviderContext writes a concise summary of the context to the debug log.

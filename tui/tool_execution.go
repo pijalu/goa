@@ -40,6 +40,7 @@ type ToolExecutionComponent struct {
 	status    ToolStatus
 	duration  string
 	isPartial bool
+	argsComplete bool
 	renderer  ToolRenderer
 	generic   genericRenderer
 
@@ -146,7 +147,7 @@ func (tc *ToolExecutionComponent) updateBox() {
 		Expanded:     tc.expanded,
 		IsPartial:    tc.isPartial,
 		IsError:      tc.status == ToolError,
-		ArgsComplete: true,
+		ArgsComplete: tc.argsComplete,
 	}
 
 	// Build header
@@ -200,6 +201,27 @@ func (tc *ToolExecutionComponent) SetToolArgs(args string) {
 	tc.Invalidate()
 }
 
+// SetArgsComplete marks the tool call arguments as fully received.
+// This triggers the renderer to show the final header (no longer streaming).
+func (tc *ToolExecutionComponent) SetArgsComplete() {
+	tc.argsComplete = true
+	tc.updateBox()
+	tc.Invalidate()
+}
+
+// SetArgsPartial updates the header display with partial tool call
+// arguments during streaming. Unlike SetArgsJSON, this does NOT attempt
+// json.Unmarshal (partial JSON would fail). The renderer handles
+// incomplete JSON via the ArgsComplete field in RenderContext.
+func (tc *ToolExecutionComponent) SetArgsPartial(args string) {
+	tc.toolArgs = args
+	tc.updateBox()
+	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
+}
+
 // SetArgs parses and stores the structured arguments for renderer use.
 func (tc *ToolExecutionComponent) SetArgs(args map[string]any) {
 	tc.args = args
@@ -208,10 +230,12 @@ func (tc *ToolExecutionComponent) SetArgs(args map[string]any) {
 }
 
 // SetArgsJSON parses JSON arguments and stores them for the renderer.
+// When the JSON is successfully parsed, args are marked as complete.
 func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
 		tc.args = args
+		tc.argsComplete = true
 	}
 	tc.toolArgs = FormatToolArgs(tc.toolName, argsJSON)
 	tc.updateBox()
@@ -248,6 +272,16 @@ func (tc *ToolExecutionComponent) SetOutput(output string) {
 // Status returns the current execution status.
 func (tc *ToolExecutionComponent) Status() ToolStatus {
 	return tc.status
+}
+
+// ToolName returns the name of the tool being executed.
+func (tc *ToolExecutionComponent) ToolName() string {
+	return tc.toolName
+}
+
+// ArgsComplete returns whether all tool call arguments have been received.
+func (tc *ToolExecutionComponent) ArgsComplete() bool {
+	return tc.argsComplete
 }
 
 // SetStatus changes the execution status.

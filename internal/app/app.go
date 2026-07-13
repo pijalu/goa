@@ -431,7 +431,7 @@ func (a *App) reloadSkills() {
 	a.subs.skillRegistry = reg
 
 	// Register /<skillname> shortcuts for the newly loaded project skills.
-	if warnings := commands.RegisterSkillShortcuts(a.subs.cmdRouter.Registry(), reg); len(warnings) > 0 {
+	if warnings := commands.RegisterSkillShortcuts(a.subs.registry, reg); len(warnings) > 0 {
 		for _, w := range warnings {
 			log.Printf("Warning: %s\n", w)
 		}

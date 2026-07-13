@@ -311,6 +311,20 @@ func (b *bedrockStreamAcc) handleContentBlockStart(chunk string) {
 		b.toolAccums = append(b.toolAccums, bedrockToolAccum{
 			id: evt.Block.ToolUse.ID, name: evt.Block.ToolUse.Name,
 		})
+		b.ensureStart()
+		b.stream.Push(provider.AssistantMessageEvent{
+			Type:         provider.EventToolCallStart,
+			ContentIndex: evt.Index,
+			Partial: &provider.AssistantMessage{
+				Content: []provider.ContentBlock{
+					{
+						Type:       provider.ContentBlockToolCall,
+						ToolCallID: evt.Block.ToolUse.ID,
+						ToolName:   evt.Block.ToolUse.Name,
+					},
+				},
+			},
+		})
 	}
 }
 
@@ -335,6 +349,21 @@ func (b *bedrockStreamAcc) handleContentBlockDelta(chunk string) {
 		for i := range b.toolAccums {
 			if i == evt.Index {
 				b.toolAccums[i].args += evt.Delta.ToolUse.Input
+				b.stream.Push(provider.AssistantMessageEvent{
+					Type:         provider.EventToolCallDelta,
+					ContentIndex: evt.Index,
+					Delta:        evt.Delta.ToolUse.Input,
+					Partial: &provider.AssistantMessage{
+						Content: []provider.ContentBlock{
+							{
+								Type:          provider.ContentBlockToolCall,
+								ToolCallID:    b.toolAccums[i].id,
+								ToolName:      b.toolAccums[i].name,
+								ToolArguments: b.toolAccums[i].args,
+							},
+						},
+					},
+				})
 			}
 		}
 	}

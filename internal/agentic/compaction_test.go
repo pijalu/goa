@@ -133,7 +133,32 @@ func TestMicroCompact_LowContextRatio_NoOp(t *testing.T) {
 	}
 }
 
-// ── helpers ────────────────────────────────────────────────────────
+func TestMicroCompact_UsesEffectiveContextWindow(t *testing.T) {
+	a := &Agent{
+		cfg: Config{
+			ContextCompression: ContextCompressionConfig{
+				Strategy: CompressionMicro,
+				MicroCompaction: MicroCompactionConfig{
+					KeepRecentMessages: 1,
+					MinContentTokens:   1,
+					MinContextRatio:    0.9, // 90% needed
+					TruncatedMarker:    "[cleared]",
+				},
+			},
+		},
+		history: []Message{
+			{Role: ToolRole, Content: repeatStr("x", 500)},
+			{Role: User, Content: "hi"},
+		},
+	}
+	a.SetContextWindow(1000000)
+
+	a.microCompactForced(false)
+
+	if a.history[0].Content != repeatStr("x", 500) {
+		t.Errorf("tool result was truncated despite low ratio against effective context window")
+	}
+}
 
 // historyWithNToolResults builds a history with N tool result messages.
 // Each result body is filled with 'x' repeated size times.

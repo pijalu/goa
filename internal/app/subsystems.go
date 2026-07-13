@@ -25,7 +25,10 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/auth"
+	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/internal/hooks"
+	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/internal/role"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/telemetry"
@@ -42,6 +45,7 @@ import (
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
 	goaltui "github.com/pijalu/goa/tui/goal"
+	bgpanel "github.com/pijalu/goa/tui/background"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
@@ -79,6 +83,7 @@ type subsystems struct {
 	orchCmd           *commands.OrchestrateCommand
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
+	pluginMgr         *plugins.Manager
 	runWizard         bool // set when /setup command requests wizard
 
 	// TUI components (set after InitSubsystems)
@@ -86,6 +91,7 @@ type subsystems struct {
 	goalBubble *goaltui.Bubble
 	footer     *tui.Footer
 	tuiEngine  *tui.TUI
+	bgPanel    *bgpanel.Panel
 
 	// Logger for structured stats output
 	logger      *agentic.Logger
@@ -136,6 +142,16 @@ type subsystems struct {
 
 	// dreamScheduler triggers automatic memory consolidation after sessions.
 	dreamScheduler *dreamScheduler
+
+	// registry holds the explicitly-injected command registry used across the
+	// app. Replaces the deprecated core.GlobalRegistry package variable.
+	registry *core.CommandRegistry
+
+	// Background task manager shared by the bg_exec tool and the status panel.
+	bgMgr *background.Manager
+
+	// lspMgr runs gopls for Go diagnostics; closed on shutdown to avoid leaks.
+	lspMgr *lsp.Manager
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
@@ -164,6 +180,7 @@ func (s *subsystems) effectiveModeState() internal.ModeState {
 func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, opts RuntimeOptions) *subsystems {
 	subs := initBaseSubsystems(cfg, projectDir)
 	agentBundle := initAgentBundle(cfg, projectDir)
+	initHookEngine(cfg, projectDir, agentBundle.agentMgr)
 
 	// Steering queue: shared between AgentManager (consumes at turn end) and
 	// TUI submit handler (appends while a turn is running).
@@ -194,7 +211,8 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		registerGoalTools(subs.toolRegistry, goalManager)
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
-	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState)
+	registry := core.NewCommandRegistry()
+	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)
 	modeRegistry := core.NewModeRegistry(promptReg)
 	loadUserModes(modeRegistry, cfg.ConfigDir, projectDir)
@@ -216,8 +234,9 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		if mdl, err := subs.providerMgr.ResolveActiveModel(); err == nil {
 			agentDrivenTools := multiagent.AgentDrivenTools(nil, nil)
 			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg)
-			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus)
+			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr)
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
+			agentPool.SetOrchestrator(foregroundOrch)
 			wireCompanionCreation(agentPool, agentBundle.agentMgr, agentBundle.stateSnapshot)
 			registerSkillRunnerIfNeeded(subs.toolRegistry, skillBundle.skillRegistry, agentPool, promptReg, cfg)
 			registerBuiltinWorkflows(workflowReg)
@@ -233,7 +252,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		attachWebFetchSummarizer(subs.toolRegistry, &webFetchAgentPool{pool: agentPool})
 	}
 
-	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts)
+	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry)
 }
 
 func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
@@ -248,6 +267,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	trustMgr := trust.NewManager(filepath.Join(cfg.ConfigDir, "trust.json"))
 	providerMgr := provider.NewProviderManager(cfg)
 	modelValidator := provider.NewModelValidator(providerMgr, cfg)
+	bgMgr := createBackgroundManager(projectDir)
 
 	sandboxMgr, err := sandbox.NewManager("", worktreeMgr)
 	if err != nil {
@@ -256,7 +276,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	}
 
 	toolRegistry := tools.NewToolRegistry()
-	registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg)
+	lspMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
 	if cfg.Tools.Enabled.PTYExec {
 		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
 	}
@@ -270,6 +290,8 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 		toolRegistry:      toolRegistry,
 		trustMgr:          trustMgr,
 		lifecycleRegistry: plugins.NewLifecycleRegistry(),
+		bgMgr:             bgMgr,
+		lspMgr:            lspMgr,
 	}
 }
 
@@ -282,12 +304,24 @@ type baseSubsystems struct {
 	toolRegistry      *tools.ToolRegistry
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
+	bgMgr             *background.Manager
+	lspMgr            *lsp.Manager
+}
+
+func createBackgroundManager(projectDir string) *background.Manager {
+	path := filepath.Join(projectDir, ".goa", "bgexec.json")
+	mgr, err := background.NewManager(path)
+	if err != nil {
+		log.Printf("Warning: failed to create durable background manager at %s: %v\n", path, err)
+		mgr, _ = background.NewManager("")
+	}
+	return mgr
 }
 
 func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 	sessionStore := core.NewSessionStore(filepath.Join(projectDir, ".goa"))
 	loopDetector := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
-	eventBus := event.MakeBus(100, 32, 32, 32)
+	eventBus := event.MakeBus(1024, 32, 32, 32)
 
 	stateStore := core.NewStateStore(projectDir)
 	snap, _ := stateStore.Load()
@@ -331,6 +365,19 @@ func initAgentLogger(cfg *config.Config, projectDir string, agentMgr *core.Agent
 	nullLogger := agentic.NewLogger(agentic.Error)
 	agentMgr.SetLogger(nullLogger)
 	return nullLogger
+}
+
+func initHookEngine(cfg *config.Config, projectDir string, agentMgr *core.AgentManager) {
+	hookCfg, err := hooks.LoadConfig(cfg.ConfigDir, projectDir)
+	if err != nil {
+		log.Printf("Warning: failed to load hooks config: %v\n", err)
+		return
+	}
+	if hookCfg == nil || len(hookCfg.Hooks) == 0 {
+		return
+	}
+	hookStore := hooks.NewStore(filepath.Join(projectDir, ".goa", "hooks.log"))
+	agentMgr.SetHookEngine(hooks.NewEngine(hookCfg, hookStore))
 }
 
 func newAutonomySwitcher(agentMgr *core.AgentManager, cfg *config.Config, setJail func(bool)) commands.AutonomySwitcher {
@@ -486,8 +533,21 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 	}
 }
 
-func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State) skillCommandBundle {
+func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
+	cfgDir := cfg.ConfigDir
+	if cfgDir == "" {
+		cfgDir = filepath.Join(projectDir, ".goa")
+	}
+	pluginRoot := filepath.Join(cfgDir, "plugins")
+	pluginMgr, err := plugins.NewManager(pluginRoot, trustMgr)
+	if err != nil {
+		log.Printf("Warning: failed to create plugin manager: %v\n", err)
+	}
+
 	skillDirs := append(config.DefaultSkillDirs(projectDir), cfg.Skills.Dirs...)
+	if pluginMgr != nil {
+		skillDirs = append(skillDirs, pluginMgr.EnabledSkillDirs()...)
+	}
 	skillRegistry := skills.NewSkillRegistry(skillDirs)
 	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
@@ -506,16 +566,24 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 	// Wire the queue as the goal name pool so newly created active goals pick
 	// a friendly alias that does not collide with queued goals.
 	goalManager.Mode.SetNamePool(goalManager.Queue)
-	authStore := auth.NewStore(filepath.Join(cfg.ConfigDir, "auth.json"))
-	sessTree := sessiontree.NewManager(sessiontree.NewJSONStore(filepath.Join(cfg.ConfigDir, "session-tree.json")))
-	themeStore := config.NewThemeStore(filepath.Join(cfg.ConfigDir, "themes"))
+	authStore, err := auth.NewStore(filepath.Join(cfgDir, "auth.json"))
+	if err != nil {
+		log.Printf("Warning: auth store unavailable, falling back to in-memory: %v", err)
+		authStore, _ = auth.NewStore("")
+	}
+	if providerMgr != nil {
+		providerMgr.SetAuthStore(authStore)
+	}
+	sessTree := sessiontree.NewManager(sessiontree.NewJSONStore(filepath.Join(cfgDir, "session-tree.json")))
+	themeStore := config.NewThemeStore(filepath.Join(cfgDir, "themes"))
 	currentVer := version.Version()
-	updateChecker := update.NewChecker(currentVer, cfg.ConfigDir)
-	telClient := telemetry.NewClient(telemetryEnabled, cfg.ConfigDir)
+	updateChecker := update.NewChecker(currentVer, cfgDir)
+	telClient := telemetry.NewClient(telemetryEnabled, cfgDir)
 
 	deps := commands.CommandDependencies{
 		GoalCommand:     goalCmd,
 		AuthStore:       authStore,
+		PluginManager:   pluginMgr,
 		SessionTree:     sessTree,
 		ThemeStore:      themeStore,
 		UpdateChecker:   updateChecker,
@@ -523,7 +591,6 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 		TrustManager:    trustMgr,
 		SwarmState:      swarmState,
 	}
-	registry := core.NewCommandRegistry()
 	if err := commands.RegisterAll(registry, deps); err != nil {
 		log.Fatalf("Failed to register commands: %v", err)
 	}
@@ -553,6 +620,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, toolRegistr
 		docEngine:     docEngine,
 		cmdRouter:     cmdRouter,
 		goaTool:       goaTool,
+		pluginMgr:     pluginMgr,
 	}
 }
 
@@ -602,6 +670,7 @@ type skillCommandBundle struct {
 	cmdRouter     *core.CommandRouter
 	modeRegistry  *core.ModeRegistry
 	goaTool       *core.GoaCommandTool
+	pluginMgr     *plugins.Manager
 }
 
 func initPromptAndWorkflowLayer(cfg *config.Config, projectDir string) (*prompts.Registry, *multiagent.WorkflowRegistry) {
@@ -646,7 +715,7 @@ func registerAgentDrivenTools(toolRegistry *tools.ToolRegistry, tools []agentic.
 	return requestReviewTool, delegateTool
 }
 
-func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, promptReg *prompts.Registry, cfg *config.Config, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus) *multiagent.AgentPool {
+func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, promptReg *prompts.Registry, cfg *config.Config, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager) *multiagent.AgentPool {
 	allTools := toolRegistry.All()
 	streamOpts := providerMgr.BuildStreamOptions()
 	pool := multiagent.NewAgentPool(mdl, streamOpts, allTools)
@@ -663,7 +732,7 @@ func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderMa
 	configureRoleModels(pool, cfg, modeRegistry)
 	// Register AgentTool and AgentSwarmTool with ModeResolver so sub-agents
 	// get mode-appropriate prompts, tools, and temperature settings.
-	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus)
+	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus, agentMgr)
 	return pool
 }
 
@@ -819,7 +888,7 @@ func attachAgentDrivenToolPools(tools []agentic.Tool, pool *multiagent.AgentPool
 	}
 }
 
-func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions) *subsystems {
+func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions, registry *core.CommandRegistry) *subsystems {
 	promptDir := cfg.Prompts.Dir
 	if promptDir == "" {
 		promptDir = filepath.Join(projectDir, ".goa", "prompts")
@@ -859,11 +928,15 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		delegateTool:      delegateTool,
 		logger:            ab.agentLogger,
 		lifecycleRegistry: base.lifecycleRegistry,
+		pluginMgr:         sc.pluginMgr,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,
 		perfLoadDuration:  opts.PerfLoadDuration,
 		agentStreams:      newAgentStreamRegistry(),
+		registry:          registry,
+		bgMgr:             base.bgMgr,
+		lspMgr:            base.lspMgr,
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
@@ -880,13 +953,13 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		RootDir:  filepath.Join(projectDir, ".goa", "orchestrator"),
 		GoalMode: s.goalManager.Mode,
 	}
+	s.orchCmd = orchCmd
 	orchCmd.ShowBrowser = func() {
 		b := orchpanel.NewBrowser(orchCmd.RootDir, nil)
 		handle := s.tuiEngine.ShowOverlay(b, tui.OverlayOptions{CaptureInput: true})
 		b.SetCloseFunc(func() { handle.Hide() })
 	}
-	s.orchCmd = orchCmd
-	_ = s.cmdRouter.Registry().Register(orchCmd)
+	_ = s.registry.Register(orchCmd)
 
 	s.dreamScheduler = newDreamScheduler(s)
 	_ = s.dreamScheduler.readSchedulerState()
@@ -896,6 +969,8 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	if s.modelValidator != nil {
 		s.modelValidator.Start(context.Background(), 5*time.Minute)
 	}
+
+	loadEnabledPlugins(s)
 
 	s.startOrchestratorCleanup()
 
@@ -925,13 +1000,20 @@ func (a *modeResolverAdapter) Resolve(major string) (multiagent.ModeSpec, error)
 // registerSubAgentTools creates and registers AgentTool and AgentSwarmTool
 // with the tool registry, providing them with the AgentPool and ModeResolver
 // needed to spawn sub-agents with mode-appropriate configuration.
-func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus) {
+func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager) {
 	resolver := &modeResolverAdapter{reg: modeRegistry}
+	currentMode := func() internal.ModeState {
+		if agentMgr == nil {
+			return internal.ModeState{}
+		}
+		return agentMgr.CurrentMode()
+	}
 
 	agentTool := &multiagent.AgentTool{
 		Pool:         pool,
 		ModeResolver: resolver,
 		TaskBus:      taskBus,
+		CurrentMode:  currentMode,
 	}
 	reg.Register(agentTool)
 
@@ -940,6 +1022,7 @@ func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, 
 		ModeResolver: resolver,
 		TaskBus:      taskBus,
 		SwarmState:   swarmState,
+		CurrentMode:  currentMode,
 	}
 	reg.Register(swarmTool)
 }

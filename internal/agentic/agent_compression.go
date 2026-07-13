@@ -11,9 +11,37 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
 
+// compactSummaryRequestPrompt is the stable user turn that precedes the
+// generated summary in compacted history. Carrying the summary as an assistant
+// reply to a user turn keeps the role sequence valid for strict providers
+// (DeepSeek, some OpenAI deployments) that reject an assistant-first history,
+// and ends on an assistant turn so the next user input alternates correctly.
+const compactSummaryRequestPrompt = "Summarize our conversation so far, preserving key facts, decisions, and context."
+
 func (a *Agent) Compact(ctx context.Context) error {
-	if len(a.history) == 0 {
+	a.mu.Lock()
+	empty := len(a.history) == 0
+	a.mu.Unlock()
+	if empty {
 		return nil
+	}
+
+	// Pre-flight: summarizeHistory sends the entire non-system history to the
+	// model. If that input is itself near the window, the summarization request
+	// returns the same context_length_exceeded and Compact fails exactly when
+	// it is needed most. Shrink in-memory (selective) first so the summarize
+	// call operates on a smaller input. Reserve headroom for the summarization
+	// instruction plus the generated summary output.
+	if maxTokens := a.effectiveMaxTokens(); maxTokens > 0 {
+		const summarizeHeadroomPercent = 90
+		if a.summarizationInputTokens() > maxTokens*summarizeHeadroomPercent/100 {
+			if a.cfg.Logger != nil {
+				a.cfg.Logger.Log(Info, "Compact: pre-shrinking history (selective) before summarization to avoid self-overflow")
+			}
+			a.mu.Lock()
+			a.compressSelective()
+			a.mu.Unlock()
+		}
 	}
 
 	summary, err := a.summarizeHistory(ctx)
@@ -21,9 +49,15 @@ func (a *Agent) Compact(ctx context.Context) error {
 		return err
 	}
 
+	// Replace history with a valid, cache-stable role sequence. The system
+	// prompt is NOT stored here: buildProviderContext sends it via
+	// Context.SystemPrompt, so storing it would duplicate it on the next turn.
+	// Previously Compact stored [system, assistant] (assistant-first after the
+	// index-0 system skip, rejected by strict providers) and obliterated the
+	// provider's prompt cache by wholesale prefix replacement.
 	a.mu.Lock()
 	a.history = []Message{
-		{Type: Content, Role: System, Content: a.cfg.SystemPrompt},
+		{Type: Content, Role: User, Content: compactSummaryRequestPrompt},
 		{Type: Content, Role: Assistant, Content: summary},
 	}
 	a.mu.Unlock()
@@ -32,9 +66,31 @@ func (a *Agent) Compact(ctx context.Context) error {
 	return nil
 }
 
+// summarizationInputTokens estimates the token cost of the input
+// summarizeHistory will send to the model (all non-system history), snapshotted
+// under the mutex. Used by Compact's pre-flight overflow check.
+func (a *Agent) summarizationInputTokens() int {
+	a.mu.Lock()
+	snapshot := append([]Message(nil), a.history...)
+	a.mu.Unlock()
+	var total int
+	for i := range snapshot {
+		if snapshot[i].Role != System {
+			total += messageTokenCount(&snapshot[i])
+		}
+	}
+	return total
+}
+
 func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
+	// Snapshot history under the mutex, then run the (network) summarization
+	// off-lock so a slow provider call does not block off-turn history readers.
+	a.mu.Lock()
+	snapshot := append([]Message(nil), a.history...)
+	a.mu.Unlock()
+
 	var msgs []Message
-	for _, m := range a.history {
+	for _, m := range snapshot {
 		if m.Role != System {
 			msgs = append(msgs, m)
 		}
@@ -95,7 +151,10 @@ func (a *Agent) MaybeCompress(ctx context.Context) error {
 // per-strategy thresholds are bypassed so manual invocations always perform
 // work. No-op if the history is empty.
 func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrategy, force bool) error {
-	if a == nil || len(a.history) == 0 {
+	a.mu.Lock()
+	n := len(a.history)
+	a.mu.Unlock()
+	if n == 0 {
 		return nil
 	}
 	if a.cfg.Logger != nil {
@@ -123,7 +182,9 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 		if threshold == 0 {
 			threshold = 90
 		}
+		a.mu.Lock()
 		stats := a.computeContextStatsForMax(maxTokens)
+		a.mu.Unlock()
 		if stats.UsagePercent < threshold {
 			return nil
 		}
@@ -141,8 +202,8 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 		return err
 	}
 
-	// Emit stats after compression
-	newStats := a.computeContextStats()
+	// Emit stats after compression (public ContextStats acquires the mutex).
+	newStats := a.ContextStats()
 	a.emitEvent(OutputEvent{
 		Type:         EventContextStats,
 		ContextStats: &newStats,
@@ -171,41 +232,50 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 
 	switch strategy {
 	case CompressionToolElision:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	case CompressionSelective:
+		a.mu.Lock()
 		a.compressSelective()
+		a.mu.Unlock()
 	case CompressionSummarize:
 		return a.Compact(ctx)
 	case CompressionHybrid:
 		return a.compressHybrid(ctx)
 	case CompressionMicro:
+		// microCompactForced self-manages a.mu (it emits after unlock), so do
+		// not wrap it in a held lock here.
 		a.microCompactForced(force)
 	default:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	}
 	return nil
 }
 
 // compressHybrid applies tool_elision then selective if still over threshold.
+// The in-memory steps run under a.mu; Compact (network) runs off-lock.
 func (a *Agent) compressHybrid(ctx context.Context) error {
-	a.compressToolElision(true)
-
-	stats := a.computeContextStats()
 	threshold := a.cfg.ContextCompression.ThresholdPercent
 	if threshold == 0 {
 		threshold = 100
 	}
-	if stats.UsagePercent < threshold {
+
+	a.mu.Lock()
+	a.compressToolElision(true)
+	stats := a.computeContextStats()
+	needMore := stats.UsagePercent >= threshold
+	if needMore {
+		a.compressSelective()
+		stats = a.computeContextStats()
+		needMore = stats.UsagePercent >= threshold
+	}
+	a.mu.Unlock()
+	if !needMore {
 		return nil
 	}
-
-	a.compressSelective()
-
-	stats = a.computeContextStats()
-	if stats.UsagePercent < threshold {
-		return nil
-	}
-
 	return a.Compact(ctx)
 }
 
@@ -384,8 +454,9 @@ func (a *Agent) handleContextError(err error) {
 		a.cfg.Logger.Log(Info, "Context length error — applying compression (strategy=%s)", strategy)
 	}
 
-	// Apply the configured strategy.  We pass force=true so the strategy
-	// runs even when internal thresholds aren't met (overflow is an emergency).
+	// compressHistoryWithStrategy self-manages a.mu per strategy branch (micro
+	// emits after unlock; the pure strategies take the lock around their
+	// mutation), so do not hold the lock across it here.
 	a.compressHistoryWithStrategy(string(strategy), true)
 
 	// If the configured strategy is tool_elision or micro and context is
@@ -393,14 +464,16 @@ func (a *Agent) handleContextError(err error) {
 	// This handles text-heavy conversations where eliding tool data leaves
 	// all user+assistant messages intact.
 	if strategy == "" || strategy == CompressionToolElision || strategy == CompressionMicro {
-		stats := a.computeContextStats()
+		stats := a.ContextStats()
 		maxTokens := a.effectiveMaxTokens()
 		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
 			if a.cfg.Logger != nil {
 				a.cfg.Logger.Log(Info, "Tool elision/micro freed insufficient space (%d/%d tokens) — escalating to selective",
 					stats.EstimatedTokens, maxTokens)
 			}
+			a.mu.Lock()
 			a.compressSelective()
+			a.mu.Unlock()
 		}
 	}
 }
@@ -414,20 +487,29 @@ func (a *Agent) compressHistoryWithStrategy(strategy string, force bool) {
 	// useful emergency strategy anyway since it costs an LLM call).
 	switch CompressionStrategy(strategy) {
 	case CompressionSelective:
+		a.mu.Lock()
 		a.compressSelective()
+		a.mu.Unlock()
 	case CompressionToolElision:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	case CompressionMicro:
+		// microCompactForced self-manages a.mu (it emits after unlock).
 		a.microCompactForced(force)
 	case CompressionHybrid:
+		a.mu.Lock()
 		a.compressToolElision(true)
 		stats := a.computeContextStats()
 		maxTokens := a.effectiveMaxTokens()
 		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
 			a.compressSelective()
 		}
+		a.mu.Unlock()
 	default:
+		a.mu.Lock()
 		a.compressToolElision(force)
+		a.mu.Unlock()
 	}
 }
 

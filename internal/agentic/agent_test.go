@@ -423,8 +423,12 @@ func TestAgent_CompactReplacesHistory(t *testing.T) {
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(history))
 	}
-	if history[0].Role != System {
-		t.Errorf("expected first to be system, got %v", history[0].Role)
+	// Compaction must produce a valid, provider-friendly role sequence: the
+	// system prompt is carried via Context.SystemPrompt (not duplicated in
+	// history), and the summary is an assistant reply to a user turn so the
+	// history is not assistant-first and the next user input alternates.
+	if history[0].Role != User {
+		t.Errorf("expected first to be user (no system duplication), got %v", history[0].Role)
 	}
 	if history[1].Role != Assistant {
 		t.Errorf("expected second to be assistant, got %v", history[1].Role)
