@@ -693,13 +693,14 @@ func (r *Runtime) RecordAgentThinking(h *AgentHandle, text string) {
 }
 
 // RecordAgentToolCall emits a tool-call event so the TUI can render a running
-// tool widget for the agent.
-func (r *Runtime) RecordAgentToolCall(h *AgentHandle, tool, input, callID string) {
+// tool widget for the agent. isDelta reports whether input is a partial
+// streaming update for an existing call_id.
+func (r *Runtime) RecordAgentToolCall(h *AgentHandle, tool, input, callID string, isDelta bool) {
 	if h == nil || tool == "" {
 		return
 	}
 	r.emit(Event{Type: EventAgentToolCall, AgentID: h.ID, Role: h.Role,
-		Payload: map[string]any{"tool": tool, "input": input, "call_id": callID}})
+		Payload: map[string]any{"tool": tool, "input": input, "call_id": callID, "is_delta": isDelta}})
 }
 
 // RecordAgentToolCall emits a tool-result event so the TUI can finalize the
@@ -1033,13 +1034,23 @@ func (r *Runtime) SteerAgent(agentID, text string) bool {
 }
 
 // SteerAll broadcasts a steering message to every live handle (including the
-// orchestrator role if present). Used by the Summary tab.
+// orchestrator role if present). If the orchestrator loop is paused waiting
+// for a user answer, this also resumes the loop so the steering is processed
+// immediately. Used by the Summary tab.
 func (r *Runtime) SteerAll(text string) {
 	for _, h := range r.pool.Live() {
 		h.Steer(text)
 		r.emit(Event{Type: EventAgentSteered, AgentID: h.ID, Role: h.Role,
 			Payload: map[string]any{"from": "broadcast", "text": text}})
 	}
+	// Resume a paused orchestrator loop so the broadcast is not left dangling.
+	r.loopMu.Lock()
+	if r.loopActive && r.pendingUser && r.resumeCh != nil {
+		r.pendingUser = false
+		close(r.resumeCh)
+		r.resumeCh = nil
+	}
+	r.loopMu.Unlock()
 }
 
 // SteerOrchestrator targets the orchestrator-role handle only.

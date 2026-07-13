@@ -65,9 +65,131 @@ func assertToolResultPayload(t *testing.T, ev Event, wantText string, wantOK boo
 	}
 }
 
-// TestRuntimeRecordAgentEvents_ForwardThinkingToolCallResult asserts that
-// RecordAgentThinking, RecordAgentToolCall, and RecordAgentToolResult emit
-// the right event types with payload fields and no-op on nil/empty inputs.
+// TestRuntime_SteerAll_ResumesPausedLoop asserts that SteerAll resumes the
+// orchestrator loop when it is paused waiting for a user answer. The default
+// TUI steering target is "all", so a broadcast must not leave the
+// orchestrator stuck in the paused state.
+func TestRuntime_SteerAll_ResumesPausedLoop(t *testing.T) {
+	cfg := testRuntimeConfig()
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		return NewAgentHandle("fake-"+role, role, model), nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	resume := make(chan struct{})
+	rt.loopMu.Lock()
+	rt.loopActive = true
+	rt.pendingUser = true
+	rt.resumeCh = resume
+	rt.loopMu.Unlock()
+
+	rt.SteerAll("answer")
+
+	select {
+	case <-resume:
+		// resumed as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("SteerAll did not resume a paused orchestrator loop")
+	}
+}
+
+// TestRuntime_SteerAgent_BuffersWithoutResume verifies that SteerAgent
+// appends steering to the targeted handle without resuming a paused
+// orchestrator loop. Use SteerOrchestrator (or SteerAll) to resume the
+// orchestrator specifically.
+func TestRuntime_SteerAgent_BuffersWithoutResume(t *testing.T) {
+	cfg := config.OrchestratorConfig{
+		Roles: map[string]config.OrchestratorRole{
+			"orchestrator": {Model: "gemma"},
+			"coder":        {Model: "gemma"},
+		},
+		Pool:     config.OrchestratorPoolConfig{MaxTotalAgents: 2},
+		Defaults: config.OrchestratorDefaultsConfig{Topology: "hub"},
+	}
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		return NewAgentHandle("fake-"+role, role, model), nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	resume := make(chan struct{})
+	rt.loopMu.Lock()
+	rt.loopActive = true
+	rt.pendingUser = true
+	rt.resumeCh = resume
+	rt.loopMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	h, err := rt.pool.Acquire(ctx, "orchestrator", AcquireOptions{})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	h.Model = "gemma"
+	if !rt.SteerAgent(h.ID, "answer") {
+		t.Fatal("SteerAgent did not find the orchestrator handle")
+	}
+
+	if h.Steering.Len() == 0 {
+		t.Error("SteerAgent did not buffer steering in the handle")
+	}
+
+	select {
+	case <-resume:
+		t.Fatal("SteerAgent unexpectedly resumed a paused orchestrator loop")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// TestRuntime_SteerAll_WithoutPendingUserDoesNotPanic ensures SteerAll is
+// safe even when no loop is paused.
+func TestRuntime_SteerAll_WithoutPendingUserDoesNotPanic(t *testing.T) {
+	cfg := testRuntimeConfig()
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		return NewAgentHandle("fake-"+role, role, model), nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	// No loop active; should not panic or block.
+	rt.SteerAll("hello")
+}
+
+// TestRuntime_SteerOrchestrator_ResumesPausedLoop verifies the dedicated
+// orchestrator steering path still resumes a paused loop.
+func TestRuntime_SteerOrchestrator_ResumesPausedLoop(t *testing.T) {
+	cfg := testRuntimeConfig()
+	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
+		return NewAgentHandle("fake-"+role, role, model), nil
+	})
+	rt, err := NewRuntime(cfg, pool, nil, "")
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	resume := make(chan struct{})
+	rt.loopMu.Lock()
+	rt.loopActive = true
+	rt.pendingUser = true
+	rt.resumeCh = resume
+	rt.loopMu.Unlock()
+
+	rt.SteerOrchestrator("answer")
+
+	select {
+	case <-resume:
+		// resumed as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("SteerOrchestrator did not resume a paused orchestrator loop")
+	}
+}
 func TestRuntimeRecordAgentEvents_ForwardThinkingToolCallResult(t *testing.T) {
 	cfg := testRuntimeConfig()
 	pool := NewBoundedAgentPool(cfg, func(role, model string, _ AcquireOptions) (*AgentHandle, error) {
@@ -82,7 +204,7 @@ func TestRuntimeRecordAgentEvents_ForwardThinkingToolCallResult(t *testing.T) {
 	rt.RecordAgentThinking(nil, "text")
 	rt.RecordAgentThinking(h, "")
 	rt.RecordAgentThinking(h, "reasoning")
-	rt.RecordAgentToolCall(h, "writefile", `{"path":"x.txt"}`, "tc1")
+	rt.RecordAgentToolCall(h, "writefile", `{"path":"x.txt"}`, "tc1", false)
 	rt.RecordAgentToolResult(h, "tc1", "written", true)
 
 	got := collectRuntimeEvents(t, rt)

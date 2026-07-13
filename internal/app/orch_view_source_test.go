@@ -6,10 +6,12 @@ package app
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/core/orchestrator"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
+	"github.com/pijalu/goa/tui"
 )
 
 // TestTranslateOrchEvent_Mappings is a table-driven assertion that every
@@ -54,6 +56,16 @@ func TestTranslateOrchEvent_Mappings(t *testing.T) {
 			name: "agent_tool_call passes tool/input/call_id",
 			in:   orchestrator.Event{Type: orchestrator.EventAgentToolCall, AgentID: "c-1", Role: "coder", Payload: map[string]any{"tool": "writefile", "input": `{"path":"x.txt"}`, "call_id": "t1"}},
 			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAgentToolCall, AgentID: "c-1", Role: "coder", Tool: "writefile", ToolInput: `{"path":"x.txt"}`, CallID: "t1"},
+		},
+		{
+			name: "agent_tool_call delta passes is_delta",
+			in:   orchestrator.Event{Type: orchestrator.EventAgentToolCall, AgentID: "c-1", Role: "coder", Payload: map[string]any{"tool": "writefile", "input": `{"path":"x`, "call_id": "t1", "is_delta": true}},
+			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAgentToolCall, AgentID: "c-1", Role: "coder", Tool: "writefile", ToolInput: `{"path":"x`, CallID: "t1", IsDelta: true},
+		},
+		{
+			name: "ask_user passes question",
+			in:   orchestrator.Event{Type: orchestrator.EventAskUser, AgentID: "o-1", Role: "orchestrator", Payload: map[string]any{"question": "What is the goal?"}},
+			want: orchpanel.AgentViewEvent{Kind: orchpanel.EvAskUser, AgentID: "o-1", Role: "orchestrator", Question: "What is the goal?"},
 		},
 		{
 			name: "agent_tool_result passes call_id/text/ok",
@@ -105,3 +117,47 @@ func TestTranslateOrchEvent_UnknownReturnsFalse(t *testing.T) {
 		t.Errorf("expected ok=false for unknown event type")
 	}
 }
+
+// TestDisplayOrchestratorQuestion_AddsSystemMessage verifies that an ask_user
+// event surfaces the question as a system chat message.
+func TestDisplayOrchestratorQuestion_AddsSystemMessage(t *testing.T) {
+	a := &App{}
+	a.subs = &subsystems{chat: tui.NewChatViewport()}
+
+	a.displayOrchestratorQuestion(orchpanel.AgentViewEvent{
+		Kind:     orchpanel.EvAskUser,
+		AgentID:  "o-1",
+		Role:     "orchestrator",
+		Question: "What is the goal?",
+	})
+
+	msgs := a.subs.chat.Messages()
+	found := false
+	for _, m := range msgs {
+		if m.Type == tui.ConsoleSystemMessage && strings.Contains(m.Content, "What is the goal?") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected system message with question, got messages: %v", msgs)
+	}
+}
+
+// TestDisplayOrchestratorQuestion_EmptyQuestionIsNoOp verifies that an empty
+// question does not add a message.
+func TestDisplayOrchestratorQuestion_EmptyQuestionIsNoOp(t *testing.T) {
+	a := &App{}
+	a.subs = &subsystems{chat: tui.NewChatViewport()}
+
+	a.displayOrchestratorQuestion(orchpanel.AgentViewEvent{
+		Kind:     orchpanel.EvAskUser,
+		AgentID:  "o-1",
+		Role:     "orchestrator",
+		Question: "",
+	})
+
+	if len(a.subs.chat.Messages()) != 0 {
+		t.Errorf("expected no messages for empty question, got %d", len(a.subs.chat.Messages()))
+	}
+}
+

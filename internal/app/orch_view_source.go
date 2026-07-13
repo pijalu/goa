@@ -22,81 +22,128 @@ func translateOrchEvent(ev orchestrator.Event) (orchpanel.AgentViewEvent, bool) 
 	case orchestrator.EventRunStarted:
 		return orchpanel.AgentViewEvent{Kind: orchpanel.EvSourceStarted, Meta: orchRunMeta(ev)}, true
 	case orchestrator.EventRunFinished:
-		status := "ok"
-		if ok, _ := ev.Payload["ok"].(bool); !ok {
-			status = "failed"
-		}
-		return orchpanel.AgentViewEvent{Kind: orchpanel.EvSourceFinished, Status: status}, true
+		return translateRunFinished(ev)
 	case orchestrator.EventAgentStarted:
-		return orchpanel.AgentViewEvent{
-			Kind:     orchpanel.EvAgentStarted,
-			AgentID:  ev.AgentID,
-			Role:     ev.Role,
-			Model:    ev.Model,
-			Provider: orchStr(ev.Payload, "provider"),
-			Thinking: orchStr(ev.Payload, "thinking"),
-		}, true
+		return translateAgentStarted(ev), true
 	case orchestrator.EventAgentMessage:
-		return orchpanel.AgentViewEvent{
-			Kind:    orchpanel.EvAgentMessage,
-			AgentID: ev.AgentID, Role: ev.Role,
-			Text: orchStr(ev.Payload, "text"),
-		}, true
+		return translateAgentMessage(ev), true
 	case orchestrator.EventAgentThinking:
-		return orchpanel.AgentViewEvent{
-			Kind:    orchpanel.EvAgentThinking,
-			AgentID: ev.AgentID, Role: ev.Role,
-			Text: orchStr(ev.Payload, "text"),
-		}, true
+		return translateAgentThinking(ev), true
 	case orchestrator.EventAgentToolCall:
-		return orchpanel.AgentViewEvent{
-			Kind:      orchpanel.EvAgentToolCall,
-			AgentID:   ev.AgentID, Role: ev.Role,
-			Tool:      orchStr(ev.Payload, "tool"),
-			ToolInput: orchStr(ev.Payload, "input"),
-			CallID:    orchStr(ev.Payload, "call_id"),
-		}, true
+		return translateAgentToolCall(ev), true
 	case orchestrator.EventAgentToolResult:
-		return orchpanel.AgentViewEvent{
-			Kind:    orchpanel.EvAgentToolResult,
-			AgentID: ev.AgentID, Role: ev.Role,
-			CallID: orchStr(ev.Payload, "call_id"),
-			Text:   orchStr(ev.Payload, "text"),
-			OK:     orchBool(ev.Payload, "ok"),
-		}, true
+		return translateAgentToolResult(ev), true
 	case orchestrator.EventAgentStats:
-		return orchpanel.AgentViewEvent{
-			Kind:     orchpanel.EvAgentStats,
-			AgentID:  ev.AgentID, Role: ev.Role,
-			Status:   orchStr(ev.Payload, "status"),
-			Thinking: orchStr(ev.Payload, "thinking"),
-			Stats: &orchpanel.AgentStatsDelta{
-				Turns:           orchInt(ev.Payload, "turns"),
-				TokensIn:        orchInt(ev.Payload, "tokens_in"),
-				TokensOut:       orchInt(ev.Payload, "tokens_out"),
-				CacheRead:       orchInt(ev.Payload, "cache_read"),
-				CacheCreation:   orchInt(ev.Payload, "cache_creation"),
-				ToolCalls:       orchInt(ev.Payload, "tool_calls"),
-				ContextEstimate: orchInt(ev.Payload, "context_estimate"),
-				ContextMax:      orchInt(ev.Payload, "context_max"),
-				ContextAutoMax:  orchBool(ev.Payload, "context_auto_max"),
-			},
-		}, true
+		return translateAgentStats(ev), true
 	case orchestrator.EventAgentSteered:
-		return orchpanel.AgentViewEvent{
-			Kind:    orchpanel.EvAgentSteered,
-			AgentID: ev.AgentID, Role: ev.Role,
-			Text: orchStr(ev.Payload, "text"),
-		}, true
+		return translateAgentSteered(ev), true
 	case orchestrator.EventAgentFinished:
-		return orchpanel.AgentViewEvent{
-			Kind:    orchpanel.EvAgentFinished,
-			AgentID: ev.AgentID, Role: ev.Role,
-			Status: orchFinishedStatus(ev.Payload),
-			Text:   orchStr(ev.Payload, "text"),
-		}, true
+		return translateAgentFinished(ev), true
+	case orchestrator.EventAskUser:
+		return translateAskUser(ev), true
 	}
 	return orchpanel.AgentViewEvent{}, false
+}
+
+func translateRunFinished(ev orchestrator.Event) (orchpanel.AgentViewEvent, bool) {
+	status := "ok"
+	if ok, _ := ev.Payload["ok"].(bool); !ok {
+		status = "failed"
+	}
+	return orchpanel.AgentViewEvent{Kind: orchpanel.EvSourceFinished, Status: status}, true
+}
+
+func translateAgentStarted(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:     orchpanel.EvAgentStarted,
+		AgentID:  ev.AgentID,
+		Role:     ev.Role,
+		Model:    ev.Model,
+		Provider: orchStr(ev.Payload, "provider"),
+		Thinking: orchStr(ev.Payload, "thinking"),
+	}
+}
+
+func translateAgentMessage(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:    orchpanel.EvAgentMessage,
+		AgentID: ev.AgentID, Role: ev.Role,
+		Text: orchStr(ev.Payload, "text"),
+	}
+}
+
+func translateAgentThinking(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:    orchpanel.EvAgentThinking,
+		AgentID: ev.AgentID, Role: ev.Role,
+		Text: orchStr(ev.Payload, "text"),
+	}
+}
+
+func translateAgentToolCall(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:      orchpanel.EvAgentToolCall,
+		AgentID:   ev.AgentID, Role: ev.Role,
+		Tool:      orchStr(ev.Payload, "tool"),
+		ToolInput: orchStr(ev.Payload, "input"),
+		CallID:    orchStr(ev.Payload, "call_id"),
+		IsDelta:   orchBool(ev.Payload, "is_delta"),
+	}
+}
+
+func translateAgentToolResult(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:    orchpanel.EvAgentToolResult,
+		AgentID: ev.AgentID, Role: ev.Role,
+		CallID: orchStr(ev.Payload, "call_id"),
+		Text:   orchStr(ev.Payload, "text"),
+		OK:     orchBool(ev.Payload, "ok"),
+	}
+}
+
+func translateAgentStats(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:     orchpanel.EvAgentStats,
+		AgentID:  ev.AgentID, Role: ev.Role,
+		Status:   orchStr(ev.Payload, "status"),
+		Thinking: orchStr(ev.Payload, "thinking"),
+		Stats: &orchpanel.AgentStatsDelta{
+			Turns:           orchInt(ev.Payload, "turns"),
+			TokensIn:        orchInt(ev.Payload, "tokens_in"),
+			TokensOut:       orchInt(ev.Payload, "tokens_out"),
+			CacheRead:       orchInt(ev.Payload, "cache_read"),
+			CacheCreation:   orchInt(ev.Payload, "cache_creation"),
+			ToolCalls:       orchInt(ev.Payload, "tool_calls"),
+			ContextEstimate: orchInt(ev.Payload, "context_estimate"),
+			ContextMax:      orchInt(ev.Payload, "context_max"),
+			ContextAutoMax:  orchBool(ev.Payload, "context_auto_max"),
+		},
+	}
+}
+
+func translateAgentSteered(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:    orchpanel.EvAgentSteered,
+		AgentID: ev.AgentID, Role: ev.Role,
+		Text: orchStr(ev.Payload, "text"),
+	}
+}
+
+func translateAgentFinished(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:    orchpanel.EvAgentFinished,
+		AgentID: ev.AgentID, Role: ev.Role,
+		Status: orchFinishedStatus(ev.Payload),
+		Text:   orchStr(ev.Payload, "text"),
+	}
+}
+
+func translateAskUser(ev orchestrator.Event) orchpanel.AgentViewEvent {
+	return orchpanel.AgentViewEvent{
+		Kind:     orchpanel.EvAskUser,
+		AgentID:  ev.AgentID, Role: ev.Role,
+		Question: orchStr(ev.Payload, "question"),
+	}
 }
 
 // orchRunMeta copies display-only run metadata from the run_started payload.

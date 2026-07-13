@@ -117,7 +117,7 @@ func TestRuntime_EmitPreservesOrder(t *testing.T) {
 
 	rt.RecordAgentThinking(h, "t1")
 	rt.RecordAgentMessage(h, "m1")
-	rt.RecordAgentToolCall(h, "writefile", "{}", "c1")
+	rt.RecordAgentToolCall(h, "writefile", "{}", "c1", false)
 	rt.RecordAgentToolResult(h, "c1", "ok", true)
 
 	deadline := time.Now().Add(2 * time.Second)

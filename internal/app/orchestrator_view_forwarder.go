@@ -94,11 +94,11 @@ func (a *App) drainOrchView(done <-chan struct{}, src orchEventSource) {
 func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
 	switch ne.Kind {
 	case orchpanel.EvAgentThinking:
-		a.handleAgentThinking(ne.AgentID, ne.Text)
+		a.handleAgentThinking(ne.AgentID, ne.Text, true)
 	case orchpanel.EvAgentMessage:
-		a.handleAgentContent(ne.AgentID, ne.Text)
+		a.handleAgentContent(ne.AgentID, ne.Text, true)
 	case orchpanel.EvAgentToolCall:
-		a.handleAgentToolCall(ne.AgentID, ne.Tool, ne.ToolInput, ne.CallID)
+		a.handleAgentToolCall(ne.AgentID, ne.Tool, ne.ToolInput, ne.CallID, ne.IsDelta)
 	case orchpanel.EvAgentToolResult:
 		a.handleAgentToolResult(ne.AgentID, ne.CallID, ne.Text, ne.OK)
 	case orchpanel.EvAgentStarted:
@@ -107,8 +107,23 @@ func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
 		a.applyAgentFinished(ne)
 	case orchpanel.EvSourceFinished:
 		a.applySourceFinished(ne)
+	case orchpanel.EvAskUser:
+		a.displayOrchestratorQuestion(ne)
 	default:
 		a.applyToView(ne)
+	}
+}
+
+// displayOrchestratorQuestion surfaces the orchestrator's ask_user question in
+// the chat viewport so the user can see what they are being asked before the
+// app blocks for input.
+func (a *App) displayOrchestratorQuestion(ne orchpanel.AgentViewEvent) {
+	if ne.Question == "" || a.subs.chat == nil {
+		return
+	}
+	a.subs.chat.AddSystemMessage("[orchestrator asks] " + ne.Question)
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
 	}
 }
 

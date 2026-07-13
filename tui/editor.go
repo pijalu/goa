@@ -318,6 +318,7 @@ func (e *Editor) clearLocked() {
 	e.preferredVisualCol = -1
 	e.preferredColSet = false
 	e.lastAction = ""
+	e.stableMaxLines = 0
 }
 
 // HandleInput processes keyboard input with readline-like behavior. Runs on

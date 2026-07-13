@@ -208,7 +208,7 @@ func applyOutputEvent(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev 
 func applyToolCall(h *orchestrator.AgentHandle, rt *orchestrator.Runtime, ev agentic.OutputEvent) {
 	h.Stats.IncToolCall()
 	if rt != nil {
-		rt.RecordAgentToolCall(h, ev.ToolName, ev.ToolInput, ev.ToolCallID)
+		rt.RecordAgentToolCall(h, ev.ToolName, ev.ToolInput, ev.ToolCallID, ev.IsDelta)
 	}
 }
 

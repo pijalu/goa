@@ -398,3 +398,29 @@ func TestToolExecution_PartialArgs_RenderContextWiredCorrectly(t *testing.T) {
 	tc.SetArgsComplete()
 	tc.SetArgsJSON(`{"path":"test.go","content":"package main"}`)
 }
+
+// TestToolExecution_RunningShowsElapsedDuration verifies that the tool widget
+// renders an elapsed duration while the tool is still running/pending.
+func TestToolExecution_RunningShowsElapsedDuration(t *testing.T) {
+	tc := NewToolExecution("bash", "sleep 1")
+	tc.SetArgsJSON(`{"command":"sleep 1"}`)
+	tc.SetStatus(ToolRunning)
+
+	lines := tc.Render(80)
+	rendered := strings.Join(lines, "\n")
+	stripped := ansi.Strip(rendered)
+	if !strings.Contains(stripped, "elapsed") {
+		t.Errorf("expected running tool to show elapsed duration, got:\n%s", stripped)
+	}
+
+	// After completion, the duration should switch to "Took ...".
+	tc.SetOutput("done")
+	tc.SetStatus(ToolSuccess)
+	lines = tc.Render(80)
+	rendered = strings.Join(lines, "\n")
+	stripped = ansi.Strip(rendered)
+	if !strings.Contains(stripped, "Took") {
+		t.Errorf("expected completed tool to show final duration, got:\n%s", stripped)
+	}
+}
+

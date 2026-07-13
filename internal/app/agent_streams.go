@@ -24,6 +24,7 @@ type agentStreamState struct {
 	thinkView   tui.Component
 	contentView tui.Component
 	tools       map[string]*tui.ToolExecutionComponent
+	activeTool  *tui.ToolExecutionComponent // fallback for tool calls without call_id
 }
 
 // endSegment closes the current thinking/content segment so the next chunk
@@ -158,7 +159,7 @@ func (a *App) endAgentStream(agentID string) {
 	a.subs.agentStreams.end(agentID)
 }
 
-func (a *App) handleAgentThinking(agentID, text string) {
+func (a *App) handleAgentThinking(agentID, text string, isDelta bool) {
 	if a.subs.agentStreams == nil || a.subs.chat == nil {
 		return
 	}
@@ -172,7 +173,12 @@ func (a *App) handleAgentThinking(agentID, text string) {
 	if state.kind != tui.ConsoleThinkingBlock && state.kind != 0 {
 		state.endSegment()
 	}
-	state.thinking.WriteString(text)
+	if isDelta {
+		state.thinking.WriteString(text)
+	} else {
+		state.thinking.Reset()
+		state.thinking.WriteString(text)
+	}
 	if state.thinkView == nil {
 		expanded := a.subs.cfg == nil || !a.subs.cfg.TUI.Transparency.ThinkingCollapsed
 		state.thinkView = a.subs.chat.AddAgentThinkingBlock(state.label, state.thinking.String(), expanded)
@@ -185,7 +191,7 @@ func (a *App) handleAgentThinking(agentID, text string) {
 	}
 }
 
-func (a *App) handleAgentContent(agentID, text string) {
+func (a *App) handleAgentContent(agentID, text string, isDelta bool) {
 	if a.subs.agentStreams == nil || a.subs.chat == nil {
 		return
 	}
@@ -196,7 +202,12 @@ func (a *App) handleAgentContent(agentID, text string) {
 	if state.kind != tui.ConsoleAgentMessage && state.kind != 0 {
 		state.endSegment()
 	}
-	state.content.WriteString(text)
+	if isDelta {
+		state.content.WriteString(text)
+	} else {
+		state.content.Reset()
+		state.content.WriteString(text)
+	}
 	if state.contentView == nil {
 		state.contentView = a.subs.chat.AddAgentContent(state.label, state.content.String())
 		state.kind = tui.ConsoleAgentMessage
@@ -208,7 +219,7 @@ func (a *App) handleAgentContent(agentID, text string) {
 	}
 }
 
-func (a *App) handleAgentToolCall(agentID, name, input, callID string) {
+func (a *App) handleAgentToolCall(agentID, name, input, callID string, isDelta bool) {
 	if a.subs.agentStreams == nil || a.subs.chat == nil {
 		return
 	}
@@ -217,17 +228,76 @@ func (a *App) handleAgentToolCall(agentID, name, input, callID string) {
 		return
 	}
 	state.endSegment()
+
+	existing := a.findExistingToolWidget(state, name, callID)
+	if existing != nil {
+		a.updateToolWidget(existing, state, name, input, callID, isDelta)
+		return
+	}
+
 	tc := a.subs.chat.AddAgentToolExecution(state.label, name, input)
+	a.configureNewToolWidget(tc, state, name, input, callID, isDelta)
+	a.showToolStatus(state, name)
+}
+
+// findExistingToolWidget returns the widget for the given callID or name, if any.
+func (a *App) findExistingToolWidget(state *agentStreamState, name, callID string) *tui.ToolExecutionComponent {
+	if callID != "" {
+		if tc := state.tools[callID]; tc != nil {
+			return tc
+		}
+	}
+	if state.activeTool != nil && state.activeTool.ToolName() == name {
+		return state.activeTool
+	}
+	return nil
+}
+
+// updateToolWidget applies a streaming or final tool-call update to an existing widget.
+func (a *App) updateToolWidget(tc *tui.ToolExecutionComponent, state *agentStreamState, name, input, callID string, isDelta bool) {
+	if isDelta {
+		tc.SetArgsPartial(input)
+		return
+	}
+	// Final (non-delta) arrival: mark args complete and refresh.
+	tc.SetArgsJSON(input)
+	tc.SetArgsComplete()
+	tc.SetStatus(tui.ToolRunning)
+	a.storeToolRef(state, tc, callID)
+	a.showToolStatus(state, name)
+}
+
+// configureNewToolWidget sets up a freshly created tool widget for a streaming or final call.
+func (a *App) configureNewToolWidget(tc *tui.ToolExecutionComponent, state *agentStreamState, name, input, callID string, isDelta bool) {
+	if isDelta {
+		tc.SetArgsPartial(input)
+	} else {
+		tc.SetArgsComplete()
+		tc.SetArgsJSON(input)
+	}
+	tc.SetStatus(tui.ToolRunning)
+	a.storeToolRef(state, tc, callID)
+}
+
+// storeToolRef records the widget under the callID or as the active fallback.
+func (a *App) storeToolRef(state *agentStreamState, tc *tui.ToolExecutionComponent, callID string) {
 	if callID != "" {
 		state.tools[callID] = tc
+	} else {
+		state.activeTool = tc
 	}
-	if a.subs.statusMsg != nil {
-		// Include the tool name so the spinner identifies which tool the agent
-		// is invoking (e.g. "coder tool calling: bash"), not just the generic
-		// "tool calling". Keeps the "tool calling" substring so existing
-		// footer/status assertions still match.
-		a.subs.statusMsg.Show(state.label + " tool calling: " + name)
+}
+
+// showToolStatus updates the status bar to identify the tool being called.
+func (a *App) showToolStatus(state *agentStreamState, name string) {
+	if a.subs.statusMsg == nil {
+		return
 	}
+	// Include the tool name so the spinner identifies which tool the agent
+	// is invoking (e.g. "coder tool calling: bash"), not just the generic
+	// "tool calling". Keeps the "tool calling" substring so existing
+	// footer/status assertions still match.
+	a.subs.statusMsg.Show(state.label + " tool calling: " + name)
 }
 
 func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
@@ -238,7 +308,17 @@ func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
 	if state == nil {
 		return
 	}
-	if tc, okTool := state.tools[callID]; okTool {
+	var tc *tui.ToolExecutionComponent
+	if callID != "" {
+		if t, okTool := state.tools[callID]; okTool {
+			tc = t
+			delete(state.tools, callID)
+		}
+	} else if state.activeTool != nil {
+		tc = state.activeTool
+		state.activeTool = nil
+	}
+	if tc != nil {
 		status := tui.ToolSuccess
 		if !ok {
 			status = tui.ToolError
@@ -246,7 +326,6 @@ func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
 		tc.SetOutput(text)
 		tc.SetStatus(status)
 		tc.SetPartial(false)
-		delete(state.tools, callID)
 		// Close any open segment so the next thinking/content chunk starts a
 		// fresh block rather than appending to the pre-tool block.
 		state.endSegment()

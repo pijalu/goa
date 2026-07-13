@@ -38,6 +38,9 @@ const (
 	EvAgentSteered AgentEventKind = "agent_steered"
 	// EvAgentFinished marks an agent terminal; Status carries the outcome.
 	EvAgentFinished AgentEventKind = "agent_finished"
+	// EvAskUser carries a question the orchestrator asks the user. The view
+	// should render it prominently and pause for an answer.
+	EvAskUser AgentEventKind = "ask_user"
 )
 
 // AgentStatsDelta is the per-agent usage snapshot carried by EvAgentStats.
@@ -70,6 +73,8 @@ type AgentViewEvent struct {
 	ToolInput string
 	CallID    string
 	OK        bool
+	IsDelta   bool
+	Question  string
 	Stats     *AgentStatsDelta
 	Meta      map[string]string
 }

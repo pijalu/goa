@@ -144,6 +144,7 @@ func TestRuntimeOptionsValidate(t *testing.T) {
 		{"valid prompt-file", RuntimeOptions{PromptFile: "/tmp/prompt.md"}, false},
 		{"TUI mode", RuntimeOptions{}, false},
 		{"mutually exclusive", RuntimeOptions{PromptArg: "hello", PromptFile: "/tmp/prompt.md"}, true},
+		{"empty explicit prompt", RuntimeOptions{PromptGiven: true}, true},
 		{"bad color", RuntimeOptions{PromptArg: "hello", Color: "blue"}, true},
 		{"negative memory budget", RuntimeOptions{PromptArg: "hello", MemoryBudget: -1}, true},
 		{"negative max turns", RuntimeOptions{PromptArg: "hello", MaxTurns: -1}, true},

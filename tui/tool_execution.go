@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
 )
@@ -43,6 +44,7 @@ type ToolExecutionComponent struct {
 	argsComplete bool
 	renderer  ToolRenderer
 	generic   genericRenderer
+	startTime time.Time
 
 	// onInvalidate is called when internal state changes (output, status,
 	// duration) so the owning ChatViewport can invalidate its render cache.
@@ -118,6 +120,7 @@ func NewToolExecution(toolName, toolArgs string) *ToolExecutionComponent {
 		isPartial: true,
 		renderer:  GetToolRenderer(toolName),
 		box:       &toolBox{},
+		startTime: time.Now(),
 	}
 	tc.updateBox()
 	tc.AddChild(tc.box)
@@ -172,7 +175,7 @@ func (tc *ToolExecutionComponent) updateBox() {
 	}
 
 	// Duration
-	tc.box.duration = tc.duration
+	tc.renderDuration()
 
 	// Background: bash/terminal renderers request the default background so
 	// the output looks like raw shell output rather than a colored box.
@@ -183,6 +186,26 @@ func (tc *ToolExecutionComponent) updateBox() {
 	}
 
 	tc.box.Invalidate()
+}
+
+// renderDuration computes the duration string based on current status and
+// elapsed time. It keeps the mutable duration state out of updateBox so the
+// latter stays within the complexity budget.
+func (tc *ToolExecutionComponent) renderDuration() {
+	switch tc.status {
+	case ToolSuccess, ToolError:
+		if tc.duration == "" && !tc.startTime.IsZero() {
+			tc.duration = formatDuration(time.Since(tc.startTime))
+		}
+	case ToolPending, ToolRunning:
+		if !tc.startTime.IsZero() {
+			tc.box.duration = fmt.Sprintf("elapsed %s", formatDuration(time.Since(tc.startTime)))
+		} else {
+			tc.box.duration = ""
+		}
+	default:
+		tc.box.duration = tc.duration
+	}
 }
 
 // ── Setters ──
@@ -322,6 +345,22 @@ func (tc *ToolExecutionComponent) SetDuration(d string) {
 // Invalidate clears cached rendering state.
 func (tc *ToolExecutionComponent) Invalidate() {
 	tc.Container.Invalidate()
+}
+
+// Render renders the tool execution widget. While the tool is running, the
+// elapsed duration is recomputed on every frame so the user sees live timing.
+func (tc *ToolExecutionComponent) Render(width int) []string {
+	if tc.status == ToolPending || tc.status == ToolRunning {
+		if !tc.startTime.IsZero() {
+			elapsed := fmt.Sprintf("elapsed %s", formatDuration(time.Since(tc.startTime)))
+			if tc.box.duration != elapsed {
+				// Rebuild the whole box so the spinner icon and duration both
+				// refresh on the next render cycle.
+				tc.updateBox()
+			}
+		}
+	}
+	return tc.Container.Render(width)
 }
 
 // ── Helpers ──
@@ -464,3 +503,13 @@ func extractJSONIntField(raw, field string) string {
 	}
 	return ""
 }
+
+// formatDuration returns a concise human-readable duration string.
+// Sub-second values show two decimals; seconds and up show one decimal.
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%.2fs", d.Seconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+

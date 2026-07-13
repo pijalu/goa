@@ -122,17 +122,34 @@ func (o RuntimeOptions) validateModes() error {
 	if err := o.checkHeadlessIncompatible(); err != nil {
 		return err
 	}
+	if err := o.validatePromptFlags(); err != nil {
+		return err
+	}
+	if err := o.validateDreamCompatibility(); err != nil {
+		return err
+	}
+	if o.Goal && !o.promptImpliesHeadless() {
+		return fmt.Errorf("--goal requires --prompt or --prompt-file")
+	}
+	return nil
+}
+
+func (o RuntimeOptions) validatePromptFlags() error {
 	if o.PromptArg != "" && o.PromptFile != "" {
 		return fmt.Errorf("--prompt and --prompt-file are mutually exclusive")
 	}
+	if o.PromptGiven && o.PromptArg == "" && o.PromptFile == "" {
+		return fmt.Errorf("--prompt requires a non-empty value")
+	}
+	return nil
+}
+
+func (o RuntimeOptions) validateDreamCompatibility() error {
 	if o.PromptArg != "" && (o.Dream || o.DreamApply) {
 		return fmt.Errorf("--prompt is incompatible with --dream/--dream-apply")
 	}
 	if o.PromptFile != "" && (o.Dream || o.DreamApply) {
 		return fmt.Errorf("--prompt-file is incompatible with --dream/--dream-apply")
-	}
-	if o.Goal && !o.promptImpliesHeadless() {
-		return fmt.Errorf("--goal requires --prompt or --prompt-file")
 	}
 	return nil
 }

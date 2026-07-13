@@ -77,3 +77,31 @@ func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 		t.Fatal("smartsearch should be registered when enabled")
 	}
 }
+
+func TestRuntimeOptions_EmptyPromptImpliesHeadless(t *testing.T) {
+	opts := RuntimeOptions{PromptArg: "", PromptGiven: true}
+	if !opts.Headless() {
+		t.Error("expected headless when --prompt is explicitly empty")
+	}
+}
+
+func TestRuntimeOptions_PromptArgImpliesHeadless(t *testing.T) {
+	opts := RuntimeOptions{PromptArg: "hello"}
+	if !opts.Headless() {
+		t.Error("expected headless when --prompt has a value")
+	}
+}
+
+func TestRuntimeOptions_PromptFileImpliesHeadless(t *testing.T) {
+	opts := RuntimeOptions{PromptFile: "/tmp/prompt.txt"}
+	if !opts.Headless() {
+		t.Error("expected headless when --prompt-file is set")
+	}
+}
+
+func TestRuntimeOptions_DefaultIsTUI(t *testing.T) {
+	opts := RuntimeOptions{}
+	if opts.Headless() {
+		t.Error("expected TUI mode by default")
+	}
+}

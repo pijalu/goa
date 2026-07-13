@@ -6,6 +6,7 @@ package app
 
 import (
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 // developer environments and are no-ops in CI.
 func lmstudioReachable(t *testing.T) bool {
 	t.Helper()
+	if os.Getenv("GOA_ENABLE_LIVE_LM_TESTS") != "1" {
+		t.Log("live LM tests skipped; set GOA_ENABLE_LIVE_LM_TESTS=1 to enable")
+		return false
+	}
 	client := http.Client{Timeout: 1500 * time.Millisecond}
 	resp, err := client.Get("http://localhost:1234/v1/models")
 	if err != nil {
