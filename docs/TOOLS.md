@@ -250,6 +250,31 @@ remote providers get it disabled.
 }
 ```
 
+### `python` — Execute Python code in an embedded interpreter
+
+Runs Python code using the embedded gpython interpreter. Each call gets a
+fresh isolated interpreter context with stdout and stderr captured. Supports
+Python 3.4 language subset and stdlib modules provided by gpython.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | string | Python code to execute (required) |
+| `timeout` | number | Timeout in seconds (default: 60, max: 300) |
+
+**Security:**
+- Runs in-process with an isolated gpython context per call
+- No filesystem or network access unless the Python code explicitly uses
+  available stdlib modules
+- Disable via `/tools python:off` or `/config` → Tools
+
+**Example:**
+```json
+{
+  "code": "print(sum(range(10)))"
+}
+```
+
 ### `ssh_bash` — Execute commands on remote hosts
 
 Runs shell commands on SSH hosts using the system `ssh` binary.
@@ -546,6 +571,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projec
     reg.Register(&tools.EditFileTool{WorktreeMgr: wm, ProjectDir: projectDir, GitStager: gitStager})
     reg.Register(&tools.SearchTool{WorktreeMgr: wm, Threads: cfg.Tools.Search.Threads, ...})
     reg.Register(&tools.BashTool{WorktreeMgr: wm, Blocked: cfg.Tools.Bash.BlockedCommands, ...})
+    reg.Register(&tools.PythonTool{TimeoutSeconds: cfg.Tools.Python.TimeoutSeconds})
     reg.Register(&tools.SSHBashTool{Hosts: sshHosts(cfg)})
     reg.Register(tools.NewBGExecTool())
     reg.Register(&tools.MementoTool{ProjectDir: projectDir, GlobalDir: cfg.ConfigDir})

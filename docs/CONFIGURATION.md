@@ -159,6 +159,7 @@ tools:
     delegate_to: false       # multi-agent delegation
     request_review: false    # multi-agent review requests
     webfetch: false           # web fetching
+    python: true             # embedded gpython interpreter (opt-out)
     clarify_disabled: false  # set true to remove the ask_user_question tool
   edit:
     allow_fuzz_on_edits: true        # DEFAULT: enabled
@@ -191,6 +192,8 @@ tools:
     enable_complexity_analysis: false # AST-based command complexity analysis
     max_complexity_score: 5          # Max complexity score (0=disabled)
     jail: false                      # Force project-directory jail
+  python:
+    timeout_seconds: 60              # Default execution timeout
   smartsearch:
     enabled: false                   # Enable BM25 relevance search (default: false)
     max_results: 20                  # Max results per query

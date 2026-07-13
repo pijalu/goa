@@ -37,8 +37,8 @@ Goa is a terminal-native AI coding agent built around the **Agent SDK** in [`int
 │  Agent SDK      │        │  Tool System                         │
 │  (internal/     │        │  read  │ edit  │ write               │
 │   agentic/)     │        │  search     │ bash       │ ssh_bash  │
-│  Agent.Run()    │        │  bg_exec    │ memento    │ goa_cmd   │
-│  Session.Stream()│       │  registry   │ gitutil    │ pathutil  │
+│  Agent.Run()    │        │  bg_exec    │ memento    │ python     │
+│  Session.Stream()│       │  goa_cmd   │ registry   │ gitutil    │
 │  OutputObserver │        │  documentable interface              │
 │  SkillRunner    │        │  Responsibility: Interface to FS/OS  │
 │  AgentBus       │        │                                      │

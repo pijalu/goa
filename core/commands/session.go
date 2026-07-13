@@ -83,7 +83,7 @@ func showFullHelp(out core.OutputWriter, cmdReg *core.CommandRegistry, reg core.
 func printHelpTools(out core.OutputWriter, reg core.ToolRegistry) {
 	writeStr(out, "\nTools:\n")
 	if reg == nil {
-		knownTools := []string{"read", "write", "edit", "search", "bash", "ssh_bash", "bg_exec", "memento", "goa_command", "run_skill"}
+		knownTools := []string{"read", "write", "edit", "search", "bash", "python", "ssh_bash", "bg_exec", "memento", "goa_command", "run_skill"}
 		for _, name := range knownTools {
 			writeFmt(out, "  %-25s (use /tools:%s or /docs:TOOLS for reference)\n", name, name)
 		}

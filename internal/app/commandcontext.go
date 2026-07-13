@@ -157,6 +157,8 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 			return makeBGExecTool(subs), true
 		case "memento":
 			return makeMementoTool(subs), true
+		case "python":
+			return makePythonTool(subs), true
 		case "ssh_bash":
 			return makeSSHBashTool(subs), true
 		case "pty_exec":
@@ -181,6 +183,10 @@ func makeMementoTool(subs *subsystems) agentic.Tool {
 
 func makeSSHBashTool(subs *subsystems) agentic.Tool {
 	return &tools.SSHBashTool{Hosts: sshHosts(subs.cfg)}
+}
+
+func makePythonTool(subs *subsystems) agentic.Tool {
+	return &tools.PythonTool{TimeoutSeconds: subs.cfg.Tools.Python.TimeoutSeconds}
 }
 
 func makePTYExecTool(subs *subsystems) (agentic.Tool, bool) {

@@ -139,6 +139,8 @@ tools:
     jail: false
   ssh:
     hosts: []
+  python:
+    timeout_seconds: 60
   edit:
     allow_fuzz_on_edits: true
     fuzzy_match: true
@@ -181,6 +183,7 @@ tools:
     ssh_bash: false
     webfetch: true
     verify: true
+    python: true
   search:
     threads: 4
     max_results: 30

@@ -338,30 +338,12 @@ func toolStatusLabel(ctx core.Context, name string) string {
 // getToolEnabled reads the enabled flag for a configurable tool.
 func getToolEnabled(cfg *config.Config, name string) bool {
 	switch name {
-	case "bg_exec":
-		return cfg.Tools.Enabled.BGExec
-	case "delegate_to":
-		return cfg.Tools.Enabled.DelegateTo
-	case "goal":
-		return cfg.Tools.Enabled.Goal
-	case "memento":
-		return cfg.Tools.Enabled.Memento
-	case "pty_exec":
-		return cfg.Tools.Enabled.PTYExec
-	case "request_review":
-		return cfg.Tools.Enabled.RequestReview
-	case "ssh_bash":
-		return cfg.Tools.Enabled.SSHBash
-	case "webfetch":
-		return cfg.Tools.Enabled.WebFetch
-	case "verify":
-		return cfg.Tools.Enabled.Verify
 	case "ask_user_question":
 		return !cfg.Tools.Enabled.ClarifyDisabled
 	case "smartsearch":
 		return cfg.Tools.SmartSearch.Enabled
 	}
-	return false
+	return cfg.Tools.Enabled.GetEnabled(name)
 }
 
 // setToolEnabled updates the enabled flag for a configurable tool.

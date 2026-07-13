@@ -47,7 +47,7 @@ The skill frontmatter `tools:` field lists the tool names that should be availab
 tools: [bash, read, edit]
 ```
 
-If `tools:` is absent, the sub-agent receives a default safe set: `bash`, `read`, `edit`, `write`, and `webfetch` (if available). It never receives `run_skill`, `terminal`, or `learn_skill`.
+If `tools:` is absent, the sub-agent receives a default safe set: `bash`, `read`, `edit`, `write`, `webfetch`, and `python` (if available). It never receives `run_skill`, `terminal`, or `learn_skill`.
 
 ## 5. Slash Command Behavior
 

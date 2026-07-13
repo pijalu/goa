@@ -508,6 +508,8 @@ List, inspect, toggle, or directly execute tools.
   /tools:read                     → Show detailed info about a tool
   /tools:memento:on                → Enable a configurable tool
   /tools:bg_exec:off               → Disable a configurable tool
+  /tools:python:on                 → Enable the python tool
+  /tools:python:off                → Disable the python tool
   /tools:search:pattern=TODO       → Execute a tool directly
   /tools:search:glob=*.go,pattern=test  → With multiple params
 

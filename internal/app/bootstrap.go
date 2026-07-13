@@ -512,6 +512,11 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	if cfg.Tools.Enabled.Verify {
 		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
 	}
+	if cfg.Tools.Enabled.PythonEnabled {
+		reg.Register(&tools.PythonTool{
+			TimeoutSeconds: cfg.Tools.Python.TimeoutSeconds,
+		})
+	}
 	reg.Register(&tools.TerminalTool{
 		WorktreeMgr:    wm,
 		SandboxMgr:     sandboxMgr,

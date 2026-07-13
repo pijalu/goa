@@ -308,3 +308,21 @@ func TestToggleTool_AlreadyInState(t *testing.T) {
 		t.Error("Memento should remain disabled")
 	}
 }
+
+func TestToolsDocCommand_TogglePythonCompletionStateAware(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tools.Enabled.SetEnabled("python", true)
+	ctx := core.Context{Config: cfg}
+	cmd := &ToolsDocCommand{}
+
+	vals := cmd.CompleteArgs(ctx, "python:")
+	if len(vals) != 1 || vals[0].Value != "python:off" {
+		t.Errorf("enabled python: got %v, want [python:off]", vals)
+	}
+
+	cfg.Tools.Enabled.SetEnabled("python", false)
+	vals = cmd.CompleteArgs(ctx, "python:")
+	if len(vals) != 1 || vals[0].Value != "python:on" {
+		t.Errorf("disabled python: got %v, want [python:on]", vals)
+	}
+}

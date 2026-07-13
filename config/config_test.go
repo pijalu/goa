@@ -1161,3 +1161,52 @@ func TestResolvePlanFilePath_AbsolutePath(t *testing.T) {
 		t.Errorf("ResolvePlanFilePath = %q, want %q", got, want)
 	}
 }
+
+// TestToolEnabledConfigPython verifies python flag getters and setters.
+func TestToolEnabledConfigPython(t *testing.T) {
+	cfg := ToolEnabledConfig{}
+	if cfg.GetEnabled("python") {
+		t.Error("PythonEnabled should be false by default")
+	}
+	cfg.SetEnabled("python", true)
+	if !cfg.PythonEnabled {
+		t.Error("PythonEnabled should be true after SetEnabled")
+	}
+	if !cfg.GetEnabled("python") {
+		t.Error("GetEnabled(python) should return true")
+	}
+	if cfg.GetEnabled("unknown_tool") {
+		t.Error("GetEnabled for unknown tool should return false")
+	}
+	if cfg.set == nil || !cfg.set["python"] {
+		t.Error("SetEnabled should mark python as explicitly set")
+	}
+}
+
+// TestToolEnabledConfigUnknownSetEnabled verifies unknown tool names are
+// recorded but do not crash.
+func TestToolEnabledConfigUnknownSetEnabled(t *testing.T) {
+	cfg := ToolEnabledConfig{}
+	cfg.SetEnabled("unknown_tool", true)
+	if cfg.GetEnabled("unknown_tool") {
+		t.Error("GetEnabled for unknown tool should return false")
+	}
+	if cfg.set == nil || !cfg.set["unknown_tool"] {
+		t.Error("SetEnabled should mark unknown tool as explicitly set")
+	}
+}
+
+// TestToolEnabledConfigPythonApplyTo verifies python flag is copied by ApplyTo.
+func TestToolEnabledConfigPythonApplyTo(t *testing.T) {
+	src := ToolEnabledConfig{}
+	src.SetEnabled("python", true)
+
+	dst := ToolEnabledConfig{}
+	src.ApplyTo(&dst)
+	if !dst.PythonEnabled {
+		t.Error("PythonEnabled should be copied by ApplyTo")
+	}
+	if dst.set == nil || !dst.set["python"] {
+		t.Error("ApplyTo should mark python as explicitly set in target")
+	}
+}

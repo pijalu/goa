@@ -325,6 +325,7 @@ func (c *Config) mergeTools(other *Config) {
 	mergeReadFile(&c.Tools.ReadFile, &other.Tools.ReadFile)
 	mergeEditFile(&c.Tools.Edit, &other.Tools.Edit)
 	mergeWriteFile(&c.Tools.Write, &other.Tools.Write)
+	mergePython(&c.Tools.Python, &other.Tools.Python)
 	other.Tools.Enabled.ApplyTo(&c.Tools.Enabled)
 }
 
@@ -344,6 +345,13 @@ func mergeEditFile(dst, src *EditConfig) {
 	}
 	if src.AllowFuzzOnEdits {
 		dst.AllowFuzzOnEdits = true
+	}
+}
+
+// mergePython merges the python tool config.
+func mergePython(dst, src *PythonConfig) {
+	if src.TimeoutSeconds != 0 {
+		dst.TimeoutSeconds = src.TimeoutSeconds
 	}
 }
 

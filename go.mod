@@ -7,6 +7,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/expr-lang/expr v1.17.8
+	github.com/go-python/gpython v0.2.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-runewidth v0.0.24
 	github.com/mattn/go-sqlite3 v1.14.45

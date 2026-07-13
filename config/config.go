@@ -326,6 +326,7 @@ type ToolsConfig struct {
 	Search      SearchConfig         `yaml:"search"`
 	SmartSearch SmartSearchConfig    `yaml:"smartsearch"`
 	Edit        EditConfig           `yaml:"edit"`
+	Python      PythonConfig         `yaml:"python"`
 	ReadFile    tools.FileToolConfig `yaml:"read_file"`
 	Write       WriteConfig          `yaml:"write"`
 	WebFetch    tools.WebFetchConfig `yaml:"webfetch"`
@@ -372,6 +373,10 @@ type ToolEnabledConfig struct {
 	// to true (set in the embedded default config) so the model can run tests
 	// unless the user explicitly disables it.
 	Verify bool `yaml:"verify"`
+	// PythonEnabled controls the embedded `python` gpython tool. Opt-OUT:
+	// defaults to true so the model can run Python code unless the user
+	// explicitly disables it.
+	PythonEnabled bool `yaml:"python"`
 	// ClarifyDisabled, when true, removes the ask_user_question tool from the
 	// model's toolset. It is an inverted flag: the default (false/unset) leaves
 	// the tool ENABLED by default, matching the requested behavior. All other
@@ -402,29 +407,8 @@ func (t *ToolEnabledConfig) UnmarshalYAML(node *yaml.Node) error {
 
 // SetEnabled sets the named tool flag and marks it as explicitly configured.
 func (t *ToolEnabledConfig) SetEnabled(name string, value bool) {
-	switch name {
-	case "bg_exec":
-		t.BGExec = value
-	case "delegate_to":
-		t.DelegateTo = value
-	case "goal":
-		t.Goal = value
-	case "memento":
-		t.Memento = value
-	case "pty_exec":
-		t.PTYExec = value
-	case "request_review":
-		t.RequestReview = value
-	case "ssh_bash":
-		t.SSHBash = value
-	case "webfetch":
-		t.WebFetch = value
-	case "verify":
-		t.Verify = value
-	case "clarify_disabled":
-		t.ClarifyDisabled = value
-	default:
-		return
+	if ptr := t.fieldPtr(name); ptr != nil {
+		*ptr = value
 	}
 	if t.set == nil {
 		t.set = make(map[string]bool)
@@ -432,31 +416,43 @@ func (t *ToolEnabledConfig) SetEnabled(name string, value bool) {
 	t.set[name] = true
 }
 
+// GetEnabled returns the enabled flag for a known tool name, or false for
+// unknown names.
+func (t *ToolEnabledConfig) GetEnabled(name string) bool {
+	if ptr := t.fieldPtr(name); ptr != nil {
+		return *ptr
+	}
+	return false
+}
+
+// fieldPtr returns a pointer to the boolean field for the given tool name.
+func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
+	fields := map[string]*bool{
+		"bg_exec":          &t.BGExec,
+		"delegate_to":      &t.DelegateTo,
+		"goal":             &t.Goal,
+		"memento":          &t.Memento,
+		"pty_exec":         &t.PTYExec,
+		"request_review":   &t.RequestReview,
+		"ssh_bash":         &t.SSHBash,
+		"webfetch":         &t.WebFetch,
+		"verify":           &t.Verify,
+		"python":           &t.PythonEnabled,
+		"clarify_disabled": &t.ClarifyDisabled,
+	}
+	return fields[name]
+}
+
 // ApplyTo copies explicitly set flags from t into target.
 func (t *ToolEnabledConfig) ApplyTo(target *ToolEnabledConfig) {
 	if t.set == nil || target == nil {
 		return
 	}
-	type field struct {
-		name string
-		src  bool
-		dst  *bool
-	}
-	fields := []field{
-		{"bg_exec", t.BGExec, &target.BGExec},
-		{"delegate_to", t.DelegateTo, &target.DelegateTo},
-		{"goal", t.Goal, &target.Goal},
-		{"memento", t.Memento, &target.Memento},
-		{"pty_exec", t.PTYExec, &target.PTYExec},
-		{"request_review", t.RequestReview, &target.RequestReview},
-		{"ssh_bash", t.SSHBash, &target.SSHBash},
-		{"webfetch", t.WebFetch, &target.WebFetch},
-		{"verify", t.Verify, &target.Verify},
-		{"clarify_disabled", t.ClarifyDisabled, &target.ClarifyDisabled},
-	}
-	for _, f := range fields {
-		if t.set[f.name] {
-			*f.dst = f.src
+	for name := range t.set {
+		if srcPtr := t.fieldPtr(name); srcPtr != nil {
+			if dstPtr := target.fieldPtr(name); dstPtr != nil {
+				*dstPtr = *srcPtr
+			}
 		}
 	}
 	if target.set == nil {
@@ -482,6 +478,11 @@ type EditConfig struct {
 // path would cause irreversible data loss. The struct exists for future
 // write-specific configuration options.
 type WriteConfig struct{}
+
+// PythonConfig controls the embedded gpython interpreter tool.
+type PythonConfig struct {
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
 
 // BashConfig controls bash tool behavior.
 type BashConfig struct {

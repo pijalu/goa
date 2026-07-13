@@ -16,6 +16,7 @@ func init() {
 	RegisterToolRenderer("write", tools.NewWriteFileRenderer())
 	RegisterToolRenderer("edit", tools.NewEditFileRenderer())
 	RegisterToolRenderer("bash", tools.NewBashRenderer())
+	RegisterToolRenderer("python", tools.PythonRenderer{})
 	RegisterToolRenderer("verify", tools.NewVerifyRenderer())
 	RegisterToolRenderer("terminal", tools.TerminalRenderer{})
 	RegisterToolRenderer("webfetch", tools.NewWebFetchRenderer())

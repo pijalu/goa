@@ -130,3 +130,17 @@ func TestDefaultConfig_VerifyToolEnabled(t *testing.T) {
 		t.Errorf("Tools.Enabled.Verify = false, want true (verify is opt-out)")
 	}
 }
+
+// TestDefaultConfig_PythonToolEnabled verifies the python tool is opt-OUT:
+// enabled by default via the embedded config.
+func TestDefaultConfig_PythonToolEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Tools.Enabled.PythonEnabled {
+		t.Errorf("Tools.Enabled.PythonEnabled = false, want true (python is opt-out)")
+	}
+}

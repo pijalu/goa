@@ -134,3 +134,23 @@ func TestConfigurableTools_IncludesVerifyAndClarify(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigurableTools_IncludesPython(t *testing.T) {
+	names := ConfigurableToolNames()
+	found := false
+	for _, n := range names {
+		if n == "python" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ConfigurableToolNames missing %q: %v", "python", names)
+	}
+
+	for _, tool := range ConfigurableTools() {
+		if tool.Name == "python" && !tool.Default {
+			t.Errorf("python should default to enabled, got Default=%v", tool.Default)
+		}
+	}
+}
