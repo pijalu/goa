@@ -80,7 +80,7 @@ func TestConfigMenu_RootShowsItems(t *testing.T) {
 	if sr.title != "Settings:" {
 		t.Errorf("title = %q, want Settings:", sr.title)
 	}
-	want := []string{"profile", "model", "provider", "models", "mode", "compression", "theme", "spinner", "thinking_level", "thinking_blocks", "show_thinking", "multi_agent", "orchestrator", "tools", "loop_detection", "skills", "goals"}
+	want := []string{"profile", "model", "provider", "models", "mode", "compression", "theme", "spinner", "thinking_level", "thinking_blocks", "show_thinking", "multi_agent", "orchestrator", "tools", "sandbox", "loop_detection", "skills", "goals"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d root items, got %d", len(want), len(sr.options))
 	}
@@ -318,6 +318,42 @@ func TestConfigMenu_ShowThinkingToggle(t *testing.T) {
 
 	if cfg.TUI.Transparency.ShowThinking {
 		t.Error("ShowThinking should be toggled off")
+	}
+}
+
+func TestConfigMenu_SandboxSubMenu(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("sandbox", true)
+
+	if sr.title != "Sandbox settings:" {
+		t.Fatalf("expected sandbox menu, got %q", sr.title)
+	}
+	want := []string{"bash_complexity", "bash_jail", "bash_max_score", "terminal_sandbox", "bash_blocked", "bash_allowed"}
+	if len(sr.options) != len(want) {
+		t.Fatalf("expected %d sandbox options, got %d", len(want), len(sr.options))
+	}
+	for i, w := range want {
+		if sr.options[i].Value != w {
+			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
+		}
+	}
+}
+
+func TestConfigMenu_SandboxToggleComplexity(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("sandbox", true)
+	sr.onSel("bash_complexity", true)
+
+	if !cfg.Tools.Bash.EnableComplexityAnalysis {
+		t.Error("Tools.Bash.EnableComplexityAnalysis should be toggled on")
 	}
 }
 

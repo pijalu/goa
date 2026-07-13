@@ -190,6 +190,70 @@ func TestBashTool_Execute_EnvVarNotSet_EnvParamUsedForMasking(t *testing.T) {
 	}
 }
 
+func TestBashTool_Schema_ComplexityDisabled_DoesNotMentionComplexity(t *testing.T) {
+	tool := &BashTool{EnableComplexity: false}
+	schema := tool.Schema()
+	if strings.Contains(schema.Description, "complex") {
+		t.Errorf("description should not mention complexity when disabled, got: %q", schema.Description)
+	}
+}
+
+func TestBashTool_Schema_ComplexityEnabled_MentionsComplexity(t *testing.T) {
+	tool := &BashTool{EnableComplexity: true}
+	schema := tool.Schema()
+	if !strings.Contains(schema.Description, "analyzable") {
+		t.Errorf("description should tell the agent scripts must be analyzable, got: %q", schema.Description)
+	}
+	if !strings.Contains(schema.Description, "command substitution") {
+		t.Errorf("description should warn about command substitution, got: %q", schema.Description)
+	}
+}
+
+func TestBashTool_LongDoc_ComplexityEnabled_IncludesNotice(t *testing.T) {
+	tool := &BashTool{EnableComplexity: true}
+	long := tool.LongDoc()
+	if !strings.Contains(long, "Complexity analysis is enabled") {
+		t.Errorf("LongDoc should include complexity notice when enabled, got: %q", long)
+	}
+}
+
+func TestBashTool_LongDoc_ComplexityDisabled_NoNotice(t *testing.T) {
+	tool := &BashTool{EnableComplexity: false}
+	long := tool.LongDoc()
+	if strings.Contains(long, "Complexity analysis is enabled") {
+		t.Errorf("LongDoc should not include complexity notice when disabled, got: %q", long)
+	}
+}
+
+func TestBashTool_ComplexityNotice(t *testing.T) {
+	tool := &BashTool{}
+	notice := tool.ComplexityNotice()
+	if notice == "" {
+		t.Error("ComplexityNotice should not be empty")
+	}
+	if !strings.Contains(notice, "statically analyzable") {
+		t.Errorf("notice should mention static analyzability, got: %q", notice)
+	}
+}
+
+func TestBashTool_Analyzer_ComplexityDisabled_DoesNotRejectComplexScript(t *testing.T) {
+	disabled := false
+	tool := &BashTool{
+		Analyzer: &sandbox.Analyzer{
+			Allowed:          []string{"echo"},
+			EnableComplexity: &disabled,
+		},
+	}
+	cmd := `{"command": "for f in a b c; do echo $f; done"}`
+	result, err := tool.Execute(cmd)
+	if err != nil {
+		t.Fatalf("expected complex script to pass when complexity is disabled: %v", err)
+	}
+	if !strings.Contains(result, "a") {
+		t.Errorf("expected loop output, got: %q", result)
+	}
+}
+
 func TestBashTool_Documentation_LongDocLongerThanShort(t *testing.T) {
 	tool := &BashTool{}
 	short := tool.ShortDoc()
@@ -806,6 +870,33 @@ func TestBashTool_Analyzer_Nil_DoesNotAnalyze(t *testing.T) {
 	}
 	if !strings.Contains(result, "hello") {
 		t.Errorf("expected output to contain hello, got: %q", result)
+	}
+}
+
+func TestBashTool_Analyzer_HigherComplexityThresholdAllowsForLoop(t *testing.T) {
+	cmd := `{"command": "for f in a b c d e f g h i j; do echo \"--- $f ---\" && echo \"$(echo $f)\" || echo \"(not tracked)\"; done"}`
+
+	// With the default threshold, this for-loop is rejected.
+	toolLow := &BashTool{
+		Analyzer: &sandbox.Analyzer{Allowed: []string{"echo"}},
+	}
+	if _, err := toolLow.Execute(cmd); err == nil {
+		t.Fatal("expected for-loop to be rejected with default complexity threshold")
+	}
+
+	// With an explicit higher threshold, the same command is allowed.
+	toolHigh := &BashTool{
+		Analyzer: &sandbox.Analyzer{
+			Allowed:            []string{"echo"},
+			MaxComplexityScore: 200,
+		},
+	}
+	result, err := toolHigh.Execute(cmd)
+	if err != nil {
+		t.Fatalf("expected for-loop to pass with raised complexity threshold: %v", err)
+	}
+	if !strings.Contains(result, "--- a ---") {
+		t.Errorf("expected loop output, got: %q", result)
 	}
 }
 

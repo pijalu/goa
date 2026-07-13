@@ -489,6 +489,14 @@ type BashConfig struct {
 	// MaxOutputBytes caps the byte size of command output returned to the
 	// agent. The tail of the output is kept. Zero defaults to 50KB.
 	MaxOutputBytes int `yaml:"max_output_bytes"`
+	// MaxComplexityScore caps the AST complexity score at which a shell command
+	// is considered too complex for reliable static analysis. Zero defaults to
+	// the analyzer's conservative threshold (50).
+	MaxComplexityScore int `yaml:"max_complexity_score"`
+	// EnableComplexityAnalysis enables the AST-based complexity analyzer.
+	// When enabled, the LLM is told to keep bash scripts simple and avoid
+	// dynamic command construction. Disabled by default.
+	EnableComplexityAnalysis bool `yaml:"enable_complexity_analysis"`
 }
 
 // SSHConfig controls SSH bash tool behavior.

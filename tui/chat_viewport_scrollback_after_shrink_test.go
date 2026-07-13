@@ -50,12 +50,14 @@ func TestChatViewport_ShrinkDoesNotEraseScrollback(t *testing.T) {
 	chat.Clear()
 	engine.RenderNow()
 
-	// No full erase must be emitted after the initial frame.
+	// No scrollback erase must be emitted after the initial frame. A screen
+	// clear (\x1b[2J) is acceptable for a scrollback-affecting shrink as long as
+	// the scrollback history itself is not erased.
 	frames := collectFrames(term)
 	if len(frames) >= 2 {
 		afterInitial := strings.Join(frames[1:], "")
-		if strings.Contains(afterInitial, "\x1b[2J") || strings.Contains(afterInitial, "\x1b[3J") {
-			t.Errorf("chat shrink emitted a full screen/scrollback erase")
+		if strings.Contains(afterInitial, "\x1b[3J") {
+			t.Errorf("chat shrink erased scrollback (\x1b[3J)")
 		}
 	}
 

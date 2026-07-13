@@ -381,7 +381,6 @@ type Compositor struct {
 	maxLinesRendered    int
 	fullRedrawCount     int
 	firstScrollDone     bool // true after the first viewport scroll; affects scrollback population
-	clearOnShrink       bool // when true, shrinks that overflow scrollback trigger a full redraw
 
 	// cursorVisible tracks the terminal's cursor-show state so we only emit
 	// \x1b[?25h / \x1b[?25l on a real transition, never as a redundant per-frame
@@ -463,7 +462,7 @@ func (c *Compositor) Render(scene *Scene) {
 	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, height, fullRender, resizeRender) {
 		return
 	}
-	c.renderChangePath(canvas, hasOverlay, scene.Cursor, fl, fullRender)
+	c.renderChangePath(canvas, hasOverlay, scene.Cursor, fl, fullRender, resizeRender)
 }
 
 // frameLocals holds viewport/cursor tracking state for one frame, threaded as
@@ -512,15 +511,15 @@ func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChang
 		resizeRender()
 		return true
 	}
-	// Shrink guard: a full redraw is only required when the shrink could have
-	// left the SCROLLBACK stale, i.e. when we have previously rendered more
-	// lines than fit on screen (maxLinesRendered > height). Pure in-viewport
-	// shrinks are handled correctly by the differential path's trailing-line
-	// clear (writeDifferential), so they no longer force an O(history) full
-	// redraw on every later frame. !hasOverlay because overlays are
-	// viewport-relative and must not be disturbed by a base clear.
-	if c.clearOnShrink && len(canvas) < c.maxLinesRendered && c.maxLinesRendered > height && !hasOverlay {
-		fullRender(true)
+	// Scrollback-affecting shrink: the previous canvas was taller than the
+	// screen, so content was pushed into scrollback, and the current canvas is
+	// shorter. Repaint the visible viewport with a screen clear (\x1b[2J) but
+	// keep the scrollback intact (no \x1b[3J). The differential path cannot
+	// handle this correctly because the viewport moves up and the old visible
+	// rows must be cleared. !hasOverlay because overlays are viewport-relative
+	// and would be repainted by the same canvas anyway.
+	if len(c.prevLines) > height && len(canvas) < len(c.prevLines) && !hasOverlay {
+		resizeRender()
 		return true
 	}
 	return false
@@ -578,7 +577,7 @@ func (c *Compositor) visibleRegionDiff(canvas []string, newVTop int, fl *frameLo
 	return
 }
 
-func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool)) {
+func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool), resizeRender func()) {
 	newVTop := max(0, len(canvas)-fl.height)
 	firstV, lastV := c.visibleRegionDiff(canvas, newVTop, fl)
 
@@ -595,7 +594,7 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	lastChanged := lastV + newVTop
 
 	if firstChanged >= len(canvas) && len(c.prevLines) > len(canvas) {
-		if c.renderDeletedLines(canvas, cursor, fl.prevViewportTop, fl.height, fl.computeLineDiff, fullRender) {
+		if c.renderDeletedLines(canvas, cursor, fl.prevViewportTop, fl.height, fl.computeLineDiff, resizeRender) {
 			return
 		}
 	}
@@ -703,16 +702,20 @@ func (c *Compositor) applyFrameTracking(canvas []string, cursor *CursorPos, widt
 }
 
 func (c *Compositor) renderDeletedLines(canvas []string, cursor *CursorPos, prevViewportTop, height int,
-	computeLineDiff func(int) int, fullRender func(bool)) bool {
+	computeLineDiff func(int) int, resizeRender func()) bool {
 
 	targetRow := max(0, len(canvas)-1)
 	if targetRow < prevViewportTop {
-		fullRender(true)
+		// The new canvas is entirely above the old viewport. Repaint the visible
+		// viewport without erasing scrollback.
+		resizeRender()
 		return true
 	}
 	extraLines := len(c.prevLines) - len(canvas)
 	if extraLines > height {
-		fullRender(true)
+		// Too many stale rows were removed; a full viewport repaint is needed,
+		// but scrollback must stay intact.
+		resizeRender()
 		return true
 	}
 	var buf strings.Builder

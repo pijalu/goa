@@ -298,6 +298,12 @@ func (c *Config) mergeTools(other *Config) {
 	if other.Tools.Bash.MaxOutputBytes != 0 {
 		c.Tools.Bash.MaxOutputBytes = other.Tools.Bash.MaxOutputBytes
 	}
+	if other.Tools.Bash.MaxComplexityScore != 0 {
+		c.Tools.Bash.MaxComplexityScore = other.Tools.Bash.MaxComplexityScore
+	}
+	if other.Tools.Bash.EnableComplexityAnalysis {
+		c.Tools.Bash.EnableComplexityAnalysis = other.Tools.Bash.EnableComplexityAnalysis
+	}
 	if other.Tools.Bash.CompressOutput != nil {
 		c.Tools.Bash.CompressOutput = other.Tools.Bash.CompressOutput
 	}

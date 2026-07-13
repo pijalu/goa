@@ -68,6 +68,12 @@ type Analyzer struct {
 	// MaxComplexityScore caps the tolerable complexity of a command AST.
 	// Zero defaults to a conservative threshold.
 	MaxComplexityScore int
+
+	// EnableComplexity, when explicitly set to false, skips the AST
+	// complexity/dynamic-command checks while still enforcing blocked/allowed
+	// lists and category flags. A nil pointer preserves the default enabled
+	// behaviour for backward-compatible analyzer usage.
+	EnableComplexity *bool
 }
 
 // built-in command category lists.
@@ -92,12 +98,26 @@ const defaultMaxComplexity = 50
 
 // NewAnalyzer creates an Analyzer from blocked and allowed command lists.
 // Blocked commands are rejected; when Allowed is non-empty only those
-// commands are accepted. Empty built-in category lists are used.
+// commands are accepted. Empty built-in category lists are used. Complexity
+// analysis is enabled by default for backward-compatible behaviour.
 func NewAnalyzer(blocked, allowed []string) *Analyzer {
 	return &Analyzer{
-		Blocked: blocked,
-		Allowed: allowed,
+		Blocked:          blocked,
+		Allowed:          allowed,
+		EnableComplexity: boolPtr(true),
 	}
+}
+
+// boolPtr returns a pointer to a bool value.
+func boolPtr(v bool) *bool { return &v }
+
+// complexityEnabled reports whether the AST complexity/dynamic-command checks
+// should run. The default is enabled unless explicitly disabled.
+func (a *Analyzer) complexityEnabled() bool {
+	if a.EnableComplexity == nil {
+		return true
+	}
+	return *a.EnableComplexity
 }
 
 // Analyze parses cmd and returns a safety classification.
@@ -116,26 +136,29 @@ func (a *Analyzer) Analyze(cmd string) (AnalysisResult, error) {
 	}
 
 	commands, dynamic := extractCommandNames(file)
-	score := complexityScore(file)
-	max := a.MaxComplexityScore
-	if max <= 0 {
-		max = defaultMaxComplexity
-	}
-	if score > max {
-		return AnalysisResult{
-			TooComplex: true,
-			Reason:     fmt.Sprintf("command complexity score %d exceeds threshold %d", score, max),
-		}, nil
-	}
-	if dynamic {
-		return AnalysisResult{
-			Commands:   commands,
-			TooComplex: true,
-			Reason:     "dynamic command construction (command substitution or variable expansion in command position)",
-		}, nil
+
+	if a.complexityEnabled() {
+		score := complexityScore(file)
+		max := a.MaxComplexityScore
+		if max <= 0 {
+			max = defaultMaxComplexity
+		}
+		if score > max {
+			return AnalysisResult{
+				TooComplex: true,
+				Reason:     fmt.Sprintf("command complexity score %d exceeds threshold %d", score, max),
+			}, nil
+		}
+		if dynamic {
+			return AnalysisResult{
+				Commands:   commands,
+				TooComplex: true,
+				Reason:     "dynamic command construction (command substitution or variable expansion in command position)",
+			}, nil
+		}
 	}
 
-	blocked, reason := a.classify(commands, score)
+	blocked, reason := a.classify(commands, complexityScore(file))
 	return AnalysisResult{
 		Destructive: blocked.Destructive,
 		Network:     blocked.Network,

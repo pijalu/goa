@@ -376,6 +376,50 @@ func TestAnalyzer_ComplexityScore_High(t *testing.T) {
 	}
 }
 
+func TestAnalyzer_ComplexityDisabled_SkipsComplexityChecks(t *testing.T) {
+	disabled := false
+	a := &Analyzer{
+		Allowed:          []string{"echo"},
+		EnableComplexity: &disabled,
+	}
+	res, err := a.Analyze("for i in 1 2 3; do echo $i; done")
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.TooComplex {
+		t.Errorf("complexity checks should be skipped when EnableComplexity is false")
+	}
+	if !res.Allowed {
+		t.Errorf("allowed command should still be enforced, got Allowed=%v", res.Allowed)
+	}
+}
+
+func TestAnalyzer_ComplexityDisabled_SkipsDynamicCommandCheck(t *testing.T) {
+	disabled := false
+	a := &Analyzer{
+		Allowed:          []string{"echo"},
+		EnableComplexity: &disabled,
+	}
+	res, err := a.Analyze("echo ok && $CMD")
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if res.TooComplex {
+		t.Errorf("dynamic command check should be skipped when EnableComplexity is false")
+	}
+}
+
+func TestAnalyzer_DefaultComplexityEnabled(t *testing.T) {
+	a := &Analyzer{Allowed: []string{"echo"}}
+	res, err := a.Analyze("for i in 1 2 3; do for j in 1 2 3; do echo $(echo $i $j); done; done")
+	if err != nil {
+		t.Fatalf("analyze failed: %v", err)
+	}
+	if !res.TooComplex {
+		t.Errorf("complexity checks should run by default")
+	}
+}
+
 func TestAnalyzer_BackquoteCommandSubstitution(t *testing.T) {
 	a := NewAnalyzer(nil, []string{"echo"})
 	res, err := a.Analyze("echo `date`")

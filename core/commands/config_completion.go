@@ -122,6 +122,10 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"multi_agent.companion_model", "model id"},
 		{"multi_agent.companion_provider", "provider id"},
 		{"tools.enabled.goal", "enable goal tools (default false)"},
+		{"tools.bash.enable_complexity_analysis", "true | false"},
+		{"tools.bash.jail", "true | false"},
+		{"tools.bash.max_complexity_score", "integer (0 = default)"},
+		{"tools.terminal.sandbox.enabled", "true | false"},
 		{"orchestrator.roles.*", "{ model: <id>, provider: <id>, allowed_tools: [<names>] }"},
 		{"orchestrator.pool.max_total_agents", "integer (0 = unlimited pool delegation)"},
 		{"orchestrator.pool.max_agents_per_model.*", "integer >= 1"},
@@ -154,7 +158,7 @@ func configValueCompletions(ctx core.Context, key, prefix string) []core.ArgComp
 		return modelCompletionValues(ctx, prefix)
 	case "active_provider", "multi_agent.companion_provider":
 		return providerCompletionValues(ctx, prefix)
-	case "tools.enabled.goal":
+	case "tools.enabled.goal", "tools.bash.enable_complexity_analysis", "tools.bash.jail", "tools.terminal.sandbox.enabled":
 		return boolCompletionValues(prefix)
 	case "orchestrator.defaults.topology":
 		return filteredCompletions([]string{"hub", "fanout", "pipeline"}, prefix, "")

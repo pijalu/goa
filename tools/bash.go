@@ -34,10 +34,12 @@ type BashTool struct {
 	CompressOutput  bool
 	ProjectDir      string
 	Jail            bool
+	// EnableComplexity, when true, enables the AST complexity analyzer and
+	// advertises the restriction in the tool description. When false, only
+	// blocked/allowed lists and project jail are enforced.
+	EnableComplexity bool
 	// Analyzer performs AST-based static analysis of shell commands when
-	// non-nil. It catches command obfuscation, dynamic command construction,
-	// and category-based risks (destructive, network, interactive) that simple
-	// first-token matching misses.
+	// non-nil. Complexity checks run only when EnableComplexity is true.
 	Analyzer *sandbox.Analyzer
 	// Redactor removes secrets from command output before it is returned to
 	// the model. When nil, no secret scanning is performed.
@@ -73,9 +75,13 @@ func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 
 // Schema returns the tool schema for bash.
 func (t *BashTool) Schema() agentic.ToolSchema {
+	description := "Run a shell command."
+	if t.EnableComplexity {
+		description = "Run a shell command. Bash scripts must be statically analyzable: avoid command substitution, variable expansion in command position, loops, conditionals, and other complex constructs. The analyzer will reject commands it cannot evaluate safely."
+	}
 	return agentic.ToolSchema{
 		Name:        "bash",
-		Description: "Run a shell command.",
+		Description: description,
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -312,7 +318,17 @@ var bashDocs embed.FS
 
 func (t *BashTool) ShortDoc() string { return readDoc(bashDocs, "bash.short.md") }
 func (t *BashTool) LongDoc() string {
-	return fmt.Sprintf(readDoc(bashDocs, "bash.long.md"), DefaultBashTimeoutS, MaxBashTimeoutS)
+	doc := fmt.Sprintf(readDoc(bashDocs, "bash.long.md"), DefaultBashTimeoutS, MaxBashTimeoutS)
+	if t.EnableComplexity {
+		doc += "\n\n" + t.ComplexityNotice()
+	}
+	return doc
+}
+
+// ComplexityNotice returns the text that tells the agent that bash complexity
+// analysis is enabled and that scripts must be simple enough to be analyzed.
+func (t *BashTool) ComplexityNotice() string {
+	return "Complexity analysis is enabled for this bash tool. Scripts must be statically analyzable: avoid command substitution, variable expansion in command position, loops, conditionals, and other complex constructs. The analyzer will reject commands that exceed the configured complexity threshold or that cannot be evaluated safely."
 }
 
 func (t *BashTool) Examples() []string {

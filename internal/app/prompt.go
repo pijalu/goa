@@ -17,6 +17,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/memory"
 	"github.com/pijalu/goa/skills"
+	"github.com/pijalu/goa/tools"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -352,6 +353,8 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 		}
 	}
 
+	maybeInjectBashComplexityNotice(subs, chat)
+
 	providerName := providerCfg.Name
 	if providerName == "" {
 		providerName = providerCfg.ID
@@ -359,6 +362,42 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 	msg := fmt.Sprintf("Connected to %s (%s).", providerName, model)
 	chat.AddInfoMessage(msg)
 	subs.tuiEngine.RequestRender()
+}
+
+// maybeInjectBashComplexityNotice sends a durable system message to the LLM
+// when bash complexity analysis is enabled and the conversation already has
+// user/assistant messages (i.e. the setting is being applied to an ongoing
+// conversation). When the conversation is fresh, the tool description
+// already informs the agent of the restriction.
+func maybeInjectBashComplexityNotice(subs *subsystems, chat *tui.ChatViewport) {
+	if subs.toolRegistry == nil || subs.agentMgr == nil {
+		return
+	}
+	bashToolIface, ok := subs.toolRegistry.Get("bash")
+	if !ok {
+		return
+	}
+	bashTool, ok := bashToolIface.(*tools.BashTool)
+	if !ok || !bashTool.EnableComplexity {
+		return
+	}
+	if !conversationHasUserOrAssistant(chat) {
+		return
+	}
+	if err := subs.agentMgr.InjectSystemMessage(bashTool.ComplexityNotice()); err != nil {
+		chat.AddSystemMessage(fmt.Sprintf("[goa-system] Failed to notify agent of bash complexity analysis: %v", err))
+	}
+}
+
+// conversationHasUserOrAssistant returns true when the chat already contains
+// at least one user or assistant message, indicating an ongoing conversation.
+func conversationHasUserOrAssistant(chat *tui.ChatViewport) bool {
+	for _, m := range chat.Snapshot() {
+		if m.Type == tui.ConsoleUserMessage || m.Type == tui.ConsoleAssistantMessage {
+			return true
+		}
+	}
+	return false
 }
 
 // filterToolsForCurrentMode returns the subset of tools allowed by the

@@ -479,17 +479,18 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	}
 
 	reg.Register(&tools.BashTool{
-		WorktreeMgr:     wm,
-		Blocked:         cfg.Tools.Bash.BlockedCommands,
-		Allowed:         cfg.Tools.Bash.AllowedCommands,
-		EnvMaskPatterns: cfg.Tools.Bash.EnvMaskPatterns,
-		CompressOutput:  ptrBool(cfg.Tools.Bash.CompressOutput),
-		ProjectDir:      projectDir,
-		Jail:            cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
-		MaxOutputBytes:  cfg.Tools.Bash.MaxOutputBytes,
+		WorktreeMgr:      wm,
+		Blocked:          cfg.Tools.Bash.BlockedCommands,
+		Allowed:          cfg.Tools.Bash.AllowedCommands,
+		EnvMaskPatterns:  cfg.Tools.Bash.EnvMaskPatterns,
+		CompressOutput:   ptrBool(cfg.Tools.Bash.CompressOutput),
+		ProjectDir:       projectDir,
+		Jail:             cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
+		MaxOutputBytes:   cfg.Tools.Bash.MaxOutputBytes,
+		EnableComplexity: cfg.Tools.Bash.EnableComplexityAnalysis,
 		CompressionResolver: resolveCompression,
-		Analyzer:        analyzerForBash(cfg.Tools.Bash.BlockedCommands, cfg.Tools.Bash.AllowedCommands),
-		Redactor:        secrets.DefaultRedactor(),
+		Analyzer:         analyzerForBash(cfg.Tools.Bash),
+		Redactor:         secrets.DefaultRedactor(),
 	})
 	reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
 	reg.Register(&tools.TerminalTool{
@@ -571,13 +572,20 @@ func ptrBool(v *bool) bool {
 }
 
 // analyzerForBash creates an AST-based analyzer when blocked or allowed
-// command lists are configured. This catches obfuscated or dynamic commands
-// that simple first-token matching misses.
-func analyzerForBash(blocked, allowed []string) *sandbox.Analyzer {
-	if len(blocked) == 0 && len(allowed) == 0 {
+// command lists are configured, or when complexity analysis is explicitly
+// enabled. This catches obfuscated or dynamic commands that simple
+// first-token matching misses. Complexity analysis is enabled only
+// when the user explicitly opts in via tools.bash.enable_complexity_analysis.
+func analyzerForBash(cfg config.BashConfig) *sandbox.Analyzer {
+	if len(cfg.BlockedCommands) == 0 && len(cfg.AllowedCommands) == 0 && !cfg.EnableComplexityAnalysis {
 		return nil
 	}
-	return sandbox.NewAnalyzer(blocked, allowed)
+	return &sandbox.Analyzer{
+		Blocked:            cfg.BlockedCommands,
+		Allowed:            cfg.AllowedCommands,
+		MaxComplexityScore: cfg.MaxComplexityScore,
+		EnableComplexity:   &cfg.EnableComplexityAnalysis,
+	}
 }
 
 // defaultFloat returns val if non-zero, otherwise defaultVal.
