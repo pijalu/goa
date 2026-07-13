@@ -8,11 +8,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
 )
+
+// partialStringFieldRe extracts quoted string fields from incomplete JSON
+// objects during streaming tool-call argument display.
+var partialStringFieldRe = regexp.MustCompile(`"([^"]+)":"((?:\\.|[^"\\])*)`)
 
 // ToolStatus represents the execution state of a tool call.
 type ToolStatus int
@@ -96,7 +102,7 @@ func (b *toolBox) build(width int) []string {
 
 	// Duration
 	if b.duration != "" {
-		lines = append(lines, b.bgLine(ansiMuted(fmt.Sprintf("Took %s", b.duration)), width))
+		lines = append(lines, b.bgLine(ansiMuted(b.duration), width))
 	}
 
 	// Bottom padding (like Box paddingY=1)
@@ -151,6 +157,7 @@ func (tc *ToolExecutionComponent) updateBox() {
 		IsPartial:    tc.isPartial,
 		IsError:      tc.status == ToolError,
 		ArgsComplete: tc.argsComplete,
+		Args:         tc.args,
 	}
 
 	// Build header
@@ -170,6 +177,10 @@ func (tc *ToolExecutionComponent) updateBox() {
 	// Build body
 	if tc.output != "" {
 		tc.box.body = renderer.RenderResult(tc.output, ctx)
+	} else if tc.isPartial {
+		// While arguments are still streaming, render the partial arguments as
+		// the body so the user sees content as it arrives (e.g. write/edit).
+		tc.box.body = renderer.RenderResult("", ctx)
 	} else {
 		tc.box.body = ""
 	}
@@ -190,19 +201,28 @@ func (tc *ToolExecutionComponent) updateBox() {
 
 // renderDuration computes the duration string based on current status and
 // elapsed time. It keeps the mutable duration state out of updateBox so the
-// latter stays within the complexity budget.
+// latter stays within the complexity budget. The stored value is the full
+// display line ("elapsed X.XXs" or "Took X.XXs"); the box builder uses it
+// directly. Durations of 0.01s or less are hidden to avoid noisy flicker for
+// instantaneous tools.
 func (tc *ToolExecutionComponent) renderDuration() {
+	const minDuration = 10 * time.Millisecond // 0.01s
+	elapsed := time.Since(tc.startTime)
+	if elapsed <= minDuration {
+		tc.box.duration = ""
+		return
+	}
+	d := formatDuration(elapsed)
 	switch tc.status {
 	case ToolSuccess, ToolError:
-		if tc.duration == "" && !tc.startTime.IsZero() {
-			tc.duration = formatDuration(time.Since(tc.startTime))
+		// Cache the final duration so repeated renders stay stable once the
+		// tool has finished.
+		if tc.duration == "" {
+			tc.duration = d
 		}
+		tc.box.duration = "Took " + tc.duration
 	case ToolPending, ToolRunning:
-		if !tc.startTime.IsZero() {
-			tc.box.duration = fmt.Sprintf("elapsed %s", formatDuration(time.Since(tc.startTime)))
-		} else {
-			tc.box.duration = ""
-		}
+		tc.box.duration = "elapsed " + d
 	default:
 		tc.box.duration = tc.duration
 	}
@@ -238,10 +258,40 @@ func (tc *ToolExecutionComponent) SetArgsComplete() {
 // incomplete JSON via the ArgsComplete field in RenderContext.
 func (tc *ToolExecutionComponent) SetArgsPartial(args string) {
 	tc.toolArgs = args
+	tc.updatePartialArgs(args)
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
 		tc.onInvalidate()
+	}
+}
+
+// updatePartialArgs merges best-effort parsed fields from a partial JSON
+// argument string into tc.args so renderers can display streaming content
+// (e.g. write/edit content) before the full JSON is complete.
+func (tc *ToolExecutionComponent) updatePartialArgs(raw string) {
+	// If the partial string happens to be complete now, use the real parser.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+		tc.args = parsed
+		return
+	}
+
+	// Extract string fields from the incomplete JSON. This is intentionally
+	// a narrow, best-effort path for streaming tool-call display only.
+	for _, m := range partialStringFieldRe.FindAllStringSubmatch(raw, -1) {
+		if len(m) != 3 {
+			continue
+		}
+		key := m[1]
+		value := m[2]
+		if u, err := strconv.Unquote(`"` + value + `"`); err == nil {
+			value = u
+		}
+		if tc.args == nil {
+			tc.args = make(map[string]any)
+		}
+		tc.args[key] = value
 	}
 }
 

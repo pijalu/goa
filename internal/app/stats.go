@@ -458,6 +458,15 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 }
 
 func (a *App) handleStateChange(ev *agentic.OutputEvent) {
+	// A spurious mid-turn EventEnd arms the status spinner's session-ended
+	// guard, which would silently drop every subsequent Show() and leave the
+	// spinner dark for the rest of the turn. A transition to an active state
+	// proves the turn is still alive, so reset the guard before updating the
+	// status label.
+	if ev.State != agentic.StateIdle {
+		a.subs.statusMsg.Reset()
+	}
+
 	// Break any active streaming block when the agent moves to a different
 	// output state, so thinking/content/tool segments stay in separate blocks.
 	a.endStreamIfDifferent(ev.State)

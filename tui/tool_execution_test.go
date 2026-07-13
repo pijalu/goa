@@ -7,6 +7,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/spinner"
@@ -310,7 +311,7 @@ func TestToolExecution_BashRenderer_ShowsCommandAndOutput(t *testing.T) {
 	if !strings.Contains(rendered, "hello") {
 		t.Errorf("expected output 'hello', got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Took 0.0s") {
+	if !strings.Contains(rendered, "Took 0.04s") {
 		t.Errorf("expected duration, got %q", rendered)
 	}
 }
@@ -399,16 +400,49 @@ func TestToolExecution_PartialArgs_RenderContextWiredCorrectly(t *testing.T) {
 	tc.SetArgsJSON(`{"path":"test.go","content":"package main"}`)
 }
 
+// TestToolExecution_WriteStreaming_BodyShowsPartialContent verifies that while
+// a write tool is streaming arguments, the partial content is rendered in the
+// body so the user sees the file being written as it arrives.
+func TestToolExecution_WriteStreaming_BodyShowsPartialContent(t *testing.T) {
+	tc := NewToolExecution("write", "write test.go")
+	tc.SetArgsPartial(`{"path":"test.go","content":"package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"}`)
+
+	lines := tc.Render(80)
+	rendered := strings.Join(lines, "\n")
+	stripped := ansi.Strip(rendered)
+	if !strings.Contains(stripped, "package main") {
+		t.Errorf("expected streamed content in body, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "println") {
+		t.Errorf("expected streamed content to include println, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "write test.go ...") {
+		t.Errorf("expected streaming header placeholder, got:\n%s", stripped)
+	}
+}
+
 // TestToolExecution_RunningShowsElapsedDuration verifies that the tool widget
-// renders an elapsed duration while the tool is still running/pending.
+// renders an elapsed duration while the tool is still running/pending, and that
+// the duration is only shown once it exceeds the 0.01s threshold.
 func TestToolExecution_RunningShowsElapsedDuration(t *testing.T) {
 	tc := NewToolExecution("bash", "sleep 1")
 	tc.SetArgsJSON(`{"command":"sleep 1"}`)
 	tc.SetStatus(ToolRunning)
 
+	// Immediately after starting, the elapsed time is below the 0.01s
+	// threshold, so no duration line should be rendered yet.
 	lines := tc.Render(80)
 	rendered := strings.Join(lines, "\n")
 	stripped := ansi.Strip(rendered)
+	if strings.Contains(stripped, "elapsed") {
+		t.Errorf("expected duration hidden below threshold, got:\n%s", stripped)
+	}
+
+	// After waiting past the threshold, the elapsed duration should appear.
+	time.Sleep(20 * time.Millisecond)
+	lines = tc.Render(80)
+	rendered = strings.Join(lines, "\n")
+	stripped = ansi.Strip(rendered)
 	if !strings.Contains(stripped, "elapsed") {
 		t.Errorf("expected running tool to show elapsed duration, got:\n%s", stripped)
 	}
@@ -421,6 +455,9 @@ func TestToolExecution_RunningShowsElapsedDuration(t *testing.T) {
 	stripped = ansi.Strip(rendered)
 	if !strings.Contains(stripped, "Took") {
 		t.Errorf("expected completed tool to show final duration, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "Took elapsed") {
+		t.Errorf("duration label should not contain both prefixes, got:\n%s", stripped)
 	}
 }
 

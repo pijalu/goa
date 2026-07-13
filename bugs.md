@@ -36,4 +36,4 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-*No open bugs.*
+No open bugs.

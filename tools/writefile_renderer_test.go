@@ -47,3 +47,28 @@ func TestWriteFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 		t.Errorf("expected expand hint, got %q", ansi.Strip(result))
 	}
 }
+
+func TestWriteFileRenderer_RenderCall_StreamingShowsPlaceholder(t *testing.T) {
+	r := NewWriteFileRenderer()
+	call := r.RenderCall(map[string]any{"path": "main.go"}, tuirender.RenderContext{ArgsComplete: false})
+	stripped := ansi.Strip(call)
+	if !strings.Contains(stripped, "write main.go") {
+		t.Errorf("expected tool name and path, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "...") {
+		t.Errorf("expected streaming placeholder, got %q", stripped)
+	}
+}
+
+func TestWriteFileRenderer_RenderResult_StreamingShowsPartialContent(t *testing.T) {
+	r := NewWriteFileRenderer()
+	args := map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}"}
+	result := r.RenderResult("", tuirender.RenderContext{IsPartial: true, ArgsComplete: false, Args: args})
+	stripped := ansi.Strip(result)
+	if !strings.Contains(stripped, "package main") {
+		t.Errorf("expected partial content in body, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "println") {
+		t.Errorf("expected streamed content, got %q", stripped)
+	}
+}

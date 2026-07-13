@@ -34,35 +34,48 @@ func (r *WriteFileRenderer) RenderCall(args map[string]any, ctx tuirender.Render
 		pathDisplay = "..."
 	}
 
-	// During streaming (ArgsComplete == false), show useful progress info.
+	// During streaming (ArgsComplete == false), keep the header minimal: the
+	// body will render the streaming content as it arrives.
 	if !ctx.ArgsComplete {
-		// Count approximate content bytes/lines from partial args.
-		if content, ok := args["content"].(string); ok && content != "" {
-			lines := strings.Count(content, "\n") + 1
-			if lines > 1 {
-				return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(fmt.Sprintf(" (%d lines...)", lines))
-			}
-			// Show partial content snippet when no newlines yet.
-			snippet := content
-			if len(snippet) > 30 {
-				snippet = snippet[:27] + "..."
-			}
-			return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(fmt.Sprintf(" (\"%s\")", snippet))
-		}
-		return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(" (streaming...)")
+		return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(" ...")
 	}
 	return rToolTitle("write") + " " + rAccent(pathDisplay)
 }
 
 func (r *WriteFileRenderer) RenderResult(output string, ctx tuirender.RenderContext) string {
-	// write returns a preview block. Extract the content between the
-	// markdown fences and render it syntax-highlighted.
-	content := extractWriteContent(output)
+	content := r.resolveContent(output, ctx)
 	if content == "" {
 		return ""
 	}
+	path := r.resolvePath(output, ctx)
+	return r.renderContent(content, path, ctx)
+}
 
+// resolveContent returns the content to display, preferring the final tool
+// output and falling back to streamed partial args while the call is still
+// in progress.
+func (r *WriteFileRenderer) resolveContent(output string, ctx tuirender.RenderContext) string {
+	content := extractWriteContent(output)
+	if content == "" && ctx.IsPartial {
+		if partial, ok := ctx.Args["content"].(string); ok && partial != "" {
+			content = partial
+		}
+	}
+	return content
+}
+
+// resolvePath returns the file path from the tool output or the parsed args.
+func (r *WriteFileRenderer) resolvePath(output string, ctx tuirender.RenderContext) string {
 	path := stringArg(parseResultHeader(output), "path")
+	if path == "" {
+		path = stringArg(ctx.Args, "path")
+	}
+	return path
+}
+
+// renderContent formats the content lines with optional syntax highlighting
+// and truncation.
+func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.RenderContext) string {
 	lang := getLanguageFromPath(path)
 
 	lines := strings.Split(content, "\n")

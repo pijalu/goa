@@ -23,6 +23,8 @@ func setSysProcAttr(cmd *exec.Cmd) {
 }
 
 // pidAlive reports whether the process is still running via GetExitCodeProcess.
+// STILL_ACTIVE is the documented Windows constant (259) and is not exposed
+// by the pinned golang.org/x/sys/windows version, so it is defined locally.
 func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -36,7 +38,8 @@ func pidAlive(pid int) bool {
 	if err := windows.GetExitCodeProcess(h, &code); err != nil {
 		return false
 	}
-	return code == uint32(windows.STILL_ACTIVE)
+	const stillActive = 259 // STILL_ACTIVE
+	return code == stillActive
 }
 
 // signalProcess sends a Ctrl-Break (graceful) or taskkill /F (forceful) to the

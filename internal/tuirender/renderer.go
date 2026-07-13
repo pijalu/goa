@@ -47,4 +47,7 @@ type RenderContext struct {
 	IsError bool
 	// ArgsComplete is true when all arguments have been received.
 	ArgsComplete bool
+	// Args holds the parsed tool arguments, when available. During streaming
+	// it may contain partial/extracted fields (e.g. content for write/edit).
+	Args map[string]any
 }

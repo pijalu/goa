@@ -53,7 +53,7 @@ func TestBashRenderer_RenderResult_WithOutput(t *testing.T) {
 	if !strings.Contains(ansi.Strip(result), "hi") {
 		t.Errorf("expected output 'hi', got %q", result)
 	}
-	if !strings.Contains(ansi.Strip(result), "Took 0.1s") {
+	if !strings.Contains(ansi.Strip(result), "Took 0.05s") {
 		t.Errorf("expected duration, got %q", result)
 	}
 }
@@ -89,7 +89,7 @@ func TestBashRenderer_RenderResult_DurationOnly(t *testing.T) {
 	r := NewBashRenderer()
 	result := r.RenderResult("Duration: 0.12s\n", tuirender.RenderContext{Expanded: true, IsPartial: true})
 	stripped := ansi.Strip(result)
-	if !strings.Contains(stripped, "Elapsed 0.1s") {
+	if !strings.Contains(stripped, "elapsed 0.12s") {
 		t.Errorf("expected elapsed time for partial context, got %q", stripped)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -92,8 +93,66 @@ func TestUIScenario_SpinnerSurvivesToolCallTurn(t *testing.T) {
 	}
 }
 
+// TestUIScenario_SpinnerSurvivesMidTurnEventEnd is the regression test for
+// the "spinner disappears during conversation and does not appear again" bug
+// observed in the exported log. The agent layer may emit EventEnd mid-turn
+// (e.g. after a tool batch or at provider chunk boundaries), which arms the
+// status spinner's session-ended guard. Subsequent Show() calls become no-ops
+// and the spinner stays dark. The app layer must reset the guard when new
+// activity proves the turn is still alive.
+func TestUIScenario_SpinnerSurvivesMidTurnEventEnd(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateThinking, Text: "I should read the file."})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall, ToolName: "read", ToolInput: `{"path":"README.md"}`, ToolCallID: "call_1"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult, ToolName: "read", ToolCallID: "call_1", Text: "read file README.md:1:5"})
+	// Mid-turn EventEnd: the spinner guard must NOT stay armed, because the
+	// turn is still in progress (more thinking and tool calls follow).
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateThinking, Text: "Now I understand."})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`, ToolCallID: "call_2"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult, ToolName: "bash", ToolCallID: "call_2", Text: "main.go\nDuration: 0.05s\n"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateContent})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateContent, Text: "Here is the summary."})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	film := sc.filmstrip()
+	trace := film.StatusTrace()
+	t.Logf("status trace: %v", trace)
+
+	frames := film.Frames()
+	for i, s := range frames {
+		isLast := i == len(frames)-1
+		if isLast {
+			if s.Diff.StatusText != "" {
+				t.Errorf("step %d (%s): expected spinner cleared at true turn end, got %q", i, s.Label, s.Diff.StatusText)
+			}
+			continue
+		}
+		// The mid-turn EventEnd frame itself is allowed to be empty because
+		// SessionEnd clears the status; what matters is that the spinner
+		// reappears on the very next active event.
+		if s.Label == "end" {
+			continue
+		}
+		if s.Diff.StatusText == "" {
+			t.Errorf("step %d (%s): spinner went dark mid-turn; the activity indicator must stay visible across the whole turn. Full trace: %v",
+				i, s.Label, trace)
+		}
+	}
+
+	wantContains := []string{"Thinking", "Tool calling", "Sending request"}
+	joined := strings.Join(trace, "|")
+	for _, w := range wantContains {
+		if !strings.Contains(joined, w) {
+			t.Errorf("expected status trace to contain %q, got %v", w, trace)
+		}
+	}
+}
+
 // TestUIScenario_StatusTrace is a focused, fast check on the status lifecycle
-// captured by the filmstrip. It is the minimal reproduction an agent can run
 // to verify the spinner lifecycle for any change to the event->status wiring.
 // It also exercises the scenario's direct status helpers (statusVisible /
 // statusText), which are the most concise assertion API for activity state.
@@ -111,6 +170,37 @@ func TestUIScenario_StatusTrace(t *testing.T) {
 	}
 	if !strings.Contains(sc.statusText(), "Answering") {
 		t.Errorf("statusText() = %q, want it to contain Answering", sc.statusText())
+	}
+}
+
+// TestUIScenario_ToolWidgetVisibleFromStart verifies that a tool widget is
+// rendered as soon as the tool call starts, not only after the result
+// arrives. This regresses the bug where long tool outputs appeared all at
+// once after the call finished.
+func TestUIScenario_ToolWidgetVisibleFromStart(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall, ToolName: "write", ToolInput: `{"path":"main.go","content":"package main"}`, ToolCallID: "call_1"})
+
+	// The widget should be visible immediately, before any result.
+	frame := sc.engine.AgentFrame()
+	visible := strings.Join(frame.Visible, "\n")
+	if !strings.Contains(ansi.Strip(visible), "write main.go") {
+		t.Errorf("expected tool widget visible at call start, got:\n%s", visible)
+	}
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult, ToolName: "write", ToolCallID: "call_1", Text: "[write: main.go]\n✓ Written\n```\npackage main\n```\n"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	// After the result the content should still be visible.
+	last := sc.filmstrip().Last()
+	if last == nil {
+		t.Fatal("expected at least one filmstrip frame")
+	}
+	visible = strings.Join(last.Frame.Visible, "\n")
+	if !strings.Contains(ansi.Strip(visible), "package main") {
+		t.Errorf("expected tool result content visible, got:\n%s", visible)
 	}
 }
 

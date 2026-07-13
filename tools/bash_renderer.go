@@ -86,12 +86,12 @@ func (r *BashRenderer) RenderResult(output string, ctx tuirender.RenderContext) 
 		b.WriteByte('\n')
 	}
 
-	if parsed.durationMs > 0 {
+	if parsed.durationMs > 10 { // only show if duration > 0.01s
 		label := "Took"
 		if ctx.IsPartial {
-			label = "Elapsed"
+			label = "elapsed"
 		}
-		b.WriteString(rMuted(fmt.Sprintf("%s %.1fs", label, parsed.durationMs/1000.0)))
+		b.WriteString(rMuted(fmt.Sprintf("%s %s", label, formatBashDuration(parsed.durationMs/1000.0))))
 	}
 
 	result := strings.TrimRight(b.String(), "\n")
@@ -148,4 +148,13 @@ func parseBashTruncationLine(line string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(matches[1]), true
+}
+
+// formatBashDuration formats a duration in seconds. Sub-second values show two
+// decimals so fast-but-not-instantaneous runs are not rounded to 0.0s.
+func formatBashDuration(s float64) string {
+	if s < 1 {
+		return fmt.Sprintf("%.2fs", s)
+	}
+	return fmt.Sprintf("%.1fs", s)
 }
