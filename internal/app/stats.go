@@ -85,6 +85,8 @@ func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
 		a.handleStateChange(ev)
 	case agentic.EventToolCall:
 		a.handleToolCall(ev)
+	case agentic.EventToolProgress:
+		a.handleToolProgress(ev)
 	case agentic.EventTokenStats, agentic.EventContextStats:
 		a.handleTokenStats(ev)
 	case agentic.EventCompact:
@@ -288,6 +290,26 @@ func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agenti
 	tc.SetStatus(a.toolStatusFromResult(ev.Text))
 	tc.SetPartial(false)
 	a.clearToolBusy()
+}
+
+// handleToolProgress renders partial output emitted by a still-running tool
+// (EventToolProgress, e.g. streamed bash stdout) into its widget without
+// completing it. The widget stays in the Running state with its live elapsed
+// timer; only the displayed output is refreshed so the user sees progress
+// instead of a frozen spinner. lookupActiveTool is intentionally NOT used: it
+// removes the entry, which would orphan the eventual EventToolResult.
+func (a *App) handleToolProgress(ev *agentic.OutputEvent) {
+	if ev.ToolCallID != "" && a.subs.activeTools != nil {
+		if tc, ok := a.subs.activeTools[ev.ToolCallID]; ok {
+			tc.SetOutput(ev.Text)
+			tc.SetPartial(true)
+			return
+		}
+	}
+	if tc := a.findPendingTool(); tc != nil {
+		tc.SetOutput(ev.Text)
+		tc.SetPartial(true)
+	}
 }
 
 // lookupActiveTool returns the in-flight tool component matching the given

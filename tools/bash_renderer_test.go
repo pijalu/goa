@@ -50,11 +50,22 @@ func TestBashRenderer_RenderResult_WithOutput(t *testing.T) {
 	r := NewBashRenderer()
 	out := "hi\nDuration: 0.05s\n"
 	result := r.RenderResult(out, tuirender.RenderContext{Expanded: true, IsPartial: false})
-	if !strings.Contains(ansi.Strip(result), "hi") {
+	stripped := ansi.Strip(result)
+	if !strings.Contains(stripped, "hi") {
 		t.Errorf("expected output 'hi', got %q", result)
 	}
-	if !strings.Contains(ansi.Strip(result), "Took 0.05s") {
-		t.Errorf("expected duration, got %q", result)
+	// The renderer must NOT emit its own timing line: the generic
+	// ToolExecutionComponent duration line is the single source of truth, and
+	// a second "Took" here would duplicate it (the duplicate-time bug).
+	if strings.Contains(stripped, "Took") {
+		t.Errorf("renderer must not emit Took line (handled by widget); got %q", stripped)
+	}
+	if strings.Contains(stripped, "elapsed") {
+		t.Errorf("renderer must not emit elapsed line (handled by widget); got %q", stripped)
+	}
+	// The Duration footer must be stripped from the body, not shown raw.
+	if strings.Contains(stripped, "Duration:") {
+		t.Errorf("Duration footer must be stripped from body; got %q", stripped)
 	}
 }
 
@@ -68,6 +79,10 @@ func TestBashRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	result := r.RenderResult(out, tuirender.RenderContext{Expanded: false})
 	if strings.Count(result, "\n") >= 10 {
 		t.Errorf("expected preview truncation, got %d lines", strings.Count(result, "\n"))
+	}
+	// Duration footer is stripped, never rendered by the body.
+	if strings.Contains(ansi.Strip(result), "Duration:") {
+		t.Errorf("Duration footer must be stripped; got %q", result)
 	}
 }
 
@@ -89,8 +104,10 @@ func TestBashRenderer_RenderResult_DurationOnly(t *testing.T) {
 	r := NewBashRenderer()
 	result := r.RenderResult("Duration: 0.12s\n", tuirender.RenderContext{Expanded: true, IsPartial: true})
 	stripped := ansi.Strip(result)
-	if !strings.Contains(stripped, "elapsed 0.12s") {
-		t.Errorf("expected elapsed time for partial context, got %q", stripped)
+	// A bare Duration footer yields no visible body (timing is owned by the
+	// widget duration line), regardless of the partial/complete state.
+	if stripped != "" {
+		t.Errorf("expected empty body for duration-only output, got %q", stripped)
 	}
 }
 
@@ -130,10 +147,10 @@ func TestBashRenderer_RenderCall_EmptyArgs(t *testing.T) {
 func TestBashRenderer_parseOutput(t *testing.T) {
 	r := NewBashRenderer()
 	p := r.parseOutput("file.txt\nDuration: 0.12s\n")
-	if p.durationMs != 120 {
-		t.Errorf("duration = %f, want 120", p.durationMs)
-	}
 	if !strings.Contains(p.output, "file.txt") {
 		t.Errorf("output = %q, want file.txt", p.output)
+	}
+	if strings.Contains(p.output, "Duration:") {
+		t.Errorf("Duration footer must be stripped from parsed output; got %q", p.output)
 	}
 }

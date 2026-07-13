@@ -244,7 +244,24 @@ func (a *Agent) executeToolWithResult(ctx context.Context, name, input, callID s
 	if err := a.fireBeforeToolHook(ctx, name, input, callID); err != nil {
 		return ToolResult{}, err
 	}
-	result, err := a.runTool(ctx, name, input)
+	// Inject an execution-progress emitter so streaming-capable tools (those
+	// that call agentic.ProgressFromContext) can report partial output while
+	// still running. The emitted EventToolProgress events are transient UI
+	// updates; the final EventToolResult is still emitted on completion.
+	execCtx := ctx
+	if callID != "" {
+		emit := ProgressFunc(func(partial string) {
+			a.emitEvent(OutputEvent{
+				Type:       EventToolProgress,
+				State:      StateToolCall,
+				ToolName:   name,
+				ToolCallID: callID,
+				Text:       partial,
+			})
+		})
+		execCtx = WithProgress(ctx, emit)
+	}
+	result, err := a.runTool(execCtx, name, input)
 	a.fireAfterToolHook(ctx, name, input, callID, result, err)
 	return result, err
 }

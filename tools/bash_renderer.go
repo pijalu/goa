@@ -7,7 +7,6 @@ package tools
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/pijalu/goa/internal/tuirender"
@@ -54,6 +53,10 @@ func (r *BashRenderer) RenderResult(output string, ctx tuirender.RenderContext) 
 	if output == "" {
 		return ""
 	}
+	// Strip the trailing Duration/Full-output metadata footer lines that the
+	// bash tool appends for diagnostics. The execution timing itself is shown
+	// by the generic ToolExecutionComponent duration line (single source of
+	// truth) — rendering a second "Took" here duplicated it.
 	parsed := r.parseOutput(output)
 
 	var b strings.Builder
@@ -86,14 +89,6 @@ func (r *BashRenderer) RenderResult(output string, ctx tuirender.RenderContext) 
 		b.WriteByte('\n')
 	}
 
-	if parsed.durationMs > 10 { // only show if duration > 0.01s
-		label := "Took"
-		if ctx.IsPartial {
-			label = "elapsed"
-		}
-		b.WriteString(rMuted(fmt.Sprintf("%s %s", label, formatBashDuration(parsed.durationMs/1000.0))))
-	}
-
 	result := strings.TrimRight(b.String(), "\n")
 	return result
 }
@@ -107,10 +102,9 @@ func (r *BashRenderer) HideResultWhenCollapsed() bool { return false }
 func (r *BashRenderer) DefaultBackground() bool { return false }
 
 type bashParsedOutput struct {
-	durationMs float64
-	truncated  bool
-	fullPath   string
-	output     string
+	truncated bool
+	fullPath  string
+	output    string
 }
 
 func (r *BashRenderer) parseOutput(output string) bashParsedOutput {
@@ -118,8 +112,7 @@ func (r *BashRenderer) parseOutput(output string) bashParsedOutput {
 	lines := strings.Split(output, "\n")
 	var outputLines []string
 	for _, line := range lines {
-		if ms, ok := parseBashDurationLine(line); ok {
-			p.durationMs = ms
+		if isBashDurationLine(line) {
 			continue
 		}
 		if path, ok := parseBashTruncationLine(line); ok {
@@ -133,13 +126,11 @@ func (r *BashRenderer) parseOutput(output string) bashParsedOutput {
 	return p
 }
 
-func parseBashDurationLine(line string) (float64, bool) {
-	matches := bashDurationLineRe.FindStringSubmatch(line)
-	if len(matches) != 2 {
-		return 0, false
-	}
-	f, err := strconv.ParseFloat(matches[1], 64)
-	return f * 1000, err == nil
+// isBashDurationLine reports whether a line is the "Duration: X.XXs" footer
+// the bash tool appends. It is stripped from the displayed body; timing is
+// shown by the generic tool widget duration line instead.
+func isBashDurationLine(line string) bool {
+	return bashDurationLineRe.MatchString(line)
 }
 
 func parseBashTruncationLine(line string) (string, bool) {
@@ -150,11 +141,4 @@ func parseBashTruncationLine(line string) (string, bool) {
 	return strings.TrimSpace(matches[1]), true
 }
 
-// formatBashDuration formats a duration in seconds. Sub-second values show two
-// decimals so fast-but-not-instantaneous runs are not rounded to 0.0s.
-func formatBashDuration(s float64) string {
-	if s < 1 {
-		return fmt.Sprintf("%.2fs", s)
-	}
-	return fmt.Sprintf("%.1fs", s)
-}
+

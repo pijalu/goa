@@ -34,6 +34,11 @@ const (
 	EventToolCall EventType = "tool_call"
 	// EventToolResult indicates a tool execution completed.
 	EventToolResult EventType = "tool_result"
+	// EventToolProgress carries partial output emitted by a tool while it is
+	// still running (e.g. streamed stdout of a long bash command). It is a
+	// transient UI update: it does not complete the tool call and is not sent
+	// to the model.
+	EventToolProgress EventType = "tool_progress"
 	// EventEnd signals the end of a conversation turn.
 	EventEnd EventType = "end"
 	// EventClear signals the conversation was cleared.

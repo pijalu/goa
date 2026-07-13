@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -376,4 +377,70 @@ func TestManager_StopAfterRestart(t *testing.T) {
 	if got == nil || got.Status != StatusKilled {
 		t.Fatalf("expected killed after reattached stop, got %+v", got)
 	}
+}
+
+// TestManager_PreservesLargeOutputOnExit is the regression test for the
+// intermittent "long line not preserved" truncation. It launches a process
+// that writes many large lines then exits, waits for completion, and asserts
+// every byte is captured. Before the fix (cmd.Wait() called before the drain
+// goroutines finished), Wait closed the pipes while data was still buffered in
+// the kernel, dropping a trailing chunk on timing-sensitive runs.
+func TestManager_PreservesLargeOutputOnExit(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := NewManager(filepath.Join(dir, "tasks.json"))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	// 40 lines of ~64 KiB each = ~2.5 MiB, far beyond any kernel pipe buffer,
+	// so the drain cannot complete instantaneously and the race window is wide.
+	const lines = 40
+	const lineLen = 64 * 1024
+	script := "for i in $(seq 1 " + itoa(lines) + "); do printf '%0" + itoa(lineLen) + "d\\n' 0; done"
+	task, err := mgr.Start(script, "", nil)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !waitStatus(mgr, task.ID, 5*time.Second) {
+		t.Fatalf("task did not exit")
+	}
+	out, _ := mgr.ReadOutput(task.ID, lines+10)
+	got := strings.Join(out, "\n")
+	wantLine := strings.Repeat("0", lineLen)
+	count := strings.Count(got, wantLine)
+	if count != lines {
+		t.Errorf("expected %d full %d-byte lines, found %d (total read %d bytes) — output was truncated by the Wait-vs-drain race",
+			lines, lineLen, count, len(got))
+	}
+}
+
+func itoa(n int) string {
+	const digits = "0123456789"
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	for n > 0 {
+		b = append([]byte{digits[n%10]}, b...)
+		n /= 10
+	}
+	if neg {
+		b = append([]byte{'-'}, b...)
+	}
+	return string(b)
+}
+
+func waitStatus(mgr *Manager, id string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if t := mgr.Get(id); t != nil && t.Status != StatusRunning {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
 }

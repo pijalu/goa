@@ -36,4 +36,4 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-No open bugs.
+(none — last batch closed and archived to `docs/archive/bugs.2026-07-13-tui-review.md`)

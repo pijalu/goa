@@ -311,8 +311,29 @@ func TestToolExecution_BashRenderer_ShowsCommandAndOutput(t *testing.T) {
 	if !strings.Contains(rendered, "hello") {
 		t.Errorf("expected output 'hello', got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Took 0.04s") {
-		t.Errorf("expected duration, got %q", rendered)
+}
+
+// TestToolExecution_BashRenderer_NoDuplicateTook is the regression test for the
+// duplicate-time bug: the bash renderer used to render its own "Took" line
+// (parsed from the tool's Duration footer) in addition to the generic widget
+// duration line, producing two "Took" rows. The widget duration line must be
+// the single source of truth, and the Duration footer must be stripped from
+// the body.
+func TestToolExecution_BashRenderer_NoDuplicateTook(t *testing.T) {
+	tc := NewToolExecution("bash", "go test ./tools/")
+	tc.SetArgsJSON(`{"command":"go test ./tools/"}`)
+	// Ensure the wall-clock duration crosses the visibility threshold so the
+	// generic duration line is actually rendered.
+	time.Sleep(20 * time.Millisecond)
+	tc.SetOutput("ok  github.com/pijalu/goa/tools  0.507s\nDuration: 1.20s\n")
+	tc.SetStatus(ToolSuccess)
+
+	stripped := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if n := strings.Count(stripped, "Took"); n != 1 {
+		t.Errorf("expected exactly one 'Took' line, got %d; rendered:\n%s", n, stripped)
+	}
+	if strings.Contains(stripped, "Duration:") {
+		t.Errorf("Duration footer must be stripped from body; rendered:\n%s", stripped)
 	}
 }
 

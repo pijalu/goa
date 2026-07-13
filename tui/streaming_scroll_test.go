@@ -119,19 +119,28 @@ func (e *screenEmulator) parseEscape(s string) int {
 func (e *screenEmulator) handleCSI(params string, final byte) {
 	switch final {
 	case 'H', 'f':
+		// Text written just before a cursor move belongs at the CURRENT row;
+		// commit it before repositioning, or it would land on the destination row
+		// (the "multiple lines stacked on one row" false positive).
+		e.flush()
 		row, col := 1, 1
 		fmt.Sscanf(params, "%d;%d", &row, &col)
 		e.row = max(0, row-1)
 		e.col = max(0, col-1)
 	case 'A':
+		e.flush()
 		e.row = max(0, e.row-paramInt(params, 1))
 	case 'B':
+		e.flush()
 		e.row = min(e.h-1, e.row+paramInt(params, 1))
 	case 'G':
+		e.flush()
 		e.col = max(0, paramInt(params, 1)-1)
 	case 'J':
+		e.flush()
 		e.eraseDisplay(params)
 	case 'K':
+		e.flush()
 		e.eraseLine(params)
 	}
 }

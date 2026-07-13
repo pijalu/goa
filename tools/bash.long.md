@@ -16,3 +16,9 @@ Security:
   - Blocked commands are rejected (configurable in tools.bash.blocked_commands)
   - Allowed commands whitelist mode (configurable in tools.bash.allowed_commands)
   - Env values matching *KEY*, *TOKEN*, *SECRET*, *PASSWORD* are masked
+
+Tool selection:
+  - For searching the codebase, PREFER the `search` tool over grep/rg.
+    `search` is faster (parallel), auto-excludes noise dirs, and returns
+    structured results. Reserve bash+grep for tasks `search` cannot do
+    (filtering command output, pipes, find -exec, PCRE-only constructs).

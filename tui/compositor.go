@@ -695,7 +695,14 @@ func (c *Compositor) applyFrameTracking(canvas []string, cursor *CursorPos, widt
 	vtop := max(0, len(canvas)-height)
 	c.previousViewportTop = vtop
 	c.viewportTop = vtop
-	c.firstScrollDone = len(canvas) > height
+	// firstScrollDone is sticky: once a session has scrolled (scrollback
+	// populated), it must never reset. A later shrink-to-fit used to clear it,
+	// which made the next regrow re-enter emitFirstScroll and re-write the
+	// WHOLE canvas from row 0 — flashing off-screen content (the header
+	// mascot/logo) back onto the visible screen and duplicating scrollback.
+	if len(canvas) > height {
+		c.firstScrollDone = true
+	}
 	c.prevH = height
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
@@ -795,7 +802,13 @@ func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, pr
 	if !c.firstScrollDone {
 		emitFirstScroll(&buf, canvas, width)
 	} else if scroll > height && height > 0 {
-		emitLargeScroll(&buf, canvas, firstChanged, width, newVtop, height, prevVtop)
+		// prevLen = old canvas length. For a pure tail-append (the common large
+		// growth), new lines start here. For in-place growth (e.g. a widget body
+		// expanding mid-canvas) this start may miss some mid-canvas content in
+		// scrollback, but the visible screen stays correct and the realistic
+		// streaming case (small per-frame growth) takes the bare-newline path
+		// below and is fully correct.
+		emitLargeScroll(&buf, canvas, width, len(c.prevLines), newVtop, height)
 	} else {
 		buf.WriteString(strings.Repeat("\n", scroll))
 	}
@@ -820,21 +833,38 @@ func emitFirstScroll(buf *strings.Builder, canvas []string, width int) {
 	}
 }
 
-// emitLargeScroll handles a viewport advance larger than one screen by
-// pushing the previous viewport into scrollback with bare newlines, then
-// writing each newly-added line above the new viewport as real content so
-// it too ends up in scrollback.
-func emitLargeScroll(buf *strings.Builder, canvas []string, firstChanged, width, newVtop, height, prevVtop int) {
-	buf.WriteString(strings.Repeat("\n", height))
-	gapStart := max(0, prevVtop+height)
-	for i := gapStart; i < newVtop; i++ {
+// emitLargeScroll handles a viewport advance larger than one screen. The
+// cursor is already on the bottom row (set by the caller). For every line
+// from the previous canvas end through the end of the new viewport, we scroll
+// THEN write: each \n pushes the current top row into scrollback and opens a
+// blank bottom row, which the following write fills. After (gap+height)
+// iterations scrollback holds the scrolled-off region and the visible screen
+// shows the new viewport.
+//
+// This replaces the old "clear bottom / write / newline" pattern, which was
+// fundamentally broken: a trailing \n at the bottom row scrolls the TOP row
+// (not the just-written line) into scrollback, so gap lines stacked on screen
+// and were then overwritten by the new viewport — losing every gap line (the
+// "scrollback missing content after long edit/write" bug).
+func emitLargeScroll(buf *strings.Builder, canvas []string, width, prevLen, newVtop, height int) {
+	start := prevLen
+	if start < 0 {
+		start = 0
+	}
+	end := newVtop + height
+	if end > len(canvas) {
+		end = len(canvas)
+	}
+	for i := start; i < end; i++ {
+		// Scroll first: top row -> scrollback, blank appears at the bottom row.
+		buf.WriteString("\n")
 		line := canvas[i]
 		if vw := visibleWidth(line); vw > width {
 			line = truncateToWidth(line, width, "")
 		}
+		// Re-anchor to the bottom-left and clear, then fill with the line.
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", height))
 		buf.WriteString(line)
-		buf.WriteString("\n")
 	}
 }
 

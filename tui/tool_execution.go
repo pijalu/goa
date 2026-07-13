@@ -357,6 +357,13 @@ func (tc *ToolExecutionComponent) ArgsComplete() bool {
 	return tc.argsComplete
 }
 
+// IsPartial reports whether the widget is still streaming/running and its
+// output is a partial snapshot (e.g. streamed progress from a long-running
+// tool). The final result clears it.
+func (tc *ToolExecutionComponent) IsPartial() bool {
+	return tc.isPartial
+}
+
 // SetStatus changes the execution status.
 func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
 	tc.status = status

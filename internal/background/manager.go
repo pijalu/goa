@@ -288,9 +288,17 @@ func (m *Manager) StopAll(grace time.Duration) {
 // A terminated process is marked StatusKilled; other non-zero exits are
 // StatusError; clean exits are StatusCompleted. The killed flag is set by
 // terminate() before signalling, so it is reliably visible here.
+//
+// Ordering: the output-draining goroutines (collectOutput) MUST finish before
+// cmd.Wait(). Wait closes the stdout/stderr pipes (its documented contract
+// with StdoutPipe), so reading after it can return a partial result and lose
+// whatever was still buffered in the kernel pipe — the intermittent
+// "long line not preserved" truncation. Draining to EOF first guarantees the
+// whole stream is captured; collectOutput reaches EOF when the child exits and
+// closes its write end, so wg.Wait() returns exactly when the process is done.
 func (m *Manager) waitForExit(task *Task, proc *runningProc) {
+	proc.wg.Wait() // drain both pipes fully before Wait closes them
 	exitErr := proc.cmd.Wait()
-	proc.wg.Wait()
 	close(proc.outW.done)
 	close(proc.errW.done)
 	_ = proc.stdin.Close()

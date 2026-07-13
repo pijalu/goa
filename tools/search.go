@@ -40,46 +40,46 @@ type searchResult struct {
 // Schema returns the tool schema for search.
 func (t *SearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
-		Name:        "search",
-		Description: "Search files for a pattern.",
+		Name: "search",
+		Description: "Fast parallel code/text search (regex) across files. PREFER this over `bash`+grep/rg for any codebase search: it auto-excludes .git/vendor/node_modules, respects globs, and returns ranked, structured results (file: matches + line numbers + content). Use `bash` with grep only for features this tool cannot do (e.g. searching command output, pipes, PCRE-only constructs).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "Pattern to search for (supports regex)",
+					"description": "Regex pattern to search for (Go RE2 syntax; case-insensitive by default).",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Root directory or file to search (default: project root). Supports single files for searching a specific file.",
+					"description": "Root directory or a single file to search (default: project root). Pass a file path to search one file.",
 				},
 				"glob": map[string]any{
 					"type":        "string",
-					"description": "File glob pattern to filter (e.g. '*.go')",
+					"description": "Comma-separated file glob filter, e.g. \"*.go\" or \"*.go,*.ts\".",
 				},
 				"recursive": map[string]any{
 					"type":        "boolean",
-					"description": "Search subdirectories recursively (default: true)",
+					"description": "Search subdirectories recursively (default: true).",
 				},
 				"case_sensitive": map[string]any{
 					"type":        "boolean",
-					"description": "Whether the search is case-sensitive (default: false, case-insensitive)",
+					"description": "Case-sensitive match (default: false).",
 				},
 				"max_results": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of results to return",
+					"description": "Maximum total matched lines to return.",
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
-					"description": "Number of context lines around each match",
+					"description": "Context lines shown around each match.",
 				},
 				"showing": map[string]any{
 					"type":        "integer",
-					"description": "Content lines per file (default: 10% of max_results, 0 = line numbers only)",
+					"description": "Content lines per file (default: 10% of max_results; 0 = line numbers only).",
 				},
 				"exclude_glob": map[string]any{
 					"type":        "string",
-					"description": "Glob pattern to exclude files (e.g. '*_test.go')",
+					"description": "Glob pattern to exclude files (e.g. '*_test.go').",
 				},
 			},
 			"required": []string{"pattern"},

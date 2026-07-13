@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -79,6 +80,7 @@ func (t *BashTool) Schema() agentic.ToolSchema {
 	if t.EnableComplexity {
 		description = "Run a shell command. Bash scripts must be statically analyzable: avoid command substitution, variable expansion in command position, loops, conditionals, and other complex constructs. The analyzer will reject commands it cannot evaluate safely."
 	}
+	description += " For searching the codebase, PREFER the `search` tool over grep/rg — reserve bash for tasks search cannot do (e.g. filtering command output, pipes, find -exec)."
 	return agentic.ToolSchema{
 		Name:        "bash",
 		Description: description,
@@ -179,6 +181,15 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	// If the host injected a progress emitter, stream stdout to it so the TUI
+	// shows live output for long-running commands instead of a frozen spinner.
+	progress := agentic.ProgressFromContext(ctx)
+	var pw *progressWriter
+	if progress != nil {
+		pw = newProgressWriter(&stdout, progress, bashProgressInterval)
+		cmd.Stdout = pw
+	}
+
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		return nil, 0, false, err
@@ -190,6 +201,7 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 	var timedOut bool
 	select {
 	case runErr := <-done:
+		pw.finalFlush()
 		output := stdout.Bytes()
 		output = append(output, stderr.Bytes()...)
 		return output, time.Since(start), false, runErr
@@ -204,6 +216,7 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 		<-done
 	}
 
+	pw.finalFlush()
 	output := stdout.Bytes()
 	output = append(output, stderr.Bytes()...)
 	return output, time.Since(start), timedOut, nil
@@ -220,6 +233,58 @@ func normalizeBashTimeout(timeout int) int {
 		return MaxBashTimeoutS
 	}
 	return timeout
+}
+
+// bashProgressInterval is the minimum spacing between two streamed progress
+// snapshots for a running bash command. It keeps a fast-producing command from
+// flooding the TUI with redraws while still updating well within a human
+// perceptible window.
+const bashProgressInterval = 120 * time.Millisecond
+
+// progressWriter copies every write to buf (so the final output is preserved
+// unchanged) and, no more than once per interval, reports the output-so-far to
+// the host via emit. The snapshot is taken under the lock and the emit happens
+// outside it so a slow observer never blocks the child's pipe drain.
+type progressWriter struct {
+	mu       sync.Mutex
+	buf      *bytes.Buffer
+	emit     func(string)
+	interval time.Duration
+	last     time.Time
+}
+
+func newProgressWriter(buf *bytes.Buffer, emit func(string), interval time.Duration) *progressWriter {
+	return &progressWriter{buf: buf, emit: emit, interval: interval}
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	due := w.emit != nil && time.Since(w.last) >= w.interval
+	var snap string
+	if due {
+		w.last = time.Now()
+		snap = w.buf.String()
+	}
+	w.mu.Unlock()
+	if due {
+		w.emit(snap)
+	}
+	return n, err
+}
+
+// finalFlush reports the final output-so-far so the last chunk produced just
+// before exit is not held back by the debounce interval.
+func (w *progressWriter) finalFlush() {
+	if w == nil || w.emit == nil {
+		return
+	}
+	w.mu.Lock()
+	snap := w.buf.String()
+	w.mu.Unlock()
+	if snap != "" {
+		w.emit(snap)
+	}
 }
 
 func (t *BashTool) formatOutput(p *bashParams, output []byte, cmdErr error, duration time.Duration) (string, error) {
