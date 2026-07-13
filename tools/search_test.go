@@ -23,28 +23,12 @@ func TestSearchTool_Schema_HasRequiredFields(t *testing.T) {
 	}
 }
 
-// TestSearchTool_Schema_SteersAwayFromGrep locks in the guidance that makes
-// the agent reach for `search` instead of `bash`+grep/rg: the description must
-// state it is preferred for codebase search and reference grep/rg so a model
-// wiring bash+grep maps that intent onto this tool.
-func TestSearchTool_Schema_SteersAwayFromGrep(t *testing.T) {
+// TestSearchTool_Schema_ContainsSearchConfirms the description mentions search.
+func TestSearchTool_Schema_ContainsSearch(t *testing.T) {
 	tool := &SearchTool{}
 	desc := strings.ToLower(tool.Schema().Description)
-	for _, want := range []string{"prefer", "grep", "search"} {
-		if !strings.Contains(desc, want) {
-			t.Errorf("search description should mention %q to steer away from bash+grep; got: %q", want, tool.Schema().Description)
-		}
-	}
-}
-
-// TestBashTool_Schema_SteersToSearchForCodebaseSearch ensures the bash
-// description tells the agent to use the `search` tool for codebase search so
-// bash is reserved for features search cannot do.
-func TestBashTool_Schema_SteersToSearchForCodebaseSearch(t *testing.T) {
-	tool := &BashTool{}
-	desc := strings.ToLower(tool.Schema().Description)
-	if !strings.Contains(desc, "search") || !strings.Contains(desc, "prefer") {
-		t.Errorf("bash description should tell the agent to prefer `search` for codebase search; got: %q", tool.Schema().Description)
+	if !strings.Contains(desc, "search") {
+		t.Errorf("search description should mention search; got: %q", tool.Schema().Description)
 	}
 }
 

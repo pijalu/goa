@@ -37,27 +37,27 @@ func (t *ReadFileTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path to the file to read (relative or absolute).",
+					"description": "file path",
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "First line to read (1-indexed, default: 1)",
+					"description": "first line (1-indexed, default: 1)",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "Last line to read (1-indexed, default: end of file)",
+					"description": "last line (1-indexed, default: end)",
 				},
 				"max_lines": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of lines to return (default: 500, max: 4096)",
+					"description": "max lines (default: 500, max: 4096)",
 				},
 				"max_bytes": map[string]any{
 					"type":        "integer",
-					"description": "Maximum bytes to return (default: 50000)",
+					"description": "max bytes (default: 50000)",
 				},
 				"show_numbers": map[string]any{
 					"type":        "boolean",
-					"description": "Show line numbers in output (default: true)",
+					"description": "show line numbers (default: true)",
 				},
 			},
 			"required": []string{"path"},

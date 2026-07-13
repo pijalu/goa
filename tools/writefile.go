@@ -89,11 +89,11 @@ func (t *WriteFileTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path to the file to write",
+					"description": "file path",
 				},
 				"content": map[string]any{
 					"type":        "string",
-					"description": "Content to write to the file",
+					"description": "file content",
 				},
 			},
 			"required": []string{"path", "content"},

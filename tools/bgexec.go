@@ -58,23 +58,23 @@ func (t *BGExecTool) Schema() agentic.ToolSchema {
 					"enum": []string{"start", "status", "read", "write", "stop", "list"},
 				},
 				"command": map[string]any{
-					"type": "string", "description": "Command to start",
+					"type": "string", "description": "command to start",
 				},
 				"id": map[string]any{
-					"type": "string", "description": "Process ID for status/read/write/stop actions",
+					"type": "string", "description": "process ID for status/read/write/stop",
 				},
 				"workdir": map[string]any{
-					"type": "string", "description": "Working directory",
+					"type": "string", "description": "working directory",
 				},
 				"env": map[string]any{
 					"type": "object", "additionalProperties": map[string]any{"type": "string"},
-					"description": "Environment variables",
+					"description": "env vars",
 				},
 				"input": map[string]any{
-					"type": "string", "description": "Input to write to process stdin",
+					"type": "string", "description": "stdin input",
 				},
 				"tail_lines": map[string]any{
-					"type": "integer", "description": "Number of recent lines to read (default: 20)",
+					"type": "integer", "description": "lines to read (default: 20)",
 				},
 			},
 			"required": []string{"action"},

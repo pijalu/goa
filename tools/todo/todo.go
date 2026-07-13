@@ -55,20 +55,20 @@ func (t *TodoListTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: add, update, complete, remove, list, clear",
+					"description": "add|update|complete|remove|list|clear",
 					"enum":        []string{"add", "update", "complete", "remove", "list", "clear"},
 				},
 				"id": map[string]any{
 					"type":        "string",
-					"description": "Todo ID (required for update/complete/remove).",
+					"description": "todo ID for update/complete/remove",
 				},
 				"description": map[string]any{
 					"type":        "string",
-					"description": "Todo description (required for add).",
+					"description": "todo description for add",
 				},
 				"status": map[string]any{
 					"type":        "string",
-					"description": "New status for update: pending, in_progress, done.",
+					"description": "pending|in_progress|done",
 					"enum":        []string{"pending", "in_progress", "done"},
 				},
 			},

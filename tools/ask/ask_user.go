@@ -73,7 +73,7 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"questions": map[string]any{
 					"type":        "array",
-					"description": "One or more clarifying questions. Each is asked separately.",
+					"description": "clarifying questions, each asked separately",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -81,7 +81,7 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 							"question": map[string]any{"type": "string", "description": "The question itself (required)."},
 							"options": map[string]any{
 								"type":        "array",
-								"description": "Optional answer choices (max 6). The user may type the number or the text.",
+								"description": "answer choices (max 6)",
 								"items":       map[string]any{"type": "string"},
 							},
 							"required":         map[string]any{"type": "boolean", "description": "If true, cancellation is an error. Default false."},

@@ -75,11 +75,11 @@ func (t *TerminalTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
-					"description": "Shell command to execute",
+					"description": "command to execute",
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Timeout in seconds (default: from config)",
+					"description": "timeout in seconds (default: from config)",
 				},
 			},
 			"required": []string{"command"},

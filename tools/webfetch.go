@@ -86,29 +86,29 @@ func (t *WebFetchTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"url": map[string]any{
 					"type":        "string",
-					"description": "Absolute URL to fetch (required).",
+					"description": "absolute URL (required)",
 				},
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action to perform.",
+					"description": "fetch|summarize",
 					"enum":        actions,
 					"default":     "fetch",
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "First line to return (1-indexed, default: 1). Only for fetch.",
+					"description": "first line (1-indexed, default: 1)",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "Last line to return (1-indexed, default: end of file). Only for fetch.",
+					"description": "last line (1-indexed, default: end)",
 				},
 				"max_lines": map[string]any{
 					"type":        "integer",
-					"description": "Maximum lines to return (default from config). Only for fetch.",
+					"description": "max lines (default from config)",
 				},
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "Optional steering prompt for summarize action. Ignored for fetch.",
+					"description": "steering prompt for summarize action",
 				},
 			},
 			"required": []string{"url"},

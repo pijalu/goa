@@ -78,9 +78,8 @@ func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 func (t *BashTool) Schema() agentic.ToolSchema {
 	description := "Run a shell command."
 	if t.EnableComplexity {
-		description = "Run a shell command. Bash scripts must be statically analyzable: avoid command substitution, variable expansion in command position, loops, conditionals, and other complex constructs. The analyzer will reject commands it cannot evaluate safely."
+		description = "Run a shell command. Complex scripts may be rejected — use simple commands."
 	}
-	description += " For searching the codebase, PREFER the `search` tool over grep/rg — reserve bash for tasks search cannot do (e.g. filtering command output, pipes, find -exec)."
 	return agentic.ToolSchema{
 		Name:        "bash",
 		Description: description,
@@ -89,20 +88,20 @@ func (t *BashTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
-					"description": "Shell command to execute",
+					"description": "command to execute",
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": fmt.Sprintf("Timeout in seconds (default: %ds, max: %ds)", DefaultBashTimeoutS, MaxBashTimeoutS),
+					"description": fmt.Sprintf("timeout (default: %ds, max: %ds)", DefaultBashTimeoutS, MaxBashTimeoutS),
 				},
 				"workdir": map[string]any{
 					"type":        "string",
-					"description": "Working directory for the command (default: project root)",
+					"description": "working directory (default: project root)",
 				},
 				"env": map[string]any{
 					"type":                 "object",
 					"additionalProperties": map[string]any{"type": "string"},
-					"description":          "Environment variables. Values matching *KEY*, *TOKEN*, *SECRET*, or *PASSWORD* are masked in output.",
+					"description":          "env vars (values matching *KEY*, *TOKEN*, *SECRET*, *PASSWORD* masked)",
 				},
 			},
 			"required": []string{"command"},

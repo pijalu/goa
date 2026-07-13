@@ -39,17 +39,17 @@ func (t *MementoTool) Schema() agentic.ToolSchema {
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
-					"type": "string", "description": "Action to perform",
+					"type": "string", "description": "read|write|append|list|delete",
 					"enum": []string{"read", "write", "append", "list", "delete"},
 				},
 				"name": map[string]any{
-					"type": "string", "description": "Memory file name (alphanumeric + hyphens only)",
+					"type": "string", "description": "memory file name (alphanumeric + hyphens)",
 				},
 				"content": map[string]any{
-					"type": "string", "description": "Content for write/append actions",
+					"type": "string", "description": "content for write/append",
 				},
 				"section": map[string]any{
-					"type": "string", "description": "Section heading for append action (e.g., 'decisions')",
+					"type": "string", "description": "section heading for append (e.g., 'decisions')",
 				},
 			},
 			"required": []string{"action"},

@@ -59,23 +59,23 @@ func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Natural language query describing what you are looking for (e.g. 'database migration', 'user authentication')",
+					"description": "natural language query",
 				},
 				"glob": map[string]any{
 					"type":        "string",
-					"description": "File glob pattern to filter results (e.g. '*.go')",
+					"description": "comma-separated globs, e.g. *.go",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Root directory to search (default: project root)",
+					"description": "root directory (default: project root)",
 				},
 				"max_results": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of results to return (default: 20)",
+					"description": "max results (default: 20)",
 				},
 				"min_score": map[string]any{
 					"type":        "number",
-					"description": "Minimum relevance score threshold (0.0 to 1.0, default: 0.0)",
+					"description": "min score 0.0-1.0 (default: 0.0)",
 				},
 			},
 			"required": []string{"query"},

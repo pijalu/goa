@@ -39,16 +39,16 @@ func (t *SSHBashTool) Schema() agentic.ToolSchema {
 			"type": "object",
 			"properties": map[string]any{
 				"host_id": map[string]any{
-					"type": "string", "description": "Host ID from SSH configuration",
+					"type": "string", "description": "host ID from SSH config",
 				},
 				"command": map[string]any{
-					"type": "string", "description": "Command to execute on the remote host",
+					"type": "string", "description": "remote command",
 				},
 				"timeout": map[string]any{
-					"type": "integer", "description": "Timeout in seconds",
+					"type": "integer", "description": "timeout in seconds",
 				},
 				"workdir": map[string]any{
-					"type": "string", "description": "Working directory on the remote host",
+					"type": "string", "description": "remote working directory",
 				},
 			},
 			"required": []string{"host_id", "command"},

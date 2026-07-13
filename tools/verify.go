@@ -38,22 +38,22 @@ type verifyInput struct {
 func (v *VerifyTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "verify",
-		Description: "Run the project's test suite and return a structured report with pass/fail status and failure summaries.",
+		Description: "Run the test suite, return pass/fail report.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
-					"description": "Optional explicit test command. If omitted, the tool discovers the framework from go.mod, package.json, or Python files.",
+					"description": "test command (optional, auto-detected from go.mod/package.json)",
 				},
 				"args": map[string]any{
 					"type": "array",
 					"items": map[string]any{"type": "string"},
-					"description": "Optional extra arguments to pass to the test command.",
+					"description": "extra args for test command",
 				},
 				"timeout_seconds": map[string]any{
 					"type":        "integer",
-					"description": "Maximum time in seconds to wait for the test command. Defaults to 60.",
+					"description": "max time in seconds (default: 60)",
 					"default":     60,
 				},
 			},

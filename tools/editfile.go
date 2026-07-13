@@ -72,48 +72,48 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path to the file to edit",
+					"description": "file path",
 				},
 				"old_string": map[string]any{
 					"type":        "string",
-					"description": "Text to search for and replace",
+					"description": "text to match",
 				},
 				"new_string": map[string]any{
 					"type":        "string",
-					"description": "Replacement text",
+					"description": "replacement text",
 				},
 				"operation": map[string]any{
 					"type":        "string",
-					"description": "Edit operation (default: replace)",
+					"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
 					"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "Start line (1-indexed, for replace_lines/insert_after/insert_before)",
+					"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "End line (1-indexed, for replace_lines/delete_lines)",
+					"description": "end line (1-indexed, for replace_lines/delete_lines)",
 				},
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "Regex pattern for replace_pattern/insert_after/insert_before",
+					"description": "regex for replace_pattern/insert_after/insert_before",
 				},
 				"pattern_flags": map[string]any{
 					"type":        "string",
-					"description": "Regex flags (e.g. 'i' for case-insensitive)",
+					"description": "regex flags (e.g. 'i')",
 				},
 				"occurrence": map[string]any{
 					"type":        "integer",
-					"description": "Which occurrence to replace for replace_pattern (default: 1)",
+					"description": "occurrence for replace_pattern (default: 1)",
 				},
 				"new_content": map[string]any{
 					"type":        "string",
-					"description": "New content for replace_lines/insert_after/insert_before",
+					"description": "replacement content for replace_lines/insert_after/insert_before",
 				},
 				"indent_mode": map[string]any{
 					"type":        "string",
-					"description": "Indent handling: preserve (default), normalize, as-is",
+					"description": "preserve (default)|normalize|as-is",
 					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
 			},

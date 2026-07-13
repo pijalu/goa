@@ -60,21 +60,21 @@ func (t *AgentSwarmTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"task": map[string]any{
 					"type":        "string",
-					"description": "Short description of the overall swarm task.",
+					"description": "swarm task description",
 				},
 				"items": map[string]any{
 					"type":        "array",
-					"description": "Values used to fill {{item}} in prompt_template. Each item launches one sub-agent.",
+					"description": "values filling {{item}} in prompt_template, one sub-agent per item",
 					"items":       map[string]any{"type": "string"},
 				},
 				"subagent_type": map[string]any{
 					"type":        "string",
-					"description": "Mode to use for every sub-agent: coder (default), explore, or plan.",
+					"description": "coder (default)|explore|plan",
 					"enum":        []string{"coder", "explore", "plan"},
 				},
 				"prompt_template": map[string]any{
 					"type":        "string",
-					"description": "Prompt template; must contain the {{item}} placeholder, replaced per item.",
+					"description": "prompt template with {{item}} placeholder",
 				},
 			},
 			"required": []string{"task", "items"},

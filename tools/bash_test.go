@@ -201,11 +201,8 @@ func TestBashTool_Schema_ComplexityDisabled_DoesNotMentionComplexity(t *testing.
 func TestBashTool_Schema_ComplexityEnabled_MentionsComplexity(t *testing.T) {
 	tool := &BashTool{EnableComplexity: true}
 	schema := tool.Schema()
-	if !strings.Contains(schema.Description, "analyzable") {
-		t.Errorf("description should tell the agent scripts must be analyzable, got: %q", schema.Description)
-	}
-	if !strings.Contains(schema.Description, "command substitution") {
-		t.Errorf("description should warn about command substitution, got: %q", schema.Description)
+	if !strings.Contains(schema.Description, "rejected") {
+		t.Errorf("description should warn scripts may be rejected, got: %q", schema.Description)
 	}
 }
 

@@ -57,17 +57,18 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, renderContextFiles(subs.contextFiles))
 	}
 
-	// 3. Long-term memory summaries
-	if memSection := buildMemorySection(subs); memSection != "" {
-		parts = append(parts, memSection)
-	}
-
-	// 4. Active skill listings from the current mode's skill stack.
+	// 3. Active skill listings from the current mode's skill stack.
 	// The full skill body is not inlined; the agent loads a skill via the read
 	// tool when the task matches it. This follows the pi approach and keeps the
 	// initial prompt small.
 	if activeSkills := buildActiveSkillsSection(subs, budget); activeSkills != "" {
 		parts = append(parts, activeSkills)
+	}
+
+	// 4. Long-term memory summaries — lower priority than active skills
+	// because memories can be read on demand.
+	if memSection := buildMemorySection(subs); memSection != "" {
+		parts = append(parts, memSection)
 	}
 
 	// 5. Available skills (all skills listed regardless of inline vs sub-agent)
@@ -219,7 +220,7 @@ func availableSkillsSection(subs *subsystems) string {
 }
 
 // buildSelfDocSection returns a minimal <goa_documentation> section that lists
-// every embedded document and how to read it via the goa:// scheme. It is
+// embedded documents and how to read them via the goa:// scheme. It is
 // intentionally short because context is expensive for every model.
 func buildSelfDocSection() string {
 	docList, err := docs.List()
@@ -229,11 +230,12 @@ func buildSelfDocSection() string {
 
 	var b strings.Builder
 	b.WriteString("<goa_documentation>\n")
-	b.WriteString("Read embedded docs with the read tool using goa:// URLs.\n")
+	b.WriteString("Read embedded docs via goa:// URLs.")
 	for _, d := range docList {
-		fmt.Fprintf(&b, "- %s: goa://%s\n", d.Name, d.Path)
+		b.WriteByte(' ')
+		b.WriteString(d.Name)
 	}
-	b.WriteString("</goa_documentation>")
+	b.WriteString("\n</goa_documentation>")
 	return b.String()
 }
 
@@ -242,9 +244,7 @@ func buildSelfDocSection() string {
 // by all modes and injected early in the system prompt.
 func buildToolUsageSection() string {
 	return `<tool_usage>
-Always favor specialized tools over bash commands — they handle errors,
-cross-platform quirks, and structured output better than piping through
-shell. Use bash only when no dedicated tool covers the task.
+Prefer dedicated tools over bash.
 </tool_usage>`
 }
 
@@ -280,10 +280,10 @@ func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skill
 	}
 
 	if forcedInlineCount > 0 {
-		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d forced inline · global mode: %s). Use /skill to list.",
+		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d forced inline · mode: %s)",
 			len(skillList), inlineCount, forcedInlineCount, globalMode))
 	} else {
-		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · global mode: %s). Use /skill to list.",
+		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · mode: %s)",
 			len(skillList), inlineCount, subCount, globalMode))
 	}
 }
@@ -445,7 +445,7 @@ func filterToolsForCurrentMode(subs *subsystems, allTools []agentic.Tool) []agen
 }
 
 // buildActiveSkillsSection lists the skills loaded into the current mode's
-// skill stack in compact form: name, short description, and file location.
+// skill stack in compact form: name and file location.
 // The full skill body is not inlined in the system prompt; the agent loads a
 // skill with the read tool when the task matches it. This follows the pi
 // approach and keeps the initial prompt as short as possible.
@@ -459,9 +459,8 @@ func buildActiveSkillsSection(subs *subsystems, budget int) string {
 	}
 
 	type item struct {
-		name        string
-		description string
-		location    string
+		name     string
+		location string
 	}
 	var items []item
 	for _, name := range mode.Skills {
@@ -470,9 +469,8 @@ func buildActiveSkillsSection(subs *subsystems, budget int) string {
 			continue
 		}
 		items = append(items, item{
-			name:        escapeXML(skill.Meta.Name),
-			description: escapeXML(skill.Meta.Description),
-			location:    escapeXML(skill.FilePath),
+			name:     escapeXML(skill.Meta.Name),
+			location: escapeXML(skill.FilePath),
 		})
 	}
 	if len(items) == 0 {
@@ -481,31 +479,15 @@ func buildActiveSkillsSection(subs *subsystems, budget int) string {
 
 	var b strings.Builder
 	b.WriteString("<active_skills>\n")
-	b.WriteString("Load with the read tool when the task matches.\n")
-	for _, it := range items {
-		fmt.Fprintf(&b, "  <skill>\n")
-		fmt.Fprintf(&b, "    <name>%s</name>\n", it.name)
-		fmt.Fprintf(&b, "    <description>%s</description>\n", it.description)
-		fmt.Fprintf(&b, "    <location>%s</location>\n", it.location)
-		fmt.Fprintf(&b, "  </skill>\n")
-	}
-	b.WriteString("</active_skills>")
-	rendered := b.String()
-	if budget > 0 && len(rendered) > budget/4 {
-		// Too many active skills for the budget; keep only the names/locations.
-		b.Reset()
-		b.WriteString("<active_skills>\n")
-		b.WriteString("Active skills: ")
-		for i, it := range items {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			fmt.Fprintf(&b, "%s (%s)", it.name, it.location)
+	b.WriteString("Active skills: ")
+	for i, it := range items {
+		if i > 0 {
+			b.WriteString(", ")
 		}
-		b.WriteString("\n</active_skills>")
-		rendered = b.String()
+		fmt.Fprintf(&b, "%s (%s)", it.name, it.location)
 	}
-	return rendered
+	b.WriteString("\n</active_skills>")
+	return b.String()
 }
 
 // escapeXML escapes special XML characters so rendered skill metadata is safe
@@ -569,7 +551,7 @@ func collectConsolidatedAndRecent(memStore *memory.MemoryStore, files []memory.M
 		log.Println("Warning: consolidated memory has no summary; using full content.")
 		summary = strings.TrimSpace(content)
 	}
-	entry := fmt.Sprintf("Consolidated memory (read full file for details):\n%s", summary)
+	entry := fmt.Sprintf("Consolidated (read full file for details):\n%s", summary)
 	tokens := estimateTokens(entry)
 	if tokens >= budget {
 		return []string{entry}, tokens
@@ -599,7 +581,7 @@ func collectConsolidatedAndRecent(memStore *memory.MemoryStore, files []memory.M
 			break
 		}
 		used += t
-		entries = append(entries, fmt.Sprintf("File: %s\nSummary: %s", f.Name, ms))
+		entries = append(entries, fmt.Sprintf("%s: %s", f.Name, ms))
 	}
 	return entries, used
 }
@@ -634,7 +616,7 @@ func collectMemoryEntries(memStore *memory.MemoryStore, files []memory.MemoryFil
 			break
 		}
 		used += tokens
-		entries = append(entries, fmt.Sprintf("File: %s\nSummary: %s", f.Name, summary))
+		entries = append(entries, fmt.Sprintf("%s: %s", f.Name, summary))
 	}
 	return entries, used
 }
@@ -645,7 +627,7 @@ func renderMemorySection(entries []string) string {
 	}
 	var b strings.Builder
 	b.WriteString("<memory>\n")
-	b.WriteString("The following are summaries of long-term memories. If a summary is relevant, read the full file with read_file.\n\n")
+	b.WriteString("Summaries of long-term memories. Read full files with read_file if relevant.\n\n")
 	b.WriteString(strings.Join(entries, "\n\n"))
 	b.WriteString("\n</memory>")
 	return b.String()

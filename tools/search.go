@@ -41,33 +41,33 @@ type searchResult struct {
 func (t *SearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name: "search",
-		Description: "Fast parallel code/text search (regex) across files. PREFER this over `bash`+grep/rg for any codebase search: it auto-excludes .git/vendor/node_modules, respects globs, and returns ranked, structured results (file: matches + line numbers + content). Use `bash` with grep only for features this tool cannot do (e.g. searching command output, pipes, PCRE-only constructs).",
+		Description: "Parallel regex search across files. Globs, recursive, case-insensitive, structured results.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "Regex pattern to search for (Go RE2 syntax; case-insensitive by default).",
+					"description": "Go RE2 pattern (case-insensitive)",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Root directory or a single file to search (default: project root). Pass a file path to search one file.",
+					"description": "root dir or file path (default: project root)",
 				},
 				"glob": map[string]any{
 					"type":        "string",
-					"description": "Comma-separated file glob filter, e.g. \"*.go\" or \"*.go,*.ts\".",
+					"description": "comma-separated globs, e.g. *.go,*.ts",
 				},
 				"recursive": map[string]any{
 					"type":        "boolean",
-					"description": "Search subdirectories recursively (default: true).",
+					"description": "search recursively (default: true)",
 				},
 				"case_sensitive": map[string]any{
 					"type":        "boolean",
-					"description": "Case-sensitive match (default: false).",
+					"description": "case-sensitive (default: false)",
 				},
 				"max_results": map[string]any{
 					"type":        "integer",
-					"description": "Maximum total matched lines to return.",
+					"description": "max matched lines to return",
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
