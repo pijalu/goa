@@ -375,8 +375,8 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 	if providerName == "" {
 		providerName = providerCfg.ID
 	}
-	msg := fmt.Sprintf("Connected to %s (%s).", providerName, model)
-	chat.AddInfoMessage(msg)
+	msg := fmt.Sprintf("⟡ Connected to %s (%s).", providerName, model)
+	chat.AddSystemMessage(msg)
 	subs.tuiEngine.RequestRender()
 }
 
