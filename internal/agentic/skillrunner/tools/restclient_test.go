@@ -262,8 +262,8 @@ func TestRestClientToolUserAgent(t *testing.T) {
 		t.Error("User-Agent header should be set")
 	}
 
-	if !strings.Contains(receivedUA, "AgenticBot") {
-		t.Errorf("User-Agent should contain 'AgenticBot', got: %s", receivedUA)
+	if !strings.Contains(receivedUA, "goa") {
+		t.Errorf("User-Agent should contain 'goa', got: %s", receivedUA)
 	}
 }
 

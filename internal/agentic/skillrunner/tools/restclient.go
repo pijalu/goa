@@ -19,23 +19,26 @@ import (
 
 // restClientTool implements agentic.Tool for making REST API calls.
 type restClientTool struct {
-	logger *agentic.Logger
-	client *http.Client
+	logger    *agentic.Logger
+	client    *http.Client
+	userAgent string
 }
 
 // NewRestClientTool creates a new restClientTool with default http.Client.
 func NewRestClientTool(logger *agentic.Logger) agentic.Tool {
 	return &restClientTool{
-		logger: logger,
-		client: &http.Client{},
+		logger:    logger,
+		client:    &http.Client{},
+		userAgent: "goa",
 	}
 }
 
 // NewRestClientToolWithClient creates a new restClientTool with a custom http.Client.
 func NewRestClientToolWithClient(client *http.Client, logger *agentic.Logger) agentic.Tool {
 	return &restClientTool{
-		logger: logger,
-		client: client,
+		logger:    logger,
+		client:    client,
+		userAgent: "goa",
 	}
 }
 
@@ -172,7 +175,7 @@ func (t *restClientTool) buildRequest(params restParams, reqURL string) (*http.R
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	setDefaultRestHeaders(req)
+	t.setDefaultRestHeaders(req)
 	for k, v := range params.Headers {
 		req.Header.Set(k, v)
 	}
@@ -190,8 +193,8 @@ func buildRequestBody(method string, body map[string]interface{}) (io.Reader, er
 	return bytes.NewReader(bodyBytes), nil
 }
 
-func setDefaultRestHeaders(req *http.Request) {
-	req.Header.Set("User-Agent", "AgenticBot/1.0 (https://github.com/pijalu/goa/internal/agentic; contact@example.com)")
+func (t *restClientTool) setDefaultRestHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", t.userAgent)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 }
