@@ -33,13 +33,13 @@ type Emitter func(Event)
 // HOW agentic output maps to events — those are supplied by an adapter
 // (internal/app) so this package is unit-testable without a live provider.
 type Runtime struct {
-	cfg        config.OrchestratorConfig
-	pool       *BoundedAgentPool
-	store      EventStore
-	topology   Topology
-	runID      string
-	rootDir    string
-	promptDir  string // user prompt override directory; empty means embedded only
+	cfg       config.OrchestratorConfig
+	pool      *BoundedAgentPool
+	store     EventStore
+	topology  Topology
+	runID     string
+	rootDir   string
+	promptDir string // user prompt override directory; empty means embedded only
 
 	// resume, when set by Resume(), records the snapshot of a prior run so
 	// fanout/pipeline skip roles that already finished successfully and the
@@ -451,6 +451,20 @@ func (r *Runtime) waitForUserAnswer(ctx context.Context) error {
 		r.resumeCh = make(chan struct{})
 	}
 	ch := r.resumeCh
+
+	// Race-safety: an answer may already be buffered if SteerOrchestrator was
+	// called between AskUser (which created the channel) and this wait. In
+	// that case the channel was closed and set to nil, and a new one would be
+	// created above; consume the buffered answer and resume immediately.
+	r.orchSteerMu.Lock()
+	if len(r.orchSteer) > 0 {
+		r.orchSteer = r.orchSteer[:0]
+		r.orchSteerMu.Unlock()
+		r.pendingUser = false
+		r.loopMu.Unlock()
+		return nil
+	}
+	r.orchSteerMu.Unlock()
 	r.loopMu.Unlock()
 
 	r.emit(Event{Type: EventLoopState, Role: "orchestrator",

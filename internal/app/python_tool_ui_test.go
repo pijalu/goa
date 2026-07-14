@@ -54,8 +54,11 @@ func TestPythonToolUI_ShowsScriptDuringStreamingAndOutputAfterResult(t *testing.
 	})
 	visible = strings.Join(sc.engine.AgentFrame().Visible, "\n")
 	stripped = ansi.Strip(visible)
-	if !strings.Contains(stripped, "(5 lines)") {
-		t.Errorf("expected 5-line summary in header; visible:\n%s", visible)
+	if !strings.Contains(stripped, "def add(a, b):") {
+		t.Errorf("expected script body visible; visible:\n%s", visible)
+	}
+	if !strings.Contains(stripped, ">>>") {
+		t.Errorf("expected python prompt visible; visible:\n%s", visible)
 	}
 
 	// Final result: body switches to output.

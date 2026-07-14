@@ -84,13 +84,18 @@ func TestBoundedAgentPool_PerModelCap(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, err := p.Acquire(ctx, "coder", AcquireOptions{}); err != nil {
+	h1, err := p.Acquire(ctx, "coder", AcquireOptions{})
+	if err != nil {
 		t.Fatalf("coder: %v", err)
 	}
+	defer p.Release(h1)
+
 	// planner uses the same model — must block.
+	acquireCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	acquired := make(chan error, 1)
 	go func() {
-		_, err := p.Acquire(ctx, "planner", AcquireOptions{})
+		_, err := p.Acquire(acquireCtx, "planner", AcquireOptions{})
 		acquired <- err
 	}()
 	select {
@@ -98,6 +103,14 @@ func TestBoundedAgentPool_PerModelCap(t *testing.T) {
 		t.Fatalf("planner (same model) acquired despite per-model cap")
 	case <-time.After(50 * time.Millisecond):
 	}
+	cancel()
+	select {
+	case <-acquired:
+		// expected cancellation
+	case <-time.After(time.Second):
+		t.Fatal("blocked acquire did not return after cancel")
+	}
+
 	// reviewer uses a different model — must succeed immediately.
 	if _, err := p.Acquire(ctx, "reviewer", AcquireOptions{}); err != nil {
 		t.Fatalf("reviewer (different model): %v", err)

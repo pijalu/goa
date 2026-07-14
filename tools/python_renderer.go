@@ -23,109 +23,89 @@ func NewPythonRenderer() *PythonRenderer {
 	return &PythonRenderer{KeyExpand: "Ctrl+O"}
 }
 
-const pythonPrompt = ">>> "
+const (
+	pythonHeaderPrompt = ">>> "
+	pythonBodyPrompt   = ">>> "
+	pythonContPrompt   = "... "
+)
 
-// RenderCall shows the python tool name, the first line of the code, and the
-// total line count so the header is identifiable even for multi-line scripts.
+// RenderCall shows the clear tool name "python" in the header. The actual
+// executed script is rendered in the body by RenderResult.
 func (r *PythonRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {
-	code := stringArg(args, "code")
-	if code == "" {
-		return rBashPrompt(pythonPrompt) + rToolTitle("python")
-	}
-	lines := strings.Split(code, "\n")
-	// Drop trailing blank lines so a single trailing newline doesn't inflate
-	// the reported count.
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
-	}
-	first := strings.TrimSpace(lines[0])
-	if len(first) > 60 {
-		first = first[:57] + "..."
-	}
-	lineCount := len(lines)
-	var suffix string
-	if lineCount > 1 {
-		suffix = rMuted(fmt.Sprintf(" (%d lines)", lineCount))
-	}
-	return rBashPrompt(pythonPrompt) + rToolTitle("python") + " " + rToolOutput(first) + suffix
+	return rBashPrompt(pythonHeaderPrompt) + rToolTitle("python")
 }
 
-// RenderResult shows the streaming/pending script before execution and the
-// captured output afterwards. Output is rendered as the last N lines with an
-// expansion hint, matching the bash renderer's pattern.
+// RenderResult shows the script that was executed (with REPL-style prompts) and
+// the captured output. When collapsed, up to 5 script lines and the last 5
+// output lines are shown; expanding reveals the full script and full output.
 func (r *PythonRenderer) RenderResult(output string, ctx tuirender.RenderContext) string {
-	if output != "" {
-		return r.renderOutput(output, ctx)
-	}
-	return r.renderCode(ctx)
-}
-
-func (r *PythonRenderer) renderCode(ctx tuirender.RenderContext) string {
 	code := stringArg(ctx.Args, "code")
 	if code == "" {
 		return ""
 	}
-	lines := strings.Split(code, "\n")
-	lines = trimTrailingEmptyLines(lines)
-	total := len(lines)
-	if total == 0 {
+	scriptLines := trimTrailingEmptyLines(strings.Split(code, "\n"))
+	if len(scriptLines) == 0 {
 		return ""
 	}
-	highlighted := HighlightCode(code, "python")
-	highlighted = trimTrailingEmptyLines(highlighted)
 
-	maxLines := 5
-	if ctx.Expanded {
-		maxLines = len(highlighted)
-	}
-	display := highlighted
-	remaining := 0
-	if len(highlighted) > maxLines {
-		display = highlighted[:maxLines]
-		remaining = len(highlighted) - maxLines
+	scriptDisplay, scriptHidden := limitHead(scriptLines, 5, ctx.Expanded)
+	outLines := []string{}
+	outHidden := 0
+	if output != "" {
+		outLines = trimTrailingEmptyLines(strings.Split(output, "\n"))
+		outLines, outHidden = limitTail(outLines, 5, ctx.Expanded)
 	}
 
 	var b strings.Builder
-	for _, line := range display {
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-	}
-	if remaining > 0 {
-		b.WriteByte('\n')
-		b.WriteString(rMuted(fmt.Sprintf("... (%d more lines, %s to expand)", remaining, r.keyExpand())))
-	}
+	r.writeScriptLines(&b, scriptDisplay)
+	r.writeOutputLines(&b, outLines)
+	r.writeExpandHint(&b, scriptHidden+outHidden)
 	return b.String()
 }
 
-func (r *PythonRenderer) renderOutput(output string, ctx tuirender.RenderContext) string {
-	lines := strings.Split(output, "\n")
-	lines = trimTrailingEmptyLines(lines)
-	if len(lines) == 0 {
-		return ""
+func (r *PythonRenderer) writeScriptLines(b *strings.Builder, lines []string) {
+	for i, line := range lines {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		prompt := pythonBodyPrompt
+		if i > 0 {
+			prompt = pythonContPrompt
+		}
+		b.WriteString(rBashPrompt(prompt))
+		b.WriteString(HighlightLine(line, "python"))
 	}
-	maxLines := 5
-	if ctx.Expanded {
-		maxLines = len(lines)
-	}
-	display := lines
-	hidden := 0
-	if len(lines) > maxLines {
-		display = lines[len(lines)-maxLines:]
-		hidden = len(lines) - maxLines
-	}
+}
 
-	var b strings.Builder
-	if hidden > 0 {
-		b.WriteString(rMuted(fmt.Sprintf("… %d earlier lines (%s to expand)", hidden, r.keyExpand())))
-		b.WriteByte('\n')
-	}
-	for _, line := range display {
+func (r *PythonRenderer) writeOutputLines(b *strings.Builder, lines []string) {
+	for _, line := range lines {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
 		b.WriteString(rToolOutput(line))
-		b.WriteByte('\n')
 	}
-	return strings.TrimRight(b.String(), "\n")
+}
+
+func (r *PythonRenderer) writeExpandHint(b *strings.Builder, hidden int) {
+	if hidden <= 0 {
+		return
+	}
+	b.WriteByte('\n')
+	b.WriteString(rMuted(fmt.Sprintf("... (%d more line(s), %s to expand)", hidden, r.keyExpand())))
+}
+
+func limitHead(lines []string, max int, expanded bool) ([]string, int) {
+	if expanded || len(lines) <= max {
+		return lines, 0
+	}
+	return lines[:max], len(lines) - max
+}
+
+func limitTail(lines []string, max int, expanded bool) ([]string, int) {
+	if expanded || len(lines) <= max {
+		return lines, 0
+	}
+	return lines[len(lines)-max:], len(lines) - max
 }
 
 func (r *PythonRenderer) keyExpand() string {
@@ -136,7 +116,7 @@ func (r *PythonRenderer) keyExpand() string {
 }
 
 // PreviewLines returns the default number of lines to show when collapsed.
-func (r *PythonRenderer) PreviewLines() int { return 6 }
+func (r *PythonRenderer) PreviewLines() int { return 12 }
 
 // HideResultWhenCollapsed reports whether collapsed results are hidden.
 func (r *PythonRenderer) HideResultWhenCollapsed() bool { return false }

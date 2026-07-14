@@ -213,9 +213,181 @@ func highlightGo(line string) string {
 	return tokenizeGo(line, keywords, types, c)
 }
 
-func highlightPython(line string) string { return line }
-func highlightJSON(line string) string   { return line }
-func highlightYAML(line string) string   { return line }
+func highlightPython(line string) string {
+	keywords := map[string]bool{
+		"False": true, "None": true, "True": true, "and": true, "as": true,
+		"assert": true, "async": true, "await": true, "break": true, "class": true,
+		"continue": true, "def": true, "del": true, "elif": true, "else": true,
+		"except": true, "finally": true, "for": true, "from": true, "global": true,
+		"if": true, "import": true, "in": true, "is": true, "lambda": true,
+		"nonlocal": true, "not": true, "or": true, "pass": true, "raise": true,
+		"return": true, "try": true, "while": true, "with": true, "yield": true,
+	}
+	types := map[string]bool{
+		"bool": true, "bytes": true, "dict": true, "float": true, "int": true,
+		"list": true, "object": true, "set": true, "str": true, "tuple": true,
+		"type": true, "abs": true, "all": true, "any": true, "enumerate": true,
+		"len": true, "max": true, "min": true, "print": true, "range": true,
+		"round": true, "sum": true, "zip": true,
+	}
+	c := &hlColors{
+		kw: ansi.Fg("#d29922"), typ: ansi.Fg("#58a6ff"), fn: ansi.Fg("#3fb950"),
+		str: ansi.Fg("#a5d6ff"), num: ansi.Fg("#79c0ff"), comm: ansi.Faint,
+		reset: ansi.BoldReset + ansi.FgReset, fg: ansi.Fg("#8b949e"),
+	}
+	return tokenizePython(line, keywords, types, c)
+}
+
+func tokenizePython(line string, keywords, types map[string]bool, c *hlColors) string {
+	var out strings.Builder
+	i := 0
+	for i < len(line) {
+		if writePythonComment(line, &i, &out, c) {
+			continue
+		}
+		if writePythonString(line, &i, &out, c) {
+			continue
+		}
+		if writePythonNumber(line, &i, &out, c) {
+			continue
+		}
+		if writePythonIdent(line, &i, &out, keywords, types, c) {
+			continue
+		}
+		out.WriteByte(line[i])
+		i++
+	}
+	if out.Len() == 0 {
+		return line
+	}
+	return out.String()
+}
+
+func writePythonComment(line string, i *int, out *strings.Builder, c *hlColors) bool {
+	if line[*i] == '#' {
+		out.WriteString(c.comm + line[*i:] + c.reset)
+		*i = len(line)
+		return true
+	}
+	return false
+}
+
+func writePythonString(line string, i *int, out *strings.Builder, c *hlColors) bool {
+	quote, width := pythonQuoteStyle(line, *i)
+	if width == 0 {
+		return false
+	}
+	start := *i
+	*i += width
+	for *i+width <= len(line) {
+		sub := line[*i : *i+width]
+		if sub == quote {
+			*i += width
+			break
+		}
+		if line[*i] == '\\' {
+			*i++
+			continue
+		}
+		*i++
+	}
+	out.WriteString(c.str + line[start:*i] + c.reset)
+	return true
+}
+
+func pythonQuoteStyle(line string, i int) (string, int) {
+	if i >= len(line) {
+		return "", 0
+	}
+	var quote string
+	switch line[i] {
+	case '"':
+		quote = "\""
+	case '\'':
+		quote = "'"
+	default:
+		return "", 0
+	}
+	if i+2 < len(line) && line[i:i+3] == quote+quote+quote {
+		return quote + quote + quote, 3
+	}
+	return quote, 1
+}
+
+func writePythonNumber(line string, i *int, out *strings.Builder, c *hlColors) bool {
+	if !isDigit(line[*i]) && line[*i] != '.' {
+		return false
+	}
+	start := *i
+	if base := pythonBasePrefix(line, i); base != "" {
+		*i += 2
+		for *i < len(line) && pythonBaseDigit(line[*i], base) {
+			*i++
+		}
+	} else {
+		for *i < len(line) && isPythonNumberChar(line[*i]) {
+			*i++
+		}
+	}
+	out.WriteString(c.num + line[start:*i] + c.reset)
+	return true
+}
+
+func pythonBasePrefix(line string, i *int) string {
+	if line[*i] != '0' || *i+1 >= len(line) {
+		return ""
+	}
+	switch line[*i+1] {
+	case 'x', 'X':
+		return "x"
+	case 'b', 'B':
+		return "b"
+	case 'o', 'O':
+		return "o"
+	default:
+		return ""
+	}
+}
+
+func pythonBaseDigit(b byte, base string) bool {
+	switch base {
+	case "x":
+		return isDigit(b) || isHexDigit(b)
+	case "b":
+		return b == '0' || b == '1'
+	case "o":
+		return b >= '0' && b <= '7'
+	}
+	return false
+}
+
+func isPythonNumberChar(b byte) bool {
+	return isDigit(b) || b == '.' || b == 'e' || b == 'E' || b == '+' || b == '-'
+}
+
+func writePythonIdent(line string, i *int, out *strings.Builder, keywords, types map[string]bool, c *hlColors) bool {
+	if !isIdentStart(line[*i]) {
+		return false
+	}
+	start := *i
+	for *i < len(line) && isIdentChar(line[*i]) {
+		*i++
+	}
+	ident := line[start:*i]
+	colored := ident
+	if keywords[ident] {
+		colored = c.kw + ident + c.reset
+	} else if types[ident] {
+		colored = c.typ + ident + c.reset
+	} else if *i < len(line) && line[*i] == '(' {
+		colored = c.fn + ident + c.reset
+	}
+	out.WriteString(colored)
+	return true
+}
+
+func highlightJSON(line string) string { return line }
+func highlightYAML(line string) string { return line }
 
 type hlColors struct {
 	kw, typ, fn, str, num, comm, reset, fg string

@@ -69,6 +69,68 @@ print("Result:", result)
 	}
 }
 
+func TestPythonTool_Execute_FString(t *testing.T) {
+	tool := &PythonTool{}
+	out, err := tool.Execute(`{"code": "result = 5 + 7\nprint(f\"The sum is: {result}\")"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "The sum is: 12") {
+		t.Errorf("output = %q, want The sum is: 12", out)
+	}
+}
+
+func TestPythonTool_Execute_FStringMultipleExpressions(t *testing.T) {
+	tool := &PythonTool{}
+	out, err := tool.Execute(`{"code": "a = 3\nb = 4\nprint(f\"a={a}, b={b}, sum={a+b}\")"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "a=3, b=4, sum=7") {
+		t.Errorf("output = %q, want a=3, b=4, sum=7", out)
+	}
+}
+
+func TestPythonTool_Execute_FStringFormatSpec(t *testing.T) {
+	tool := &PythonTool{}
+	out, err := tool.Execute(`{"code": "pi = 3.14159\nprint(f\"pi = {pi:.2f}\")"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "pi = 3.14") {
+		t.Errorf("output = %q, want pi = 3.14", out)
+	}
+}
+
+func TestPythonTool_transformFStrings(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{
+			`print(f"The sum is: {result}")`,
+			`print("The sum is: %s" % (result))`,
+		},
+		{
+			`x = f"a={a}, b={b}"`,
+			`x = "a=%s, b=%s" % (a, b)`,
+		},
+		{
+			`print(f"pi = {pi:.2f}")`,
+			`print("pi = %.2f" % (pi))`,
+		},
+		{
+			`print('hello')`,
+			`print('hello')`,
+		},
+	}
+	for _, tc := range tests {
+		got := transformFStrings(tc.in)
+		if got != tc.want {
+			t.Errorf("transformFStrings(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestPythonTool_Execute_RuntimeError(t *testing.T) {
 	tool := &PythonTool{}
 	_, err := tool.Execute(`{"code": "1/0"}`)

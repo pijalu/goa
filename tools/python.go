@@ -131,10 +131,7 @@ func (t *PythonTool) runPython(ctx context.Context, code string, timeout int) (s
 		_, _ = io.Copy(&out, r)
 	}()
 
-	// Compile in exec mode so multi-line scripts (function definitions,
-	// classes, control flow) are accepted as a complete module. RunSrc uses
-	// single-statement mode, which rejects anything after a compound stmt.
-	comp, err := compile.Compile(code+"\n", "<python>", py.ExecMode, 0, true)
+	comp, err := compilePythonCode(code)
 	if err != nil {
 		pyCtx.Close()
 		_ = w.Close()
@@ -162,6 +159,142 @@ func (t *PythonTool) runPython(ctx context.Context, code string, timeout int) (s
 	case <-time.After(time.Duration(timeout) * time.Second):
 		return "", toolErr("python", "timeout", fmt.Sprintf("Execution timed out after %ds", timeout))
 	}
+}
+
+// compilePythonCode compiles the Python buffer in exec mode. If the code uses
+// f-strings (unsupported by the embedded Python 3.4 interpreter) it applies a
+// best-effort rewrite to str.format() before retrying.
+func compilePythonCode(code string) (*py.Code, error) {
+	comp, err := compile.Compile(code+"\n", "<python>", py.ExecMode, 0, true)
+	if err == nil {
+		return comp, nil
+	}
+	if !strings.Contains(code, "f\"") && !strings.Contains(code, "f'") {
+		return nil, err
+	}
+	transformed := transformFStrings(code)
+	comp, err = compile.Compile(transformed+"\n", "<python>", py.ExecMode, 0, true)
+	if err == nil {
+		return comp, nil
+	}
+	return nil, err
+}
+
+// transformFStrings rewrites f"..." and f'...' literals with non-nested
+// braces to equivalent %-formatting calls. This is a compatibility shim for the
+// embedded interpreter, which does not implement f-strings.
+func transformFStrings(code string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(code) {
+		if i+1 < len(code) && code[i] == 'f' && (code[i+1] == '"' || code[i+1] == '\'') {
+			rewritten, next, ok := rewriteFStringAt(code, i)
+			if !ok {
+				return code
+			}
+			out.WriteString(rewritten)
+			i = next
+			continue
+		}
+		out.WriteByte(code[i])
+		i++
+	}
+	return out.String()
+}
+
+// rewriteFStringAt parses a single f-string starting at position i (where
+// code[i]=='f' and code[i+1] is the quote character). It returns the rewritten
+// %-format expression, the index after the f-string, and false if the f-string
+// is malformed (e.g. unclosed brace).
+func rewriteFStringAt(code string, i int) (string, int, bool) {
+	quote := code[i+1]
+	i += 2
+	template, exprs, next, ok := parseFStringContent(code, i, quote)
+	if !ok {
+		return "", 0, false
+	}
+	var out strings.Builder
+	out.WriteByte(quote)
+	out.WriteString(template)
+	out.WriteByte(quote)
+	if len(exprs) > 0 {
+		out.WriteString(" % (")
+		for j, e := range exprs {
+			if j > 0 {
+				out.WriteString(", ")
+			}
+			out.WriteString(e)
+		}
+		out.WriteByte(')')
+	}
+	return out.String(), next, true
+}
+
+// parseFStringContent scans the inside of an f-string starting at i and
+// returns the %-format template, the expression list, the index after the
+// closing quote, and a flag indicating whether the f-string was well-formed.
+func parseFStringContent(code string, i int, quote byte) (string, []string, int, bool) {
+	var template strings.Builder
+	var exprs []string
+	for i < len(code) {
+		if code[i] == '\\' && i+1 < len(code) {
+			// Keep escaped chars in the template as-is.
+			template.WriteByte(code[i])
+			template.WriteByte(code[i+1])
+			i += 2
+			continue
+		}
+		if code[i] == quote {
+			i++
+			break
+		}
+		if code[i] == '{' {
+			expr, spec, next, ok := parseFStringExpr(code, i+1)
+			if !ok {
+				return "", nil, 0, false
+			}
+			if spec == "" {
+				template.WriteString("%s")
+			} else {
+				template.WriteString("%" + spec)
+			}
+			exprs = append(exprs, expr)
+			i = next
+			continue
+		}
+		template.WriteByte(code[i])
+		i++
+	}
+	return template.String(), exprs, i, true
+}
+
+// parseFStringExpr parses a single {...} expression inside an f-string. It
+// returns the expression, the optional format spec, the index after the closing
+// brace, and a flag indicating success.
+func parseFStringExpr(code string, i int) (string, string, int, bool) {
+	exprStart := i
+	depth := 1
+	for i < len(code) && depth > 0 {
+		if code[i] == '{' {
+			depth++
+		} else if code[i] == '}' {
+			depth--
+			if depth == 0 {
+				break
+			}
+		}
+		i++
+	}
+	if i >= len(code) {
+		return "", "", 0, false
+	}
+	expr := code[exprStart:i]
+	var spec string
+	if colon := strings.Index(expr, ":"); colon >= 0 {
+		spec = expr[colon+1:]
+		expr = expr[:colon]
+	}
+	return expr, spec, i + 1, true
 }
 
 // truncateOutput applies configured line/byte limits.

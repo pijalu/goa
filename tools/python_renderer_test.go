@@ -19,21 +19,8 @@ func TestPythonRenderer_RenderCall(t *testing.T) {
 	if !strings.Contains(stripped, "python") {
 		t.Errorf("RenderCall = %q, want python label", out)
 	}
-	if !strings.Contains(stripped, "print(1+2)") {
-		t.Errorf("RenderCall = %q, want print(1+2)", out)
-	}
-}
-
-func TestPythonRenderer_RenderCall_MultilineShowsLineCount(t *testing.T) {
-	r := NewPythonRenderer()
-	code := "a = 1\nb = 2\nprint(a + b)\n"
-	out := r.RenderCall(map[string]any{"code": code}, tuirender.RenderContext{})
-	stripped := ansi.Strip(out)
-	if !strings.Contains(stripped, "python") {
-		t.Errorf("RenderCall = %q, want python label", out)
-	}
-	if !strings.Contains(stripped, "(3 lines)") {
-		t.Errorf("RenderCall = %q, want (3 lines)", out)
+	if strings.Contains(stripped, "print") {
+		t.Errorf("header should not contain code; got %q", out)
 	}
 }
 
@@ -46,48 +33,67 @@ func TestPythonRenderer_RenderCall_Empty(t *testing.T) {
 	}
 }
 
-func TestPythonRenderer_RenderResult_PartialShowsCode(t *testing.T) {
+func TestPythonRenderer_RenderResult_ShowsScriptWithPrompts(t *testing.T) {
 	r := NewPythonRenderer()
-	code := "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nprint(a + b + c + d + e)\n"
-	out := r.RenderResult("", tuirender.RenderContext{IsPartial: true, Args: map[string]any{"code": code}})
+	code := "a = 5\nb = 10\nprint(a + b)\n"
+	out := r.RenderResult("", tuirender.RenderContext{Args: map[string]any{"code": code}})
 	stripped := ansi.Strip(out)
-	if !strings.Contains(stripped, "a = 1") {
-		t.Errorf("RenderResult = %q, want a = 1", out)
+	if !strings.Contains(stripped, ">>> a = 5") {
+		t.Errorf("expected first script line with >>> prompt, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "more lines") {
-		t.Errorf("RenderResult = %q, want line-count hint", out)
+	if !strings.Contains(stripped, "... b = 10") {
+		t.Errorf("expected continuation prompt, got %q", stripped)
 	}
 }
 
-func TestPythonRenderer_RenderResult_OutputShowsLastLines(t *testing.T) {
+func TestPythonRenderer_RenderResult_ShowsScriptAndOutput(t *testing.T) {
 	r := NewPythonRenderer()
-	var lines []string
-	for i := 1; i <= 10; i++ {
-		lines = append(lines, "line")
-	}
-	out := r.RenderResult(strings.Join(lines, "\n"), tuirender.RenderContext{})
+	code := "a = 5\nb = 10\nprint(a + b)\n"
+	output := "The first number is: 5\nThe second number is: 10\nThe sum is: 15"
+	out := r.RenderResult(output, tuirender.RenderContext{Args: map[string]any{"code": code}})
 	stripped := ansi.Strip(out)
-	if strings.Count(stripped, "\n") >= 6 {
-		t.Errorf("expected output preview truncation, got %d lines", strings.Count(stripped, "\n"))
+	if !strings.Contains(stripped, ">>> a = 5") {
+		t.Errorf("expected script visible, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "earlier lines") {
-		t.Errorf("expected earlier-lines hint, got %q", out)
+	if !strings.Contains(stripped, "The sum is: 15") {
+		t.Errorf("expected output visible, got %q", stripped)
 	}
 }
 
-func TestPythonRenderer_RenderResult_ExpandedOutput(t *testing.T) {
+func TestPythonRenderer_RenderResult_ExpandHintWhenTruncated(t *testing.T) {
 	r := NewPythonRenderer()
-	out := r.RenderResult("a\nb\nc", tuirender.RenderContext{Expanded: true})
+	code := "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\n"
+	output := "line1\nline2\nline3\nline4\nline5\nline6"
+	out := r.RenderResult(output, tuirender.RenderContext{Args: map[string]any{"code": code}})
 	stripped := ansi.Strip(out)
-	if strings.Count(stripped, "\n") != 2 {
-		t.Errorf("expected all 3 output lines (2 newlines), got %d newlines", strings.Count(stripped, "\n"))
+	if !strings.Contains(stripped, "more line") {
+		t.Errorf("expected truncation hint, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "line6") {
+		t.Errorf("expected last output line, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "(2 more line(s)") {
+		t.Errorf("expected 2 hidden lines in hint, got %q", stripped)
+	}
+}
+
+func TestPythonRenderer_RenderResult_ExpandedShowsFullScript(t *testing.T) {
+	r := NewPythonRenderer()
+	code := "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\n"
+	out := r.RenderResult("", tuirender.RenderContext{Expanded: true, Args: map[string]any{"code": code}})
+	stripped := ansi.Strip(out)
+	if !strings.Contains(stripped, "f = 6") {
+		t.Errorf("expected full script when expanded, got %q", stripped)
+	}
+	if strings.Contains(stripped, "more line") {
+		t.Errorf("expanded view should not have truncation hint, got %q", stripped)
 	}
 }
 
 func TestPythonRenderer_PreviewLines(t *testing.T) {
 	r := NewPythonRenderer()
-	if r.PreviewLines() != 6 {
-		t.Errorf("PreviewLines = %d, want 6", r.PreviewLines())
+	if r.PreviewLines() != 12 {
+		t.Errorf("PreviewLines = %d, want 12", r.PreviewLines())
 	}
 }
 
@@ -95,5 +101,15 @@ func TestPythonRenderer_HideResultWhenCollapsed(t *testing.T) {
 	r := NewPythonRenderer()
 	if r.HideResultWhenCollapsed() {
 		t.Error("HideResultWhenCollapsed should be false")
+	}
+}
+
+func TestPythonRenderer_SyntaxHighlight(t *testing.T) {
+	r := NewPythonRenderer()
+	code := "def add(a, b):\n    return a + b\n"
+	out := r.RenderResult("", tuirender.RenderContext{Args: map[string]any{"code": code}})
+	// ANSI color codes should be present on the highlighted keyword.
+	if !strings.Contains(out, ansi.Fg("#d29922")) {
+		t.Errorf("expected syntax highlighting color codes, got %q", out)
 	}
 }
