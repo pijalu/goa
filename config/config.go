@@ -741,10 +741,11 @@ func DefaultCompressForProvider(p *ProviderConfig) bool {
 
 // LoggingConfig controls log output.
 type LoggingConfig struct {
-	Level       string `yaml:"level"`
-	File        string `yaml:"file"`
-	TraceKeys   bool   `yaml:"trace_keys"`
-	TerminalLog string `yaml:"terminal_log"`
+	Level        string `yaml:"level"`
+	File         string `yaml:"file"`
+	TraceKeys    bool   `yaml:"trace_keys"`
+	TerminalLog  string `yaml:"terminal_log"`
+	RenderTrace  string `yaml:"render_trace"`
 }
 
 // Validate checks the config for semantic correctness.

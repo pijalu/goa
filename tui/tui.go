@@ -232,6 +232,15 @@ func (t *TUI) FullRedrawCount() int {
 	return t.compositor.FullRedrawCount()
 }
 
+// SetRenderTrace enables per-frame compositor tracing to path (JSONL). It is
+// the entry point for config Logging.render_trace / --render-log /
+// GOA_LOGGING_RENDER_TRACE, exposing byte-level rendering diagnosis from the
+// CLI. The filmstrip/AgentFrame cannot see compositor-emission bugs by
+// design; this trace can.
+func (t *TUI) SetRenderTrace(path string) error {
+	return t.compositor.EnableRenderTrace(path)
+}
+
 func (t *TUI) AgentFrame() AgentFrame {
 	var frame AgentFrame
 	t.ApplySync(func() {

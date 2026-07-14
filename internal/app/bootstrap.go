@@ -215,6 +215,7 @@ func defineStringFlags() map[string]*string {
 		{"config", "config", "Explicit config path"},
 		{"logfile", "logfile", "Write agent/LLM debug logs to file"},
 		{"terminal-log", "terminal_log", "Write raw TUI terminal output to file"},
+		{"render-log", "render_trace", "Write per-frame compositor render trace (JSONL) to file"},
 	}
 	ptrs := make(map[string]*string, len(defs))
 	for _, d := range defs {

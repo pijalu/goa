@@ -67,6 +67,15 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 		}
 	}
 	engine := tui.NewTUI(ft)
+	if rt := a.renderTracePath(); rt != "" {
+		if err := engine.SetRenderTrace(rt); err == nil {
+			if a.subs.logger != nil {
+				a.subs.logger.Log(agentic.Info, "render trace enabled: %s", rt)
+			}
+		} else if a.subs.logger != nil {
+			a.subs.logger.Log(agentic.Error, "failed to enable render trace %s: %v", rt, err)
+		}
+	}
 	chat := tui.NewChatViewport()
 	agentContent := orchpanel.NewAgentContent()
 	agentTabBar := orchpanel.NewAgentTabBar()
@@ -100,6 +109,16 @@ func (a *App) keyLogPath() string {
 		return filepath.Join(cd, "goa", "keys.log")
 	}
 	return filepath.Join(a.subs.projectDir, ".goa", "keys.log")
+}
+
+// renderTracePath resolves the per-frame compositor trace destination from
+// config, falling back to the GOA_DEBUG_RENDER convenience env var. Mirrors
+// the terminal-log resolution above.
+func (a *App) renderTracePath() string {
+	if a.subs.cfg.Logging.RenderTrace != "" {
+		return a.subs.cfg.Logging.RenderTrace
+	}
+	return os.Getenv("GOA_DEBUG_RENDER")
 }
 
 func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {

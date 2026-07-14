@@ -386,6 +386,13 @@ type Compositor struct {
 	// \x1b[?25h / \x1b[?25l on a real transition, never as a redundant per-frame
 	// write. It is updated solely inside the synced frame buffers.
 	cursorVisible bool
+
+	// tracer, when non-nil, records one JSONL frame per Render for offline
+	// diagnosis of byte-level rendering bugs (which the Scene/filmstrip cannot
+	// see). curTrace is the in-progress record for the current Render, owned by
+	// the lock holder; nil when tracing is disabled.
+	tracer   *renderTracer
+	curTrace *frameTrace
 }
 
 // NewCompositor creates a Compositor bound to a Terminal.
@@ -393,11 +400,66 @@ func NewCompositor(term Terminal) *Compositor {
 	return &Compositor{terminal: term}
 }
 
+// EnableRenderTrace opens a per-frame JSONL trace at path for offline diagnosis
+// of byte-level rendering bugs. Wired from config Logging.render_trace, the
+// --render-log CLI flag, or the GOA_LOGGING_RENDER_TRACE env var.
+func (c *Compositor) EnableRenderTrace(path string) error {
+	tr, err := newRenderTracer(path)
+	if err != nil {
+		return err
+	}
+	c.tracer = tr
+	return nil
+}
+
 // FullRedrawCount exposes the number of full redraws (diagnostics/tests).
 func (c *Compositor) FullRedrawCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.fullRedrawCount
+}
+
+// beginTrace starts a per-frame trace record (no-op when tracing is disabled).
+// Must run under c.mu; curTrace lives only for the duration of one Render.
+func (c *Compositor) beginTrace(scene *Scene, canvas []string, w, h int) {
+	if c.tracer == nil {
+		return
+	}
+	c.curTrace = &frameTrace{
+		TermW:     w,
+		TermH:     h,
+		CanvasLen: len(canvas),
+		PrevVtop:  c.previousViewportTop,
+		Layers:    sceneLayersTrace(scene.Layers),
+	}
+}
+
+// emitTrace flushes the in-progress frame record (no-op when disabled).
+func (c *Compositor) emitTrace() {
+	if c.tracer == nil || c.curTrace == nil {
+		c.curTrace = nil
+		return
+	}
+	c.tracer.emit(*c.curTrace)
+	c.curTrace = nil
+}
+
+func (c *Compositor) setTracePath(path string) {
+	if c.curTrace != nil {
+		c.curTrace.Path = path
+	}
+}
+
+func (c *Compositor) traceWroteRow(row int) {
+	if c.curTrace != nil {
+		c.curTrace.WroteRows = append(c.curTrace.WroteRows, row)
+	}
+}
+
+func (c *Compositor) traceClearedRow(row int) {
+	if c.curTrace != nil {
+		c.curTrace.ClearedRows = append(c.curTrace.ClearedRows, row)
+	}
 }
 
 // PrevSize reports the last-rendered terminal size (width, height).
@@ -435,6 +497,10 @@ func (c *Compositor) Restore() {
 	buf.WriteString("\r\n")
 	c.terminal.Write([]byte(buf.String()))
 	c.terminal.ShowCursor()
+	if c.tracer != nil {
+		c.tracer.close()
+		c.tracer = nil
+	}
 }
 
 // Render composes the Scene's layers into a canvas, diffs against the previous
@@ -454,6 +520,8 @@ func (c *Compositor) Render(scene *Scene) {
 	defer c.mu.Unlock()
 
 	canvas, hasOverlay := scene.compose(c.previousViewportTop)
+	c.beginTrace(scene, canvas, width, height)
+	defer c.emitTrace()
 
 	fl := c.computeFrameLocals(width, height)
 	fullRender := func(clearScreen, clearScrollback bool) { c.fullFrame(canvas, scene.Cursor, width, height, clearScreen, clearScrollback) }
@@ -582,11 +650,16 @@ func (c *Compositor) visibleRegionDiff(canvas []string, newVTop int, fl *frameLo
 
 func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool, bool), resizeRender func()) {
 	newVTop := max(0, len(canvas)-fl.height)
+	if c.curTrace != nil {
+		c.curTrace.PrevVtop = fl.prevViewportTop
+		c.curTrace.NewVtop = newVTop
+	}
 	firstV, lastV := c.visibleRegionDiff(canvas, newVTop, fl)
 
 	if firstV < 0 {
 		// No visible content changed; only the cursor may need repositioning.
 		// Emit it in its own synced frame so even a cursor-only update is atomic.
+		c.setTracePath("cursor")
 		c.renderCursorOnly(cursor, len(canvas), fl.width, newVTop, fl.height)
 		c.previousViewportTop = newVTop
 		c.prevH = fl.height
@@ -597,6 +670,7 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	lastChanged := lastV + newVTop
 
 	if firstChanged >= len(canvas) && len(c.prevLines) > len(canvas) {
+		c.setTracePath("deleted")
 		if c.renderDeletedLines(canvas, cursor, fl.prevViewportTop, fl.height, fl.computeLineDiff, resizeRender) {
 			return
 		}
@@ -604,6 +678,11 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	if needsFullRedrawForChange(firstChanged, fl.prevViewportTop, fl.viewportTop, len(canvas), fl.height, hasOverlay) {
 		fullRender(true, !hasOverlay)
 		return
+	}
+	c.setTracePath("diff")
+	if c.curTrace != nil {
+		c.curTrace.FirstChanged = firstChanged
+		c.curTrace.LastChanged = lastChanged
 	}
 	finalCursorRow := c.writeDifferential(canvas, firstChanged, lastChanged, fl.width,
 		&fl.prevViewportTop, &fl.viewportTop, fl.height, cursor)
@@ -623,6 +702,7 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 }
 
 func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height int, clearScreen, clearScrollback bool) {
+	c.setTracePath("full")
 	c.fullRedrawCount++
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
@@ -659,6 +739,7 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 // so we avoid re-emitting the entire history (which was slow on long sessions
 // and discarded the user's scroll position).
 func (c *Compositor) resizeFrame(canvas []string, cursor *CursorPos, width, height int) {
+	c.setTracePath("resize")
 	c.fullRedrawCount++
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
@@ -787,25 +868,30 @@ func (c *Compositor) renderDeletedLines(canvas []string, cursor *CursorPos, prev
 // namesake invariant of TestChatLargeAppendScrollsWithoutErasingScrollback):
 // the scroll newlines push the previously-visible rows into scrollback, and no
 // full redraw / \x1b[2J / \x1b[3J is emitted.
-// emitViewportScroll advances the terminal viewport from prevVtop to newVtop,
-// pushing the previous on-screen rows into scrollback. For a large append
-// (more new lines than fit on screen), the newly-added lines above the new
-// viewport were never on screen; bare newlines would push BLANK rows into
-// scrollback and the user could not scroll back to them. So each such gap line
-// is written as real content (clear bottom row, write, newline to scroll it
-// into scrollback). The gap starts at firstChanged so content that shifted
-// into indices previously covered by stale on-screen rows is preserved.
+// appendViewportScroll emits the viewport-advance bytes (needed to push the
+// scrolled-off top rows into terminal scrollback) INTO buf, as part of the
+// caller's already-open synced frame. It returns needsVisibleRepaint=true
+// when the strategy emitted only bare newlines: bare newlines shift every
+// on-screen row up by `scroll` and leave the bottom `scroll` rows blank, so
+// the caller must ensure those new bottom rows are painted (the differential
+// repaint in writeDifferential handles this, since they are content-changed).
+// The firstScroll/largeScroll strategies already write the visible content
+// themselves, so they return false.
 //
-// For the very first scroll of a session, the previous viewport is empty or
-// only partially filled, so bare newlines would push blank rows into
-// scrollback. On that first scroll we write every scrolled-off row directly
-// as content, ensuring the full transcript is recoverable.
-func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, prevVtop, newVtop, height int) {
+// Merging the scroll into the caller's single sync (rather than emitting it
+// as its own \x1b[?2026h...\x1b[?2026l write, the old behavior) eliminates the
+// intermediate committed frame where every row had shifted up but the new
+// bottom rows were not yet drawn — the visible streaming "footer jumps up
+// then back" / ghosting flicker.
+func (c *Compositor) appendViewportScroll(buf *strings.Builder, canvas []string, firstChanged, width, prevVtop, newVtop, height int) (needsVisibleRepaint bool) {
 	scroll := newVtop - prevVtop
-	var buf strings.Builder
-	buf.WriteString("\x1b[?2026h")
+	if c.curTrace != nil {
+		c.curTrace.Scroll = scroll
+		c.curTrace.Scrolled = true
+	}
 	buf.WriteString(fmt.Sprintf("\x1b[%d;1H", height))
-	if !c.firstScrollDone {
+	switch {
+	case !c.firstScrollDone:
 		// First viewport advance of the session: scrollback is empty and the
 		// screen may be only partially filled, so bare newlines would push
 		// blank rows into scrollback and lose gap content. emitFirstScroll
@@ -814,21 +900,24 @@ func (c *Compositor) emitViewportScroll(canvas []string, firstChanged, width, pr
 		// scroll off the TOP naturally as new content fills the screen — they
 		// are never painted at the BOTTOM, which is what caused the
 		// logo/mascot to flash across the screen during the first scroll.
-		emitFirstScroll(&buf, canvas, width)
-	} else if scroll > height && height > 0 {
+		emitFirstScroll(buf, canvas, width)
+	case scroll > height && height > 0:
 		// prevLen = old canvas length. For a pure tail-append (the common large
 		// growth), new lines start here. For in-place growth (e.g. a widget body
 		// expanding mid-canvas) this start may miss some mid-canvas content in
 		// scrollback, but the visible screen stays correct and the realistic
 		// streaming case (small per-frame growth) takes the bare-newline path
 		// below and is fully correct.
-		emitLargeScroll(&buf, canvas, width, len(c.prevLines), newVtop, height)
-	} else {
+		emitLargeScroll(buf, canvas, width, len(c.prevLines), newVtop, height)
+	default:
 		buf.WriteString(strings.Repeat("\n", scroll))
+		needsVisibleRepaint = true
 	}
-	buf.WriteString("\x1b[?2026l")
-	c.terminal.Write([]byte(buf.String()))
 	c.firstScrollDone = true
+	if c.curTrace != nil {
+		c.curTrace.FullViewportRepaint = needsVisibleRepaint
+	}
+	return needsVisibleRepaint
 }
 
 // emitFirstScroll populates scrollback on the first viewport advance of a
@@ -904,14 +993,19 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	if desiredViewportTop < 0 {
 		desiredViewportTop = 0
 	}
-	if desiredViewportTop > *prevViewportTop {
-		c.emitViewportScroll(canvas, firstChanged, width, *prevViewportTop, desiredViewportTop, height)
-		*prevViewportTop = desiredViewportTop
-		*viewportTop = desiredViewportTop
-	}
+	scrolled := desiredViewportTop > *prevViewportTop
 
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
+	if scrolled {
+		// Fold the viewport scroll INTO this same synced frame (one atomic
+		// commit). The old code emitted it as a separate \x1b[?2026h...\x1b[?2026l
+		// write, whose intermediate frame showed every row shifted up with the
+		// new bottom rows still blank — the visible streaming flicker.
+		c.appendViewportScroll(&buf, canvas, firstChanged, width, *prevViewportTop, desiredViewportTop, height)
+		*prevViewportTop = desiredViewportTop
+		*viewportTop = desiredViewportTop
+	}
 	vtop := *viewportTop
 
 	// Only lines inside the viewport can be drawn with CUP. Lines above it (a
@@ -935,20 +1029,11 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 			line = truncateToWidth(line, width, "")
 		}
 		buf.WriteString(line)
+		c.traceWroteRow(screenRow)
 	}
 	finalCursorRow := renderEnd
 	// Clear extra trailing lines if the buffer shrank (absolute CUP per line).
-	// Only clear rows that are actually on screen: when the canvas shrank to fit
-	// (canvas <= height), the freed lines are above/below the visible region and
-	// must not be touched, or the last visible line (e.g. the input) gets wiped.
-	if extra := len(c.prevLines) - len(canvas); extra > 0 {
-		for k := 0; k < extra; k++ {
-			row := (len(canvas) + k) - vtop + 1
-			if row < 1 || row > height {
-				continue
-			}
-			buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", row))
-		}
+	if c.clearShrunkTrailingLines(&buf, canvas, vtop, height) > 0 {
 		finalCursorRow = max(0, len(canvas)-1)
 	}
 	// Fold the hardware-cursor repositioning into the SAME synced region so the
@@ -959,6 +1044,29 @@ func (c *Compositor) writeDifferential(canvas []string, firstChanged, lastChange
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
 	return finalCursorRow
+}
+
+// clearShrunkTrailingLines erases the on-screen rows freed when the canvas
+// shrank, using absolute CUP per line. Only rows actually on screen are
+// cleared: when the canvas shrank to fit (canvas <= height) the freed lines
+// are above/below the visible region and must not be touched, or the last
+// visible line (e.g. the input) gets wiped. Returns the number of rows cleared.
+func (c *Compositor) clearShrunkTrailingLines(buf *strings.Builder, canvas []string, vtop, height int) int {
+	extra := len(c.prevLines) - len(canvas)
+	if extra <= 0 {
+		return 0
+	}
+	cleared := 0
+	for k := 0; k < extra; k++ {
+		row := (len(canvas) + k) - vtop + 1
+		if row < 1 || row > height {
+			continue
+		}
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", row))
+		c.traceClearedRow(row)
+		cleared++
+	}
+	return cleared
 }
 
 // clampRow clamps a 1-indexed screen row to [1, height].
