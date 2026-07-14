@@ -45,17 +45,21 @@ func TestFooter_RendersOrchestrationStatsAsPerAgentLines(t *testing.T) {
 	}
 }
 
-// TestFooter_IdleStatsKeepStableSpacerHeight verifies that when no
-// orchestration stats are present the footer reserves a single blank spacer
-// line so the chrome height stays constant (no jitter when a run starts/stops).
-func TestFooter_IdleStatsKeepStableSpacerHeight(t *testing.T) {
+// TestFooter_IdleIsTwoLinesNoSpacer verifies that when no orchestration stats
+// are present the footer renders exactly its two chrome lines with NO blank
+// spacer. (A blank third line wasted the bottom terminal row forever — the
+// "empty line at bottom" bug. The chat viewport fill absorbs any chrome-height
+// change when orchestration starts/stops, so the spacer is unnecessary.)
+func TestFooter_IdleIsTwoLinesNoSpacer(t *testing.T) {
 	f := NewFooter()
 	f.SetData(FooterData{Mode: "yolo", Model: "gemma"})
 	idle := f.Render(80)
-	if len(idle) != 3 {
-		t.Fatalf("idle footer should be 3 lines (2 chrome + spacer), got %d", len(idle))
+	if len(idle) != 2 {
+		t.Fatalf("idle footer should be 2 chrome lines (no spacer), got %d: %q", len(idle), idle)
 	}
-	if strings.TrimSpace(stripANSI(idle[2])) != "" {
-		t.Errorf("idle third line should be a blank spacer, got %q", idle[2])
+	for i, l := range idle {
+		if strings.TrimSpace(stripANSI(l)) == "" {
+			t.Errorf("idle footer line %d is blank; footer must not emit blank lines", i)
+		}
 	}
 }

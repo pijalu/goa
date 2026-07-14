@@ -12,15 +12,15 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// Render renders two status lines with adaptive width, plus a third line for
-// orchestration stats when active. The third line is always emitted (as a
-// blank spacer when no orchestration stats are present) so the footer height
-// stays constant and the compositor avoids full redraws when the stats line
-// appears or disappears.
+// Render renders two status lines with adaptive width. During orchestration,
+// the chrome is replaced by one line per active agent (each carrying its own
+// model and role context).
 //
-// During orchestration, only the per-agent lines are rendered; the chrome
-// lines (workdir/mode and main stats/model) are suppressed because each
-// agent line carries its own model and role context.
+// The footer height is intentionally NOT padded to a constant value: the chat
+// viewport is the layout fill and absorbs any chrome-height change, so the
+// total canvas height stays == terminal height and the compositor updates the
+// shifted rows differentially (no full redraw). Padding the footer with a
+// blank line when idle would instead waste the bottom terminal row forever.
 func (f *Footer) Render(width int) []string {
 	if width <= 0 {
 		return nil
@@ -86,12 +86,10 @@ func (f *Footer) Render(width int) []string {
 }
 
 // renderOrchStatsLines renders the per-agent orchestration stats (one line per
-// active model, newline-separated) in the footer's status color. When no run
-// is active it returns a single blank spacer so the chrome height stays
-// constant (no jitter when a run starts or stops). Each agent line is fitted
-// to the terminal width.
+// active model, newline-separated) in the footer's status color, each line
+// fitted to the terminal width. It returns nil when no run is active so the
+// idle footer is exactly its two chrome lines (no blank spacer: see Render).
 func (f *Footer) renderOrchStatsLines(width int, styler func(string) string) []string {
-	hadLine := false
 	var out []string
 	for _, raw := range strings.Split(f.data.OrchestrationStats, "\n") {
 		ol := strings.TrimSpace(raw)
@@ -102,10 +100,6 @@ func (f *Footer) renderOrchStatsLines(width int, styler func(string) string) []s
 			ol = truncateToWidth(ol, width, "")
 		}
 		out = append(out, styler(ol))
-		hadLine = true
-	}
-	if !hadLine {
-		return []string{strings.Repeat(" ", width)}
 	}
 	return out
 }
