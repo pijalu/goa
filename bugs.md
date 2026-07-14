@@ -36,4 +36,47 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-(none — last batch closed and archived to `docs/archive/bugs.2026-07-13-tui-review.md`)
+## TUI issues: 1 empty line at bottom
+The TUI displays an empty line at the bottom of the terminal - it will never be filled:
+```
+▄▄▄▄▄      ▄▄▄▄▄             ▄▄▄▄▄▄      ▄▄▄▄      ▄▄▄▄
+▄▄▄▄▄▄ ▄▄▄▄▄      ▄▄▄▄▄▄ ▄▄  ▄▄    ▄███ ████ ▄███ ████ ▄███ ████
+▄ ▄▄▄ ▄       ▄  ▄       ▄  ▄▄      ████ ████ ████ ████ ████ ████
+▄ ▄▄               ▄         ▄ ▄    ████ ████ ████ ████ ▄▄▄▄▄████
+▀▄   ▄▄▄     ▄  ▄ ▄     ▄          ▀███▄████ ▀███▄███▀ ████▄████
+▄▄▄▄▄▄ ▄   ▄▄▄▄▄▄      ▄     ▄▄▄▄ ████
+          ▄          ▄     ▀▀▀▀▀▀▀▀
+         ▄
+     ▄▄▄▄
+
+goa coding agent v0.1.0-dev
+Ctrl+C/D exit  |  / commands  |  Tab complete  |  ↑↓ history
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⟡ Context loaded: /Users/muaddib/dev/goa/AGENTS.md                                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⟡ 13 skills (1 inline, 12 forced inline · mode: inline)                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⟡ Connected to LM Studio (google/gemma-4-e4b).                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (✱ feature/ui-issues)                                                                                 coder │ YOLO
+                                                                              (lmstudio) google/gemma-4-e4b • high
+
+```
+
+
+## TUI issues: TUI selection widget breaks scrolling/history redraw — RESOLVED 2026-07-14
+
+Fixed and archived: see `docs/archive/bugs.2026-07-14.md`.
+Root cause: the editor autocomplete popup was appended to the base render,
+growing the base canvas past the terminal height and pushing base content
+into scrollback on open (irrecoverable on close). Fix: popup is now a
+`LayerOverlay` via the new `PopupRenderer` interface, so the base canvas
+height is constant and scrollback is never touched. Regression:
+`tui/autocomplete_popup_scrollback_test.go`.

@@ -62,6 +62,25 @@ type InputTrap interface {
 	TrapInput(data string) bool // returns true if the component handled the key
 }
 
+// PopupRenderer is an optional interface for a base component that also
+// produces a transient popup (e.g. the editor's autocomplete list). Returning
+// the popup SEPARATELY from Render — instead of appending it to the rendered
+// lines — is what keeps the popup from growing the base canvas.
+//
+// Why this matters: the Compositor pushes base canvas rows into terminal
+// scrollback whenever the canvas grows taller than the terminal. A popup that
+// is part of the base render therefore pushes the header/content into
+// scrollback when it opens, and that content cannot be recovered when the
+// popup closes (terminals cannot "un-scroll"). The TUI composites PopupLines
+// as a LayerOverlay that floats above neighboring base content, so the base
+// canvas height never changes and opening/closing a popup never touches
+// scrollback.
+type PopupRenderer interface {
+	// PopupLines returns the transient popup lines for the given width, or
+	// nil if no popup is currently active. Each line must not exceed width.
+	PopupLines(width int) []string
+}
+
 // Container is a Component that arranges child components vertically.
 // It delegates HandleInput to children that implement Focusable.
 //

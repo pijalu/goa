@@ -970,7 +970,7 @@ func (t *TUI) renderNow() []string {
 func (t *TUI) buildScene(w, h int) *Scene {
 	scene := &Scene{TerminalW: w, TerminalH: h}
 	rendered, _ := t.renderChildren(w, h)
-	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w)
+	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w, h)
 	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
 	extractCursorMarker(scene)
 	return scene
@@ -1023,9 +1023,13 @@ func (t *TUI) totalHeight(c Component, renderedLen int) int {
 }
 
 // buildBaseLayers converts rendered children into base layers and agent nodes.
-func (t *TUI) buildBaseLayers(rendered [][]string, w int) ([]Layer, []AgentNode) {
+// It also collects each child's transient popup (PopupRenderer) and emits those
+// as LayerOverlay layers so the base canvas height stays constant (see
+// PopupRenderer).
+func (t *TUI) buildBaseLayers(rendered [][]string, w, h int) ([]Layer, []AgentNode) {
 	var layers []Layer
 	var nodes []AgentNode
+	var seeds []popupSeed
 	y := 0
 	for i, child := range t.children {
 		lines := rendered[i]
@@ -1046,7 +1050,84 @@ func (t *TUI) buildBaseLayers(rendered [][]string, w int) ([]Layer, []AgentNode)
 			Content: lines,
 		})
 		nodes = append(nodes, agentNodeFor(child, rect, lines))
+		if pr, ok := child.(PopupRenderer); ok {
+			if pl := pr.PopupLines(w); len(pl) > 0 {
+				seeds = append(seeds, popupSeed{lines: pl, rect: rect})
+			}
+		}
 		y += totalH
+	}
+	popLayers, popNodes := buildPopupOverlays(seeds, w, h, y)
+	layers = append(layers, popLayers...)
+	nodes = append(nodes, popNodes...)
+	return layers, nodes
+}
+
+// popupSeed pairs a PopupRenderer's transient lines with the canvas rect of the
+// base component that owns them, so buildPopupOverlays can position the popup
+// relative to its owner after the stacked base height is known.
+type popupSeed struct {
+	lines []string
+	rect  Rect
+}
+
+// buildPopupOverlays turns popup seeds into LayerOverlay layers. Each popup
+// floats ABOVE its owning component as a viewport-relative overlay, so the
+// base canvas height never changes and opening/closing a popup can never push
+// base content into terminal scrollback.
+//
+// Placement: prefer directly above the owner (the conventional autocomplete
+// position, and overflow-safe when the owner is bottom-anchored like the
+// editor). If there is not enough room above, fall back to below the owner.
+// The result is clamped to the visible viewport so the overlay never extends
+// the canvas beyond the terminal height (which would itself trigger a scroll).
+func buildPopupOverlays(seeds []popupSeed, w, h, baseHeight int) ([]Layer, []AgentNode) {
+	if len(seeds) == 0 {
+		return nil, nil
+	}
+	viewportStart := baseHeight - h
+	if viewportStart < 0 {
+		viewportStart = 0
+	}
+	var layers []Layer
+	var nodes []AgentNode
+	for _, s := range seeds {
+		popupH := len(s.lines)
+		if popupH <= 0 {
+			continue
+		}
+		lines := s.lines
+		if popupH > h {
+			lines = append([]string(nil), lines[:h]...)
+			popupH = h
+		}
+		screenTop := s.rect.Y - viewportStart
+		if screenTop < 0 {
+			screenTop = 0
+		}
+		// Prefer above the owner; fall back to below if it does not fit.
+		y := screenTop - popupH
+		if y < 0 {
+			y = screenTop + s.rect.H
+		}
+		// Clamp into the visible viewport so the overlay never grows the canvas
+		// past the terminal height.
+		if y+popupH > h {
+			y = h - popupH
+		}
+		if y < 0 {
+			y = 0
+		}
+		rect := Rect{X: 0, Y: y, W: w, H: popupH}
+		content := append([]string(nil), lines...)
+		layers = append(layers, Layer{
+			Name:    "popup",
+			Kind:    LayerOverlay,
+			Z:       1,
+			Rect:    rect,
+			Content: content,
+		})
+		nodes = append(nodes, AgentNode{Name: "popup", Type: "*tui.Popup", Rect: rect})
 	}
 	return layers, nodes
 }

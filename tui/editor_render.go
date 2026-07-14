@@ -116,9 +116,10 @@ func (e *Editor) Render(width int) []string {
 	layout := e.computeLayout(width)
 	result := e.renderEditorFrame(layout, width)
 
-	if e.focused && e.compState.Active() {
-		result = e.appendCompletionLines(result, width)
-	}
+	// NOTE: the autocomplete popup is intentionally NOT part of the rendered
+	// frame. It is exposed via PopupLines and composited as a LayerOverlay so
+	// that opening/closing the popup cannot grow the base canvas (which would
+	// push base content into terminal scrollback). See PopupRenderer.
 	return result
 }
 
@@ -226,13 +227,15 @@ func (e *Editor) renderBottomBorder(layout editorLayout, width int) string {
 	return editorBorderColor(e.thinkingLevel) + strings.Repeat("─", width) + ansi.Reset
 }
 
-// appendCompletionLines appends completion list lines after the editor content.
-func (e *Editor) appendCompletionLines(result []string, width int) []string {
-	compLines := e.renderAutoComp(width)
-	if len(compLines) == 0 {
-		return result
+// PopupLines implements PopupRenderer. It returns the autocomplete popup as
+// a transient overlay, rendered separately from the editor frame so the base
+// canvas height is constant (see PopupRenderer rationale). Returns nil when no
+// popup is active.
+func (e *Editor) PopupLines(width int) []string {
+	if !e.focused || !e.compState.Active() {
+		return nil
 	}
-	return append(result, compLines...)
+	return e.renderAutoComp(width)
 }
 
 // compLineInfo holds a rendered completion line and its source item index.
