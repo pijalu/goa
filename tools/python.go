@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-python/gpython/compile"
 	"github.com/go-python/gpython/py"
 	_ "github.com/go-python/gpython/stdlib"
 
@@ -130,9 +131,20 @@ func (t *PythonTool) runPython(ctx context.Context, code string, timeout int) (s
 		_, _ = io.Copy(&out, r)
 	}()
 
+	// Compile in exec mode so multi-line scripts (function definitions,
+	// classes, control flow) are accepted as a complete module. RunSrc uses
+	// single-statement mode, which rejects anything after a compound stmt.
+	comp, err := compile.Compile(code+"\n", "<python>", py.ExecMode, 0, true)
+	if err != nil {
+		pyCtx.Close()
+		_ = w.Close()
+		<-readDone
+		return "", toolErr("python", "execution_error", formatPythonError(err))
+	}
+
 	runDone := make(chan error, 1)
 	go func() {
-		_, runErr := py.RunSrc(pyCtx, code, "<python>", nil)
+		_, runErr := py.RunCode(pyCtx, comp, "<python>", nil)
 		pyCtx.Close()
 		_ = w.Close()
 		runDone <- runErr
@@ -242,7 +254,7 @@ var (
 	_ agentic.ContextTool   = (*PythonTool)(nil)
 	_ agentic.LoopAnnotated = (*PythonTool)(nil)
 	_ Documentable          = (*PythonTool)(nil)
-	_ Accessor                = (*PythonTool)(nil)
+	_ Accessor              = (*PythonTool)(nil)
 )
 
 // pythonRunStatus returns a short status line for the TUI while the python

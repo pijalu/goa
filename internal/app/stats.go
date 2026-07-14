@@ -253,8 +253,8 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 		case strings.Contains(ev.Text, "Loop guardrail"),
 			strings.Contains(ev.Text, "identical to the previous"):
 			a.toolCallWarningLevel = maxToolCallLevel(a.toolCallWarningLevel, ToolCallWarning)
-		// All other [goa-system] messages are informational (repeated call hint,
-		// round limit reached, truncated result) — keep ToolCallNormal.
+			// All other [goa-system] messages are informational (repeated call hint,
+			// round limit reached, truncated result) — keep ToolCallNormal.
 		}
 	}
 	a.statsMu.Unlock()
@@ -637,6 +637,9 @@ func (a *App) createStreamingToolWidget(toolCallID, toolName, toolInput string) 
 	} else {
 		a.subs.activeTool = tc
 	}
+	// Prime the widget with the partial arguments so the renderer can show
+	// streaming content (e.g. python code) as it arrives.
+	tc.SetArgsPartial(toolInput)
 	label := "Streaming tool call..."
 	if toolName != "" {
 		label = "Calling " + toolName + "..."

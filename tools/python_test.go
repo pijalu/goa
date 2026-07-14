@@ -6,6 +6,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,23 @@ func TestPythonTool_Execute_Computation(t *testing.T) {
 	}
 	if !strings.Contains(out, "45") {
 		t.Errorf("output = %q, want 45", out)
+	}
+}
+
+func TestPythonTool_Execute_MultilineFunction(t *testing.T) {
+	tool := &PythonTool{}
+	code := `def add(a, b):
+    return a + b
+
+result = add(2, 3)
+print("Result:", result)
+`
+	out, err := tool.Execute(fmt.Sprintf(`{"code": %q}`, code))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "Result: 5") {
+		t.Errorf("output = %q, want Result: 5", out)
 	}
 }
 
