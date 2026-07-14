@@ -113,18 +113,13 @@ func TestOverlayBufferGrowthRedrawsFullScreen(t *testing.T) {
 	handle := engine.ShowOverlay(overlay, OverlayOptions{CaptureInput: true, Height: 10})
 	engine.RenderNow()
 
-	// Grow the base buffer while the overlay is visible. The render that
-	// incorporates the growth while the overlay is still open must perform a
-	// full redraw: the old overlay region in prevLines now lies above the new
-	// viewport, so differential rendering would write at stale rows.
-	before := engine.compositor.FullRedrawCount()
+	// Grow the base buffer while the overlay is visible. Differential
+	// rendering should handle this without a full redraw that would duplicate
+	// history in scrollback.
 	for i := 0; i < 20; i++ {
 		chat.AddSystemMessage(fmt.Sprintf("behind overlay %d", i))
 	}
 	engine.RenderNow()
-	if engine.compositor.FullRedrawCount() <= before {
-		t.Errorf("base-buffer growth while overlay is open did not perform a full redraw")
-	}
 
 	// After the overlay is hidden the chat content should be visible without
 	// leftover overlay artifacts.
@@ -137,5 +132,120 @@ func TestOverlayBufferGrowthRedrawsFullScreen(t *testing.T) {
 	joined := strings.Join(final, "\n")
 	if !strings.Contains(joined, "behind overlay 19") {
 		t.Errorf("latest message added behind the overlay is not visible after closing")
+	}
+}
+
+// TestOverlayBufferGrowthPreservesScrollback verifies that when an overlay is
+// open and the base chat buffer grows past the previous viewport, the full
+// redraw does NOT erase terminal scrollback. The older conversation must
+// remain accessible after the overlay closes.
+func TestOverlayBufferGrowthPreservesScrollback(t *testing.T) {
+	term := &fakeTerminal{w: 80, h: 24}
+	engine := NewTUI(term)
+	chat := NewChatViewport()
+	inp := NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	engine.SetFocus(inp)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer engine.Stop()
+
+	for i := 0; i < 30; i++ {
+		chat.AddSystemMessage(fmt.Sprintf("baseline %d", i))
+	}
+	engine.RenderNow()
+
+	overlay := NewInput()
+	handle := engine.ShowOverlay(overlay, OverlayOptions{CaptureInput: true, Height: 10})
+	engine.RenderNow()
+
+	// Grow the base buffer while the overlay is visible.
+	for i := 0; i < 20; i++ {
+		chat.AddSystemMessage(fmt.Sprintf("behind overlay %d", i))
+	}
+	engine.RenderNow()
+
+	// Hide the overlay and render once more.
+	handle.Hide()
+	engine.RenderNow()
+
+	// Replay all terminal writes through a screen emulator.
+	emu := newScreenEmulator(24, 80)
+	for _, w := range term.writes {
+		emu.Process(w)
+	}
+
+	// The oldest system message must still be present in scrollback.
+	found := false
+	for _, line := range emu.Scrollback() {
+		if strings.Contains(line, "baseline 0") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("scrollback lost the oldest baseline message after overlay buffer growth")
+	}
+}
+
+// TestOverlayOpenCloseDoesNotDuplicateHeaderScrollback verifies that opening
+// an overlay, growing the chat behind it, and closing the overlay does not
+// duplicate the header/mascot in terminal scrollback.
+func TestOverlayOpenCloseDoesNotDuplicateHeaderScrollback(t *testing.T) {
+	term := &fakeTerminal{w: 150, h: 29}
+	engine := NewTUI(term)
+	header := NewHeader("goa", "v0.1.0-dev")
+	chat := NewChatViewport()
+	inp := NewEditor()
+	engine.AddChild(header)
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	engine.SetFocus(inp)
+
+	if err := engine.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer engine.Stop()
+
+	for i := 0; i < 50; i++ {
+		chat.AddSystemMessage(fmt.Sprintf("baseline %d", i))
+	}
+	engine.RenderNow()
+
+	overlay := NewInput()
+	handle := engine.ShowOverlay(overlay, OverlayOptions{CaptureInput: true, Height: 10})
+	engine.RenderNow()
+
+	for i := 0; i < 20; i++ {
+		chat.AddSystemMessage(fmt.Sprintf("behind overlay %d", i))
+	}
+	engine.RenderNow()
+
+	handle.Hide()
+	engine.RenderNow()
+
+	emu := newScreenEmulator(29, 150)
+	for _, w := range term.writes {
+		emu.Process(w)
+	}
+
+	// Count how many times the logo appears in visible + scrollback.
+	logoMarker := "▄▄▄▄▄▄ ▄   ▄▄▄▄▄▄      ▄     ▄▄▄▄ ████"
+	count := 0
+	for r := 0; r < 29; r++ {
+		if strings.Contains(emu.Visible(r), logoMarker) {
+			count++
+		}
+	}
+	for _, line := range emu.Scrollback() {
+		if strings.Contains(line, logoMarker) {
+			count++
+		}
+	}
+	if count > 1 {
+		t.Errorf("logo appears %d times across visible+scrollback (want at most 1)", count)
 	}
 }

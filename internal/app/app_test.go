@@ -23,13 +23,17 @@ import (
 
 // testTerminal implements tui.Terminal for testing.
 type testTerminal struct {
-	w, h int
+	w, h   int
+	writes []string
 }
 
 func (t *testTerminal) Start(onInput func(string), onResize func()) {}
 func (t *testTerminal) Stop()                                       {}
-func (t *testTerminal) Write(p []byte) (int, error)                 { return len(p), nil }
-func (t *testTerminal) WriteString(s string)                        {}
+func (t *testTerminal) Write(p []byte) (int, error) {
+	t.writes = append(t.writes, string(p))
+	return len(p), nil
+}
+func (t *testTerminal) WriteString(s string)                        { t.writes = append(t.writes, s) }
 func (t *testTerminal) Size() (int, int)                            { return t.w, t.h }
 func (t *testTerminal) SetRaw() (func(), error)                     { return func() {}, nil }
 func (t *testTerminal) HideCursor()                                 {}

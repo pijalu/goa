@@ -125,7 +125,7 @@ func TestCompositor_CursorPositionOnFirstFrame(t *testing.T) {
 	}
 	comp.Render(scene)
 
-	emu := newTermEmulator(10, 20)
+	emu := NewTermEmulator(10, 20)
 	for _, w := range term.Writes() {
 		emu.Process(w)
 	}

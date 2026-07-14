@@ -456,7 +456,7 @@ func (c *Compositor) Render(scene *Scene) {
 	canvas, hasOverlay := scene.compose(c.previousViewportTop)
 
 	fl := c.computeFrameLocals(width, height)
-	fullRender := func(clear bool) { c.fullFrame(canvas, scene.Cursor, width, height, clear) }
+	fullRender := func(clearScreen, clearScrollback bool) { c.fullFrame(canvas, scene.Cursor, width, height, clearScreen, clearScrollback) }
 	resizeRender := func() { c.resizeFrame(canvas, scene.Cursor, width, height) }
 
 	if c.earlyFullRenderPath(canvas, hasOverlay, fl.widthChanged, fl.heightChanged, height, fullRender, resizeRender) {
@@ -500,9 +500,9 @@ func (c *Compositor) computeFrameLocals(width, height int) *frameLocals {
 	return fl
 }
 
-func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, height int, fullRender func(bool), resizeRender func()) bool {
+func (c *Compositor) earlyFullRenderPath(canvas []string, hasOverlay, widthChanged, heightChanged bool, height int, fullRender func(bool, bool), resizeRender func()) bool {
 	if len(c.prevLines) == 0 && !widthChanged && !heightChanged {
-		fullRender(false)
+		fullRender(false, false)
 		return true
 	}
 	if widthChanged || heightChanged {
@@ -538,6 +538,9 @@ func (c *Compositor) visibleRegionDiff(canvas []string, newVTop int, fl *frameLo
 	}
 	if prevVTop < 0 {
 		prevVTop = 0
+	}
+	if prevVTop > prevLen {
+		prevVTop = prevLen
 	}
 
 	prevStart := min(prevVTop, prevLen)
@@ -577,7 +580,7 @@ func (c *Compositor) visibleRegionDiff(canvas []string, newVTop int, fl *frameLo
 	return
 }
 
-func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool), resizeRender func()) {
+func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool, bool), resizeRender func()) {
 	newVTop := max(0, len(canvas)-fl.height)
 	firstV, lastV := c.visibleRegionDiff(canvas, newVTop, fl)
 
@@ -599,7 +602,7 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 		}
 	}
 	if needsFullRedrawForChange(firstChanged, fl.prevViewportTop, fl.viewportTop, len(canvas), fl.height, hasOverlay) {
-		fullRender(true)
+		fullRender(true, !hasOverlay)
 		return
 	}
 	finalCursorRow := c.writeDifferential(canvas, firstChanged, lastChanged, fl.width,
@@ -619,12 +622,15 @@ func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *
 	c.prevH = fl.height
 }
 
-func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height int, clear bool) {
+func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height int, clearScreen, clearScrollback bool) {
 	c.fullRedrawCount++
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
-	if clear {
-		buf.WriteString("\x1b[2J\x1b[H\x1b[3J")
+	if clearScreen {
+		buf.WriteString("\x1b[2J\x1b[H")
+	}
+	if clearScrollback {
+		buf.WriteString("\x1b[3J")
 	}
 	for i, line := range canvas {
 		if i > 0 {
@@ -642,7 +648,7 @@ func (c *Compositor) fullFrame(canvas []string, cursor *CursorPos, width, height
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
 
-	c.applyFrameTracking(canvas, cursor, width, height, clear)
+	c.applyFrameTracking(canvas, cursor, width, height, clearScrollback)
 }
 
 // resizeFrame repaints only the visible viewport after a terminal size change.
@@ -1068,7 +1074,7 @@ func needsFullRedrawForChange(firstChanged, prevViewportTop, viewportTop, newLen
 	}
 	if overlayOpen {
 		contentViewportTop := max(0, newLen-height)
-		if firstChanged < contentViewportTop || contentViewportTop > prevViewportTop {
+		if firstChanged < contentViewportTop {
 			return true
 		}
 	}

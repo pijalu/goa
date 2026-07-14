@@ -66,7 +66,7 @@ func TestStreaming_Growth_NoClobber(t *testing.T) {
 		engine.RenderNow()
 	}
 
-	emu := newTermEmulator(h, 60)
+	emu := NewTermEmulator(h, 60)
 	for _, w := range term.writes {
 		emu.Process(w)
 	}

@@ -36,6 +36,7 @@ type uiScenario struct {
 	footer   *tui.Footer
 	app      *App
 	film     *tui.Filmstrip
+	term     *testTerminal
 	stepName func(agentic.EventType, agentic.OutputState) string
 }
 
@@ -96,6 +97,7 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 		footer: footer,
 		app:    app,
 		film:   tui.NewFilmstrip(),
+		term:   term,
 	}
 }
 

@@ -416,6 +416,11 @@ var scalarCLIAppliers = map[string]func(*Config, string){
 			cfg.Logging.TraceKeys = true
 		}
 	},
+	"terminal_log": func(cfg *Config, value string) {
+		if value != "" {
+			cfg.Logging.TerminalLog = value
+		}
+	},
 }
 
 func (cl *CascadeLoader) applyProviderCLIOverrides(cfg *Config) {

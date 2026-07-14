@@ -5,13 +5,14 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/rivo/uniseg"
 )
 
-// termEmulator is a faithful, per-cell terminal emulator for verifying the
+// TermEmulator is a faithful, per-cell terminal emulator for verifying the
 // Compositor's output. Unlike the coarse screenEmulator, it tracks the cursor
 // column per character (grapheme-width-aware), models DEC-style DEFERRED
 // auto-wrap (the cursor enters a pending-wrap state after filling the last
@@ -19,7 +20,7 @@ import (
 // differential renderers), and honors scrollback. This is the tool that lets
 // tests catch the streaming "ghosting" class of bugs — and it doubles as the
 // agent's "what is actually on the screen" reader.
-type termEmulator struct {
+type TermEmulator struct {
 	w, h        int
 	screen      [][]string // [row][col] cell text (ANSI-stripped for assertion)
 	scrollback  []string
@@ -27,8 +28,8 @@ type termEmulator struct {
 	pendingWrap bool // DEC deferred wrap: last cell filled, next char wraps
 }
 
-func newTermEmulator(h, w int) *termEmulator {
-	e := &termEmulator{w: w, h: h}
+func NewTermEmulator(h, w int) *TermEmulator {
+	e := &TermEmulator{w: w, h: h}
 	e.screen = make([][]string, h)
 	for i := range e.screen {
 		e.screen[i] = make([]string, w)
@@ -37,7 +38,7 @@ func newTermEmulator(h, w int) *termEmulator {
 }
 
 // Process replays a byte stream of compositor output.
-func (e *termEmulator) Process(s string) {
+func (e *TermEmulator) Process(s string) {
 	i := 0
 	for i < len(s) {
 		c := s[i]
@@ -69,7 +70,7 @@ func (e *termEmulator) Process(s string) {
 
 // writePrintable writes one grapheme cluster (cluster-aware width) and advances
 // the cursor with deferred-wrap semantics. Returns bytes consumed.
-func (e *termEmulator) writePrintable(s string, i int) int {
+func (e *TermEmulator) writePrintable(s string, i int) int {
 	rest := s[i:]
 	// Extract one grapheme cluster via uniseg.
 	gr := uniseg.NewGraphemes(rest)
@@ -106,7 +107,7 @@ func (e *termEmulator) writePrintable(s string, i int) int {
 	return i + consumed
 }
 
-func (e *termEmulator) lineFeed() {
+func (e *TermEmulator) lineFeed() {
 	if e.row < e.h-1 {
 		e.row++
 		return
@@ -121,7 +122,7 @@ func (e *termEmulator) lineFeed() {
 	e.screen[e.h-1] = make([]string, e.w)
 }
 
-func (e *termEmulator) parseEscape(s string) int {
+func (e *TermEmulator) parseEscape(s string) int {
 	if strings.HasPrefix(s, "\x1b]") {
 		// OSC (e.g. hyperlink \x1b]8;;...\x07): consume until BEL.
 		if idx := strings.Index(s, "\x07"); idx >= 0 {
@@ -146,7 +147,7 @@ func (e *termEmulator) parseEscape(s string) int {
 }
 
 // applyCSI applies one CSI escape's effect.
-func (e *termEmulator) applyCSI(params string, final byte) {
+func (e *TermEmulator) applyCSI(params string, final byte) {
 	switch final {
 	case 'H', 'f':
 		var row, col int
@@ -173,7 +174,7 @@ func (e *termEmulator) applyCSI(params string, final byte) {
 	}
 }
 
-func (e *termEmulator) eraseDisplay(params string) {
+func (e *TermEmulator) eraseDisplay(params string) {
 	switch params {
 	case "2", "3":
 		for r := range e.screen {
@@ -196,7 +197,7 @@ func (e *termEmulator) eraseDisplay(params string) {
 	}
 }
 
-func (e *termEmulator) eraseLine(params string) {
+func (e *TermEmulator) eraseLine(params string) {
 	if params != "" && params != "2" && params != "0" {
 		return
 	}
@@ -207,7 +208,7 @@ func (e *termEmulator) eraseLine(params string) {
 }
 
 // Visible returns the ANSI-stripped text of a screen row.
-func (e *termEmulator) Visible(row int) string {
+func (e *TermEmulator) Visible(row int) string {
 	if row < 0 || row >= e.h {
 		return ""
 	}
@@ -218,7 +219,7 @@ func (e *termEmulator) Visible(row int) string {
 	return b.String()
 }
 
-func (e *termEmulator) Scrollback() []string { return e.scrollback }
+func (e *TermEmulator) Scrollback() []string { return e.scrollback }
 
 func clampInt(v, lo, hi int) int {
 	if v < lo {
@@ -228,6 +229,25 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func paramInt(params string, defaultVal int) int {
+	if params == "" {
+		return defaultVal
+	}
+	// Use only the first parameter if multiple are present (e.g. "0;1").
+	p := params
+	if idx := strings.Index(p, ";"); idx >= 0 {
+		p = p[:idx]
+	}
+	if idx := strings.Index(p, ":"); idx >= 0 {
+		p = p[:idx]
+	}
+	var n int
+	if _, err := fmt.Sscanf(p, "%d", &n); err != nil {
+		return defaultVal
+	}
+	return n
 }
 
 func fmtSscan(params string, row, col *int) {

@@ -474,6 +474,9 @@ func (c *Config) mergeLogging(other *Config) {
 	if other.Logging.File != "" {
 		c.Logging.File = other.Logging.File
 	}
+	if other.Logging.TerminalLog != "" {
+		c.Logging.TerminalLog = other.Logging.TerminalLog
+	}
 	c.Logging.TraceKeys = c.Logging.TraceKeys || other.Logging.TraceKeys
 }
 

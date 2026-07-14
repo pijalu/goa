@@ -49,7 +49,7 @@ func TestStreaming_NoGhosting_FaithfulEmulator(t *testing.T) {
 		engine.RenderNow()
 	}
 
-	emu := newTermEmulator(10, 60)
+	emu := NewTermEmulator(10, 60)
 	for _, w := range term.writes {
 		emu.Process(w)
 	}
@@ -96,7 +96,7 @@ func TestStreaming_Growth_NoGhosting(t *testing.T) {
 		engine.RenderNow()
 	}
 
-	emu := newTermEmulator(10, 60)
+	emu := NewTermEmulator(10, 60)
 	for _, w := range term.writes {
 		emu.Process(w)
 	}
@@ -111,7 +111,7 @@ func TestStreaming_Growth_NoGhosting(t *testing.T) {
 	}
 }
 
-func dumpTerm(e *termEmulator, h int) string {
+func dumpTerm(e *TermEmulator, h int) string {
 	var b strings.Builder
 	for r := 0; r < h; r++ {
 		b.WriteString(strings.TrimRight(e.Visible(r), " ") + "\n")

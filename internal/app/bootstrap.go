@@ -214,6 +214,7 @@ func defineStringFlags() map[string]*string {
 		{"theme", "theme", "Override TUI theme (dark or light)"},
 		{"config", "config", "Explicit config path"},
 		{"logfile", "logfile", "Write agent/LLM debug logs to file"},
+		{"terminal-log", "terminal_log", "Write raw TUI terminal output to file"},
 	}
 	ptrs := make(map[string]*string, len(defs))
 	for _, d := range defs {

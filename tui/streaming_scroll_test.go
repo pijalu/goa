@@ -6,7 +6,6 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -164,17 +163,6 @@ func (e *screenEmulator) eraseLine(params string) {
 	if e.row >= 0 && e.row < e.h {
 		e.screen[e.row] = ""
 	}
-}
-
-func paramInt(params string, defaultVal int) int {
-	if params == "" {
-		return defaultVal
-	}
-	n, err := strconv.Atoi(params)
-	if err != nil {
-		return defaultVal
-	}
-	return n
 }
 
 func (e *screenEmulator) Visible(row int) string {

@@ -51,7 +51,21 @@ func headerFrom(projectDir string) *tui.Header {
 
 func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
 	projectDir := a.subs.projectDir
-	ft := tui.NewProcessTerminal()
+	var ft tui.Terminal = tui.NewProcessTerminal()
+	logPath := a.subs.cfg.Logging.TerminalLog
+	if logPath == "" {
+		logPath = os.Getenv("GOA_DEBUG_TERMINAL")
+	}
+	if logPath != "" {
+		if lt, err := tui.NewLogTerminal(ft, logPath); err == nil {
+			ft = lt
+			if a.subs.logger != nil {
+				a.subs.logger.Log(agentic.Info, "terminal debug log enabled: %s", logPath)
+			}
+		} else if a.subs.logger != nil {
+			a.subs.logger.Log(agentic.Error, "failed to enable terminal debug log %s: %v", logPath, err)
+		}
+	}
 	engine := tui.NewTUI(ft)
 	chat := tui.NewChatViewport()
 	agentContent := orchpanel.NewAgentContent()

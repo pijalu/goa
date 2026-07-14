@@ -1,0 +1,172 @@
+{"Type":"content","State":0,"Role":"user","Text":"/model","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"state_change","State":2,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"system","Text":"You are a coder agent. Implement features per plan and requirements.\n\nRules:\n1. Follow the plan step by step\n2. Write clean, idiomatic Go code\n3. Handle errors; add comments for complex logic\n4. Prefer simple over clever\n5. If the plan is unclear or you need to deviate, explain why.\n\n\u003ctool_usage\u003e\nPrefer dedicated tools over bash.\n\u003c/tool_usage\u003e\n\n\u003c!--\nSPDX-License-Identifier: GPL-3.0-or-later\n\nCopyright (C) 2026 Pierre Poissinger\n--\u003e\n\nAction skills: run_skill. Inline/knowledge: read.\n\n\u003cavailable_skills\u003e\n\n  \u003cskill name=\"review\" category=\"action\" tool=\"run_skill\" location=\"embedded:/review/SKILL.md\"\u003eCode review checklist and analysis\u003c/skill\u003e\n\n  \u003cskill name=\"telegram\" category=\"knowledge\" tool=\"read\" location=\"embedded:/telegram/SKILL.md\"\u003eThink and respond in telegraphic style — no articles, no subjects, no verbs of thought\u003c/skill\u003e\n\n  \u003cskill name=\"dream\" category=\"action\" tool=\"run_skill\" location=\"embedded:/dream/SKILL.md\"\u003eInternal skill for memory consolidation (dream mode). Not exposed to the agent.\u003c/skill\u003e\n\n  \u003cskill name=\"refactor\" category=\"action\" tool=\"run_skill\" location=\"embedded:/refactor/SKILL.md\"\u003eRefactor code for clarity, idiomatic style, and correctness\u003c/skill\u003e\n\n  \u003cskill name=\"test-gen\" category=\"action\" tool=\"run_skill\" location=\"embedded:/test-gen/SKILL.md\"\u003eGenerate unit tests following table-driven patterns\u003c/skill\u003e\n\n  \u003cskill name=\"commit-msg\" category=\"action\" tool=\"run_skill\" location=\"embedded:/commit-msg/SKILL.md\"\u003eGenerate conventional commit messages from staged changes\u003c/skill\u003e\n\n  \u003cskill name=\"debug\" category=\"action\" tool=\"run_skill\" location=\"embedded:/debug/SKILL.md\"\u003eAnalyze errors and debug output to find root causes\u003c/skill\u003e\n\n  \u003cskill name=\"document\" category=\"action\" tool=\"run_skill\" location=\"embedded:/document/SKILL.md\"\u003eAdd comprehensive GoDoc comments to exported symbols\u003c/skill\u003e\n\n  \u003cskill name=\"explain\" category=\"action\" tool=\"run_skill\" location=\"embedded:/explain/SKILL.md\"\u003eExplain code in detail for understanding\u003c/skill\u003e\n\n\u003c/available_skills\u003e\n\n\n\u003cgoa_documentation\u003e\nRead embedded docs via goa:// URLs. AGENTIC-SDK ARCHITECTURE COMMANDS CONFIGURATION DEVELOPMENT GOALS HOTKEYS ORCHESTRATION-DESIGN ORCHESTRATOR PLUGINS PROFILES PROFILING PROVIDER-CONNECTIVITY PROVIDERS SETUP SKILL-EXECUTION SKILLS TOOLS TUI USER-GUIDE WORKFLOWS\n\u003c/goa_documentation\u003e","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"state_change","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"state_change","State":2,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"user","Text":"can you try to run a simple hello world python to test the tooling ?","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"state_change","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"context_stats","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":"","context_stats":{"Messages":2,"Characters":2377,"EstimatedTokens":2982,"MaxTokens":131072,"UsagePercent":2,"AutoMax":true}}
+{"Type":"content","State":1,"Role":"assistant","Text":"The","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" user","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" wants","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" to","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" test","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" available","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" Python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" execution","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" tool","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" I","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" should","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" use","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" `","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"`","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" tool","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" with","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" a","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" simple","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" \"","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"Hello","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":",","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" World","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"!\"","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" program","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"tool_call","State":4,"Role":"","Text":"","IsDelta":false,"ToolName":"python","ToolInput":"{\"code\":\"print(\\\"Hello, World!\\\")\"}","ToolCallID":"OU8dqFqHPrqA23Zdt4Jkv6YivNgIXezM","ToolResult":""}
+{"Type":"tool_result","State":3,"Role":"","Text":"Hello, World!\n","IsDelta":false,"ToolName":"python","ToolInput":"","ToolCallID":"OU8dqFqHPrqA23Zdt4Jkv6YivNgIXezM","ToolResult":"Hello, World!\n"}
+{"Type":"token_stats","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":"","timings":{"prompt_n":2793,"predicted_n":51,"prompt_ms":0,"predicted_ms":0,"prompt_per_second":0,"predicted_per_second":47.28729698624612}}
+{"Type":"context_stats","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":"","context_stats":{"Messages":4,"Characters":2684,"EstimatedTokens":3057,"MaxTokens":32000,"UsagePercent":9,"AutoMax":true}}
+{"Type":"progress","State":0,"Role":"","Text":"Sending request...","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"The","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" user","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" asked","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" me","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" to","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" run","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" a","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" simple","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" \"","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"hello","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" world","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\"","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" script","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" to","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" test","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" tooling","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"I","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" have","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" already","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" executed","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" following","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" tool","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" call","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":":","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"`","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\u003c|tool_call\u003e","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"call","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":":","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"{","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"code","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":":","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\u003c|\"|\u003e","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"print","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"(\"","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"Hello","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":",","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" World","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"!\")","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\u003c|\"|\u003e","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"}","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\u003ctool_call|\u003e","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"`","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\n\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"The","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" response","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" confirms","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" that","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" tool","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" ran","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" successfully","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" and","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" printed","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" \"","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"Hello","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":",","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" World","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"!\".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"\n\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":"Now","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" I","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" need","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" to","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" confirm","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" this","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" successful","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" execution","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" to","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":" user","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":1,"Role":"assistant","Text":".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"Successfully","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" ran","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" a","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" simple","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" Python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" script","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" using","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" the","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" `","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"`","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" tool","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" The","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" output","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" was","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":":","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"\n\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"```","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"Hello","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":",","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" World","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"!","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"```","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"\n\n","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"The","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" tooling","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" appears","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" functional","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" for","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" executing","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" basic","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" Python","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" code","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":".","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" Let","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" me","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" know","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" what","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" you","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"'","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"d","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" like","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" to","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" test","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":" next","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"content","State":2,"Role":"assistant","Text":"!","IsDelta":true,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
+{"Type":"token_stats","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":"","timings":{"prompt_n":2889,"predicted_n":132,"prompt_ms":0,"predicted_ms":0,"prompt_per_second":0,"predicted_per_second":44.20442150540083}}
+{"Type":"context_stats","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":"","context_stats":{"Messages":5,"Characters":3247,"EstimatedTokens":3197,"MaxTokens":32000,"UsagePercent":9,"AutoMax":true}}
+{"Type":"end","State":0,"Role":"","Text":"","IsDelta":false,"ToolName":"","ToolInput":"","ToolCallID":"","ToolResult":""}
