@@ -138,6 +138,11 @@ type AgentManager struct {
 	// per turn. Not persisted — resets on restart.
 	disableToolBudget bool
 
+	// loopStopReason is set when the loop detector cancels the turn so that
+	// executeRunner can emit a clear EventEnd instead of the generic
+	// "Generation stopped by user." cancellation message.
+	loopStopReason string
+
 	// eventFwd decouples the streaming goroutine's event emission from the
 	// bounded app event bus (see eventForwarder). nil when eventsOut is nil.
 	eventFwd *eventForwarder
@@ -294,6 +299,9 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 
 	am.applyPendingMajorMode()
 	am.applyPendingThinkingLevel()
+	am.mu.Lock()
+	am.loopStopReason = ""
+	am.mu.Unlock()
 	am.executeRunner(ctx, runner, input, images)
 
 	// After the runner finishes, flush any steering input submitted while the
@@ -352,10 +360,19 @@ func (am *AgentManager) executeRunner(ctx context.Context, runner agentRunner, i
 	if err != nil {
 		ev := agentic.OutputEvent{Type: agentic.EventEnd}
 		if errors.Is(err, context.Canceled) {
-			// User-initiated cancellation (Escape/Ctrl+C) is not a connection
-			// error; mark it so the UI can stop gracefully and keep the
-			// conversation resumable from the user's last message.
-			ev.Metadata = map[string]string{"cancelled": "true"}
+			am.mu.Lock()
+			reason := am.loopStopReason
+			am.mu.Unlock()
+			if reason != "" {
+				// Loop detector cancelled the turn; surface the real reason
+				// so the UI does not show the generic "user stopped" message.
+				ev.Text = reason
+			} else {
+				// User-initiated cancellation (Escape/Ctrl+C) is not a connection
+				// error; mark it so the UI can stop gracefully and keep the
+				// conversation resumable from the user's last message.
+				ev.Metadata = map[string]string{"cancelled": "true"}
+			}
 		} else {
 			ev.Text = err.Error()
 		}
@@ -1119,12 +1136,23 @@ func (am *AgentManager) handleLoopWarning(lvl LoopWarningLevel) {
 		// that never happens.
 		am.logEventF("loop detector: critical — cancelling turn")
 		am.emitFlash("[goa-system: critical] Agent looping — cancelling turn.")
+		am.setLoopStopReason("[goa-system] Agent stopped: the same tool call was repeated too many times without progress. Change approach or provide the final answer.")
 		am.Interrupt()
 	case LoopInterrupt:
 		am.logEventF("loop detector: interrupt — cancelling turn")
 		am.emitFlash("[goa-system: interrupt] Tool call loop detected — cancelling turn.")
+		am.setLoopStopReason("[goa-system] Agent stopped: a tool-call loop was detected (the same call repeated too many times). Change approach or provide the final answer.")
 		am.Interrupt()
 	}
+}
+
+// setLoopStopReason records why the loop detector cancelled the turn. Called
+// under the event-forwarder goroutine; lock-protected because executeRunner
+// reads it on the turn goroutine.
+func (am *AgentManager) setLoopStopReason(reason string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.loopStopReason = reason
 }
 
 func (am *AgentManager) logEventF(format string, args ...interface{}) {

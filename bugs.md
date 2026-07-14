@@ -37,7 +37,5 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-_(None — all open bugs resolved and archived.)_
-
 - 2026-07-14 — TUI selection widget breaks scrolling/history redraw → `docs/archive/bugs.2026-07-14.md`
 - 2026-07-14 — TUI empty line at bottom → `docs/archive/bugs.2026-07-14-footer.md`

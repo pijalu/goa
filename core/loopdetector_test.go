@@ -13,19 +13,16 @@ import (
 func TestLoopDetectorToolCallWarning(t *testing.T) {
 	ld := NewLoopDetector(DefaultLoopDetectorConfig())
 
-	// 1st call: OK
-	if level := ld.RecordToolCall("read", `{"path":"test.txt"}`); level != LoopOK {
-		t.Errorf("Call 1: got %d, want LoopOK", level)
+	// 1st through 6th calls: OK
+	for i := 0; i < 6; i++ {
+		if level := ld.RecordToolCall("read", `{"path":"test.txt"}`); level != LoopOK {
+			t.Errorf("Call %d: got %d, want LoopOK", i+1, level)
+		}
 	}
 
-	// 2nd call: OK
-	if level := ld.RecordToolCall("read", `{"path":"test.txt"}`); level != LoopOK {
-		t.Errorf("Call 2: got %d, want LoopOK", level)
-	}
-
-	// 3rd call: Warning (threshold = 3)
+	// 7th call: Warning (threshold = 7)
 	if level := ld.RecordToolCall("read", `{"path":"test.txt"}`); level != LoopWarning {
-		t.Errorf("Call 3: got %d, want LoopWarning", level)
+		t.Errorf("Call 7: got %d, want LoopWarning", level)
 	}
 }
 
@@ -33,13 +30,13 @@ func TestLoopDetectorToolCallWarning(t *testing.T) {
 func TestLoopDetectorToolCallInterrupt(t *testing.T) {
 	ld := NewLoopDetector(DefaultLoopDetectorConfig())
 
-	// Make 5 identical calls
-	for i := 0; i < 4; i++ {
+	// Make 9 identical calls
+	for i := 0; i < 9; i++ {
 		ld.RecordToolCall("bash", `ls`)
 	}
-	// 5th call: Interrupt
+	// 10th call: Interrupt
 	if level := ld.RecordToolCall("bash", `ls`); level != LoopInterrupt {
-		t.Errorf("Call 5: got %d, want LoopInterrupt", level)
+		t.Errorf("Call 10: got %d, want LoopInterrupt", level)
 	}
 }
 

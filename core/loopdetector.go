@@ -89,8 +89,8 @@ type LoopDetectorConfig struct {
 // DefaultLoopDetectorConfig returns sensible defaults for the loop detector.
 func DefaultLoopDetectorConfig() LoopDetectorConfig {
 	return LoopDetectorConfig{
-		LoopWarning:           3,
-		LoopInterrupt:         5,
+		LoopWarning:           7,
+		LoopInterrupt:         10,
 		ThinkingLoopWarning:   4,
 		ThinkingLoopInterrupt: 6,
 	}

@@ -1153,6 +1153,58 @@ func TestAgentManager_HandleLoopWarningCriticalInterrupts(t *testing.T) {
 	cancel2()
 }
 
+// TestAgentManager_LoopStopReason_EmitsClearEventEnd verifies that when the
+// loop detector interrupts a turn, the EventEnd produced by executeRunner
+// contains a clear loop-stop message and is not marked as a user-initiated
+// cancellation (which would produce "Generation stopped by user.").
+func TestAgentManager_LoopStopReason_EmitsClearEventEnd(t *testing.T) {
+	cfg := &config.Config{}
+	bus := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(cfg, nil, nil, NewSessionState(internal.ModeState{}), bus, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancel
+	am.running = true
+	am.mu.Unlock()
+
+	am.handleLoopWarning(LoopInterrupt)
+
+	runner := &canceledRunner{}
+	am.executeRunner(ctx, runner, "hello", nil)
+
+	var got event.AgentEvent
+	select {
+	case got = <-bus.Agent:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for EventEnd on the agent bus")
+	}
+
+	if got.Event.Type != agentic.EventEnd {
+		t.Fatalf("expected EventEnd, got %v", got.Event.Type)
+	}
+	if got.Event.Metadata != nil && got.Event.Metadata["cancelled"] == "true" {
+		t.Errorf("EventEnd should not be marked as user-cancelled when the loop detector stopped the turn; metadata=%v", got.Event.Metadata)
+	}
+	if !strings.Contains(got.Event.Text, "loop") {
+		t.Errorf("EventEnd text should contain a clear loop-stop reason, got %q", got.Event.Text)
+	}
+
+	am.Close()
+}
+
+type canceledRunner struct{}
+
+func (r *canceledRunner) Run(ctx context.Context, input string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *canceledRunner) RunWithImages(ctx context.Context, input string, images []string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func TestAgentManager_SetMode_InjectsPromptBody(t *testing.T) {
 	cfg := &config.Config{}
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder, Autonomy: internal.AutonomySolo})
