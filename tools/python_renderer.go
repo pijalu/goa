@@ -24,7 +24,7 @@ func NewPythonRenderer() *PythonRenderer {
 }
 
 const (
-	pythonHeaderPrompt = ">>> "
+	pythonHeaderPrompt = ""
 	pythonBodyPrompt   = ">>> "
 	pythonContPrompt   = "... "
 )
