@@ -36,6 +36,12 @@ type PythonTool struct {
 	// MaxOutputLines caps the number of lines returned. Zero defaults to
 	// DefaultMaxLines.
 	MaxOutputLines int
+	// ProjectDir is the absolute path of the workspace root. When non-empty it
+	// is the base the embedded `os` module resolves relative paths against.
+	ProjectDir string
+	// Jail, when true and ProjectDir is set, confines all `os` file-module
+	// operations to ProjectDir and below, matching the bash tool's jail.
+	Jail bool
 }
 
 const (
@@ -55,7 +61,7 @@ type pythonInput struct {
 func (t *PythonTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "python",
-		Description: "Execute Python code in an embedded gpython interpreter.",
+		Description: "Execute Python code in an embedded gpython interpreter. Standard file API via os (os.walk/os.stat/os.path) is jail-confined to the project; os.system/os._exit are disabled.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -130,6 +136,17 @@ func (t *PythonTool) runPython(ctx context.Context, code string, timeout int) (s
 		defer close(readDone)
 		_, _ = io.Copy(&out, r)
 	}()
+
+	// Install the jail-confined, curated `os` module (with `os.path`) so that
+	// typical LLM Python file code (os.walk, os.stat, os.path.join, ...) runs
+	// unmodified. It shadows the sparse stock gpython os module and omits
+	// unsafe primitives (os.system, os._exit).
+	if err := installGoaFsModules(pyCtx, newPyFileScope(t.ProjectDir, t.Jail)); err != nil {
+		pyCtx.Close()
+		_ = w.Close()
+		<-readDone
+		return "", toolErr("python", "setup_error", fmt.Sprintf("Cannot install os file module: %v", err))
+	}
 
 	comp, err := compilePythonCode(code)
 	if err != nil {

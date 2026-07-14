@@ -482,6 +482,11 @@ type WriteConfig struct{}
 // PythonConfig controls the embedded gpython interpreter tool.
 type PythonConfig struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// Jail confines the embedded interpreter's `os` file API to the project
+	// directory and below, matching the bash tool's jail. When false, file
+	// operations resolve against the project directory but absolute paths
+	// outside it are permitted.
+	Jail bool `yaml:"jail"`
 }
 
 // BashConfig controls bash tool behavior.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/multiagent"
@@ -186,7 +187,11 @@ func makeSSHBashTool(subs *subsystems) agentic.Tool {
 }
 
 func makePythonTool(subs *subsystems) agentic.Tool {
-	return &tools.PythonTool{TimeoutSeconds: subs.cfg.Tools.Python.TimeoutSeconds}
+	return &tools.PythonTool{
+		TimeoutSeconds: subs.cfg.Tools.Python.TimeoutSeconds,
+		ProjectDir:     subs.projectDir,
+		Jail:           subs.cfg.Tools.Python.Jail || subs.cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
+	}
 }
 
 func makePTYExecTool(subs *subsystems) (agentic.Tool, bool) {

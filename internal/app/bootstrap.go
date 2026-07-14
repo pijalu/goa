@@ -517,6 +517,8 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	if cfg.Tools.Enabled.PythonEnabled {
 		reg.Register(&tools.PythonTool{
 			TimeoutSeconds: cfg.Tools.Python.TimeoutSeconds,
+			ProjectDir:     projectDir,
+			Jail:           cfg.Tools.Python.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
 		})
 	}
 	reg.Register(&tools.TerminalTool{
