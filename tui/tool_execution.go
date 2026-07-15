@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
-	"github.com/pijalu/goa/internal/tuirender"
 )
 
 // ToolViewPolicy is implemented by the ChatViewport to supply the global
@@ -57,19 +56,19 @@ const (
 // status colors, and visual truncation.
 type ToolExecutionComponent struct {
 	Container
-	box       *toolBox
-	toolName  string
-	toolArgs  string
-	args      map[string]any
-	output    string
-	expanded  bool
-	status    ToolStatus
-	duration  string
-	isPartial bool
+	box          *toolBox
+	toolName     string
+	toolArgs     string
+	args         map[string]any
+	output       string
+	expanded     bool
+	status       ToolStatus
+	duration     string
+	isPartial    bool
 	argsComplete bool
-	renderer  ToolRenderer
-	generic   genericRenderer
-	startTime time.Time
+	renderer     ToolRenderer
+	generic      genericRenderer
+	startTime    time.Time
 
 	// onInvalidate is called when internal state changes (output, status,
 	// duration) so the owning ChatViewport can invalidate its render cache.
@@ -91,7 +90,6 @@ type ToolExecutionComponent struct {
 type toolBox struct {
 	header   string
 	body     string
-	stats    string
 	duration string
 	bgAnsi   string
 	rendered []string
@@ -123,11 +121,6 @@ func (b *toolBox) build(width int) []string {
 		for _, line := range strings.Split(b.body, "\n") {
 			lines = append(lines, b.bgLine(line, width))
 		}
-	}
-
-	// Stats (live line/byte counter)
-	if b.stats != "" {
-		lines = append(lines, b.bgLine(b.stats, width))
 	}
 
 	// Duration
@@ -192,7 +185,6 @@ func (tc *ToolExecutionComponent) updateBox() {
 			previewLines = n
 		}
 	}
-	stats := tuirender.StatsFor(tc.args, tc.output)
 
 	ctx := RenderContext{
 		Expanded:     expanded,
@@ -201,7 +193,6 @@ func (tc *ToolExecutionComponent) updateBox() {
 		ArgsComplete: tc.argsComplete,
 		Args:         tc.args,
 		PreviewLines: previewLines,
-		Stats:        stats,
 	}
 
 	// Build header
@@ -220,12 +211,6 @@ func (tc *ToolExecutionComponent) updateBox() {
 
 	// Build body
 	tc.box.body = tc.buildBody(renderer, ctx)
-
-	// Live stats line: a uniform, compact counter for every tool (lines/bytes
-	// in and out). Shown while streaming/running and whenever there is input or
-	// output worth summarizing. Keeps long calls honest about how much has
-	// arrived without forcing an expand.
-	tc.box.stats = formatToolStats(stats, expanded, tc.isPartial)
 
 	// Duration
 	tc.renderDuration()
@@ -640,31 +625,3 @@ func formatDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
-
-// formatToolStats renders the uniform live counter line for a tool block. It
-// summarizes the streamed input (args body) and the output so the user can see
-// at a glance how much has arrived — especially for long streaming calls. The
-// line is suppressed when there is nothing meaningful to show (no input and
-// no output), and uses muted styling so it reads as metadata, not content.
-func formatToolStats(s tuirender.StreamStats, expanded, isPartial bool) string {
-	if !s.HasInput && !s.HasOutput {
-		return ""
-	}
-	var parts []string
-	if s.HasInput {
-		if isPartial {
-			parts = append(parts, fmt.Sprintf("streaming… %d lines in", s.InputLines))
-		} else {
-			parts = append(parts, fmt.Sprintf("%d lines in", s.InputLines))
-		}
-	}
-	if s.HasOutput {
-		parts = append(parts, fmt.Sprintf("%d lines out", s.OutputLines))
-	}
-	line := strings.Join(parts, " · ")
-	if !expanded {
-		line += " (Ctrl+O to expand)"
-	}
-	return ansiMuted(line)
-}
-

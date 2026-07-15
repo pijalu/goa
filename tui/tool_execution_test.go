@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -76,20 +77,20 @@ func TestToolExecution_ReadFile_CollapsedByDefault(t *testing.T) {
 	}
 }
 
-func TestToolExecution_ReadFile_ExpandedShowsMetadata(t *testing.T) {
+func TestToolExecution_ReadFile_ExpandedShowsContent(t *testing.T) {
 	tc := NewToolExecution("read", "README.md")
 	tc.SetArgsJSON(`{"path":"README.md"}`)
 	tc.SetOutput("read file README.md:1:2\n1 first\n2 second\n")
 	tc.SetExpanded(true)
-	lines := tc.Render(80)
-	rendered := strings.Join(lines, "\n")
-	// Even expanded, read shows only metadata, never content
-	if strings.Contains(rendered, "1 first") {
-		t.Errorf("read should not show file content even when expanded, got %q", rendered)
+	rendered := strings.Join(tc.Render(80), "\n")
+	stripped := ansi.Strip(rendered)
+	// Expanded (Full): the file content is shown (pi parity), not just metadata.
+	if !strings.Contains(stripped, "first") || !strings.Contains(stripped, "second") {
+		t.Errorf("expanded read should show file content, got %q", rendered)
 	}
-	// Should show metadata
-	if !strings.Contains(ansi.Strip(rendered), "README.md") {
-		t.Errorf("expected file path in metadata, got %q", rendered)
+	// The path still appears on the call line.
+	if !strings.Contains(stripped, "README.md") {
+		t.Errorf("expected file path, got %q", rendered)
 	}
 }
 
@@ -482,3 +483,82 @@ func TestToolExecution_RunningShowsElapsedDuration(t *testing.T) {
 	}
 }
 
+// stubViewPolicy is a minimal ToolViewPolicy for testing the global Ctrl+O
+// expand/collapse path without a full ChatViewport.
+type stubViewPolicy struct {
+	expanded     bool
+	previewLines int
+}
+
+func (s stubViewPolicy) EffectiveToolsExpanded() bool { return s.expanded }
+func (s stubViewPolicy) EffectivePreviewLines() int   { return s.previewLines }
+
+// TestToolExecution_CtrlO_TogglesReadBody is the regression test for
+// "Ctrl+O open/close does not change anything": flipping the global view
+// policy (what Ctrl+O drives) must change a read block from header-only
+// (Summary) to showing the file content (Full).
+func TestToolExecution_CtrlO_TogglesReadBody(t *testing.T) {
+	tc := NewToolExecution("read", "main.go")
+	tc.SetArgsJSON(`{"path":"main.go"}`)
+	tc.SetOutput("read file main.go:1:2\n     1  package main\n     2  \n(end — 2 lines shown)\n")
+
+	// Collapsed (Summary): header only — no content.
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: false, previewLines: 10})
+	collapsed := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if strings.Contains(collapsed, "package main") {
+		t.Errorf("collapsed read should not show content, got %q", collapsed)
+	}
+
+	// Expand via the global policy (Ctrl+O): body now shows the file content.
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: true, previewLines: 10})
+	expanded := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(expanded, "package main") {
+		t.Errorf("expanded read should show content, got %q", expanded)
+	}
+}
+
+// TestToolExecution_CtrlO_TogglesWriteBody verifies the write block responds
+// to the global expand policy: collapsed shows a 10-line preview + hint, full
+// shows every line.
+func TestToolExecution_CtrlO_TogglesWriteBody(t *testing.T) {
+	var b strings.Builder
+	for i := 1; i <= 15; i++ {
+		fmt.Fprintf(&b, "L%02d\n", i)
+	}
+	tc := NewToolExecution("write", "out.txt")
+	tc.SetArgs(map[string]any{"path": "out.txt", "content": b.String()})
+	tc.SetPartial(true)
+
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: false, previewLines: 10})
+	collapsed := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if strings.Contains(collapsed, "L15") {
+		t.Errorf("collapsed write should hide L15, got %q", collapsed)
+	}
+	if !strings.Contains(collapsed, "more lines") {
+		t.Errorf("collapsed write should show a 'more lines' hint, got %q", collapsed)
+	}
+
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: true, previewLines: 10})
+	expanded := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(expanded, "L15") {
+		t.Errorf("expanded write should show L15, got %q", expanded)
+	}
+	if strings.Contains(expanded, "more lines") {
+		t.Errorf("expanded write should not show a 'more lines' hint, got %q", expanded)
+	}
+}
+
+// TestToolExecution_NoGenericStatsLine asserts the removed uniform
+// "N lines in / M lines out" counter never renders for any tool.
+func TestToolExecution_NoGenericStatsLine(t *testing.T) {
+	for _, name := range []string{"read", "write", "bash"} {
+		tc := NewToolExecution(name, "x")
+		tc.SetArgs(map[string]any{"path": "x.go", "command": "ls", "content": "a\nb\nc\n"})
+		tc.SetOutput("read file x:1:2\n1 a\n2 b\n(end — 2 lines shown)\n")
+		tc.SetStatus(ToolSuccess)
+		rendered := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+		if strings.Contains(rendered, "lines in") || strings.Contains(rendered, "lines out") {
+			t.Errorf("%s block must not render the generic stats line, got %q", name, rendered)
+		}
+	}
+}

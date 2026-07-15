@@ -46,12 +46,31 @@ func TestReadFileRenderer_RenderResult_EmptyForSuccess(t *testing.T) {
 	}
 }
 
-func TestReadFileRenderer_RenderResult_EmptyWhenExpanded(t *testing.T) {
+func TestReadFileRenderer_RenderResult_ShowsContentWhenExpanded(t *testing.T) {
 	r := NewReadFileRenderer()
-	// Metadata lives on the call line; result is empty.
-	result := r.RenderResult("read file README.md:1:2\nline1\nline2\n(end — 2 lines shown)\n", tuirender.RenderContext{Expanded: true})
-	if result != "" {
-		t.Errorf("expected empty result when expanded, got %q", result)
+	// Collapsed (Summary) shows nothing — the path/range is on the call line.
+	output := "read file main.go:1:2\n     1  package main\n     2  \n(end — 2 lines shown)\n"
+	collapsed := r.RenderResult(output, tuirender.RenderContext{Expanded: false, Args: map[string]any{"path": "main.go"}})
+	if collapsed != "" {
+		t.Errorf("collapsed read should be empty, got %q", collapsed)
+	}
+	// Expanded (Full) shows the file content (pi parity).
+	expanded := r.RenderResult(output, tuirender.RenderContext{Expanded: true, Args: map[string]any{"path": "main.go"}})
+	if stripped := ansi.Strip(expanded); !strings.Contains(stripped, "package main") {
+		t.Errorf("expanded read should show file content, got %q", expanded)
+	}
+}
+
+func TestReadFileRenderer_RenderResult_TruncatedShowsHint(t *testing.T) {
+	r := NewReadFileRenderer()
+	output := "read file big.go:1:500\n     1  a\n(end — 50 lines shown, 450 remaining)\n"
+	result := r.RenderResult(output, tuirender.RenderContext{Expanded: true, Args: map[string]any{"path": "big.go"}})
+	stripped := ansi.Strip(result)
+	if !strings.Contains(stripped, "450 more lines") {
+		t.Errorf("expanded truncated read should show 'more lines' hint, got %q", result)
+	}
+	if !strings.Contains(stripped, "Ctrl+O") {
+		t.Errorf("hint should mention the expand key, got %q", result)
 	}
 }
 

@@ -154,7 +154,7 @@ func TestToolStreaming_ShowInfoImmediately(t *testing.T) {
 	sc := newUIScenario(t, 100, 24)
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
 		IsDelta: true, ToolName: "write",
-		ToolInput:  `{"content":"package main\n\nfunc main(){}","path":"m.go"}`, ToolCallID: "w1"})
+		ToolInput: `{"content":"package main\n\nfunc main(){}","path":"m.go"}`, ToolCallID: "w1"})
 
 	// While still streaming (Pending), the body must already show content.
 	body := renderToolBody(t, sc)
@@ -163,9 +163,11 @@ func TestToolStreaming_ShowInfoImmediately(t *testing.T) {
 	}
 }
 
-// TestToolStreaming_LiveLineCounter verifies G4: a long streaming input shows
-// a live line counter ("streaming… N lines in").
-func TestToolStreaming_LiveLineCounter(t *testing.T) {
+// TestToolStreaming_LiveContentNotCounter verifies G4: a streaming input
+// shows live feedback via the rendered partial content body, not via a
+// generic "lines in/out" counter (removed for pi parity — pi has no such
+// line; size is conveyed by each renderer's own truncation hint).
+func TestToolStreaming_LiveContentNotCounter(t *testing.T) {
 	sc := newUIScenario(t, 100, 24)
 	content := "a\nb\nc\nd\ne\n"
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
@@ -173,8 +175,11 @@ func TestToolStreaming_LiveLineCounter(t *testing.T) {
 		ToolInput: `{"content":"` + content + `","path":"m.go"}`, ToolCallID: "w2"})
 
 	body := renderToolBody(t, sc)
-	if !strings.Contains(body, "streaming") || !strings.Contains(body, "lines in") {
-		t.Fatalf("expected live line counter while streaming, got:\n%s", body)
+	if strings.Contains(body, "lines in") || strings.Contains(body, "lines out") {
+		t.Fatalf("streaming write must not show the removed generic counter, got:\n%s", body)
+	}
+	if !strings.Contains(body, "c") {
+		t.Fatalf("streaming write should still show partial content as live feedback, got:\n%s", body)
 	}
 }
 

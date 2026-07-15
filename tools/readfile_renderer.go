@@ -6,6 +6,7 @@ package tools
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -55,25 +56,102 @@ func (r *ReadFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderC
 }
 
 func (r *ReadFileRenderer) RenderResult(output string, ctx tuirender.RenderContext) string {
-	// Read file results show ONLY metadata (path, offset).
-	// File content is never displayed in the TUI — the agent sees it in
-	// its tool result and the user trusts the agent to use it correctly.
-	header := parseReadFileHeaderPath(extractReadHeader(output))
-	if header == "" {
-		if ctx.IsError {
-			return rToolOutput(output)
-		}
+	if output == "" {
 		return ""
 	}
-	// Metadata is already shown on the call line as `read <path>:<range>`.
-	return ""
+	if ctx.IsError {
+		return rToolOutput(output)
+	}
+	if !ctx.Expanded {
+		// Summary (collapsed): header only. The path/range already appears on
+		// the call line, so there is nothing to add — matching pi, which
+		// returns "" unless the block is expanded or the result is an error.
+		return ""
+	}
+	// Full (expanded): render the embedded file content, highlighted, with a
+	// "... (N more lines)" hint when the read was truncated.
+	content, _, remaining := extractReadContent(output)
+	if len(content) == 0 {
+		return ""
+	}
+	path := stringArg(ctx.Args, "path")
+	return formatReadContent(content, path, remaining, r.KeyExpand)
 }
 
-func extractReadHeader(output string) string {
-	if idx := strings.IndexByte(output, '\n'); idx > 0 {
-		return output[:idx]
+// readEndRe parses the trailing "(end — N lines shown[, M remaining])" footer
+// emitted by the read tool. Capture 1 = shown; optional capture 2 = remaining.
+var readEndRe = regexp.MustCompile(`(\d+)\s+lines\s+shown(?:,\s*(\d+)\s+remaining)?`)
+
+// readNumPrefixRe splits a numbered read line into its leading number and the
+// code body, e.g. "   123  package foo" → ["   123", "  ", "package foo"].
+// The read tool numbers lines as "%6d  %s" when show_numbers is true.
+var readNumPrefixRe = regexp.MustCompile(`^(\s*\d+)(\s+)(.*)$`)
+
+// extractReadContent pulls the rendered file content out of a read tool result.
+// It skips the "read file <path>:a:b" header, the bracketed [metadata] lines,
+// and the trailing "(end — …)" footer, returning the content lines plus the
+// remaining-line count (0 when the read was complete or the footer is absent).
+func extractReadContent(output string) (lines []string, shown, remaining int) {
+	for _, line := range strings.Split(output, "\n") {
+		switch {
+		case strings.HasPrefix(line, "read file "):
+			continue
+		case strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]"):
+			continue
+		case strings.HasPrefix(line, "(end"):
+			shown, remaining = parseReadEnd(line)
+			return lines, shown, remaining
+		default:
+			lines = append(lines, line)
+		}
 	}
-	return ""
+	return lines, 0, 0
+}
+
+// parseReadEnd extracts shown/remaining counts from a read footer line.
+func parseReadEnd(line string) (shown, remaining int) {
+	m := readEndRe.FindStringSubmatch(line)
+	if len(m) == 0 {
+		return 0, 0
+	}
+	shown, _ = strconv.Atoi(m[1])
+	if m[2] != "" {
+		remaining, _ = strconv.Atoi(m[2])
+	}
+	return shown, remaining
+}
+
+// formatReadContent renders read content lines for the expanded (Full) view.
+// Numbered lines keep their number (muted) with the code body highlighted by
+// language; unnumbered/plain lines fall back to the toolOutput color. When the
+// read was truncated, a "… N more lines (Ctrl+O to expand)" hint is appended.
+func formatReadContent(content []string, path string, remaining int, key string) string {
+	lang := getLanguageFromPath(path)
+	var b strings.Builder
+	for _, line := range content {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(formatReadContentLine(line, lang))
+	}
+	if remaining > 0 {
+		b.WriteByte('\n')
+		b.WriteString(expandHint(remaining, key))
+	}
+	return b.String()
+}
+
+// formatReadContentLine renders a single read content line, splitting the
+// optional leading line number so only the code body is syntax-highlighted.
+func formatReadContentLine(line, lang string) string {
+	if lang == "" {
+		return rToolOutput(line)
+	}
+	m := readNumPrefixRe.FindStringSubmatch(line)
+	if m == nil {
+		return rToolOutput(line)
+	}
+	return rMuted(m[1]) + m[2] + HighlightLine(m[3], lang)
 }
 
 func limitReadLines(lines []string, expanded bool) ([]string, int) {
@@ -110,19 +188,6 @@ func formatReadLines(lines []string, remaining int, lang, key string) string {
 
 func (r *ReadFileRenderer) PreviewLines() int             { return 1 }
 func (r *ReadFileRenderer) HideResultWhenCollapsed() bool { return false }
-
-// parseReadFileHeaderPath extracts the path from a "read file <path>:..." header.
-func parseReadFileHeaderPath(header string) string {
-	const prefix = "read file "
-	if !strings.HasPrefix(header, prefix) {
-		return ""
-	}
-	rest := header[len(prefix):]
-	if idx := strings.IndexByte(rest, ':'); idx >= 0 {
-		return rest[:idx]
-	}
-	return rest
-}
 
 // parseOffset extracts "start:end" from the header "read file <path>:start:end".
 func parseOffset(rangeStr string) string {
