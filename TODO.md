@@ -90,3 +90,35 @@ All changes must pass the 5 gates run **separately**:
 3. `gocognit -over 15 .`
 4. `gocyclo -over 12 .`
 5. `go test -count=1 -race -cover ./...`
+
+## Track 4 — Provider cache stubs & missing implementations (from Pi/OpenCode comparison)
+
+### Provider cache hints
+- [ ] **Bedrock Converse**: emit `cachePoint` markers. OpenCode supports these; Goa’s Bedrock protocol (`internal/agentic/provider/bedrock/provider.go`) has no cache breakpoints.
+- [ ] **Anthropic via Fireworks**: decide whether Fireworks’ Anthropic Messages endpoint accepts `cache_control`, then enable `cache_policy.mode` in `internal/agentic/provider/schema/variants/anthropic-fireworks.json`.
+- [ ] **Mistral Conversations**: evaluate Mistral prompt-cache support beyond the current `x-affinity` header (`internal/agentic/provider/schema/variants/mistral.json`).
+- [ ] **Google Generative AI**: evaluate out-of-band `CachedContent` support (`internal/agentic/provider/google/`, `internal/agentic/provider/protocol/google-generative-ai.go`).
+- [ ] **Legacy providers**: migrate remaining specialized providers from the old `ApiProvider` registry to the new `protocol` package (`internal/agentic/provider/stream.go:17`).
+
+### Not-current-stubs (already implemented, comments are historical)
+- `core/execution.go` — M08 ExecutionController is implemented despite the old “stub” comment.
+- `multiagent/runner.go`, `multiagent/pipeline.go`, `core/agentmanager.go` — STUB-02 gate logic is implemented.
+- `core/loopdetector.go` — STUB-1/BUG-11 dead code was removed; remaining fields are retained for future error-rate detection.
+
+## Track 5 — Other active stubs / future work
+
+### Plugins / hot reload
+- [ ] **JS plugin hot-reload**: `core/commands/help/reload.long.md` notes it is not yet implemented; `internal/app/helpers.go:90` has a no-op for stopping/reloading JSBridge instances.
+- [ ] **Plugin command registration**: `internal/app/plugins.go:92` — command registration from plugins is not yet wired.
+
+### TUI / streaming
+- [ ] **Line-addressable chat history**: `tui/chat_viewport.go:128` has a no-op today for future line-addressable history.
+- [ ] **OpenAI Responses WebSocket transport**: `internal/agentic/provider/openai_responses/provider.go:336` returns `not yet implemented` for WebSocket.
+
+### Architecture / data model
+- [ ] **Migrate variant-specific fields to VariantProfile**: `internal/agentic/provider/schema/types.go:179` — `ThinkingLevelMap`, `ThinkingBudgets`, `ThinkingFormat`, `Compat` belong in `VariantProfile`.
+- [ ] **Write-specific config merge options**: `config/config_merge.go:360` has a no-op placeholder for future write-specific options.
+- [ ] **LoopDetector error-rate detection**: `core/loopdetector.go:58` and `:154` retain error history but do not wire an error-rate check.
+
+### Commands
+- [ ] **`/audit` command**: `docs/research/goa-gap-plan.md:705` lists it as a future command to read and display audit entries.

@@ -157,42 +157,30 @@ func (pm *PTYManager) Read(id string, tail int) (string, error) {
 	return result, nil
 }
 
-// ReadBlocking reads output with a timeout — returns when new data arrives or timeout expires.
-// Uses a signal channel instead of polling to avoid unnecessary CPU wake-ups.
+// ReadBlocking waits up to timeout for output to appear and returns all output
+// currently in the buffer. If the buffer already contains data when called, it
+// returns immediately instead of waiting for more data.
 func (pm *PTYManager) ReadBlocking(id string, timeout time.Duration) (string, error) {
 	s, err := pm.getSession(id)
 	if err != nil {
 		return "", err
 	}
-	startLen := s.Buffer.Len()
-	deadline := time.After(timeout)
 
-	// Pre-check: data might already be available.
-	if s.Buffer.Len() > startLen {
-		goto collect
-	}
-
-	select {
-	case <-deadline:
-		// Timeout — check if any data arrived anyway.
-		if s.Buffer.Len() > startLen {
-			goto collect
+	// If no data is available yet, wait for the readOutput goroutine to signal
+	// that it has written something, or for the timeout to expire.
+	if s.Buffer.Len() == 0 {
+		select {
+		case <-time.After(timeout):
+		case <-s.dataReady:
 		}
-		return "", nil
-	case <-s.dataReady:
-		// Data was written. Fall through to collect.
 	}
 
-collect:
 	lines := s.Buffer.ReadAll()
-	if len(lines) > startLen {
-		result := ""
-		for _, line := range lines[startLen:] {
-			result += line
-		}
-		return result, nil
+	result := ""
+	for _, line := range lines {
+		result += line
 	}
-	return "", nil
+	return result, nil
 }
 
 // IsRunning returns whether the PTY session's process is still running.

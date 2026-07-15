@@ -52,6 +52,37 @@ func TestLoadEmbeddedProfile(t *testing.T) {
 	assert.InDelta(t, 1.0, *p.Defaults.Temperature, 0.0001)
 }
 
+func TestLoadEmbeddedProfile_OpenAIEnablesPromptCache(t *testing.T) {
+	p, err := LoadEmbeddedProfile("openai-base")
+	require.NoError(t, err)
+	assert.Equal(t, "openai-base", p.ID)
+	assert.True(t, p.Compat.SupportsPromptCache, "OpenAI should advertise prompt-cache support")
+}
+
+func TestLoadEmbeddedProfile_OpenRouterEnablesPromptCache(t *testing.T) {
+	p, err := LoadEmbeddedProfile("openrouter")
+	require.NoError(t, err)
+	assert.Equal(t, "openrouter", p.ID)
+	assert.Equal(t, "short", string(p.CachePolicy.Mode), "OpenRouter should use short cache policy to emit Anthropic-style cache_control breakpoints")
+	assert.True(t, p.Compat.SupportsPromptCache, "OpenRouter should advertise prompt-cache support")
+}
+
+func TestLoadEmbeddedProfile_LMStudioEnablesPromptCache(t *testing.T) {
+	p, err := LoadEmbeddedProfile("lm-studio")
+	require.NoError(t, err)
+	assert.Equal(t, "lm-studio", p.ID)
+	assert.Equal(t, "short", string(p.CachePolicy.Mode), "LM Studio should use short cache policy to emit Anthropic-style cache_control breakpoints")
+	assert.True(t, p.Compat.SupportsPromptCache, "LM Studio should advertise prompt-cache support")
+}
+
+func TestLoadEmbeddedProfile_OllamaEnablesPromptCache(t *testing.T) {
+	p, err := LoadEmbeddedProfile("ollama")
+	require.NoError(t, err)
+	assert.Equal(t, "ollama", p.ID)
+	assert.Equal(t, "short", string(p.CachePolicy.Mode), "Ollama should use short cache policy to emit Anthropic-style cache_control breakpoints")
+	assert.True(t, p.Compat.SupportsPromptCache, "Ollama should advertise prompt-cache support")
+}
+
 func TestLoadEmbeddedProfileNotFound(t *testing.T) {
 	_, err := LoadEmbeddedProfile("does-not-exist")
 	require.Error(t, err)

@@ -6,7 +6,7 @@
     "supports_store": true,
     "max_tokens_field": "max_output_tokens",
     "thinking_format": "reasoning_content",
-    "supports_prompt_cache": false,
+    "supports_prompt_cache": true,
     "stream_includes_usage": true
   },
   "auth": {

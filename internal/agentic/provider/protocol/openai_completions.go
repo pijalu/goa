@@ -424,7 +424,7 @@ func promptCacheKey(model schema.Model, opts schema.StreamOptions, compat openAI
 	}
 	isOpenAI := strings.Contains(model.BaseURL, "api.openai.com")
 	if isOpenAI || (opts.CacheRetention == schema.CacheRetentionLong && compat.SupportsLongCacheRetention) || isLocalProvider(model.Provider, model.BaseURL) {
-		return clampOpenAIPromptCacheKey(opts.SessionID)
+		return ClampOpenAIPromptCacheKey(opts.SessionID)
 	}
 	return ""
 }
@@ -447,17 +447,17 @@ func isLocalProvider(prov schema.Provider, baseURL string) bool {
 		strings.Contains(u, "localhost:11434") || strings.Contains(u, "127.0.0.1:11434")
 }
 
-const openAIPromptCacheKeyMaxLen = 64
+const OpenAIPromptCacheKeyMaxLen = 64
 
-func clampOpenAIPromptCacheKey(key string) string {
+func ClampOpenAIPromptCacheKey(key string) string {
 	if key == "" {
 		return ""
 	}
 	runes := []rune(key)
-	if len(runes) <= openAIPromptCacheKeyMaxLen {
+	if len(runes) <= OpenAIPromptCacheKeyMaxLen {
 		return key
 	}
-	return string(runes[:openAIPromptCacheKeyMaxLen])
+	return string(runes[:OpenAIPromptCacheKeyMaxLen])
 }
 
 // ---------------------------------------------------------------------------

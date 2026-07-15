@@ -161,6 +161,69 @@ func TestOpenAIResponsesBuildsRequest(t *testing.T) {
 	assert.Equal(t, "developer", first["role"])
 }
 
+func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAIResponses)
+	require.NotNil(t, p)
+
+	ctx := schema.Context{Messages: []schema.Message{schema.NewUserMessage("hello")}}
+	profile := schema.VariantProfile{Compat: schema.CompatFlags{SupportsStore: ptr(false)}}
+
+	// Plain OpenAI Responses: only sends prompt_cache_key when caching is enabled.
+	body, err := p.BuildRequest(
+		schema.Model{ID: "gpt-5", Api: schema.ApiOpenAIResponses},
+		ctx,
+		schema.StreamOptions{SessionID: "session-123", CacheRetention: schema.CacheRetentionShort},
+		profile,
+	)
+	require.NoError(t, err)
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, "session-123", req["previous_response_id"])
+	assert.Equal(t, "session-123", req["prompt_cache_key"])
+
+	body, err = p.BuildRequest(
+		schema.Model{ID: "gpt-5", Api: schema.ApiOpenAIResponses},
+		ctx,
+		schema.StreamOptions{SessionID: "session-123", CacheRetention: schema.CacheRetentionNone},
+		profile,
+	)
+	require.NoError(t, err)
+	req = map[string]any{}
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, "session-123", req["previous_response_id"])
+	assert.NotContains(t, req, "prompt_cache_key")
+
+	// Azure OpenAI Responses: sends prompt_cache_key whenever a session ID is present.
+	azure := ForAPI(schema.ApiAzureOpenAIResponses)
+	require.NotNil(t, azure)
+	body, err = azure.BuildRequest(
+		schema.Model{ID: "gpt-5", Api: schema.ApiAzureOpenAIResponses},
+		ctx,
+		schema.StreamOptions{SessionID: "azure-session", CacheRetention: schema.CacheRetentionNone},
+		profile,
+	)
+	require.NoError(t, err)
+	req = map[string]any{}
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, "azure-session", req["previous_response_id"])
+	assert.Equal(t, "azure-session", req["prompt_cache_key"])
+
+	// Codex Responses: sends prompt_cache_key whenever a session ID is present.
+	codex := ForAPI(schema.ApiOpenAICodexResponses)
+	require.NotNil(t, codex)
+	body, err = codex.BuildRequest(
+		schema.Model{ID: "gpt-5", Api: schema.ApiOpenAICodexResponses},
+		ctx,
+		schema.StreamOptions{SessionID: "codex-session", CacheRetention: schema.CacheRetentionNone},
+		profile,
+	)
+	require.NoError(t, err)
+	req = map[string]any{}
+	require.NoError(t, json.Unmarshal(body, &req))
+	assert.Equal(t, "codex-session", req["previous_response_id"])
+	assert.Equal(t, "codex-session", req["prompt_cache_key"])
+}
+
 func TestLMStudioQwenRequest(t *testing.T) {
 	p := ForAPI(schema.ApiOpenAICompletions)
 	require.NotNil(t, p)

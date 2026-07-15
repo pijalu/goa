@@ -6,7 +6,7 @@
     "supports_store": false,
     "max_tokens_field": "max_tokens",
     "thinking_format": "openrouter",
-    "supports_prompt_cache": false,
+    "supports_prompt_cache": true,
     "stream_includes_usage": true
   },
   "auth": {
@@ -15,7 +15,7 @@
     "header": "Authorization",
     "prefix": "Bearer "
   },
-  "cache_policy": { "mode": "none", "breakpoint_cap": 0 },
+  "cache_policy": { "mode": "short", "breakpoint_cap": 4 },
   "tool_compat": {
     "tool_call_id_rules": { "max_length": 40, "alphabet": "[a-zA-Z0-9_-]" },
     "schema_sanitizer": "openai",
