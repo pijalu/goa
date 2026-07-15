@@ -650,6 +650,13 @@ func (c *Compositor) visibleRegionDiff(canvas []string, newVTop int, fl *frameLo
 
 func (c *Compositor) renderChangePath(canvas []string, hasOverlay bool, cursor *CursorPos, fl *frameLocals, fullRender func(bool, bool), resizeRender func()) {
 	newVTop := max(0, len(canvas)-fl.height)
+	// Update viewportTop so writeDifferential and needsFullRedrawForChange
+	// use the correct top for screen-row calculations. Previously this was
+	// only set in the scroll > 0 path inside writeDifferential; when the
+	// canvas shrank (scroll < 0, e.g. widget collapse or overlay open),
+	// the stale value caused lines to be written at wrong screen positions
+	// and old content (ghost lines) to persist below the footer.
+	fl.viewportTop = newVTop
 	if c.curTrace != nil {
 		c.curTrace.PrevVtop = fl.prevViewportTop
 		c.curTrace.NewVtop = newVTop
