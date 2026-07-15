@@ -131,6 +131,77 @@ func TestPythonTool_transformFStrings(t *testing.T) {
 	}
 }
 
+func TestPythonTool_Execute_StdlibModules(t *testing.T) {
+	cases := []struct {
+		name string
+		code string
+		want string
+	}{
+		{
+			name: "re",
+			code: `import re; m = re.search(r"[0-9]+", "foo 123 bar"); print(m.group())`,
+			want: "123",
+		},
+		{
+			name: "json",
+			code: `import json; print(json.loads('{"a":1}')["a"])`,
+			want: "1",
+		},
+		{
+			name: "datetime",
+			code: `import datetime; dt = datetime.datetime(2024, 1, 1, 12, 0, 0); print(dt.strftime("%Y-%m-%d"))`,
+			want: "2024-01-01",
+		},
+		{
+			name: "random",
+			code: `import random; random.seed(7); r = random.randint(1, 10); print(1 <= r <= 10)`,
+			want: "True",
+		},
+		{
+			name: "hashlib",
+			code: `import hashlib; print(hashlib.md5("hello").hexdigest())`,
+			want: "5d41402abc4b2a76b9719d911017c592",
+		},
+		{
+			name: "base64",
+			code: `import base64; print(base64.b64encode("hello"))`,
+			want: "aGVsbG8=",
+		},
+		{
+			name: "urllib.parse",
+			code: `import urllib.parse; print(urllib.parse.quote("a b"))`,
+			want: "a%20b",
+		},
+		{
+			name: "collections",
+			code: `import collections; c = collections.Counter("abba"); print(c["a"])`,
+			want: "2",
+		},
+		{
+			name: "itertools",
+			code: `import itertools; print(list(itertools.combinations("abc", 2)))`,
+			want: "[['a', 'b'], ['a', 'c'], ['b', 'c']]",
+		},
+		{
+			name: "stat",
+			code: `import stat; print(stat.S_IRUSR)`,
+			want: "256",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := &PythonTool{}
+			out, err := tool.Execute(fmt.Sprintf(`{"code": %q}`, tc.code))
+			if err != nil {
+				t.Fatalf("Execute failed: %v\noutput: %s", err, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output = %q, want %q", out, tc.want)
+			}
+		})
+	}
+}
+
 func TestPythonTool_Execute_RuntimeError(t *testing.T) {
 	tool := &PythonTool{}
 	_, err := tool.Execute(`{"code": "1/0"}`)

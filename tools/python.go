@@ -20,6 +20,7 @@ import (
 	_ "github.com/go-python/gpython/stdlib"
 
 	"github.com/pijalu/goa/internal/agentic"
+	_ "github.com/pijalu/goa/internal/python/stdlib"
 )
 
 // PythonTool executes Python code in an embedded gpython interpreter.

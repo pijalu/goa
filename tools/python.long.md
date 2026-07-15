@@ -58,6 +58,33 @@ operation is confined to the project directory and below; paths that escape it
 raise `PermissionError`. When the jail is off, relative paths still resolve
 against the project root, but absolute paths outside it are permitted.
 
+## Supported stdlib modules
+
+In addition to the curated `os` module, the embedded interpreter provides these
+Go-backed stdlib modules. They are registered globally, so they are available
+in every `python` tool invocation.
+
+| Module | Notes |
+| --- | --- |
+| `re` | `compile`, `search`, `match`, `findall`, `sub`, `split`, `escape`; `I`/`IGNORECASE`; `Pattern` and `Match` objects. Backed by Go's RE2 engine: no lookarounds or backreferences, and `re.sub` uses literal replacement only. |
+| `json` | `loads`, `dumps(obj, indent=None)`. Supports dicts with string keys and JSON scalar types. |
+| `datetime` | `datetime`, `date`, `timedelta`; `now`, `today`, `fromtimestamp`, `strptime`, `isoformat`, `strftime`; basic arithmetic with `timedelta`. |
+| `random` | `random`, `randint`, `choice`, `shuffle`, `sample`, `uniform`, `seed`. |
+| `hashlib` | `md5`, `sha1`, `sha256`, `sha512`; `Hash.hexdigest()` / `Hash.digest()`. |
+| `base64` | `b64encode`, `b64decode`, `urlsafe_b64encode`, `urlsafe_b64decode`. Returns strings, not bytes. |
+| `urllib.parse` | `quote`, `quote_plus`, `unquote`, `unquote_plus`, `urlencode`, `urlparse`, `urlunparse`, `parse_qs`, `parse_qsl`. |
+| `collections` | `Counter` with `update`, `subtract`, `elements`, `most_common`, and dict-like access. |
+| `itertools` | `count`, `cycle`, `repeat`, `chain`, `islice`, `combinations`, `permutations`, `product`. |
+| `stat` | Constants (`S_IFREG`, `S_IFDIR`, permission bits) and `S_IMODE`/`S_IFMT`. |
+
+Example — regex and JSON in one snippet:
+
+```python
+import re, json
+m = re.search(r"\d+", "order 42")
+print(json.dumps({"order_id": int(m.group())}))
+```
+
 ### Intentionally absent
 
 For safety, the curated module **does not expose** `os.system`, `os._exit`,
