@@ -26,6 +26,23 @@ func TestReplayFooterMovement(t *testing.T) {
 	const logPath = "/tmp/goa-term-flash-2.log"
 	const termH, termW = 29, 150
 
+	writes := loadFlashLogWrites(t, logPath)
+	emu := NewTermEmulator(termH, termW)
+	isFooter := footerMatcher()
+
+	frames := replayFrames(emu, writes, termH, isFooter)
+	changes := analyzeFooterChanges(frames)
+
+	logFooterDistribution(t, frames, termH)
+	logFooterChanges(t, changes)
+	logInputTopChanges(t, frames)
+	dumpSelectedFrames(t, writes, termH, isFooter)
+}
+
+// loadFlashLogWrites reads and parses the flash log, skipping the test if the
+// log file is not available.
+func loadFlashLogWrites(t *testing.T, logPath string) []string {
+	t.Helper()
 	f, err := os.Open(logPath)
 	if err != nil {
 		t.Skipf("flash log not available: %v", err)
@@ -36,55 +53,66 @@ func TestReplayFooterMovement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	t.Logf("parsed %d writes, replaying at %dx%d", len(writes), termH, termW)
+	t.Logf("parsed %d writes, replaying at %dx%d", len(writes), 29, 150)
+	return writes
+}
 
-	emu := NewTermEmulator(termH, termW)
-
-	isFooter := func(s string) bool {
+// footerMatcher returns a function that recognises footer status rows.
+func footerMatcher() func(string) bool {
+	return func(s string) bool {
 		return strings.Contains(s, "tok/s") ||
 			strings.Contains(s, "(auto)") ||
 			strings.Contains(s, "(lmstudio)") ||
 			strings.Contains(s, "(google)") ||
 			strings.Contains(s, "Answering")
 	}
+}
 
-	snapshot := func(idx int) frameDump {
-		fr := frameDump{idx: idx, footerRow: -1, inputTop: -1, bottomFill: make([]bool, termH)}
-		for r := termH - 1; r >= 0; r-- {
-			row := strings.TrimSpace(emu.Visible(r))
-			if isFooter(row) {
-				if fr.footerRow < 0 {
-					fr.footerRow = r
-				}
-				fr.footerHits++
-			}
-		}
-		for r := termH - 1; r >= 0; r-- {
-			if strings.Contains(emu.Visible(r), "╭") {
-				fr.inputTop = r
-				break
-			}
-		}
-		for r := 0; r < termH; r++ {
-			if strings.TrimSpace(emu.Visible(r)) != "" {
-				fr.bottomFill[r] = true
-			}
-		}
-		return fr
-	}
-
-	frames := []frameDump{snapshot(-1)}
+// replayFrames processes all writes and snapshots state after each synced frame.
+func replayFrames(emu *TermEmulator, writes []string, termH int, isFooter func(string) bool) []frameDump {
+	frames := []frameDump{snapshotFrame(emu, -1, termH, isFooter)}
 	for wi, w := range writes {
 		emu.Process(w)
 		if strings.HasSuffix(w, "\x1b[?2026l") {
-			frames = append(frames, snapshot(wi))
+			frames = append(frames, snapshotFrame(emu, wi, termH, isFooter))
 		}
 	}
-	t.Logf("captured %d frames", len(frames))
+	return frames
+}
 
-	type change struct {
-		from, to, at int
+// snapshotFrame captures a single frame's footer and input-top landmarks.
+func snapshotFrame(emu *TermEmulator, idx, termH int, isFooter func(string) bool) frameDump {
+	fr := frameDump{idx: idx, footerRow: -1, inputTop: -1, bottomFill: make([]bool, termH)}
+	for r := termH - 1; r >= 0; r-- {
+		row := strings.TrimSpace(emu.Visible(r))
+		if isFooter(row) {
+			if fr.footerRow < 0 {
+				fr.footerRow = r
+			}
+			fr.footerHits++
+		}
 	}
+	for r := termH - 1; r >= 0; r-- {
+		if strings.Contains(emu.Visible(r), "╭") {
+			fr.inputTop = r
+			break
+		}
+	}
+	for r := 0; r < termH; r++ {
+		if strings.TrimSpace(emu.Visible(r)) != "" {
+			fr.bottomFill[r] = true
+		}
+	}
+	return fr
+}
+
+// change records a single footer row movement.
+type change struct {
+	from, to, at int
+}
+
+// analyzeFooterChanges builds a list of footer row changes from the frames.
+func analyzeFooterChanges(frames []frameDump) []change {
 	var changes []change
 	prev := frames[0].footerRow
 	for _, fr := range frames[1:] {
@@ -93,7 +121,12 @@ func TestReplayFooterMovement(t *testing.T) {
 			prev = fr.footerRow
 		}
 	}
+	return changes
+}
 
+// logFooterDistribution prints how many frames the footer spent on each row.
+func logFooterDistribution(t *testing.T, frames []frameDump, termH int) {
+	t.Helper()
 	rowCount := map[int]int{}
 	for _, fr := range frames {
 		rowCount[fr.footerRow]++
@@ -104,8 +137,12 @@ func TestReplayFooterMovement(t *testing.T) {
 			t.Logf("  row %d -> %d frames", r, rowCount[r])
 		}
 	}
-	t.Logf("footer row changed %d times across the session", len(changes))
+	t.Logf("footer row changed %d times across the session", len(analyzeFooterChanges(frames)))
+}
 
+// logFooterChanges prints the first 50 footer row changes.
+func logFooterChanges(t *testing.T, changes []change) {
+	t.Helper()
 	limit := len(changes)
 	if limit > 50 {
 		limit = 50
@@ -114,8 +151,11 @@ func TestReplayFooterMovement(t *testing.T) {
 		c := changes[i]
 		t.Logf("  change #%d: footer row %d -> %d (write %d)", i+1, c.from, c.to, c.at)
 	}
+}
 
-	// Input-top movement.
+// logInputTopChanges prints how many times the input-top border moved.
+func logInputTopChanges(t *testing.T, frames []frameDump) {
+	t.Helper()
 	inputChanges := 0
 	prevIn := frames[0].inputTop
 	for _, fr := range frames[1:] {
@@ -127,25 +167,24 @@ func TestReplayFooterMovement(t *testing.T) {
 		}
 	}
 	t.Logf("input-top border moved %d times", inputChanges)
+}
 
-	// Recompute emulator state and dump selected problematic frames.
-	// Dump specific frames of interest (chosen by hand from the change log).
+// dumpSelectedFrames replays the captured log up to hand-selected writes and
+// prints the resulting screen for manual diagnosis.
+func dumpSelectedFrames(t *testing.T, writes []string, termH int, isFooter func(string) bool) {
+	t.Helper()
 	manual := []int{914, 924, 933, 965, 514, 850}
 	dumpTargets := map[int]bool{}
 	for _, m := range manual {
 		dumpTargets[m] = true
 	}
-	// Limit dumps to keep output manageable.
+
 	shown := 0
 	for wi := range writes {
 		if !dumpTargets[wi] || shown >= 6 {
 			continue
 		}
-		// Replay from scratch up to wi.
-		e := NewTermEmulator(termH, termW)
-		for j := 0; j <= wi; j++ {
-			e.Process(writes[j])
-		}
+		e := replayUpTo(writes, termH, 150, wi)
 		landed := snapshotOf(e, wi, termH, isFooter)
 		t.Logf("=== write %d: footer at row %d (hits=%d) ===", wi, landed.footerRow, landed.footerHits)
 		dumpFrame(t, e, landed, termH)
@@ -154,6 +193,15 @@ func TestReplayFooterMovement(t *testing.T) {
 			break
 		}
 	}
+}
+
+// replayUpTo creates a fresh emulator and replays writes up to and including idx.
+func replayUpTo(writes []string, h, w, idx int) *TermEmulator {
+	e := NewTermEmulator(h, w)
+	for j := 0; j <= idx; j++ {
+		e.Process(writes[j])
+	}
+	return e
 }
 
 func snapshotOf(emu *TermEmulator, idx, termH int, isFooter func(string) bool) frameDump {
@@ -177,6 +225,7 @@ func snapshotOf(emu *TermEmulator, idx, termH int, isFooter func(string) bool) f
 }
 
 func dumpFrame(t *testing.T, emu *TermEmulator, fr frameDump, termH int) {
+	t.Helper()
 	for r := 0; r < termH; r++ {
 		row := emu.Visible(r)
 		trim := strings.TrimRight(row, " ")

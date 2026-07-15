@@ -53,7 +53,7 @@ func TestPyFileScope_Resolve(t *testing.T) {
 	_ = os.MkdirAll(root, 0o755)
 	scope := newPyFileScope(root, true)
 
-	tests := []struct {
+	cases := []struct {
 		name    string
 		in      string
 		wantSub string // result must equal root/wantSub
@@ -67,26 +67,32 @@ func TestPyFileScope_Resolve(t *testing.T) {
 		{"traversal", "../../etc/passwd", "", "escape"},
 		{"dotdot back inside", filepath.Join(root, "..", "proj", "y"), "y", ""},
 	}
-	for _, tc := range tests {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := scope.resolve(tc.in)
-			if tc.wantErr != "" {
-				if err == nil {
-					t.Fatalf("resolve(%q): want error containing %q, got %q", tc.in, tc.wantErr, got)
-				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("resolve(%q): error %q does not contain %q", tc.in, err.Error(), tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("resolve(%q): unexpected error: %v", tc.in, err)
-			}
-			want := filepath.Join(root, tc.wantSub)
-			if got != want {
-				t.Errorf("resolve(%q) = %q, want %q", tc.in, got, want)
-			}
+			assertPyResolve(t, scope, tc.in, tc.wantSub, tc.wantErr)
 		})
+	}
+}
+
+// assertPyResolve checks a single resolve case against the expected result.
+func assertPyResolve(t *testing.T, scope pyFileScope, in, wantSub, wantErr string) {
+	t.Helper()
+	got, err := scope.resolve(in)
+	if wantErr != "" {
+		if err == nil {
+			t.Fatalf("resolve(%q): want error containing %q, got %q", in, wantErr, got)
+		}
+		if !strings.Contains(err.Error(), wantErr) {
+			t.Fatalf("resolve(%q): error %q does not contain %q", in, err.Error(), wantErr)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("resolve(%q): unexpected error: %v", in, err)
+	}
+	want := filepath.Join(scope.root, wantSub)
+	if got != want {
+		t.Errorf("resolve(%q) = %q, want %q", in, got, want)
 	}
 }
 

@@ -14,6 +14,18 @@ import (
 // twice in the chat viewport after a model-switch flash and the start of
 // agent thinking.
 func TestUserMessage_NoDoubleDraw(t *testing.T) {
+	term, chat, status, engine := setupDoubleDrawTest(t)
+	defer engine.Stop()
+
+	msg := "can you try to run a simple hello world python to test the tooling ?"
+	driveModelSwitchScenario(chat, status, term, engine)
+	replayAndAssertNoDuplicates(t, term, msg, 29)
+}
+
+// setupDoubleDrawTest builds a TUI engine with the chat, status, footer, and
+// editor components used by the double-draw regression test.
+func setupDoubleDrawTest(t *testing.T) (*fakeTerminal, *ChatViewport, *StatusMsg, *TUI) {
+	t.Helper()
 	term := &fakeTerminal{w: 150, h: 29}
 	engine := NewTUI(term)
 	chat := NewChatViewport()
@@ -28,10 +40,13 @@ func TestUserMessage_NoDoubleDraw(t *testing.T) {
 	if err := engine.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer engine.Stop()
+	return term, chat, status, engine
+}
 
-	msg := "can you try to run a simple hello world python to test the tooling ?"
-
+// driveModelSwitchScenario reproduces the sequence reported to trigger the
+// double draw: model switch, user message, multiple thinking/tool/answering
+// cycles, and a final large assistant message that forces scrollback.
+func driveModelSwitchScenario(chat *ChatViewport, status *StatusMsg, term *fakeTerminal, engine *TUI) {
 	chat.AddSystemMessage("⟡ No AGENTS.md context file found")
 	chat.AddSystemMessage("⟡ 9 skills (1 inline, 8 forced inline · mode: inline)")
 	chat.AddSystemMessage("⟡ Connected to OpenCode Zen Go (deepseek-v4-flash).")
@@ -40,6 +55,7 @@ func TestUserMessage_NoDoubleDraw(t *testing.T) {
 	chat.AddFlashMessage("⚡ Switched to model: google/gemma-4-e4b")
 	engine.RenderNow()
 
+	msg := "can you try to run a simple hello world python to test the tooling ?"
 	chat.AddUserMessage(msg)
 	engine.RenderNow()
 
@@ -50,12 +66,10 @@ func TestUserMessage_NoDoubleDraw(t *testing.T) {
 	chat.UpdateLastMessage("The user wants to test the available Python execution tool. I should use the `python` tool with a simple \"Hello, World!\" program.", ConsoleThinkingBlock)
 	engine.RenderNow()
 
-	// Add tool execution widget
 	tc := chat.AddToolExecution("python", `{"code":"print(\"Hello, World!\")"}`)
 	tc.SetStatus(ToolRunning)
 	engine.RenderNow()
 
-	// Complete the tool
 	tc.SetOutput("Hello, World!\n")
 	tc.SetStatus(ToolSuccess)
 	tc.SetPartial(false)
@@ -74,48 +88,51 @@ func TestUserMessage_NoDoubleDraw(t *testing.T) {
 	chat.AddAssistantMessage("Successfully ran a simple Python script using the `python` tool. The output was:\n\n```\nHello, World!\n```\n\nThe tooling appears functional for executing basic Python code. Let me know what you'd like to test next!")
 	engine.RenderNow()
 
-	// Force scrollback by adding a large follow-up message.
 	chat.AddAssistantMessage(strings.Repeat("This is a follow-up paragraph.\n", 50))
 	engine.RenderNow()
+}
 
+// replayAndAssertNoDuplicates replays the emitted bytes through the faithful
+// emulator and asserts that the user message and the system message each
+// appear exactly once across the visible screen and scrollback.
+func replayAndAssertNoDuplicates(t *testing.T, term *fakeTerminal, msg string, h int) {
+	t.Helper()
 	emu := NewTermEmulator(29, 150)
 	for _, w := range term.writes {
 		emu.Process(w)
 	}
 
-	// Count occurrences across the visible screen AND the terminal scrollback.
-	visibleRows := 0
-	for r := 0; r < 29; r++ {
-		if strings.Contains(emu.Visible(r), msg) {
-			visibleRows++
-		}
-	}
-	scrollbackCount := 0
-	for _, line := range emu.Scrollback() {
-		if strings.Contains(line, msg) {
-			scrollbackCount++
-		}
-	}
+	visibleRows := countVisibleOccurrences(emu, msg, h)
+	scrollbackCount := countScrollbackOccurrences(emu, msg)
 	if visibleRows+scrollbackCount != 1 {
 		t.Errorf("user message appears %d times across visible+scrollback (want 1); visibleRows=%d scrollbackCount=%d; screen:\n%s\nscrollback:\n%s",
-			visibleRows+scrollbackCount, visibleRows, scrollbackCount, dumpTerm(emu, 29), strings.Join(emu.Scrollback(), "\n"))
+			visibleRows+scrollbackCount, visibleRows, scrollbackCount, dumpTerm(emu, h), strings.Join(emu.Scrollback(), "\n"))
 	}
 
-	// Also validate the system message for "✓ /model completed successfully" is not duplicated.
 	cmdPanel := "✓ /model completed successfully"
-	cmdCount := 0
-	for r := 0; r < 29; r++ {
-		if strings.Contains(emu.Visible(r), cmdPanel) {
-			cmdCount++
-		}
-	}
-	for _, line := range emu.Scrollback() {
-		if strings.Contains(line, cmdPanel) {
-			cmdCount++
-		}
-	}
+	cmdCount := countVisibleOccurrences(emu, cmdPanel, h) + countScrollbackOccurrences(emu, cmdPanel)
 	if cmdCount != 1 {
 		t.Errorf("system message panel appears %d times across visible+scrollback (want 1); screen:\n%s\nscrollback:\n%s",
-			cmdCount, dumpTerm(emu, 29), strings.Join(emu.Scrollback(), "\n"))
+			cmdCount, dumpTerm(emu, h), strings.Join(emu.Scrollback(), "\n"))
 	}
+}
+
+func countVisibleOccurrences(emu *TermEmulator, msg string, h int) int {
+	count := 0
+	for r := 0; r < h; r++ {
+		if strings.Contains(emu.Visible(r), msg) {
+			count++
+		}
+	}
+	return count
+}
+
+func countScrollbackOccurrences(emu *TermEmulator, msg string) int {
+	count := 0
+	for _, line := range emu.Scrollback() {
+		if strings.Contains(line, msg) {
+			count++
+		}
+	}
+	return count
 }

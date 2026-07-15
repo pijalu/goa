@@ -409,7 +409,7 @@ func firstWordEnd(runes []rune, words []wordInfo, idx int) int {
 // cursorColInWord computes the visual column of an offset within a word.
 // Width is grapheme-cluster-aware (via ansi.Width) so multi-rune clusters such
 // as ZWJ emoji contribute their true rendered width, keeping the column
-// consistent with the marker placement in bytePosForCol.
+// consistent with the marker placement in renderContentLine.
 func cursorColInWord(runes []rune, w wordInfo, offset, baseCol int) int {
 	within := offset - w.start
 	if within < 0 {
@@ -640,31 +640,6 @@ func simulateWordWrap(runes []rune, words []wordInfo, offset, width int) (visLin
 	return visLine, visCol
 }
 
-// bytePosForCol finds the byte position in line that corresponds to the given
-// visual column. It is grapheme-cluster-aware so the returned byte offset
-// always lands on a cluster boundary and the accumulated width matches
-// visibleWidth (and thus the terminal's actual rendering). This is what keeps
-// the hardware cursor column aligned with the glyph under multi-rune clusters
-// such as ZWJ emoji, combining marks, and regional-indicator flags.
-func bytePosForCol(line string, col int) int {
-	if col <= 0 {
-		return 0
-	}
-	current := 0
-	gr := uniseg.NewGraphemes(line)
-	for gr.Next() {
-		cluster := gr.Str()
-		w := ansi.ClusterWidth(cluster)
-		if current+w > col {
-			// Cursor falls inside this cluster — place the marker at the
-			// cluster boundary (a cursor never splits a grapheme cluster).
-			start, _ := gr.Positions()
-			return start
-		}
-		current += w
-	}
-	return len(line)
-}
 
 // Focused returns focus state.
 func (e *Editor) Focused() bool {

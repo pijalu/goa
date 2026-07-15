@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -18,15 +17,7 @@ import (
 // bugs that the filmstrip (Scene-derived) cannot see.
 func TestRenderTrace_EmitsPerFrameJSONL(t *testing.T) {
 	term := &fakeTerminal{w: 60, h: 10}
-	engine := NewTUI(term)
-	chat := NewChatViewport()
-	inp := NewEditor()
-	inp.SetTUI(engine)
-	inp.SetFocused(true)
-	engine.AddChild(chat)
-	engine.AddChild(inp)
-	engine.SetFocus(inp)
-
+	engine, chat := setupRenderTraceTest(t, term)
 	tracePath := filepath.Join(t.TempDir(), "render.jsonl")
 	if err := engine.SetRenderTrace(tracePath); err != nil {
 		t.Fatalf("SetRenderTrace: %v", err)
@@ -36,19 +27,41 @@ func TestRenderTrace_EmitsPerFrameJSONL(t *testing.T) {
 	}
 	defer engine.Stop()
 
-	// Frame 1: initial render (full).
+	emitTraceFrames(chat, engine, 40)
+	engine.Stop()
+
+	records := readTraceRecords(t, tracePath)
+	validateTraceRecords(t, records)
+}
+
+// setupRenderTraceTest builds a TUI engine with a chat viewport and editor.
+func setupRenderTraceTest(t *testing.T, term *fakeTerminal) (*TUI, *ChatViewport) {
+	t.Helper()
+	engine := NewTUI(term)
+	chat := NewChatViewport()
+	inp := NewEditor()
+	inp.SetTUI(engine)
+	inp.SetFocused(true)
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	engine.SetFocus(inp)
+	return engine, chat
+}
+
+// emitTraceFrames renders a full initial frame then a series of streaming
+// frames that force viewport scrolls.
+func emitTraceFrames(chat *ChatViewport, engine *TUI, n int) {
 	chat.AddUserMessage("hello")
 	engine.RenderNow()
-	// Frames 2..N: streaming growth that forces viewport scrolls — these are
-	// the frames the trace is meant to make diagnosable.
-	for i := 0; i < 40; i++ {
+	for i := 0; i < n; i++ {
 		chat.AddSystemMessage("streaming line growing the conversation")
 		engine.RenderNow()
 	}
-	// Force a flush of any buffered state.
-	engine.Stop()
-	engine = nil
+}
 
+// readTraceRecords reads and decodes JSONL trace records.
+func readTraceRecords(t *testing.T, tracePath string) []frameTrace {
+	t.Helper()
 	f, err := os.Open(tracePath)
 	if err != nil {
 		t.Fatalf("trace file not written: %v", err)
@@ -71,8 +84,21 @@ func TestRenderTrace_EmitsPerFrameJSONL(t *testing.T) {
 	if len(records) < 10 {
 		t.Fatalf("expected at least 10 trace records, got %d", len(records))
 	}
+	return records
+}
 
-	// Frame numbers must be contiguous starting at 1.
+// validateTraceRecords checks frame numbering, paths, layers, scrolls, and
+// known path values.
+func validateTraceRecords(t *testing.T, records []frameTrace) {
+	t.Helper()
+	validateFrameSequence(t, records)
+	validatePathValues(t, records)
+	validateTraceContent(t, records)
+}
+
+// validateFrameSequence checks frame numbers, path presence, and terminal size.
+func validateFrameSequence(t *testing.T, records []frameTrace) {
+	t.Helper()
 	for i, r := range records {
 		if r.Frame != int64(i+1) {
 			t.Fatalf("record %d has Frame=%d, want %d", i, r.Frame, i+1)
@@ -84,25 +110,30 @@ func TestRenderTrace_EmitsPerFrameJSONL(t *testing.T) {
 			t.Fatalf("record %d term size=%dx%d, want 60x10", i, r.TermW, r.TermH)
 		}
 	}
+}
 
-	// At least one record must carry the scene layers (intent layout), so the
-	// trace can be diffed against the emitted bytes.
+// validatePathValues ensures every record has a known render path.
+func validatePathValues(t *testing.T, records []frameTrace) {
+	t.Helper()
+	valid := map[string]bool{"full": true, "resize": true, "diff": true, "cursor": true, "deleted": true}
+	for _, r := range records {
+		if !valid[r.Path] {
+			t.Errorf("record Frame %d has unknown Path %q", r.Frame, r.Path)
+		}
+	}
+}
+
+// validateTraceContent checks that the trace includes layers, a scroll record,
+// and differential-path records.
+func validateTraceContent(t *testing.T, records []frameTrace) {
+	t.Helper()
 	hasLayers := false
+	hasScroll := false
+	diffCount := 0
 	for _, r := range records {
 		if len(r.Layers) > 0 {
 			hasLayers = true
-			break
 		}
-	}
-	if !hasLayers {
-		t.Errorf("no record carried Scene layers; the trace cannot show intent layout")
-	}
-
-	// At least one diff-path record must show a viewport scroll (Scrolled) with
-	// a non-zero Scroll — the streaming-scroll case the trace targets.
-	hasScroll := false
-	var diffCount int
-	for _, r := range records {
 		if r.Path == "diff" {
 			diffCount++
 		}
@@ -110,22 +141,13 @@ func TestRenderTrace_EmitsPerFrameJSONL(t *testing.T) {
 			hasScroll = true
 		}
 	}
+	if !hasLayers {
+		t.Errorf("no record carried Scene layers; the trace cannot show intent layout")
+	}
 	if diffCount == 0 {
 		t.Errorf("no diff-path records; expected the streaming growth to take the differential path")
 	}
 	if !hasScroll {
 		t.Errorf("no record recorded a viewport scroll; expected streaming growth to scroll")
 	}
-
-	// Every record's Path must be one of the known render paths.
-	valid := map[string]bool{"full": true, "resize": true, "diff": true, "cursor": true, "deleted": true}
-	for _, r := range records {
-		if !valid[r.Path] {
-			t.Errorf("record Frame %d has unknown Path %q", r.Frame, r.Path)
-		}
-	}
-
-	// Sanity: the JSON is compact (no embedded newlines per record) so it is
-	// safe to line-parse.
-	_ = strings.TrimSpace
 }

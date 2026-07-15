@@ -14,41 +14,49 @@ import (
 
 func TestAnalyzeFlashLog(t *testing.T) {
 	path := "/tmp/goa-term-flash.log"
-	f, err := os.Open(path)
+	writes, err := openAndParseFlashLog(path)
 	if err != nil {
-		t.Skipf("flash log not available: %v", err)
-	}
-	defer f.Close()
-
-	writes, err := parseFlashLog(f)
-	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("flash log not available: %v", err)
+		}
 		t.Fatalf("parse flash log: %v", err)
 	}
 	t.Logf("parsed %d writes", len(writes))
 
-	const mascot = "goa coding agent"
-	// The reported terminal size is 150 columns x 29 rows.
-	for _, h := range []int{29} {
-		for _, w := range []int{150} {
-			emu := newScreenEmulator(h, w)
-			frameIdx := 0
-			var logoFrames []int
-			for _, write := range writes {
-				emu.Process(write)
-				if strings.Contains(write, "\x1b[?2026l") {
-					frameIdx++
-					if visibleContains(emu, h, mascot) {
-						logoFrames = append(logoFrames, frameIdx)
-					}
-				}
-			}
-			if len(logoFrames) > 1 {
-				// Mascot visible in more than one frame means it reappeared after
-				// the first frame; report the flash.
-				t.Logf("height=%d width=%d: logo visible in frames %v", h, w, logoFrames)
+	logoFrames := findLogoFrames(writes, 29, 150, "goa coding agent")
+	if len(logoFrames) > 1 {
+		// Mascot visible in more than one frame means it reappeared after
+		// the first frame; report the flash.
+		t.Logf("height=%d width=%d: logo visible in frames %v", 29, 150, logoFrames)
+	}
+}
+
+// openAndParseFlashLog opens the flash log and parses its writes.
+func openAndParseFlashLog(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return parseFlashLog(f)
+}
+
+// findLogoFrames replays writes through a screen emulator and records the frame
+// numbers where the mascot is visible after each synced frame.
+func findLogoFrames(writes []string, h, w int, mascot string) []int {
+	emu := newScreenEmulator(h, w)
+	frameIdx := 0
+	var logoFrames []int
+	for _, write := range writes {
+		emu.Process(write)
+		if strings.Contains(write, "\x1b[?2026l") {
+			frameIdx++
+			if visibleContains(emu, h, mascot) {
+				logoFrames = append(logoFrames, frameIdx)
 			}
 		}
 	}
+	return logoFrames
 }
 
 var headerRe = regexp.MustCompile(`# \S+ write (\d+) bytes`)

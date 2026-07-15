@@ -482,35 +482,39 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		MaxResults:  cfg.Tools.Search.MaxResults,
 		ExcludeDirs: cfg.Tools.Search.Exclude,
 	})
-	// resolveCompression returns the effective tool output compression setting.
-	// Resolution order:
-	//   1. Model-level compress_output override (if set)
-	//   2. Global tools.bash.compress_output override (if set)
-	//   3. Provider auto-detect — local providers default to enabled, remote off
-	resolveCompression := func() bool {
-		if m, err := cfg.GetActiveModelConfig(); err == nil && m.CompressOutput != nil {
-			return *m.CompressOutput
-		}
-		if cfg.Tools.Bash.CompressOutput != nil {
-			return *cfg.Tools.Bash.CompressOutput
-		}
-		return config.DefaultCompressForProvider(cfg.GetActiveProviderConfig())
-	}
 
+	compression := resolveCompression(cfg)
 	reg.Register(&tools.BashTool{
-		WorktreeMgr:      wm,
-		Blocked:          cfg.Tools.Bash.BlockedCommands,
-		Allowed:          cfg.Tools.Bash.AllowedCommands,
-		EnvMaskPatterns:  cfg.Tools.Bash.EnvMaskPatterns,
-		CompressOutput:   ptrBool(cfg.Tools.Bash.CompressOutput),
-		ProjectDir:       projectDir,
-		Jail:             cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
-		MaxOutputBytes:   cfg.Tools.Bash.MaxOutputBytes,
-		EnableComplexity: cfg.Tools.Bash.EnableComplexityAnalysis,
-		CompressionResolver: resolveCompression,
-		Analyzer:         analyzerForBash(cfg.Tools.Bash),
-		Redactor:         secrets.DefaultRedactor(),
+		WorktreeMgr:         wm,
+		Blocked:             cfg.Tools.Bash.BlockedCommands,
+		Allowed:             cfg.Tools.Bash.AllowedCommands,
+		EnvMaskPatterns:     cfg.Tools.Bash.EnvMaskPatterns,
+		CompressOutput:      ptrBool(cfg.Tools.Bash.CompressOutput),
+		ProjectDir:          projectDir,
+		Jail:                cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
+		MaxOutputBytes:      cfg.Tools.Bash.MaxOutputBytes,
+		EnableComplexity:    cfg.Tools.Bash.EnableComplexityAnalysis,
+		CompressionResolver: func() bool { return compression },
+		Analyzer:            analyzerForBash(cfg.Tools.Bash),
+		Redactor:            secrets.DefaultRedactor(),
 	})
+	reg.Register(&tools.TerminalTool{
+		WorktreeMgr:         wm,
+		SandboxMgr:          sandboxMgr,
+		Blocked:             cfg.Tools.Terminal.Sandbox.BlockedCommands,
+		Allowed:             cfg.Tools.Terminal.Sandbox.AllowedCommands,
+		TimeoutSeconds:      cfg.Tools.Terminal.Sandbox.TimeoutSeconds,
+		MaxOutputChars:      cfg.Tools.Terminal.Sandbox.MaxOutputChars,
+		Bypass:              !cfg.Tools.Terminal.Sandbox.Enabled,
+		CompressionResolver: func() bool { return compression },
+	})
+
+	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker)
+	return lspMgr
+}
+
+// registerOptionalTools registers tools that are gated by configuration flags.
+func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker) {
 	if cfg.Tools.Enabled.Verify {
 		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
 	}
@@ -521,16 +525,6 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 			Jail:           cfg.Tools.Python.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
 		})
 	}
-	reg.Register(&tools.TerminalTool{
-		WorktreeMgr:    wm,
-		SandboxMgr:     sandboxMgr,
-		Blocked:        cfg.Tools.Terminal.Sandbox.BlockedCommands,
-		Allowed:        cfg.Tools.Terminal.Sandbox.AllowedCommands,
-		TimeoutSeconds: cfg.Tools.Terminal.Sandbox.TimeoutSeconds,
-		MaxOutputChars: cfg.Tools.Terminal.Sandbox.MaxOutputChars,
-		Bypass:         !cfg.Tools.Terminal.Sandbox.Enabled,
-		CompressionResolver: resolveCompression,
-	})
 	if cfg.Tools.Enabled.SSHBash {
 		reg.Register(&tools.SSHBashTool{Hosts: sshHosts(cfg)})
 	}
@@ -563,8 +557,21 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		}
 		reg.Register(ss)
 	}
+}
 
-	return lspMgr
+// resolveCompression returns the effective tool output compression setting.
+// Resolution order:
+//   1. Model-level compress_output override (if set)
+//   2. Global tools.bash.compress_output override (if set)
+//   3. Provider auto-detect — local providers default to enabled, remote off
+func resolveCompression(cfg *config.Config) bool {
+	if m, err := cfg.GetActiveModelConfig(); err == nil && m.CompressOutput != nil {
+		return *m.CompressOutput
+	}
+	if cfg.Tools.Bash.CompressOutput != nil {
+		return *cfg.Tools.Bash.CompressOutput
+	}
+	return config.DefaultCompressForProvider(cfg.GetActiveProviderConfig())
 }
 
 // defaultInt returns val if non-zero, otherwise defaultVal.

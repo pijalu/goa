@@ -107,61 +107,82 @@ func (d *DocEngine) LongDoc(name string) (string, error) {
 // tool's own embedded short.md via the registry, falling back to
 // docs/TOOLS.md section extraction, then to a generic placeholder.
 func (d *DocEngine) toolShortDoc(name string) (string, error) {
-	// 1. Prefer the tool's own embedded short.md via the registry.
-	if d.toolRegistry != nil {
-		if tool, ok := d.toolRegistry.Get(name); ok {
-			if sd, ok := tool.(interface{ ShortDoc() string }); ok {
-				if doc := sd.ShortDoc(); doc != "" {
-					return doc, nil
-				}
-			}
-			// Fallback to Schema().Description if not documentable.
-			if desc := tool.Schema().Description; desc != "" {
-				return desc, nil
-			}
-		}
+	if doc, ok := d.toolRegistryShortDoc(name); ok {
+		return doc, nil
 	}
-
-	// 2. Try embedded docs/TOOLS.md section extraction.
-	if content, err := docs.Get("TOOLS"); err == nil {
-		if section := extractSection(content, name); section != "" {
-			return summarize(firstLine(section)), nil
-		}
+	if doc, ok := toolDocFromDocs(name); ok {
+		return summarize(firstLine(doc)), nil
 	}
-
 	return fmt.Sprintf("Tool '%s' — see /tools for details", name), nil
+}
+
+// toolRegistryShortDoc returns the short doc for a tool from the registry,
+// either from the tool's ShortDoc() method or from Schema().Description.
+func (d *DocEngine) toolRegistryShortDoc(name string) (string, bool) {
+	if d.toolRegistry == nil {
+		return "", false
+	}
+	tool, ok := d.toolRegistry.Get(name)
+	if !ok {
+		return "", false
+	}
+	if sd, ok := tool.(interface{ ShortDoc() string }); ok {
+		if doc := sd.ShortDoc(); doc != "" {
+			return doc, true
+		}
+	}
+	if desc := tool.Schema().Description; desc != "" {
+		return desc, true
+	}
+	return "", false
 }
 
 // toolLongDoc returns detailed documentation for a tool, preferring
 // the tool's own embedded long.md, then docs/TOOLS.md section extraction.
 func (d *DocEngine) toolLongDoc(name string) (string, error) {
-	// 1. Prefer the tool's own embedded long.md via the registry.
-	if d.toolRegistry != nil {
-		if tool, ok := d.toolRegistry.Get(name); ok {
-			if ld, ok := tool.(interface{ LongDoc() string }); ok {
-				if doc := ld.LongDoc(); doc != "" {
-					return fmt.Sprintf("# Tool: %s\n\n%s\n\n(see /docs tools? for full tool reference)", name, doc), nil
-				}
-			}
-			// Fallback to embedded short.md.
-			if sd, ok := tool.(interface{ ShortDoc() string }); ok {
-				if doc := sd.ShortDoc(); doc != "" {
-					return doc + "\n\nSee /docs TOOLS for the full tool system reference.", nil
-				}
-			}
-		}
+	if doc, ok := d.toolRegistryLongDoc(name); ok {
+		return doc, nil
 	}
-
-	// 2. Try embedded docs/TOOLS.md section extraction.
-	content, err := docs.Get("TOOLS")
-	if err == nil {
-		if section := extractSection(content, name); section != "" {
-			return fmt.Sprintf("# Tool: %s\n\n%s\n\n(see /docs tools? for full tool reference)", name, section), nil
-		}
+	if section, ok := toolDocFromDocs(name); ok {
+		return fmt.Sprintf("# Tool: %s\n\n%s\n\n(see /docs tools? for full tool reference)", name, section), nil
 	}
-
-	// 3. Generic fallback.
 	return fmt.Sprintf("Tool '%s' — see /tools for details", name), nil
+}
+
+// toolRegistryLongDoc returns the long doc for a tool from the registry,
+// preferring LongDoc(), then ShortDoc().
+func (d *DocEngine) toolRegistryLongDoc(name string) (string, bool) {
+	if d.toolRegistry == nil {
+		return "", false
+	}
+	tool, ok := d.toolRegistry.Get(name)
+	if !ok {
+		return "", false
+	}
+	if ld, ok := tool.(interface{ LongDoc() string }); ok {
+		if doc := ld.LongDoc(); doc != "" {
+			return fmt.Sprintf("# Tool: %s\n\n%s\n\n(see /docs tools? for full tool reference)", name, doc), true
+		}
+	}
+	if sd, ok := tool.(interface{ ShortDoc() string }); ok {
+		if doc := sd.ShortDoc(); doc != "" {
+			return doc + "\n\nSee /docs TOOLS for the full tool system reference.", true
+		}
+	}
+	return "", false
+}
+
+// toolDocFromDocs extracts the docs/TOOLS.md section for a tool if it exists.
+func toolDocFromDocs(name string) (string, bool) {
+	content, err := docs.Get("TOOLS")
+	if err != nil {
+		return "", false
+	}
+	section := extractSection(content, name)
+	if section == "" {
+		return "", false
+	}
+	return section, true
 }
 
 // skillShortDoc returns a short description for a skill, preferring the

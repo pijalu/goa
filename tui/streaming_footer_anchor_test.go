@@ -45,6 +45,20 @@ func TestStreamingScroll_FooterStaysAnchored(t *testing.T) {
 	)
 	const footerModel = "STABLEFOOTERMODEL"
 
+	term, chat, engine := setupStreamingFooterTest(t, w, h, footerModel)
+	defer engine.Stop()
+
+	fillChatHistory(chat, term, 40)
+	streamFrames(chat, engine, term, 30)
+
+	frames := captureFooterFrames(term, h, footerModel, w)
+	assertFooterAnchored(t, frames, h, term, w)
+}
+
+// setupStreamingFooterTest builds a TUI with header, chat, status, editor, and
+// footer for the footer-anchoring regression test.
+func setupStreamingFooterTest(t *testing.T, w, h int, footerModel string) (*fakeTerminal, *ChatViewport, *TUI) {
+	t.Helper()
 	term := &fakeTerminal{w: w, h: h}
 	engine := NewTUI(term)
 
@@ -72,41 +86,43 @@ func TestStreamingScroll_FooterStaysAnchored(t *testing.T) {
 	if err := engine.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer engine.Stop()
+	return term, chat, engine
+}
 
-	// Fill the chat past the viewport so further growth causes real scrolls.
-	for i := 0; i < 40; i++ {
+// fillChatHistory adds enough history to overflow the viewport.
+func fillChatHistory(chat *ChatViewport, term *fakeTerminal, n int) {
+	for i := 0; i < n; i++ {
 		chat.AddSystemMessage("history line that wraps the conversation region")
 	}
-	engine.RenderNow()
+	term.writes = nil // discard initial fill bytes; the regression is about streaming frames
+}
 
-	// Reset the recorded bytes: the regression is about the STREAMING scroll
-	// frames, not the initial fill.
-	term.writes = nil
-
-	// Stream more content, rendering every frame, while the FOOTER STAYS
-	// IDENTICAL (the drift trigger: unchanged bottom-anchored chrome).
-	for i := 0; i < 30; i++ {
+// streamFrames renders more streaming content while the footer stays identical.
+func streamFrames(chat *ChatViewport, engine *TUI, term *fakeTerminal, n int) {
+	for i := 0; i < n; i++ {
 		chat.AddSystemMessage("streaming line growing the conversation tail")
 		engine.RenderNow()
 	}
+}
 
-	// Replay every emitted byte through the faithful terminal emulator and
-	// snapshot after each synced frame (\x1b[?2026l = end of one atomic commit).
+// footerFrame holds the footer position for one committed frame.
+type footerFrame struct {
+	idx       int
+	footerRow int // bottom-most row containing the footer model token, -1 none
+	bottomHas bool
+}
+
+// captureFooterFrames replays emitted bytes and snapshots after each synced frame.
+func captureFooterFrames(term *fakeTerminal, h int, footerModel string, w int) []footerFrame {
 	emu := NewTermEmulator(h, w)
-	type frame struct {
-		idx       int
-		footerRow int // bottom-most row containing the footer model token, -1 none
-		bottomHas bool
-	}
-	var frames []frame
+	var frames []footerFrame
 	frameIdx := 0
 	for _, write := range term.Writes() {
 		emu.Process(write)
 		if !strings.HasSuffix(write, "\x1b[?2026l") {
 			continue
 		}
-		fr := frame{idx: frameIdx, footerRow: -1}
+		fr := footerFrame{idx: frameIdx, footerRow: -1}
 		for r := h - 1; r >= 0; r-- {
 			if strings.Contains(emu.Visible(r), footerModel) {
 				fr.footerRow = r
@@ -117,34 +133,45 @@ func TestStreamingScroll_FooterStaysAnchored(t *testing.T) {
 		frames = append(frames, fr)
 		frameIdx++
 	}
+	return frames
+}
 
+// assertFooterAnchored verifies the footer is on the bottom row of every
+// committed streaming frame.
+func assertFooterAnchored(t *testing.T, frames []footerFrame, h int, term *fakeTerminal, w int) {
+	t.Helper()
 	if len(frames) == 0 {
 		t.Fatalf("no synced frames emitted")
 	}
 
-	// The footer model line must be on the bottom row of every committed frame.
 	bad := 0
 	for _, fr := range frames {
 		if !fr.bottomHas || fr.footerRow != h-1 {
 			bad++
 		}
 	}
-	if bad > 0 {
-		t.Errorf("footer was NOT bottom-anchored in %d/%d streaming frames (the bug). "+
-			"Per-frame footer row (h-1=%d wanted):", bad, len(frames), h-1)
-		for _, fr := range frames {
-			mark := "ok"
-			if fr.footerRow != h-1 {
-				mark = "<<< MOVED"
-			}
-			t.Logf("  frame %d: footerRow=%d %s", fr.idx, fr.footerRow, mark)
-		}
-		// Dump the worst frame for diagnosis.
-		dumpEmulator(t, emu, h)
+	if bad == 0 {
+		return
 	}
+
+	t.Errorf("footer was NOT bottom-anchored in %d/%d streaming frames (the bug). "+
+		"Per-frame footer row (h-1=%d wanted):", bad, len(frames), h-1)
+	for _, fr := range frames {
+		mark := "ok"
+		if fr.footerRow != h-1 {
+			mark = "<<< MOVED"
+		}
+		t.Logf("  frame %d: footerRow=%d %s", fr.idx, fr.footerRow, mark)
+	}
+	emu := NewTermEmulator(h, w)
+	for _, w := range term.Writes() {
+		emu.Process(w)
+	}
+	dumpEmulator(t, emu, h)
 }
 
 func dumpEmulator(t *testing.T, emu *TermEmulator, h int) {
+	t.Helper()
 	t.Logf("final screen:")
 	for r := 0; r < h; r++ {
 		row := strings.TrimRight(emu.Visible(r), " ")
