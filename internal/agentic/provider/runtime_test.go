@@ -49,6 +49,52 @@ func TestGenericStreamBuildsPipeline(t *testing.T) {
 	_ = stream.Result()
 }
 
+type captureTransport struct {
+	req *transport.TransportRequest
+}
+
+func (c *captureTransport) Do(ctx context.Context, req *transport.TransportRequest) (*transport.TransportResponse, error) {
+	c.req = req
+	return &transport.TransportResponse{
+		StatusCode: 200,
+		Headers:    map[string]string{"Content-Type": "text/event-stream"},
+		Body:       io.NopCloser(strings.NewReader(`data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}` + "\n\n")),
+	}, nil
+}
+
+func TestGenericStreamSendsOptsHeaders(t *testing.T) {
+	old := transport.Default()
+	defer transport.SetDefault(old)
+
+	capt := &captureTransport{}
+	transport.SetDefault(capt)
+
+	model := schema.Model{
+		ID:       "kimi-for-coding",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderKimiCode,
+		BaseURL:  "http://example.com/v1/chat/completions",
+	}
+	opts := schema.StreamOptions{
+		MaxTokens: 10,
+		APIKey:    "sk-test",
+		Headers:   map[string]string{"User-Agent": "goa/0.1.0-dev", "X-Custom": "custom-value"},
+	}
+	stream, err := GenericStream(model, schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}}, opts)
+	require.NoError(t, err)
+	require.NotNil(t, stream)
+
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+	_ = stream.Result()
+
+	require.NotNil(t, capt.req, "transport should have received a request")
+	assert.Equal(t, "goa/0.1.0-dev", capt.req.Headers["User-Agent"], "User-Agent from opts.Headers should be preserved")
+	assert.Equal(t, "custom-value", capt.req.Headers["X-Custom"], "custom header from opts.Headers should be preserved")
+	assert.Equal(t, "Bearer sk-test", capt.req.Headers["Authorization"], "auth header should be injected")
+}
+
 func TestGenericProviderImplementsApiProvider(t *testing.T) {
 	p := NewGenericProvider(schema.ApiOpenAICompletions)
 	assert.Equal(t, schema.ApiOpenAICompletions, p.API())

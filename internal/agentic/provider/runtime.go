@@ -35,7 +35,7 @@ func GenericStream(model schema.Model, ctx schema.Context, opts schema.StreamOpt
 		Context:  ctx,
 		Options:  opts,
 		Profile:  profile,
-		Headers:  make(map[string]string),
+		Headers:  cloneStringMap(opts.Headers),
 		Pipeline: pipeline,
 	}
 	if err := pipeline.ApplyRequest(reqCtx); err != nil {
@@ -68,6 +68,17 @@ func applyEnvOverrides(profile schema.VariantProfile, model schema.Model) schema
 		profile.Match.BaseURL = model.BaseURL
 	}
 	return profile
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return make(map[string]string)
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func executeRequest(

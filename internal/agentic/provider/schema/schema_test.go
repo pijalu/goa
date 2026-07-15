@@ -29,6 +29,19 @@ func TestLoadEmbeddedProfiles(t *testing.T) {
 	assert.True(t, ids["google-base"], "expected google-base profile")
 }
 
+func TestResolveProfile_KimiProvidersHaveAuth(t *testing.T) {
+	for _, prov := range []Provider{ProviderKimi, ProviderKimiCode} {
+		profile := ResolveProfile(Model{
+			ID:       "test-model",
+			Api:      ApiOpenAICompletions,
+			Provider: prov,
+		})
+		assert.Equal(t, "Authorization", profile.Auth.Header, "provider %q should use Authorization header", prov)
+		assert.Equal(t, "Bearer ", profile.Auth.Prefix, "provider %q should use Bearer prefix", prov)
+		assert.Equal(t, AuthMethodAPIKey, profile.Auth.Method, "provider %q should use api_key auth", prov)
+	}
+}
+
 func TestLoadEmbeddedProfile(t *testing.T) {
 	p, err := LoadEmbeddedProfile("openai-base")
 	require.NoError(t, err)

@@ -1,6 +1,6 @@
 {
-  "id": "moonshot",
-  "match": { "api": "openai-completions", "provider": "kimi" },
+  "id": "kimi-code",
+  "match": { "api": "openai-completions", "provider": "kimi-code" },
   "defaults": { "temperature": 1.0, "max_tokens": 4096 },
   "compat": {
     "supports_store": false,
@@ -11,7 +11,7 @@
   },
   "auth": {
     "method": "api_key",
-    "env_vars": ["MOONSHOT_API_KEY", "KIMI_API_KEY"],
+    "env_vars": ["KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"],
     "header": "Authorization",
     "prefix": "Bearer "
   },

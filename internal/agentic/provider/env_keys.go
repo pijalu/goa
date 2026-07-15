@@ -41,6 +41,8 @@ var providerEnvVars = map[Provider][]string{
 	ProviderOpenRouter: {"OPENROUTER_API_KEY"},
 	ProviderOpenCode:   {"OPENCODE_API_KEY"},
 	ProviderOpenCodeGo: {"OPENCODE_API_KEY"},
+	ProviderKimi:       {"MOONSHOT_API_KEY", "KIMI_API_KEY"},
+	ProviderKimiCode:   {"KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"},
 }
 
 // localProviders need no API key.
