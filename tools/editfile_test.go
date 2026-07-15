@@ -525,7 +525,7 @@ func TestEditFileTool_FuzzyFilename_LegacyOperation(t *testing.T) {
 	}
 }
 
-func TestEditFileTool_ReplacePattern_EscapedNewlinesAndQuotes(t *testing.T) {
+func TestEditFileTool_ReplacePattern_MultilineBlockWithQuotes(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "game.js")
 	original := `// Placeholder functions for key game components:
@@ -541,8 +541,15 @@ console.log("Game Initializing...");
 	}
 
 	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
-	// Pattern contains literal \n and \" sequences as the model often emits them.
-	pattern := `// Placeholder functions for key game components:\n// initGame(), drawMap(), updateGame(), and handleInput().\n\nconst canvas = document.getElementById('gameCanvas');\nconst ctx = canvas.getContext('2d');\n\nconsole.log(\"Game Initializing...\");`
+	// A multi-line pattern carries REAL newlines (JSON "\n") and real quotes.
+	// It must route to fuzzy block matching and replace the block exactly.
+	pattern := `// Placeholder functions for key game components:
+// initGame(), drawMap(), updateGame(), and handleInput().
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+console.log("Game Initializing...");`
 	newContent := `// New header
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -551,7 +558,7 @@ console.log("Ready");`
 	input := fmt.Sprintf(`{"path": %q, "operation": "replace_pattern", "pattern": %q, "new_content": %q}`, filePath, pattern, newContent)
 	result, err := tool.Execute(input)
 	if err != nil {
-		t.Fatalf("Replace pattern with escaped newlines should succeed: %v", err)
+		t.Fatalf("Multi-line block replace_pattern should succeed: %v", err)
 	}
 	data, _ := os.ReadFile(filePath)
 	content := string(data)
@@ -563,5 +570,33 @@ console.log("Ready");`
 	}
 	if !strings.Contains(result, "affected") {
 		t.Errorf("Expected result to mention affected lines, got: %q", result)
+	}
+}
+
+// TestEditFileTool_ReplacePattern_LiteralBackslashNIsVerbatim locks in the
+// contract that a pattern containing a literal backslash-n (the two characters
+// '\' and 'n', as emitted by JSON "\\n") is matched verbatim and is NOT
+// re-interpreted as a newline. Re-interpreting it silently corrupted code that
+// legitimately contains backslash escapes (Go/Python string literals, regex
+// metacharacters). When the file has no such literal text, the tool must
+// return a clear pattern_not_found error rather than mangling the pattern.
+func TestEditFileTool_ReplacePattern_LiteralBackslashNIsVerbatim(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "snip.go")
+	original := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	// Go raw string: the pattern contains a literal backslash-n (two chars).
+	pattern := `func main() {}\nextra`
+	input := fmt.Sprintf(`{"path": %q, "operation": "replace_pattern", "pattern": %q, "new_content": "x"}`, filePath, pattern)
+	_, err := tool.Execute(input)
+	if err == nil {
+		t.Fatal("expected pattern_not_found for a literal backslash-n pattern that is not present, got success")
+	}
+	if !strings.Contains(err.Error(), "pattern_not_found") {
+		t.Errorf("expected pattern_not_found error, got: %v", err)
 	}
 }

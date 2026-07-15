@@ -165,3 +165,37 @@ func TestWriteFileFuzzyFilename_Disabled(t *testing.T) {
 		t.Errorf("target.txt should be untouched, got: %q", string(data))
 	}
 }
+
+// TestWriteFilePreservesLiteralBackslashN verifies that a literal backslash-n
+// sequence in the content (e.g. a Go/Python source escape "\n", a regex \n, or
+// a printf "%s\n") is written verbatim and is NOT converted into a real
+// newline. Converting it would corrupt the written source — e.g. turning
+// `fmt.Println("hi\n")` into a broken multi-line string literal.
+func TestWriteFilePreservesLiteralBackslashN(t *testing.T) {
+	dir, cleanup := tempDir(t)
+	defer cleanup()
+
+	filePath := dir + "/snippet.go"
+	tool := &WriteFileTool{}
+	// JSON \"\\n\" decodes to the two characters backslash + n (the source escape).
+	// JSON \n  decodes to a real newline (line separator).
+	input := `{"path": "` + filePath + `", "content": "package main\n\nfunc main() {\n\tfmt.Println(\"hi\\n\")\n}\n"}`
+	if _, err := tool.Execute(input); err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("Read file: %v", err)
+	}
+	got := string(data)
+	// The literal backslash-n inside the string literal must be preserved.
+	want := `Println("hi\n")`
+	if !strings.Contains(got, want) {
+		t.Fatalf("literal backslash-n was corrupted in written file.\n want substring: %q\n got file:\n%s", want, got)
+	}
+	// And the real line separators must still be newlines (sanity).
+	if strings.Count(got, "\n") < 4 {
+		t.Fatalf("expected several real newlines, got file:\n%s", got)
+	}
+}

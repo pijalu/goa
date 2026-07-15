@@ -183,13 +183,20 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", err
 	}
 
+	// Use NewContent verbatim. JSON unmarshalling already resolved every
+	// escape sequence the model intended: a real newline arrived as JSON "\n",
+	// a literal backslash+n (e.g. a Go/Python source escape such as "\n")
+	// arrived as JSON "\\n". Re-interpreting escapes here would silently
+	// corrupt any code that legitimately contains backslash escapes — which is
+	// what drove models to abandon `edit` for bash/python when editing files
+	// full of regex/string escapes (see session 1784126185).
 	ep := editParams{
 		startLine:    p.StartLine,
 		endLine:      p.EndLine,
 		pattern:      p.Pattern,
 		patternFlags: p.PatternFlags,
 		occurrence:   p.Occurrence,
-		newLines:     strings.Split(strings.ReplaceAll(p.NewContent, "\\n", "\n"), "\n"),
+		newLines:     splitLines(p.NewContent),
 		indentMode:   IndentMode(defaultStr(p.IndentMode, string(IndentPreserve))),
 	}
 
@@ -346,21 +353,24 @@ func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occ
 		occurrence = 1
 	}
 
-	// Models sometimes double-escape literal newlines/backslashes/quotes when
-	// they meant to supply a multi-line block. Normalize those sequences so the
-	// edit can match the actual file content.
-	normalized := unescapePattern(pattern)
+	// Use the pattern verbatim. JSON unmarshalling already resolved any escape
+	// sequence the model intended (a real newline for "\n", a literal backslash+n
+	// for "\\n"). Re-interpreting escapes here is unsafe: it silently corrupts
+	// patterns that legitimately contain backslash escapes (Go/Python string
+	// literals, regex metacharacters such as \n, \d, \s) and can wrongly reroute
+	// a single-line regex into block matching.
 
-	// Multi-line patterns are matched as a fuzzy block against the whole file.
-	if strings.Contains(normalized, "\n") {
-		return t.replacePatternBlock(lines, normalized, occurrence, newLines, indentMode)
+	// A pattern that spans multiple lines (after JSON decoding) cannot be matched
+	// line-by-line, so match it as a fuzzy block against the whole file.
+	if strings.Contains(pattern, "\n") {
+		return t.replacePatternBlock(lines, pattern, occurrence, newLines, indentMode)
 	}
 
 	caseSensitive := !strings.Contains(flags, "i")
 	found := 0
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if matchLine(line, normalized, caseSensitive) {
+		if matchLine(line, pattern, caseSensitive) {
 			found++
 			if found == occurrence {
 				adjusted := t.adjustIndent([]string{line}, newLines, indentMode)
@@ -419,19 +429,6 @@ func (t *EditFileTool) mapBlockPatternError(pattern string, err error) error {
 			Detail:   fmt.Sprintf("Edit failed: %v", err),
 			HintText: "Check the file content with 'read' and try again."}
 	}
-}
-
-// unescapePattern replaces common literal escape sequences that models often
-// emit when they meant to supply literal newlines, tabs, quotes, or
-// backslashes.
-func unescapePattern(s string) string {
-	s = strings.ReplaceAll(s, `\\\\`, "\x00")
-	s = strings.ReplaceAll(s, `\n`, "\n")
-	s = strings.ReplaceAll(s, `\t`, "\t")
-	s = strings.ReplaceAll(s, `\"`, `"`)
-	s = strings.ReplaceAll(s, `\'`, `'`)
-	s = strings.ReplaceAll(s, "\x00", `\\`)
-	return s
 }
 
 func (t *EditFileTool) insertAfter(lines []string, lineNum int, pattern string, newLines []string, indentMode IndentMode) ([]string, int, error) {

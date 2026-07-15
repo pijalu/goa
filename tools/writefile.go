@@ -124,23 +124,29 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 		}
 	}
 
-	processedContent := strings.ReplaceAll(p.Content, "\\n", "\n")
+	// Use Content verbatim. JSON unmarshalling already resolved every escape
+	// sequence the model intended: a real newline arrived as JSON "\n", a
+	// literal backslash+n (e.g. a Go/Python source escape such as "\n", a regex
+	// \n, a printf "%s\n") arrived as JSON "\\n". Re-interpreting escapes here
+	// would silently corrupt written code — e.g. `fmt.Println("hi\n")` would be
+	// turned into a broken multi-line string literal.
+	content := p.Content
 	if err := t.ensureParentDirs(resolvedPath, p.CreateDirs); err != nil {
 		return "", err
 	}
 
 	t.stageIfExists(resolvedPath)
 
-	if err := os.WriteFile(resolvedPath, []byte(processedContent), 0644); err != nil {
+	if err := os.WriteFile(resolvedPath, []byte(content), 0644); err != nil {
 		return "", formatWriteError(originalPath, err)
 	}
 
 	if t.FileChangeNotifier != nil {
 		t.FileChangeNotifier(resolvedPath)
 	}
-	diagBlock := t.lspDiagnostics(context.Background(), resolvedPath, processedContent, true)
+	diagBlock := t.lspDiagnostics(context.Background(), resolvedPath, content, true)
 
-	preview := buildWritePreview(originalPath, processedContent)
+	preview := buildWritePreview(originalPath, content)
 	if diagBlock != "" {
 		preview += diagBlock
 	}
