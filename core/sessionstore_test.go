@@ -274,3 +274,62 @@ func TestStartSession_RotationClosesPriorWriter(t *testing.T) {
 		t.Errorf("second session events = %+v", secondEvents)
 	}
 }
+
+// TestSessionWriteEvent_SkipsToolCallDeltas guards against SESSION-BUG-1:
+// streamed tool-call deltas carry the full accumulated arguments, so persisting
+// them for a single streamed call writes the same content many times and
+// creates a session file that grows quadratically (observed: 6.4GB).
+// Only the final completed tool-call event needs to be replayed.
+func TestSessionWriteEvent_SkipsToolCallDeltas(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+	ss.StartSession()
+
+	// Content deltas are small and must still be persisted for replay.
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Text: "hello", IsDelta: true})
+	// The completed tool-call event is the one we need to replay.
+	ss.WriteEvent(agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "bash",
+		ToolInput:  `{"command":"ls"}`,
+		IsDelta:    false,
+	})
+	// Streaming tool-call deltas must NOT be persisted.
+	ss.WriteEvent(agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   "write",
+		ToolInput:  strings.Repeat("x", 100000),
+		IsDelta:    true,
+	})
+
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	sessions, err := ss.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].EventCount != 2 {
+		t.Errorf("EventCount = %d, want 2 (tool-call delta not persisted)", sessions[0].EventCount)
+	}
+
+	events, err := ss.LoadSession(sessions[0].Name)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Type != agentic.EventContent {
+		t.Errorf("events[0].Type = %v, want EventContent", events[0].Type)
+	}
+	if events[1].Type != agentic.EventToolCall || events[1].IsDelta {
+		t.Errorf("events[1] should be a completed tool call, got %+v", events[1])
+	}
+}

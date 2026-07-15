@@ -245,6 +245,16 @@ func (s *SessionStore) logError(action string, err error) {
 
 // WriteEvent enqueues an event for asynchronous persistence.
 func (s *SessionStore) WriteEvent(event agentic.OutputEvent) {
+	// Streaming tool-call deltas carry the accumulated arguments so far.
+	// For a single streamed call (e.g. write of a large file) the provider
+	// emits one delta per chunk, each containing the full content written so
+	// far. Persisting those deltas in the session file produces quadratic
+	// growth (observed: a 6.4GB session file from ~9k events). The final
+	// completed (non-delta) tool-call event is sufficient for replay/export.
+	if event.Type == agentic.EventToolCall && event.IsDelta {
+		return
+	}
+
 	s.mu.Lock()
 	writer := s.writer
 	broken := s.writerBroken
