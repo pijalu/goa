@@ -78,25 +78,23 @@ func (r *WriteFileRenderer) resolvePath(output string, ctx tuirender.RenderConte
 }
 
 // renderContent formats the content lines with optional syntax highlighting
-// and truncation.
+// and truncation. Only the displayed lines are highlighted so large writes
+// do not waste CPU/memory coloring content that will never be visible.
 func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.RenderContext) string {
 	lang := getLanguageFromPath(path)
 
-	lines := strings.Split(content, "\n")
-	if lang != "" {
-		lines = HighlightCode(content, lang)
-	}
-	lines = trimTrailingEmptyLines(lines)
+	allLines := strings.Split(content, "\n")
+	allLines = trimTrailingEmptyLines(allLines)
 
 	maxLines := r.PreviewLines()
 	if ctx.Expanded {
-		maxLines = len(lines)
+		maxLines = len(allLines)
 	}
-	displayLines := lines
-	if len(lines) > maxLines {
-		displayLines = lines[:maxLines]
+	displayLines := allLines
+	if len(allLines) > maxLines {
+		displayLines = allLines[:maxLines]
 	}
-	remaining := len(lines) - maxLines
+	remaining := len(allLines) - maxLines
 
 	var b strings.Builder
 	for _, line := range displayLines {
@@ -106,7 +104,7 @@ func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.Re
 		if lang == "" {
 			b.WriteString(rToolOutput(line))
 		} else {
-			b.WriteString(line)
+			b.WriteString(HighlightLine(line, lang))
 		}
 	}
 	if remaining > 0 {
