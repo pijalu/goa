@@ -175,15 +175,7 @@ func (tc *ToolExecutionComponent) updateBox() {
 	tc.box.header = ansi.Fg(iconColor) + icon + " " + ansi.FgReset + call
 
 	// Build body
-	if tc.output != "" {
-		tc.box.body = renderer.RenderResult(tc.output, ctx)
-	} else if tc.isPartial {
-		// While arguments are still streaming, render the partial arguments as
-		// the body so the user sees content as it arrives (e.g. write/edit).
-		tc.box.body = renderer.RenderResult("", ctx)
-	} else {
-		tc.box.body = ""
-	}
+	tc.box.body = tc.buildBody(renderer, ctx)
 
 	// Duration
 	tc.renderDuration()
@@ -197,6 +189,23 @@ func (tc *ToolExecutionComponent) updateBox() {
 	}
 
 	tc.box.Invalidate()
+}
+
+// buildBody chooses the right renderer path for the tool body. When the tool
+// has produced output, RenderResult is used. While arguments are still
+// streaming, a StreamingRenderer gets its RenderPartial hook; otherwise the
+// legacy RenderResult("", partial) path is used.
+func (tc *ToolExecutionComponent) buildBody(renderer ToolRenderer, ctx RenderContext) string {
+	if tc.output != "" {
+		return renderer.RenderResult(tc.output, ctx)
+	}
+	if !tc.isPartial {
+		return ""
+	}
+	if sr, ok := renderer.(StreamingRenderer); ok {
+		return sr.RenderPartial(tc.args, ctx)
+	}
+	return renderer.RenderResult("", ctx)
 }
 
 // renderDuration computes the duration string based on current status and

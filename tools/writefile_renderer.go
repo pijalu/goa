@@ -17,9 +17,11 @@ type WriteFileRenderer struct {
 	KeyExpand string
 }
 
-// writeFilePreviewLines is the default number of content lines shown for a
-// write result. Large enough to display typical writes without truncation.
-const writeFilePreviewLines = 1000
+// writeFilePreviewLines is the number of content lines shown for a write
+// preview while streaming and when the tool block is collapsed. It keeps the
+// TUI compact even when writing large files; expanding reveals the full
+// content.
+const writeFilePreviewLines = 5
 
 var _ tuirender.ToolRenderer = (*WriteFileRenderer)(nil)
 
@@ -33,12 +35,6 @@ func (r *WriteFileRenderer) RenderCall(args map[string]any, ctx tuirender.Render
 	if pathDisplay == "" {
 		pathDisplay = "..."
 	}
-
-	// During streaming (ArgsComplete == false), keep the header minimal: the
-	// body will render the streaming content as it arrives.
-	if !ctx.ArgsComplete {
-		return rToolTitle("write") + " " + rAccent(pathDisplay) + rMuted(" ...")
-	}
 	return rToolTitle("write") + " " + rAccent(pathDisplay)
 }
 
@@ -49,6 +45,14 @@ func (r *WriteFileRenderer) RenderResult(output string, ctx tuirender.RenderCont
 	}
 	path := r.resolvePath(output, ctx)
 	return r.renderContent(content, path, ctx)
+}
+
+// RenderPartial implements tuirender.StreamingRenderer. While the write tool
+// arguments are still streaming, the body shows the accumulated content as a
+// compact preview so the user sees the file being written as it arrives.
+func (r *WriteFileRenderer) RenderPartial(args map[string]any, ctx tuirender.RenderContext) string {
+	ctx.Args = args
+	return r.RenderResult("", ctx)
 }
 
 // resolveContent returns the content to display, preferring the final tool

@@ -93,6 +93,7 @@ func TestCompositor_StreamingWriteWidgetPreservesScrollback(t *testing.T) {
 	engine.RenderNow()
 
 	tc := chat.AddToolExecution("write", ``)
+	tc.SetExpanded(true)
 	tc.SetArgsPartial(`{"path":"big.go"}`)
 	engine.RenderNow()
 

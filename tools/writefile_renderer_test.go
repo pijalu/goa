@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -48,15 +49,38 @@ func TestWriteFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	}
 }
 
-func TestWriteFileRenderer_RenderCall_StreamingShowsPlaceholder(t *testing.T) {
+func TestWriteFileRenderer_RenderCall_StreamingShowsPath(t *testing.T) {
 	r := NewWriteFileRenderer()
 	call := r.RenderCall(map[string]any{"path": "main.go"}, tuirender.RenderContext{ArgsComplete: false})
 	stripped := ansi.Strip(call)
 	if !strings.Contains(stripped, "write main.go") {
 		t.Errorf("expected tool name and path, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "...") {
-		t.Errorf("expected streaming placeholder, got %q", stripped)
+	if strings.Contains(stripped, "...") {
+		t.Errorf("did not expect a placeholder now that body renders the streamed content, got %q", stripped)
+	}
+}
+
+func TestWriteFileRenderer_RenderResult_StreamingPreviewLimit(t *testing.T) {
+	r := NewWriteFileRenderer()
+	var content []string
+	for i := 1; i <= writeFilePreviewLines+10; i++ {
+		content = append(content, fmt.Sprintf("line %d", i))
+	}
+	args := map[string]any{"path": "big.go", "content": strings.Join(content, "\n")}
+	result := r.RenderResult("", tuirender.RenderContext{IsPartial: true, ArgsComplete: false, Args: args})
+	stripped := ansi.Strip(result)
+	if !strings.Contains(stripped, "line 1") {
+		t.Errorf("expected first line in preview, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "line 5") {
+		t.Errorf("expected fifth line in preview, got %q", stripped)
+	}
+	if strings.Contains(stripped, "line 6") {
+		t.Errorf("did not expect line 6 in collapsed preview, got %q", stripped)
+	}
+	if !strings.Contains(stripped, "to expand") {
+		t.Errorf("expected expand hint, got %q", stripped)
 	}
 }
 

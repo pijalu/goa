@@ -437,8 +437,8 @@ func TestToolExecution_WriteStreaming_BodyShowsPartialContent(t *testing.T) {
 	if !strings.Contains(stripped, "println") {
 		t.Errorf("expected streamed content to include println, got:\n%s", stripped)
 	}
-	if !strings.Contains(stripped, "write test.go ...") {
-		t.Errorf("expected streaming header placeholder, got:\n%s", stripped)
+	if !strings.Contains(stripped, "write test.go") {
+		t.Errorf("expected streaming header, got:\n%s", stripped)
 	}
 }
 

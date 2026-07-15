@@ -35,6 +35,19 @@ type DefaultBackgroundRenderer interface {
 	DefaultBackground() bool
 }
 
+// StreamingRenderer is an optional extension for ToolRenderer. Tools whose
+// arguments are useful while still streaming can implement RenderPartial;
+// the TUI will show the returned body preview as soon as the partial arguments
+// contain something worth displaying. This keeps the UI responsive without
+// each renderer needing to overload RenderResult for the streaming case.
+type StreamingRenderer interface {
+	ToolRenderer
+	// RenderPartial renders a preview of the tool body using the arguments
+	// received so far. It should be compact and return an empty string when
+	// there is nothing useful to show yet.
+	RenderPartial(args map[string]any, ctx RenderContext) string
+}
+
 // RenderContext carries execution-state information passed to renderers.
 type RenderContext struct {
 	// Cwd is the current working directory.

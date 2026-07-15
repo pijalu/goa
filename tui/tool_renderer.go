@@ -12,6 +12,9 @@ import (
 // ToolRenderer is re-exported from internal/tuirender for tui callers.
 type ToolRenderer = tuirender.ToolRenderer
 
+// StreamingRenderer is re-exported from internal/tuirender for tui callers.
+type StreamingRenderer = tuirender.StreamingRenderer
+
 // RenderContext is re-exported from internal/tuirender.
 type RenderContext = tuirender.RenderContext
 

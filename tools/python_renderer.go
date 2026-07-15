@@ -63,6 +63,13 @@ func (r *PythonRenderer) RenderResult(output string, ctx tuirender.RenderContext
 	return b.String()
 }
 
+// RenderPartial implements tuirender.StreamingRenderer. While the python tool
+// arguments are still streaming, the body previews the code being written.
+func (r *PythonRenderer) RenderPartial(args map[string]any, ctx tuirender.RenderContext) string {
+	ctx.Args = args
+	return r.RenderResult("", ctx)
+}
+
 func (r *PythonRenderer) writeScriptLines(b *strings.Builder, lines []string) {
 	for i, line := range lines {
 		if b.Len() > 0 {
