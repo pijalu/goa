@@ -1205,6 +1205,83 @@ func (r *canceledRunner) RunWithImages(ctx context.Context, input string, images
 	return ctx.Err()
 }
 
+func TestAgentManager_ToolCallStreamingDeltasDoNotLoop(t *testing.T) {
+	cfg := &config.Config{}
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	am := NewAgentManager(cfg, nil, ld, NewSessionState(internal.ModeState{}), nil, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancel
+	am.running = true
+	am.mu.Unlock()
+
+	input := `{"command":"cd ~/dev/goa && git status --short"}`
+
+	// Simulate a single streamed tool call: the provider emits many deltas,
+	// each carrying the accumulated arguments so far. Before the fix this
+	// looked like the same call repeated many times and tripped the loop
+	// detector after the configured threshold (10 by default).
+	for i := 0; i < 15; i++ {
+		am.OnEvent(agentic.OutputEvent{
+			Type:       agentic.EventToolCall,
+			State:      agentic.StateToolCall,
+			Role:       agentic.Assistant,
+			ToolName:   "bash",
+			ToolInput:  input,
+			ToolCallID: "call_01_same",
+			IsDelta:    true,
+		})
+	}
+	if ctx.Err() != nil {
+		t.Fatal("streaming tool-call deltas falsely triggered the tool-call loop detector")
+	}
+
+	// The final completed event must not itself be treated as a repeat,
+	// because the delta phase was not counted.
+	am.OnEvent(agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		State:      agentic.StateToolCall,
+		Role:       agentic.Assistant,
+		ToolName:   "bash",
+		ToolInput:  input,
+		ToolCallID: "call_01_same",
+		IsDelta:    false,
+	})
+	if ctx.Err() != nil {
+		t.Fatal("single completed tool call triggered a false loop")
+	}
+
+	// Sanity: genuinely repeated completed calls still trigger the detector.
+	for i := 0; i < 8; i++ {
+		am.OnEvent(agentic.OutputEvent{
+			Type:       agentic.EventToolCall,
+			State:      agentic.StateToolCall,
+			Role:       agentic.Assistant,
+			ToolName:   "bash",
+			ToolInput:  input,
+			ToolCallID: fmt.Sprintf("call_repeat_%d", i),
+			IsDelta:    false,
+		})
+	}
+	if ctx.Err() != nil {
+		t.Fatal("loop detector fired before the configured interrupt threshold")
+	}
+	am.OnEvent(agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		State:      agentic.StateToolCall,
+		Role:       agentic.Assistant,
+		ToolName:   "bash",
+		ToolInput:  input,
+		ToolCallID: "call_repeat_9",
+		IsDelta:    false,
+	})
+	if ctx.Err() == nil {
+		t.Fatal("expected real repeated completed calls to trigger the loop detector")
+	}
+	cancel()
+}
+
 func TestAgentManager_SetMode_InjectsPromptBody(t *testing.T) {
 	cfg := &config.Config{}
 	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder, Autonomy: internal.AutonomySolo})

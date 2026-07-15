@@ -123,6 +123,16 @@ func (am *AgentManager) handleTypedEvent(event agentic.OutputEvent) {
 }
 
 func (am *AgentManager) handleToolCallEvent(event agentic.OutputEvent) {
+	// Streaming tool calls emit one EventToolCall delta per partial arguments
+	// chunk, all carrying the accumulated input so far. The TUI uses those
+	// deltas for live updates, but the manager-level bookkeeping (turn recorder,
+	// loop detector, lifecycle hooks) must only act on the completed call.
+	// Acting on deltas would treat the chunks of a single streamed tool call as
+	// many repeated identical calls and falsely trigger the loop detector.
+	if event.IsDelta {
+		return
+	}
+
 	am.turnRecorder.RecordToolCall(event.ToolName, event.ToolInput, event.ToolCallID)
 	am.dispatchLifecycle("tool_call", map[string]any{
 		"tool":    event.ToolName,
