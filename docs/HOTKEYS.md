@@ -54,7 +54,7 @@ The table below shows the default keybindings. Customize them in your theme conf
 | `Ctrl+P` | Show the assembled system prompt |
 | `Ctrl+X` | Switch orchestrator tab (Conversation ↔ Stats) |
 | `Ctrl+Tab` | Toggle thinking block visibility |
-| `Ctrl+Shift+X` | Toggle tool/output expand |
+| `Ctrl+O` | Toggle all tool output (Summary/Full) |
 | `Ctrl+Shift+Z` | Delete the last chat message |
 | `Ctrl+C` | Cancel input request / quit when empty |
 | `Esc` | Cancel completion / close selection |

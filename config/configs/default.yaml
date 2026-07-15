@@ -217,6 +217,13 @@ tui:
     thinking_pane_position: "side"
     highlight_tool_input: true
     thinking_collapsed: false
+  # tools controls how tool calls are rendered in the chat.
+  #   view: "summary" (N-line preview, default) | "full" (everything)
+  #   preview_lines: lines shown per tool block in summary mode (default 10).
+  # Ctrl+O toggles all tool blocks between summary and full at runtime.
+  tools:
+    view: "summary"
+    preview_lines: 10
 
 plugins:
   dirs:

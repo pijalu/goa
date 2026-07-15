@@ -11,7 +11,24 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/tuirender"
 )
+
+// previewLinesFromCtx returns the effective Summary line count for a tool
+// body, preferring the configured value carried in ctx (tui.tools.preview_lines,
+// default 10) and falling back to the renderer's own default when ctx does not
+// carry one (headless/legacy callers, tests). This is the single chokepoint
+// that makes tool output uniform across all tools regardless of their
+// historical per-tool hardcodes.
+func previewLinesFromCtx(ctx tuirender.RenderContext, rendererDefault int) int {
+	if ctx.PreviewLines > 0 {
+		return ctx.PreviewLines
+	}
+	if rendererDefault > 0 {
+		return rendererDefault
+	}
+	return 10
+}
 
 // renderColor helpers produce ANSI-styled fragments. These are intentionally
 // self-contained so tool renderers do not depend on the tui package.

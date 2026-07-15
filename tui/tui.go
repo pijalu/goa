@@ -909,8 +909,11 @@ func (o *inputOverlay) SetFocused(f bool) { o.input.SetFocused(f) }
 func (o *inputOverlay) Focused() bool     { return o.input.Focused() }
 func (o *inputOverlay) Invalidate()       {}
 
-// handleToggleExpand handles Ctrl+O to toggle the last tool component's
-// expand/collapse state.
+// handleToggleExpand handles Ctrl+O to toggle ALL tool components between
+// Summary (collapsed, N-line preview) and Full (expanded) view for the
+// running session. Previously it toggled only the last widget; the global
+// toggle matches the spec (one key flips every tool block) and is honored by
+// every widget via the ChatViewport's ToolViewPolicy.
 func (t *TUI) handleToggleExpand(data string) bool {
 	if !matchesKey(data, "ctrl+o") {
 		return false
@@ -919,12 +922,9 @@ func (t *TUI) handleToggleExpand(data string) bool {
 	if cv == nil {
 		return false
 	}
-	if tc := cv.LastToolComponent(); tc != nil {
-		tc.SetExpanded(!tc.expanded)
-		t.RequestRender()
-		return true
-	}
-	return false
+	cv.ToggleAllToolsView()
+	t.RequestRender()
+	return true
 }
 
 // findChatViewport finds the ChatViewport child, if any.

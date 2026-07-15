@@ -81,8 +81,12 @@ type Agent struct {
 	// streamingToolCalls tracks tool calls that are still being streamed
 	// (arguments not yet complete). Maps tool call ID to accumulated partial
 	// state so EventToolCallDelta can update the TUI incrementally.
-	// Cleared at the start of each stream round via resetStreamRoundState.
-	streamingToolCalls map[string]*partialToolCall
+	// streamingToolCallsByIndex is the secondary index keyed by provider
+	// content-block index, used to correlate Anthropic input_json_delta
+	// events (which carry Delta + ContentIndex but no Partial snapshot).
+	// Both are cleared at the start of each stream round via resetStreamRoundState.
+	streamingToolCalls        map[string]*partialToolCall
+	streamingToolCallsByIndex map[int]*partialToolCall
 
 	// thinkingBuf accumulates delta thinking tokens from the current assistant
 	// response so they can be included in the assistant message when a tool call
@@ -220,10 +224,10 @@ type Agent struct {
 // streamed from the provider. Used to emit incremental EventToolCall
 // updates to observers so the TUI can display partial progress.
 type partialToolCall struct {
-	toolName      string
-	toolCallID    string
-	argsBuf       strings.Builder
-	widgetCreated bool
+	toolName     string
+	toolCallID   string
+	contentIndex int // provider content-block index; correlates nil-Partial deltas (Anthropic)
+	argsBuf      strings.Builder
 }
 
 // ContextStats holds the current context window usage of an Agent.

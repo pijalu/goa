@@ -13,6 +13,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/metrics"
+	"github.com/pijalu/goa/internal/tooltracker"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -268,23 +269,19 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 		a.subs.tuiEngine.SetTitle("goa - " + cwdBase)
 	}
 
-	if tc := a.lookupActiveTool(ev.ToolCallID); tc != nil {
-		a.applyToolResultToWidget(tc, ev)
+	if tc := a.toolTracker().OnResult(ev); tc != nil {
+		a.clearToolBusy()
 		return
 	}
-	// Fallback: if the tool result did not carry a matching ID, update the
-	// oldest still-pending tool widget so the result is visible in the widget
-	// instead of appearing as a separate text entry.
-	if tc := a.findPendingTool(); tc != nil {
-		a.applyToolResultToWidget(tc, ev)
-		return
-	}
+	// No tracked widget matched (e.g. a result for a call whose widget was
+	// already retired or never seen): render a plain tool-result entry.
 	a.subs.chat.AddToolResult(ev.Text)
 	a.clearToolBusy()
 }
 
-// applyToolResultToWidget updates a single tool widget with the result text,
-// status, and final (non-partial) marker.
+// applyToolResultToWidget is retained for the orchestrator/multi-agent path
+// and any caller that applies a result directly to a known widget. The
+// foreground path delegates result application to the ToolCallTracker.
 func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
 	tc.SetOutput(ev.Text)
 	tc.SetStatus(a.toolStatusFromResult(ev.Text))
@@ -296,59 +293,17 @@ func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agenti
 // (EventToolProgress, e.g. streamed bash stdout) into its widget without
 // completing it. The widget stays in the Running state with its live elapsed
 // timer; only the displayed output is refreshed so the user sees progress
-// instead of a frozen spinner. lookupActiveTool is intentionally NOT used: it
-// removes the entry, which would orphan the eventual EventToolResult.
+// instead of a frozen spinner. The tracker resolves the widget without
+// retiring it (so the eventual EventToolResult still resolves).
 func (a *App) handleToolProgress(ev *agentic.OutputEvent) {
-	if ev.ToolCallID != "" && a.subs.activeTools != nil {
-		if tc, ok := a.subs.activeTools[ev.ToolCallID]; ok {
-			tc.SetOutput(ev.Text)
-			tc.SetPartial(true)
-			return
-		}
-	}
-	if tc := a.findPendingTool(); tc != nil {
-		tc.SetOutput(ev.Text)
-		tc.SetPartial(true)
+	if tc := a.toolTracker().OnProgress(ev); tc != nil {
+		return
 	}
 }
 
-// lookupActiveTool returns the in-flight tool component matching the given
-// ToolCallID. The matched entry is removed so subsequent results do not
-// overwrite it. Non-empty IDs are only matched against the ID map; they do not
-// fall back to the legacy single-slot, which would update the wrong widget
-// when multiple tools are in flight.
-func (a *App) lookupActiveTool(callID string) *tui.ToolExecutionComponent {
-	if callID != "" {
-		if tc, ok := a.subs.activeTools[callID]; ok {
-			delete(a.subs.activeTools, callID)
-			return tc
-		}
-		return nil
-	}
-	if a.subs.activeTool != nil {
-		tc := a.subs.activeTool
-		a.subs.activeTool = nil
-		return tc
-	}
-	return nil
-}
-
-// findPendingTool walks the chat entries from oldest to newest and returns the
-// first tool widget that has not yet been marked as success or error. This is
-// a best-effort fallback when the provider does not include ToolCallIDs.
-func (a *App) findPendingTool() *tui.ToolExecutionComponent {
-	for _, c := range a.subs.chat.Children() {
-		tc, ok := c.(*tui.ToolExecutionComponent)
-		if !ok {
-			continue
-		}
-		if tc.Status() != tui.ToolSuccess && tc.Status() != tui.ToolError {
-			return tc
-		}
-	}
-	return nil
-}
-
+// failPendingTools marks every tool widget the tracker still considers
+// in-flight as interrupted (✗). This is the safety net at EventEnd for tools
+// cancelled mid-run; with the tracker it should rarely fire.
 // setStreamingStatus shows the most informative status label for the current
 // phase. When a tool batch is in progress it shows "Tool calling (X/Y)",
 // otherwise "Answering...".
@@ -364,9 +319,11 @@ func (a *App) setStreamingStatus() {
 
 // failPendingTools walks all tool widgets in the chat viewport and marks any
 // that are still in Running or Pending state as interrupted (ToolError).
-// This ensures that tools interrupted by session cancellation or errors show
-// as ✗ (error) rather than remaining in "⟳ running" state indefinitely.
+// This catches stragglers from EVERY path (foreground tracker, orchestrator
+// agent streams, or any orphan) so cancelled tools show ✗ instead of hanging.
+// The foreground tracker is reset so the next turn starts clean.
 func (a *App) failPendingTools() {
+	a.subs.toolTracker = nil
 	if a.subs.chat == nil {
 		return
 	}
@@ -408,8 +365,7 @@ func (a *App) handleSessionEnd(ev *agentic.OutputEvent) {
 	a.statsMu.Unlock()
 
 	subs := a.subs
-	subs.activeTool = nil
-	subs.activeTools = nil
+	subs.toolTracker = nil // fresh tracker for the next turn
 
 	// Check if the event carries an error (agentmanager.go emits EventEnd with
 	// non-empty Text on stream/connection errors). Surface it to the user with
@@ -544,50 +500,53 @@ func (a *App) handleStateChange(ev *agentic.OutputEvent) {
 	subs.footer.SetModelBusy(mainActivity != "")
 }
 
+// toolTracker returns the foreground conversation's tool-call tracker,
+// lazily binding it to the chat viewport. All tool widgets for the main
+// agent are created exclusively through it, which guarantees exactly one
+// widget per logical tool call (late-id adoption) and prevents the
+// "stuck on write" orphan bug.
+func (a *App) toolTracker() *tooltracker.Tracker {
+	if a.subs.toolTracker == nil {
+		chat := a.subs.chat
+		a.subs.toolTracker = tooltracker.New(func(name, input string) *tui.ToolExecutionComponent {
+			if chat == nil {
+				return nil
+			}
+			return chat.AddToolExecution(name, input)
+		})
+	}
+	return a.subs.toolTracker
+}
+
 func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	oldText := a.subs.statusMsg.Text()
 	// Finalize any active thinking/content stream before rendering a tool call.
 	a.endStreamIfDifferent(agentic.StateToolCall)
 
-	// Check if this is a streaming update (IsDelta=true) for an existing tool call.
-	if ev.IsDelta {
-		a.handleStreamingToolCallUpdate(ev)
+	tc, created := a.toolTracker().OnCall(ev)
+	if tc == nil {
 		return
 	}
 
-	// Check if a streaming widget already exists for this tool call ID.
-	// If so, transition it to "running" instead of creating a new one.
-	if ev.ToolCallID != "" && a.subs.activeTools != nil {
-		if existing, ok := a.subs.activeTools[ev.ToolCallID]; ok {
-			existing.SetArgsComplete()
-			existing.SetStatus(tui.ToolRunning)
-			existing.SetArgsJSON(ev.ToolInput)
-			label := a.toolCallProgressLabel()
-			a.subs.statusMsg.Show(label)
-			a.setToolCallingFooter(label)
-			return
-		}
-	}
-
-	a.statsMu.Lock()
-	a.toolCallsTotal++
-	a.statsMu.Unlock()
-
-	tc := a.subs.chat.AddToolExecution(ev.ToolName, ev.ToolInput)
-	if ev.ToolCallID != "" {
-		if a.subs.activeTools == nil {
-			a.subs.activeTools = make(map[string]*tui.ToolExecutionComponent)
-		}
-		a.subs.activeTools[ev.ToolCallID] = tc
-	} else {
-		a.subs.activeTool = tc
+	// Only the first appearance of a tool call counts toward the session
+	// total; streaming deltas and late-id adoptions reuse the existing widget.
+	if created {
+		a.statsMu.Lock()
+		a.toolCallsTotal++
+		a.statsMu.Unlock()
 	}
 
 	label := a.toolCallProgressLabel()
+	if ev.IsDelta {
+		// Streaming partial: keep a descriptive label until the call completes.
+		label = "Calling " + ev.ToolName + "..."
+	}
 	// Start the shared status spinner first so that the tool widget and
 	// footer observe a non-empty CurrentSpinnerFrame when they render.
 	a.subs.statusMsg.Show(label)
-	tc.SetStatus(tui.ToolRunning)
+	if !ev.IsDelta {
+		tc.SetStatus(tui.ToolRunning)
+	}
 
 	// The footer model spinner is not used during a tool call; only the chat
 	// status spinner shows the tool's progress.
@@ -600,52 +559,9 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	}
 }
 
-// handleStreamingToolCallUpdate processes a streaming tool call update
-// (IsDelta=true). It creates or updates a tool widget with partial args.
-func (a *App) handleStreamingToolCallUpdate(ev *agentic.OutputEvent) {
-	if tc := a.findActiveToolWidget(ev.ToolCallID, ev.ToolName); tc != nil {
-		tc.SetArgsPartial(ev.ToolInput)
-		return
-	}
-	a.createStreamingToolWidget(ev.ToolCallID, ev.ToolName, ev.ToolInput)
-}
-
-// findActiveToolWidget returns an existing widget for the given tool call ID
-// or tool name when it is still pending.
-func (a *App) findActiveToolWidget(toolCallID, toolName string) *tui.ToolExecutionComponent {
-	if toolCallID != "" && a.subs.activeTools != nil {
-		if existing, ok := a.subs.activeTools[toolCallID]; ok {
-			return existing
-		}
-	}
-	active := a.subs.activeTool
-	if active != nil && active.ToolName() == toolName && active.Status() == tui.ToolPending {
-		return active
-	}
-	return nil
-}
-
-// createStreamingToolWidget creates a new pending tool widget for a streaming
-// tool call and updates the status label.
-func (a *App) createStreamingToolWidget(toolCallID, toolName, toolInput string) {
-	tc := a.subs.chat.AddToolExecution(toolName, toolInput)
-	if toolCallID != "" {
-		if a.subs.activeTools == nil {
-			a.subs.activeTools = make(map[string]*tui.ToolExecutionComponent)
-		}
-		a.subs.activeTools[toolCallID] = tc
-	} else {
-		a.subs.activeTool = tc
-	}
-	// Prime the widget with the partial arguments so the renderer can show
-	// streaming content (e.g. python code) as it arrives.
-	tc.SetArgsPartial(toolInput)
-	label := "Streaming tool call..."
-	if toolName != "" {
-		label = "Calling " + toolName + "..."
-	}
-	a.subs.statusMsg.Show(label)
-}
+// (handleStreamingToolCallUpdate / findActiveToolWidget / createStreamingToolWidget
+// were folded into the ToolCallTracker, which owns widget identity for both
+// delta and final tool-call events.)
 
 func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {
 	subs := a.subs

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/tooltracker"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -23,8 +25,10 @@ type agentStreamState struct {
 	kind        tui.ConsoleItemType
 	thinkView   tui.Component
 	contentView tui.Component
-	tools       map[string]*tui.ToolExecutionComponent
-	activeTool  *tui.ToolExecutionComponent // fallback for tool calls without call_id
+	// tracker owns this agent's tool widgets (one per logical call, with
+	// late-id adoption). Replaces the per-state tools map + activeTool fallback
+	// that could orphan streaming widgets.
+	tracker *tooltracker.Tracker
 }
 
 // endSegment closes the current thinking/content segment so the next chunk
@@ -66,7 +70,7 @@ func (r *agentStreamRegistry) begin(role, agentID string) *agentStreamState {
 		return s
 	}
 	label := r.nextLabel(role)
-	s := &agentStreamState{label: label, tools: map[string]*tui.ToolExecutionComponent{}}
+	s := &agentStreamState{label: label}
 	r.streams[agentID] = s
 	return s
 }
@@ -229,63 +233,31 @@ func (a *App) handleAgentToolCall(agentID, name, input, callID string, isDelta b
 	}
 	state.endSegment()
 
-	existing := a.findExistingToolWidget(state, name, callID)
-	if existing != nil {
-		a.updateToolWidget(existing, state, name, input, callID, isDelta)
-		return
-	}
-
-	tc := a.subs.chat.AddAgentToolExecution(state.label, name, input)
-	a.configureNewToolWidget(tc, state, name, input, callID, isDelta)
+	a.agentTracker(state).OnCall(&agentic.OutputEvent{
+		Type:       agentic.EventToolCall,
+		ToolName:   name,
+		ToolInput:  input,
+		ToolCallID: callID,
+		IsDelta:    isDelta,
+	})
 	a.showToolStatus(state, name)
 }
 
-// findExistingToolWidget returns the widget for the given callID or name, if any.
-func (a *App) findExistingToolWidget(state *agentStreamState, name, callID string) *tui.ToolExecutionComponent {
-	if callID != "" {
-		if tc := state.tools[callID]; tc != nil {
-			return tc
-		}
+// agentTracker returns the per-agent tool-call tracker, lazily binding it to
+// the chat viewport with the agent's label so every widget it creates is
+// attributed to this agent.
+func (a *App) agentTracker(state *agentStreamState) *tooltracker.Tracker {
+	if state.tracker == nil {
+		chat := a.subs.chat
+		label := state.label
+		state.tracker = tooltracker.New(func(name, input string) *tui.ToolExecutionComponent {
+			if chat == nil {
+				return nil
+			}
+			return chat.AddAgentToolExecution(label, name, input)
+		})
 	}
-	if state.activeTool != nil && state.activeTool.ToolName() == name {
-		return state.activeTool
-	}
-	return nil
-}
-
-// updateToolWidget applies a streaming or final tool-call update to an existing widget.
-func (a *App) updateToolWidget(tc *tui.ToolExecutionComponent, state *agentStreamState, name, input, callID string, isDelta bool) {
-	if isDelta {
-		tc.SetArgsPartial(input)
-		return
-	}
-	// Final (non-delta) arrival: mark args complete and refresh.
-	tc.SetArgsJSON(input)
-	tc.SetArgsComplete()
-	tc.SetStatus(tui.ToolRunning)
-	a.storeToolRef(state, tc, callID)
-	a.showToolStatus(state, name)
-}
-
-// configureNewToolWidget sets up a freshly created tool widget for a streaming or final call.
-func (a *App) configureNewToolWidget(tc *tui.ToolExecutionComponent, state *agentStreamState, name, input, callID string, isDelta bool) {
-	if isDelta {
-		tc.SetArgsPartial(input)
-	} else {
-		tc.SetArgsComplete()
-		tc.SetArgsJSON(input)
-	}
-	tc.SetStatus(tui.ToolRunning)
-	a.storeToolRef(state, tc, callID)
-}
-
-// storeToolRef records the widget under the callID or as the active fallback.
-func (a *App) storeToolRef(state *agentStreamState, tc *tui.ToolExecutionComponent, callID string) {
-	if callID != "" {
-		state.tools[callID] = tc
-	} else {
-		state.activeTool = tc
-	}
+	return state.tracker
 }
 
 // showToolStatus updates the status bar to identify the tool being called.
@@ -308,28 +280,19 @@ func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
 	if state == nil {
 		return
 	}
-	var tc *tui.ToolExecutionComponent
-	if callID != "" {
-		if t, okTool := state.tools[callID]; okTool {
-			tc = t
-			delete(state.tools, callID)
+	// Close any open segment so the next thinking/content chunk starts a
+	// fresh block rather than appending to the pre-tool block.
+	state.endSegment()
+
+	if state.tracker != nil {
+		tc := state.tracker.OnResultOK(&agentic.OutputEvent{
+			Type:       agentic.EventToolResult,
+			ToolCallID: callID,
+			Text:       text,
+		}, ok)
+		if tc != nil {
+			return
 		}
-	} else if state.activeTool != nil {
-		tc = state.activeTool
-		state.activeTool = nil
-	}
-	if tc != nil {
-		status := tui.ToolSuccess
-		if !ok {
-			status = tui.ToolError
-		}
-		tc.SetOutput(text)
-		tc.SetStatus(status)
-		tc.SetPartial(false)
-		// Close any open segment so the next thinking/content chunk starts a
-		// fresh block rather than appending to the pre-tool block.
-		state.endSegment()
-		return
 	}
 	// Fallback: render a plain tool result entry if no matching widget exists.
 	a.subs.chat.AddToolResult(text)

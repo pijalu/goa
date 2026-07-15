@@ -62,7 +62,7 @@ func (r *BashRenderer) RenderResult(output string, ctx tuirender.RenderContext) 
 	var b strings.Builder
 	if parsed.output != "" {
 		lines := strings.Split(parsed.output, "\n")
-		maxLines := 5
+		maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
 		if ctx.Expanded {
 			maxLines = len(lines)
 		}

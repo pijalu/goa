@@ -90,7 +90,7 @@ func DefaultKeybindings() map[string]KeybindingDef {
 		KbSelectConfirm:        {[]string{KeyEnter}, "Confirm selection"},
 		KbSelectCancel:         {[]string{KeyEscape, KeyCtrlC}, "Cancel selection"},
 		KbDeleteLastMsg:        {[]string{"ctrl+shift+backspace"}, "Delete last chat message"},
-		KbToggleExpand:         {[]string{"ctrl+o"}, "Toggle tool/output expand/collapse"},
+		KbToggleExpand:         {[]string{"ctrl+o"}, "Toggle all tool output (Summary/Full)"},
 		KbCycleThinkingLevel:   {[]string{KeyShiftTab}, "Cycle thinking level"},
 		KbChangeMode:           {[]string{"alt+m"}, "Cycle major mode"},
 		KbOpenModeSelector:     {[]string{"alt+o"}, "Open the mode selector"},

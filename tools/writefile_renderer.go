@@ -86,7 +86,7 @@ func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.Re
 	allLines := strings.Split(content, "\n")
 	allLines = trimTrailingEmptyLines(allLines)
 
-	maxLines := r.PreviewLines()
+	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
 	if ctx.Expanded {
 		maxLines = len(allLines)
 	}

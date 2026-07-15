@@ -29,6 +29,7 @@ import (
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/lsp"
+	"github.com/pijalu/goa/internal/tooltracker"
 	"github.com/pijalu/goa/internal/role"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/telemetry"
@@ -101,11 +102,9 @@ type subsystems struct {
 	perfLoad         bool
 	perfLoadDuration time.Duration
 
-	// Active tool components for expand/collapse, keyed by ToolCallID so that
-	// concurrently-executing tool results update the correct component. The
-	// legacy single-slot field is kept as a fallback for events without an ID.
-	activeTools map[string]*tui.ToolExecutionComponent
-	activeTool  *tui.ToolExecutionComponent
+	// toolTracker owns the lifecycle of tool-call widgets for the foreground
+	// conversation stream (the single source of truth — no per-call maps).
+	toolTracker *tooltracker.Tracker
 
 	// Context files (AGENTS.md) loaded at startup
 	contextFiles []internal.ContextFile

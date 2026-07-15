@@ -59,11 +59,10 @@ func (r *EditFileRenderer) RenderResult(output string, ctx tuirender.RenderConte
 		return ""
 	}
 
-	return r.formatDiffOutput(rendered, ctx.Expanded, r.KeyExpand)
+	return r.formatDiffOutput(rendered, ctx.Expanded, previewLinesFromCtx(ctx, r.PreviewLines()), r.KeyExpand)
 }
 
-func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, key string) string {
-	maxLines := r.PreviewLines()
+func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, maxLines int, key string) string {
 	if expanded {
 		maxLines = len(rendered)
 	}

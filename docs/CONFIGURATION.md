@@ -260,6 +260,10 @@ tui:
     thinking_collapsed: false        # Collapse thinking blocks by default
     thinking_pane_position: "side"   # side | bottom
     highlight_tool_input: true
+  # Tool call display in the chat.
+  tools:
+    view: summary                    # summary (N-line preview) | full (everything)
+    preview_lines: 10                # lines shown per tool block in summary mode
 
 # ── Memory ─────────────────────────────────────────────────────────
 memory:
@@ -427,6 +431,44 @@ Some TUI settings can be changed without editing config files:
 
 `/thinking-blocks` updates `tui.transparency.thinking_collapsed` in
 `~/.goa/config.yaml` using a targeted write that preserves your other settings.
+
+**Tool output view (Ctrl+O).** Press `Ctrl+O` at runtime to flip **every** tool
+block between **Summary** (a compact N-line preview, the default) and **Full**
+(the complete input/output). The toggle applies to all tool blocks for the
+rest of the session; the starting mode and the Summary line count come from
+`tui.tools.view` and `tui.tools.preview_lines` (see [Config File Structure](#config-file-structure)).
+
+## Tool Call Display
+
+Each tool call renders as a single widget in the chat that progresses through
+`pending → running → success/error`. The widget is created the moment a tool
+call is detected — even while its arguments are still streaming from the model
+— so you always see what is happening as fast as possible:
+
+- **Header** — the tool name and its key argument (file path, command, …),
+  with a status icon (`◉` pending, spinner running, `✓` success, `✗` error).
+- **Body** — a uniform preview of the call's content: the **first** N lines of
+  streamed input (file content, code, diff) and the **last** N lines of output
+  (command stdout, search results). N is `tui.tools.preview_lines` (default 10).
+- **Stats line** — a live counter (`streaming… 42 lines in · 7 lines out`)
+  so long calls stay honest about how much has arrived, plus a `Ctrl+O to
+  expand` hint when collapsed.
+
+`Ctrl+O` toggles **all** tool blocks between Summary and Full for the session.
+A per-widget expand (focus + `Enter`) is also available as a secondary
+affordance.
+
+### Configuration
+
+```yaml
+tui:
+  tools:
+    view: summary        # summary (collapsed, N-line preview) | full (everything)
+    preview_lines: 10    # lines per tool block in summary mode
+```
+
+Defaults: `view: summary`, `preview_lines: 10`. The `preview_lines` value is
+the single source of truth for the collapsed line count across **all** tools.
 
 ## First Run Detection
 

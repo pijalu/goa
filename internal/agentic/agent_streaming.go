@@ -261,17 +261,26 @@ func (a *Agent) handleStreamToolCallStart(_ context.Context, _ *provider.Assista
 	}
 	a.markGenStart()
 	a.resetThinkingStall()
-	a.handleToolCallPartial(event.Partial.Content[0], true)
+	a.handleToolCallPartial(event.Partial.Content[0], event.ContentIndex)
 	return false, false, nil
 }
 
 func (a *Agent) handleStreamToolCallDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
-	if event.Partial == nil || len(event.Partial.Content) == 0 {
+	// OpenAI-style delta: a full Partial snapshot is attached.
+	if event.Partial != nil && len(event.Partial.Content) > 0 {
+		a.markGenStart()
+		a.resetThinkingStall()
+		a.handleToolCallPartial(event.Partial.Content[0], event.ContentIndex)
 		return false, false, nil
 	}
-	a.markGenStart()
-	a.resetThinkingStall()
-	a.handleToolCallPartial(event.Partial.Content[0], true)
+	// Anthropic-style delta: Partial is nil but Delta carries incremental JSON,
+	// correlated by ContentIndex. Without this the streamed arguments never
+	// reach the TUI until the whole call completes.
+	if event.Delta != "" {
+		a.markGenStart()
+		a.resetThinkingStall()
+		a.handleToolCallDeltaByIndex(event.ContentIndex, event.Delta)
+	}
 	return false, false, nil
 }
 
@@ -544,17 +553,15 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 }
 
 // handleToolCallPartial processes an incremental tool call event during
-// streaming (EventToolCallStart or EventToolCallDelta). It accumulates
-// partial arguments and emits EventToolCall updates to observers so the
-// TUI can display live progress as the model constructs the tool call.
+// streaming (EventToolCallStart, or EventToolCallDelta when the provider
+// ships a full Partial snapshot such as OpenAI). It accumulates partial
+// arguments and emits EventToolCall updates to observers so the TUI can
+// display live progress as the model constructs the tool call.
 //
-// On the first partial event for a tool call ID, a new partialToolCall
-// entry is created in streamingToolCalls and an EventToolCall with
-// IsDelta=true is emitted. On subsequent deltas, the accumulated args are
-// updated and a new EventToolCall is emitted. When the full tool call
-// arrives via EventToolCallEnd, shouldBufferToolCall handles the final
-// transition.
-func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, isPartial bool) {
+// contentIndex correlates the call across later nil-Partial deltas (Anthropic
+// ships input_json_delta with only Delta + ContentIndex); it is recorded so
+// handleToolCallDeltaByIndex can append to the right call.
+func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, contentIndex int) {
 	id := tc.ToolCallID
 	if id == "" {
 		id = tc.ToolName // fallback: some providers omit the ID on start
@@ -564,13 +571,15 @@ func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, isPartial bool) 
 	ptc, exists := a.streamingToolCalls[id]
 	if !exists {
 		ptc = &partialToolCall{
-			toolName:   tc.ToolName,
-			toolCallID: tc.ToolCallID,
+			toolName:     tc.ToolName,
+			toolCallID:   tc.ToolCallID,
+			contentIndex: contentIndex,
 		}
 		if a.streamingToolCalls == nil {
 			a.streamingToolCalls = make(map[string]*partialToolCall)
 		}
 		a.streamingToolCalls[id] = ptc
+		a.indexStreamingToolCall(contentIndex, ptc)
 	}
 	if tc.ToolName != "" {
 		ptc.toolName = tc.ToolName
@@ -578,9 +587,12 @@ func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, isPartial bool) 
 	if tc.ToolCallID != "" {
 		ptc.toolCallID = tc.ToolCallID
 	}
-	ptc.argsBuf.WriteString(tc.ToolArguments)
+	if tc.ToolArguments != "" {
+		ptc.argsBuf.WriteString(tc.ToolArguments)
+	}
 	accumulated := ptc.argsBuf.String()
-	ptc.widgetCreated = true
+	emitID := ptc.toolCallID
+	emitName := ptc.toolName
 	a.mu.Unlock()
 
 	// Emit partial EventToolCall to observers (TUI will show ◉ pending icon).
@@ -588,11 +600,49 @@ func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, isPartial bool) 
 		Type:       EventToolCall,
 		State:      StateToolCall,
 		Role:       Assistant,
-		ToolName:   tc.ToolName,
+		ToolName:   emitName,
 		ToolInput:  accumulated,
-		ToolCallID: tc.ToolCallID,
+		ToolCallID: emitID,
 		IsDelta:    true,
 	})
+}
+
+// handleToolCallDeltaByIndex appends an incremental JSON fragment to the
+// streaming tool call identified by contentIndex and re-emits a partial
+// EventToolCall. This is the Anthropic path: input_json_delta events carry
+// only Delta + ContentIndex (no Partial snapshot), so without this the args
+// would never stream to the TUI until the whole call completed.
+func (a *Agent) handleToolCallDeltaByIndex(contentIndex int, delta string) {
+	a.mu.Lock()
+	ptc := a.streamingToolCallsByIndex[contentIndex]
+	if ptc == nil {
+		a.mu.Unlock()
+		return
+	}
+	ptc.argsBuf.WriteString(delta)
+	accumulated := ptc.argsBuf.String()
+	emitID := ptc.toolCallID
+	emitName := ptc.toolName
+	a.mu.Unlock()
+
+	a.emitEvent(OutputEvent{
+		Type:       EventToolCall,
+		State:      StateToolCall,
+		Role:       Assistant,
+		ToolName:   emitName,
+		ToolInput:  accumulated,
+		ToolCallID: emitID,
+		IsDelta:    true,
+	})
+}
+
+// indexStreamingToolCall records a partial call under its content-block index
+// so nil-Partial deltas (Anthropic) can be correlated. Caller must hold a.mu.
+func (a *Agent) indexStreamingToolCall(contentIndex int, ptc *partialToolCall) {
+	if a.streamingToolCallsByIndex == nil {
+		a.streamingToolCallsByIndex = make(map[int]*partialToolCall)
+	}
+	a.streamingToolCallsByIndex[contentIndex] = ptc
 }
 
 // containsToolXMLTag reports whether text still contains any raw tool-call XML
@@ -631,6 +681,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.streamLoopDetected = false
 	a.resetThinkingStall()
 	a.streamingToolCalls = nil
+	a.streamingToolCallsByIndex = nil
 }
 
 // checkStreamLoop detects immediate repetition of a suffix within the current

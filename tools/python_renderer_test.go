@@ -64,7 +64,8 @@ func TestPythonRenderer_RenderResult_ExpandHintWhenTruncated(t *testing.T) {
 	r := NewPythonRenderer()
 	code := "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\n"
 	output := "line1\nline2\nline3\nline4\nline5\nline6"
-	out := r.RenderResult(output, tuirender.RenderContext{Args: map[string]any{"code": code}})
+	// Summary view with a 5-line preview forces truncation of the 6-line body.
+	out := r.RenderResult(output, tuirender.RenderContext{Args: map[string]any{"code": code}, PreviewLines: 5})
 	stripped := ansi.Strip(out)
 	if !strings.Contains(stripped, "more line") {
 		t.Errorf("expected truncation hint, got %q", stripped)

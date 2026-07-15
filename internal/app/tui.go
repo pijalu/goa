@@ -77,6 +77,12 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 		}
 	}
 	chat := tui.NewChatViewport()
+	if cfg := a.subs.cfg; cfg != nil {
+		chat.SetToolsConfig(
+			cfg.TUI.Tools.View == config.ToolViewFull,
+			cfg.TUI.Tools.PreviewLines,
+		)
+	}
 	agentContent := orchpanel.NewAgentContent()
 	agentTabBar := orchpanel.NewAgentTabBar()
 	statusBar := tui.NewStatusMsg()

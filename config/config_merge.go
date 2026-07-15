@@ -430,6 +430,19 @@ func (c *Config) mergeTUI(other *Config) {
 	if other.TUI.Spinner != "" {
 		c.TUI.Spinner = other.TUI.Spinner
 	}
+	mergeToolDisplay(&c.TUI.Tools, &other.TUI.Tools)
+}
+
+// mergeToolDisplay merges the tools display config. Non-zero PreviewLines and
+// non-empty View win, so a more specific layer (project/local) overrides the
+// embedded defaults.
+func mergeToolDisplay(dst, src *ToolDisplayConfig) {
+	if src.View != "" {
+		dst.View = src.View
+	}
+	if src.PreviewLines != 0 {
+		dst.PreviewLines = src.PreviewLines
+	}
 }
 
 // mergeTransparency merges transparency config fields.

@@ -41,6 +41,23 @@ func (t *testTerminal) ShowCursor()                                 {}
 func (t *testTerminal) ClearScreen()                                {}
 func (t *testTerminal) SetTitle(title string)                       {}
 
+// lastTool returns the most recent ToolExecutionComponent child of the chat
+// viewport, or nil. Used by tests that previously inspected the removed
+// subs.activeTool / subs.activeTools fields; the ToolCallTracker is now the
+// single source of truth, so tests observe widgets through the chat.
+func lastTool(cv *tui.ChatViewport) *tui.ToolExecutionComponent {
+	if cv == nil {
+		return nil
+	}
+	children := cv.Children()
+	for i := len(children) - 1; i >= 0; i-- {
+		if tc, ok := children[i].(*tui.ToolExecutionComponent); ok {
+			return tc
+		}
+	}
+	return nil
+}
+
 func testSubsystems() *subsystems {
 	return &subsystems{
 		chat:         tui.NewChatViewport(),
@@ -272,10 +289,10 @@ func TestHandleStreamContent_ThinkingAndContentAlternate(t *testing.T) {
 
 func TestHandleToolResult_BashCompletesOnExitLine(t *testing.T) {
 	app := New(testSubsystems())
-	tc := app.subs.chat.AddToolExecution("bash", `{"command":"echo hi"}`)
-	app.subs.activeTool = tc
+	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"echo hi"}`})
+	tc := lastTool(app.subs.chat)
 
-	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, Text: "hi\nDuration: 0.01s\n"})
+	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, ToolName: "bash", Text: "hi\nDuration: 0.01s\n"})
 
 	if tc.Status() != tui.ToolSuccess {
 		t.Errorf("expected ToolSuccess, got %v", tc.Status())
@@ -284,10 +301,10 @@ func TestHandleToolResult_BashCompletesOnExitLine(t *testing.T) {
 
 func TestHandleToolResult_NonBashMarksErrorOnErrorPrefix(t *testing.T) {
 	app := New(testSubsystems())
-	tc := app.subs.chat.AddToolExecution("read", `{"path":"missing.txt"}`)
-	app.subs.activeTool = tc
+	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "read", ToolInput: `{"path":"missing.txt"}`})
+	tc := lastTool(app.subs.chat)
 
-	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, Text: "Error: file not found\nHint: See /docs TOOLS"})
+	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, ToolName: "read", Text: "Error: file not found\nHint: See /docs TOOLS"})
 
 	if tc.Status() != tui.ToolError {
 		t.Errorf("expected ToolError, got %v", tc.Status())
@@ -298,8 +315,8 @@ func TestHandleToolResult_NonBashMarksSuccess(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.statusMsg = tui.NewStatusMsg()
 	app.subs.footer = tui.NewFooter()
-	tc := app.subs.chat.AddToolExecution("read", `{"path":"ok.txt"}`)
-	app.subs.activeTool = tc
+	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "read", ToolInput: `{"path":"ok.txt"}`})
+	tc := lastTool(app.subs.chat)
 	app.subs.footer.SetModelBusy(true)
 
 	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, Text: "file contents"})
@@ -468,14 +485,14 @@ func TestHandleToolResult_EmptyResultClearsBusy(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.statusMsg = tui.NewStatusMsg()
 	app.subs.footer = tui.NewFooter()
-	tc := app.subs.chat.AddToolExecution("read", `{"path":"empty.txt"}`)
-	app.subs.activeTool = tc
+	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "read", ToolInput: `{"path":"empty.txt"}`})
+	tc := lastTool(app.subs.chat)
 	app.subs.footer.SetModelBusy(true)
 
-	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, Text: ""})
+	app.handleToolResult(&agentic.OutputEvent{Type: agentic.EventToolResult, ToolName: "read", Text: ""})
 
-	if app.subs.activeTool != nil {
-		t.Error("expected activeTool to be cleared after empty result")
+	if lastTool(app.subs.chat) == nil {
+		t.Error("expected tool widget to remain in chat after empty result")
 	}
 	if app.subs.footer.Data().ModelBusy {
 		t.Error("expected model busy cleared after empty tool result")

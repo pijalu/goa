@@ -48,12 +48,13 @@ func (r *PythonRenderer) RenderResult(output string, ctx tuirender.RenderContext
 		return ""
 	}
 
-	scriptDisplay, scriptHidden := limitHead(scriptLines, 5, ctx.Expanded)
+	pv := previewLinesFromCtx(ctx, r.PreviewLines())
+	scriptDisplay, scriptHidden := limitHead(scriptLines, pv, ctx.Expanded)
 	outLines := []string{}
 	outHidden := 0
 	if output != "" {
 		outLines = trimTrailingEmptyLines(strings.Split(output, "\n"))
-		outLines, outHidden = limitTail(outLines, 5, ctx.Expanded)
+		outLines, outHidden = limitTail(outLines, pv, ctx.Expanded)
 	}
 
 	var b strings.Builder

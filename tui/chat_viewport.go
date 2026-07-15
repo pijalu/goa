@@ -113,6 +113,14 @@ type ChatViewport struct {
 	allocatedHeight int
 	lastRenderWidth int
 
+	// Tool view policy (Summary/Full + preview line count). toolsDefaultExpanded
+	// comes from config (tui.tools.view == "full"); toolsExpandOverride is set
+	// by Ctrl+O to flip all blocks for the running session (nil = follow config).
+	// toolsPreviewLines is the configured Summary line count (default 10).
+	toolsDefaultExpanded bool
+	toolsExpandOverride   *bool
+	toolsPreviewLines     int
+
 	// toolWidgetsDirty is set by the animation ticker to request an in-place
 	// update of running tool widgets on the next Render call. It is an atomic
 	// flag so the ticker (which may run on a different goroutine) can safely
@@ -143,6 +151,59 @@ func (cv *ChatViewport) TotalHeight() int {
 // NewChatViewport creates a ChatViewport backed by a fresh Conversation.
 func NewChatViewport() *ChatViewport {
 	return &ChatViewport{Conversation: NewConversation(), pendingSteering: -1}
+}
+
+// SetToolsConfig applies the configured tool display policy: the default
+// expand mode and the Summary preview line count. Called once from the app
+// layer after the config is loaded. Zero PreviewLines is normalized to the
+// default (10).
+func (cv *ChatViewport) SetToolsConfig(expanded bool, previewLines int) {
+	if previewLines <= 0 {
+		previewLines = defaultToolPreviewLines
+	}
+	changed := cv.toolsDefaultExpanded != expanded || cv.toolsPreviewLines != previewLines
+	cv.toolsDefaultExpanded = expanded
+	cv.toolsPreviewLines = previewLines
+	if changed {
+		cv.invalidateAllToolWidgets()
+	}
+}
+
+// ToggleAllToolsView flips every tool block between Summary and Full for the
+// running session (Ctrl+O). Subsequent widgets inherit the override too.
+func (cv *ChatViewport) ToggleAllToolsView() {
+	nowExpanded := !cv.EffectiveToolsExpanded()
+	cv.toolsExpandOverride = &nowExpanded
+	cv.invalidateAllToolWidgets()
+}
+
+// EffectiveToolsExpanded reports whether tool blocks render fully expanded,
+// honouring a Ctrl+O override over the config default.
+func (cv *ChatViewport) EffectiveToolsExpanded() bool {
+	if cv.toolsExpandOverride != nil {
+		return *cv.toolsExpandOverride
+	}
+	return cv.toolsDefaultExpanded
+}
+
+// EffectivePreviewLines returns the configured Summary line count (default 10).
+func (cv *ChatViewport) EffectivePreviewLines() int {
+	if cv.toolsPreviewLines <= 0 {
+		return defaultToolPreviewLines
+	}
+	return cv.toolsPreviewLines
+}
+
+// invalidateAllToolWidgets forces every tool widget to rebuild on the next
+// render so a global view-mode change (config load or Ctrl+O) takes effect
+// immediately.
+func (cv *ChatViewport) invalidateAllToolWidgets() {
+	for i := range cv.entries {
+		if tc, ok := cv.entries[i].View.(*ToolExecutionComponent); ok {
+			tc.SetToolViewPolicy(cv)
+		}
+	}
+	cv.generation++
 }
 
 // SetAgentFilter scopes the viewport to one agent's blocks (label as stamped
@@ -591,6 +652,9 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 			}
 		}
 	})
+	// Attach the global tool-view policy so the widget honours the config
+	// default and live Ctrl+O toggles from its first render.
+	tc.SetToolViewPolicy(cv)
 	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleToolCall, Text: name}, View: tc})
 	return tc
 }

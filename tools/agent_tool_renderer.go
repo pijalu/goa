@@ -36,7 +36,7 @@ func (r *AgentToolRenderer) RenderResult(output string, ctx tuirender.RenderCont
 	if ctx.Expanded {
 		return output
 	}
-	maxLines := 4
+	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
 	if len(lines) <= maxLines {
 		return output
 	}

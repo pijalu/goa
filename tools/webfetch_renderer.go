@@ -52,7 +52,7 @@ func (r *WebFetchRenderer) RenderResult(output string, ctx tuirender.RenderConte
 	}
 	parsed := r.parseOutput(output)
 	lines := strings.Split(parsed.body, "\n")
-	maxLines := r.PreviewLines()
+	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
 	if ctx.Expanded {
 		maxLines = len(lines)
 	}

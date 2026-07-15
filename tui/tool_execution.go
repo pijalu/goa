@@ -14,7 +14,26 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/tuirender"
 )
+
+// ToolViewPolicy is implemented by the ChatViewport to supply the global
+// tool-view state (effective expand mode + preview line count) to every tool
+// widget. Keeping it an interface lets widgets be unit-tested without a real
+// viewport and centralizes the config/runtime policy in one place.
+type ToolViewPolicy interface {
+	// EffectiveToolsExpanded reports whether tool blocks should render fully
+	// expanded (Full view), either because the config default is "full" or the
+	// user toggled all blocks on with Ctrl+O.
+	EffectiveToolsExpanded() bool
+	// EffectivePreviewLines returns the configured Summary line count.
+	EffectivePreviewLines() int
+}
+
+// defaultToolPreviewLines is the fallback Summary line count when no view
+// policy is attached (e.g. in isolated component tests). Production widgets
+// always receive the configured value (default 10) via ToolViewPolicy.
+const defaultToolPreviewLines = 10
 
 // partialStringFieldRe extracts quoted string fields from incomplete JSON
 // objects during streaming tool-call argument display.
@@ -60,6 +79,11 @@ type ToolExecutionComponent struct {
 	// it is rendered as a colored prefix on the tool header so multiple agents'
 	// tool calls are distinguishable in the chat viewport.
 	agentLabel string
+
+	// viewPolicy supplies the global tool-view state (expand mode + preview
+	// line count). When nil, the widget falls back to its own expanded flag and
+	// a default preview count.
+	viewPolicy ToolViewPolicy
 }
 
 // toolBox renders the tool header, body, and trailing blank with the
@@ -67,6 +91,7 @@ type ToolExecutionComponent struct {
 type toolBox struct {
 	header   string
 	body     string
+	stats    string
 	duration string
 	bgAnsi   string
 	rendered []string
@@ -98,6 +123,11 @@ func (b *toolBox) build(width int) []string {
 		for _, line := range strings.Split(b.body, "\n") {
 			lines = append(lines, b.bgLine(line, width))
 		}
+	}
+
+	// Stats (live line/byte counter)
+	if b.stats != "" {
+		lines = append(lines, b.bgLine(b.stats, width))
 	}
 
 	// Duration
@@ -152,12 +182,26 @@ func (tc *ToolExecutionComponent) updateBox() {
 		renderer = tc.generic
 	}
 
+	expanded := tc.expanded
+	previewLines := defaultToolPreviewLines
+	if tc.viewPolicy != nil {
+		if tc.viewPolicy.EffectiveToolsExpanded() {
+			expanded = true
+		}
+		if n := tc.viewPolicy.EffectivePreviewLines(); n > 0 {
+			previewLines = n
+		}
+	}
+	stats := tuirender.StatsFor(tc.args, tc.output)
+
 	ctx := RenderContext{
-		Expanded:     tc.expanded,
+		Expanded:     expanded,
 		IsPartial:    tc.isPartial,
 		IsError:      tc.status == ToolError,
 		ArgsComplete: tc.argsComplete,
 		Args:         tc.args,
+		PreviewLines: previewLines,
+		Stats:        stats,
 	}
 
 	// Build header
@@ -176,6 +220,12 @@ func (tc *ToolExecutionComponent) updateBox() {
 
 	// Build body
 	tc.box.body = tc.buildBody(renderer, ctx)
+
+	// Live stats line: a uniform, compact counter for every tool (lines/bytes
+	// in and out). Shown while streaming/running and whenever there is input or
+	// output worth summarizing. Keeps long calls honest about how much has
+	// arrived without forcing an expand.
+	tc.box.stats = formatToolStats(stats, expanded, tc.isPartial)
 
 	// Duration
 	tc.renderDuration()
@@ -329,6 +379,18 @@ func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 // render cache.
 func (tc *ToolExecutionComponent) SetOnInvalidate(fn func()) {
 	tc.onInvalidate = fn
+}
+
+// SetToolViewPolicy attaches the global tool-view policy (effective expand
+// mode + preview line count) from the owning ChatViewport. Must be called
+// before the first render so the widget honours the config/Ctrl+O state.
+func (tc *ToolExecutionComponent) SetToolViewPolicy(p ToolViewPolicy) {
+	tc.viewPolicy = p
+	tc.updateBox()
+	tc.Invalidate()
+	if tc.onInvalidate != nil {
+		tc.onInvalidate()
+	}
 }
 
 // SetAgentLabel sets the display label prefix for the tool widget.
@@ -577,5 +639,32 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%.2fs", d.Seconds())
 	}
 	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// formatToolStats renders the uniform live counter line for a tool block. It
+// summarizes the streamed input (args body) and the output so the user can see
+// at a glance how much has arrived — especially for long streaming calls. The
+// line is suppressed when there is nothing meaningful to show (no input and
+// no output), and uses muted styling so it reads as metadata, not content.
+func formatToolStats(s tuirender.StreamStats, expanded, isPartial bool) string {
+	if !s.HasInput && !s.HasOutput {
+		return ""
+	}
+	var parts []string
+	if s.HasInput {
+		if isPartial {
+			parts = append(parts, fmt.Sprintf("streaming… %d lines in", s.InputLines))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d lines in", s.InputLines))
+		}
+	}
+	if s.HasOutput {
+		parts = append(parts, fmt.Sprintf("%d lines out", s.OutputLines))
+	}
+	line := strings.Join(parts, " · ")
+	if !expanded {
+		line += " (Ctrl+O to expand)"
+	}
+	return ansiMuted(line)
 }
 

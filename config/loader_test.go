@@ -794,3 +794,48 @@ execution:
 		t.Errorf("DefaultModeState().Autonomy = %q, want %q", ms.Autonomy, internal.AutonomySolo)
 	}
 }
+
+// TestLoadToolsDefaults verifies the embedded defaults populate the tools
+// display config (view=summary, preview_lines=10).
+func TestLoadToolsDefaults(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+	t.Setenv("HOME", homeDir)
+
+	loader := NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.TUI.Tools.View != ToolViewSummary {
+		t.Errorf("default Tools.View = %q, want %q", cfg.TUI.Tools.View, ToolViewSummary)
+	}
+	if cfg.TUI.Tools.PreviewLines != 10 {
+		t.Errorf("default Tools.PreviewLines = %d, want 10", cfg.TUI.Tools.PreviewLines)
+	}
+}
+
+// TestLoadToolsOverride verifies a project config overrides the tools defaults.
+func TestLoadToolsOverride(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+	t.Setenv("HOME", homeDir)
+
+	writeConfig(t, filepath.Join(projectDir, ".goa", "config.yaml"), `
+tui:
+  tools:
+    view: full
+    preview_lines: 7
+`)
+	loader := NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.TUI.Tools.View != ToolViewFull {
+		t.Errorf("Tools.View = %q, want %q", cfg.TUI.Tools.View, ToolViewFull)
+	}
+	if cfg.TUI.Tools.PreviewLines != 7 {
+		t.Errorf("Tools.PreviewLines = %d, want 7", cfg.TUI.Tools.PreviewLines)
+	}
+}

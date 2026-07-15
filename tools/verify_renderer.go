@@ -70,7 +70,7 @@ func (r *VerifyRenderer) RenderResult(output string, ctx tuirender.RenderContext
 		return ""
 	}
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
-	maxLines := 8
+	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
 	if ctx.Expanded {
 		maxLines = len(lines)
 	}

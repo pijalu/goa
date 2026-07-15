@@ -206,3 +206,91 @@ func TestHandleToolCallPartial_IgnoresEmptyContentSlice(t *testing.T) {
 		t.Errorf("expected no events for empty content, got %d", len(events))
 	}
 }
+
+// TestHandleToolCallDelta_AnthropicStyleNilPartial verifies the Anthropic
+// streaming path: input_json_delta events carry only Delta + ContentIndex
+// (no Partial snapshot). Previously these were dropped because the handler
+// early-returned on Partial==nil, so Anthropic tool args never streamed to
+// the TUI until the whole call completed. Now the delta is accumulated via
+// the content-index index and re-emitted.
+func TestHandleToolCallDelta_AnthropicStyleNilPartial(t *testing.T) {
+	agent := NewAgent(Config{
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+
+	ctx := context.Background()
+
+	// content_block_start (tool_use): establishes id + name + index, no args yet.
+	_, _, _ = agent.handleStreamEvent(ctx, nil, provider.AssistantMessageEvent{
+		Type:         provider.EventToolCallStart,
+		ContentIndex: 2,
+		Partial: &provider.AssistantMessage{
+			Content: []provider.ContentBlock{{
+				Type:       provider.ContentBlockToolCall,
+				ToolCallID: "toolu_anthropic_1",
+				ToolName:   "write",
+			}},
+		},
+	})
+
+	// input_json_delta #1: Partial is nil, only Delta + ContentIndex.
+	_, _, _ = agent.handleStreamEvent(ctx, nil, provider.AssistantMessageEvent{
+		Type:         provider.EventToolCallDelta,
+		ContentIndex: 2,
+		Delta:        `{"path":"main.go","content":"pack`,
+	})
+	// input_json_delta #2.
+	_, _, _ = agent.handleStreamEvent(ctx, nil, provider.AssistantMessageEvent{
+		Type:         provider.EventToolCallDelta,
+		ContentIndex: 2,
+		Delta:        `age main"}`,
+	})
+
+	obs.mu.Lock()
+	events := make([]OutputEvent, len(obs.events))
+	copy(events, obs.events)
+	obs.mu.Unlock()
+
+	// Expect 1 (start, empty args) + 2 (delta accumulations) = 3 delta events.
+	var deltas []OutputEvent
+	for _, ev := range events {
+		if ev.Type == EventToolCall && ev.IsDelta {
+			deltas = append(deltas, ev)
+		}
+	}
+	if len(deltas) != 3 {
+		t.Fatalf("expected 3 streamed deltas, got %d", len(deltas))
+	}
+	last := deltas[len(deltas)-1]
+	if last.ToolCallID != "toolu_anthropic_1" {
+		t.Errorf("expected accumulated delta to keep id, got %q", last.ToolCallID)
+	}
+	if last.ToolInput != `{"path":"main.go","content":"package main"}` {
+		t.Errorf("expected accumulated args, got %q", last.ToolInput)
+	}
+}
+
+// TestHandleToolCallDelta_NilPartialNoIndexIsDropped ensures a nil-Partial
+// delta with no prior content_block_start (unknown index) is safely ignored
+// rather than panicking.
+func TestHandleToolCallDelta_NilPartialNoIndexIsDropped(t *testing.T) {
+	agent := NewAgent(Config{SystemPrompt: "test", Logger: NewLogger(Error)})
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+
+	_, _, _ = agent.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{
+		Type:         provider.EventToolCallDelta,
+		ContentIndex: 9,
+		Delta:        "orphan",
+	})
+
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if len(obs.events) != 0 {
+		t.Errorf("expected no events for unknown-index delta, got %d", len(obs.events))
+	}
+}

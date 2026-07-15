@@ -547,6 +547,31 @@ type TUIConfig struct {
 	Transparency   TransparencyConfig    `yaml:"transparency"`
 	ModeLine       ModeLineSegmentConfig `yaml:"modeline,omitempty"`
 	Spinner        string                `yaml:"spinner"`
+	Tools          ToolDisplayConfig     `yaml:"tools"`
+}
+
+// ToolView is the default display mode for tool blocks in the chat.
+type ToolView string
+
+const (
+	// ToolViewSummary shows a compact N-line preview of each tool call's
+	// input/output (the default).
+	ToolViewSummary ToolView = "summary"
+	// ToolViewFull shows the complete input/output of every tool call.
+	ToolViewFull ToolView = "full"
+)
+
+// ToolDisplayConfig controls how tool calls are rendered in the chat.
+type ToolDisplayConfig struct {
+	// View is the default mode: "summary" (collapsed, N-line preview) or
+	// "full" (expanded). Defaults to "summary". Ctrl+O toggles all tool
+	// blocks between the two modes for the running session.
+	View ToolView `yaml:"view"`
+	// PreviewLines is the number of input/output lines shown per tool block
+	// in Summary mode. Defaults to 10. It is the single source of truth for
+	// the collapsed line count across ALL tools (replaces the previous
+	// inconsistent per-tool hardcodes).
+	PreviewLines int `yaml:"preview_lines"`
 }
 
 // TransparencyConfig controls which LLM transparency features are visible.

@@ -292,9 +292,9 @@ func TestHandleToolCall_ToolWidgetShowsRunningSpinner(t *testing.T) {
 	app := New(testSubsystems())
 	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`})
 
-	tc := app.subs.activeTool
+	tc := lastTool(app.subs.chat)
 	if tc == nil {
-		t.Fatal("expected activeTool to be set after handleToolCall")
+		t.Fatal("expected tool widget to be set after handleToolCall")
 	}
 	if tc.Status() != tui.ToolRunning {
 		t.Errorf("expected tool widget status ToolRunning, got %v", tc.Status())
@@ -580,9 +580,9 @@ func TestHandleToolCall_IsDeltaCreatesPendingWidget(t *testing.T) {
 	})
 
 	// Widget should exist but be in Pending state (not Running).
-	tc, ok := app.subs.activeTools["call_1"]
-	if !ok {
-		t.Fatal("expected streaming tool widget to be created in activeTools")
+	tc := lastTool(app.subs.chat)
+	if tc == nil {
+		t.Fatal("expected streaming tool widget to be created")
 	}
 	if tc.Status() != tui.ToolPending {
 		t.Errorf("expected ToolPending for streaming tool, got %v", tc.Status())
@@ -606,9 +606,9 @@ func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
 		IsDelta:    true,
 	})
 
-	tc, ok := app.subs.activeTools["call_2"]
-	if !ok {
-		t.Fatal("expected streaming tool widget in activeTools after delta")
+	tc := lastTool(app.subs.chat)
+	if tc == nil {
+		t.Fatal("expected streaming tool widget after delta")
 	}
 	if tc.Status() != tui.ToolPending {
 		t.Errorf("expected ToolPending after delta, got %v", tc.Status())
@@ -643,10 +643,10 @@ func TestHandleToolCall_NonDeltaCreatesRunningWidget(t *testing.T) {
 		// IsDelta defaults to false
 	})
 
-	if app.subs.activeTool == nil {
-		t.Fatal("expected activeTool after non-delta tool call")
+	if lastTool(app.subs.chat) == nil {
+		t.Fatal("expected tool widget after non-delta tool call")
 	}
-	if app.subs.activeTool.Status() != tui.ToolRunning {
-		t.Errorf("expected ToolRunning for non-delta tool call, got %v", app.subs.activeTool.Status())
+	if lastTool(app.subs.chat).Status() != tui.ToolRunning {
+		t.Errorf("expected ToolRunning for non-delta tool call, got %v", lastTool(app.subs.chat).Status())
 	}
 }
