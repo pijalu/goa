@@ -38,6 +38,35 @@ func TestWriteToolUI_StreamsContentBeforeResult(t *testing.T) {
 	}
 }
 
+// TestWriteToolUI_UpdatesWithMultipleDeltas validates that the write tool
+// widget updates in-place as successive argument deltas arrive.
+func TestWriteToolUI_UpdatesWithMultipleDeltas(t *testing.T) {
+	_, def := spinner.Default()
+	tui.SetSpinner(def)
+	defer tui.SetSpinner(spinner.Definition{})
+
+	sc := newUIScenario(t, 100, 24)
+
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "write", ToolInput: `{"path":"main.go`, ToolCallID: "w1",
+		IsDelta: true,
+	})
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "write", ToolInput: `{"path":"main.go","content":"package main`, ToolCallID: "w1",
+		IsDelta: true,
+	})
+	visible := strings.Join(sc.engine.AgentFrame().Visible, "\n")
+	stripped := ansi.Strip(visible)
+	if !strings.Contains(stripped, "package main") {
+		t.Errorf("expected updated streamed content visible for write; visible:\n%s", visible)
+	}
+	if !strings.Contains(stripped, "main.go") {
+		t.Errorf("expected streamed path visible for write; visible:\n%s", visible)
+	}
+}
+
 // TestBashToolUI_StreamsCommandHeader validates that the bash tool widget
 // updates its header while the command argument streams.
 func TestBashToolUI_StreamsCommandHeader(t *testing.T) {

@@ -204,6 +204,31 @@ func TestUIScenario_ToolWidgetVisibleFromStart(t *testing.T) {
 	}
 }
 
+// TestUIScenario_ThinkingBlockClosesWhenToolCallStreams verifies that the
+// thinking stream is closed as soon as a streaming tool call arrives, so the
+// tool call is rendered in its own widget rather than appended to the
+// thinking block.
+func TestUIScenario_ThinkingBlockClosesWhenToolCallStreams(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateThinking, Text: "I need to write a file.", IsDelta: true})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall, ToolName: "write", ToolInput: `{"path":"main.go"`, ToolCallID: "call_1", IsDelta: true})
+
+	frame := sc.engine.AgentFrame()
+	visible := strings.Join(frame.Visible, "\n")
+	stripped := ansi.Strip(visible)
+	if !strings.Contains(stripped, "thinking") {
+		t.Errorf("expected thinking block visible; visible:\n%s", visible)
+	}
+	if !strings.Contains(stripped, "write main.go") {
+		t.Errorf("expected streaming tool widget visible; visible:\n%s", visible)
+	}
+	if !strings.Contains(stripped, "Calling write") {
+		t.Errorf("expected status to show tool calling; visible:\n%s", visible)
+	}
+}
+
 // TestUIScenario_FilmstripIsANSIFreeForAgentIntrospection ensures the
 // filmstrip text rendering is ANSI-free and human/agent-readable, so an AI
 // agent can consume it directly when reasoning about UI state.

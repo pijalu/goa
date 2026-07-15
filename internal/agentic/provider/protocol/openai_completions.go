@@ -578,6 +578,21 @@ func (a *streamAccum) handleToolCall(m parserMessage) {
 			}
 			if m.ToolInput != "" {
 				ta.Args += m.ToolInput
+				// Emit incremental args delta so the TUI can show progress
+				// as the tool call arguments are being streamed in.
+				a.Stream.Push(schema.AssistantMessageEvent{
+					Type:         schema.EventToolCallDelta,
+					ContentIndex: idx,
+					Delta:        m.ToolInput,
+					Partial: &schema.AssistantMessage{
+						Content: []schema.ContentBlock{{
+							Type:          schema.ContentBlockToolCall,
+							ToolCallID:    ta.ID,
+							ToolName:      ta.Name,
+							ToolArguments: ta.Args,
+						}},
+					},
+				})
 			}
 			if m.ToolCallID != "" {
 				ta.ID = m.ToolCallID
@@ -585,10 +600,24 @@ func (a *streamAccum) handleToolCall(m parserMessage) {
 			return
 		}
 	}
+	// New tool call: emit EventToolCallStart with what we know so far.
 	a.ToolAccums = append(a.ToolAccums, &toolCallAccum{
 		Index: idx, ID: m.ToolCallID, Name: m.ToolName, Args: m.ToolInput,
 	})
 	a.HasContent = true
+	a.ensureStarted()
+	a.Stream.Push(schema.AssistantMessageEvent{
+		Type:         schema.EventToolCallStart,
+		ContentIndex: idx,
+		Partial: &schema.AssistantMessage{
+			Content: []schema.ContentBlock{{
+				Type:          schema.ContentBlockToolCall,
+				ToolCallID:    m.ToolCallID,
+				ToolName:      m.ToolName,
+				ToolArguments: m.ToolInput,
+			}},
+		},
+	})
 }
 
 func (a *streamAccum) handleThinking(delta string) {

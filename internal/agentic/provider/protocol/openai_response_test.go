@@ -72,6 +72,39 @@ func TestOpenAICompletionsParseToolCall(t *testing.T) {
 	assert.Contains(t, result.Content[0].ToolArguments, "NYC")
 }
 
+func TestOpenAICompletionsParseToolCallStreamsStartAndDelta(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	stream := schema.NewAssistantMessageEventStream(16)
+	go p.ParseResponse(sseBody(
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write","arguments":""}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"a"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"b"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"c"}}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+	), stream)
+
+	var start, delta, end int
+	for ev := range stream.Seq() {
+		switch ev.Type {
+		case schema.EventToolCallStart:
+			start++
+			require.Len(t, ev.Partial.Content, 1)
+			assert.Equal(t, "write", ev.Partial.Content[0].ToolName)
+		case schema.EventToolCallDelta:
+			delta++
+			require.Len(t, ev.Partial.Content, 1)
+			assert.Equal(t, "write", ev.Partial.Content[0].ToolName)
+		case schema.EventToolCallEnd:
+			end++
+		}
+	}
+	assert.Equal(t, 1, start, "expected one EventToolCallStart")
+	assert.Equal(t, 3, delta, "expected three EventToolCallDelta events")
+	assert.Equal(t, 1, end, "expected one EventToolCallEnd")
+}
+
 func TestOpenAICompletionsParseUsageAndCache(t *testing.T) {
 	p := ForAPI(schema.ApiOpenAICompletions)
 	require.NotNil(t, p)
