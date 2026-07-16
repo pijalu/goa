@@ -188,11 +188,30 @@ func (t *AgentTool) runForeground(role string, agent *agentic.Agent, agentType, 
 	defer t.Pool.Evict(role)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	if orch := t.orchestrator(); orch != nil {
+	orch := t.orchestrator()
+	if orch != nil {
 		orch.Emit("system", "user", fmt.Sprintf("Sub-agent %s started: %s", agentType, description))
 	}
+
+	// Transparency: forward the sub-agent's streamed thinking/content into the
+	// orchestrator event stream as LABELED agent messages so the user watches
+	// the sub-agent work live, instead of staring at a blank wait until the
+	// single result blob returns. RunAndCollect alone swallows every event; the
+	// observer re-exposes them. The label (the 3-5 word description) is what
+	// the chat uses to attribute the block (handleInterAgentEvent renders
+	// From != system/user as an agent message).
+	if orch != nil {
+		label := description
+		if label == "" {
+			label = agentType
+		}
+		remove := agent.AddObserver(agentic.OutputObserverFunc(
+			makeSubAgentStreamObserver(orch, label)))
+		defer remove()
+	}
+
 	result, err := agent.RunAndCollect(ctx, prompt)
-	if orch := t.orchestrator(); orch != nil {
+	if orch != nil {
 		if err != nil {
 			orch.Emit("system", "user", fmt.Sprintf("Sub-agent %s failed: %v", agentType, err))
 		} else {
@@ -207,6 +226,59 @@ func (t *AgentTool) runForeground(role string, agent *agentic.Agent, agentType, 
 		}
 	}
 	return fmt.Sprintf("[agent] %s\n\n%s", description, result), nil
+}
+
+// makeSubAgentStreamObserver returns an observer that forwards a sub-agent's
+// streamed thinking and content into the orchestrator event stream as labeled
+// agent messages. Thinking and content are accumulated separately and flushed
+// on each delta (the chat's AddAgentMessage replaces the labeled block), so the
+// user sees the sub-agent's reasoning and answer build up live. Tool calls and
+// results are emitted as discrete labeled lines.
+func makeSubAgentStreamObserver(orch interface {
+	Emit(from, to, content string)
+}, label string) func(ev agentic.OutputEvent) {
+	var thinking, content strings.Builder
+	return func(ev agentic.OutputEvent) {
+		switch {
+		case ev.Type == agentic.EventContent && ev.Role == agentic.Assistant && ev.State == agentic.StateThinking:
+			if ev.Text == "" {
+				return
+			}
+			if ev.IsDelta {
+				thinking.WriteString(ev.Text)
+			} else {
+				thinking.Reset()
+				thinking.WriteString(ev.Text)
+			}
+			orch.Emit(label, "user", "[thinking] "+thinking.String())
+		case ev.Type == agentic.EventContent && ev.Role == agentic.Assistant:
+			if ev.Text == "" {
+				return
+			}
+			if ev.IsDelta {
+				content.WriteString(ev.Text)
+			} else {
+				content.Reset()
+				content.WriteString(ev.Text)
+			}
+			orch.Emit(label, "user", content.String())
+		case ev.Type == agentic.EventToolCall && !ev.IsDelta:
+			orch.Emit(label, "user", fmt.Sprintf("[tool] %s %s", ev.ToolName, truncateForStream(ev.ToolInput)))
+		case ev.Type == agentic.EventToolResult:
+			orch.Emit(label, "user", "[result] "+truncateForStream(ev.Text))
+		}
+	}
+}
+
+// truncateForStream bounds a forwarded tool input/result line so a single huge
+// tool payload does not flood the chat stream.
+func truncateForStream(s string) string {
+	const max = 300
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 func (t *AgentTool) orchestrator() interface {

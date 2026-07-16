@@ -176,12 +176,16 @@ func (m *agentMessage) Render(width int) []string {
 
 // hashColor generates a deterministic color from a string (for agent prefixes).
 func hashColor(s string) string {
-	h := 0
+	// Use an unsigned accumulator so the modulo is always non-negative. A signed
+	// int hash overflows on longer names and Go's % preserves the sign, yielding
+	// a negative palette index and an index-out-of-range panic (e.g. "fix login
+	// bug" → palette[-4]).
+	var h uint32
 	for _, c := range s {
-		h = h*31 + int(c)
+		h = h*31 + uint32(c)
 	}
 	palette := []string{"#58a6ff", "#3fb950", "#d29922", "#f85149", "#8957e5", "#bc8cff"}
-	return palette[h%len(palette)]
+	return palette[h%uint32(len(palette))]
 }
 
 // systemMessage renders like pi's system messages: dim, markdown-rendered.
