@@ -84,23 +84,41 @@ func (r *EditFileRenderer) RenderResult(output string, ctx tuirender.RenderConte
 		return rToolOutput(output)
 	}
 
-	rendered := renderDiffLines(diff.lines, diff.oldStart, diff.newStart)
+	// Cap the diff lines we colorize to what will actually be displayed. On a
+	// collapsed view that is PreviewLines (or ctx override); on an expanded
+	// view it is the whole diff. renderDiffLines is O(n) in time AND memory
+	// (per-line expandTabs + padding + colorize + intra-line LCS for single
+	// -/+ pairs); rendering a 10k-line diff to show 1k wasted ~130ms and
+	// ~135MB of garbage on the commandLoop, hitching the TUI on every large
+	// edit. Line-number width must be computed over the FULL diff so numbers
+	// stay correctly aligned after truncation.
+	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
+	if ctx.Expanded {
+		maxLines = len(diff.lines)
+	}
+	width := diffLineNumberWidth(diff.lines, diff.oldStart, diff.newStart)
+	toRender := diff.lines
+	if len(toRender) > maxLines {
+		toRender = toRender[:maxLines]
+	}
+	rendered := renderDiffLinesWithWidth(toRender, diff.oldStart, diff.newStart, width)
 	if len(rendered) == 0 {
 		return ""
 	}
+	remaining := len(diff.lines) - len(toRender)
 
-	return r.formatDiffOutput(rendered, ctx.Expanded, previewLinesFromCtx(ctx, r.PreviewLines()), r.KeyExpand)
+	return r.formatDiffOutput(rendered, ctx.Expanded, maxLines, r.KeyExpand, remaining)
 }
 
-func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, maxLines int, key string) string {
+func (r *EditFileRenderer) formatDiffOutput(rendered []string, expanded bool, maxLines int, key string, remaining int) string {
 	if expanded {
 		maxLines = len(rendered)
 	}
 	display := rendered
 	if len(rendered) > maxLines {
 		display = rendered[:maxLines]
+		remaining = len(rendered) - len(display)
 	}
-	remaining := len(rendered) - len(display)
 
 	var b strings.Builder
 	for _, line := range display {
@@ -181,8 +199,13 @@ func parseOptionalInt(s string, fallback int) int {
 
 // renderDiffLines turns unified-diff lines into colored, numbered lines.
 func renderDiffLines(lines []string, oldStart, newStart int) []string {
-	width := diffLineNumberWidth(lines, oldStart, newStart)
+	return renderDiffLinesWithWidth(lines, oldStart, newStart, diffLineNumberWidth(lines, oldStart, newStart))
+}
 
+// renderDiffLinesWithWidth renders diff lines using a pre-computed line-number
+// width, so callers can cap the slice to the display size while keeping
+// line-number alignment consistent with the full diff.
+func renderDiffLinesWithWidth(lines []string, oldStart, newStart, width int) []string {
 	state := diffState{oldLine: oldStart, newLine: newStart}
 	var result []string
 	for state.i < len(lines) {
