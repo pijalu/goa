@@ -48,7 +48,7 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return false, err
 	}
 
-	toolCallEncountered, streamErr := a.consumeStream(ctx, stream)
+	toolCallEncountered, streamErr := a.consumeStream(ctx, stream, opts)
 	if streamErr != nil {
 		if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
 			if retErr != nil {
@@ -102,6 +102,23 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 	return provider.Stream(model, initCtx, opts)
 }
 
+// effectiveEventStallTimeout returns the maximum wall-clock time the agent
+// waits between stream events before declaring the stream stalled. It derives
+// from opts.IdleTimeout (which the HTTP layer uses as a byte-level idle guard);
+// a zero or negative value falls back to the default idle timeout (2 minutes).
+//
+// Unlike the byte-level idle timeout — reset by every byte, including SSE
+// keep-alive comments (": ping") and empty lines — this timeout is reset only
+// by actual stream events (text deltas, thinking deltas, tool calls, etc.).
+// This prevents indefinite hangs when a provider sends periodic keep-alive
+// bytes but never delivers a meaningful response.
+func (a *Agent) effectiveEventStallTimeout(opts provider.StreamOptions) time.Duration {
+	if opts.IdleTimeout > 0 {
+		return opts.IdleTimeout
+	}
+	return provider.DefaultStreamIdleTimeout
+}
+
 // effectiveMaxStreamRounds returns the configured max stream rounds, defaulting to 50.
 func (a *Agent) effectiveMaxStreamRounds() int {
 	if a.cfg.MaxStreamRounds > 0 {
@@ -141,7 +158,7 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 			return fmt.Errorf("recovery stream: %w", err)
 		}
 
-		toolCallEncountered, streamErr := a.consumeStream(ctx, recoveryStream)
+		toolCallEncountered, streamErr := a.consumeStream(ctx, recoveryStream, opts)
 		if streamErr != nil {
 			if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
 				return retErr
@@ -189,12 +206,27 @@ func (a *Agent) hasStalled() bool {
 // prepareTurn resets per-turn state, applies proactive compression, and builds
 // the initial provider context and request options.
 
-func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMessageEventStream) (bool, error) {
+func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMessageEventStream, opts provider.StreamOptions) (bool, error) {
 	a.genStartTime = time.Time{} // reset per stream; recorded on first token
+
+	// Event-level stall watchdog: unlike the byte-level idle timeout in the
+	// HTTP reader — which is reset by every byte, including SSE keep-alive
+	// comments (": ping") and empty lines — this timer resets ONLY on actual
+	// stream events (text deltas, thinking deltas, tool calls, etc.). If the
+	// provider sends keep-alive bytes but never delivers a real event, the
+	// byte-level idle timeout never fires and the agent hangs indefinitely.
+	// The watchdog terminates the stream with a stall error, which is then
+	// handled by handleStreamFailure (transient, retryable).
+	stallTimeout := a.effectiveEventStallTimeout(opts)
+	watchdog := time.AfterFunc(stallTimeout, func() {
+		a.cfg.Logger.Log(Warn, "Stream stalled: no events received for %v", stallTimeout)
+		stream.CloseWithError(fmt.Errorf("stream stalled: no events received from provider for %v", stallTimeout))
+	})
+	defer watchdog.Stop()
+
 	for event := range stream.Seq() {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
+		// An event arrived — the provider is alive. Push the stall deadline out.
+		watchdog.Reset(stallTimeout)
 
 		done, toolCallsEncountered, err := a.handleStreamEvent(ctx, stream, event)
 		if done {
@@ -945,7 +977,7 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 			a.cfg.Logger.Log(Warn, "retry stream failed: %v", err)
 			continue
 		}
-		toolCallEncountered, streamErr = a.consumeStream(ctx, stream)
+		toolCallEncountered, streamErr = a.consumeStream(ctx, stream, opts)
 		if streamErr == nil {
 			a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
 			return toolCallEncountered, true

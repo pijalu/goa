@@ -21,6 +21,7 @@ type ExportOptions struct {
 	SessionID        string
 	IncludeGlobalLog bool
 	Yes              bool
+	IssueDescription string
 }
 
 // runExport executes the headless `goa export` command.
@@ -42,9 +43,13 @@ func doExport(subs *subsystems, opts ExportOptions) error {
 	}
 
 	outputPath := defaultExportPath(subs.projectDir, opts.OutputPath)
-	issue, err := readExportIssueDescription()
-	if err != nil {
-		return err
+	issue := opts.IssueDescription
+	if issue == "" && !opts.Yes {
+		var err error
+		issue, err = readExportIssueDescription()
+		if err != nil {
+			return err
+		}
 	}
 
 	ctx := coreContextForCommand(subs, nil)

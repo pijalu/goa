@@ -169,8 +169,22 @@ func (s *AssistantMessageEventStream) terminate(t termination) bool {
 
 // Seq returns an iterator over all events in the stream.
 func (s *AssistantMessageEventStream) Seq() iter.Seq[AssistantMessageEvent] {
+	return s.SeqCtx(context.Background())
+}
+
+// SeqCtx returns an iterator over all events in the stream that respects
+// context cancellation. The iterator checks ctx.Err() between events so
+// callers can bound the total iteration time without relying on the
+// byte-level idle timeout (which is reset by every byte, including SSE
+// keep-alive comments and empty lines).
+func (s *AssistantMessageEventStream) SeqCtx(ctx context.Context) iter.Seq[AssistantMessageEvent] {
 	return func(yield func(AssistantMessageEvent) bool) {
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			event, ok := s.nextEvent()
 			if !ok {
 				return
