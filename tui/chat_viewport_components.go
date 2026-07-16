@@ -85,6 +85,13 @@ type assistantMessage struct {
 	cacheText   string
 	cacheWidth  int
 	cacheFinish string
+
+	// incr is the persistent incremental markdown renderer. It memoizes the
+	// rendered stable prefix (closed blocks) so that during streaming only the
+	// open tail is re-parsed each frame instead of the whole message. Recreated
+	// when the render width changes. Nil until first render.
+	incr *IncrementalMDRenderer
+	incrWidth int
 }
 
 func newAssistantMessage(text string) *assistantMessage {
@@ -129,8 +136,13 @@ func (m *assistantMessage) renderFrame(width int) []string {
 	// Render at width-2, then prepend " " (left) and padToWidth fills to width
 	// (1 right space via padToWidth since " " + wrapped = width-1).
 	contentW := width - 2
-	renderer := NewMDStreamRenderer(contentW, TheTheme)
-	rendered := renderer.Render(m.text)
+	// Use the persistent incremental renderer so a growing streamed message
+	// only re-parses the open tail; recreate it if the width changed.
+	if m.incr == nil || m.incrWidth != contentW {
+		m.incr = NewIncrementalMDRenderer(contentW, TheTheme)
+		m.incrWidth = contentW
+	}
+	rendered := m.incr.Render(m.text)
 	for _, line := range rendered {
 		lines = append(lines, padToWidth(" "+line, width))
 	}

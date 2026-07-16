@@ -12,10 +12,34 @@ Additionally, `k3` is not in the built-in model registry, so users must manually
 
 ---
 
+## k3 Specifics (from Kimi docs)
+
+### Reasoning Effort Mapping
+
+k3 maps effort values as follows:
+
+| Sent value | k3 maps to | Notes |
+|------------|-----------|-------|
+| `null` / `undefined` | `max` | k3 default when unset |
+| `max` / `ultra` / `xhigh` | `max` | |
+| `high` / `medium` | `high` | |
+| `low` / `minimum` / `light` | `low` | |
+| `none` | thinking disabled | |
+| **anything else** | **HTTP 400** | k3 rejects unknown values |
+
+**Critical:** `"medium"` is valid (maps to `high`), but only the exact values listed
+above are accepted. `"minimal"` would cause HTTP 400.
+
+### Context Window
+
+k3 supports up to **1M tokens** (1048576). The registry entry must set this.
+
+---
+
 ## Flow Trace (before fix)
 
 ```
-k3 needs reasoning_effort:max in request body
+k3 needs reasoning_effort in request body
   → profile says thinking_format="none"
     → applyThinking() has no builder for "none"
       → for k,v := range nil → zero thinking params in request body
@@ -38,6 +62,11 @@ k3 needs reasoning_effort:max in request body
 - `internal/agentic/provider/schema/variants/kimi-code.json` (line 8)
 
 ```diff
+  "defaults": {
+    "temperature": 1.0,
+    "max_tokens": 4096,
++   "thinking": "max"        ← k3 default when unset; avoids "medium" surprises
+  },
   "compat": {
     "supports_store": false,
     "max_tokens_field": "max_tokens",
@@ -46,11 +75,18 @@ k3 needs reasoning_effort:max in request body
 ```
 
 **Rationale:** The `openaiThinking` builder in `thinkingBodyForFormat` produces
-`{"reasoning_effort": level}`. Per Kimi docs, k3 accepts `reasoning_effort:max`
-(alongside `thinking.effort:max`).
+`{"reasoning_effort": level}`. Per Kimi docs, k3 accepts `reasoning_effort:max`.
+The default `"thinking": "max"` mirrors k3's own default (null→max) and avoids
+sending `"medium"` which, while valid (maps to `high`), is not the optimal default
+for k3's current capabilities.
 
-**Safety:** Unknown fields like `reasoning_effort` are silently ignored by providers
-that don't support them. Non-reasoning Kimi models are unaffected.
+**Safety of `"openai"` format:** Unknown fields like `reasoning_effort` are silently
+ignored by providers that don't support them. Non-reasoning Kimi models are unaffected.
+
+**Safety of `"thinking": "max"` default:** `resolveThinkingLevel` checks
+`profile.Defaults.Thinking` before falling back to `"medium"`. Setting `"max"` here
+means `null/undefined` in k3 terms gets `"max"` which is the documented default
+behavior. User-configured thinking levels still override this.
 
 ---
 
@@ -65,42 +101,76 @@ Insert after the existing `kimi-for-coding` entry (after line 231):
 {
     ID: "k3", Name: "Kimi K3", Api: provider.ApiOpenAICompletions,
     Provider: provider.ProviderKimiCode,
-    Reasoning: true, ContextWindow: 128000, MaxTokens: 16384,
+    Reasoning: true, ContextWindow: 1048576, MaxTokens: 16384,
     InputTypes: []string{"text"},
     Cost: provider.ModelPricing{Input: 0.000002, Output: 0.000008},
     ThinkingFormat: provider.ThinkingFormatReasoningContent,
 },
 ```
 
-**Rationale:** Without a registry entry, `buildFallbackModel` is used for `k3`,
-which doesn't set `Reasoning: true` or `ThinkingFormat`. Users would need
-`reasoning: true` in their config YAML — easily missed. A registry entry makes
-it work zero-config for anyone who adds k3 as a model.
+**Rationale:**
+- Without a registry entry, `buildFallbackModel` is used, which doesn't set
+  `Reasoning: true` or `ThinkingFormat`. Users would need `reasoning: true`
+  in their config YAML — easily missed. A registry entry makes it work zero-config.
+- `ContextWindow: 1048576` matches k3's documented 1M token capacity.
+  Without this, other contexts (like compression triggers) use the wrong budget.
 
 ---
 
-### Step 3 — (Optional) Set default thinking level to "max" (2 files)
+### Step 3 — Map `"minimal"` to `"low"` for k3 (optional, defensive)
 
-k3 currently only supports `max` for thinking effort (low/high coming later).
-The default `resolveThinkingLevel` returns `"medium"`. To avoid sending an
-unsupported value, add `"thinking": "max"` to the profile defaults.
+k3 rejects unknown effort values with HTTP 400. If a user configures `thinking_level: minimal`,
+Goa would send `reasoning_effort:minimal` which is not in k3's mapping → HTTP 400.
 
-**Files:**
-- `internal/agentic/provider/schema/variants/moonshot.json`
-- `internal/agentic/provider/schema/variants/kimi-code.json`
+Two approaches:
 
-```diff
-  "defaults": {
+**Option A** — Add a `ThinkingLevelMap` to the k3 profile:
+
+In `moonshot.json` / `kimi-code.json`:
+```json
+"defaults": {
     "temperature": 1.0,
     "max_tokens": 4096,
-+   "thinking": "max"
-  },
+    "thinking": "max",
+    "thinking_level_map": {
+        "minimal": "low",
+        "low": "low",
+        "medium": "high",
+        "high": "high",
+        "xhigh": "max",
+        "max": "max"
+    }
+},
 ```
 
-**Alternative:** Add a `"kimi"` thinking format builder that normalizes all
-effort values to `"max"` (simpler per-model override, but changes `applyThinking`
-and `thinkingBodyForFormat`). The profile default is preferred — it's smaller
-and doesn't require code changes.
+**Option B** — Add a `"kimi"` thinking format builder in
+`internal/agentic/provider/protocol/openai_completions.go` that applies the mapping:
+
+```go
+func kimiThinking(level string) map[string]any {
+    mapped := map[string]string{
+        "minimal": "low",
+        "low":     "low",
+        "medium":  "high",
+        "high":    "high",
+        "xhigh":   "max",
+        "max":     "max",
+    }
+    if v, ok := mapped[level]; ok {
+        return map[string]any{"reasoning_effort": v}
+    }
+    return map[string]any{"reasoning_effort": "max"}  // default to max
+}
+```
+
+And register it in `thinkingBodyForFormat`:
+```go
+"kimi": kimiThinking,
+```
+
+**Recommendation:** Option A (ThinkingLevelMap in profile) is simpler and doesn't
+require Go code changes. Option B is more correct (catches any future unknown values)
+but adds code.
 
 ---
 
@@ -110,19 +180,22 @@ and doesn't require code changes.
 |-------|-----|
 | Profile resolution | `ResolveProfile` for `kimi`/`kimi-code` returns `thinking_format: "openai"` |
 | Request body | k3 request contains `"reasoning_effort": "max"` |
+| Unknown effort | `thinking_level: minimal` sends `"reasoning_effort": "low"` (not HTTP 400) |
 | Response parsing | `reasoning_content` fields from k3 stream are extracted |
 | Event routing | `EventThinkingDelta` → `handleThinkingDelta` → `StateThinking` output |
 | Session recording | JSONL contains `State: 1` events with actual thinking text |
 | TUI display | Thinking block visible in chat viewport |
 | Non-regression | Other OpenAI providers still work (unknown fields ignored) |
+| Context window | k3 model reports `ContextWindow: 1048576` |
 
 ---
 
 ## Order of Execution
 
 1. `moonshot.json` + `kimi-code.json` — change `thinking_format` to `"openai"`
-2. `models.go` — add k3 registry entry
-3. Profiles — add `"thinking": "max"` default (optional)
+   and add `"thinking": "max"` default
+2. `models.go` — add k3 registry entry with 1M context
+3. ThinkingLevelMap in profiles or kimi format builder (defensive, optional)
 
 Steps 1+2 are the minimum viable fix:
 - Step 1 alone unblocks thinking for users who configure `reasoning: true` + `thinking_level: max`
@@ -134,8 +207,9 @@ Steps 1+2 are the minimum viable fix:
 ## After-Fix Flow
 
 ```
-k3 needs reasoning_effort:max in request body
+k3 needs reasoning_effort in request body
   → profile says thinking_format="openai" ✓
+    → defaults.thinking="max" → resolveThinkingLevel → "max"
     → openaiThinking("max") → {"reasoning_effort": "max"}
       → request body has reasoning_effort:max
         → k3 API returns reasoning_content in streaming chunks
