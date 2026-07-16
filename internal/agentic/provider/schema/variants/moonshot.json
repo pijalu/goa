@@ -1,11 +1,23 @@
 {
   "id": "moonshot",
   "match": { "api": "openai-completions", "provider": "kimi" },
-  "defaults": { "temperature": 1.0, "max_tokens": 4096 },
+  "defaults": {
+    "temperature": 1.0,
+    "max_tokens": 4096,
+    "thinking": "max",
+    "thinking_level_map": {
+      "minimal": "max",
+      "low": "max",
+      "medium": "max",
+      "high": "max",
+      "xhigh": "max",
+      "max": "max"
+    }
+  },
   "compat": {
     "supports_store": false,
     "max_tokens_field": "max_tokens",
-    "thinking_format": "none",
+    "thinking_format": "openai",
     "supports_prompt_cache": false,
     "stream_includes_usage": true
   },

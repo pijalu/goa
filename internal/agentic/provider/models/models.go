@@ -229,6 +229,23 @@ var modelDefs = []provider.Model{
 		Cost:           provider.ModelPricing{Input: 0.000002, Output: 0.000008},
 		ThinkingFormat: provider.ThinkingFormatReasoningContent,
 	},
+	{
+		// Kimi K3 (model ID "k3"). Reasoning opt-in is reasoning_effort:max
+		// (k3 is max-only today; low/high come later). The kimi-code profile
+		// sends reasoning_effort:max by default, so thinking works zero-config.
+		//
+		// ContextWindow: k3 supports up to 1M (1048576) but ONLY on the
+		// Allegretto+ plan; Moderato caps at 256k and lower tiers have no k3
+		// access (server returns 401). We ship the max so Allegretto users get
+		// full context; Moderato users must set context_window: 262144 in YAML
+		// to avoid over-budget compression/ceiling math against a 256k server.
+		//
+		// Cost is intentionally zero: Kimi Code is membership/quota-based (no
+		// published per-token price), so there is no honest rate to show.
+		ID: "k3", Name: "Kimi K3", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderKimiCode,
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 16384, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatReasoningContent,
+	},
 
 	// ── Qwen ──
 	{
