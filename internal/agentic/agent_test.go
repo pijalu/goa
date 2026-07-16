@@ -839,11 +839,15 @@ func TestAgent_ToolBudget_RollingWindowDuplicate(t *testing.T) {
 			realResults++
 		}
 	}
-	if realResults != 1 {
-		t.Errorf("expected 1 real execution, got %d (soft=%d hard=%d)", realResults, softResults, hardResults)
+	// With MaxToolCalls=3 (rolling-window limit) and 4 identical calls (fixed
+	// semantics): calls 1,2,3 execute (window count ≤ 3); call 4 is a hard-loop
+	// guard (window count 4 > limit 3). The old over-sensitive soft-skip at the
+	// 2nd call is gone.
+	if realResults != 3 {
+		t.Errorf("expected 3 real executions, got %d (soft=%d hard=%d)", realResults, softResults, hardResults)
 	}
-	if softResults != 2 {
-		t.Errorf("expected 2 soft-repeat results, got %d", softResults)
+	if softResults != 0 {
+		t.Errorf("expected 0 soft-repeat results (no more 2nd-call soft-skip), got %d", softResults)
 	}
 	if hardResults != 1 {
 		t.Errorf("expected 1 hard-loop result (4th duplicate), got %d", hardResults)
@@ -889,16 +893,16 @@ func TestAgent_ToolBudget_ConsecutiveDuplicate(t *testing.T) {
 			realResults++
 		}
 	}
-	// With MaxToolRepeatConsecutive=2 and identical calls:
+	// With MaxToolRepeatConsecutive=2 and identical calls (fixed semantics):
 	// call 1: executed
-	// call 2: soft repeat (2nd consecutive call)
-	// call 3: hard loop (3rd consecutive call)
+	// call 2: executed (a 2nd consecutive repeat is legitimate — NOT skipped)
+	// call 3: hard loop (3rd consecutive call, exceeds limit 2)
 	// call 4: hard loop
-	if realResults != 1 {
-		t.Errorf("expected 1 real execution, got %d (soft=%d hard=%d)", realResults, softResults, hardResults)
+	if realResults != 2 {
+		t.Errorf("expected 2 real executions, got %d (soft=%d hard=%d)", realResults, softResults, hardResults)
 	}
-	if softResults != 1 {
-		t.Errorf("expected 1 soft-repeat result with limit=2, got %d", softResults)
+	if softResults != 0 {
+		t.Errorf("expected 0 soft-repeat results (2nd call now executes), got %d", softResults)
 	}
 	if hardResults != 2 {
 		t.Errorf("expected 2 hard-loop results, got %d", hardResults)
@@ -1052,8 +1056,8 @@ func TestAgent_MaxToolCalls_MidBatch_LeavesSingleAssistantMessage(t *testing.T) 
 	assertToolGuardResult(t, history)
 	assertToolEventCounts(t, obs.Events(), totalCalls)
 
-	// Under the duplicate-window semantics, only the first identical call is
-	// executed; the remaining three are guardrail hints.
+	// Under the fixed duplicate-window semantics, the first three identical
+	// calls execute (window count ≤ MaxToolCalls=3); the 4th is a guardrail hint.
 	var realResults, guardResults int
 	for _, msg := range history {
 		if msg.Role != ToolRole {
@@ -1065,11 +1069,11 @@ func TestAgent_MaxToolCalls_MidBatch_LeavesSingleAssistantMessage(t *testing.T) 
 			realResults++
 		}
 	}
-	if realResults != 1 {
-		t.Errorf("expected 1 real result, got %d (guards=%d)", realResults, guardResults)
+	if realResults != 3 {
+		t.Errorf("expected 3 real results, got %d (guards=%d)", realResults, guardResults)
 	}
-	if guardResults != 3 {
-		t.Errorf("expected 3 guard results, got %d", guardResults)
+	if guardResults != 1 {
+		t.Errorf("expected 1 guard result, got %d", guardResults)
 	}
 }
 
@@ -1486,16 +1490,14 @@ func TestAgent_ToolCallLimitEnforcedOnRepeatedCall(t *testing.T) {
 			realResults++
 		}
 	}
-	// With MaxToolCalls=3 and identical calls:
-	// call 1: executed
-	// call 2: soft-repeat (already executed)
-	// call 3: soft-repeat (still within limit)
+	// With MaxToolCalls=3 and identical calls (fixed semantics):
+	// calls 1,2,3: executed (window count ≤ limit 3)
 	// call 4: hard loop (4th duplicate in window)
-	if realResults != 1 {
-		t.Errorf("expected 1 real execution, got %d (repeat=%d loop=%d)", realResults, repeatResults, loopResults)
+	if realResults != 3 {
+		t.Errorf("expected 3 real executions, got %d (repeat=%d loop=%d)", realResults, repeatResults, loopResults)
 	}
-	if repeatResults != 2 {
-		t.Errorf("expected 2 soft-repeat results, got %d", repeatResults)
+	if repeatResults != 0 {
+		t.Errorf("expected 0 soft-repeat results (2nd call now executes), got %d", repeatResults)
 	}
 	if loopResults != 1 {
 		t.Errorf("expected 1 hard-loop result, got %d", loopResults)
@@ -1958,11 +1960,14 @@ func TestAgent_ExactToolRepeatGuard_5Percent(t *testing.T) {
 			realResults++
 		}
 	}
-	if realResults != 1 {
-		t.Errorf("expected 1 real execution before loop guardrail, got %d (repeat=%d loop=%d)", realResults, repeatResults, loopResults)
+	// With MaxToolRepeatConsecutive=3 and 4 identical calls (fixed semantics):
+	// calls 1,2,3: executed (consecutive count ≤ limit 3)
+	// call 4: hard loop (4th consecutive call, exceeds limit 3)
+	if realResults != 3 {
+		t.Errorf("expected 3 real executions before loop guardrail, got %d (repeat=%d loop=%d)", realResults, repeatResults, loopResults)
 	}
-	if repeatResults != 2 {
-		t.Errorf("expected 2 soft-repeat results at 2nd and 3rd consecutive calls, got %d", repeatResults)
+	if repeatResults != 0 {
+		t.Errorf("expected 0 soft-repeat results (no more 2nd/3rd-call soft-skip), got %d", repeatResults)
 	}
 	if loopResults != 1 {
 		t.Errorf("expected 1 hard-loop result at 4th consecutive call, got %d", loopResults)

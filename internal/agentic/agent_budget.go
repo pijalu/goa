@@ -39,13 +39,6 @@ const toolBudgetMessage = "[goa-system] Tool call budget exceeded. Do not call m
 // tells it to change approach.
 const toolLoopMessage = "[goa-system] Loop guardrail: this exact tool call was repeated too many times without progress. Stop repeating it. Change your approach or produce a final answer."
 
-// toolRepeatedMessage is the synthetic tool result returned when the exact
-// same tool call (name + arguments) appears a second time within the recent
-// window before any hard limit is reached. The tool is NOT re-executed; the LLM
-// gets this hint so it can use the previous result or change approach without
-// stalling.
-const toolRepeatedMessage = "[goa-system] This exact tool call (same tool with same arguments) was already executed this turn. Use the previous result instead of repeating the same call."
-
 // ToolBudgetResultPrefix is the prefix shared by every budget-exceeded tool
 // result. Callers (e.g. the TUI layer) use it to recognise synthetic budget
 // messages without duplicating the full string.
@@ -191,11 +184,16 @@ func (a *Agent) checkTotalRepeatGuardrail(tc provider.ContentBlock, callKey stri
 }
 
 // budgetOrRepeatSkipMessage returns the appropriate skip message based on
-// rolling-window and consecutive-repeat status. Priority: hard-loop > soft-repeat.
-// The soft-repeat hint is only emitted for truly consecutive duplicates (the same
-// tool+arguments back-to-back). The rolling-window guard is reserved for the
-// hard-loop limit, so non-consecutive duplicates (e.g. A, B, A) are allowed
-// until they exceed the configured MaxToolCalls.
+// budgetOrRepeatSkipMessage returns the skip message when a tool call exceeds a
+// CONFIGURED repeat limit, or "" when the call may execute. Only the configured
+// limits skip execution; a repeat below them is allowed (a model may legitimately
+// re-run a tool — re-read a changed file, re-run a test after a fix, poll a
+// build). The previous hardcoded `consecutiveCount >= 2` case skipped the 2nd
+// identical call outright (scheduleAndRunToolCalls drops budgetToolCalls entries),
+// which broke legitimate re-reads/re-runs — the over-sensitive guard.
+//
+// Priority: hard-loop (consecutive) > rolling-window. Non-consecutive duplicates
+// (A, B, A) only trip the rolling-window / total limits, never the consecutive one.
 func (a *Agent) budgetOrRepeatSkipMessage(windowCount, consecutiveCount int) string {
 	maxConsecutive := a.cfg.MaxToolRepeatConsecutive
 	maxWindow := a.cfg.MaxToolCalls
@@ -206,8 +204,6 @@ func (a *Agent) budgetOrRepeatSkipMessage(windowCount, consecutiveCount int) str
 	case maxWindow > 0 && windowCount > maxWindow:
 		windowSize := a.effectiveToolWindowSize()
 		return fmt.Sprintf("[goa-system] Loop guardrail: this exact tool call appeared %d times in the last %d calls (limit: %d). Stop repeating the same call. Use the previous result or change approach.", windowCount, windowSize, maxWindow)
-	case consecutiveCount >= 2:
-		return toolRepeatedMessage
 	default:
 		return ""
 	}
