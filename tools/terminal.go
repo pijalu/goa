@@ -300,7 +300,9 @@ func (t *TerminalTool) applyCompression(command, output string) string {
 
 func (t *TerminalTool) truncate(output string) string {
 	res := TruncateTail(output, DefaultMaxLines, DefaultMaxBytes)
-	return res.Content
+	// Sanitize: command output is untrusted — raw ESC bytes reaching the TUI
+	// renderer would be executed by the terminal (erase line, colors).
+	return ansi.Sanitize(res.Content)
 }
 
 func (t *TerminalTool) IsRetryable(err error) bool { return false }

@@ -970,3 +970,32 @@ func TestBashTool_Redactor_TypeLabels(t *testing.T) {
 }
 
 
+
+// TestBashTool_Execute_SanitizesControlBytes: command output is untrusted —
+// a command printing a clear-line escape sequence must reach the model/TUI as
+// literal text. Raw ESC bytes would be executed by the terminal when the tool
+// widget renders, erasing the user's screen.
+func TestBashTool_Execute_SanitizesControlBytes(t *testing.T) {
+	tool := &BashTool{}
+	out, err := tool.Execute(`{"command":"printf '\\033[2Kdone\\033[0m\\n'"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("raw ESC byte leaked into tool output: %q", out)
+	}
+	if !strings.Contains(out, `\e[2Kdone`) {
+		t.Errorf("expected escape sequence shown as literal text, got: %q", out)
+	}
+}
+
+// TestTruncateCommand_RuneSafe: the display cut must not split a multi-byte
+// rune (byte cuts render as '�').
+func TestTruncateCommand_RuneSafe(t *testing.T) {
+	// 3-byte rune straddling the cut boundary.
+	cmd := strings.Repeat("世", 10)
+	got := truncateCommand(cmd, 5)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncateCommand split a rune: %q", got)
+	}
+}

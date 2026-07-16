@@ -19,6 +19,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/secrets"
 )
@@ -296,6 +297,10 @@ func (t *BashTool) formatOutput(p *bashParams, output []byte, cmdErr error, dura
 		masked := maskOutput(string(output), t.buildMasks(p.Env))
 		masked = t.redactOutput(masked)
 		masked = t.applyCompression(p.Command, masked)
+		// Sanitize last: command output is untrusted — raw ESC bytes would
+		// reach both the model context and the TUI renderer, where a stray
+		// "\e[2K" erases the user's screen. Keep sequences visible as `\e...`.
+		masked = ansi.Sanitize(masked)
 		maxLines := t.MaxOutputLines
 		if maxLines <= 0 {
 			maxLines = DefaultMaxLines

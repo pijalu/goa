@@ -277,3 +277,46 @@ func renderContains(lines []string, sub string) bool {
 	}
 	return false
 }
+
+// TestSteeringPending_Render_MultiLine: a steering message pasted with
+// embedded newlines must render one box row per visual line — ansi.Wrap only
+// accepts single paragraphs, and a returned "line" containing '\n' paints as
+// several terminal rows, desyncing the compositor (overlapping redraw bug).
+func TestSteeringPending_Render_MultiLine(t *testing.T) {
+	m := newSteeringPending("first line\nsecond line\n\nthird line")
+	width := 40
+	lines := m.Render(width)
+	if len(lines) == 0 {
+		t.Fatal("expected rendered lines")
+	}
+	for i, l := range lines {
+		if strings.ContainsRune(l, '\n') {
+			t.Errorf("rendered line %d contains an embedded newline: %q", i, l)
+		}
+	}
+	// Box structure: top border + 4 content rows (blank line preserved) + bottom.
+	if got, want := len(lines), 6; got != want {
+		t.Errorf("expected %d rows (border + 4 content + border), got %d: %q", want, got, lines)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"✎ first line", "second line", "third line"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected %q in render, got:\n%s", want, joined)
+		}
+	}
+}
+
+// TestSteeringPending_Render_SanitizesControlBytes: pasted steering text may
+// carry raw ESC bytes (e.g. a copied terminal log). The box must show them as
+// literal text, never forward them to the terminal.
+func TestSteeringPending_Render_SanitizesControlBytes(t *testing.T) {
+	m := newSteeringPending("look: \x1b[2Kbad")
+	lines := m.Render(60)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "\x1b[2K") {
+		t.Errorf("raw clear-line sequence leaked into render: %q", joined)
+	}
+	if !strings.Contains(joined, `\e[2K`) {
+		t.Errorf("expected literal \\e[2K in render, got:\n%s", joined)
+	}
+}

@@ -41,8 +41,13 @@ func rBashPrompt(text string) string {
 	return ansi.Bold + ansi.Fg(themeHex("bash_prompt")) + text + ansi.BoldReset + ansi.FgReset
 }
 
+// rToolOutput colors tool output for display. Content is sanitized first:
+// tool output is untrusted (command output, file bytes, web pages) and a raw
+// ESC byte reaching the terminal would be executed (erase line, set colors).
+// Renderer-produced text is unaffected — Sanitize's fast path returns clean
+// strings untouched.
 func rToolOutput(text string) string {
-	return ansi.Fg(themeHex("toolOutput")) + text + ansi.FgReset
+	return ansi.Fg(themeHex("toolOutput")) + ansi.Sanitize(text) + ansi.FgReset
 }
 
 func rMuted(text string) string {

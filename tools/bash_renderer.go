@@ -36,9 +36,10 @@ func (r *BashRenderer) RenderCall(args map[string]any, ctx tuirender.RenderConte
 	} else {
 		// Collapse whitespace and newlines to a single line so multi-line
 		// commands (e.g. python3 -c "...") do not break the tool box layout.
+		// Width-based, cluster-safe cut — a byte cut can split a rune.
 		cmd = strings.Join(strings.Fields(cmd), " ")
-		if len(cmd) > 120 {
-			cmd = cmd[:117] + "..."
+		if ansi.Width(cmd) > 120 {
+			cmd = ansi.Truncate(cmd, 117) + "..."
 		}
 	}
 	timeout := intArg(args, "timeout")

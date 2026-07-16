@@ -5,6 +5,7 @@
 package tools
 
 import (
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
 

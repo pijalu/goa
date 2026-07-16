@@ -145,7 +145,9 @@ func (t *SSHBashTool) Execute(input string) (string, error) {
 	fmt.Fprintf(&buf, "Exit: %d\n", exitCode(result.err))
 	fmt.Fprintf(&buf, "Duration: %.2fs\n", duration.Seconds())
 	if len(result.output) > 0 {
-		fmt.Fprintf(&buf, "Output:\n%s\n", string(result.output))
+		// Sanitize: remote command output is untrusted — raw ESC bytes must
+		// never reach the model context or the TUI renderer.
+		fmt.Fprintf(&buf, "Output:\n%s\n", ansi.Sanitize(string(result.output)))
 	}
 
 	return buf.String(), nil

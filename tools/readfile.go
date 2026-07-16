@@ -18,6 +18,7 @@ import (
 	"github.com/pijalu/goa/docs"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // ReadFileTool reads file contents with line range support, binary detection,

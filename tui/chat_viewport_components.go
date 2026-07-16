@@ -681,7 +681,11 @@ func (m *steeringPending) Render(width int) []string {
 	border := ansi.Fg(TheTheme.ColorHex("border_default"))
 	reset := ansi.Reset
 
-	clean := ansi.Sanitize(ansi.Strip(m.text))
+	// Sanitize before Strip: pasted text is untrusted — raw ESC bytes must
+	// become visible `\e` text, not reach the terminal. Strip afterwards is a
+	// no-op on real sequences (Sanitize already escaped their ESC) but keeps
+	// defense-in-depth for anything produced by goa itself.
+	clean := ansi.Strip(ansi.Sanitize(m.text))
 	innerWidth := width - 4
 	if innerWidth < 1 {
 		innerWidth = 1
