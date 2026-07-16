@@ -572,6 +572,10 @@ type ToolDisplayConfig struct {
 	// the collapsed line count across ALL tools (replaces the previous
 	// inconsistent per-tool hardcodes).
 	PreviewLines int `yaml:"preview_lines"`
+	// ShowRead controls whether the read tool's file content is displayed in
+	// the TUI. When false (default), read output is hidden unless the user
+	// toggles it. Set to true to show read output by default.
+	ShowRead bool `yaml:"show_read"`
 }
 
 // TransparencyConfig controls which LLM transparency features are visible.

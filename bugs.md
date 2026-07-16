@@ -40,6 +40,17 @@ If new items are added, restart the process.
 ## Scroll/history issue with tool call
 The scrollback/history is not updated correctly when using the edit tool with tool calls and will show artifact from the input line.
 
+**Analysis**:
+- The "double separator" lines are the editor's top and bottom border lines being pushed into terminal scrollback.
+- The editor is a base-layer child in the TUI layout. When the chat viewport grows during tool execution, the entire canvas (including the editor's borders) scrolls into terminal scrollback.
+- `bottomAlign` in `ChatViewport` prepends blank lines to fill the allocated height. When content growth crosses the `allocatedHeight` boundary, the canvas transitions from fixed-height (padded) to growing (no padding), causing a layout shift.
+- The editor's `stableMaxLines` prevents height collapse, but it doesn't prevent the editor from contributing to the base canvas.
+
+**Fix approach**:
+The editor should be rendered as a `PopupRenderer` overlay (like the autocomplete popup already is), so it never contributes to the base canvas height and never scrolls into terminal scrollback. This requires refactoring the editor's rendering path to return base content via `PopupLines` instead of `Render`.
+
+**Status**: Root cause identified. Fix deferred — requires editor rendering refactor to overlay model.
+
 ```
 Update shortcuts.go's promptCustomModel to fetch from all providers:
 
@@ -95,5 +106,9 @@ Edit tool does not show information during streaming outside of elapsed time. So
 Can you add some progress indicators or feedback during streaming: eg: Number of tokens processed / edit stats like "number of character to delete/number of character to insert".
 If possible, the stats should show the number of lines deleted/inserted like a diffstat during streaming so user can see the progress of the edit
 
+→ **FIXED**: `EditFileRenderer` now implements `StreamingRenderer` with `RenderPartial`. During argument streaming it shows a compact diffstat preview: "−X lines, +Y lines" for replace operations, or "operation: name" for other operations. Tests added: `TestEditFileRenderer_RenderPartial_*` (5 subtests).
+
 ## Read tool
 Read tool should not show output by default - it should be configurable with a dedicated flag in config to have read showing output - default should be silent.
+
+→ **FIXED**: New config flag `tui.tools.show_read` (default: `false`). When false (default), read tool widgets stay collapsed even in "full" view mode. Per-widget toggle (Ctrl+O/Enter) still works to show content. When true, read tool behaves like other tools. Config wiring: `ToolDisplayConfig.ShowRead` → `ToolViewPolicy.ShowReadContent()` → `ToolExecutionComponent.effectiveExpanded()`. Tests added: `TestToolExecution_ReadFile_ShowReadFalsePreventsGlobalExpand`, config merge and defaults tests.

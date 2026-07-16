@@ -81,6 +81,7 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 		chat.SetToolsConfig(
 			cfg.TUI.Tools.View == config.ToolViewFull,
 			cfg.TUI.Tools.PreviewLines,
+			cfg.TUI.Tools.ShowRead,
 		)
 	}
 	agentContent := orchpanel.NewAgentContent()

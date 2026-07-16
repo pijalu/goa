@@ -488,10 +488,12 @@ func TestToolExecution_RunningShowsElapsedDuration(t *testing.T) {
 type stubViewPolicy struct {
 	expanded     bool
 	previewLines int
+	showRead     bool
 }
 
 func (s stubViewPolicy) EffectiveToolsExpanded() bool { return s.expanded }
 func (s stubViewPolicy) EffectivePreviewLines() int   { return s.previewLines }
+func (s stubViewPolicy) ShowReadContent() bool        { return s.showRead }
 
 // TestToolExecution_CtrlO_TogglesReadBody is the regression test for
 // "Ctrl+O open/close does not change anything": flipping the global view
@@ -503,17 +505,44 @@ func TestToolExecution_CtrlO_TogglesReadBody(t *testing.T) {
 	tc.SetOutput("read file main.go:1:2\n     1  package main\n     2  \n(end — 2 lines shown)\n")
 
 	// Collapsed (Summary): header only — no content.
-	tc.SetToolViewPolicy(stubViewPolicy{expanded: false, previewLines: 10})
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: false, previewLines: 10, showRead: true})
 	collapsed := ansi.Strip(strings.Join(tc.Render(80), "\n"))
 	if strings.Contains(collapsed, "package main") {
 		t.Errorf("collapsed read should not show content, got %q", collapsed)
 	}
 
 	// Expand via the global policy (Ctrl+O): body now shows the file content.
-	tc.SetToolViewPolicy(stubViewPolicy{expanded: true, previewLines: 10})
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: true, previewLines: 10, showRead: true})
 	expanded := ansi.Strip(strings.Join(tc.Render(80), "\n"))
 	if !strings.Contains(expanded, "package main") {
 		t.Errorf("expanded read should show content, got %q", expanded)
+	}
+}
+
+// TestToolExecution_ReadFile_ShowReadFalsePreventsGlobalExpand verifies that
+// when ShowReadContent() returns false, a read widget stays collapsed even when
+// the global view policy says expanded=true. The per-widget toggle still works.
+func TestToolExecution_ReadFile_ShowReadFalsePreventsGlobalExpand(t *testing.T) {
+	tc := NewToolExecution("read", "main.go")
+	tc.SetArgsJSON(`{"path":"main.go"}`)
+	tc.SetOutput("read file main.go:1:2\n     1  package main\n     2  \n(end — 2 lines shown)\n")
+
+	// Global expanded=true, but showRead=false → read stays collapsed.
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: true, previewLines: 10, showRead: false})
+	rendered := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if strings.Contains(rendered, "package main") {
+		t.Errorf("read should stay collapsed when showRead=false, got %q", rendered)
+	}
+	// The header (file path) should still be visible.
+	if !strings.Contains(rendered, "main.go") {
+		t.Errorf("read header should still show path, got %q", rendered)
+	}
+
+	// Per-widget toggle still works: SetExpanded(true) overrides the policy.
+	tc.SetExpanded(true)
+	expanded := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(expanded, "package main") {
+		t.Errorf("per-widget toggle should show content, got %q", expanded)
 	}
 }
 

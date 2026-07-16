@@ -17,9 +17,9 @@ import (
 )
 
 // ToolViewPolicy is implemented by the ChatViewport to supply the global
-// tool-view state (effective expand mode + preview line count) to every tool
-// widget. Keeping it an interface lets widgets be unit-tested without a real
-// viewport and centralizes the config/runtime policy in one place.
+// tool-view state (effective expand mode + preview line count + read visibility)
+// to every tool widget. Keeping it an interface lets widgets be unit-tested
+// without a real viewport and centralizes the config/runtime policy in one place.
 type ToolViewPolicy interface {
 	// EffectiveToolsExpanded reports whether tool blocks should render fully
 	// expanded (Full view), either because the config default is "full" or the
@@ -27,6 +27,9 @@ type ToolViewPolicy interface {
 	EffectiveToolsExpanded() bool
 	// EffectivePreviewLines returns the configured Summary line count.
 	EffectivePreviewLines() int
+	// ShowReadContent reports whether the read tool's file output should be
+	// rendered. When false, read output is hidden even in Expanded/Full view.
+	ShowReadContent() bool
 }
 
 // defaultToolPreviewLines is the fallback Summary line count when no view
@@ -175,12 +178,9 @@ func (tc *ToolExecutionComponent) updateBox() {
 		renderer = tc.generic
 	}
 
-	expanded := tc.expanded
+	expanded := tc.effectiveExpanded()
 	previewLines := defaultToolPreviewLines
 	if tc.viewPolicy != nil {
-		if tc.viewPolicy.EffectiveToolsExpanded() {
-			expanded = true
-		}
 		if n := tc.viewPolicy.EffectivePreviewLines(); n > 0 {
 			previewLines = n
 		}
@@ -507,6 +507,24 @@ func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 	default:
 		return "·", TheTheme.ColorHex("system_msg")
 	}
+}
+
+// effectiveExpanded returns the effective expanded state for the widget,
+// considering both the per-widget toggle (tc.expanded) and the global view
+// policy. For read tools, the showRead policy prevents global expansion when
+// false so read output stays silent by default, while the per-widget toggle
+// (Ctrl+O/Enter on the block) still works.
+func (tc *ToolExecutionComponent) effectiveExpanded() bool {
+	if tc.viewPolicy == nil {
+		return tc.expanded
+	}
+	if !tc.viewPolicy.EffectiveToolsExpanded() {
+		return tc.expanded
+	}
+	if tc.toolName == "read" && !tc.viewPolicy.ShowReadContent() {
+		return tc.expanded
+	}
+	return true
 }
 
 func (tc *ToolExecutionComponent) bgANSI() string {

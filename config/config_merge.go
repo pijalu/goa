@@ -443,6 +443,9 @@ func mergeToolDisplay(dst, src *ToolDisplayConfig) {
 	if src.PreviewLines != 0 {
 		dst.PreviewLines = src.PreviewLines
 	}
+	if src.ShowRead {
+		dst.ShowRead = true
+	}
 }
 
 // mergeTransparency merges transparency config fields.

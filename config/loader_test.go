@@ -813,6 +813,9 @@ func TestLoadToolsDefaults(t *testing.T) {
 	if cfg.TUI.Tools.PreviewLines != 10 {
 		t.Errorf("default Tools.PreviewLines = %d, want 10", cfg.TUI.Tools.PreviewLines)
 	}
+	if cfg.TUI.Tools.ShowRead {
+		t.Errorf("default Tools.ShowRead = true, want false")
+	}
 }
 
 // TestLoadToolsOverride verifies a project config overrides the tools defaults.
@@ -826,6 +829,7 @@ tui:
   tools:
     view: full
     preview_lines: 7
+    show_read: true
 `)
 	loader := NewCascadeLoader(projectDir, "", nil)
 	cfg, err := loader.Load()
@@ -837,5 +841,8 @@ tui:
 	}
 	if cfg.TUI.Tools.PreviewLines != 7 {
 		t.Errorf("Tools.PreviewLines = %d, want 7", cfg.TUI.Tools.PreviewLines)
+	}
+	if !cfg.TUI.Tools.ShowRead {
+		t.Errorf("Tools.ShowRead = false, want true")
 	}
 }

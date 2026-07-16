@@ -211,7 +211,7 @@ func TestToolStreaming_GlobalToggleExpand(t *testing.T) {
 func TestToolStreaming_ConfigDefaultFull(t *testing.T) {
 	sc := newUIScenario(t, 100, 24)
 	sc.app.subs.cfg.TUI.Tools.View = "full"
-	sc.chat.SetToolsConfig(true, 10)
+	sc.chat.SetToolsConfig(true, 10, false)
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
 		IsDelta: false, ToolName: "bash", ToolInput: `{"command":"seq 1 30"}`, ToolCallID: "b1"})
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult,

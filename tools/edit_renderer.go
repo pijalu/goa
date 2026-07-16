@@ -23,7 +23,10 @@ type EditFileRenderer struct {
 // still offering the expand action for exceptionally large diffs.
 const editDiffPreviewLines = 1000
 
-var _ tuirender.ToolRenderer = (*EditFileRenderer)(nil)
+var (
+	_ tuirender.ToolRenderer        = (*EditFileRenderer)(nil)
+	_ tuirender.StreamingRenderer   = (*EditFileRenderer)(nil)
+)
 
 func NewEditFileRenderer() *EditFileRenderer {
 	return &EditFileRenderer{KeyExpand: "Ctrl+O"}
@@ -40,6 +43,33 @@ func (r *EditFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderC
 		path = "..."
 	}
 	return rToolTitle("edit") + " " + rAccent(formatPathRelativeToCwdOrAbsolute(path, ctx.Cwd))
+}
+
+// RenderPartial implements tuirender.StreamingRenderer. While the edit tool
+// arguments are still streaming, it shows a compact diffstat preview so the
+// user sees the edit's scope as it arrives: line counts for the old and new
+// content, or the operation name when the full content is not yet available.
+func (r *EditFileRenderer) RenderPartial(args map[string]any, ctx tuirender.RenderContext) string {
+	oldStr := stringArg(args, "old_string")
+	newStr := stringArg(args, "new_string")
+	op := stringArg(args, "operation")
+
+	var parts []string
+	if oldStr != "" {
+		oldLines := strings.Count(oldStr, "\n") + 1
+		parts = append(parts, fmt.Sprintf("-%d lines", oldLines))
+	}
+	if newStr != "" {
+		newLines := strings.Count(newStr, "\n") + 1
+		parts = append(parts, fmt.Sprintf("+%d lines", newLines))
+	}
+	if len(parts) == 0 && op != "" {
+		parts = append(parts, fmt.Sprintf("operation: %s", op))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return rMuted("  " + strings.Join(parts, ", "))
 }
 
 // RenderResult renders the edit output as a colored, line-numbered diff.

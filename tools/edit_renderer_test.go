@@ -106,6 +106,72 @@ func TestEditFileRenderer_HideResultWhenCollapsed(t *testing.T) {
 	}
 }
 
+func TestEditFileRenderer_RenderPartial_ShowsDiffstat(t *testing.T) {
+	r := NewEditFileRenderer()
+	args := map[string]any{
+		"old_string": "line1\nline2\nline3",
+		"new_string": "line1\nline2\nline3\nline4",
+	}
+	got := ansi.Strip(r.RenderPartial(args, tuirender.RenderContext{}))
+	if !strings.Contains(got, "-3 lines") {
+		t.Errorf("expected '-3 lines' in partial, got %q", got)
+	}
+	if !strings.Contains(got, "+4 lines") {
+		t.Errorf("expected '+4 lines' in partial, got %q", got)
+	}
+}
+
+func TestEditFileRenderer_RenderPartial_ShowsSingleSide(t *testing.T) {
+	r := NewEditFileRenderer()
+
+	// Only old_string (delete-only)
+	got := ansi.Strip(r.RenderPartial(map[string]any{"old_string": "a\nb"}, tuirender.RenderContext{}))
+	if !strings.Contains(got, "-2 lines") {
+		t.Errorf("expected '-2 lines' for old_string only, got %q", got)
+	}
+
+	// Only new_string (insert-only)
+	got = ansi.Strip(r.RenderPartial(map[string]any{"new_string": "x\ny\nz"}, tuirender.RenderContext{}))
+	if !strings.Contains(got, "+3 lines") {
+		t.Errorf("expected '+3 lines' for new_string only, got %q", got)
+	}
+}
+
+func TestEditFileRenderer_RenderPartial_ShowsOperation(t *testing.T) {
+	r := NewEditFileRenderer()
+	args := map[string]any{
+		"path":      "main.go",
+		"operation": "replace_lines",
+	}
+	got := ansi.Strip(r.RenderPartial(args, tuirender.RenderContext{}))
+	if !strings.Contains(got, "operation: replace_lines") {
+		t.Errorf("expected operation name in partial, got %q", got)
+	}
+}
+
+func TestEditFileRenderer_RenderPartial_EmptyArgs(t *testing.T) {
+	r := NewEditFileRenderer()
+	got := r.RenderPartial(map[string]any{}, tuirender.RenderContext{})
+	if got != "" {
+		t.Errorf("expected empty string for empty args, got %q", got)
+	}
+}
+
+func TestEditFileRenderer_RenderPartial_SingleLineStrings(t *testing.T) {
+	r := NewEditFileRenderer()
+	args := map[string]any{
+		"old_string": "hello",
+		"new_string": "world",
+	}
+	got := ansi.Strip(r.RenderPartial(args, tuirender.RenderContext{}))
+	if !strings.Contains(got, "-1 lines") {
+		t.Errorf("expected '-1 lines' for single-line string, got %q", got)
+	}
+	if !strings.Contains(got, "+1 lines") {
+		t.Errorf("expected '+1 lines' for single-line string, got %q", got)
+	}
+}
+
 func TestEditRendererHelpers_UsePartialResets(t *testing.T) {
 	for name, render := range map[string]func() string{
 		"rDiffAdded":   func() string { return rDiffAdded("x") },

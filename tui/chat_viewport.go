@@ -117,9 +117,11 @@ type ChatViewport struct {
 	// comes from config (tui.tools.view == "full"); toolsExpandOverride is set
 	// by Ctrl+O to flip all blocks for the running session (nil = follow config).
 	// toolsPreviewLines is the configured Summary line count (default 10).
+	// showRead controls read tool output visibility (default false = silent).
 	toolsDefaultExpanded bool
 	toolsExpandOverride   *bool
 	toolsPreviewLines     int
+	showRead             bool
 
 	// toolWidgetsDirty is set by the animation ticker to request an in-place
 	// update of running tool widgets on the next Render call. It is an atomic
@@ -154,16 +156,17 @@ func NewChatViewport() *ChatViewport {
 }
 
 // SetToolsConfig applies the configured tool display policy: the default
-// expand mode and the Summary preview line count. Called once from the app
-// layer after the config is loaded. Zero PreviewLines is normalized to the
-// default (10).
-func (cv *ChatViewport) SetToolsConfig(expanded bool, previewLines int) {
+// expand mode, the Summary preview line count, and read tool visibility.
+// Called once from the app layer after the config is loaded. Zero PreviewLines
+// is normalized to the default (10).
+func (cv *ChatViewport) SetToolsConfig(expanded bool, previewLines int, showRead bool) {
 	if previewLines <= 0 {
 		previewLines = defaultToolPreviewLines
 	}
-	changed := cv.toolsDefaultExpanded != expanded || cv.toolsPreviewLines != previewLines
+	changed := cv.toolsDefaultExpanded != expanded || cv.toolsPreviewLines != previewLines || cv.showRead != showRead
 	cv.toolsDefaultExpanded = expanded
 	cv.toolsPreviewLines = previewLines
+	cv.showRead = showRead
 	if changed {
 		cv.invalidateAllToolWidgets()
 	}
@@ -192,6 +195,13 @@ func (cv *ChatViewport) EffectivePreviewLines() int {
 		return defaultToolPreviewLines
 	}
 	return cv.toolsPreviewLines
+}
+
+// ShowReadContent reports whether the read tool's file output should be
+// rendered in the chat viewport. When false (the default), read output is
+// hidden even in Expanded/Full view.
+func (cv *ChatViewport) ShowReadContent() bool {
+	return cv.showRead
 }
 
 // invalidateAllToolWidgets forces every tool widget to rebuild on the next
