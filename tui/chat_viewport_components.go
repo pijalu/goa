@@ -78,6 +78,13 @@ type assistantMessage struct {
 	finishReason string // e.g. "stop", "tool_calls", "length"
 	tokenCount   int
 	durationMs   int
+
+	// renderCache memoizes the last rendered frame. Keyed implicitly by
+	// (cacheText, cacheWidth, cacheFinish); invalidated on SetText/SetFinishReason.
+	renderCache []string
+	cacheText   string
+	cacheWidth  int
+	cacheFinish string
 }
 
 func newAssistantMessage(text string) *assistantMessage {
@@ -88,6 +95,8 @@ func (m *assistantMessage) SetFinishReason(reason string, tokens int, durMs int)
 	m.finishReason = reason
 	m.tokenCount = tokens
 	m.durationMs = durMs
+	// Finish metadata changes the footer line, so the cached frame is stale.
+	m.renderCache = nil
 }
 func (m *assistantMessage) HandleInput(string) {}
 func (m *assistantMessage) Invalidate()        {}
@@ -95,6 +104,25 @@ func (m *assistantMessage) Render(width int) []string {
 	if m.text == "" {
 		return nil
 	}
+	// A2: memoize the rendered frame keyed by (text, width, finishReason).
+	// During streaming the entry is re-rendered every frame (~60fps) as text
+	// grows; a full markdown re-parse each frame is O(len) per frame. When the
+	// text has NOT changed since the last render (e.g. an unrelated component
+	// marked the viewport dirty), reuse the cached lines instead of re-parsing.
+	if m.renderCache != nil && m.cacheText == m.text && m.cacheWidth == width &&
+		m.cacheFinish == m.finishReason {
+		return m.renderCache
+	}
+	lines := m.renderFrame(width)
+	m.renderCache = lines
+	m.cacheText = m.text
+	m.cacheWidth = width
+	m.cacheFinish = m.finishReason
+	return lines
+}
+
+// renderFrame performs the actual markdown render (the uncached path).
+func (m *assistantMessage) renderFrame(width int) []string {
 	var lines []string
 
 	// Markdown rendering with 1col left/right padding.
