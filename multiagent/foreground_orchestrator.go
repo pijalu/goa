@@ -7,7 +7,6 @@ package multiagent
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"errors"
 	"strings"
@@ -987,12 +986,26 @@ func (o *ForegroundOrchestrator) emit(from, to, content string) {
 }
 
 func (o *ForegroundOrchestrator) emitKind(from, to, content, kind string) {
-	select {
-	case o.events <- OrchestratorMessage{
+	msg := OrchestratorMessage{
 		From: from, To: to, Content: content, Kind: kind,
 		Timestamp: time.Now(),
-	}:
-	default:
-		log.Printf("warning: orchestrator events channel full, dropping %s/%s", from, to)
 	}
+	// High-frequency deltas (To == "stream_chunk", both thinking and content
+	// variants) are lossy: drop rather than block the agent loop. They are
+	// best-effort — the consumer reconciles the final text at stream_end, so a
+	// dropped chunk only costs live-update smoothness, never correctness.
+	if to == "stream_chunk" {
+		select {
+		case o.events <- msg:
+		default:
+			// Intentionally silent: chunks are droppable by design.
+		}
+		return
+	}
+	// Structural events (To == stream_start / stream_end / thinking_end, every
+	// lifecycle message, and GATE_APPROVAL) must NOT be silently dropped: a
+	// lost stream_end breaks the UI state machine and a lost gate message hangs
+	// the workflow. Apply backpressure (block until the consumer makes room)
+	// instead — the same "never drop EventEnd" principle used for the agent bus.
+	o.events <- msg
 }
