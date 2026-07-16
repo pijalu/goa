@@ -20,6 +20,7 @@ import (
 	_ "github.com/go-python/gpython/stdlib"
 
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	_ "github.com/pijalu/goa/internal/python/stdlib"
 )
 
@@ -420,7 +421,8 @@ func pythonRunStatus(arguments string) string {
 	}
 	line := strings.Split(p.Code, "\n")[0]
 	if len(line) > 60 {
-		line = line[:57] + "..."
+		// Rune-safe cut: a byte cut can split a multi-byte rune.
+		line = string([]rune(line)[:57]) + "..."
 	}
 	return "Running: " + line
 }

@@ -203,9 +203,16 @@ func splitLinesForCounting(content string) []string {
 }
 
 // truncateStringFromEnd truncates a string to fit within maxBytes, taking from the end.
+// The cut lands on a rune boundary so the result is always valid UTF-8.
 func truncateStringFromEnd(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
-	return s[len(s)-maxBytes:]
+	start := len(s) - maxBytes
+	// Advance past UTF-8 continuation bytes (0b10xxxxxx) so the first byte is
+	// a rune start; this can only shrink the result below maxBytes.
+	for start < len(s) && s[start]&0xC0 == 0x80 {
+		start++
+	}
+	return s[start:]
 }

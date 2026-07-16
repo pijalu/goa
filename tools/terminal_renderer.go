@@ -19,8 +19,9 @@ func (TerminalRenderer) RenderCall(args map[string]any, ctx tuirender.RenderCont
 	if cmd == "" {
 		cmd = "..."
 	}
-	if len(cmd) > 60 {
-		cmd = cmd[:57] + "..."
+	// Width-based, cluster-safe cut — a byte cut can split a rune.
+	if ansi.Width(cmd) > 60 {
+		cmd = ansi.Truncate(cmd, 57) + "..."
 	}
 	return rBashPrompt("$ ") + rToolTitle(cmd)
 }

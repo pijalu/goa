@@ -108,3 +108,24 @@ func TestTerminalTool_ExecuteContext_CancelInterruptsLongCommand(t *testing.T) {
 		t.Errorf("cancellation did not interrupt promptly: elapsed=%v", elapsed)
 	}
 }
+
+// TestTerminalTool_SanitizesControlBytes: a command printing an escape
+// sequence must reach the model/TUI as literal text, never as raw ESC bytes
+// the terminal would execute when the widget renders.
+func TestTerminalTool_SanitizesControlBytes(t *testing.T) {
+	mgr, err := sandbox.NewManager("", nil)
+	if err != nil {
+		t.Fatalf("sandbox manager: %v", err)
+	}
+	tool := &TerminalTool{SandboxMgr: mgr, TimeoutSeconds: 10, MaxOutputChars: 1000}
+	out, err := tool.Execute(`{"command":"printf '\\033[2Kwiped\\n'"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("raw ESC byte leaked into tool output: %q", out)
+	}
+	if !strings.Contains(out, `\e[2Kwiped`) {
+		t.Errorf("expected literal escape text, got: %q", out)
+	}
+}

@@ -138,10 +138,15 @@ func (t *PTYExecTool) ptyRead(p ptyParams) (string, error) {
 	if output == "" {
 		return fmt.Sprintf("[pty_exec: read %s]\n(no output available)\n", p.ID), nil
 	}
-	// Truncate very long output
+	// Truncate very long output. Cut from the end on a rune boundary so the
+	// result is always valid UTF-8 (a raw byte cut can split a multi-byte
+	// rune and render as '�').
 	if len(output) > 50000 {
-		output = output[len(output)-50000:]
-		output = "... [truncated to last 50000 bytes]\n" + output
+		start := len(output) - 50000
+		for start < len(output) && output[start]&0xC0 == 0x80 {
+			start++ // skip UTF-8 continuation bytes
+		}
+		output = "... [truncated to last 50000 bytes]\n" + output[start:]
 	}
 	// Strip ANSI for clean output (preserve newlines). Use the shared
 	// internal/ansi stripper so CSI and OSC sequences (e.g. window-title sets)

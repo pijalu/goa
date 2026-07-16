@@ -151,3 +151,25 @@ func TestNewFrameworkRunner_RoutesByFramework(t *testing.T) {
 		t.Errorf("unknown framework should return nil, got %T", r)
 	}
 }
+
+// TestVerifyTool_Execute_SanitizesControlBytes: test-runner output is
+// untrusted — raw ESC bytes in stdout/stderr must become visible text.
+func TestVerifyTool_Execute_SanitizesControlBytes(t *testing.T) {
+	tool := &VerifyTool{
+		ProjectDir: t.TempDir(),
+		Runner: &staticRunner{report: verify.Report{
+			Framework: "go", Passed: false, ExitCode: 1,
+			Stdout: "fail \x1b[31mred\x1b[0m",
+		}},
+	}
+	out, err := tool.Execute(`{}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("raw ESC byte leaked into report: %q", out)
+	}
+	if !strings.Contains(out, `\e[31mred`) {
+		t.Errorf("expected literal escape text, got: %q", out)
+	}
+}

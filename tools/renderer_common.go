@@ -176,8 +176,11 @@ func HighlightCode(code, lang string) []string {
 	return out
 }
 
-// HighlightLine applies basic syntax coloring to a single line.
+// HighlightLine applies basic syntax coloring to a single line. The line is
+// sanitized first: it is usually untrusted file content, and raw control
+// bytes would break both highlighting and the terminal.
 func HighlightLine(line, lang string) string {
+	line = ansi.Sanitize(line)
 	switch lang {
 	case "bash", "sh", "shell", "zsh":
 		return highlightBash(line)

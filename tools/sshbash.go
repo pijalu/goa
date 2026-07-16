@@ -14,6 +14,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // SSHHostConfig holds SSH connection parameters.

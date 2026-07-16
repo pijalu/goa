@@ -583,3 +583,27 @@ func TestShortenPath_Relative(t *testing.T) {
 		t.Errorf("shortenPath(%q) = %q, want %q", "relative/path/file.go", got, "relative/path/file.go")
 	}
 }
+
+// TestReadFile_SanitizesControlBytes: file content is untrusted. A text file
+// (passes the NUL-only isBinary check) containing a clear-line sequence must
+// reach the model/TUI as literal text — raw ESC bytes would erase the user's
+// screen when the read result renders.
+func TestReadFile_SanitizesControlBytes(t *testing.T) {
+	dir := t.TempDir()
+	payload := "line1 \x1b[2Kerased \x1b[38;2;1;2;3mcolored\x1b[0m end\n"
+	path := filepath.Join(dir, "ansi.txt")
+	if err := os.WriteFile(path, []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &ReadFileTool{}
+	out, err := tool.Execute(`{"path":"` + path + `"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("raw ESC byte leaked into read output: %q", out)
+	}
+	if !strings.Contains(out, `\e[2Kerased`) {
+		t.Errorf("expected literal escape text, got: %q", out)
+	}
+}

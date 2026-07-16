@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/verify"
 )
 
@@ -182,11 +183,13 @@ func formatReport(r verify.Report) string {
 	}
 	if r.Stdout != "" {
 		b.WriteString("\n--- stdout ---\n")
-		b.WriteString(r.Stdout)
+		// Sanitize: command output is untrusted — raw ESC bytes must never
+		// reach the model context or the TUI renderer.
+		b.WriteString(ansi.Sanitize(r.Stdout))
 	}
 	if r.Stderr != "" {
 		b.WriteString("\n--- stderr ---\n")
-		b.WriteString(r.Stderr)
+		b.WriteString(ansi.Sanitize(r.Stderr))
 	}
 	return b.String()
 }

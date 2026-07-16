@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
@@ -319,8 +320,11 @@ func formatDiffLine(prefix string, lineNum int, content string, width int, color
 }
 
 // expandTabs replaces tabs with spaces for aligned rendering.
+// expandTabs expands tabs for display and sanitizes control bytes: diff
+// content is raw file text, and a stray ESC byte must render as visible
+// text, never reach the terminal as a command.
 func expandTabs(s string) string {
-	return strings.ReplaceAll(s, "\t", "   ")
+	return strings.ReplaceAll(ansi.Sanitize(s), "\t", "   ")
 }
 
 // intraLineDiff computes a lightweight word/whitespace-level diff between two

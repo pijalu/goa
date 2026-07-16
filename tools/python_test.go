@@ -332,3 +332,19 @@ func TestPythonTool_TruncateOutput(t *testing.T) {
 		t.Error("expected truncation notice")
 	}
 }
+
+// TestPythonTool_Execute_SanitizesControlBytes: script output is untrusted —
+// raw ESC bytes must become visible text before reaching the model/TUI.
+func TestPythonTool_Execute_SanitizesControlBytes(t *testing.T) {
+	tool := &PythonTool{}
+	out, err := tool.Execute(`{"code": "print('\\x1b[2Kwiped')"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("raw ESC byte leaked into tool output: %q", out)
+	}
+	if !strings.Contains(out, `\e[2Kwiped`) {
+		t.Errorf("expected literal escape text, got: %q", out)
+	}
+}

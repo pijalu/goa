@@ -640,7 +640,8 @@ func exitCode(err error) int {
 	return -1
 }
 
-// truncateCommand shortens a command for display.
+// truncateCommand shortens a command for display. The cut is rune-safe so a
+// multi-byte character at the boundary never renders as '�'.
 func truncateCommand(cmd string, maxLen int) string {
 	if maxLen <= 0 {
 		return "..."
@@ -649,7 +650,7 @@ func truncateCommand(cmd string, maxLen int) string {
 		return cmd
 	}
 	if maxLen <= 3 {
-		return cmd[:maxLen]
+		return string([]rune(cmd)[:maxLen])
 	}
-	return cmd[:maxLen-3] + "..."
+	return string([]rune(cmd)[:maxLen-3]) + "..."
 }

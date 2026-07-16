@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/sandbox"
