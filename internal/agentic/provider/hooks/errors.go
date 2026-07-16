@@ -5,6 +5,7 @@
 package hooks
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"regexp"
@@ -75,7 +76,16 @@ func (h *ErrorHook) ApplyError(ctx *ErrorContext) error {
 	}
 
 	if ctx.Err != nil {
-		ctx.IsRetryable = ctx.IsRetryable || isRetryableNetworkError(ctx.Err)
+		// A deliberate user cancellation (Escape / Ctrl+C / CloseStreamOnCancel)
+		// is never retryable: retrying would reconnect a stream the user just
+		// aborted. Check errors.Is BEFORE the substring heuristic below, because
+		// isRetryableNetworkError would otherwise match the "context canceled"
+		// text in a wrapped cancel. A *server*-side drop that surfaces as
+		// context.Canceled is still retried — it arrives wrapped in a
+		// ProviderError via the transport and is classified upstream.
+		if !errors.Is(ctx.Err, context.Canceled) {
+			ctx.IsRetryable = ctx.IsRetryable || isRetryableNetworkError(ctx.Err)
+		}
 	}
 
 	return nil
@@ -86,7 +96,11 @@ func isRetryableNetworkError(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	for _, p := range []string{"connection refused", "no such host", "temporary", "timeout", "eof", "reset by peer", "broken pipe", "context canceled"} {
+	// Note: "context canceled" is deliberately NOT in this list. A bare/synthesized
+	// cancel text almost always means a user-initiated abort (Escape, Ctrl+C),
+	// which must not be retried. Server-side drops are caught by the other
+	// transient patterns (EOF, reset, broken pipe, ...).
+	for _, p := range []string{"connection refused", "no such host", "temporary", "timeout", "eof", "reset by peer", "broken pipe"} {
 		if strings.Contains(text, p) {
 			return true
 		}

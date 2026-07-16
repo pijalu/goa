@@ -704,6 +704,15 @@ func friendlyConnectionHint(raw string) string {
 		return "[connection error] Could not connect to the LLM server.\n" +
 			"  • Make sure the server is running and the URL/port is correct\n" +
 			"  • Check your provider configuration with /config"
+	case strings.Contains(raw, "connection reset"),
+		strings.Contains(raw, "reset by peer"),
+		strings.Contains(raw, "broken pipe"),
+		strings.Contains(raw, "unexpected EOF"),
+		strings.Contains(raw, "connection lost"),
+		strings.Contains(raw, "EOF"):
+		return "[connection error] The connection to the LLM server was interrupted.\n" +
+			"  • This is usually a temporary network or server hiccup — goa retries automatically\n" +
+			"  • If it persists, check your LLM server logs and network connection"
 	case strings.Contains(raw, "no such host"),
 		strings.Contains(raw, "lookup"):
 		return "[connection error] Could not resolve the LLM server hostname.\n" +
@@ -716,8 +725,44 @@ func friendlyConnectionHint(raw string) string {
 			"  • Check your API key in the provider configuration\n" +
 			"  • Run /config to update your credentials"
 	default:
-		return fmt.Sprintf("[connection error] Connection to the LLM server was lost.\n  %s", raw)
+		// The default must NOT claim "connection lost": the raw text may carry a
+		// structured non-connection error (e.g. "Error: 404 - model 'x' not
+		// found", a 400 malformed request, a schema error). Mislabeling those as
+		// a connection problem sends the user chasing the wrong fix. Detect the
+		// structured "Error: <status> - <message>" shape produced by
+		// formatFatalStreamMessage/formatRetryMessage and surface it verbatim;
+		// only fall back to the generic connection line when nothing better is
+		// available.
+		if cause := extractHTTPErrorCause(raw); cause != "" {
+			return "[request error] " + cause + "\n" +
+				"  • This is not a connection problem — the server rejected the request\n" +
+				"  • Check the model name and provider configuration with /config"
+		}
+		return fmt.Sprintf("[error] The LLM request failed.\n  %s", raw)
 	}
+}
+
+// extractHTTPErrorCause pulls the human-readable "<status> - <message>" cause
+// out of a structured stream-error string produced by formatStreamMessage
+// ("Error: 404 - model 'x' not found (code)"). The raw text may prefix it with
+// wrapping context ("LLM request failed (not retryable): Error: 404 - ..."),
+// so we locate the "Error: " marker and return from there. Returns "" when the
+// text does not carry an HTTP-status-style error, so callers can fall back.
+func extractHTTPErrorCause(raw string) string {
+	const marker = "Error: "
+	idx := strings.Index(raw, marker)
+	if idx < 0 {
+		return ""
+	}
+	cause := strings.TrimSpace(raw[idx+len(marker):])
+	// Must start with a 3-digit HTTP status to qualify (avoids matching
+	// arbitrary "Error: ..." prose that is not an HTTP rejection).
+	if len(cause) < 3 || cause[0] < '0' || cause[0] > '9' || cause[1] < '0' || cause[1] > '9' || cause[2] < '0' || cause[2] > '9' {
+		return ""
+	}
+	// Strip a trailing " - retrying" suffix so the shown cause is the bare error.
+	cause = strings.TrimSuffix(cause, " - retrying")
+	return cause
 }
 
 // computeCost computes cumulative cost from token totals and the model's
