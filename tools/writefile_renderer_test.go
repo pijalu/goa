@@ -33,6 +33,28 @@ func TestWriteFileRenderer_RenderResult(t *testing.T) {
 	}
 }
 
+// TestWriteFileRenderer_RenderResult_NonFencedOutputShown verifies that when
+// the output is not a fenced code block (e.g. the "(interrupted)" sentinel
+// set when a write is cancelled mid-run, or an error string), the renderer
+// surfaces it verbatim instead of producing an empty body. Previously such
+// output was silently dropped, leaving the user with a ✗ icon and no text.
+func TestWriteFileRenderer_RenderResult_NonFencedOutputShown(t *testing.T) {
+	r := NewWriteFileRenderer()
+
+	for _, out := range []string{"(interrupted)", "Error: disk full"} {
+		result := r.RenderResult(out, tuirender.RenderContext{})
+		stripped := ansi.Strip(result)
+		if !strings.Contains(stripped, strings.TrimRight(out, "\n")) {
+			t.Errorf("expected non-fenced output %q to be shown verbatim, got %q", out, stripped)
+		}
+	}
+
+	// Empty output (mid-stream, before any result) must stay empty.
+	if got := r.RenderResult("", tuirender.RenderContext{}); got != "" {
+		t.Errorf("empty output should render empty body, got %q", got)
+	}
+}
+
 func TestWriteFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	r := NewWriteFileRenderer()
 	var content []string

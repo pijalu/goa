@@ -41,6 +41,14 @@ func (r *WriteFileRenderer) RenderCall(args map[string]any, ctx tuirender.Render
 func (r *WriteFileRenderer) RenderResult(output string, ctx tuirender.RenderContext) string {
 	content := r.resolveContent(output, ctx)
 	if content == "" {
+		// No fenced content. When the raw output is non-empty (e.g. the
+		// "(interrupted)" sentinel set on cancellation, or an error message
+		// that is not a code block), surface it verbatim so the body is not
+		// silently empty. An empty output (mid-stream, before any result)
+		// correctly stays empty.
+		if trimmed := strings.TrimSpace(output); trimmed != "" {
+			return rToolOutput(trimmed)
+		}
 		return ""
 	}
 	path := r.resolvePath(output, ctx)
