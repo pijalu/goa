@@ -430,13 +430,15 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	ctxMax := a.tokenSessionMax
 	tokenTotalPrompt := a.tokenPromptTotal
 	tokenTotalPredicted := a.tokenPredictedTotal
+	tokenCacheRead := a.tokenCacheReadTotal
+	tokenCacheWrite := a.tokenCacheWriteTotal
 	a.statsMu.Unlock()
 
 	line := fmt.Sprintf("[stats] turn %d: in=%d out=%d speed=%.1f ctx=%.1f%%/%d",
 		turn, promptN, predictedN, speed, ctxPct, ctxMax)
 
 	if modelCfg != nil && modelCfg.Pricing != nil {
-		cost := computeCost(tokenTotalPrompt, tokenTotalPredicted, modelCfg.Pricing)
+		cost := computeCost(tokenTotalPrompt, tokenTotalPredicted, tokenCacheRead, tokenCacheWrite, modelCfg.Pricing)
 		line += fmt.Sprintf(" cost=$%.4f", cost)
 	}
 
@@ -671,7 +673,7 @@ func applyPricing(st *sessionStats, cfg *config.Config, activeModelID string) {
 	if modelCfg == nil || modelCfg.Pricing == nil {
 		return
 	}
-	st.CostUSD = computeCost(st.PromptN, st.PredictedN, modelCfg.Pricing)
+	st.CostUSD = computeCost(st.PromptN, st.PredictedN, st.CacheReadTotal, st.CacheWriteTotal, modelCfg.Pricing)
 	if st.CostUSD > 0 || modelCfg.Pricing.InputPer1M > 0 || modelCfg.Pricing.OutputPer1M > 0 {
 		st.ShowCost = true
 	}
@@ -718,12 +720,25 @@ func friendlyConnectionHint(raw string) string {
 	}
 }
 
-func computeCost(promptN, predictedN int, pricing *config.PricingConfig) float64 {
+// computeCost computes cumulative cost from token totals and the model's
+// pricing config. Each bucket is charged at its own rate: fresh input at
+// InputPer1M, output at OutputPer1M, cache reads at the (much cheaper)
+// CacheReadPer1M, and cache writes at the CacheWritePer1M premium.
+//
+// Bucket semantics are per-provider but the formula is correct for both:
+//   - OpenAI-style: computePromptN subtracts cached tokens from PromptN, so
+//     cacheRead is added back here at the cheap cache-read rate (not omitted,
+//     and not double-charged at the full input rate).
+//   - Anthropic-style: input/cache buckets are non-overlapping on the wire, so
+//     each is charged independently at its own rate.
+func computeCost(promptN, predictedN, cacheRead, cacheWrite int, pricing *config.PricingConfig) float64 {
 	if pricing == nil {
 		return 0
 	}
 	cost := float64(promptN)/1e6*pricing.InputPer1M +
-		float64(predictedN)/1e6*pricing.OutputPer1M
+		float64(predictedN)/1e6*pricing.OutputPer1M +
+		float64(cacheRead)/1e6*pricing.CacheReadPer1M +
+		float64(cacheWrite)/1e6*pricing.CacheWritePer1M
 	return cost
 }
 

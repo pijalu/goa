@@ -250,6 +250,12 @@ type anthropicEventContext struct {
 	currentBlock  anthropicBuilder
 	contentBlocks []schema.ContentBlock
 	stream        *schema.AssistantMessageEventStream
+	// usage accumulates token accounting across the stream. Anthropic sends
+	// the (cumulative) input + cache creation/read counts on message_start,
+	// and only the output token count on message_delta. We capture both so the
+	// final AssistantMessage.Usage carries all four buckets for cache-aware
+	// cost and the footer cache hit-rate.
+	usage schema.Usage
 }
 
 type anthropicBuilder struct {
@@ -297,6 +303,23 @@ var anthropicEventHandlers = map[string]func(ctx *anthropicEventContext, data st
 }
 
 func anthropicHandleMessageStart(ctx *anthropicEventContext, data string) error {
+	var parsed struct {
+		Message struct {
+			Usage struct {
+				InputTokens      int `json:"input_tokens"`
+				OutputTokens     int `json:"output_tokens"`
+				CacheCreateTokens int `json:"cache_creation_input_tokens"`
+				CacheReadTokens   int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return fmt.Errorf("decode message_start chunk: %w", err)
+	}
+	// Capture the cumulative input + cache accounting carried on message_start.
+	ctx.usage.InputTokens = parsed.Message.Usage.InputTokens
+	ctx.usage.CacheCreationTokens = parsed.Message.Usage.CacheCreateTokens
+	ctx.usage.CacheReadTokens = parsed.Message.Usage.CacheReadTokens
 	ctx.stream.Push(schema.AssistantMessageEvent{Type: schema.EventStart, Partial: &schema.AssistantMessage{}})
 	return nil
 }
@@ -408,10 +431,14 @@ func anthropicHandleMessageDelta(ctx *anthropicEventContext, data string) error 
 		return fmt.Errorf("decode message_delta chunk: %w", err)
 	}
 	ctx.emitBlock()
+	// message_delta carries only the output count; the input + cache buckets
+	// were captured on message_start. Merge so the final Usage has all four.
+	ctx.usage.OutputTokens = parsed.Usage.OutputTokens
+	finalUsage := ctx.usage
 	ctx.stream.End(&schema.AssistantMessage{
 		Content:    ctx.contentBlocks,
 		StopReason: mapAnthropicStopReason(parsed.Delta.StopReason),
-		Usage:      &schema.Usage{InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens},
+		Usage:      &finalUsage,
 	})
 	return nil
 }

@@ -199,6 +199,10 @@ type anthropicEventContext struct {
 	currentBlock  builder
 	contentBlocks []provider.ContentBlock
 	stream        *provider.AssistantMessageEventStream
+	// usage accumulates token accounting across the stream: message_start
+	// carries the cumulative input + cache creation/read counts, message_delta
+	// carries only the output count. Merged into the final Usage.
+	usage provider.Usage
 }
 
 func (ctx *anthropicEventContext) emitBlock() {
@@ -222,6 +226,20 @@ var anthropicEventHandlers = map[string]func(ctx *anthropicEventContext, data st
 }
 
 func anthropicHandleMessageStart(ctx *anthropicEventContext, data string) error {
+	var parsed struct {
+		Message struct {
+			Usage struct {
+				InputTokens       int `json:"input_tokens"`
+				CacheCreateTokens int `json:"cache_creation_input_tokens"`
+				CacheReadTokens   int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(data), &parsed); err == nil {
+		ctx.usage.InputTokens = parsed.Message.Usage.InputTokens
+		ctx.usage.CacheCreationTokens = parsed.Message.Usage.CacheCreateTokens
+		ctx.usage.CacheReadTokens = parsed.Message.Usage.CacheReadTokens
+	}
 	ctx.stream.Push(provider.AssistantMessageEvent{
 		Type:    provider.EventStart,
 		Partial: &provider.AssistantMessage{},
@@ -292,13 +310,12 @@ func anthropicHandleMessageDelta(ctx *anthropicEventContext, data string) error 
 	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
 		return fmt.Errorf("decode message_delta chunk: %w", err)
 	}
+	ctx.usage.OutputTokens = parsed.Usage.OutputTokens
+	finalUsage := ctx.usage
 	ctx.stream.End(&provider.AssistantMessage{
 		Content:    ctx.contentBlocks,
 		StopReason: mapStopReason(parsed.Delta.StopReason),
-		Usage: &provider.Usage{
-			InputTokens:  parsed.Usage.InputTokens,
-			OutputTokens: parsed.Usage.OutputTokens,
-		},
+		Usage:      &finalUsage,
 	})
 	return nil
 }

@@ -65,8 +65,12 @@ func (h *ErrorHook) ApplyError(ctx *ErrorContext) error {
 		ctx.RetryAfterMs = parseRetryAfterMs(ctx.Headers, h.profile.ErrorRules.RetryAfterMsHeader)
 	}
 
-	// Codex and OpenAI specific: 404 is retryable once.
-	if ctx.StatusCode == http.StatusNotFound {
+	// Codex and OpenAI specific: a 404 is retryable once (their deployments can
+	// return a transient 404 while a model spins up). For every other provider a
+	// 404 means "model not found" — permanent — so it must NOT be retried:
+	// retrying a wrong model ID cannot succeed and only burns the retry budget
+	// with "Reconnecting…" churn before the inevitable failure.
+	if ctx.StatusCode == http.StatusNotFound && isOpenAIProfile(h.profile) {
 		ctx.IsRetryable = true
 	}
 
@@ -88,6 +92,15 @@ func isRetryableNetworkError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isOpenAIProfile reports whether the resolved variant profile targets an
+// OpenAI (or OpenAI Codex) deployment — the only providers for which a 404 is
+// treated as transiently retryable. Matching is on the profile's provider name
+// (both openai-base and the codex variants use provider "openai").
+func isOpenAIProfile(profile schema.VariantProfile) bool {
+	p := strings.ToLower(profile.Match.Provider)
+	return p == string(schema.ProviderOpenAI) || strings.Contains(p, "codex")
 }
 
 var defaultContextOverflowPatterns = []string{
