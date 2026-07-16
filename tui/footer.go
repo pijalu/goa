@@ -12,8 +12,8 @@ import (
 // Footer displays a two-line status bar at the bottom of the TUI.
 //
 // Concurrency: the commandLoop is the sole owner of data. SetData/SetMinorMode/
-// SetModelBusy/SetCompanionBusy/RefreshGit and Render all run on the loop
-// (serialized by the commandLoop), so no mutex is required.
+// SetModelBusy/SetCompanionBusy/SetGitInfo/RefreshGit and Render all run on the
+// loop (serialized by the commandLoop), so no mutex is required.
 type Footer struct {
 	data FooterData
 }
@@ -40,34 +40,56 @@ func (f *Footer) SetModelBusy(busy bool) { f.data.ModelBusy = busy }
 // SetCompanionBusy sets the companion model busy indicator directly.
 func (f *Footer) SetCompanionBusy(busy bool) { f.data.CompanionBusy = busy }
 
-// RefreshGit updates the git branch, dirty status, and conflict count.
-func (f *Footer) RefreshGit() {
-	f.data.GitBranch = ""
-	f.data.GitDirty = false
-	f.data.GitConflicts = false
-	dir := f.data.Workdir
+// GitInfo carries git status for the footer, gathered off the commandLoop.
+type GitInfo struct {
+	Branch    string // current branch (empty if not a git repo)
+	Dirty     bool   // true if working tree has changes
+	Conflicts bool   // true if merge conflicts exist
+}
+
+// GatherGitInfo collects branch, dirty and conflict state for dir. It is a
+// pure function with no Footer state and spawns subprocesses, so callers may
+// run it from any goroutine off the commandLoop and apply the result on the
+// loop via SetGitInfo.
+func GatherGitInfo(dir string) GitInfo {
+	var info GitInfo
 	if dir == "" {
-		return
+		return info
 	}
 	// Get branch name
 	branch, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
-		return
+		return info
 	}
-	f.data.GitBranch = strings.TrimSpace(string(branch))
+	info.Branch = strings.TrimSpace(string(branch))
 
 	// Check for dirty status and merge conflicts
 	status, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
 	if err == nil && len(status) > 0 {
-		f.data.GitDirty = true
+		info.Dirty = true
 		// Check for merge conflicts (lines starting with "UU")
 		for _, line := range strings.Split(string(status), "\n") {
 			if strings.HasPrefix(line, "UU") {
-				f.data.GitConflicts = true
+				info.Conflicts = true
 				break
 			}
 		}
 	}
+	return info
+}
+
+// SetGitInfo updates the git display fields. Must run on the commandLoop.
+func (f *Footer) SetGitInfo(info GitInfo) {
+	f.data.GitBranch = info.Branch
+	f.data.GitDirty = info.Dirty
+	f.data.GitConflicts = info.Conflicts
+}
+
+// RefreshGit updates the git branch, dirty status, and conflict count.
+// It blocks on subprocesses; prefer GatherGitInfo + SetGitInfo when called
+// from a context where blocking the commandLoop matters.
+func (f *Footer) RefreshGit() {
+	f.SetGitInfo(GatherGitInfo(f.data.Workdir))
 }
 
 // HandleInput is a no-op.

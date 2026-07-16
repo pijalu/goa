@@ -34,6 +34,7 @@ func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *t
 	go a.runControlEventReader(done, bus.Control)
 	go a.runChatEventReader(done, bus.Chat)
 	go a.runFooterEventReader(done, bus.Footer)
+	go a.runGitRefreshLoop(done, gitRefreshInterval)
 
 	// Forward foreground orchestrator events to the TUI event bus, so that
 	// companion post-turn output and other orchestrator-managed workflows
@@ -178,6 +179,50 @@ func (a *App) runFooterEventReader(done chan struct{}, ch <-chan event.FooterEve
 			})
 		}
 	}
+}
+
+// gitRefreshInterval is how often the footer re-polls the workdir's git state
+// so branch switches or commits done outside goa show up without a restart.
+const gitRefreshInterval = 2 * time.Second
+
+// runGitRefreshLoop periodically refreshes the footer's git branch/dirty
+// state. Gathering spawns git subprocesses, so it runs off the commandLoop;
+// the result is applied on the loop only when it actually changed.
+//
+// subs.footer and subs.projectDir are written before this goroutine starts
+// and never reassigned, so reading them here is race-free.
+func (a *App) runGitRefreshLoop(done chan struct{}, interval time.Duration) {
+	footer := a.subs.footer
+	if footer == nil || a.subs.projectDir == "" {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			a.refreshFooterGitOnce(footer, a.subs.projectDir)
+		}
+	}
+}
+
+// refreshFooterGitOnce gathers the git state for dir off the commandLoop and
+// applies it to the footer on the loop, requesting a render only when the
+// displayed state changed.
+func (a *App) refreshFooterGitOnce(footer *tui.Footer, dir string) {
+	info := tui.GatherGitInfo(dir)
+	a.apply(func() {
+		d := footer.Data()
+		if d.GitBranch == info.Branch && d.GitDirty == info.Dirty && d.GitConflicts == info.Conflicts {
+			return
+		}
+		footer.SetGitInfo(info)
+		if a.subs.tuiEngine != nil {
+			a.subs.tuiEngine.RequestRender()
+		}
+	})
 }
 
 func (a *App) handleControlEvent(ev event.ControlEvent) bool {

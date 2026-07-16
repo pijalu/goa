@@ -46,9 +46,13 @@ func preserveFooterData(prev, data FooterData) FooterData {
 }
 
 func preserveFooterGitAndMode(prev, data FooterData) FooterData {
+	if data.Workdir == "" {
+		data.Workdir = prev.Workdir
+	}
 	if data.GitBranch == "" {
 		data.GitBranch = prev.GitBranch
 		data.GitDirty = prev.GitDirty
+		data.GitConflicts = prev.GitConflicts
 	}
 	if data.MinorMode == "" {
 		data.MinorMode = prev.MinorMode
