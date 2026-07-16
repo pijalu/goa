@@ -13,6 +13,7 @@
 package ask
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -29,8 +30,10 @@ const maxOptions = 6
 
 // ClarifyFunc is the host callback that displays a question and blocks until
 // the user answers on the main input line. ok==false means the user cancelled.
+// step/total give the question's 1-based position within a multi-question batch
+// (total<=1 for a standalone question) so the host can show compact progress.
 // It is intentionally decoupled from the TUI package to avoid an import cycle.
-type ClarifyFunc func(title, summary, question string, options []string) (answer string, ok bool)
+type ClarifyFunc func(title, summary, question string, options []string, step, total int) (answer string, ok bool)
 
 // AskUserQuestionTool asks the user one or more clarifying questions and
 // returns the aggregated answers as a tool result.
@@ -100,6 +103,39 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 // returns the aggregated answers as JSON. It blocks per question (the agent
 // tool-execution loop expects blocking tools).
 func (t *AskUserQuestionTool) Execute(input string) (string, error) {
+	return t.run(context.Background(), input)
+}
+
+// ExecuteContext implements agentic.ContextTool so the agent's turn context
+// (user Escape / interrupt) propagates into the blocking wait for an answer.
+// Without it, the tool ignores cancellation: it stays parked on the clarify
+// channel while the agent turn is torn down, and the user sees a bare
+// "Error: context canceled" with no card and no recoverable result. On
+// cancellation it returns a graceful skipped-answers result instead.
+func (t *AskUserQuestionTool) ExecuteContext(ctx context.Context, input string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	type outcome struct {
+		out string
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		out, err := t.run(ctx, input)
+		done <- outcome{out, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-done:
+		return r.out, r.err
+	}
+}
+
+// run parses the input and asks each question in order, honoring ctx between
+// questions so a cancelled batch stops promptly.
+func (t *AskUserQuestionTool) run(ctx context.Context, input string) (string, error) {
 	var p clarifyInput
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
 		return "", &internal.ToolError{
@@ -123,10 +159,14 @@ func (t *AskUserQuestionTool) Execute(input string) (string, error) {
 	// Force a fixed title so the model cannot supply arbitrary labels.
 	const fixedTitle = "Clarifications needed"
 
-	answers := make([]clarifyAnswer, 0, len(p.Questions))
-	for _, q := range p.Questions {
+	total := len(p.Questions)
+	answers := make([]clarifyAnswer, 0, total)
+	for i, q := range p.Questions {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		q.Title = fixedTitle
-		ans, err := t.askOne(clarify, q)
+		ans, err := t.askOne(clarify, q, i+1, total)
 		if err != nil {
 			return "", err
 		}
@@ -138,8 +178,9 @@ func (t *AskUserQuestionTool) Execute(input string) (string, error) {
 }
 
 // askOne poses a single question through the host callback, canonicalizing
-// option answers and honoring the required flag.
-func (t *AskUserQuestionTool) askOne(clarify ClarifyFunc, q clarifyQuestion) (clarifyAnswer, error) {
+// option answers and honoring the required flag. step/total are forwarded so
+// the host can render compact progress for a multi-question batch.
+func (t *AskUserQuestionTool) askOne(clarify ClarifyFunc, q clarifyQuestion, step, total int) (clarifyAnswer, error) {
 	question := strings.TrimSpace(q.Question)
 	if question == "" {
 		return clarifyAnswer{}, &internal.ToolError{
@@ -168,7 +209,7 @@ func (t *AskUserQuestionTool) askOne(clarify ClarifyFunc, q clarifyQuestion) (cl
 		}
 	}
 
-	raw, ok := clarify(q.Title, q.Summary, question, opts)
+	raw, ok := clarify(q.Title, q.Summary, question, opts, step, total)
 	if !ok || strings.TrimSpace(raw) == "" {
 		if q.Required {
 			return clarifyAnswer{}, &internal.ToolError{

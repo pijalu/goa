@@ -72,6 +72,25 @@ func TestClarifyCard_QuestionRequired(t *testing.T) {
 	}
 }
 
+func TestClarifyCard_ProgressLabel(t *testing.T) {
+	// Standalone question: no progress label.
+	solo := NewClarifyCard("T", "S", "Q", nil)
+	if got := solo.ProgressLabel(); got != "" {
+		t.Errorf("standalone ProgressLabel = %q, want empty", got)
+	}
+	// Multi-question batch: "Y of X".
+	c := NewClarifyCard("T", "S", "Q", nil)
+	c.SetProgress(2, 5)
+	if got := c.ProgressLabel(); got != "2 of 5" {
+		t.Errorf("ProgressLabel = %q, want %q", got, "2 of 5")
+	}
+	// Rendered card shows the position in the header.
+	out := renderCardPlain(c, 60)
+	if !strings.Contains(out, "2 of 5") {
+		t.Errorf("rendered card missing progress label:\n%s", out)
+	}
+}
+
 func TestChatViewport_AddClarifyCard(t *testing.T) {
 	cv := NewChatViewport()
 	cv.AddClarifyCard(NewClarifyCard("T", "S", "Q", []string{"a"}))

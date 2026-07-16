@@ -85,6 +85,112 @@ func containsRendered(cv *tui.ChatViewport, substr string) bool {
 	return false
 }
 
+// TestClarify_InputTitleShowsProgressNotQuestion pins the fix for the
+// "long series of questions" UX bug: the input-line title must be a compact
+// progress cue ("... — 2 of 5"), NOT the full question text (which lives in
+// the card bubble). Previously the entire question/options were stuffed into
+// the editor title, so a long series ballooned the title with no progress cue.
+func TestClarify_InputTitleShowsProgressNotQuestion(t *testing.T) {
+	term := &testTerminal{w: 100, h: 30}
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+
+	chat := tui.NewChatViewport()
+	inp := tui.NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	inp.SetTUI(engine)
+	engine.SetFocus(inp)
+
+	subs := testSubsystems()
+	subs.tuiEngine = engine
+	subs.chat = chat
+	subs.inputEditor = inp
+	app := New(subs)
+
+	longQuestion := "Which of the many plausible approaches should the planner take when decomposing this work into independently schedulable sub-agent tasks?"
+	card := tui.NewClarifyCard("Clarifications needed", "ctx", longQuestion, []string{"option A", "option B"})
+	card.SetProgress(2, 5)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = app.clarify(card)
+		close(done)
+	}()
+	defer engine.ApplySync(func() { app.cancelPendingMainInput() })
+	got := waitForTitle(t, engine, inp, "2 of 5")
+	if strings.Contains(got, longQuestion) {
+		t.Errorf("input title must NOT contain the full question text, got %q", got)
+	}
+	if !strings.Contains(got, "Clarifications needed") {
+		t.Errorf("input title should contain the card title, got %q", got)
+	}
+}
+
+// waitForTitle polls the editor title until it contains want (or the timeout
+// fires), returning the last seen title. clarify() runs on a tool goroutine and
+// posts its state mutations via apply, so the title is not set synchronously.
+// The Editor title is commandLoop-owned state, so each read is marshalled onto
+// the loop via ApplySync to stay race-free.
+func waitForTitle(t *testing.T, engine *tui.TUI, inp *tui.Editor, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		engine.ApplySync(func() { got = inp.Title() })
+		if strings.Contains(got, want) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("editor title never contained %q; last=%q", want, got)
+	return got
+}
+
+// TestClarify_StandaloneTitleNoProgress ensures a single question (total<=1)
+// does not get a spurious "1 of 1" progress label.
+func TestClarify_StandaloneTitleNoProgress(t *testing.T) {
+	term := &testTerminal{w: 100, h: 30}
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+
+	chat := tui.NewChatViewport()
+	inp := tui.NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	inp.SetTUI(engine)
+	engine.SetFocus(inp)
+
+	subs := testSubsystems()
+	subs.tuiEngine = engine
+	subs.chat = chat
+	subs.inputEditor = inp
+	app := New(subs)
+
+	card := tui.NewClarifyCard("Clarifications needed", "", "Pick one?", nil) // no progress set
+	done := make(chan struct{})
+	go func() {
+		_, _ = app.clarify(card)
+		close(done)
+	}()
+	defer engine.ApplySync(func() { app.cancelPendingMainInput() })
+	got := waitForTitle(t, engine, inp, "Clarifications needed")
+	if strings.Contains(got, " of ") {
+		t.Errorf("standalone clarify should not show progress, got %q", got)
+	}
+	if got != "Clarifications needed" {
+		t.Errorf("standalone title = %q, want %q", got, "Clarifications needed")
+	}
+}
+
 func TestInitialFooterData_ResolvesProvider(t *testing.T) {
 	cfg := &config.Config{
 		Providers:   []config.ProviderConfig{{ID: "google", Preferred: true}},

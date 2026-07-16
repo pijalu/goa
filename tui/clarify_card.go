@@ -22,6 +22,10 @@ type ClarifyCard struct {
 	summary  string
 	question string
 	options  []string
+	// step/total track position within a multi-question batch (1-based).
+	// total<=1 means a standalone question and no progress label is shown.
+	step  int
+	total int
 }
 
 // NewClarifyCard builds a clarification card. title and question are required;
@@ -33,6 +37,23 @@ func NewClarifyCard(title, summary, question string, options []string) *ClarifyC
 		question: strings.TrimSpace(question),
 		options:  options,
 	}
+}
+
+// SetProgress records the card's position within a multi-question batch so the
+// host can render a compact "Clarification Y of X" cue instead of repeating the
+// full question in the input-line title.
+func (c *ClarifyCard) SetProgress(step, total int) {
+	c.step = step
+	c.total = total
+}
+
+// ProgressLabel returns a compact "Y of X" position label, or "" for a
+// standalone question (total<=1) where progress is meaningless.
+func (c *ClarifyCard) ProgressLabel() string {
+	if c.total <= 1 || c.step < 1 {
+		return ""
+	}
+	return fmt.Sprintf("%d of %d", c.step, c.total)
 }
 
 // Title returns the card title (used by the host to set the main editor title).
@@ -98,7 +119,11 @@ func cardColors() (bd, ac, dim string) {
 func (c *ClarifyCard) renderBody(inner int, ac, dim string) []string {
 	reset := ansi.Reset
 	var body []string
-	body = c.appendSection(body, ansi.Wrap("❓ "+c.title, inner), ac+"%s"+reset, c.title != "")
+	header := "❓ " + c.title
+	if label := c.ProgressLabel(); label != "" {
+		header += "  " + dim + "(" + label + ")" + reset
+	}
+	body = c.appendSection(body, ansi.Wrap(header, inner), ac+"%s"+reset, c.title != "")
 	body = c.appendSection(body, wrapStyled(c.summary, inner, dim+"%s"+reset), "%s", c.summary != "")
 	body = c.appendSection(body, ansi.Wrap(c.question, inner), "%s", c.question != "")
 	body = c.appendOptions(body, inner, ac, reset)

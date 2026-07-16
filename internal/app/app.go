@@ -111,8 +111,10 @@ func (a *App) Run() bool {
 
 	engine, chat, inp := a.buildTUI()
 	// Attach the interactive clarify host callback now that the App exists.
-	attachClarifyTool(subs.toolRegistry, func(title, summary, question string, options []string) (string, bool) {
-		return a.clarify(tui.NewClarifyCard(title, summary, question, options))
+	attachClarifyTool(subs.toolRegistry, func(title, summary, question string, options []string, step, total int) (string, bool) {
+		card := tui.NewClarifyCard(title, summary, question, options)
+		card.SetProgress(step, total)
+		return a.clarify(card)
 	})
 	a.wireToolConfirmation(engine)
 	a.loadPersistedPathApprovals()
@@ -291,13 +293,17 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 		if a.subs.chat != nil {
 			a.subs.chat.AddClarifyCard(card)
 		}
-		prompt := card.Question()
-		if t := card.Title(); t != "" {
-			if prompt == "" {
-				prompt = t
-			} else {
-				prompt = t + ": " + prompt
-			}
+		// The question and options live in the card bubble; the input-line title
+		// is only a compact cue. For a multi-question batch, show progress
+		// ("Clarification 2 of 5"); otherwise fall back to the card title.
+		// Stuffing the full question text here ballooned the editor title for a
+		// long series of questions and gave no sense of progress.
+		prompt := card.Title()
+		if label := card.ProgressLabel(); label != "" {
+			prompt = strings.TrimSpace(prompt + " — " + label)
+		}
+		if prompt == "" {
+			prompt = card.Question()
 		}
 		// Seed the editor empty so the previous message text doesn't linger.
 		if inp := a.subs.getInput(); inp != nil {

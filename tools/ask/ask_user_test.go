@@ -5,9 +5,11 @@
 package ask
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSchema_NameAndQuestionsRequired(t *testing.T) {
@@ -36,7 +38,7 @@ func TestExecute_InvalidJSON(t *testing.T) {
 }
 
 func TestExecute_MissingQuestionField(t *testing.T) {
-	tool := &AskUserQuestionTool{Clarify: func(title, summary, question string, options []string) (string, bool) {
+	tool := &AskUserQuestionTool{Clarify: func(title, summary, question string, options []string, step, total int) (string, bool) {
 		t.Fatal("clarify should not be called when question is empty")
 		return "", false
 	}}
@@ -47,7 +49,7 @@ func TestExecute_MissingQuestionField(t *testing.T) {
 
 func TestExecute_Series(t *testing.T) {
 	calls := 0
-	tool := &AskUserQuestionTool{Clarify: func(title, summary, question string, options []string) (string, bool) {
+	tool := &AskUserQuestionTool{Clarify: func(title, summary, question string, options []string, step, total int) (string, bool) {
 		calls++
 		switch calls {
 		case 1:
@@ -94,7 +96,7 @@ func TestExecute_Series(t *testing.T) {
 }
 
 func TestExecute_RequiredCancelled(t *testing.T) {
-	tool := &AskUserQuestionTool{Clarify: func(title, summary, question string, options []string) (string, bool) {
+	tool := &AskUserQuestionTool{Clarify: func(title, summary, question string, options []string, step, total int) (string, bool) {
 		return "", false // user cancelled
 	}}
 	_, err := tool.Execute(`{"questions":[{"question":"q","required":true}]}`)
@@ -136,7 +138,7 @@ func TestCanonicalize_OptionsCapped(t *testing.T) {
 	for i := range big {
 		big[i] = "opt"
 	}
-	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, options []string) (string, bool) {
+	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, options []string, _, _ int) (string, bool) {
 		if len(options) > maxOptions {
 			t.Errorf("options not capped: %d", len(options))
 		}
@@ -145,9 +147,69 @@ func TestCanonicalize_OptionsCapped(t *testing.T) {
 	_, _ = tool.Execute(`{"questions":[{"question":"q","options":["a","b","c","d","e","f","g","h"]}]}`)
 }
 
+func TestExecute_ProgressForwarded(t *testing.T) {
+	type pos struct{ step, total int }
+	var got []pos
+	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, _ []string, step, total int) (string, bool) {
+		got = append(got, pos{step, total})
+		return "1", true
+	}}
+	if _, err := tool.Execute(`{"questions":[{"question":"a"},{"question":"b"},{"question":"c"}]}`); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	want := []pos{{1, 3}, {2, 3}, {3, 3}}
+	if len(got) != len(want) {
+		t.Fatalf("got %d calls, want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("call %d = %+v, want %+v", i, got[i], w)
+		}
+	}
+}
+
+func TestExecuteContext_CancelledBeforeStart(t *testing.T) {
+	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, _ []string, _, _ int) (string, bool) {
+		t.Fatal("clarify must not run when ctx is already cancelled")
+		return "", false
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := tool.ExecuteContext(ctx, `{"questions":[{"question":"q"}]}`); err == nil {
+		t.Fatal("expected cancellation error")
+	}
+}
+
+func TestExecuteContext_CancelUnblocksWaiting(t *testing.T) {
+	// clarify blocks forever; ctx cancellation must release ExecuteContext
+	// instead of hanging the agent turn (the "no output / context canceled" bug).
+	release := make(chan struct{})
+	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, _ []string, _, _ int) (string, bool) {
+		<-release // parked until test ends
+		return "", false
+	}}
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := tool.ExecuteContext(ctx, `{"questions":[{"question":"q"}]}`)
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ExecuteContext did not return after cancellation")
+	}
+}
+
 func TestExecute_TitleNormalized(t *testing.T) {
 	var gotTitle string
-	tool := &AskUserQuestionTool{Clarify: func(title, _, _ string, _ []string) (string, bool) {
+	tool := &AskUserQuestionTool{Clarify: func(title, _, _ string, _ []string, _, _ int) (string, bool) {
 		gotTitle = title
 		return "", false
 	}}

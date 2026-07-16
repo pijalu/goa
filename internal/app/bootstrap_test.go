@@ -33,7 +33,7 @@ func TestAttachClarifyTool(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
 	called := false
-	attachClarifyTool(reg, func(title, summary, question string, options []string) (string, bool) {
+	attachClarifyTool(reg, func(title, summary, question string, options []string, step, total int) (string, bool) {
 		called = true
 		return "x", true
 	})
