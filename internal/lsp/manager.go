@@ -73,7 +73,10 @@ func (m *Manager) Start(ctx context.Context) error {
 // version counter is (re)initialized so subsequent DidChange calls send
 // strictly increasing versions as the LSP requires.
 func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
-	if !m.started || m.server == nil {
+	// m may be nil: bootstrap returns a typed-nil *Manager when gopls fails to
+	// start, which lands in the tool's LSPManager interface field as a non-nil
+	// interface. Treat a nil receiver as "no LSP" rather than panicking.
+	if m == nil || !m.started || m.server == nil {
 		return fmt.Errorf("lsp manager: not started")
 	}
 	uri := m.fileURI(path)
@@ -94,7 +97,7 @@ func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
 // per document so gopls receives a monotonically increasing sequence (a
 // fixed version previously caused out-of-order / rejected updates).
 func (m *Manager) DidChange(ctx context.Context, path, text string) error {
-	if !m.started || m.server == nil {
+	if m == nil || !m.started || m.server == nil {
 		return fmt.Errorf("lsp manager: not started")
 	}
 	uri := m.fileURI(path)
@@ -112,6 +115,9 @@ func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 
 // DiagnosticsFor returns the latest diagnostics for a file path.
 func (m *Manager) DiagnosticsFor(ctx context.Context, path string) []Diagnostic {
+	if m == nil {
+		return nil
+	}
 	return m.diags.Get(m.fileURI(path))
 }
 

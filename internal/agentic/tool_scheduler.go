@@ -7,6 +7,8 @@ package agentic
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -196,7 +198,10 @@ func (s *ToolScheduler) start(st *scheduledTask) {
 }
 
 // runTask executes a tool task and recovers from panics so a single tool bug
-// cannot hang Collect() or break the agent turn.
+// cannot hang Collect() or break the agent turn. The recovered error carries a
+// trimmed stack trace: tool results land in the session event log and crash
+// exports, which is where panics are debugged from, so the frames that led to
+// the panic must travel with the error instead of being lost.
 func (s *ToolScheduler) runTask(ctx context.Context, st *scheduledTask) (ToolResult, error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -204,13 +209,42 @@ func (s *ToolScheduler) runTask(ctx context.Context, st *scheduledTask) (ToolRes
 				st.result = ToolCallResult{
 					Name:   st.Name,
 					CallID: st.CallID,
-					Err:    fmt.Errorf("tool panic: %v", r),
+					Err:    fmt.Errorf("tool panic in %s: %v\n%s", st.Name, r, panicStackBrief()),
 				}
 				close(st.done)
 			})
 		}
 	}()
 	return st.Execute(ctx)
+}
+
+// panicStackBrief returns the current goroutine stack trimmed to the first
+// frames inside goa code, one "file:line" per line, so a recovered panic error
+// stays compact yet points at the failing code. Stack file lines carry local
+// build paths, not module paths, and the panic always originates inside the
+// goa binary, so dropping toolchain/stdlib frames reliably leaves goa frames.
+func panicStackBrief() string {
+	lines := strings.Split(string(debug.Stack()), "\n")
+	var brief []string
+	for _, ln := range lines {
+		trimmed := strings.TrimSpace(ln)
+		if !strings.Contains(trimmed, ".go:") {
+			continue // function-name line, not a file:line frame location
+		}
+		// Skip Go toolchain (GOROOT) and module-cache (GOPATH/pkg/mod) frames;
+		// what remains is goa's own source tree regardless of checkout path.
+		if strings.Contains(trimmed, "/libexec/src/") || strings.Contains(trimmed, "/pkg/mod/") {
+			continue
+		}
+		brief = append(brief, trimmed)
+		if len(brief) == 6 {
+			break
+		}
+	}
+	if len(brief) == 0 {
+		return "(no goa frames captured)"
+	}
+	return strings.Join(brief, "\n")
 }
 
 // watchDeadline enforces the per-task timeout independently of Execute: when

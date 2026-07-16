@@ -322,6 +322,14 @@ func TestToolScheduler_Panic_ReturnsError(t *testing.T) {
 	if !strings.Contains(results[0].Err.Error(), "boom") {
 		t.Errorf("expected panic message in error, got %q", results[0].Err.Error())
 	}
+	if !strings.Contains(results[0].Err.Error(), "panicker") {
+		t.Errorf("expected tool name in panic error, got %q", results[0].Err.Error())
+	}
+	// The error must carry stack frames pointing at goa code so panics are
+	// debuggable from the session log (where tool results are recorded).
+	if !strings.Contains(results[0].Err.Error(), "tool_scheduler") {
+		t.Errorf("expected stack frames in panic error, got %q", results[0].Err.Error())
+	}
 }
 
 // assertAnError returns an error with the given message.
