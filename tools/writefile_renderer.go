@@ -91,19 +91,33 @@ func (r *WriteFileRenderer) resolvePath(output string, ctx tuirender.RenderConte
 func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.RenderContext) string {
 	lang := getLanguageFromPath(path)
 
-	allLines := strings.Split(content, "\n")
-	allLines = trimTrailingEmptyLines(allLines)
-
 	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
-	if ctx.Expanded {
-		maxLines = len(allLines)
-	}
-	displayLines := allLines
-	if len(allLines) > maxLines {
-		displayLines = allLines[:maxLines]
-	}
-	remaining := len(allLines) - maxLines
 
+	// Expanded view needs every line; build the full slice once.
+	if ctx.Expanded {
+		allLines := trimTrailingEmptyLines(strings.Split(content, "\n"))
+		return r.highlightLines(allLines, lang, 0)
+	}
+
+	// Collapsed/preview path: split only the head needed for display instead
+	// of materializing the whole (possibly very large) content per call —
+	// important while streaming, when this runs on every args delta.
+	displayLines := trimTrailingEmptyLines(splitFirstLines(content, maxLines))
+	// remaining counts full lines beyond the preview window. Count newlines
+	// (a single linear scan, no []string materialization) and drop trailing
+	// empty lines to match the trimmed total the expanded path would report.
+	total := strings.Count(content, "\n") + 1
+	total -= countTrailingEmptyLines(content)
+	remaining := 0
+	if total > maxLines {
+		remaining = total - maxLines
+	}
+	return r.highlightLines(displayLines, lang, remaining)
+}
+
+// highlightLines renders displayLines with optional syntax highlighting and
+// appends the "... N more lines" hint when remaining > 0.
+func (r *WriteFileRenderer) highlightLines(displayLines []string, lang string, remaining int) string {
 	var b strings.Builder
 	for _, line := range displayLines {
 		if b.Len() > 0 {
@@ -122,6 +136,42 @@ func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.Re
 		b.WriteString(rMuted(" to expand)"))
 	}
 	return b.String()
+}
+
+// countTrailingEmptyLines returns how many lines at the end of s are empty,
+// matching trimTrailingEmptyLines semantics without splitting the string.
+func countTrailingEmptyLines(s string) int {
+	n := 0
+	for len(s) > 0 {
+		i := strings.LastIndexByte(s, '\n')
+		line := s[i+1:]
+		if line != "" {
+			break
+		}
+		n++
+		if i < 0 {
+			break
+		}
+		s = s[:i]
+	}
+	return n
+}
+
+// splitFirstLines returns at most n leading lines of s (split on '\n'),
+// stopping early once n lines are collected so it never scans the whole
+// string for a small preview.
+func splitFirstLines(s string, n int) []string {
+	lines := make([]string, 0, n)
+	for len(lines) < n {
+		i := strings.IndexByte(s, '\n')
+		if i < 0 {
+			lines = append(lines, s)
+			break
+		}
+		lines = append(lines, s[:i])
+		s = s[i+1:]
+	}
+	return lines
 }
 
 func (r *WriteFileRenderer) PreviewLines() int             { return writeFilePreviewLines }
