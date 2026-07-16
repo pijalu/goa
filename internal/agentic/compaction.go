@@ -112,6 +112,32 @@ func (a *Agent) cacheAssumedCold() bool {
 	return time.Since(last) >= threshold
 }
 
+// cacheAssumedColdForProactive is the cache gate for proactive (threshold-
+// triggered) in-place history mutation by strategies OTHER than micro
+// compaction (e.g. the default tool_elision). MicroCompaction.CacheMissThreshold
+// is only populated for CompressionMicro; for every other strategy it stays
+// zero, which cacheAssumedCold reads as "protection disabled". That would leave
+// the default elision strategy churning the hot cache on every threshold
+// crossing. To protect the cache by default regardless of strategy, a zero
+// threshold here means the provider cache TTL (~1h, the default micro config);
+// only an explicitly negative threshold disables protection.
+//
+// The caller must hold a.mu.
+func (a *Agent) cacheAssumedColdForProactive() bool {
+	threshold := a.cfg.ContextCompression.MicroCompaction.CacheMissThreshold
+	if threshold < 0 {
+		return true // protection explicitly disabled
+	}
+	if threshold == 0 {
+		threshold = DefaultMicroCompactionConfig.CacheMissThreshold
+	}
+	last := a.lastTurnEnd
+	if last.IsZero() {
+		return true
+	}
+	return time.Since(last) >= threshold
+}
+
 func (a *Agent) contextRatio() float64 {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {

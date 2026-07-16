@@ -184,6 +184,22 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 		}
 		a.mu.Lock()
 		stats := a.computeContextStatsForMax(maxTokens)
+		// Cache-aware gating for proactive in-place mutation. Strategies like
+		// tool_elision rewrite old messages in place, which churns the provider's
+		// hot prefix cache into a full re-process on the next turn (the same cost
+		// the micro-compaction gate avoids). Defer the proactive mutation while
+		// the cache is presumed hot (recent turn), unless usage is at the hard
+		// ceiling where skipping risks an overflow. The overflow-recovery path
+		// (handleStreamFailure → compressHistoryWith) does NOT go through here,
+		// so emergency compression is never gated.
+		const hardCeilingPercent = 95
+		if stats.UsagePercent < hardCeilingPercent && !a.cacheAssumedColdForProactive() {
+			a.mu.Unlock()
+			if a.cfg.Logger != nil {
+				a.cfg.Logger.Log(Debug, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", stats.UsagePercent)
+			}
+			return nil
+		}
 		a.mu.Unlock()
 		if stats.UsagePercent < threshold {
 			return nil
