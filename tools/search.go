@@ -18,6 +18,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // SearchTool searches for patterns in files using goroutine pool for
@@ -546,9 +547,13 @@ func formatFileContentLines(buf *bytes.Buffer, g *fileGroup, maxResults, showing
 		if *totalShown >= maxResults || (showing > 0 && i >= showing) {
 			break
 		}
-		content := strings.TrimSpace(r.Line)
-		if len(content) > 120 {
-			content = content[:120] + "…"
+		// Sanitize: matched file content is untrusted — raw ESC bytes would
+		// reach both the model context and the TUI renderer, where a stray
+		// "\e[2K" erases the user's screen. Truncate rune-safely: a byte cut
+		// can split a multi-byte rune and render as '�'.
+		content := ansi.Sanitize(strings.TrimSpace(r.Line))
+		if ansi.Width(content) > 120 {
+			content = ansi.Truncate(content, 120) + "…"
 		}
 		fmt.Fprintf(buf, "  %d: %s\n", r.LineNum, content)
 		(*totalShown)++

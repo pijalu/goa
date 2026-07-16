@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
@@ -156,11 +157,12 @@ func (r *SmartSearchRenderer) formatFileLines(lines []string) []string {
 			)
 			entries = append(entries, lineEntry{rank: currentRank, content: entry})
 		} else if cm := contentRe.FindStringSubmatch(trimmed); cm != nil {
-			// Matching content line — pass through with formatting.
+			// Matching content line — sanitize (never forward raw ESC bytes to
+			// the terminal) and truncate by display width, not bytes.
 			lineNum := cm[1]
-			content := cm[2]
-			if len(content) > 80 {
-				content = content[:80] + "…"
+			content := ansi.Sanitize(cm[2])
+			if ansi.Width(content) > 80 {
+				content = ansi.Truncate(content, 80) + "…"
 			}
 			matchEntry := fmt.Sprintf("  %s  %s", rMuted(lineNum), rToolOutput(content))
 			entries = append(entries, lineEntry{rank: currentRank, content: matchEntry})

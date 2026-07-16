@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSearchTool_Schema_HasRequiredFields(t *testing.T) {
@@ -436,5 +437,53 @@ func TestSearchTool_TotalShownCountIsAccurate(t *testing.T) {
 	}
 	if strings.Contains(out, "showing 4") {
 		t.Errorf("double-counted summary detected (showing 4). Output:\n%s", out)
+	}
+}
+
+// TestSearchTool_Execute_EscapesControlBytes: matched file content is
+// untrusted. A file containing a clear-line escape sequence must reach the
+// model/TUI as literal text — raw ESC bytes would erase the user's screen
+// when the tool widget renders. Regression: repro-out style ANSI logs.
+func TestSearchTool_Execute_EscapesControlBytes(t *testing.T) {
+	dir := t.TempDir()
+	// Text file (no NUL) with raw ANSI content — passes the isBinary check.
+	payload := "repo (\x1b[38;2;63;185;80m⎇ main\x1b[0m) status\n"
+	if err := os.WriteFile(filepath.Join(dir, "log.txt"), []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{Threads: 2, MaxResults: 50}
+	result, err := tool.Execute(`{"pattern": "main", "path": "` + dir + `"}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if strings.Contains(result, "\x1b") {
+		t.Errorf("raw ESC byte leaked into tool output: %q", result)
+	}
+	if !strings.Contains(result, `\e[38;2;63;185;80m`) {
+		t.Errorf("expected escape sequence shown as literal text, got: %q", result)
+	}
+}
+
+// TestSearchTool_Execute_LongLineTruncatedRuneSafe: the 120-column preview
+// cut must not split a multi-byte rune (byte cuts render as '�').
+func TestSearchTool_Execute_LongLineTruncatedRuneSafe(t *testing.T) {
+	dir := t.TempDir()
+	// 200 CJK chars (3 bytes each): a byte cut at 120 lands mid-rune.
+	long := strings.Repeat("世", 200) + " needle"
+	if err := os.WriteFile(filepath.Join(dir, "u.txt"), []byte(long+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{Threads: 2, MaxResults: 50}
+	result, err := tool.Execute(`{"pattern": "needle", "path": "` + dir + `"}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if !utf8.ValidString(result) {
+		t.Errorf("tool output is not valid UTF-8 (rune split by truncation): %q", result)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(result), "…") {
+		t.Errorf("expected truncated line ending with …, got: %q", result)
 	}
 }

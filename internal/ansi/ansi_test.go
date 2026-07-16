@@ -270,3 +270,33 @@ func TestExtractTrailingSGR(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitize(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text unchanged", "hello world", "hello world"},
+		{"empty", "", ""},
+		{"tabs and newlines kept", "a\tb\nc", "a\tb\nc"},
+		{"CR kept", "a\rb", "a\rb"},
+		// A file containing a clear-line sequence must display as literal
+		// text, never reach the terminal as a command.
+		{"CSI escaped", "\x1b[2Krest", `\e[2Krest`},
+		{"SGR escaped", "\x1b[38;2;1;2;3mred", `\e[38;2;1;2;3mred`},
+		{"OSC escaped", "\x1b]0;title\x07body", `\e]0;title?body`},
+		{"BEL replaced", "a\x07b", "a?b"},
+		{"NUL replaced", "a\x00b", "a?b"},
+		{"DEL replaced", "a\x7fb", "a?b"},
+		{"invalid utf8 replaced", "bad\xff\xfebytes", "bad�bytes"},
+		{"unicode kept", "héllo ⎇ 世界", "héllo ⎇ 世界"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Sanitize(tt.input); got != tt.want {
+				t.Errorf("Sanitize(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

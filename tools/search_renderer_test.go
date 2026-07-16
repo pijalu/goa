@@ -7,7 +7,9 @@ package tools
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
@@ -148,5 +150,34 @@ func TestSearchRenderer_HideResultWhenCollapsed(t *testing.T) {
 	r := NewSearchRenderer()
 	if r.HideResultWhenCollapsed() {
 		t.Error("expected false")
+	}
+}
+
+// TestSearchRenderer_RenderResult_EscapesControlBytes: even if tool output
+// ever carries raw ESC bytes, the renderer must never forward them to the
+// terminal — a stray clear-line sequence would corrupt the whole frame.
+func TestSearchRenderer_RenderResult_EscapesControlBytes(t *testing.T) {
+	r := NewSearchRenderer()
+	output := "[search: \"main\"] — 1 matches found\nlog.txt: 1 matches\n  16: repo (\x1b[38;2;63;185;80m⎇ main\x1b[0m)"
+	result := r.RenderResult(output, tuirender.RenderContext{})
+	// The renderer adds its own theme colors; what must not leak is the
+	// *file's* raw sequence (ESC + "[38;2;63;185;80m").
+	if strings.Contains(result, "\x1b[38;2;63;185;80m") {
+		t.Errorf("raw file ESC sequence leaked into render: %q", result)
+	}
+	if !strings.Contains(result, `\e[38;2;63;185;80m`) {
+		t.Errorf("expected escaped sequence as literal text, got: %q", result)
+	}
+}
+
+// TestSearchRenderer_RenderResult_TruncatesRuneSafe: the 80-column preview
+// cut must not split a multi-byte rune (byte cuts render as '�').
+func TestSearchRenderer_RenderResult_TruncatesRuneSafe(t *testing.T) {
+	r := NewSearchRenderer()
+	long := strings.Repeat("世", 100) // 3 bytes each: byte cut at 80 lands mid-rune
+	output := "[search: \"x\"] — 1 matches found\nu.txt: 1 matches\n  7: " + long
+	result := r.RenderResult(output, tuirender.RenderContext{})
+	if !utf8.ValidString(ansi.Strip(result)) {
+		t.Errorf("renderer output is not valid UTF-8 (rune split): %q", result)
 	}
 }

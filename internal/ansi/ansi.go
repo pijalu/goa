@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
@@ -133,6 +134,36 @@ var ansiRe = regexp.MustCompile(`\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-9;?]*
 // Strip removes ANSI escape sequences from a string.
 func Strip(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
+}
+
+// Sanitize makes untrusted text (file contents, command output) safe to show
+// in a terminal: ESC becomes the two printable characters `\e`, other control
+// runes become '?', and invalid UTF-8 is replaced. Tabs and newlines are kept
+// (tabs expand at render time; newlines stay meaningful for line splitting).
+//
+// Unlike Strip, which drops escape sequences produced by goa itself, Sanitize
+// keeps foreign sequences *visible* — a searched file containing "\e[2K" must
+// display as literal text, never erase the user's screen.
+func Sanitize(s string) string {
+	if strings.IndexByte(s, 0x1b) < 0 && utf8.ValidString(s) && strings.IndexFunc(s, unicode.IsControl) < 0 {
+		return s // fast path: nothing to do
+	}
+	s = strings.ToValidUTF8(s, "�")
+	var out strings.Builder
+	out.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == 0x1b:
+			out.WriteString(`\e`)
+		case r == '\t' || r == '\n' || r == '\r':
+			out.WriteRune(r)
+		case unicode.IsControl(r):
+			out.WriteByte('?')
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }
 
 // Width returns the display width of a string, ignoring ANSI codes.

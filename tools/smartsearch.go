@@ -20,6 +20,7 @@ import (
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/tools/search/bm25"
 )
 
@@ -455,9 +456,9 @@ func (t *SmartSearchTool) formatResults(results []bm25.SearchResult, matches map
 		}
 		fmt.Fprintf(&buf, "%d. [%.2f] %s  (%d lines)\n", i+1, r.Score, relPath, r.Lines)
 		for _, m := range matches[r.Path] {
-			content := strings.TrimSpace(m.Text)
-			if len(content) > 140 {
-				content = content[:140] + "…"
+			content := ansi.Sanitize(strings.TrimSpace(m.Text))
+			if ansi.Width(content) > 140 {
+				content = ansi.Truncate(content, 140) + "…"
 			}
 			fmt.Fprintf(&buf, "    %d: %s\n", m.Num, content)
 		}

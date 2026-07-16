@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
@@ -173,9 +174,12 @@ func (r *SearchRenderer) formatContentLine(line string) string {
 		return ""
 	}
 	lineNum := strings.TrimSpace(parts[0])
-	content := strings.TrimSpace(parts[1])
-	if len(content) > 80 {
-		content = content[:80] + "…"
+	// Sanitize defensively (the tool already sanitizes, but renderers must
+	// never forward raw ESC bytes to the terminal) and truncate by display
+	// width — a byte cut can split a multi-byte rune and render as '�'.
+	content := ansi.Sanitize(strings.TrimSpace(parts[1]))
+	if ansi.Width(content) > 80 {
+		content = ansi.Truncate(content, 80) + "…"
 	}
 	return fmt.Sprintf("  %s  %s", rMuted(lineNum), rToolOutput(content))
 }

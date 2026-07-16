@@ -681,12 +681,28 @@ func (m *steeringPending) Render(width int) []string {
 	border := ansi.Fg(TheTheme.ColorHex("border_default"))
 	reset := ansi.Reset
 
-	clean := ansi.Strip(m.text)
+	clean := ansi.Sanitize(ansi.Strip(m.text))
 	innerWidth := width - 4
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
-	wrapped := ansi.Wrap(fmt.Sprintf("✎ steering: %s", clean), innerWidth)
+	// ansi.Wrap takes a single paragraph: split multi-line steering text on
+	// newlines and wrap each paragraph. Feeding embedded newlines to Wrap
+	// would return "lines" containing '\n', which paint as several terminal
+	// rows and desync the compositor's line accounting (overlapping redraw).
+	var wrapped []string
+	paragraphs := strings.Split(clean, "\n")
+	for i, para := range paragraphs {
+		prefix := "  "
+		if i == 0 {
+			prefix = "✎ "
+		}
+		if strings.TrimSpace(para) == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		wrapped = append(wrapped, ansi.Wrap(prefix+para, innerWidth)...)
+	}
 
 	var lines []string
 	top := border + "┌" + strings.Repeat("─", width-2) + "┐" + reset
