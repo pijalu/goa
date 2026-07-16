@@ -151,6 +151,13 @@ Event-sourced NDJSON under `.goa/plans/<plan-id>/events.jsonl`, mirroring
 is written on every mutation for fast load; the event log remains the source
 of truth for replay.
 
+All store mutations serialize through a single in-process mutex around
+load–mutate–append–snapshot, and every writer (planner/orchestrator tool
+calls, pager comment saves, run-event callbacks) shares one store handle per
+plan. This is what makes the replan window safe: while a replan pauses at the
+item boundary, the finishing worker's `item_completed` write and the reopened
+pager's `comment_added` write cannot interleave (§16).
+
 Event types:
 
 ```
@@ -168,7 +175,8 @@ plan_approved       {}
 execution_started   {run_id}
 item_started        {item_id, role, agent_id}
 item_completed      {item_id, result}
-item_blocked_evt    {item_id, reason}
+item_blocked        {item_id, reason}
+item_skipped        {item_id, reason}
 clarification       {item_id, question, answer}   // both directions recorded
 plan_completed      {}
 plan_failed         {reason}
@@ -231,6 +239,7 @@ small for the models that carry it):
 | `start_item` | `{id}` | execution | Validate + mark `in_progress`; returns the worker task brief. |
 | `complete_item` | `{id, result}` | execution | Mark `done`, store result. |
 | `block_item` | `{id, reason}` | execution | Mark `blocked`. |
+| `skip_item` | `{id, reason?}` | execution | Mark `skipped`; result lists the item's dependents (their dependency is now satisfied — `start_item` rule 4 treats `skipped` like `done`). No auto-cascade: dependents are never skipped implicitly. |
 
 Phase enforcement is by plan status: structural actions during execution (or
 execution actions during planning) return a `ToolError` with a hint
@@ -242,6 +251,12 @@ execution actions during planning) return a `ToolError` with a hint
 2. Item exists and is `pending` (on `blocked`, hint at `replan`).
 3. No other item is `in_progress` — one in flight, strictly.
 4. Every ID in `DependsOn` is `done` or `skipped`.
+
+`skip_item` validation: plan status is `executing`; the item exists and is
+`pending` or `blocked` (never `in_progress` or `done`). Because a `skipped`
+dependency satisfies rule 4, skipping a blocked item is the execution-phase
+escape hatch that keeps the "all items `done`/`skipped`" terminal condition
+reachable without re-entering planning (§9.2).
 
 On success the returned brief is self-contained for a fresh small-context
 worker: item title, full description, ordered list of dependency results
@@ -318,10 +333,16 @@ terminal-status plans older than N days are deleted).
 ### 6.3 Planner Role
 
 The planner is the `orchestrator` role from the existing orchestrator config
-(no new role concept). Planner tool surface: `plan` + the role's
-`allowed_tools`, defaulting to the read-only set (`readfile`, `search`,
-`smartsearch`, `bash`) when the role has no allowlist — the planner must be
-able to explore the repo to write grounded plans. Workers get
+(no new role concept). If no orchestrator roles are configured — the default
+config ships `orchestrator.roles: {}` — `/plan:new` reuses the
+`effectiveOrchestratorConfig` path from `core/commands/orchestrate.go`:
+default `orchestrator`/`coder`/`reviewer` roles are synthesized from the
+active model and the same "using default roles" flash is shown.
+
+Planner tool surface: `plan` + the role's `allowed_tools`, defaulting to the
+exploration set (`readfile`, `search`, `smartsearch`, plus `bash` under the
+standard jail) when the role has no allowlist — the planner must be able to
+explore the repo to write grounded plans. Workers get
 `task_outcome` + their role's `allowed_tools`; never `plan`.
 
 ## 7. Command Surface
@@ -381,7 +402,9 @@ rendered lines + line anchors + comment CRUD + main-input callbacks
 `SetViewport`). `ReviewPager` becomes a thin adapter over it (diff parsing,
 base-ref selection), `PlanPager` another (rendered plan, item anchors). The
 extraction is behavior-preserving; the existing `review_pager_test.go` suite
-is the equivalence proof.
+is the equivalence proof. For that proof to hold, the extraction must keep
+`ReviewPager`'s public surface (struct fields and callback names) intact —
+the tests construct and drive it directly and stay unchanged.
 
 PlanPager keys:
 
@@ -401,13 +424,20 @@ work. The footer line shows revision, open-comment count, and the key hints.
 ## 9. Execution Phase
 
 1. Approval (`plan_approved` event) starts an orchestrator **hub** run via the
-   existing `core/orchestrator` runtime. The run's `RunStarted` payload
-   records `plan_id`; the plan records `RunID`. Run objective:
+   existing `core/orchestrator` runtime. The run's `run_started` payload
+   records `plan_id`, following the existing conditional `goal_id` pattern in
+   `runtime.go` (a `Runtime.SetPlanID(planID)` setter before start; payload
+   field omitted when unset); the plan records `RunID`. Run objective:
    `"Execute plan <name> (<plan-id>): <objective>"`.
-2. The orchestrator agent is the planner role — same model, and it keeps the
-   planning conversation history, so it executes with full context of *why*
-   the plan looks the way it does. Tools: `plan` (execution actions only),
-   `delegate`, `rework`, `ask_user`.
+2. The execution orchestrator is a **fresh agent** built from the
+   `orchestrator` role (standard hub construction — the planning-phase agent
+   lives in the main chat and is not carried over). The *why* context comes
+   from the plan itself: its first turn starts with `plan get`, which returns
+   items with their descriptions, dependency results, and the comment
+   history (including resolved comments and their resolution notes) — the
+   same state-injection mechanism as resume (§9.4), so approval, resume, and
+   crash-recovery all converge on one orchestrator bootstrap path. Tools:
+   `plan` (execution actions only), `delegate`, `rework`, `ask_user`.
 3. Loop (driven by the orchestrator model, constrained by the tool):
    `plan get` → `start_item` (enforces: one in flight, deps satisfied) →
    `delegate(role, brief, new_agent: true)` → worker runs → typed outcome →
@@ -430,8 +460,10 @@ work. The footer line shows revision, open-comment count, and the key hints.
 The orchestrator must review each worker result against the item description
 before `complete_item` (the TODO's "run review of the output/check it
 matches"). This is a prompt-level obligation in the execution section of the
-planner prompt, plus a tool-level nudge: `complete_item` requires a non-empty
-`result` that is the orchestrator's own summary, not a paste of the worker's.
+planner prompt, plus a tool-level nudge: `complete_item` rejects an empty
+`result`. The tool cannot distinguish the orchestrator's own summary from a
+pasted worker result — that part is prompt-level only; the tool-enforced
+contract is non-emptiness.
 
 ### 9.2 Failure paths
 
@@ -442,8 +474,9 @@ planner prompt, plus a tool-level nudge: `complete_item` requires a non-empty
   stays `executing` and is resumable.
 - `block_item` with pending dependents: they stay `pending`; the orchestrator
   is told (in the tool result) which items are now unstartable, and must
-  either replan (hand back via `/plan:replan`) or finish without them
-  (mark `skipped` through `replan`-time edits).
+  either replan (hand back via `/plan:replan`) or finish without them:
+  `skip_item` the blocked item — and, where appropriate, its dependents —
+  which satisfies their dependencies and keeps the plan finishable (§5).
 
 ### 9.3 Delegation visibility
 
@@ -508,7 +541,8 @@ completion) and `plan.retention`. Unit tests per config conventions.
 `plan` tool (full action/phase matrix, sequential-dispatch enforcement) and
 `task_outcome` tool; embedded docs; TUI renderer; registration. Unit tests
 for every action × phase combination, dependency errors, reorder validation,
-`StopTurn` semantics.
+`skip_item` validation and dependent-satisfaction semantics, `StopTurn`
+semantics.
 
 ### Phase 4 — Pager extraction + PlanPager
 Extract `tui/annotate/` from `review_pager.go` (behavior-preserving; existing
@@ -557,6 +591,9 @@ Retention sweep, `goa --plan <id>` headless resume, deprecation notes,
 
 - `core/plan/` — new: `model.go`, `store.go`, `render.go`, `annotations.go`
   (+ tests). Existing `mode.go` untouched.
+- `core/orchestrator/` — `Runtime.SetPlanID` and the conditional `plan_id`
+  field in the `run_started` payload, mirroring `goal_id` (+ payload/replay
+  test). No other runtime changes.
 - `tools/plan/` — new: `plan.go`, `task_outcome.go`, `plan_renderer.go`,
   `plan.short.md`, `plan.long.md` (+ tests). `plan_mode.go` gains a
   deprecation note in its long doc.
