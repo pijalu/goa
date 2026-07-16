@@ -92,9 +92,13 @@ func (c *CommandCompleter) SetArgCompleter(fn ArgCompletionsFunc) {
 // Results are categorized into Most Used, Commands, and Modifiers tiers.
 func (c *CommandCompleter) Complete(prefix string) []Completion {
 	// Colon-triggered arg completion: /cmd:argprefix
+	// Only activates when the text before : is a /command, not regular text.
 	colonIdx := strings.Index(prefix, ":")
 	if colonIdx >= 0 && c.argCompleter != nil {
 		cmdName := prefix[:colonIdx]
+		if !strings.HasPrefix(cmdName, "/") {
+			return nil
+		}
 		argPrefix := prefix[colonIdx+1:]
 		results := c.argCompleter(cmdName, argPrefix)
 		var expanded []Completion

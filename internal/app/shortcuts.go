@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -235,11 +237,80 @@ func modelSelectorLess(items []tui.SelectorItem, active string) func(i, j int) b
 }
 
 func (a *App) promptCustomModel() {
-	a.requestMainInput("Enter custom model name:", func(selected string) {
-		if selected != "" {
-			a.applyModelSelection(selected)
+	subs := a.subs
+	if subs.cfg == nil {
+		a.requestMainInput("Enter custom model name:", func(selected string) {
+			if selected != "" {
+				a.applyModelSelection(selected)
+			}
+		})
+		return
+	}
+
+	// Fetch models from ALL configured providers.
+	type modelEntry struct {
+		providerID string
+		model      provider.ModelInfo
+	}
+	var allModels []modelEntry
+	seen := make(map[string]bool)
+	if subs.providerMgr != nil {
+		for _, p := range subs.cfg.Providers {
+			if p.ID == "" {
+				continue
+			}
+			mList, err := subs.providerMgr.ListModelsCached(p.ID, 5*time.Minute)
+			if err != nil || len(mList) == 0 {
+				continue
+			}
+			for _, m := range mList {
+				if seen[m.ID] {
+					continue
+				}
+				seen[m.ID] = true
+				allModels = append(allModels, modelEntry{providerID: p.ID, model: m})
+			}
 		}
+	}
+
+	if len(allModels) == 0 {
+		a.requestMainInput("Enter custom model name:", func(selected string) {
+			if selected != "" {
+				a.applyModelSelection(selected)
+			}
+		})
+		return
+	}
+
+	items := make([]tui.SelectorItem, 0, len(allModels)+1)
+	for _, entry := range allModels {
+		desc := entry.providerID
+		if entry.model.ID == subs.cfg.ActiveModel {
+			desc += " (active)"
+		}
+		items = append(items, tui.SelectorItem{Value: entry.model.ID, Label: entry.model.ID, Description: desc})
+	}
+	items = append(items, tui.SelectorItem{
+		Value: "__custom__", Label: "── custom model ──",
+		Description: "type any model name",
 	})
+
+	ch := subs.tuiEngine.ShowSelector("Select model:", items, subs.cfg.ActiveModel)
+	go func() {
+		selected := <-ch
+		if selected == "" {
+			return
+		}
+		if selected == "__custom__" {
+			a.requestMainInput("Enter custom model name:", func(v string) {
+				if v != "" {
+					a.applyModelSelection(v)
+				}
+			})
+			return
+		}
+		a.apply(func() { a.applyModelSelection(selected) })
+	}()
 }
 
 func (a *App) applyModelSelection(selected string) {

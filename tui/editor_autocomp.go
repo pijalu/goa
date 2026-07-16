@@ -95,9 +95,11 @@ func (e *Editor) isSlashAtBufferStart(prefix string) bool {
 }
 
 // shouldTriggerAutoComp reports whether the prefix should open the completion popup.
-// Trigger conditions: /commands, /cmd:args, @paths, or path-like content.
+// Trigger conditions: /commands and their :args, @paths, or path-like content.
+// Colon alone (text:no-command) does NOT trigger — only /command:args does
+// (which starts with / and is already caught by the first condition).
 func shouldTriggerAutoComp(prefix string) bool {
-	if strings.HasPrefix(prefix, "/") || strings.Contains(prefix, ":") {
+	if strings.HasPrefix(prefix, "/") {
 		return true
 	}
 	if strings.HasPrefix(prefix, "@") {

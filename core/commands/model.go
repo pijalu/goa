@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -118,6 +120,10 @@ func showModelSelector(host core.UIHost, cfg *config.Config, saver config.Config
 		if !ok || selected == "" {
 			return
 		}
+		if selected == "__add__" {
+			runAddModelFromSelector(host, cfg, saver)
+			return
+		}
 		if strings.HasPrefix(selected, "__delete__") {
 			modelID := strings.TrimPrefix(selected, "__delete__")
 			confirmAndRemoveModel(host, cfg, saver, pCfg, modelID)
@@ -130,6 +136,126 @@ func showModelSelector(host core.UIHost, cfg *config.Config, saver config.Config
 		applyModelSelection(host, cfg, saver, selected)
 	})
 	return nil
+}
+
+// runAddModelFromSelector guides the user through adding a model from the
+// provider's available model list, similar to /config's add model flow.
+func runAddModelFromSelector(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
+	// Show provider selection
+	providers := configuredProviderItemsSimple(cfg)
+	if len(providers) == 0 {
+		host.Flash("No providers configured. Use /config to add one.")
+		return
+	}
+	if len(providers) == 1 {
+		pickModelFromProvider(host, cfg, saver, providers[0].Value)
+		return
+	}
+	host.SelectOption("Select provider:", providers, "", func(providerID string, ok bool) {
+		if !ok || providerID == "" {
+			return
+		}
+		pickModelFromProvider(host, cfg, saver, providerID)
+	})
+}
+
+// pickModelFromProvider fetches models from the given provider and shows a
+// selector for the user to pick one to add.
+func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID string) {
+	ctx, ok := host.(core.Context)
+	var models []provider.ModelInfo
+	var err error
+	if ok && ctx.ProviderManager != nil {
+		if pm, ok := ctx.ProviderManager.(interface {
+			ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
+		}); ok {
+			models, err = pm.ListModelsCached(providerID, 5*time.Minute)
+		} else {
+			models, err = ctx.ProviderManager.ListModels(providerID)
+		}
+	}
+	if err != nil || len(models) == 0 {
+		// Fallback: prompt for manual model string
+		host.ShowInput("Model name:", "", func(modelName string, ok bool) {
+			if !ok || modelName == "" {
+				return
+			}
+			addAndShowModel(host, cfg, saver, providerID, modelName)
+		})
+		return
+	}
+	items := make([]tui.SelectorItem, 0, len(models)+1)
+	for _, mod := range models {
+		desc := providerID
+		if modelIndex(cfg.Models, mod.ID) >= 0 {
+			desc += " ✓ configured"
+		}
+		items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
+	}
+	items = append(items, tui.SelectorItem{
+		Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
+	})
+	host.SelectOption("Select model to add:", items, "", func(selected string, ok bool) {
+		if !ok || selected == "" {
+			return
+		}
+		if selected == "__custom__" {
+			host.ShowInput("Model name:", "", func(modelName string, ok bool) {
+				if !ok || modelName == "" {
+					return
+				}
+				addAndShowModel(host, cfg, saver, providerID, modelName)
+			})
+			return
+		}
+		addAndShowModel(host, cfg, saver, providerID, selected)
+	})
+}
+
+// addAndShowModel adds a model to config, persists, and re-shows the model selector.
+func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID, modelName string) {
+	if modelIndex(cfg.Models, modelName) >= 0 {
+		host.Flash("Model " + modelName + " already configured.")
+		_ = showModelSelector(host, cfg, saver, cfg.GetProviderByID(providerID))
+		return
+	}
+	modelID := deriveModelID(modelName)
+	cfg.Models = append(cfg.Models, config.ModelConfig{
+		ID:         modelID,
+		Name:       modelName,
+		ProviderID: providerID,
+		Model:      modelName,
+	})
+	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+		host.Flash("Failed to save: " + err.Error())
+	}
+	host.Flash("Model " + modelID + " added.")
+	pCfg := cfg.GetProviderByID(cfg.ActiveProvider)
+	_ = showModelSelector(host, cfg, saver, pCfg)
+}
+
+// configuredProviderItemsSimple returns configured provider selector items.
+func configuredProviderItemsSimple(cfg *config.Config) []tui.SelectorItem {
+	var items []tui.SelectorItem
+	seen := map[string]bool{}
+	for _, p := range cfg.Providers {
+		if p.ID == "" || seen[p.ID] {
+			continue
+		}
+		seen[p.ID] = true
+		items = append(items, tui.SelectorItem{Value: p.ID, Label: p.ID, Description: p.Name})
+	}
+	return items
+}
+
+// modelIndex returns the index of a model by ID, or -1 if not found.
+func modelIndex(models []config.ModelConfig, id string) int {
+	for i, m := range models {
+		if m.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // modelValidatorFor returns the model validator from the host context, if any.
@@ -201,13 +327,100 @@ func modelItemLess(items []tui.SelectorItem, activeModel string) func(i, j int) 
 
 // promptCustomModel opens an input dialog for a free-form model name and, on
 // confirm, applies it via applyModelSelection.
+// It first tries to show available models from ALL configured providers for
+// autocomplete-style selection, falling back to a plain text input.
 func promptCustomModel(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
-	host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
-		if !ok || customModel == "" {
+	// Fetch models from ALL configured providers, not just the active one.
+	allModels := fetchAllProviderModels(host, cfg)
+	if len(allModels) == 0 {
+		host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
+			if !ok || customModel == "" {
+				return
+			}
+			applyModelSelection(host, cfg, saver, customModel)
+		})
+		return
+	}
+
+	items := make([]tui.SelectorItem, 0, len(allModels)+1)
+	for _, entry := range allModels {
+		desc := entry.ProviderID
+		if entry.Model.ID == cfg.ActiveModel {
+			desc += " (active)"
+		}
+		items = append(items, tui.SelectorItem{Value: entry.Model.ID, Label: entry.Model.ID, Description: desc})
+	}
+	items = append(items, tui.SelectorItem{
+		Value: "__custom__", Label: "── custom model ──",
+		Description: "type any model name",
+	})
+	host.SelectOption("Select model:", items, cfg.ActiveModel, func(selected string, ok bool) {
+		if !ok || selected == "" {
 			return
 		}
-		applyModelSelection(host, cfg, saver, customModel)
+		if selected == "__custom__" {
+			host.ShowInput("Enter custom model name:", "", func(customModel string, ok bool) {
+				if !ok || customModel == "" {
+					return
+				}
+				applyModelSelection(host, cfg, saver, customModel)
+			})
+			return
+		}
+		applyModelSelection(host, cfg, saver, selected)
 	})
+}
+
+// providerModelEntry pairs a model with the provider it came from.
+type providerModelEntry struct {
+	ProviderID string
+	Model      provider.ModelInfo
+}
+
+// fetchAllProviderModels fetches available models from ALL configured providers,
+// aggregating the results into a single flat list.
+func fetchAllProviderModels(host core.UIHost, cfg *config.Config) []providerModelEntry {
+	ctx, ok := host.(core.Context)
+	if !ok || ctx.ProviderManager == nil {
+		return nil
+	}
+	var entries []providerModelEntry
+	seen := make(map[string]bool) // deduplicate model IDs
+	for _, p := range cfg.Providers {
+		if p.ID == "" {
+			continue
+		}
+		models := fetchProviderModels(host, p.ID)
+		for _, mod := range models {
+			if seen[mod.ID] {
+				continue
+			}
+			seen[mod.ID] = true
+			entries = append(entries, providerModelEntry{ProviderID: p.ID, Model: mod})
+		}
+	}
+	return entries
+}
+
+// fetchProviderModels tries to get the model list from a single provider.
+func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelInfo {
+	ctx, ok := host.(core.Context)
+	if !ok || ctx.ProviderManager == nil {
+		return nil
+	}
+	if pm, ok := ctx.ProviderManager.(interface {
+		ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
+	}); ok {
+		models, err := pm.ListModelsCached(providerID, 5*time.Minute)
+		if err == nil {
+			return models
+		}
+	}
+	models, err := ctx.ProviderManager.ListModels(providerID)
+	if err != nil {
+		return nil
+	}
+	return models
 }
 
 // applyModelSelection records the chosen model, follows its configured

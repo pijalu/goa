@@ -14,8 +14,15 @@ import (
 )
 
 func (m *configMenu) selectModelPage(title, current string, onSelected func(string)) {
+	m.selectModelPageForProvider(title, current, onSelected, "")
+}
+
+// selectModelPageForProvider is like selectModelPage but when providerID is
+// non-empty, the "— other model —" flow skips the provider selection step
+// (the caller already chose one).
+func (m *configMenu) selectModelPageForProvider(title, current string, onSelected func(string), providerID string) {
 	baseLen := len(m.history)
-	m.current = func() { m.selectModelPage(title, current, onSelected) }
+	m.current = func() { m.selectModelPageForProvider(title, current, onSelected, providerID) }
 	items := m.configuredModelItems()
 	items = append(items, tui.SelectorItem{
 		Value:       "__other__",
@@ -32,7 +39,7 @@ func (m *configMenu) selectModelPage(title, current string, onSelected func(stri
 			onSelected(selected)
 			return
 		}
-		m.open(func() { m.promptOtherModel(onSelected, baseLen) })
+		m.open(func() { m.promptOtherModel(onSelected, baseLen, providerID) })
 	})
 }
 
@@ -55,7 +62,13 @@ func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 	return items
 }
 
-func (m *configMenu) promptOtherModel(onSelected func(string), baseLen int) {
+func (m *configMenu) promptOtherModel(onSelected func(string), baseLen int, knownProviderID string) {
+	// If the caller already selected a provider (knownProviderID), skip the
+	// provider selection step and go straight to model resolution.
+	if knownProviderID != "" {
+		m.open(func() { m.resolveModel(knownProviderID, "", onSelected, baseLen) })
+		return
+	}
 	providers := configuredProviderItems(m.ctx.Config)
 	if len(providers) == 0 || providers[0].Value == "" {
 		m.flash("No providers configured. Add a provider first.")
@@ -98,7 +111,11 @@ func (m *configMenu) resolveModel(providerID, modelName string, onSelected func(
 	}
 	items := make([]tui.SelectorItem, 0, len(models)+1)
 	for _, mod := range models {
-		items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: providerID})
+		desc := providerID
+		if findModelIndex(m.ctx.Config.Models, mod.ID) >= 0 {
+			desc += " ✓ configured"
+		}
+		items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
 	}
 	items = append(items, tui.SelectorItem{
 		Value:       "__custom__",
@@ -181,12 +198,12 @@ func (m *configMenu) runAddModel() {
 			m.back()
 			return
 		}
-		m.selectModelPage("Select model:", "", func(modelID string) {
+		m.selectModelPageForProvider("Select model:", "", func(modelID string) {
 			if modelID == "" {
 				return
 			}
 			m.addModel(providerID, deriveModelID(modelID), modelID)
-		})
+		}, providerID)
 	})
 }
 

@@ -160,6 +160,21 @@ func (s *Selector) handleDelete(data string) *string {
 
 func (s *Selector) handlePrintable(data string) *string {
 	if len(data) == 1 && data[0] >= 32 && data[0] < 127 {
+		if s.searchText == "" {
+			switch data[0] {
+			case '+':
+				v := "__add__"
+				return &v
+			case '-':
+				if len(s.filtered) > 0 {
+					item := s.filtered[s.selected]
+					if !strings.HasPrefix(item.Value, "__") {
+						v := "__delete__" + item.Value
+						return &v
+					}
+				}
+			}
+		}
 		s.searchText += data
 		s.applyFilter()
 	}
@@ -377,7 +392,7 @@ func (s *Selector) renderSearchLine(c selectorColors) string {
 func (s *Selector) renderHint(c selectorColors) string {
 	hint := "  ↑↓ nav  /  type filter  /  enter  /  esc"
 	if hasDeletableItems(s.items) {
-		hint += "  /  " + ansi.Fg(c.suc) + "backspace" + ansi.FgReset + ansi.Fg(c.sys) + " delete"
+		hint += "  /  " + ansi.Fg(c.suc) + "+ add / - delete" + ansi.Reset
 	}
 	return ansi.Fg(c.sys) + ansi.Faint + hint + ansi.Reset
 }

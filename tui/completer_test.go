@@ -140,6 +140,31 @@ func TestCommandCompleter_ColonTriggersArgCompletion(t *testing.T) {
 	}
 }
 
+func TestCommandCompleter_NoColonCompletionWithoutSlash(t *testing.T) {
+	cmdNames := []string{"/mode", "/help"}
+	descs := map[string]string{
+		"/mode": "Set mode",
+		"/help": "Help",
+	}
+	cc := NewCommandCompleter(cmdNames, descs)
+	// arg completer that returns something for any command
+	cc.SetArgCompleter(func(cmdName, argPrefix string) []Completion {
+		return []Completion{{Value: "something", Description: "test"}}
+	})
+
+	// Non-command prefix with colon should NOT trigger arg completion
+	results := cc.Complete("text:withcolon")
+	if len(results) != 0 {
+		t.Errorf("expected 0 completions for non-command colon prefix, got %d: %v", len(results), results)
+	}
+
+	// /command: should still work
+	results = cc.Complete("/mode:")
+	if len(results) == 0 {
+		t.Error("expected completions for /mode: to still work")
+	}
+}
+
 func TestCommandCompleter_BasePresence(t *testing.T) {
 	cmdNames := []string{"/help", "/mode"}
 	descs := map[string]string{
