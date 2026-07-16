@@ -996,3 +996,13 @@ func (a *Agent) SetBufferedToolCallCountForTest(n int) {
 	defer a.mu.Unlock()
 	a.bufferedToolCallCount = n
 }
+
+// PolicyConfigForTest exposes the safety-gating fields a sub-agent was built
+// with (autonomy, guard, confirm, project dir) so tests can assert policy
+// inheritance without reaching into unexported state. Test-only; not part of
+// the runtime API.
+func (a *Agent) PolicyConfigForTest() (getAutonomy func() internal.AutonomyLevel, getGuard func() perms.GuardConfig, confirm func(context.Context, string, string) (bool, error), projectDir string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.GetAutonomy, a.cfg.GetGuardConfig, a.cfg.ConfirmTool, a.cfg.ProjectDir
+}

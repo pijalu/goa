@@ -730,6 +730,18 @@ func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderMa
 	pool.PromptRegistry = promptReg
 	pool.SetGoaConfig(cfg)
 
+	// Wire sub-agent safety gating (C2): every agent the pool creates inherits
+	// the same autonomy/guard/confirm policy and project scope as the main
+	// agent, so a spawned coder/explore sub-agent cannot run tools unconfirmed
+	// when the session is in an ask/confirm autonomy mode.
+	if agentMgr != nil {
+		getAutonomy, getGuard, confirm, projectDir := agentMgr.PolicySource()
+		pool.GetAutonomy = getAutonomy
+		pool.GetGuardConfig = getGuard
+		pool.ConfirmTool = confirm
+		pool.ProjectDir = projectDir
+	}
+
 	pool.ModelFactory = func(modelName string) (agenticprovider.Model, error) {
 		return providerMgr.ResolveModelByID(modelName)
 	}

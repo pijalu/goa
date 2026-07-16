@@ -5,13 +5,16 @@
 package multiagent
 
 import (
+	"context"
 	"log"
 	"strings"
 	"sync"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/perms"
 	gorole "github.com/pijalu/goa/internal/role"
 )
 
@@ -66,6 +69,18 @@ type AgentPool struct {
 	// Config holds the Goa configuration used to build agentic.Config for
 	// sub-agents. When nil, sub-agents are created with minimal defaults.
 	Config *config.Config
+
+	// PolicySource supplies the autonomy level, guard rules, and tool
+	// confirmation callback that sub-agents must inherit so they are subject to
+	// the SAME safety gating as the main agent. Without it, a spawned coder
+	// sub-agent would run tools (e.g. bash) unconfirmed even when the session
+	// is in an ask/confirm autonomy mode — a safety and transparency hole (C2).
+	// Sourced from the host's AgentManager at pool construction.
+	GetAutonomy    func() internal.AutonomyLevel
+	GetGuardConfig func() perms.GuardConfig
+	ConfirmTool    func(ctx context.Context, toolName, input string) (bool, error)
+	// ProjectDir scopes SOLO-mode filesystem/shell restrictions for sub-agents.
+	ProjectDir string
 
 	// agentBus enables agent-to-agent messaging via send_message tools.
 	agentBus *agentic.AgentBus
@@ -385,6 +400,24 @@ func (p *AgentPool) ToolNames() []string {
 }
 
 func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
+	// Safety policy inheritance is independent of p.Config: sub-agents must be
+	// subject to the same autonomy/guard/confirm gating as the main agent even
+	// when no Goa config is set (C2). Only copy a field when the pool has a
+	// source for it; a nil source leaves the agent's zero value (no gating),
+	// which callers treat as "not configured" rather than "allow all".
+	if p.GetAutonomy != nil {
+		ac.GetAutonomy = p.GetAutonomy
+	}
+	if p.GetGuardConfig != nil {
+		ac.GetGuardConfig = p.GetGuardConfig
+	}
+	if p.ConfirmTool != nil {
+		ac.ConfirmTool = p.ConfirmTool
+	}
+	if p.ProjectDir != "" {
+		ac.ProjectDir = p.ProjectDir
+	}
+
 	if p.Config == nil {
 		return
 	}

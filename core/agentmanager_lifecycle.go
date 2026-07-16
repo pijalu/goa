@@ -54,6 +54,33 @@ func (am *AgentManager) SetConfirmTool(fn func(ctx context.Context, toolName, in
 	am.confirmTool = fn
 }
 
+// PolicySource returns the safety-gating callbacks and scope the main agent
+// runs under — autonomy level, guard rules, tool confirmation, and project
+// dir — in a form the sub-agent pool can inherit (C2). Sub-agents must be
+// subject to the same gating as the main agent; without this they would run
+// tools unconfirmed even in ask/confirm autonomy modes. The closures read live
+// state (current mode, mode registry) so sub-agent gating tracks mode changes
+// just like the main agent's.
+func (am *AgentManager) PolicySource() (getAutonomy func() internal.AutonomyLevel, getGuard func() perms.GuardConfig, confirm func(context.Context, string, string) (bool, error), projectDir string) {
+	am.mu.Lock()
+	confirmTool := am.confirmTool
+	projectDir = am.projectDir
+	am.mu.Unlock()
+
+	getAutonomy = func() internal.AutonomyLevel { return am.CurrentMode().Autonomy }
+	getGuard = func() perms.GuardConfig {
+		if am.modeRegistry == nil {
+			return perms.GuardConfig{}
+		}
+		spec, err := am.modeRegistry.Resolve(am.CurrentMode().Major)
+		if err != nil {
+			return perms.GuardConfig{}
+		}
+		return spec.Guard
+	}
+	return getAutonomy, getGuard, confirmTool, projectDir
+}
+
 func (am *AgentManager) SetLifecycleRegistry(r LifecycleRegistry) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
