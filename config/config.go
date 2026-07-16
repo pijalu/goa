@@ -377,6 +377,16 @@ type ToolEnabledConfig struct {
 	// defaults to true so the model can run Python code unless the user
 	// explicitly disables it.
 	PythonEnabled bool `yaml:"python"`
+	// Agent controls the `agent` sub-agent tool. Opt-OUT: defaults to true
+	// (set in the embedded default config) so the model can spawn sub-agents
+	// unless the user explicitly disables it.
+	Agent bool `yaml:"agent"`
+	// AgentSwarm controls the `agent_swarm` tool. Opt-OUT: defaults to true
+	// (set in the embedded default config).
+	AgentSwarm bool `yaml:"agent_swarm"`
+	// Goa controls the `goa` slash-command tool. Opt-OUT: defaults to true
+	// (set in the embedded default config).
+	Goa bool `yaml:"goa"`
 	// ClarifyDisabled, when true, removes the ask_user_question tool from the
 	// model's toolset. It is an inverted flag: the default (false/unset) leaves
 	// the tool ENABLED by default, matching the requested behavior. All other
@@ -438,6 +448,9 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"webfetch":         &t.WebFetch,
 		"verify":           &t.Verify,
 		"python":           &t.PythonEnabled,
+		"agent":            &t.Agent,
+		"agent_swarm":      &t.AgentSwarm,
+		"goa":              &t.Goa,
 		"clarify_disabled": &t.ClarifyDisabled,
 	}
 	return fields[name]

@@ -184,6 +184,9 @@ tools:
     webfetch: true
     verify: true
     python: true
+    agent: true
+    agent_swarm: true
+    goa: true
   search:
     threads: 4
     max_results: 30

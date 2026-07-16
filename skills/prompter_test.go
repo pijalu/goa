@@ -26,20 +26,52 @@ func TestRenderAvailableSkills_ExecuteToolPerCategory(t *testing.T) {
 		{Name: "action", Description: "Action", Category: "action"},
 		{Name: "sub", Description: "Sub", RequiresSubAgent: true},
 	}
-	_ = RenderAvailableSkills(fr, skills)
+	_ = RenderAvailableSkills(fr, skills, true)
 	if fr.lastData == nil {
 		t.Fatal("expected renderer to receive data")
 	}
-	rendered, ok := fr.lastData.([]safeSkill)
+	rendered, ok := fr.lastData.(availableSkillsData)
 	if !ok {
-		t.Fatalf("expected []safeSkill, got %T", fr.lastData)
+		t.Fatalf("expected availableSkillsData, got %T", fr.lastData)
 	}
 	want := map[string]string{
 		"inline": "read",
 		"action": "run_skill",
 		"sub":    "run_skill",
 	}
-	for _, s := range rendered {
+	for _, s := range rendered.Skills {
+		if s.ExecuteTool != want[s.Name] {
+			t.Errorf("%s ExecuteTool = %q, want %q", s.Name, s.ExecuteTool, want[s.Name])
+		}
+	}
+}
+
+// When the run_skill tool is not registered (inline execution mode), action
+// skills must not be advertised with tool="run_skill" — the model would call
+// a nonexistent tool. They are invocable via the /skill:run:<name> command.
+func TestRenderAvailableSkills_NoRunSkillTool(t *testing.T) {
+	fr := &fakeRenderer{rendered: "rendered"}
+	skills := []SkillSummary{
+		{Name: "inline", Description: "Inline", Category: "knowledge"},
+		{Name: "action", Description: "Action", Category: "action"},
+		{Name: "sub", Description: "Sub", RequiresSubAgent: true},
+	}
+	_ = RenderAvailableSkills(fr, skills, false)
+	rendered, ok := fr.lastData.(availableSkillsData)
+	if !ok {
+		t.Fatalf("expected availableSkillsData, got %T", fr.lastData)
+	}
+	for _, s := range rendered.Skills {
+		if s.ExecuteTool == "run_skill" {
+			t.Errorf("%s: must not advertise run_skill when the tool is unavailable", s.Name)
+		}
+	}
+	want := map[string]string{
+		"inline": "read",
+		"action": "/skill:run:action",
+		"sub":    "/skill:run:sub",
+	}
+	for _, s := range rendered.Skills {
 		if s.ExecuteTool != want[s.Name] {
 			t.Errorf("%s ExecuteTool = %q, want %q", s.Name, s.ExecuteTool, want[s.Name])
 		}
@@ -50,7 +82,7 @@ func TestEscapeSkills_XMLEscaping(t *testing.T) {
 	skills := []SkillSummary{
 		{Name: "a&b", Description: "x<y", Category: "action"},
 	}
-	out := escapeSkills(skills)
+	out := escapeSkills(skills, true)
 	if len(out) != 1 {
 		t.Fatal("expected one safe skill")
 	}

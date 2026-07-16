@@ -319,7 +319,14 @@ func (t *Tracker) failIfInflight(tc *tui.ToolExecutionComponent) {
 	if tc == nil || !isInflight(tc) {
 		return
 	}
-	tc.SetOutput("(interrupted)")
+	if !tc.ArgsComplete() {
+		// Arguments never finished streaming: the tool call was canceled
+		// before the tool executed — say so explicitly instead of implying
+		// work happened and its output was lost.
+		tc.SetOutput("(canceled before execution — the tool never ran)")
+	} else {
+		tc.SetOutput("(interrupted)")
+	}
 	tc.SetStatus(tui.ToolError)
 	tc.SetPartial(false)
 }

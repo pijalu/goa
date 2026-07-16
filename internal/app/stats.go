@@ -321,6 +321,10 @@ func (a *App) setStreamingStatus() {
 // that are still in Running or Pending state as interrupted (ToolError).
 // This catches stragglers from EVERY path (foreground tracker, orchestrator
 // agent streams, or any orphan) so cancelled tools show ✗ instead of hanging.
+// A widget whose arguments never finished streaming was canceled BEFORE the
+// tool executed — it is labeled accordingly so the user does not think work
+// happened and its output was lost (bugs.md: "Tool call start a review but
+// no output of work done").
 // The foreground tracker is reset so the next turn starts clean.
 func (a *App) failPendingTools() {
 	a.subs.toolTracker = nil
@@ -334,7 +338,11 @@ func (a *App) failPendingTools() {
 			continue
 		}
 		if tc.Status() == tui.ToolPending || tc.Status() == tui.ToolRunning {
-			tc.SetOutput("(interrupted)")
+			if !tc.ArgsComplete() {
+				tc.SetOutput("(canceled before execution — the tool never ran)")
+			} else {
+				tc.SetOutput("(interrupted)")
+			}
 			tc.SetStatus(tui.ToolError)
 			tc.SetPartial(false)
 			interrupted++

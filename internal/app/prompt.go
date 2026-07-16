@@ -216,7 +216,17 @@ func availableSkillsSection(subs *subsystems) string {
 	if len(skillSummaries) == 0 {
 		return ""
 	}
-	return skills.RenderAvailableSkills(subs.promptReg, skillSummaries)
+	return skills.RenderAvailableSkills(subs.promptReg, skillSummaries, runSkillToolAvailable(subs))
+}
+
+// runSkillToolAvailable reports whether the run_skill tool is registered,
+// i.e. whether action skills can be invoked via run_skill in this session.
+func runSkillToolAvailable(subs *subsystems) bool {
+	if subs.toolRegistry == nil {
+		return false
+	}
+	_, ok := subs.toolRegistry.Get("run_skill")
+	return ok
 }
 
 // buildSelfDocSection returns a minimal <goa_documentation> section that lists

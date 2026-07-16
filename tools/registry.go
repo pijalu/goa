@@ -124,6 +124,9 @@ type ConfigurableTool struct {
 // change needed for it to show up in the Tools config screen and docs.
 func ConfigurableTools() []ConfigurableTool {
 	return []ConfigurableTool{
+		{Name: "agent", Description: "Spawn a sub-agent for a task", Default: true},
+		{Name: "agent_swarm", Description: "Fan out a swarm of sub-agents", Default: true},
+		{Name: "goa", Description: "Run Goa slash commands from the model", Default: true},
 		{Name: "verify", Description: "Run the test suite, report pass/fail", Default: true},
 		{Name: "ask_user_question", Description: "Ask the user a question", Default: true},
 		{Name: "python", Description: "Execute Python code with gpython", Default: true},

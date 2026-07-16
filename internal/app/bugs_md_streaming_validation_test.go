@@ -263,3 +263,69 @@ func TestBugs_NoStuckWriteWidget_StrandedMarkedInterrupted(t *testing.T) {
 		t.Errorf("expected visible '(interrupted)' output for stranded widget, got:\n%s", got)
 	}
 }
+
+// TestBugs_CanceledMidToolCall_LabeledNeverRan reproduces the bugs.md item
+// "Tool call start a review but no output of work done": the model streams an
+// agent tool call, the stream is canceled while the arguments are STILL
+// streaming (the tool never executes), and the widget must say the tool never
+// ran — not a bare "(interrupted)" that implies work happened and its output
+// was lost.
+func TestBugs_CanceledMidToolCall_LabeledNeverRan(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+
+	// Partial agent tool-call deltas — args never complete (unterminated JSON),
+	// matching the real export: ~40 "Calling agent..." updates then cancel.
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "agent", ToolCallID: "call_agent", IsDelta: true,
+		ToolInput: `{"description":"Review render loop + compositor perf","subagent_type":"coder","prompt":"Review`,
+	})
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "agent", ToolCallID: "call_agent", IsDelta: true,
+		ToolInput: `{"description":"Review render loop + compositor perf","subagent_type":"coder","prompt":"Review the render loop and compositor`,
+	})
+
+	// Stream canceled mid-tool-call: turn ends with no result.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	ws := toolWidgets(sc)
+	if len(ws) != 1 {
+		t.Fatalf("expected exactly 1 agent widget, got %d", len(ws))
+	}
+	if ws[0].Status() != tui.ToolError {
+		t.Errorf("expected canceled widget to be marked error, got %v", ws[0].Status())
+	}
+	got := visibleText(sc)
+	if !strings.Contains(got, "never ran") {
+		t.Errorf("expected '(canceled before execution — the tool never ran)' for mid-args cancel, got:\n%s", got)
+	}
+}
+
+// TestBugs_CanceledRunningTool_LabeledInterrupted is the counterpart: a tool
+// whose args DID complete (execution began) but whose result never arrives
+// keeps the "(interrupted)" label.
+func TestBugs_CanceledRunningTool_LabeledInterrupted(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "agent", ToolCallID: "call_agent2",
+		ToolInput: `{"description":"Review render loop","subagent_type":"coder","prompt":"Review it"}`,
+	})
+	// Turn ends while the (fully-specified) tool is running.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	ws := toolWidgets(sc)
+	if len(ws) != 1 {
+		t.Fatalf("expected exactly 1 agent widget, got %d", len(ws))
+	}
+	got := visibleText(sc)
+	if !strings.Contains(got, "(interrupted)") {
+		t.Errorf("expected '(interrupted)' for a tool canceled while running, got:\n%s", got)
+	}
+	if strings.Contains(got, "never ran") {
+		t.Errorf("a fully-specified tool must NOT be labeled 'never ran', got:\n%s", got)
+	}
+}

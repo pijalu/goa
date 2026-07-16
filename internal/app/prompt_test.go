@@ -220,6 +220,68 @@ func TestBuildActiveSkillsSection_NoSkills(t *testing.T) {
 	}
 }
 
+// writeTestSkill creates a SKILL.md under dir/.goa/skills/<name>/.
+func writeTestSkill(t *testing.T, dir, name, frontmatter string) {
+	t.Helper()
+	skillRoot := filepath.Join(dir, ".goa", "skills", name)
+	if err := os.MkdirAll(skillRoot, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	content := "---\n" + frontmatter + "\n---\nbody"
+	if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+}
+
+// In inline execution mode the run_skill tool is not registered, so the
+// <available_skills> listing must not advertise action skills with
+// tool="run_skill" — the model would call a nonexistent tool.
+func TestAvailableSkillsSection_InlineModeNoRunSkill(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "review", "name: review\ndescription: Review code\ncategory: action")
+
+	skillReg := skills.NewSkillRegistry([]string{filepath.Join(dir, ".goa", "skills")})
+	if err := skillReg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+
+	subs := newTestSubsystems(dir)
+	subs.skillRegistry = skillReg
+	// default (empty) execution mode == inline: run_skill is NOT registered
+	subs.toolRegistry = tools.NewToolRegistry()
+
+	got := availableSkillsSection(subs)
+	if strings.Contains(got, `tool="run_skill"`) {
+		t.Errorf("inline mode must not advertise run_skill:\n%s", got)
+	}
+	if !strings.Contains(got, "/skill:run:review") {
+		t.Errorf("action skill should be invocable via /skill:run:<name>:\n%s", got)
+	}
+}
+
+// In sub-agent execution mode the run_skill tool is registered, so action
+// skills are advertised with tool="run_skill".
+func TestAvailableSkillsSection_SubAgentModeRunSkill(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "review", "name: review\ndescription: Review code\ncategory: action")
+
+	skillReg := skills.NewSkillRegistry([]string{filepath.Join(dir, ".goa", "skills")})
+	if err := skillReg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+
+	subs := newTestSubsystems(dir)
+	subs.skillRegistry = skillReg
+	subs.cfg.Skills.ExecutionMode = config.AgenticSkillModeSubAgent
+	subs.toolRegistry = tools.NewToolRegistry()
+	subs.toolRegistry.Register(&mockTool{name: "run_skill"})
+
+	got := availableSkillsSection(subs)
+	if !strings.Contains(got, `tool="run_skill"`) {
+		t.Errorf("sub-agent mode should advertise run_skill:\n%s", got)
+	}
+}
+
 func TestBuildSystemPrompt_SmallContextBudget(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{ConfigDir: dir}

@@ -30,17 +30,41 @@ func ToSkillSummaries(skills []*Skill) []SkillSummary {
 	return out
 }
 
+// availableSkillsData is the template payload for the <available_skills>
+// prompt section: the skills plus the mode-dependent header line.
+type availableSkillsData struct {
+	Header string
+	Skills []safeSkill
+}
+
 // RenderAvailableSkills renders the <available_skills> prompt via the given
 // renderer. Returns empty string if no skills or if the renderer fails.
-func RenderAvailableSkills(renderer PromptRenderer, skills []SkillSummary) string {
+// runSkillAvailable must reflect whether the run_skill tool is actually
+// registered; when it is not (inline execution mode), action skills are
+// advertised with their /skill:run:<name> invocation instead of a
+// nonexistent tool.
+func RenderAvailableSkills(renderer PromptRenderer, skills []SkillSummary, runSkillAvailable bool) string {
 	if len(skills) == 0 || renderer == nil {
 		return ""
 	}
-	result, err := renderer.Render("available_skills", escapeSkills(skills))
+	data := availableSkillsData{
+		Header: availableSkillsHeader(runSkillAvailable),
+		Skills: escapeSkills(skills, runSkillAvailable),
+	}
+	result, err := renderer.Render("available_skills", data)
 	if err != nil {
 		return ""
 	}
 	return result
+}
+
+// availableSkillsHeader returns the header line describing how each skill
+// category is invoked in the current execution mode.
+func availableSkillsHeader(runSkillAvailable bool) string {
+	if runSkillAvailable {
+		return "Action skills: run_skill. Inline/knowledge: read."
+	}
+	return "Action skills: invoke with the /skill:run:<name> command. Inline/knowledge: read."
 }
 
 // RenderSkillShow renders the /skill:name? display via the given renderer.
@@ -109,12 +133,16 @@ type safeSkill struct {
 	RequiresSubAgent bool
 }
 
-func escapeSkills(skills []SkillSummary) []safeSkill {
+func escapeSkills(skills []SkillSummary, runSkillAvailable bool) []safeSkill {
 	out := make([]safeSkill, len(skills))
 	for i, s := range skills {
 		executeTool := "read"
 		if s.RequiresSubAgent || categoryOrDefault(s.Category) == SkillCategoryAction {
-			executeTool = "run_skill"
+			if runSkillAvailable {
+				executeTool = "run_skill"
+			} else {
+				executeTool = "/skill:run:" + s.Name
+			}
 		}
 		out[i] = safeSkill{
 			Name:             escapeXML(s.Name),

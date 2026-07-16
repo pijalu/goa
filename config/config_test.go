@@ -1027,6 +1027,67 @@ func TestToolEnabledConfigDefaults(t *testing.T) {
 	}
 }
 
+// TestAgentToolsConfigurable verifies the sub-agent/swarm/goa tools are
+// toggleable through ToolEnabledConfig like every other configurable tool.
+func TestAgentToolsConfigurable(t *testing.T) {
+	for _, name := range []string{"agent", "agent_swarm", "goa"} {
+		cfg := ToolEnabledConfig{}
+		if cfg.GetEnabled(name) {
+			t.Errorf("%s should default to false on a zero-value config", name)
+		}
+		cfg.SetEnabled(name, true)
+		if !cfg.GetEnabled(name) {
+			t.Errorf("GetEnabled(%s) should return true after SetEnabled", name)
+		}
+		cfg.SetEnabled(name, false)
+		if cfg.GetEnabled(name) {
+			t.Errorf("GetEnabled(%s) should return false after disable", name)
+		}
+	}
+}
+
+// TestAgentToolsYAMLRoundTrip verifies the new keys parse from YAML.
+func TestAgentToolsYAMLRoundTrip(t *testing.T) {
+	y := `
+tools:
+  enabled:
+    agent: false
+    agent_swarm: false
+    goa: false
+`
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(y), &cfg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if cfg.Tools.Enabled.Agent {
+		t.Error("Agent should be false")
+	}
+	if cfg.Tools.Enabled.AgentSwarm {
+		t.Error("AgentSwarm should be false")
+	}
+	if cfg.Tools.Enabled.Goa {
+		t.Error("Goa should be false")
+	}
+}
+
+// TestAgentToolsDefaultEnabled verifies the embedded default config ships the
+// sub-agent/swarm/goa tools enabled (opt-out), preserving current behavior.
+func TestAgentToolsDefaultEnabled(t *testing.T) {
+	yamlText, err := DefaultConfigYAML()
+	if err != nil {
+		t.Fatalf("load embedded default: %v", err)
+	}
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
+		t.Fatalf("Unmarshal embedded default failed: %v", err)
+	}
+	for _, name := range []string{"agent", "agent_swarm", "goa"} {
+		if !cfg.Tools.Enabled.GetEnabled(name) {
+			t.Errorf("embedded default should enable %s (opt-out)", name)
+		}
+	}
+}
+
 func TestToolEnabledConfigRoundTrip(t *testing.T) {
 	y := `
 tools:

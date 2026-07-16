@@ -166,6 +166,15 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 			return makePTYExecTool(subs)
 		case "request_review", "delegate_to":
 			return makeAgentDrivenTool(subs, name)
+		case "agent":
+			return newAgentTool(subs.agentPool, subs.modeRegistry, subs.taskBus, subs.agentMgr), true
+		case "agent_swarm":
+			return newAgentSwarmTool(subs.agentPool, subs.modeRegistry, subs.swarmState, subs.taskBus, subs.agentMgr, subs.events), true
+		case "goa":
+			if subs.goaTool == nil {
+				return nil, false
+			}
+			return subs.goaTool, true
 		}
 		return nil, false
 	}

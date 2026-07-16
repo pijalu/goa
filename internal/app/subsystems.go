@@ -73,6 +73,9 @@ type subsystems struct {
 	workflowReg       *multiagent.WorkflowRegistry
 	agentPool         *multiagent.AgentPool
 	events            *event.Bus
+	goaTool           *core.GoaCommandTool // retained so /tools:goa:on can re-register at runtime
+	swarmState        *swarm.State         // retained so /tools:agent_swarm:on can rebuild the tool
+	taskBus           *tasks.Bus           // retained so /tools:agent:on can rebuild the tool
 	projectDir        string
 	inputEditor       *tui.Editor // the input line, set after buildTUI
 	commandStats      *CommandStats
@@ -250,7 +253,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		attachWebFetchSummarizer(subs.toolRegistry, &webFetchAgentPool{pool: agentPool})
 	}
 
-	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry)
+	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry, swarmState, taskBus)
 }
 
 func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
@@ -606,12 +609,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		cmdRouter.SetAliases(cfg.Aliases)
 	}
 
-	// Register the goa_command tool now that the command router exists.
-	// The execution context is wired later in assembleSubsystems once the
-	// subsystems are fully assembled.
-	goaTool := core.NewGoaCommandToolWithContextFn(cmdRouter, func() core.Context { return core.Context{} })
-
-	toolRegistry.Register(goaTool)
+	goaTool := registerGoaCommandTool(cmdRouter, toolRegistry, cfg)
 
 	return skillCommandBundle{
 		skillRegistry: skillRegistry,
@@ -620,6 +618,18 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		goaTool:       goaTool,
 		pluginMgr:     pluginMgr,
 	}
+}
+
+// registerGoaCommandTool creates the goa_command tool now that the command
+// router exists and registers it unless disabled via tools.enabled.goa
+// (default on). The execution context is wired later in assembleSubsystems
+// once the subsystems are fully assembled.
+func registerGoaCommandTool(cmdRouter *core.CommandRouter, toolRegistry *tools.ToolRegistry, cfg *config.Config) *core.GoaCommandTool {
+	goaTool := core.NewGoaCommandToolWithContextFn(cmdRouter, func() core.Context { return core.Context{} })
+	if cfg.Tools.Enabled.Goa {
+		toolRegistry.Register(goaTool)
+	}
+	return goaTool
 }
 
 // loadUserModes discovers custom modes from .goa/prompts/mode/ in the home
@@ -730,7 +740,7 @@ func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderMa
 	configureRoleModels(pool, cfg, modeRegistry)
 	// Register AgentTool and AgentSwarmTool with ModeResolver so sub-agents
 	// get mode-appropriate prompts, tools, and temperature settings.
-	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus, agentMgr, eventBus)
+	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus, agentMgr, eventBus, cfg)
 	return pool
 }
 
@@ -886,7 +896,7 @@ func attachAgentDrivenToolPools(tools []agentic.Tool, pool *multiagent.AgentPool
 	}
 }
 
-func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions, registry *core.CommandRegistry) *subsystems {
+func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, base baseSubsystems, ab agentBundle, sc skillCommandBundle, promptReg *prompts.Registry, workflowReg *multiagent.WorkflowRegistry, agentPool *multiagent.AgentPool, foregroundOrch *multiagent.ForegroundOrchestrator, requestReviewTool *multiagent.RequestReviewTool, delegateTool *multiagent.DelegateTool, pipelineRunner *multiagent.PipelineRunner, goalManager *core.GoalManager, goalDriver *core.GoalDriver, opts RuntimeOptions, registry *core.CommandRegistry, swarmState *swarm.State, taskBus *tasks.Bus) *subsystems {
 	promptDir := cfg.Prompts.Dir
 	if promptDir == "" {
 		promptDir = filepath.Join(projectDir, ".goa", "prompts")
@@ -913,6 +923,9 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		agentPool:         agentPool,
 		ptyMgr:            base.ptyMgr,
 		events:            ab.eventBus,
+		goaTool:           sc.goaTool,
+		swarmState:        swarmState,
+		taskBus:           taskBus,
 		projectDir:        projectDir,
 		trustMgr:          base.trustMgr,
 		commandStats:      NewCommandStats(projectDir),
@@ -997,32 +1010,48 @@ func (a *modeResolverAdapter) Resolve(major string) (multiagent.ModeSpec, error)
 
 // registerSubAgentTools creates and registers AgentTool and AgentSwarmTool
 // with the tool registry, providing them with the AgentPool and ModeResolver
-// needed to spawn sub-agents with mode-appropriate configuration.
-func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager, eventBus *event.Bus) {
-	resolver := &modeResolverAdapter{reg: modeRegistry}
-	currentMode := func() internal.ModeState {
+// needed to spawn sub-agents with mode-appropriate configuration. Each tool
+// is registered only when enabled via tools.enabled (default: enabled).
+func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager, eventBus *event.Bus, cfg *config.Config) {
+	if cfg.Tools.Enabled.Agent {
+		reg.Register(newAgentTool(pool, modeRegistry, taskBus, agentMgr))
+	}
+	if cfg.Tools.Enabled.AgentSwarm {
+		reg.Register(newAgentSwarmTool(pool, modeRegistry, swarmState, taskBus, agentMgr, eventBus))
+	}
+}
+
+// currentModeFunc returns a resolver for the agent manager's current mode,
+// tolerating a nil manager (tests, partially assembled subsystems).
+func currentModeFunc(agentMgr *core.AgentManager) func() internal.ModeState {
+	return func() internal.ModeState {
 		if agentMgr == nil {
 			return internal.ModeState{}
 		}
 		return agentMgr.CurrentMode()
 	}
+}
 
-	agentTool := &multiagent.AgentTool{
+// newAgentTool builds the `agent` sub-agent tool. Shared by initial
+// registration and runtime re-enable via the tool factory.
+func newAgentTool(pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, taskBus *tasks.Bus, agentMgr *core.AgentManager) *multiagent.AgentTool {
+	return &multiagent.AgentTool{
 		Pool:         pool,
-		ModeResolver: resolver,
+		ModeResolver: &modeResolverAdapter{reg: modeRegistry},
 		TaskBus:      taskBus,
-		CurrentMode:  currentMode,
+		CurrentMode:  currentModeFunc(agentMgr),
 	}
-	reg.Register(agentTool)
+}
 
-	swarmTool := &toolsSwarm.AgentSwarmTool{
+// newAgentSwarmTool builds the `agent_swarm` tool. Shared by initial
+// registration and runtime re-enable via the tool factory.
+func newAgentSwarmTool(pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager, eventBus *event.Bus) *toolsSwarm.AgentSwarmTool {
+	return &toolsSwarm.AgentSwarmTool{
 		Pool:         pool,
-		ModeResolver: resolver,
+		ModeResolver: &modeResolverAdapter{reg: modeRegistry},
 		TaskBus:      taskBus,
 		SwarmState:   swarmState,
-		CurrentMode:  currentMode,
+		CurrentMode:  currentModeFunc(agentMgr),
 		Emitter:      &swarmEmitter{bus: eventBus},
 	}
-	reg.Register(swarmTool)
-
 }
