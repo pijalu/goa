@@ -11,6 +11,8 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/metrics"
 	"github.com/pijalu/goa/internal/tooltracker"
@@ -668,14 +670,63 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 
 // applyPricing computes cost and pricing-related visibility flags for the
 // given session stats using the model identified by activeModelID.
+//
+// Pricing resolution order (first match wins):
+//  1. User-configured pricing on the model's config entry (YAML) — explicit
+//     override, always honored.
+//  2. The built-in model registry's cost data (models.go), keyed by the
+//     config entry's real model name (ModelConfig.Model), then by the config
+//     ID itself. This is the bridge that makes cache-aware cost work out of
+//     the box for known models, without requiring YAML cache rates.
 func applyPricing(st *sessionStats, cfg *config.Config, activeModelID string) {
-	modelCfg := cfg.GetModelByID(activeModelID)
-	if modelCfg == nil || modelCfg.Pricing == nil {
+	pricing := resolvePricing(cfg, activeModelID)
+	if pricing == nil {
 		return
 	}
-	st.CostUSD = computeCost(st.PromptN, st.PredictedN, st.CacheReadTotal, st.CacheWriteTotal, modelCfg.Pricing)
-	if st.CostUSD > 0 || modelCfg.Pricing.InputPer1M > 0 || modelCfg.Pricing.OutputPer1M > 0 {
+	st.CostUSD = computeCost(st.PromptN, st.PredictedN, st.CacheReadTotal, st.CacheWriteTotal, pricing)
+	if st.CostUSD > 0 || pricing.InputPer1M > 0 || pricing.OutputPer1M > 0 {
 		st.ShowCost = true
+	}
+}
+
+// resolvePricing returns the effective per-1M pricing for a model: the user's
+// config override when present, otherwise the built-in registry cost converted
+// from per-token to per-1M. Returns nil when no pricing is known.
+func resolvePricing(cfg *config.Config, activeModelID string) *config.PricingConfig {
+	modelCfg := cfg.GetModelByID(activeModelID)
+	if modelCfg != nil && modelCfg.Pricing != nil {
+		return modelCfg.Pricing // explicit user override
+	}
+	// Built-in registry fallback: try the real API model name, then the config ID.
+	var names []string
+	if modelCfg != nil && modelCfg.Model != "" {
+		names = append(names, modelCfg.Model)
+	}
+	names = append(names, activeModelID)
+	for _, name := range names {
+		if m := models.GetModel(name); m != nil && hasBuiltinCost(m.Cost) {
+			p := builtinCostToPricing(m.Cost)
+			return &p
+		}
+	}
+	return nil
+}
+
+// hasBuiltinCost reports whether a registry cost entry carries any non-zero rate.
+func hasBuiltinCost(c provider.ModelPricing) bool {
+	return c.Input != 0 || c.Output != 0 || c.CacheRead != 0 || c.CacheWrite != 0
+}
+
+// builtinCostToPricing maps the registry's ModelPricing onto the per-1M
+// PricingConfig used by computeCost. The registered cost values (models.go,
+// via models_generated.go) are already expressed per 1M tokens, so they map
+// directly — no unit conversion.
+func builtinCostToPricing(c provider.ModelPricing) config.PricingConfig {
+	return config.PricingConfig{
+		InputPer1M:      c.Input,
+		OutputPer1M:     c.Output,
+		CacheReadPer1M:  c.CacheRead,
+		CacheWritePer1M: c.CacheWrite,
 	}
 }
 
