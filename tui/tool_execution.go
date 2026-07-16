@@ -73,6 +73,18 @@ type ToolExecutionComponent struct {
 	generic      genericRenderer
 	startTime    time.Time
 
+	// bodyVersion is bumped whenever a body-input changes (output, args,
+	// status, isPartial, argsComplete, expanded, view policy). buildBody
+	// memoizes its (expensive) result on (bodyVersion, effectiveExpanded,
+	// previewLines) so that per-frame spinner patches and snapshot builds —
+	// which rebuild the box without changing body inputs — do not re-split
+	// and re-highlight large tool output on every tick. Without this a
+	// running tool with large content (write/edit/bash) starves the command
+	// loop, freezing the TUI and blocking the result event and Esc/Ctrl-C.
+	bodyVersion uint64
+	bodyCache   string
+	bodyCacheAt bodyCacheKey
+
 	// onInvalidate is called when internal state changes (output, status,
 	// duration) so the owning ChatViewport can invalidate its render cache.
 	onInvalidate func()
@@ -226,11 +238,44 @@ func (tc *ToolExecutionComponent) updateBox() {
 	tc.box.Invalidate()
 }
 
-// buildBody chooses the right renderer path for the tool body. When the tool
-// has produced output, RenderResult is used. While arguments are still
-// streaming, a StreamingRenderer gets its RenderPartial hook; otherwise the
-// legacy RenderResult("", partial) path is used.
+// bodyCacheKey captures every input buildBody's result depends on: the
+// widget-state version plus the view-policy-derived expand/preview values
+// (which can change globally, e.g. via Ctrl+O, without a widget setter).
+type bodyCacheKey struct {
+	ver      uint64
+	expanded bool
+	preview  int
+}
+
+// invalidateBody marks the cached body stale. Called by every setter that
+// changes a body input so the next buildBody recomputes.
+func (tc *ToolExecutionComponent) invalidateBody() {
+	tc.bodyVersion++
+}
+
+// buildBody chooses the right renderer path for the tool body, memoized on
+// its inputs. When the tool has produced output, RenderResult is used. While
+// arguments are still streaming, a StreamingRenderer gets its RenderPartial
+// hook; otherwise the legacy RenderResult("", partial) path is used.
+//
+// The memoization is what lets a Running tool with large content coexist
+// with the 60fps spinner/snapshot rebuilds: the body is recomputed only when
+// its inputs change (new streamed content, status change, view toggle), not
+// on every animation tick. Streaming content still reaches the user — each
+// SetOutput/SetArgsPartial invalidates the cache, so the next build shows it.
 func (tc *ToolExecutionComponent) buildBody(renderer ToolRenderer, ctx RenderContext) string {
+	key := bodyCacheKey{ver: tc.bodyVersion, expanded: ctx.Expanded, preview: ctx.PreviewLines}
+	if key == tc.bodyCacheAt && tc.bodyCache != "" {
+		return tc.bodyCache
+	}
+	body := tc.computeBody(renderer, ctx)
+	tc.bodyCache = body
+	tc.bodyCacheAt = key
+	return body
+}
+
+// computeBody is the uncached body-render path.
+func (tc *ToolExecutionComponent) computeBody(renderer ToolRenderer, ctx RenderContext) string {
 	if tc.output != "" {
 		return renderer.RenderResult(tc.output, ctx)
 	}
@@ -277,6 +322,7 @@ func (tc *ToolExecutionComponent) renderDuration() {
 // SetExpanded toggles between preview and full output.
 func (tc *ToolExecutionComponent) SetExpanded(expanded bool) {
 	tc.expanded = expanded
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 }
@@ -292,6 +338,7 @@ func (tc *ToolExecutionComponent) SetToolArgs(args string) {
 // This triggers the renderer to show the final header (no longer streaming).
 func (tc *ToolExecutionComponent) SetArgsComplete() {
 	tc.argsComplete = true
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 }
@@ -303,6 +350,7 @@ func (tc *ToolExecutionComponent) SetArgsComplete() {
 func (tc *ToolExecutionComponent) SetArgsPartial(args string) {
 	tc.toolArgs = args
 	tc.updatePartialArgs(args)
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
@@ -342,6 +390,7 @@ func (tc *ToolExecutionComponent) updatePartialArgs(raw string) {
 // SetArgs parses and stores the structured arguments for renderer use.
 func (tc *ToolExecutionComponent) SetArgs(args map[string]any) {
 	tc.args = args
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 }
@@ -355,6 +404,7 @@ func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 		tc.argsComplete = true
 	}
 	tc.toolArgs = FormatToolArgs(tc.toolName, argsJSON)
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 }
@@ -371,6 +421,7 @@ func (tc *ToolExecutionComponent) SetOnInvalidate(fn func()) {
 // before the first render so the widget honours the config/Ctrl+O state.
 func (tc *ToolExecutionComponent) SetToolViewPolicy(p ToolViewPolicy) {
 	tc.viewPolicy = p
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
@@ -391,6 +442,7 @@ func (tc *ToolExecutionComponent) SetAgentLabel(label string) {
 // SetOutput sets the tool's output text.
 func (tc *ToolExecutionComponent) SetOutput(output string) {
 	tc.output = output
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
@@ -426,6 +478,7 @@ func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
 	if status == ToolSuccess || status == ToolError {
 		tc.isPartial = false
 	}
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
@@ -436,6 +489,7 @@ func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
 // SetPartial marks the component as still streaming/running.
 func (tc *ToolExecutionComponent) SetPartial(partial bool) {
 	tc.isPartial = partial
+	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
