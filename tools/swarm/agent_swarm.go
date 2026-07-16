@@ -21,6 +21,13 @@ import (
 	"github.com/pijalu/goa/multiagent"
 )
 
+// ChatEmitter emits user-visible chat messages from a running swarm.
+// Implemented by the app layer so the swarm tool can surface sub-agent
+// activity in the conversation history without importing the TUI.
+type ChatEmitter interface {
+	Emit(from, to, content string)
+}
+
 // AgentSwarmTool spawns multiple sub-agents in parallel to work on a list of
 // items. It mirrors kimi-code's AgentSwarm tool: a single prompt_template
 // expanded per item, with validation, structured XML results, task-bus
@@ -34,12 +41,17 @@ type AgentSwarmTool struct {
 	// CurrentMode returns the caller's current mode. Planner mode may only
 	// spawn plan sub-agents to prevent escaping planner restrictions.
 	CurrentMode func() internal.ModeState
+	// Emitter surfaces sub-agent lifecycle/output in the chat history.
+	Emitter ChatEmitter
+	// ProgressReporter receives a live text summary of sub-agent status so
+	// the TUI can display it inside the running agent_swarm tool widget.
+	ProgressReporter func(text string)
 }
 
 const (
-	swarmPlaceholder      = "{{item}}"
-	maxSwarmSubagents     = 128
-	defaultSubagentType   = "coder"
+	swarmPlaceholder       = "{{item}}"
+	maxSwarmSubagents      = 128
+	defaultSubagentType    = "coder"
 	swarmBackgroundTimeout = 30 * time.Minute
 )
 
@@ -197,9 +209,9 @@ func (t *AgentSwarmTool) prepareConfig(subagentType string) multiagent.AgentConf
 		return multiagent.AgentConfig{}
 	}
 	return multiagent.AgentConfig{
-		SystemPrompt:  spec.Body,
-		AllowedTools:  spec.AllowedTools,
-		Temperature:   spec.Temperature,
+		SystemPrompt: spec.Body,
+		AllowedTools: spec.AllowedTools,
+		Temperature:  spec.Temperature,
 	}
 }
 
@@ -210,21 +222,85 @@ type swarmItemResult struct {
 	body    string // result text or error message
 }
 
+// swarmProgress tracks the live status of each swarm item so the TUI can
+// display per-sub-agent progress inside the running agent_swarm tool widget.
+type swarmProgress struct {
+	mu    sync.Mutex
+	items map[string]string
+	order []string
+}
+
+func newSwarmProgress(items []string) *swarmProgress {
+	p := &swarmProgress{
+		items: make(map[string]string, len(items)),
+		order: make([]string, len(items)),
+	}
+	copy(p.order, items)
+	for _, it := range items {
+		p.items[it] = "pending"
+	}
+	return p
+}
+
+func (p *swarmProgress) set(item, status string) {
+	p.mu.Lock()
+	p.items[item] = status
+	p.mu.Unlock()
+}
+
+func (p *swarmProgress) snapshot() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	completed, failed := 0, 0
+	var b strings.Builder
+	for _, it := range p.order {
+		status := p.items[it]
+		switch status {
+		case "completed":
+			completed++
+		case "failed":
+			failed++
+		}
+		b.WriteString(fmt.Sprintf("  %s: %s\n", it, status))
+	}
+	summary := renderSwarmSummary(completed, failed)
+	return fmt.Sprintf("🐝 %s (%d/%d)\n%s", summary, completed, len(p.order), b.String())
+}
+
 func (t *AgentSwarmTool) runAll(p agentSwarmInput, cfg multiagent.AgentConfig) []swarmItemResult {
 	results := make([]swarmItemResult, len(p.Items))
+	progress := newSwarmProgress(p.Items)
+	if t.ProgressReporter != nil {
+		t.ProgressReporter(progress.snapshot())
+	}
 	var wg sync.WaitGroup
 	for i, item := range p.Items {
 		wg.Add(1)
 		go func(idx int, it string) {
 			defer wg.Done()
-			results[idx] = t.runOne(p.Task, it, p.PromptTemplate, cfg)
+			results[idx] = t.runOne(p.Task, it, p.PromptTemplate, cfg, progress)
 		}(i, item)
 	}
 	wg.Wait()
 	return results
 }
 
-func (t *AgentSwarmTool) runOne(task, item, template string, cfg multiagent.AgentConfig) swarmItemResult {
+func (t *AgentSwarmTool) reportProgress(progress *swarmProgress) {
+	if t.ProgressReporter == nil {
+		return
+	}
+	t.ProgressReporter(progress.snapshot())
+}
+
+func (t *AgentSwarmTool) emit(from, to, content string) {
+	if t.Emitter == nil || content == "" {
+		return
+	}
+	// Non-blocking: never let chat emission stall a sub-agent turn.
+	t.Emitter.Emit(from, to, content)
+}
+
+func (t *AgentSwarmTool) runOne(task, item, template string, cfg multiagent.AgentConfig, progress *swarmProgress) swarmItemResult {
 	prompt := strings.ReplaceAll(template, swarmPlaceholder, item)
 	taskID := fmt.Sprintf("swarm-%d-%d", time.Now().UnixNano(), uniqueCounter())
 	role := fmt.Sprintf("swarm-%s-%s", strings.ReplaceAll(task, " ", "-"), taskID)
@@ -235,28 +311,60 @@ func (t *AgentSwarmTool) runOne(task, item, template string, cfg multiagent.Agen
 		t.TaskBus.Start(taskID)
 	}
 
-	agent, err := t.Pool.CreateTaskAgent(role, cfg)
+	progress.set(item, "running")
+	t.reportProgress(progress)
+
+	t.emit(role, "user", fmt.Sprintf("🐝 sub-agent started: %s", item))
+
+	// Use CreateEphemeralAgent so swarm sub-agents do not inherit the
+	// foreground orchestrator's companion observer (which would otherwise route
+	// their events into the companion renderer — the "companion · cycle" leak).
+	agent, err := t.Pool.CreateEphemeralAgent(role, cfg)
 	if err != nil {
+		msg := fmt.Sprintf("create agent: %v", err)
+		progress.set(item, "failed")
+		t.reportProgress(progress)
+		t.emit(role, "user", fmt.Sprintf("❌ sub-agent failed: %s\n%v", item, err))
 		if t.TaskBus != nil {
-			t.TaskBus.Fail(taskID, fmt.Sprintf("create agent: %v", err))
+			t.TaskBus.Fail(taskID, msg)
 		}
-		return swarmItemResult{item: item, outcome: "failed", body: fmt.Sprintf("create agent: %v", err)}
+		return swarmItemResult{item: item, outcome: "failed", body: msg}
 	}
 
-	// Evict the one-shot agent once it finishes so the pool does not retain it
-	// (mirrors the agent tool's BUG-10 fix).
-	defer t.Pool.Evict(role)
+	// Accumulate the sub-agent's final output so the full conversation can be
+	// emitted into the chat history once the sub-agent finishes.
+	var resultBuf strings.Builder
+	obs := agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
+		if ev.Type == agentic.EventContent && ev.Role == agentic.Assistant && ev.Text != "" {
+			resultBuf.WriteString(ev.Text)
+		}
+	})
+	remove := agent.AddObserver(obs)
+	defer remove()
 
 	ctx, cancel := context.WithTimeout(context.Background(), swarmBackgroundTimeout)
 	defer cancel()
-	result, runErr := agent.RunAndCollect(ctx, prompt)
+	runErr := agent.Run(ctx, prompt)
 
 	if runErr != nil {
+		msg := fmt.Sprintf("%v", runErr)
+		progress.set(item, "failed")
+		t.reportProgress(progress)
+		t.emit(role, "user", fmt.Sprintf("❌ sub-agent failed: %s\n%v", item, runErr))
 		if t.TaskBus != nil {
-			t.TaskBus.Fail(taskID, runErr.Error())
+			t.TaskBus.Fail(taskID, msg)
 		}
-		return swarmItemResult{item: item, outcome: "failed", body: runErr.Error()}
+		return swarmItemResult{item: item, outcome: "failed", body: msg}
 	}
+	result := resultBuf.String()
+	progress.set(item, "completed")
+	t.reportProgress(progress)
+
+	displayResult := result
+	if displayResult == "" {
+		displayResult = "(no output)"
+	}
+	t.emit(role, "user", fmt.Sprintf("✅ sub-agent completed: %s\n%s", item, displayResult))
 	if t.TaskBus != nil {
 		t.TaskBus.Complete(taskID, result)
 	}

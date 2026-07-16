@@ -270,7 +270,7 @@ func handleAgentOutputEvent(o *ForegroundOrchestrator, role string, state *agent
 	case agentic.EventToolCall:
 		// Track tool calls during this stage. WorkflowNextTool uses this
 		// to validate that actual work was done before allowing advancement.
-		if ev.ToolName != "workflows:next" {
+		if ev.ToolName != "workflows_next" {
 			o.stageToolCount.Add(1)
 		}
 	case agentic.EventContent:
@@ -896,7 +896,7 @@ func (o *ForegroundOrchestrator) AccumulatedContext() string {
 	return o.accumulatedContext
 }
 
-// StageToolCount returns how many non-workflows:next tools the current
+// StageToolCount returns how many non-workflows_next tools the current
 // stage agent has called. Used by WorkflowNextTool to validate work.
 func (o *ForegroundOrchestrator) StageToolCount() int {
 	return int(o.stageToolCount.Load())

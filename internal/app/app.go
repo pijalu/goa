@@ -66,8 +66,8 @@ type App struct {
 	prevCacheHitPct float64
 
 	// Status tracking for granular footer/status messages.
-	toolResultsSeen     int
-	toolCallsTotal      int
+	toolResultsSeen      int
+	toolCallsTotal       int
 	toolCallWarningLevel ToolCallLevel
 
 	// pendingInput holds an active main-input request (a command or review
@@ -90,7 +90,9 @@ type inputRequest struct {
 
 // New creates an App from initialized subsystems.
 func New(subs *subsystems) *App {
-	return &App{subs: subs}
+	a := &App{subs: subs}
+	wireSwarmTool(a)
+	return a
 }
 
 // Run starts the TUI, agent session, and event loop. It returns true if the
@@ -280,7 +282,10 @@ func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), o
 // registration, title set) are routed through app.apply so the commandLoop
 // remains the sole mutator. The blocking happens here on the tool goroutine.
 func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
-	type result struct{ text string; ok bool }
+	type result struct {
+		text string
+		ok   bool
+	}
 	resCh := make(chan result, 1)
 
 	a.apply(func() {

@@ -154,7 +154,7 @@ that allows inter-agent messaging.
 1. **All agents are pre-created** in a pool
 2. They register on a shared **AgentBus** — each agent can message any other
 3. Only the **current stage agent** is actively running at any one time
-4. When the active agent calls `workflows:next`, the orchestrator:
+4. When the active agent calls `workflows_next`, the orchestrator:
    - Marks the current stage as complete
    - Starts the next stage agent with accumulated context
 5. Agents use `send_message` / `receive_message` tools to communicate
@@ -165,7 +165,7 @@ that allows inter-agent messaging.
 |------|---------|-------|----------|
 | `send_message` | ✅ | ✅ | ✅ |
 | `receive_message` | ✅ | ✅ | ✅ |
-| `workflows:next` | ✅ | ✅ | ✅ |
+| `workflows_next` | ✅ | ✅ | ✅ |
 | `read` | ❌ | ✅ | ✅ |
 | `edit` | ❌ | ✅ | ❌ |
 | `bash` | ❌ | ✅ | ❌ |
@@ -185,18 +185,18 @@ Stage 1 (planner):
       Question: <one question>
       Options: <possible answers>
   - Creates a detailed implementation plan
-  - Calls workflows:next
+  - Calls workflows_next
 
 Stage 2 (coder):
   - Reads the plan from conversation history
   - Can message the planner for clarification via send_message
   - Implements using tools (write, edit, bash, etc.)
-  - Calls workflows:next
+  - Calls workflows_next
 
 Stage 3 (reviewer):
   - Reviews the implementation
   - Can request fixes from coder via send_message
-  - Calls workflows:next → workflow complete
+  - Calls workflows_next → workflow complete
 ```
 
 ### Creating Custom Workflows

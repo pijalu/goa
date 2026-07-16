@@ -10,7 +10,7 @@ Goa's workflow system enables **multi-stage, multi-agent collaboration** where d
 
 ## Overview
 
-A workflow is a sequence of stages, each assigned to a different agent role (planner, coder, reviewer). Agents communicate via a shared **AgentBus** and advance through stages by calling the `workflows:next` tool.
+A workflow is a sequence of stages, each assigned to a different agent role (planner, coder, reviewer). Agents communicate via a shared **AgentBus** and advance through stages by calling the `workflows_next` tool.
 
 ```
 Workflow "Implement Feature"
@@ -51,7 +51,7 @@ Runs a workflow. Supports colon syntax for tab completion:
 1. All agents are pre-created in a pool when the workflow starts
 2. They are registered on a shared AgentBus (each agent can message any other)
 3. Only the **current stage agent** is actively running
-4. When the active agent calls `workflows:next`, the orchestrator:
+4. When the active agent calls `workflows_next`, the orchestrator:
    - Marks the current stage as complete
    - Starts the next stage agent with accumulated context
 5. Agents use `send_message`/`receive_message` tools to communicate
@@ -62,7 +62,7 @@ Runs a workflow. Supports colon syntax for tab completion:
 |------|---------|-------|----------|
 | `send_message` | ✅ | ✅ | ✅ |
 | `receive_message` | ✅ | ✅ | ✅ |
-| `workflows:next` | ✅ | ✅ | ✅ |
+| `workflows_next` | ✅ | ✅ | ✅ |
 | `read` | ❌ | ✅ | ✅ |
 | `edit` | ❌ | ✅ | ❌ |
 | `bash` | ❌ | ✅ | ❌ |
@@ -81,18 +81,18 @@ Stage 1 (planner):
     Question: <one question>
     Options: <possible answers>
   - Creates a detailed plan
-  - Calls workflows:next
+  - Calls workflows_next
 
 Stage 2 (coder):
   - Reads the plan from conversation history
   - Can message planner for clarification
   - Implements using tools (write, bash, etc.)
-  - Calls workflows:next
+  - Calls workflows_next
 
 Stage 3 (reviewer):
   - Reviews the implementation
   - Can request fixes from coder via send_message
-  - Calls workflows:next → workflow complete
+  - Calls workflows_next → workflow complete
 ```
 
 ## Directory Structure

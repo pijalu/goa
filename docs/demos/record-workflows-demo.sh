@@ -317,7 +317,7 @@ cat > "$HTML_FILE" << 'HOWTO'
     <p>
         When a workflow runs, goa creates a pool of agents — one per role — registered on a
         shared <strong>AgentBus</strong>. Only the current stage's agent runs at any time.
-        When it calls <code>workflows:next</code>, the next stage starts with accumulated
+        When it calls <code>workflows_next</code>, the next stage starts with accumulated
         context. Agents can message each other using <code>send_message</code> /
         <code>receive_message</code> tools.
     </p>
@@ -326,7 +326,7 @@ cat > "$HTML_FILE" << 'HOWTO'
     <table>
         <tr><th>Tool</th><th>Planner</th><th>Coder</th><th>Reviewer</th></tr>
         <tr><td><code>send_message</code></td><td>✅</td><td>✅</td><td>✅</td></tr>
-        <tr><td><code>workflows:next</code></td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td><code>workflows_next</code></td><td>✅</td><td>✅</td><td>✅</td></tr>
         <tr><td><code>read</code></td><td>❌</td><td>✅</td><td>✅</td></tr>
         <tr><td><code>edit</code> / <code>write</code></td><td>❌</td><td>✅</td><td>❌</td></tr>
         <tr><td><code>bash</code></td><td>❌</td><td>✅</td><td>❌</td></tr>

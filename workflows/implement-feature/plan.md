@@ -13,4 +13,4 @@ Write your plan directly in your response. Be specific about:
 - Files to create or modify
 - Step-by-step implementation order
 
-When your plan is complete, you MUST call the `workflows:next` tool to advance to the implementation stage. Do not end your turn without calling workflows:next.
+When your plan is complete, you MUST call the `workflows_next` tool to advance to the implementation stage. Do not end your turn without calling workflows_next.

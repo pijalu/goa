@@ -13,6 +13,6 @@ IMPORTANT: Write files to the current project directory using relative paths (fo
 Steps:
 1. Read the conversation history to understand the plan
 2. Write the code using `write`
-3. When done, call the `workflows:next` tool
+3. When done, call the `workflows_next` tool
 
-Available tools: write, read, bash, workflows:next
+Available tools: write, read, bash, workflows_next

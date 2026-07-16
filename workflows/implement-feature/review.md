@@ -20,4 +20,4 @@ Your job is to review the implementation created by the coder.
 
 3. **Request fixes if needed**: If you find issues, use `send_message` to tell the coder what needs to be fixed. Use `receive_message` to get updates.
 
-4. **Signal completion**: When the code looks good, call the `workflows:next` tool to complete the workflow.
+4. **Signal completion**: When the code looks good, call the `workflows_next` tool to complete the workflow.

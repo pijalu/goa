@@ -82,7 +82,7 @@ func isRetryableNetworkError(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	for _, p := range []string{"connection refused", "no such host", "temporary", "timeout", "eof", "reset by peer", "broken pipe"} {
+	for _, p := range []string{"connection refused", "no such host", "temporary", "timeout", "eof", "reset by peer", "broken pipe", "context canceled"} {
 		if strings.Contains(text, p) {
 			return true
 		}

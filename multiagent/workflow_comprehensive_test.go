@@ -822,8 +822,8 @@ func TestWorkflowNextTool_Schema(t *testing.T) {
 
 	tool := &WorkflowNextTool{Orchestrator: orch, Run: run}
 	schema := tool.Schema()
-	if schema.Name != "workflows:next" {
-		t.Errorf("expected name 'workflows:next', got %q", schema.Name)
+	if schema.Name != "workflows_next" {
+		t.Errorf("expected name 'workflows_next', got %q", schema.Name)
 	}
 	if schema.Description == "" {
 		t.Error("expected non-empty description")

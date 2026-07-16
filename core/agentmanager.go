@@ -663,13 +663,19 @@ func (am *AgentManager) injectModePrompt(major internal.MajorMode) {
 
 // InjectSystemMessage appends a system message to the active agent's history.
 // It returns an error if no agent session is active.
+//
+// CAUTION: the agent.InjectSystemMessage call triggers event emission that
+// calls back into the AgentManager (OnEvent → logEvent), which acquires
+// am.mu. To avoid a self-deadlock with a non-reentrant mutex, the agent
+// pointer is snapshot under the lock and the call is made outside it.
 func (am *AgentManager) InjectSystemMessage(content string) error {
 	am.mu.Lock()
-	defer am.mu.Unlock()
-	if am.activeAgent == nil {
+	agent := am.activeAgent
+	am.mu.Unlock()
+	if agent == nil {
 		return fmt.Errorf("no active agent session")
 	}
-	am.activeAgent.InjectSystemMessage(content)
+	agent.InjectSystemMessage(content)
 	return nil
 }
 

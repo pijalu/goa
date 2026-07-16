@@ -37,5 +37,63 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-- 2026-07-14 — TUI selection widget breaks scrolling/history redraw → `docs/archive/bugs.2026-07-14.md`
-- 2026-07-14 — TUI empty line at bottom → `docs/archive/bugs.2026-07-14-footer.md`
+## Scroll/history issue with tool call
+The scrollback/history is not updated correctly when using the edit tool with tool calls and will show artifact from the input line.
+
+```
+Update shortcuts.go's promptCustomModel to fetch from all providers:
+
+
+◉ edit ...
+elapsed 17.5s
+
+◠ Calling edit...
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (⎇ main)                                                                                                                               coding-posture │ YOLO
+↑105.5K ↓37.5K 111.6 tok/s CH98.8% TC:112 11.3%/1.0M (auto)                                                                     (opencode-go) deepseek-v4-flash • high
+-244          }
+-245       })
+-246       return
+-247    }
+-248
+-249    // Try to show available models from the active provider for autocomplete.
+-250    providerID := subs.cfg.ActiveProvider
+-251    var models []provider.ModelInfo
+-252    if providerID != "" && subs.providerMgr != nil {
+-253       models, _ = subs.providerMgr.ListModelsCached(providerID, 5*time.Minute)
+-254    }
+```
+
+```
+▾ thinking...
+▏Let me generate the commit message using the commit-msg skill:
+
+
+◟ $ cd /Users/muaddib/dev/goa && git diff --cached 2>/dev/null; git diff
+elapsed 0.33s
+
+◟ Tool calling
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (⎇ main)                                                                                                                               coding-posture │ YOLO
+↑116.6K ↓40.0K 142.3 tok/s CH98.8% TC:120 11.7%/1.0M (auto)                                                                     (opencode-go) deepseek-v4-flash • high
++      m.selectModelPageForProvider(title, current, onSelected, "")
++}
++
++// selectModelPageForProvider is like selectModelPage but when providerID is
++// non-empty, the "— other model —" flow skips the provider selection step
++// (the caller already chose one).
++func (m *configMenu) selectModelPageForProvider(title, current string, onSelected func(string), providerID string) {
+      baseLen := len(m.history)
+```
+
+## Edit tool 
+Edit tool does not show information during streaming outside of elapsed time. Some edit can be big so it's important to see the progress.
+Can you add some progress indicators or feedback during streaming: eg: Number of tokens processed / edit stats like "number of character to delete/number of character to insert".
+If possible, the stats should show the number of lines deleted/inserted like a diffstat during streaming so user can see the progress of the edit
+
+## Read tool
+Read tool should not show output by default - it should be configurable with a dedicated flag in config to have read showing output - default should be silent.

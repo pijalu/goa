@@ -18,10 +18,10 @@ type WorkflowNextTool struct {
 	Run          *PipelineRun
 }
 
-// Schema returns the tool schema for workflows:next.
+// Schema returns the tool schema for workflows_next.
 func (t *WorkflowNextTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
-		Name:        "workflows:next",
+		Name:        "workflows_next",
 		Description: "Advance the current workflow stage to the next one.",
 		Schema: map[string]any{
 			"type": "object",
@@ -52,9 +52,9 @@ func (t *WorkflowNextTool) Execute(input string) (string, error) {
 	}
 
 	// Require actual work before advancing. The orchestrator tracks how
-	// many non-workflows:next tools were called during this stage.
+	// many non-workflows_next tools were called during this stage.
 	if t.Orchestrator != nil && t.Orchestrator.StageToolCount() == 0 {
-		return "", fmt.Errorf("you must do the work before advancing; call write to write the files, then call workflows:next when done")
+		return "", fmt.Errorf("you must do the work before advancing; call write to write the files, then call workflows_next when done")
 	}
 
 	if t.Orchestrator != nil {
@@ -76,5 +76,5 @@ func (t *WorkflowNextTool) activeRun() *PipelineRun {
 	return nil
 }
 
-// IsRetryable returns false — workflows:next should not be retried on failure.
+// IsRetryable returns false — workflows_next should not be retried on failure.
 func (t *WorkflowNextTool) IsRetryable(err error) bool { return false }

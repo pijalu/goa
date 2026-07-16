@@ -4,7 +4,6 @@ package agentic
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -864,10 +863,6 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	a.resetStreamRoundState()
 	a.mu.Unlock()
 	a.undoLastAssistantMessage()
-
-	if errors.Is(streamErr, context.Canceled) {
-		return true, streamErr
-	}
 
 	// Overflow guard: only one compress+retry per turn.  If compression
 	// cannot free enough space, the second overflow kills the turn with

@@ -20,4 +20,4 @@ Your job is to review uncommitted changes in the repository.
 
 3. **Provide feedback**: Summarize your findings with specific recommendations.
 
-4. **Signal completion**: When your review is complete, call the `workflows:next` tool.
+4. **Signal completion**: When your review is complete, call the `workflows_next` tool.

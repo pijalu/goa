@@ -29,10 +29,10 @@ import (
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/lsp"
-	"github.com/pijalu/goa/internal/tooltracker"
 	"github.com/pijalu/goa/internal/role"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/telemetry"
+	"github.com/pijalu/goa/internal/tooltracker"
 	"github.com/pijalu/goa/internal/trust"
 	"github.com/pijalu/goa/internal/update"
 	"github.com/pijalu/goa/internal/version"
@@ -45,8 +45,8 @@ import (
 	"github.com/pijalu/goa/tools"
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
-	goaltui "github.com/pijalu/goa/tui/goal"
 	bgpanel "github.com/pijalu/goa/tui/background"
+	goaltui "github.com/pijalu/goa/tui/goal"
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
@@ -95,8 +95,8 @@ type subsystems struct {
 	bgPanel    *bgpanel.Panel
 
 	// Logger for structured stats output
-	logger      *agentic.Logger
-	statusMsg   *tui.StatusMsg
+	logger    *agentic.Logger
+	statusMsg *tui.StatusMsg
 
 	// Perf-load mode settings.
 	perfLoad         bool
@@ -232,7 +232,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		if mdl, err := subs.providerMgr.ResolveActiveModel(); err == nil {
 			agentDrivenTools := multiagent.AgentDrivenTools(nil, nil)
 			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg)
-			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr)
+			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr, agentBundle.eventBus)
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
 			agentPool.SetOrchestrator(foregroundOrch)
 			wireCompanionCreation(agentPool, agentBundle.agentMgr, agentBundle.stateSnapshot)
@@ -713,7 +713,7 @@ func registerAgentDrivenTools(toolRegistry *tools.ToolRegistry, tools []agentic.
 	return requestReviewTool, delegateTool
 }
 
-func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, promptReg *prompts.Registry, cfg *config.Config, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager) *multiagent.AgentPool {
+func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, promptReg *prompts.Registry, cfg *config.Config, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager, eventBus *event.Bus) *multiagent.AgentPool {
 	allTools := toolRegistry.All()
 	streamOpts := providerMgr.BuildStreamOptions()
 	pool := multiagent.NewAgentPool(mdl, streamOpts, allTools)
@@ -730,7 +730,7 @@ func createAgentPool(mdl agenticprovider.Model, providerMgr *provider.ProviderMa
 	configureRoleModels(pool, cfg, modeRegistry)
 	// Register AgentTool and AgentSwarmTool with ModeResolver so sub-agents
 	// get mode-appropriate prompts, tools, and temperature settings.
-	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus, agentMgr)
+	registerSubAgentTools(toolRegistry, pool, modeRegistry, swarmState, taskBus, agentMgr, eventBus)
 	return pool
 }
 
@@ -998,7 +998,7 @@ func (a *modeResolverAdapter) Resolve(major string) (multiagent.ModeSpec, error)
 // registerSubAgentTools creates and registers AgentTool and AgentSwarmTool
 // with the tool registry, providing them with the AgentPool and ModeResolver
 // needed to spawn sub-agents with mode-appropriate configuration.
-func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager) {
+func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, modeRegistry *core.ModeRegistry, swarmState *swarm.State, taskBus *tasks.Bus, agentMgr *core.AgentManager, eventBus *event.Bus) {
 	resolver := &modeResolverAdapter{reg: modeRegistry}
 	currentMode := func() internal.ModeState {
 		if agentMgr == nil {
@@ -1021,6 +1021,8 @@ func registerSubAgentTools(reg *tools.ToolRegistry, pool *multiagent.AgentPool, 
 		TaskBus:      taskBus,
 		SwarmState:   swarmState,
 		CurrentMode:  currentMode,
+		Emitter:      &swarmEmitter{bus: eventBus},
 	}
 	reg.Register(swarmTool)
+
 }

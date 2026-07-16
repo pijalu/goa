@@ -19,7 +19,7 @@ func TestAgentPool_CreateEphemeralAgent_IsolatedAndClean(t *testing.T) {
 	pool := NewAgentPool(testModel("m"), provider.StreamOptions{}, tools)
 	// Configure the pool so the CACHED path (toolsForRole) would inject both
 	// extras: a companion send_message tool (agent bus) and a workflow
-	// workflows:next tool (foreground orchestrator). The ephemeral path must
+	// workflows_next tool (foreground orchestrator). The ephemeral path must
 	// exclude both.
 	pool.SetAgentBus(agentic.NewAgentBus())
 	pool.orch = &ForegroundOrchestrator{} // non-nil is all toolsForRole checks
@@ -49,11 +49,11 @@ func TestAgentPool_CreateEphemeralAgent_IsolatedAndClean(t *testing.T) {
 		t.Errorf("CreateEphemeralAgent fired OnAgentCreated %d times; ephemeral workers must not trigger companion wiring", createdCalls)
 	}
 
-	// Toolset: allow-listed base only. No send_message, no workflows:next.
+	// Toolset: allow-listed base only. No send_message, no workflows_next.
 	if names := toolNamesOf(a1); contains(names, "send_message") {
 		t.Errorf("ephemeral agent leaked send_message tool: %v", names)
-	} else if contains(names, "workflows:next") {
-		t.Errorf("ephemeral agent leaked workflows:next tool: %v", names)
+	} else if contains(names, "workflows_next") {
+		t.Errorf("ephemeral agent leaked workflows_next tool: %v", names)
 	} else if !contains(names, "read") || contains(names, "write") {
 		t.Errorf("ephemeral agent tools = %v, want only [read] (allow-list)", names)
 	}

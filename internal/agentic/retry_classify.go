@@ -23,8 +23,12 @@ const maxStreamBackoff = 30 * time.Second
 // It trusts the provider hook classification when the error is a
 // *hooks.ProviderError, and otherwise falls back to a transient-error
 // heuristic for bare mid-stream failures (idle timeout, dropped connection,
-// unexpected EOF). Context cancellation and user-imposed deadlines are never
-// retried — retrying them cannot succeed.
+// unexpected EOF). User-imposed deadlines are never retried — retrying
+// them cannot succeed. Context cancellation is NOT excluded: when the
+// transport layer returns context.Canceled from a server-side connection
+// drop, it is wrapped in a *ProviderError and classified by the error hook
+// pipeline. Bare context.Canceled (user Escape / CloseStreamOnCancel)
+// stays non-retryable via the transient-error heuristic.
 //
 // Context-overflow errors are always considered retryable here; the
 // once-only semantics are enforced separately in handleStreamFailure via
@@ -33,7 +37,13 @@ func shouldRetryStreamError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// User-imposed deadlines are never retried — retrying them cannot succeed.
+	// Context cancellation is NOT excluded here: when the transport layer
+	// returns context.Canceled (e.g. server-side connection drop), it is wrapped
+	// in a *hooks.ProviderError below and classified by the error hook pipeline.
+	// Bare context.Canceled (from CloseStreamOnCancel / ctx.Err()) stays
+	// non-retryable because isTransientStreamError does not match it.
+	if errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	// Overflow is retried once via the dedicated compress+retry path.

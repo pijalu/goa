@@ -17,7 +17,7 @@ Status: **investigation only** (no code changes). Companion to
 >   (per-handle accumulator replaces the role-keyed buffer that concurrent
 >   same-role delegations clobbered).
 > - **R8** (tool leak) — `baseToolsForRole` returns only allow-listed tools;
->   ephemeral agents get no `workflows:next` / `send_message`.
+>   ephemeral agents get no `workflows_next` / `send_message`.
 > - **R10** (companion renderer leak) — ephemeral agents do NOT fire
 >   `OnAgentCreated`, so they no longer inherit the foreground orchestrator's
 >   companion observer (the root cause of "companion · cycle" during
@@ -493,7 +493,7 @@ orchestrator role (`agent.SetTools(append(agent.Tools(), delegate))`); it never
 
 ### Impact
 - Wastes turns/tokens on a tool that can never succeed (feeds R9).
-- Confuses the model (it has both `delegate` and `workflows:next`, plus the
+- Confuses the model (it has both `delegate` and `workflows_next`, plus the
   edit tools), increasing loop/stall behaviour.
 - Pollutes the rendered transcript with `run tool` errors.
 
@@ -700,7 +700,7 @@ preferred because it removes the shared-state class of bugs entirely.
    `go test -race`/`go run -race` and look for concurrent access on
    `Agent.history` / `contentBuf` / `bufferedToolCalls`.
 4. **R8 (tool leak)** — build an orchestrator agent via the adapter and assert
-   its tool schemas contain **no** `workflows:next` (today: it does).
+   its tool schemas contain **no** `workflows_next` (today: it does).
 5. **R9 (deadline)** — run the fire-sim objective with an instrumented clock
    and confirm the run aborts with `context.DeadlineExceeded` at 10 min and
    marks both agents `crashed`.
