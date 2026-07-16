@@ -483,3 +483,150 @@ func (s *SessionStore) scanSessionFile(path string) (count, tokens int, firstMsg
 func randomID(length int) string {
 	return internal.RandomString(length)
 }
+
+// ── Input History ──
+
+// InputEntry records a single user input in a session's input history file.
+type InputEntry struct {
+	Text      string `json:"t"`
+	Timestamp int64  `json:"ts"` // unix nano
+}
+
+// inputHistoryDir returns the directory for per-session input history files.
+func (s *SessionStore) inputHistoryDir() string {
+	return filepath.Join(s.dir, "sessions", "inputs")
+}
+
+// inputHistoryPath returns the path to a session's input history file.
+func (s *SessionStore) inputHistoryPath(sessionID string) string {
+	return filepath.Join(s.inputHistoryDir(), sessionID+".jsonl")
+}
+
+// RecordInput appends a user input to the current session's input history file.
+// Creates the file if it doesn't exist. Safe for concurrent append by multiple
+// processes because each process writes to a different session file.
+func (s *SessionStore) RecordInput(sessionID, text string) error {
+	if sessionID == "" || text == "" {
+		return nil
+	}
+	dir := s.inputHistoryDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create input history dir: %w", err)
+	}
+	entry := InputEntry{Text: text, Timestamp: time.Now().UnixNano()}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal input entry: %w", err)
+	}
+	path := s.inputHistoryPath(sessionID)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open input history file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("write input history: %w", err)
+	}
+	return nil
+}
+
+// LoadAllInputHistory scans all session input history files and returns
+// deduplicated input texts, sorted by recency (oldest-first for the editor),
+// capped at max entries. If excludeSession is non-empty, entries from that
+// session are omitted. If max <= 0, returns nil (disabled).
+func (s *SessionStore) LoadAllInputHistory(max int, excludeSession string) []string {
+	if max <= 0 {
+		return nil
+	}
+	entries := s.readAllInputEntries()
+	return s.buildHistory(entries, max, excludeSession)
+}
+
+// LoadSessionInputHistory loads input entries for a specific session.
+func (s *SessionStore) LoadSessionInputHistory(sessionName string) []InputEntry {
+	path := s.inputHistoryPath(sessionName)
+	return s.readInputFile(path)
+}
+
+// readAllInputEntries reads InputEntry from all files in the input history directory.
+func (s *SessionStore) readAllInputEntries() []InputEntry {
+	dir := s.inputHistoryDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return nil
+	}
+	var all []InputEntry
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		all = append(all, s.readInputFile(path)...)
+	}
+	return all
+}
+
+// readInputFile reads all InputEntry from a single JSONL file.
+func (s *SessionStore) readInputFile(path string) []InputEntry {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var entries []InputEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry InputEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry.Text != "" {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+// buildHistory deduplicates InputEntry by text (keep most recent), sorts by
+// timestamp descending, caps at max, then reverses to oldest-first for the
+// editor. If excludeSession is non-empty, entries whose source file matches
+// that session name are excluded.
+func (s *SessionStore) buildHistory(all []InputEntry, max int, excludeSession string) []string {
+	// Dedup by text, keep most recent timestamp
+	seen := make(map[string]int64) // text → latest timestamp
+	for _, entry := range all {
+		if ts, ok := seen[entry.Text]; ok {
+			if entry.Timestamp > ts {
+				seen[entry.Text] = entry.Timestamp
+			}
+		} else {
+			seen[entry.Text] = entry.Timestamp
+		}
+	}
+
+	// Build slice and sort by timestamp descending (most recent first)
+	deduped := make([]InputEntry, 0, len(seen))
+	for text, ts := range seen {
+		deduped = append(deduped, InputEntry{Text: text, Timestamp: ts})
+	}
+	sort.Slice(deduped, func(i, j int) bool {
+		return deduped[i].Timestamp > deduped[j].Timestamp
+	})
+
+	// Cap at max
+	if len(deduped) > max {
+		deduped = deduped[:max]
+	}
+
+	// Reverse to oldest-first for editor
+	result := make([]string, len(deduped))
+	for i, entry := range deduped {
+		result[len(result)-1-i] = entry.Text
+	}
+	return result
+}

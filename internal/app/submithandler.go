@@ -32,6 +32,9 @@ func (a *App) makeSubmitHandler(engine *tui.TUI, chat *tui.ChatViewport) func(st
 			return
 		}
 
+		// Record in per-session input history before routing
+		a.recordInputHistory(text)
+
 		if a.handlePendingMainInput(text) {
 			return
 		}
@@ -233,6 +236,22 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 	a.showSendingStatus(modelName)
 	if err := subs.agentMgr.SendUserInputWithImages(input, images); err != nil {
 		a.handleSendError(err)
+	}
+}
+
+// recordInputHistory records a user input in the current session's input
+// history file, enabling cross-session history reconstruction.
+func (a *App) recordInputHistory(text string) {
+	subs := a.subs
+	if subs.agentMgr == nil || subs.sessionStore == nil {
+		return
+	}
+	sessionID := subs.agentMgr.SessionID()
+	if sessionID == "" {
+		return
+	}
+	if err := subs.sessionStore.RecordInput(sessionID, text); err != nil {
+		subs.logger.Log(agentic.Error, "failed to record input history: %v", err)
 	}
 }
 
@@ -469,6 +488,17 @@ func (a *App) handleSlashCommand(input string) {
 	if err != nil {
 		output = fmt.Sprintf("Error: %v", err)
 	}
+
+	// After command execution (e.g. /session:restore), apply any pending
+	// input history to the editor.
+	if subs.agentMgr != nil {
+		if h := subs.agentMgr.GetAndClearPendingInputHistory(); len(h) > 0 {
+			if inp := subs.getInput(); inp != nil {
+				inp.SetHistory(h)
+			}
+		}
+	}
+
 	// Record command usage (even if error — user attempted it)
 	if subs.commandStats != nil {
 		subs.commandStats.Record(trimmed)

@@ -224,6 +224,10 @@ tui:
   tools:
     view: "summary"
     preview_lines: 10
+  # history controls per-session input history loading and search.
+  # max_loaded: max entries loaded from session files (0 = disabled, default 100).
+  history:
+    max_loaded: 100
 
 plugins:
   dirs:

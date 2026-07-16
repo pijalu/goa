@@ -113,6 +113,11 @@ type Editor struct {
 
 	// Undo coalescing: tracks the last action type for fish-style merging
 	lastAction string // "type-word", "kill", "yank", or ""
+
+	// History search mode (Ctrl+R)
+	searchMode     bool
+	searchSearcher *HistorySearcher
+	searchQuery    string
 }
 
 // NewEditor creates a multi-line editor.
@@ -319,6 +324,14 @@ func (e *Editor) clearLocked() {
 	e.preferredColSet = false
 	e.lastAction = ""
 	e.stableMaxLines = 0
+	e.clearSearchMode()
+}
+
+// clearSearchMode resets history search state.
+func (e *Editor) clearSearchMode() {
+	e.searchMode = false
+	e.searchSearcher = nil
+	e.searchQuery = ""
 }
 
 // HandleInput processes keyboard input with readline-like behavior. Runs on

@@ -59,6 +59,13 @@ func (c *SessionCommand) Run(ctx core.Context, args []string) error {
 	if len(args) > 0 {
 		sub = args[0]
 	}
+
+	// Determine history limit from config
+	maxHistory := 0
+	if ctx.Config != nil && ctx.Config.TUI.History.MaxLoaded != nil {
+		maxHistory = *ctx.Config.TUI.History.MaxLoaded
+	}
+
 	switch sub {
 	case "list":
 		return listSessions(ctx, ctx.SessionStore)
@@ -68,14 +75,14 @@ func (c *SessionCommand) Run(ctx core.Context, args []string) error {
 		return runNew(ctx)
 	case "restore":
 		if name, ok := namedArg(args); ok {
-			return restoreSession(ctx, ctx, ctx.SessionStore, ctx.AgentManager, name)
+			return restoreSession(ctx, ctx, ctx.SessionStore, ctx.AgentManager, name, maxHistory)
 		}
-		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, ctx.AgentManager, false)
+		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, ctx.AgentManager, false, maxHistory)
 	case "delete":
 		if name, ok := namedArg(args); ok {
 			return deleteSessionByName(ctx, ctx.SessionStore, name)
 		}
-		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, ctx.AgentManager, true)
+		return showSessionPicker(ctx, ctx, ctx, ctx.SessionStore, ctx.AgentManager, true, 0)
 	case "import":
 		return importSessionFromZip(ctx, ctx, ctx.SessionStore, restArgs(args))
 	default:
@@ -150,6 +157,7 @@ func restoreSession(
 	store core.SessionStoreAPI,
 	agentMgr *core.AgentManager,
 	name string,
+	maxHistory int,
 ) error {
 	if store == nil {
 		writeStr(w, "Session store not available.\n")
@@ -192,6 +200,13 @@ func restoreSession(
 			// new events are appended to the original session file.
 			store.StartSessionWithID(name)
 		}
+
+		// Load input history for the restored session: session entries as
+		// newest (last in editor's array), global entries fill older slots.
+		if ss, ok := store.(*core.SessionStore); ok && maxHistory > 0 {
+			combined := buildCombinedInputHistory(ss, name, maxHistory)
+			agentMgr.SetPendingInputHistory(combined)
+		}
 	}
 
 	es.ClearChat()
@@ -209,6 +224,42 @@ func restoreSession(
 	return nil
 }
 
+// buildCombinedInputHistory combines session-specific input history with
+// global history: session entries appear as newest (last in array), and
+// global entries fill remaining older slots, capped at max.
+func buildCombinedInputHistory(ss *core.SessionStore, sessionName string, max int) []string {
+	// Load this session's input history
+	sessionEntries := ss.LoadSessionInputHistory(sessionName)
+
+	// Convert session entries to strings in oldest-first order
+	sessionTexts := make([]string, 0, len(sessionEntries))
+	for _, e := range sessionEntries {
+		if e.Text != "" {
+			sessionTexts = append(sessionTexts, e.Text)
+		}
+	}
+
+	// If session has more than max, just use its own most recent entries
+	if len(sessionTexts) >= max {
+		return sessionTexts[len(sessionTexts)-max:]
+	}
+
+	// Load global history (excluding this session) for remaining slots
+	remaining := max - len(sessionTexts)
+	globalHistory := ss.LoadAllInputHistory(remaining*2, sessionName) // load extra for dedup
+
+	// globalHistory is oldest-first. We take the oldest 'remaining' entries
+	// (they're at the start of oldest-first), and append session entries.
+	if len(globalHistory) > remaining {
+		globalHistory = globalHistory[len(globalHistory)-remaining:]
+	}
+
+	result := make([]string, 0, max)
+	result = append(result, globalHistory...)
+	result = append(result, sessionTexts...)
+	return result
+}
+
 // showSessionPicker shows an interactive selector for sessions.
 // Depends on OutputWriter + EventSink + Selector + SessionStoreAPI.
 func showSessionPicker(
@@ -218,6 +269,7 @@ func showSessionPicker(
 	store core.SessionStoreAPI,
 	agentMgr *core.AgentManager,
 	deleteMode bool,
+	maxHistory int,
 ) error {
 	if store == nil {
 		writeStr(w, "Session store not available.\n")
@@ -246,10 +298,11 @@ func showSessionPicker(
 			es.Flash("Deleted session: " + selected)
 			return
 		}
-		restoreSession(w, es, store, agentMgr, selected)
+		restoreSession(w, es, store, agentMgr, selected, maxHistory)
 	})
 	return nil
 }
+
 
 // buildSessionItems converts session records into selector items.
 // Pure data transformation — no Context dependency.

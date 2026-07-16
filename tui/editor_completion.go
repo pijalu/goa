@@ -41,6 +41,9 @@ func (e *Editor) acceptCompletion() {
 	e.pushUndo()
 	e.replacePrefix(e.compState.Prefix, sel.Value)
 	e.clearCompletion()
+	if e.searchMode {
+		e.exitSearchMode()
+	}
 }
 
 // acceptAndRecomplete fills the selected completion into the buffer and

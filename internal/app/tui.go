@@ -32,7 +32,7 @@ func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	a.attachInputHandlers(inp, engine)
 	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, statusBar, goalBubble, bgPanel, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
-	a.loadInputHistory(inp)
+	a.startBackgroundHistoryLoad(inp, engine)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
 
 	if err := engine.Start(); err != nil {
@@ -379,19 +379,35 @@ func initSpinner(cfg *config.Config) {
 	}
 }
 
-// loadInputHistory loads the input history from the state store.
-func (a *App) loadInputHistory(inp *tui.Editor) {
+// startBackgroundHistoryLoad scans all session input history files in the
+// background and sets the editor's history when complete. The editor starts
+// empty; history appears when the scan completes (typically sub-millisecond).
+// This avoids blocking startup on filesystem I/O and works correctly when
+// multiple Goa instances share a project directory.
+func (a *App) startBackgroundHistoryLoad(inp *tui.Editor, engine *tui.TUI) {
 	subs := a.subs
-	if subs.agentMgr == nil {
+	if subs.sessionStore == nil {
 		return
 	}
-	history := subs.agentMgr.GetInputHistory()
-	if len(history) > 0 {
-		inp.SetHistory(history)
+	maxLoaded := 100
+	if subs.cfg != nil && subs.cfg.TUI.History.MaxLoaded != nil {
+		maxLoaded = *subs.cfg.TUI.History.MaxLoaded
 	}
+	if maxLoaded <= 0 {
+		return // disabled
+	}
+	go func() {
+		history := subs.sessionStore.LoadAllInputHistory(maxLoaded, "")
+		if len(history) == 0 {
+			return
+		}
+		engine.Apply(func() { inp.SetHistory(history) })
+	}()
 }
 
 // saveInputHistory saves the input history to the state store.
+// Deprecated: Input history is now persisted per-session via session input
+// files. This function is retained for backward compatibility during migration.
 func (a *App) saveInputHistory(inp *tui.Editor) {
 	subs := a.subs
 	if subs.agentMgr == nil {

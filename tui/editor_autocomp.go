@@ -4,9 +4,7 @@
 
 package tui
 
-import (
-	"strings"
-)
+import "strings"
 
 // ── Completion debounce ──
 
@@ -33,9 +31,13 @@ func (e *Editor) scheduleAutoComp() {
 
 // ── Autocomplete (during typing) ──
 
-// updateAutoComp queries the completer and shows suggestions.
-// Called after each character insert/delete.
+// updateAutoComp queries the completer or history searcher and shows
+// suggestions. Called after each character insert/delete.
 func (e *Editor) updateAutoComp() {
+	if e.searchMode {
+		e.updateSearchCompletion()
+		return
+	}
 	if e.completer == nil {
 		e.clearCompletion()
 		return

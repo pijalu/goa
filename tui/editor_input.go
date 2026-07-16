@@ -55,8 +55,6 @@ func (e *Editor) handleInputLocked(data string) []func() {
 	return e.pendingCallbacks
 }
 
-// handleControlKeys handles special control keys (Ctrl+D, Esc, PageUp/Down,
-// and jump-mode triggers). Returns true if consumed.
 func (e *Editor) handleControlKeys(data string) bool {
 	switch {
 	case matchesKey(data, KeyCtrlD):
@@ -67,6 +65,11 @@ func (e *Editor) handleControlKeys(data string) bool {
 		}
 		return false // Let handleEditKeys process it as delete-forward
 	case matchesKey(data, KeyEscape):
+		if e.searchMode {
+			e.exitSearchMode()
+			e.clearCompletion()
+			return true
+		}
 		if e.OnEscape != nil {
 			cb := e.OnEscape
 			e.queueCallback(func() { cb() })
@@ -117,6 +120,14 @@ func (e *Editor) handleEditKeys(data string) bool {
 	case e.kb.Matches(data, KbDeleteLineEnd):
 		e.killToEnd()
 		return true
+	case e.kb.Matches(data, KbHistorySearch):
+		e.toggleHistorySearch()
+		return true
+	case e.kb.Matches(data, KbHistorySearchPrev):
+		if e.searchMode {
+			e.cycleSearchMatch()
+			return true
+		}
 	}
 	return false
 }

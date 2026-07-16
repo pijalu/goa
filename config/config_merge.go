@@ -431,6 +431,7 @@ func (c *Config) mergeTUI(other *Config) {
 		c.TUI.Spinner = other.TUI.Spinner
 	}
 	mergeToolDisplay(&c.TUI.Tools, &other.TUI.Tools)
+	mergeHistoryConfig(&c.TUI.History, &other.TUI.History)
 }
 
 // mergeToolDisplay merges the tools display config. Non-zero PreviewLines and
@@ -445,6 +446,16 @@ func mergeToolDisplay(dst, src *ToolDisplayConfig) {
 	}
 	if src.ShowRead {
 		dst.ShowRead = true
+	}
+}
+
+// mergeTransparency merges transparency config fields.
+// mergeHistoryConfig merges the history config. Only overrides if src.MaxLoaded
+// is non-nil, so a more specific layer (project/local) can explicitly disable
+// history loading by setting max_loaded: 0.
+func mergeHistoryConfig(dst, src *HistoryConfig) {
+	if src.MaxLoaded != nil {
+		dst.MaxLoaded = src.MaxLoaded
 	}
 }
 

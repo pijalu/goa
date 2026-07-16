@@ -56,6 +56,8 @@ const (
 	KbCycleAutonomy        = "app.autonomy.cycle"
 	KbChangeModel          = "app.model.select"
 	KbToggleThinkingBlocks = "app.thinking.toggle"
+	KbHistorySearch        = "editor.historySearch"
+	KbHistorySearchPrev    = "editor.historySearchPrev"
 )
 
 // DefaultKeybindings returns the default keybinding definitions.
@@ -97,6 +99,8 @@ func DefaultKeybindings() map[string]KeybindingDef {
 		KbCycleAutonomy:        {[]string{"ctrl+shift+m"}, "Cycle autonomy level"},
 		KbChangeModel:          {[]string{KeyCtrlL}, "Open model selector"},
 		KbToggleThinkingBlocks: {[]string{KeyCtrlT}, "Toggle thinking blocks"},
+		KbHistorySearch:        {[]string{"ctrl+r"}, "Reverse history search"},
+		KbHistorySearchPrev:    {[]string{"ctrl+s"}, "Cycle previous history match"},
 	}
 }
 

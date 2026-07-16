@@ -127,7 +127,6 @@ func (a *App) Run() bool {
 	done := a.setupEventHandlers(engine, chat, inp)
 	engine.RunLoops() // launch the commandLoop (sole state owner) + renderLoop
 	<-done
-	a.saveInputHistory(inp)
 	if subs.dreamScheduler != nil {
 		subs.dreamScheduler.writeSchedulerState()
 		subs.dreamScheduler.Stop()

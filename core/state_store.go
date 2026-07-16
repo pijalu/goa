@@ -22,7 +22,6 @@ type SessionStateSnapshot struct {
 	AgentDrivenEnabled bool               `json:"agent_driven_enabled"` // agent-driven tools enabled
 	ThinkingLevel      string             `json:"thinking_level,omitempty"`
 	CompanionHistory   []json.RawMessage  `json:"companion_history,omitempty"` // companion agent message history
-	InputHistory       []string           `json:"input_history,omitempty"`     // user input history for readline
 	ApprovedPaths      []string           `json:"approved_paths,omitempty"`    // persisted tool-path approvals
 	DeniedPaths        []string           `json:"denied_paths,omitempty"`      // persisted tool-path denials
 }

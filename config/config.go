@@ -548,6 +548,15 @@ type TUIConfig struct {
 	ModeLine       ModeLineSegmentConfig `yaml:"modeline,omitempty"`
 	Spinner        string                `yaml:"spinner"`
 	Tools          ToolDisplayConfig     `yaml:"tools"`
+	History        HistoryConfig         `yaml:"history"`
+}
+
+// HistoryConfig controls per-session input history loading and search.
+type HistoryConfig struct {
+	// MaxLoaded is the maximum number of input history entries loaded from
+	// all session input history files on startup and session restore.
+	// nil or 0 disables history loading entirely. Default is 100.
+	MaxLoaded *int `yaml:"max_loaded"`
 }
 
 // ToolView is the default display mode for tool blocks in the chat.

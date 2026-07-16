@@ -27,8 +27,13 @@ func (e *Editor) addHistory(s string) {
 	if s == "" {
 		return
 	}
-	if len(e.history) > 0 && e.history[len(e.history)-1] == s {
-		return
+	// Global dedup: if the entry exists anywhere, remove the old occurrence
+	// so the new one is recorded at the most recent position.
+	for i, h := range e.history {
+		if h == s {
+			e.history = append(e.history[:i], e.history[i+1:]...)
+			break
+		}
 	}
 	e.history = append(e.history, s)
 	if len(e.history) > 100 {

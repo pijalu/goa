@@ -146,6 +146,10 @@ type AgentManager struct {
 	// eventFwd decouples the streaming goroutine's event emission from the
 	// bounded app event bus (see eventForwarder). nil when eventsOut is nil.
 	eventFwd *eventForwarder
+
+	// pendingInputHistory holds input history extracted from a restored
+	// session, waiting to be applied to the editor by the app layer.
+	pendingInputHistory []string
 }
 
 // NewAgentManager creates a new agent manager.
@@ -774,30 +778,43 @@ func (am *AgentManager) stateStoreRef() *StateStore {
 }
 
 // SetInputHistory persists the input history to the state store.
+// Deprecated: Input history is now per-session. This is a no-op.
 func (am *AgentManager) SetInputHistory(history []string) error {
-	ss := am.stateStoreRef()
-	if ss == nil {
-		return nil
-	}
-	snap, err := ss.Load()
-	if err != nil {
-		return err
-	}
-	snap.InputHistory = history
-	return ss.Save(snap)
+	return nil
 }
 
 // GetInputHistory loads the input history from the state store.
+// Deprecated: Use per-session input history files instead.
 func (am *AgentManager) GetInputHistory() []string {
-	ss := am.stateStoreRef()
-	if ss == nil {
-		return nil
+	return nil
+}
+
+// SessionID returns the current session ID, or empty if no session is active.
+func (am *AgentManager) SessionID() string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.sessionStore == nil {
+		return ""
 	}
-	snap, err := ss.Load()
-	if err != nil {
-		return nil
-	}
-	return snap.InputHistory
+	return am.sessionStore.SessionID()
+}
+
+// SetPendingInputHistory stores input history for the editor after session
+// restore. The app layer retrieves it via GetAndClearPendingInputHistory.
+func (am *AgentManager) SetPendingInputHistory(h []string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.pendingInputHistory = h
+}
+
+// GetAndClearPendingInputHistory returns any pending input history and clears
+// it. Used by the app layer after command execution to populate the editor.
+func (am *AgentManager) GetAndClearPendingInputHistory() []string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	h := am.pendingInputHistory
+	am.pendingInputHistory = nil
+	return h
 }
 
 // SetAgentDrivenEnabled sets whether agent-driven tools are enabled.
