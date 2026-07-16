@@ -178,36 +178,8 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 
 	// Micro compaction uses its own internal threshold checks.
 	if strategy != CompressionMicro {
-		threshold := cfg.ThresholdPercent
-		if threshold == 0 {
-			threshold = 90
-		}
-		a.mu.Lock()
-		stats := a.computeContextStatsForMax(maxTokens)
-		// Cache-aware gating for proactive in-place mutation. Strategies like
-		// tool_elision rewrite old messages in place, which churns the provider's
-		// hot prefix cache into a full re-process on the next turn (the same cost
-		// the micro-compaction gate avoids). Defer the proactive mutation while
-		// the cache is presumed hot (recent turn), unless usage is at the hard
-		// ceiling where skipping risks an overflow. The overflow-recovery path
-		// (handleStreamFailure → compressHistoryWith) does NOT go through here,
-		// so emergency compression is never gated.
-		const hardCeilingPercent = 95
-		if stats.UsagePercent < hardCeilingPercent && !a.cacheAssumedColdForProactive() {
-			a.mu.Unlock()
-			if a.cfg.Logger != nil {
-				a.cfg.Logger.Log(Debug, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", stats.UsagePercent)
-			}
+		if !a.shouldProactivelyCompress(cfg.ThresholdPercent, maxTokens) {
 			return nil
-		}
-		a.mu.Unlock()
-		if stats.UsagePercent < threshold {
-			return nil
-		}
-
-		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Info, "Context compression triggered: %d%% usage (%d / %d tokens)",
-				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
 		}
 	}
 
@@ -226,6 +198,42 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 	})
 
 	return nil
+}
+
+// shouldProactivelyCompress reports whether threshold-triggered compression
+// should run this turn. It applies the usage threshold AND the cache-aware
+// gate: proactive in-place mutation (tool_elision et al.) rewrites old
+// messages, churning the provider's hot prefix cache into a full re-process
+// on the next turn, so it defers while the cache is presumed hot (recent
+// turn) unless usage is at the hard ceiling where skipping risks overflow.
+// The overflow-recovery path (handleStreamFailure → compressHistoryWith) does
+// NOT go through here, so emergency compression is never gated.
+func (a *Agent) shouldProactivelyCompress(thresholdPercent, maxTokens int) bool {
+	threshold := thresholdPercent
+	if threshold == 0 {
+		threshold = 90
+	}
+	const hardCeilingPercent = 95
+
+	a.mu.Lock()
+	stats := a.computeContextStatsForMax(maxTokens)
+	deferCompression := stats.UsagePercent < hardCeilingPercent && !a.cacheAssumedColdForProactive()
+	a.mu.Unlock()
+
+	if deferCompression {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Debug, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", stats.UsagePercent)
+		}
+		return false
+	}
+	if stats.UsagePercent < threshold {
+		return false
+	}
+	if a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "Context compression triggered: %d%% usage (%d / %d tokens)",
+			stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
+	}
+	return true
 }
 
 // compressHistory applies the configured compression strategy.

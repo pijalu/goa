@@ -237,37 +237,46 @@ func (t *AgentTool) runForeground(role string, agent *agentic.Agent, agentType, 
 func makeSubAgentStreamObserver(orch interface {
 	Emit(from, to, content string)
 }, label string) func(ev agentic.OutputEvent) {
-	var thinking, content strings.Builder
-	return func(ev agentic.OutputEvent) {
-		switch {
-		case ev.Type == agentic.EventContent && ev.Role == agentic.Assistant && ev.State == agentic.StateThinking:
-			if ev.Text == "" {
-				return
-			}
-			if ev.IsDelta {
-				thinking.WriteString(ev.Text)
-			} else {
-				thinking.Reset()
-				thinking.WriteString(ev.Text)
-			}
-			orch.Emit(label, "user", "[thinking] "+thinking.String())
-		case ev.Type == agentic.EventContent && ev.Role == agentic.Assistant:
-			if ev.Text == "" {
-				return
-			}
-			if ev.IsDelta {
-				content.WriteString(ev.Text)
-			} else {
-				content.Reset()
-				content.WriteString(ev.Text)
-			}
-			orch.Emit(label, "user", content.String())
-		case ev.Type == agentic.EventToolCall && !ev.IsDelta:
-			orch.Emit(label, "user", fmt.Sprintf("[tool] %s %s", ev.ToolName, truncateForStream(ev.ToolInput)))
-		case ev.Type == agentic.EventToolResult:
-			orch.Emit(label, "user", "[result] "+truncateForStream(ev.Text))
-		}
+	s := &subAgentStreamer{orch: orch, label: label}
+	return s.onEvent
+}
+
+// subAgentStreamer accumulates one sub-agent's thinking/content and forwards
+// labeled updates to the orchestrator stream. Split from the closure to keep
+// each method under the complexity budget.
+type subAgentStreamer struct {
+	orch     interface{ Emit(from, to, content string) }
+	label    string
+	thinking strings.Builder
+	content  strings.Builder
+}
+
+func (s *subAgentStreamer) onEvent(ev agentic.OutputEvent) {
+	switch {
+	case ev.Type == agentic.EventContent && ev.Role == agentic.Assistant && ev.State == agentic.StateThinking:
+		s.onStreamText(&s.thinking, "[thinking] ", ev)
+	case ev.Type == agentic.EventContent && ev.Role == agentic.Assistant:
+		s.onStreamText(&s.content, "", ev)
+	case ev.Type == agentic.EventToolCall && !ev.IsDelta:
+		s.orch.Emit(s.label, "user", fmt.Sprintf("[tool] %s %s", ev.ToolName, truncateForStream(ev.ToolInput)))
+	case ev.Type == agentic.EventToolResult:
+		s.orch.Emit(s.label, "user", "[result] "+truncateForStream(ev.Text))
 	}
+}
+
+// onStreamText accumulates a delta (or replaces on a full snapshot) and emits
+// the labeled block. Empty text is ignored.
+func (s *subAgentStreamer) onStreamText(buf *strings.Builder, prefix string, ev agentic.OutputEvent) {
+	if ev.Text == "" {
+		return
+	}
+	if ev.IsDelta {
+		buf.WriteString(ev.Text)
+	} else {
+		buf.Reset()
+		buf.WriteString(ev.Text)
+	}
+	s.orch.Emit(s.label, "user", prefix+buf.String())
 }
 
 // truncateForStream bounds a forwarded tool input/result line so a single huge
