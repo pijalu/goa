@@ -224,9 +224,13 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 	})
 	defer watchdog.Stop()
 
-	for event := range stream.Seq() {
+	for event := range stream.SeqCtx(ctx) {
 		// An event arrived — the provider is alive. Push the stall deadline out.
 		watchdog.Reset(stallTimeout)
+
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 
 		done, toolCallsEncountered, err := a.handleStreamEvent(ctx, stream, event)
 		if done {

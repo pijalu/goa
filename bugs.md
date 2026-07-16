@@ -37,6 +37,55 @@ If new items are added, restart the process.
 
 # Open Bugs
 
+## Spontaneous generation cancellation: stream fails with `context.Canceled` despite no user action
+
+The agent repeatedly stops mid-generation with `Error: context canceled` / `Generation stopped by user.` even though the user did not press Escape/Ctrl+C. This happened in a single session 3+ times consecutively, making the agent unusable.
+
+### Evidence
+- Export `goa-export-20260716-124216.zip`: Agent streaming thinking deltas for ~64s, then `✓` thinking-end marker, then immediately `[WARN] stream failure: context canceled` / `[WARN] stream error not retryable; surfacing immediately: context canceled`.
+- Export `goa-export-20260716-124357.zip`: Same pattern repeated — agent responds then gets canceled again at 12:43:17, 12:43:22, 12:43:45.
+- User states: "I didn't stop anything - the agent stopped by itself."
+- No loop-detector warnings in logs.
+- No stall-watchdog firing (events were arriving).
+
+### Root Cause Analysis
+
+The cancellation trace:
+1. `am.cancel()` is called (the run context's cancel function)
+2. `CloseStreamOnCancel` goroutine detects `ctx.Done()` and calls `stream.CloseWithError(ctx.Err())` → `context.Canceled`
+3. The HTTP request's context is the same run context, so `resp.Body.Read()` returns `context.Canceled`
+4. `IdleTimeoutReader.Read()` → `(n, context.Canceled)`
+5. SSE parser `bufio.Scanner` returns `scanner.Err()` = `context.Canceled`
+6. `parseOpenAIStream` → `stream.CloseWithError(fmt.Errorf("SSE parse error: %w", err))`
+7. `consumeStream` loop exits, `finishStreamTurn` → `stream.Err()` returns the wrapped error
+8. `handleStreamFailure` logs "not retryable" and surfaces immediately
+9. `executeRunner` sees `errors.Is(err, context.Canceled)` → sets `Metadata["cancelled"] = "true"`
+10. Stats handler displays "Generation stopped by user."
+
+**Who calls `am.cancel()`?**
+- `tui.go:159` `handleEscape()` → `subs.agentMgr.Interrupt()` — Escape key handler
+- `core/agentmanager.go:1125,1146,1151` — loop detector warnings (none fired)
+- `headless.go:274,713,827` — headless mode only
+- `core/context.go:475` — `InterruptAgent()` for session restore
+
+The ONLY path in TUI mode is `handleEscape()` / `editor.OnEscape` callback.
+
+### Hypothesis: Spurious Escape from split CSI sequences
+
+The `stdin_buffer.go` `handleEscapeByte()` treats a standalone `0x1b` byte as an Escape key press. If the terminal sends multiple-byte sequences (CSI, terminal responses like CPR) that arrive split across `read()` calls, the first byte `0x1b` triggers a spurious Escape before the rest arrives.
+
+This is a classic terminal input race: the TUI sends escape sequences for rendering (cursor positioning, colors), and terminal responses (cursor position reports) begin with `0x1b`. TCP segmentation can split these across reads.
+
+### Fix applied
+
+Two changes:
+
+1. **Escape debounce in `ProcessTerminal.readLoop()`** (`tui/terminal.go`): when a bare `0x1b` byte arrives from stdin, the read loop now pauses briefly (`escapeDebounceTimeout = 20ms`) and attempts a follow-up read with a deadline (`os.Stdin.SetReadDeadline`). If completing bytes arrive within the window, the full sequence is forwarded. If the timeout fires, the escape is dispatched as a standalone Escape key press. A fallback `time.AfterFunc` timer ensures the Escape is never lost even if `pollEscapeDebounce` doesn't run.
+
+2. **Restored `ctx.Err()` check in `consumeStream`** (`internal/agentic/agent_streaming.go`): reads from `stream.SeqCtx(ctx)` (context-aware iterator) instead of `stream.Seq()`, and checks `ctx.Err()` on each iteration. This ensures context cancellation is detected promptly even when the stall watchdog or HTTP transport don't surface it.
+
+**Tests**: All existing TUI, agentic, core, multiagent, and app tests pass with `-race`. No new complexity violations.
+
 ## Scroll/history issue with tool call
 The scrollback/history is not updated correctly when using the edit tool with tool calls and will show artifact from the input line.
 

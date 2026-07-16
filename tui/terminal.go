@@ -49,6 +49,14 @@ type ProcessTerminal struct {
 	protoPending atomic.Bool
 	protoBuf     string // buffer for split protocol responses
 	protoTimer   *time.Timer
+
+	// escapeDebounce handles the classic Escape-vs-CSI-start ambiguity.
+	// When a single 0x1b byte arrives, we wait briefly for more bytes
+	// before treating it as an Escape key press. If completing bytes
+	// arrive in time, the sequence is merged and forwarded as one.
+	escapePending atomic.Bool
+	escapeTimer   *time.Timer
+	escapeMu      sync.Mutex
 }
 
 // NewProcessTerminal creates a ProcessTerminal.
@@ -118,6 +126,11 @@ func (t *ProcessTerminal) enableModifyOtherKeys() {
 	os.Stdout.WriteString("\x1b[>4;2m") // Enable modifyOtherKeys mode 2
 }
 
+const escapeDebounceTimeout = 20 * time.Millisecond
+
+// readLoop reads from stdin and dispatches input events.
+// It handles the Escape-vs-CSI-start ambiguity: a bare 0x1b byte
+// is debounced for escapeDebounceTimeout before emitting as Escape.
 func (t *ProcessTerminal) readLoop() {
 	buf := make([]byte, 256)
 	for {
@@ -125,6 +138,12 @@ func (t *ProcessTerminal) readLoop() {
 		case <-t.done:
 			return
 		default:
+		}
+
+		// If an escape debounce is pending, check for more bytes with a timeout.
+		if t.escapePending.Load() {
+			t.pollEscapeDebounce()
+			continue
 		}
 
 		n, err := os.Stdin.Read(buf)
@@ -137,12 +156,88 @@ func (t *ProcessTerminal) readLoop() {
 
 		data := string(buf[:n])
 
+		// Bare 0x1b byte: could be Escape key or start of a CSI/SS3 sequence
+		// that arrived in a separate TCP segment. Debounce before dispatching.
+		if n == 1 && buf[0] == 0x1b && !t.protoPending.Load() {
+			t.startEscapeDebounce()
+			continue
+		}
+
 		if t.protoPending.Load() {
 			t.handleProtocolBytes(data)
 		} else {
 			t.forwardToInput(data)
 		}
 	}
+}
+
+// pollEscapeDebounce waits for more bytes after a bare 0x1b with a
+// brief timeout. If bytes arrive, they are merged with the pending
+// escape and forwarded as a complete sequence. If the timeout fires,
+// the escape is forwarded as a standalone Escape key press.
+func (t *ProcessTerminal) pollEscapeDebounce() {
+	t.escapeMu.Lock()
+	if !t.escapePending.Load() {
+		t.escapeMu.Unlock()
+		return
+	}
+	t.escapeMu.Unlock()
+
+	// Set a brief read deadline so we don't block forever.
+	_ = setStdinReadDeadline(time.Now().Add(escapeDebounceTimeout))
+
+	buf := make([]byte, 256)
+	n, err := os.Stdin.Read(buf)
+
+	// Cancel the pending debounce regardless of outcome.
+	t.escapeMu.Lock()
+	t.escapePending.Store(false)
+	if t.escapeTimer != nil {
+		t.escapeTimer.Stop()
+		t.escapeTimer = nil
+	}
+	t.escapeMu.Unlock()
+
+	// Clear the read deadline so subsequent reads block normally.
+	_ = setStdinReadDeadline(time.Time{})
+
+	if err != nil || n == 0 {
+		// No more data arrived — this is a real Escape key press.
+		t.forwardToInput("\x1b")
+		return
+	}
+
+	// More data arrived: merge with the pending escape and forward.
+	t.forwardToInput("\x1b" + string(buf[:n]))
+}
+
+// startEscapeDebounce starts (or resets) the escape debounce timer.
+func (t *ProcessTerminal) startEscapeDebounce() {
+	t.escapeMu.Lock()
+	defer t.escapeMu.Unlock()
+
+	t.escapePending.Store(true)
+	if t.escapeTimer != nil {
+		t.escapeTimer.Stop()
+	}
+	// Fallback timer: if pollEscapeDebounce doesn't run (e.g., readLoop is
+	// stuck in a stalled read), this timer ensures we don't lose the Escape.
+	t.escapeTimer = time.AfterFunc(escapeDebounceTimeout*2, func() {
+		if !t.escapePending.Load() {
+			return
+		}
+		t.escapeMu.Lock()
+		t.escapePending.Store(false)
+		t.escapeTimer = nil
+		t.escapeMu.Unlock()
+		t.forwardToInput("\x1b")
+	})
+}
+
+// setStdinReadDeadline sets the read deadline on stdin (Unix only).
+// A zero time.Time clears the deadline.
+func setStdinReadDeadline(t time.Time) error {
+	return os.Stdin.SetReadDeadline(t)
 }
 
 // handleProtocolBytes processes raw bytes during protocol negotiation.
@@ -320,6 +415,15 @@ func (t *ProcessTerminal) Stop() {
 	}
 	t.protoPending.Store(false)
 	t.protoBuf = ""
+
+	// Cancel any pending escape debounce.
+	t.escapeMu.Lock()
+	t.escapePending.Store(false)
+	if t.escapeTimer != nil {
+		t.escapeTimer.Stop()
+		t.escapeTimer = nil
+	}
+	t.escapeMu.Unlock()
 
 	// Disable bracketed paste first; this stops the terminal from wrapping
 	// pasted content in 200~...201~ sequences.
