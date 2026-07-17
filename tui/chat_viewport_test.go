@@ -294,9 +294,9 @@ func TestSteeringPending_Render_MultiLine(t *testing.T) {
 			t.Errorf("rendered line %d contains an embedded newline: %q", i, l)
 		}
 	}
-	// Box structure: top border + 4 content rows (blank line preserved) + bottom.
-	if got, want := len(lines), 6; got != want {
-		t.Errorf("expected %d rows (border + 4 content + border), got %d: %q", want, got, lines)
+	// Box structure: top border + 4 content rows (blank line preserved) + footer + bottom.
+	if got, want := len(lines), 7; got != want {
+		t.Errorf("expected %d rows (border + 4 content + footer + border), got %d: %q", want, got, lines)
 	}
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{"✎ first line", "second line", "third line"} {

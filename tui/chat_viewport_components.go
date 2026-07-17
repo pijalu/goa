@@ -712,10 +712,34 @@ func (m *steeringPending) Render(width int) []string {
 	top := border + "┌" + strings.Repeat("─", width-2) + "┐" + reset
 	bot := border + "└" + strings.Repeat("─", width-2) + "┘" + reset
 	lines = append(lines, padToWidth(top, width))
+
+	// Count total wrapped lines for the footer stat.
+	totalWrapped := 0
 	for _, raw := range wrapped {
+		totalWrapped += countLines(raw, innerWidth)
+	}
+
+	// Show preview (first 5 wrapped lines) + line count.
+	previewLines := wrapped
+	hidden := 0
+	if len(wrapped) > 5 {
+		previewLines = wrapped[:5]
+		hidden = totalWrapped - 5
+	}
+
+	for _, raw := range previewLines {
 		body := " " + padToWidth(raw, innerWidth) + " "
 		lines = append(lines, padToWidth(bg+fg+body+reset, width))
 	}
+
+	// Footer with line count
+	footerText := fmt.Sprintf("  %d line(s) to send", totalWrapped)
+	if hidden > 0 {
+		footerText = fmt.Sprintf("  %d line(s) to send (%d hidden)", totalWrapped, hidden)
+	}
+	footerBody := " " + padToWidth(footerText, innerWidth) + " "
+	lines = append(lines, padToWidth(bg+ansi.Fg(TheTheme.ColorHex("system_msg"))+footerBody+reset, width))
+
 	lines = append(lines, padToWidth(bot, width))
 	return lines
 }
@@ -731,4 +755,24 @@ func (cv *ChatViewport) LastToolComponent() *ToolExecutionComponent {
 		return nil
 	}
 	return e.View.(*ToolExecutionComponent)
+}
+
+// countLines returns the number of terminal lines a string occupies when
+// wrapped at the given width, counting embedded newlines as line breaks.
+func countLines(s string, width int) int {
+	if width <= 0 {
+		return 0
+	}
+	lines := 0
+	for _, part := range strings.Split(s, "\n") {
+		l := ansi.Width(part) / width
+		if ansi.Width(part)%width > 0 || ansi.Width(part) == 0 {
+			l++
+		}
+		lines += l
+	}
+	if lines == 0 {
+		return 1
+	}
+	return lines
 }

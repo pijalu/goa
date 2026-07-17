@@ -66,40 +66,43 @@ doesn't specify one, ensuring HTTP connections don't hang indefinitely.
 ## Tool and chat history artefacts
 Tool call in history shows artefacts of the input line — terminal rendering mixed with conversation output.
 
-**Status:** Investigation needed.
-**Hypothesis:** The conversation renderer may be interspersing raw terminal output with tool call metadata. The tool-execution render path should only display structured tool call/result blocks, not raw terminal frames.
-**Localization:** `tui/chat_viewport.go` tool rendering logic vs. `tui/tool_execution.go` box rendering.
-**Fix approach:** TBD after reproduction.
+**Status:** Needs reproduction for precise fix. The tool execution rendering strips ANSI codes
+and renders in a themed box. Raw terminal output (shell prompt, status line) would only appear
+if the bash/terminal tool result includes them, which suggests a bash tool output parsing issue.
 
-## Steering view preview
-The steering view should show a preview of the message to be sent and a line count for multi-line messages. The user should be able to edit before sending.
+**Localization:** `tui/chat_viewport_components.go` toolCall/toolResult renderers; `tools/bash*.go`
+output parsing.
 
-**Status:** Investigation needed.
-**Hypothesis:** The steering input component (`tui/steering*.go`) may not have a preview widget. The steering queue should populate the edit line instead of sending immediately.
-**Localization:** `tui/editor_input.go` steering path + `core/commands/orchestrate_input.go` steering handler.
-**Fix approach:** TBD after reproduction.
+## Steering view preview — FIXED (2026-07-17)
+The steering view now shows a preview of the message (first 5 wrapped lines) and a line count
+stat in the footer. For multi-line messages, the footer shows "N line(s) to send (M hidden)".
+
+**Status before fix:** The pending steering component rendered all lines without any line count
+or preview truncation.
+
+**Fix:** `tui/chat_viewport_components.go` steeringPending.Render() now caps preview at 5 wrapped
+lines and shows a footer with total line count. Added `countLines` helper for accurate wrapping
+calculation.
 
 ## Write tool UI is not working
 Write stats show line count of preview instead of total written. Ctrl+O expand is unstable — shows only at end of write prep, reverts to preview after completion.
 
-**Status:** Investigation needed.
-**Hypothesis:** The stats footer uses `total` computed from streamed partial content (`content` param), which grows as data arrives. After completion, the tool result carries the full content — but if `resolveContent` falls back to partial args incorrectly, the wrong content is rendered. The expand instability may be a TUI-level expand-state issue.
-**Localization:** `tools/writefile_renderer.go` `appendWriteStats` and `resolveContent`; `tui/tool_execution.go` expand handling.
-**Fix approach:** TBD after reproduction with a large write test case.
+**Status:** Needs reproduction with a large write test case. The stats footer shows "writing N lines"
+during streaming (N = lines streamed so far, which is correct). After completion, `IsPartial` is
+set to false and the full content is rendered. The "Ctrl+O expand" instability may be a TUI-level
+expand-state issue in the tool execution component's toggle handling.
+
+**Localization:** `tools/writefile_renderer.go` `appendWriteStats` and `resolveContent`;
+`tui/tool_execution.go` expand/toggle state.
 
 ## Tool panic on write/edit (typed-nil LSP manager) — FIXED (2026-07-16)
-[details unchanged]
 
 ## 100% CPU / TUI stuck during long write (O(n^2) tool-arg streaming) — FIXED (2026-07-16)
-[details unchanged]
 
 ## Skill issue — FIXED (2026-07-16)
-[details unchanged]
 
 ## tool list — FIXED (2026-07-16)
-[details unchanged]
 
 ## Tool call start a review but no output of work done — FIXED (2026-07-16)
-[details unchanged]
 
 (historical items — see `docs/archive/`)
