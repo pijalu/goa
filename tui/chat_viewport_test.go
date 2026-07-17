@@ -7,6 +7,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // viewAt returns the View of the i-th entry via the Model's snapshot ordering.
@@ -324,6 +326,20 @@ func TestSteeringPending_Render_MultiLine(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected %q in render, got:\n%s", want, joined)
 		}
+	}
+}
+
+// TestSteeringPending_Render_ShowsEditAffordance is the P2 regression test:
+// the pending-steering bubble must advertise the Alt+E edit hotkey so users
+// can discover that a queued steering message is editable.
+func TestSteeringPending_Render_ShowsEditAffordance(t *testing.T) {
+	m := newSteeringPending("please also fix the tests")
+	out := ansi.Strip(strings.Join(m.Render(80), "\n"))
+	if !strings.Contains(out, "Alt+E") {
+		t.Errorf("steering bubble should advertise the Alt+E edit affordance, got:\n%s", out)
+	}
+	if !strings.Contains(out, "to send") {
+		t.Errorf("bubble should keep the line-count footer, got:\n%s", out)
 	}
 }
 

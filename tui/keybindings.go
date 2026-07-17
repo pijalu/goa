@@ -58,6 +58,9 @@ const (
 	KbToggleThinkingBlocks = "app.thinking.toggle"
 	KbHistorySearch        = "editor.historySearch"
 	KbHistorySearchPrev    = "editor.historySearchPrev"
+	// KbEditSteering recalls a pending steering message into the input line for
+	// editing (the steering queue is flushed until resubmitted).
+	KbEditSteering = "app.steering.edit"
 )
 
 // DefaultKeybindings returns the default keybinding definitions.
@@ -101,6 +104,7 @@ func DefaultKeybindings() map[string]KeybindingDef {
 		KbToggleThinkingBlocks: {[]string{KeyCtrlT}, "Toggle thinking blocks"},
 		KbHistorySearch:        {[]string{"ctrl+r"}, "Reverse history search"},
 		KbHistorySearchPrev:    {[]string{"ctrl+s"}, "Cycle previous history match"},
+		KbEditSteering:         {[]string{"alt+e"}, "Edit pending steering message"},
 	}
 }
 

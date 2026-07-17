@@ -90,6 +90,7 @@ func hotkeysGroups() []hotkeysGroup {
 				{name: tui.KbChangeModel, desc: "Open the model selector"},
 				{name: tui.KbToggleThinkingBlocks, desc: "Toggle thinking block visibility"},
 				{name: tui.KbToggleExpand, desc: "Toggle tool/output expand"},
+				{name: tui.KbEditSteering, desc: "Edit pending steering message"},
 				{name: tui.KbDeleteLastMsg, desc: "Delete the last chat message"},
 				{key: "ctrl+c", desc: "Cancel input request / quit when empty"},
 				{key: "esc", desc: "Cancel completion / selection"},

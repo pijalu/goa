@@ -749,10 +749,11 @@ func (m *steeringPending) Render(width int) []string {
 		lines = append(lines, padToWidth(bg+fg+body+reset, width))
 	}
 
-	// Footer with line count
-	footerText := fmt.Sprintf("  %d line(s) to send", totalWrapped)
+	// Footer with line count + the edit affordance (Alt+E recalls the pending
+	// message into the input line for editing).
+	footerText := fmt.Sprintf("  %d line(s) to send (Alt+E to edit)", totalWrapped)
 	if hidden > 0 {
-		footerText = fmt.Sprintf("  %d line(s) to send (%d hidden)", totalWrapped, hidden)
+		footerText = fmt.Sprintf("  %d line(s) to send (%d hidden, Alt+E to edit)", totalWrapped, hidden)
 	}
 	footerBody := " " + padToWidth(footerText, innerWidth) + " "
 	lines = append(lines, padToWidth(bg+ansi.Fg(TheTheme.ColorHex("system_msg"))+footerBody+reset, width))
