@@ -91,33 +91,35 @@ func (r *WriteFileRenderer) resolvePath(output string, ctx tuirender.RenderConte
 func (r *WriteFileRenderer) renderContent(content, path string, ctx tuirender.RenderContext) string {
 	lang := getLanguageFromPath(path)
 
-	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
-
-	// Expanded view needs every line; build the full slice once.
+	// Expanded view needs every line; build the full slice once. The full
+	// content is on screen, so no stats footer is needed.
 	if ctx.Expanded {
 		allLines := trimTrailingEmptyLines(strings.Split(content, "\n"))
-		return r.highlightLines(allLines, lang, 0)
+		return r.highlightLines(allLines, lang)
 	}
+
+	maxLines := previewLinesFromCtx(ctx, r.PreviewLines())
 
 	// Collapsed/preview path: split only the head needed for display instead
 	// of materializing the whole (possibly very large) content per call —
 	// important while streaming, when this runs on every args delta.
 	displayLines := trimTrailingEmptyLines(splitFirstLines(content, maxLines))
-	// remaining counts full lines beyond the preview window. Count newlines
-	// (a single linear scan, no []string materialization) and drop trailing
-	// empty lines to match the trimmed total the expanded path would report.
+	// Count total lines in a single linear scan (no []string materialization)
+	// and drop trailing empty lines to match the trimmed expanded total.
 	total := strings.Count(content, "\n") + 1
 	total -= countTrailingEmptyLines(content)
-	remaining := 0
-	if total > maxLines {
-		remaining = total - maxLines
+	hidden := 0
+	if total > len(displayLines) {
+		hidden = total - len(displayLines)
 	}
-	return r.highlightLines(displayLines, lang, remaining)
+	body := r.highlightLines(displayLines, lang)
+	return appendWriteStats(body, total, hidden, ctx.IsPartial, r.KeyExpand)
 }
 
-// highlightLines renders displayLines with optional syntax highlighting and
-// appends the "... N more lines" hint when remaining > 0.
-func (r *WriteFileRenderer) highlightLines(displayLines []string, lang string, remaining int) string {
+// highlightLines renders displayLines with optional syntax highlighting.
+// The collapsed-view stats footer is appended separately by renderContent
+// (appendWriteStats), so this only produces the content lines themselves.
+func (r *WriteFileRenderer) highlightLines(displayLines []string, lang string) string {
 	var b strings.Builder
 	for _, line := range displayLines {
 		if b.Len() > 0 {
@@ -128,12 +130,6 @@ func (r *WriteFileRenderer) highlightLines(displayLines []string, lang string, r
 		} else {
 			b.WriteString(HighlightLine(line, lang))
 		}
-	}
-	if remaining > 0 {
-		b.WriteString("\n")
-		b.WriteString(rMuted(fmt.Sprintf("... (%d more lines, ", remaining)))
-		b.WriteString(rToolOutput(r.KeyExpand))
-		b.WriteString(rMuted(" to expand)"))
 	}
 	return b.String()
 }
@@ -176,6 +172,43 @@ func splitFirstLines(s string, n int) []string {
 
 func (r *WriteFileRenderer) PreviewLines() int             { return writeFilePreviewLines }
 func (r *WriteFileRenderer) HideResultWhenCollapsed() bool { return false }
+
+// appendWriteStats appends the collapsed write footer to body: the total
+// number of lines being written, how many are hidden by the preview window
+// (when any), and the Ctrl+O affordance to expand the full content. While
+// the write is still streaming (partial) the stat is phrased as an ongoing
+// "writing N lines"; once the result is in it reports the final "N lines".
+// This footer is what carries the write-preparation stats next to the
+// widget's own elapsed timer, which lives on the duration line below the
+// body. The expanded view shows the full content and omits the footer.
+func appendWriteStats(body string, total, hidden int, partial bool, key string) string {
+	var b strings.Builder
+	b.WriteString(body)
+	if body != "" {
+		b.WriteByte('\n')
+	}
+	stat := fmt.Sprintf("%d %s", total, pluralize("line", total))
+	if partial {
+		stat = "writing " + stat
+	}
+	b.WriteString(rMuted("… " + stat))
+	if hidden > 0 {
+		b.WriteString(rMuted(fmt.Sprintf(" (%d more lines, ", hidden)))
+	} else {
+		b.WriteString(rMuted(" ("))
+	}
+	b.WriteString(rToolOutput(key))
+	b.WriteString(rMuted(" to expand)"))
+	return b.String()
+}
+
+// pluralize returns the singular or plural form of word based on n.
+func pluralize(word string, n int) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
 
 // extractWriteContent pulls the fenced code block out of write output.
 func extractWriteContent(output string) string {

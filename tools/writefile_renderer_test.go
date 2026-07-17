@@ -118,3 +118,77 @@ func TestWriteFileRenderer_RenderResult_StreamingShowsPartialContent(t *testing.
 		t.Errorf("expected streamed content, got %q", stripped)
 	}
 }
+
+// TestWriteFileRenderer_WriteStatsDuringPreparation pins the collapsed
+// write-preparation footer: it must always show the line-count stat and the
+// Ctrl+O expand affordance — even when the whole content fits inside the
+// preview window (previously such writes rendered bare content with no stats
+// at all, leaving only the elapsed timer). While streaming it reads
+// "writing N lines"; after completion it reports the final "N lines".
+func TestWriteFileRenderer_WriteStatsDuringPreparation(t *testing.T) {
+	r := NewWriteFileRenderer()
+	cases := []struct {
+		name    string
+		render  func() string
+		want    []string // substrings that must appear
+		notWant []string // substrings that must not appear
+	}{
+		{
+			name: "streaming content fits preview",
+			render: func() string {
+				args := map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}"}
+				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10})
+			},
+			want: []string{"writing 3 lines", "Ctrl+O"},
+		},
+		{
+			name: "streaming content exceeds preview",
+			render: func() string {
+				args := map[string]any{"path": "big.go", "content": strings.Repeat("line\n", 19) + "line"}
+				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10})
+			},
+			want: []string{"writing 20 lines", "10 more lines", "Ctrl+O"},
+		},
+		{
+			name: "single line uses singular",
+			render: func() string {
+				args := map[string]any{"path": "one.go", "content": "package main"}
+				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10})
+			},
+			want:    []string{"writing 1 line"},
+			notWant: []string{"1 lines"},
+		},
+		{
+			name: "completed result shows final count",
+			render: func() string {
+				out := "[write: main.go]\n✓ Written — 30 bytes, 3 lines\n```\npackage main\n\nfunc main() {}\n```\n"
+				return r.RenderResult(out, tuirender.RenderContext{PreviewLines: 10})
+			},
+			want:    []string{"3 lines"},
+			notWant: []string{"writing"},
+		},
+		{
+			name: "expanded shows full content without footer",
+			render: func() string {
+				args := map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}"}
+				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10, Expanded: true})
+			},
+			notWant: []string{"writing", "Ctrl+O"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stripped := ansi.Strip(tc.render())
+			for _, w := range tc.want {
+				if !strings.Contains(stripped, w) {
+					t.Errorf("expected %q in output, got %q", w, stripped)
+				}
+			}
+			for _, nw := range tc.notWant {
+				if strings.Contains(stripped, nw) {
+					t.Errorf("did not expect %q in output, got %q", nw, stripped)
+				}
+			}
+		})
+	}
+}
