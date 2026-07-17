@@ -24,11 +24,11 @@ temperature: 0.1
 # Test Skill
 
 This is the skill body.`
-	skill := parseSkill("test-skill", content, "embedded", "embedded:/test-skill/SKILL.md")
+	skill := parseSkill("test-skill", content, "embedded", "skills/test-skill/SKILL.md")
 	if skill == nil {
 		t.Fatal("parseSkill returned nil")
 	}
-	if skill.FilePath != "embedded:/test-skill/SKILL.md" {
+	if skill.FilePath != "skills/test-skill/SKILL.md" {
 		t.Errorf("FilePath = %q, want populated path", skill.FilePath)
 	}
 	if skill.Meta.Name != "test-skill" {

@@ -228,7 +228,7 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		if err != nil {
 			return nil
 		}
-		skill := parseSkill(name, string(data), "embedded", "embedded:/"+path)
+		skill := parseSkill(name, string(data), "embedded", "skills/"+path)
 		if skill != nil {
 			r.skills[name] = skill
 			r.scanEmbeddedSubSkills(name, path)
@@ -258,7 +258,7 @@ func (r *SkillRegistry) scanEmbeddedSubSkills(parentName, parentPath string) {
 		if err != nil {
 			continue
 		}
-		skill := parseSkill(entry.Name(), string(data), "embedded", "embedded:/"+skillPath)
+		skill := parseSkill(entry.Name(), string(data), "embedded", "skills/"+skillPath)
 		if skill != nil {
 			r.subSkills[parentName] = append(r.subSkills[parentName], skill)
 		}

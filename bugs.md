@@ -36,7 +36,21 @@ If new items are added, restart the process.
 
 # Open bugs
 
-(none — all items closed; see Closed Bugs for fix details)
+## Commit skill
+There seems to be a commit skill but it fails:
+```
+
+
+ ✗ read embedded:/commit-msg/SKILL.md
+ Error: [read error: file_not_found]
+ File not found: embedded:/commit-msg/SKILL.md
+ Hint: Check the file path and try again. Use search to find the correct path.
+ Took 0.60s
+
+
+ ✓ $ cd /Users/muaddib/dev/goa && git diff --stat && git diff specs/plan-mode.md | head -60
+ ```
+
 
 # Closed Bugs
 
