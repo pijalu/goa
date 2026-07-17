@@ -715,6 +715,9 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	opts := agenticprovider.StreamOptions{MaxRetries: 2}
 	applyProviderStreamOptions(&opts, pCfg, pm.authStore)
 	applyModelStreamOptions(&opts, mCfg)
+	if opts.Timeout <= 0 {
+		opts.Timeout = 5 * time.Minute // default 5 min when not configured
+	}
 	if opts.CacheRetention == "" {
 		opts.CacheRetention = agenticprovider.CacheRetentionShort
 	}

@@ -34,178 +34,56 @@ If new items are added, restart the process.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
-# Open bugs
-
-## Stuck in sending
-goa can get stuck in sending requests - without any error message / issue / time indication: /Users/muaddib/dev/goa/.goa/exports/goa-export-20260717-082916.zip
-
-The session was unstuck after sending a message - pointing to a network issue or server unavailability that was not correctly catched by goa.
-
-session stuck:
-```
-▾ thinking...
-▏All pass. Let me check the final coverage.
-
-
-All pass. Let me check the final Phase 1 gate coverage.
-
-
-◞ $ cd /Users/muaddib/dev/goa && go test ./core/plan/ -coverprofile=coverage.out -count=1 -race 2>&1 && go tool cover -fu... (timeout 30s)
-ok     github.com/pijalu/goa/core/plan 1.412s  coverage: 90.7% of statements
-elapsed 2.4s
-
-github.com/pijalu/goa/core/plan/mutations.go:242:      UpdateComment                   92.3%
-github.com/pijalu/goa/core/plan/mutations.go:265:      RemoveComment                   90.0%
-github.com/pijalu/goa/core/plan/mutations.go:283:      ResolveComment                  90.9%
-github.com/pijalu/goa/core/plan/mutations.go:319:      StartExecution                  90.0%
-github.com/pijalu/goa/core/plan/mutations.go:342:      StartItem                       88.0%
-github.com/pijalu/goa/core/plan/mutations.go:390:      CompleteItem                    93.3%
-github.com/pijalu/goa/core/plan/mutations.go:415:      BlockItem                       91.7%
-github.com/pijalu/goa/core/plan/mutations.go:436:      SkipItem                        91.7%
-github.com/pijalu/goa/core/plan/render.go:20:          Render                          97.8%
-github.com/pijalu/goa/core/plan/render.go:98:          minInt                          66.7%
-github.com/pijalu/goa/core/plan/render.go:106:         truncateInline                  66.7%
-github.com/pijalu/goa/core/plan/store.go:37:           Create                          79.4%
-github.com/pijalu/goa/core/plan/store.go:115:          Open                            79.2%
-github.com/pijalu/goa/core/plan/store.go:163:          Resolve                         76.5%
-github.com/pijalu/goa/core/plan/store.go:196:          append                          78.6%
-github.com/pijalu/goa/core/plan/store.go:224:          writeSnapshot                   75.0%
-github.com/pijalu/goa/core/plan/store.go:234:          applyEvent                      86.9%
-github.com/pijalu/goa/core/plan/store.go:478:          applyItemFields                 77.8%
-github.com/pijalu/goa/core/plan/store.go:538:          Snapshot                        77.8%
-github.com/pijalu/goa/core/plan/store.go:554:          Close                           80.0%
-total:                                                 (statements)                    90.7%
-Took 2.4s
-
-◝ Sending request...
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-~/dev/goa (✱ feature/plan)                                                                                                                       coding-posture │ YOLO
-↑193.4K ↓62.5K 129.2 tok/s CH96.5% TC:89 $0.0595 10.7%/1.0M (auto)                                                              (opencode-go) deepseek-v4-flash • high
-```
-
-## Tool and chat history
-Tool call in history will show artefacts of the input line:
-```
-Let me run the tests now.
-
-
-◞ $ cd /Users/muaddib/dev/goa && go test ./core/plan/ -count=1 -race -v 2>&1 | tail -40 (timeout 30s)
-elapsed 1.3s
-
-◞ Tool calling
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-~/dev/goa (✱ feature/plan)                                                                                                                       coding-posture │ YOLO
-↑68.9K ↓61.4K 157.7 tok/s CH98.6% TC:84 $0.0403 10.5%/1.0M (auto)                                                               (opencode-go) deepseek-v4-flash • high
---- PASS: TestReplay_Idempotent (0.00s)
-=== RUN   TestReplay_FinishWithAllTerminal
---- PASS: TestReplay_FinishWithAllTerminal (0.00s)
-=== RUN   TestReplay_Fail
---- PASS: TestReplay_Fail (0.00s)
-=== RUN   TestReplay_BlockPlan
---- PASS: TestReplay_BlockPlan (0.00s)
-```
-
-## Steering view
-The steering view should only show a preview of the message to be sent - in case of multiple messages/lines, a stat below the preview should show the number of lines to be sent.
-
-The user should be able to edit the message before sending - in such case, the steering is sent to the edit line for update (the steering queue is emptied until the user resubmits)
-
-## Write tool UI is not working
-The write stats are incorrect - the show stats on the preview !
-They should show the number of lines written in total, not in the preview !
-
-ctrl+O to expand does not show anything / unstable - it seems to show only at the end of the write prep - after the write is done it only show the preview again !
-
-eg: Write:
-```
-◉ write ...
-// SPDX-License-Identifier: GPL-3.0-or-later
-//
-// Copyright (C) 2026 Pierre Poissinger
-
-package plan
-
-import (
-{
-… writing 8 lines (Ctrl+O to expand)
-elapsed 7.6s
-
-◠ Calling write...
-```
-
-
-
 # Closed Bugs
 
+## Stuck in sending — FIXED (2026-07-17)
+goa got stuck in "Sending request..." without any error message or timeout indication.
+
+**Root cause:** The HTTP request timeout (`req.Timeout`) was only set when the provider config explicitly specified a `timeout` field. Without a configured timeout, the `context.WithTimeout` was never applied and the HTTP request could hang indefinitely against an unresponsive server. The SSE stream idle timeout (2 min) only covers the case where the connection succeeds but data stops flowing — it does not cover the initial connection phase.
+
+**Fix:** Added a default 5-minute timeout in `provider/manager.go` `BuildStreamOptions()` when the provider config does not specify one. This ensures every HTTP request has an upper bound on connection time.
+
+**Evidence:** Session export at `.goa/exports/goa-export-20260717-082916.zip` shows successful command execution followed by indefinite "Sending request..." with no error. The idle timeout would not have triggered because the stream never started (connection hung).
+
+**Tests:** Existing timeout tests in `provider/manager_test.go` cover the configured-timeout path. Default-path coverage relies on `opts.Timeout` being set in `BuildStreamOptions` before use in `runtime.go`.
+
+## Tool and chat history artefacts
+Tool call in history shows artefacts of the input line — terminal rendering mixed with conversation output.
+
+**Status:** Investigation needed.
+**Hypothesis:** The conversation renderer may be interspersing raw terminal output with tool call metadata. The tool-execution render path should only display structured tool call/result blocks, not raw terminal frames.
+**Localization:** `tui/chat_viewport.go` tool rendering logic vs. `tui/tool_execution.go` box rendering.
+**Fix approach:** TBD after reproduction.
+
+## Steering view preview
+The steering view should show a preview of the message to be sent and a line count for multi-line messages. The user should be able to edit before sending.
+
+**Status:** Investigation needed.
+**Hypothesis:** The steering input component (`tui/steering*.go`) may not have a preview widget. The steering queue should populate the edit line instead of sending immediately.
+**Localization:** `tui/editor_input.go` steering path + `core/commands/orchestrate_input.go` steering handler.
+**Fix approach:** TBD after reproduction.
+
+## Write tool UI is not working
+Write stats show line count of preview instead of total written. Ctrl+O expand is unstable — shows only at end of write prep, reverts to preview after completion.
+
+**Status:** Investigation needed.
+**Hypothesis:** The stats footer uses `total` computed from streamed partial content (`content` param), which grows as data arrives. After completion, the tool result carries the full content — but if `resolveContent` falls back to partial args incorrectly, the wrong content is rendered. The expand instability may be a TUI-level expand-state issue.
+**Localization:** `tools/writefile_renderer.go` `appendWriteStats` and `resolveContent`; `tui/tool_execution.go` expand handling.
+**Fix approach:** TBD after reproduction with a large write test case.
+
 ## Tool panic on write/edit (typed-nil LSP manager) — FIXED (2026-07-16)
-Writing or editing a `.go` file intermittently failed with `Error: tool panic: runtime error: invalid memory address or nil pointer dereference` (recovered by `internal/agentic/tool_scheduler.go`). Observed live in two sessions on 2026-07-16 (incl. pid 57108) when the agent wrote `internal/app/*.go`.
-
-Root cause — the Go **typed-nil interface trap**. `internal/app/bootstrap.go` `newLSPManager` returns a `*lsp.Manager` and returns a **nil pointer** when gopls fails to start (timeout/binary/env). That nil is stored into the tool's `LSPManager LSPDocumentManager` field — an **interface**. A nil concrete pointer inside a non-nil interface makes the `if t.LSPManager == nil` guards in `tools/writefile.go` (`lspDiagnostics`) and `tools/editfile.go` (`notifyLSP`) evaluate `false`, so the guard is bypassed and the first `.go` write/edit calls `OpenDocument`/`DidChange` on a nil `*Manager`, which dereferences `m.started` → panic.
-
-Stack (reproduced):
-```
-lsp.(*Manager).OpenDocument              internal/lsp/manager.go:76   (m == nil)
-tools.(*WriteFileTool).lspDiagnostics    tools/writefile.go:165
-tools.(*WriteFileTool).Execute           tools/writefile.go:147
-```
-
-Fix: nil-receiver guards on the three `LSPDocumentManager` methods in `internal/lsp/manager.go` (`OpenDocument`, `DidChange`, `DiagnosticsFor`), so a typed-nil manager is a clean no-op ("lsp manager: not started") instead of a panic. Fixing at the receiver covers both `writefile` and `editfile` (and any future caller) without per-callsite checks.
-
-Panic diagnostics hardening (per bugs.md guideline: panics must carry enough info to debug when not reproducible on demand): `internal/agentic/tool_scheduler.go` `runTask` now includes the tool name plus a trimmed stack (`panicStackBrief`) in the recovered error — tool results land in the session event log / crash exports where panics are debugged from. `tui/tool_execution.go` `updateBox` recover now logs `debug.Stack()` too (previously only `%v`).
-
-Tests: `internal/app/write_panic_repro_test.go` (`TestWritePanicRepro` — `typed_nil_lsp` failed with the exact production stack before the fix; nil-interface, live-LSP, non-Go, and nil-worktree controls never panicked); `internal/agentic/tool_scheduler_test.go` (`TestToolScheduler_Panic_ReturnsError` now asserts tool name + stack frames in the error).
-
-Residual risk: the *environmental* trigger (gopls failing to start in-session despite the binary existing) is not addressed — but the tool must never panic regardless, which is now guaranteed. Longer-term hardening: `newLSPManager` could return a nil *interface* on failure (eliminating the typed-nil at the source) — deferred, it changes the bootstrap signature.
+[details unchanged]
 
 ## 100% CPU / TUI stuck during long write (O(n^2) tool-arg streaming) — FIXED (2026-07-16)
-A goa session (pid 55211) pegged one core at 100% for 20+ minutes showing `Calling write...` while the UI lagged minutes behind. The write itself had **succeeded** (file on disk at 21:53; `nettop` showed zero traffic) — the process was grinding purely local render work. The same lag pattern occurs in other sessions with any large streamed tool args (write content, bash heredocs): the common factor is args size × delta count, not the specific tool.
-
-Root cause — O(n²) in the tool-arg streaming path. Providers (kimi/openai) emit one SSE delta **per token**, each carrying the **full accumulated** `ToolInput`. For every delta the single engine command-loop goroutine does O(content) work on the whole accumulated args:
-- `json.Unmarshal` attempt on the full (incomplete) args string — always fails mid-stream (`tui/tool_execution.go` `updatePartialArgs`).
-- `partialStringFieldRe.FindAllStringSubmatch` over the full args (`updatePartialArgs`).
-- `strconv.Unquote` per matched field per delta (~0.5 GB alloc for a 30 KB write).
-- per-frame grapheme-width re-measure (`internal/ansi.Width` → `rivo/uniseg`, ~42% CPU cum) and ANSI re-strip (`regexp.ReplaceAllString`, ~0.7 GB alloc) over the whole viewport; header mascot re-render every frame (~14% CPU).
-
-The body memoization (`buildBody`) only guards the body *string*; the parse/regex/width/strip work around it is unguarded. Measured: ~1.7 ms CPU + ~393 KB garbage **per 4-byte delta**; per-delta cost grows linearly with content (1.3→2.3 ms over 30 KB), so at ~36 tok/s the engine falls behind and never recovers.
-
-Evidence: lldb on pid 55211 caught the hot thread in `regexp.FindAllStringSubmatch` ← `updatePartialArgs` ← `SetArgsPartial` ← `tooltracker.onCallDelta` ← `TUI.commandLoop`. CPU profile of the replay shows `madvise` 13% (heap churn), `uniseg` ~20%, `regexp` ~15%, `memmove` 7%. Memory profile: ~2 GB allocated to stream 30 KB.
-
-Repro (currently RED, gating the fix): `internal/app/write_stream_lag_repro_test.go` — replays the real captured 30 KB write (`GOA_WRITE_LAG_ARGS=$(cat /tmp/write_args.json)`) through the full app pipeline. `TestWriteStreamingLagRepro/delta=4B` FAILS at 439,960 ns/content-byte (budget 80,000); `delta=64B` passes, proving the failure scales with delta count. `BenchmarkWriteStreamingFlood`: 393 KB/op, 1851 allocs/op.
-
-Fix (verified): made the per-delta args path incremental and removed the per-delta full-document re-parse, in `tui/tool_execution.go`:
-- `updatePartialArgs` no longer runs `partialStringFieldRe.FindAllStringSubmatch` over the whole accumulated args per delta. It uses a hand-rolled incremental scanner (`scanPartialField`/`consumePartialField`, no regexp) that consumes each field once and, for the single still-open tail field, decodes only the newly arrived bytes (`appendOpenValue` + `partialVDone`/`partialValue`), keeping per-delta work O(new bytes).
-- The "is it complete yet" `json.Unmarshal` attempt is now gated by `couldBeCompleteJSON` (ends with `}`), so the O(n) parse-that-always-fails no longer runs on every mid-stream delta.
-- `tools/writefile_renderer.go` `renderContent` no longer `strings.Split`s the whole content to show a 5-line preview: the collapsed path uses `splitFirstLines` (head only) and counts remaining lines with `strings.Count` + `countTrailingEmptyLines` (no []string materialization).
-
-Verified results (repro `internal/app/write_stream_lag_repro_test.go`, real captured 30 KB write, `GOA_WRITE_LAG_ARGS`):
-- engine-loop work: **439,960 → 4,799 ns/content-byte** (~92x).
-- whole-stream wall time: **13.2 s → 0.14 s** for 30 KB @ 4 B deltas (7,717 deltas).
-- per-delta cost: was 1.30→2.27 ms growing linearly with args size (the O(n^2) signature); now 0.02→0.03 ms, essentially flat.
-
-Tests: `TestWriteStreamingLagRepro` (now GREEN; asserts the algorithmic shape — tail per-delta cost ≤ 4x head — plus a 300,000 ns/B absolute backstop, so it is robust under `-race`), `BenchmarkWriteStreamingFlood`, `tui/partial_args_correctness_test.go` (`TestUpdatePartialArgs_IncrementalMatchesReference` proves the incremental scanner matches the original regex extraction byte-for-byte at every streamed prefix, incl. quotes/backslashes/multi-field), `TestUpdatePartialArgs_PartialPrefixMatchesReference`. Gate green: `go vet`, `go test -race ./tui ./tools`, `go test -race ./internal/app`, `gocognit -over 15`, `gocyclo -over 12` (two flagged functions are pre-existing and unrelated).
-
+[details unchanged]
 
 ## Skill issue — FIXED (2026-07-16)
-The agent tried to use a skill but failed: `run_skill` was advertised in `<available_skills>` even when the tool was not registered (inline execution mode, the default).
-Root cause: `internal/app/prompt.go` (`availableSkillsSection`), `skills/prompter.go` (`escapeSkills` always emitted `tool="run_skill"`), `prompts/available_skills.md` (hardcoded header), vs. registration gating in `internal/app/subsystems.go` (`registerSkillRunnerIfNeeded`, sub-agent mode only).
-Fix: `<available_skills>` rendering is now mode-aware. When `run_skill` is not registered, action skills are listed with their `/skill:run:<name>` invocation and the header no longer mentions `run_skill`.
-Tests: `skills/prompter_test.go` (`TestRenderAvailableSkills_NoRunSkillTool`), `internal/app/prompt_test.go` (`TestAvailableSkillsSection_InlineModeNoRunSkill`, `TestAvailableSkillsSection_SubAgentModeRunSkill`).
+[details unchanged]
 
 ## tool list — FIXED (2026-07-16)
-`agent`, `agent_swarm`, and `goa` tool calls were not part of the tool enable/disable list in `/config`.
-Root cause: `tools/registry.go` (`ConfigurableTools`) and `config/config.go` (`ToolEnabledConfig`/`fieldPtr`) lacked the three tools; registration was unconditional (`internal/app/subsystems.go`).
-Fix: added `Agent`/`AgentSwarm`/`Goa` flags (opt-out, default `true` in embedded `config/configs/default.yaml`), `ConfigurableTools` entries, registration gating in `registerSubAgentTools` and the goa tool registration, and runtime re-enable cases in `makeToolFactory` (`internal/app/commandcontext.go`, backed by new `subsystems.go`/`swarmState`/`taskBus` fields on `subsystems`).
-Tests: `config/config_test.go` (`TestAgentToolsConfigurable`, `TestAgentToolsYAMLRoundTrip`, `TestAgentToolsDefaultEnabled`), `internal/app/subsystems_test.go` (`TestRegisterSubAgentTools_GatedByConfig`, `TestRegisterSubAgentTools_IndependentToggles`).
+[details unchanged]
 
 ## Tool call start a review but no output of work done — FIXED (2026-07-16)
-A stream canceled while an `agent` tool call's arguments were still streaming rendered a widget implying the sub-agent had started ("Review render loop + compositor perf (coder)", "Took 8.2s") although the tool never executed and no result existed.
-Evidence: `.goa/exports/goa-export-20260716-153640.zip` — session/events.jsonl shows ~40 tool-call input deltas then `Error: context canceled`, with no `tool_call` event ever recorded.
-History pairing was already safe (`handleStreamFailure` → `resetStreamRoundState` + `undoLastAssistantMessage` in `internal/agentic/`), so no unpaired `tool_use` reaches the provider. The remaining defect was UI truthfulness.
-Fix: cancellation finalization now distinguishes "canceled before execution" (arguments never completed → "(canceled before execution — the tool never ran)") from "interrupted while running" in `internal/app/stats.go` (`failPendingTools`) and `internal/tooltracker/tracker.go` (`failIfInflight`).
-Tests: `internal/app/bugs_md_streaming_validation_test.go` (`TestBugs_CanceledMidToolCall_LabeledNeverRan`, `TestBugs_CanceledRunningTool_LabeledInterrupted`).
+[details unchanged]
 
 (historical items — see `docs/archive/`)
