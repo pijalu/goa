@@ -817,12 +817,14 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 // because the func is stored in a struct field rather than a local.
 func (a *Agent) finishProcessing() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.processing = false
 	a.lastTurnEnd = time.Now()
-	if a.cancel != nil {
-		a.cancel()
-		a.cancel = nil
+	cancel := a.cancel
+	a.cancel = nil
+	a.mu.Unlock()
+	a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+	if cancel != nil {
+		cancel()
 	}
 }
 

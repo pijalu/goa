@@ -38,14 +38,23 @@ If new items are added, restart the process.
 
 ## Stuck in sending — FIXED (2026-07-17)
 goa got stuck in "Sending request..." without any error message or timeout indication.
+Sending another message unsticks the session — pointing to a state-machine bug where
+the status is never cleared when the agent's turn processing ends.
 
-**Root cause:** The HTTP request timeout (`req.Timeout`) was only set when the provider config explicitly specified a `timeout` field. Without a configured timeout, the `context.WithTimeout` was never applied and the HTTP request could hang indefinitely against an unresponsive server. The SSE stream idle timeout (2 min) only covers the case where the connection succeeds but data stops flowing — it does not cover the initial connection phase.
+**Root cause:** The agent's `finishProcessing()` method — the guaranteed cleanup path
+called on every exit from the turn-processing loop — did not emit an `EventProgress{Text: ""}`
+event to clear the "Sending request..." status. When the provider stream ended (with or
+without error), the UI stayed permanently stuck on "Sending request..." because the
+progress clear event was only emitted in specific error branches of `handleStreamFailure`,
+not on the general-purpose cleanup path.
 
-**Fix:** Added a default 5-minute timeout in `provider/manager.go` `BuildStreamOptions()` when the provider config does not specify one. This ensures every HTTP request has an upper bound on connection time.
+**Fix:** `internal/agentic/agent.go` `finishProcessing()` now emits
+`emitEvent(OutputEvent{Type: EventProgress, Text: ""})` before releasing the agent lock,
+ensuring the status is cleared on every exit path (success, error, cancellation).
 
-**Evidence:** Session export at `.goa/exports/goa-export-20260717-082916.zip` shows successful command execution followed by indefinite "Sending request..." with no error. The idle timeout would not have triggered because the stream never started (connection hung).
-
-**Tests:** Existing timeout tests in `provider/manager_test.go` cover the configured-timeout path. Default-path coverage relies on `opts.Timeout` being set in `BuildStreamOptions` before use in `runtime.go`.
+**Also fixed:** Added default 5-minute request timeout in `provider/manager.go`
+`BuildStreamOptions()` for cases where the provider config doesn't specify one,
+ensuring HTTP connections don't hang indefinitely.
 
 ## Tool and chat history artefacts
 Tool call in history shows artefacts of the input line — terminal rendering mixed with conversation output.
