@@ -282,6 +282,27 @@ func renderContains(lines []string, sub string) bool {
 // embedded newlines must render one box row per visual line — ansi.Wrap only
 // accepts single paragraphs, and a returned "line" containing '\n' paints as
 // several terminal rows, desyncing the compositor (overlapping redraw bug).
+// TestSteeringPending_Render_LeadingBlanksSkipped: a message starting with
+// blank lines must preview real content, not blank rows.
+func TestSteeringPending_Render_LeadingBlanksSkipped(t *testing.T) {
+	m := newSteeringPending("\n\nalpha\nbeta\ngamma\ndelta\nepsilon\nzeta")
+	lines := m.Render(40)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "alpha") {
+		t.Errorf("expected first content line 'alpha' in preview, got:\n%s", joined)
+	}
+	// 7 content lines total (>5): zeta hidden, footer must report hidden count.
+	if strings.Contains(joined, "zeta") {
+		t.Errorf("expected 6th content line hidden from preview, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "hidden") {
+		t.Errorf("expected hidden-count footer, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "8 line(s) to send (1 hidden)") {
+		t.Errorf("expected total+hidden line counts in footer, got:\n%s", joined)
+	}
+}
+
 func TestSteeringPending_Render_MultiLine(t *testing.T) {
 	m := newSteeringPending("first line\nsecond line\n\nthird line")
 	width := 40

@@ -28,6 +28,54 @@ func TestMaybeSteerAgent_WhenIdle(t *testing.T) {
 	}
 }
 
+// TestHandleEditSteering_RecallsPendingIntoEditor covers the steering
+// edit-before-send flow (Alt+E): pending steering text moves into the input
+// line, the queue is emptied, and the pending bubble/footer indicator clear.
+func TestHandleEditSteering_RecallsPendingIntoEditor(t *testing.T) {
+	app, subs := testAppWithAgent(t)
+	subs.agentMgr.SetSteeringQueue(core.NewSteeringQueue())
+	subs.inputEditor = tui.NewEditor()
+	chat := tui.NewChatViewport()
+	engine := tui.NewTUI(&testTerminal{w: 80, h: 24})
+
+	sq := subs.agentMgr.SteeringQueue()
+	sq.Append("first steering")
+	sq.Append("second steering")
+	chat.AddSteeringPending("first steering")
+	data := subs.footer.Data()
+	data.SteeringPending = "first steering"
+	subs.footer.SetData(data)
+
+	app.handleEditSteering(engine, chat)
+
+	if got := subs.inputEditor.Text(); got != "first steering\n\nsecond steering" {
+		t.Errorf("editor text = %q, want joined steering", got)
+	}
+	if sq.Len() != 0 {
+		t.Errorf("steering queue should be flushed, got %d pending", sq.Len())
+	}
+	if got := subs.footer.Data().SteeringPending; got != "" {
+		t.Errorf("footer steering indicator = %q, want cleared", got)
+	}
+}
+
+// TestHandleEditSteering_NoPendingIsNoOp ensures Alt+E without pending
+// steering does not clobber the editor content.
+func TestHandleEditSteering_NoPendingIsNoOp(t *testing.T) {
+	app, subs := testAppWithAgent(t)
+	subs.agentMgr.SetSteeringQueue(core.NewSteeringQueue())
+	subs.inputEditor = tui.NewEditor()
+	subs.inputEditor.SetText("draft in progress")
+	chat := tui.NewChatViewport()
+	engine := tui.NewTUI(&testTerminal{w: 80, h: 24})
+
+	app.handleEditSteering(engine, chat)
+
+	if got := subs.inputEditor.Text(); got != "draft in progress" {
+		t.Errorf("editor text = %q, want unchanged draft", got)
+	}
+}
+
 func testAppWithAgent(t *testing.T) (*App, *subsystems) {
 	t.Helper()
 	app := &App{}

@@ -511,14 +511,14 @@ func (a *App) showPlanPager(m *event.ShowPlanPager) {
 
 // showPlanStatus opens the read-only plan-status overlay. The store was
 // opened by the /plan status command and is closed here when the overlay is
-// dismissed.
-func (a *App) showPlanStatus(m *event.ShowPlanStatus) {
+// dismissed. Returns the overlay component for tests; may be nil.
+func (a *App) showPlanStatus(m *event.ShowPlanStatus) *tui.PlanStatusOverlay {
 	if a.subs.tuiEngine == nil || m == nil || m.Store == nil {
-		return
+		return nil
 	}
 	store, ok := m.Store.(*plan.Store)
 	if !ok {
-		return
+		return nil
 	}
 	overlay := tui.NewPlanStatusOverlay(store)
 	overlay.RequestRender = func() {
@@ -551,6 +551,7 @@ func (a *App) showPlanStatus(m *event.ShowPlanStatus) {
 		CaptureInput: true,
 	})
 	a.reviewSetTitle(planStatusHelpTitle)
+	return overlay
 }
 
 // reviewOverlayGeometry holds the computed size and position for the review
