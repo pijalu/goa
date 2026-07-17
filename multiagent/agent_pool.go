@@ -330,11 +330,12 @@ func (p *AgentPool) assembleConfig(mdl provider.Model, cfg AgentConfig, systemPr
 		systemPrompt = appendToolDirective(systemPrompt, tools)
 	}
 	ac := agentic.Config{
-		Model:         mdl,
-		APIKey:        opts.APIKey,
-		StreamOptions: opts,
-		SystemPrompt:  systemPrompt,
-		Tools:         tools,
+		Model:              mdl,
+		APIKey:             opts.APIKey,
+		StreamOptions:      opts,
+		SystemPrompt:       systemPrompt,
+		Tools:              tools,
+		AllowEmptyResponse: true,
 	}
 	if cfg.ReasoningEffort != "" {
 		ac.ReasoningEffort = cfg.ReasoningEffort

@@ -501,7 +501,7 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 	// text (e.g. loop-detector fixtures) sets genStartTime and is NOT treated
 	// as empty here; thinking-only turns are handled by the silent-stop notice
 	// in finalizeStreamTurn.
-	if !a.turnHadToolExecution && a.genStartTime.IsZero() && len(a.bufferedToolCalls) == 0 {
+	if !a.cfg.AllowEmptyResponse && !a.turnHadToolExecution && a.genStartTime.IsZero() && len(a.bufferedToolCalls) == 0 {
 		return false, errEmptyResponse
 	}
 

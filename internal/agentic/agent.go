@@ -431,6 +431,14 @@ type Config struct {
 	// HookEngine executes user-defined lifecycle hooks (beforeTool, afterTool,
 	// sessionStart, sessionEnd). When nil, no hooks run.
 	HookEngine hooks.AgentHookEngine
+
+	// AllowEmptyResponse when true disables the empty-response guard that
+	// treats a clean stream end with zero events as a transient error.
+	// Companion and sub-agents (multiagent pool, orchestration specialists)
+	// set this because an empty reply is a valid "nothing to report" outcome.
+	// The main interactive agent leaves it false so that provider truncation
+	// under load is surfaced instead of silently swallowed.
+	AllowEmptyResponse bool
 }
 
 // NewAgent creates a new Agent with the given configuration.
