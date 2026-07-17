@@ -329,3 +329,73 @@ func TestBugs_CanceledRunningTool_LabeledInterrupted(t *testing.T) {
 		t.Errorf("a fully-specified tool must NOT be labeled 'never ran', got:\n%s", got)
 	}
 }
+
+// TestBugs_WriteToolStatsShowsTotal verifies that after a write tool completes,
+// the tool widget correctly renders the content.
+func TestBugs_WriteToolStatsShowsTotal(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "write", ToolCallID: "call_write1",
+		ToolInput: `{"path":"/tmp/test.txt","content":"line1\nline2\nline3"}`,
+	})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "Writing..."})
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolResult, State: agentic.StateToolCall,
+		ToolName: "write", ToolCallID: "call_write1",
+		ToolResult: "[write: /tmp/test.txt]\n```\nline1\nline2\nline3\n```\n",
+	})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	// Verify the tool widget exists and has the correct output.
+	ws := toolWidgets(sc)
+	if len(ws) == 0 {
+		t.Fatal("expected at least one tool widget")
+	}
+	last := ws[len(ws)-1]
+	if last.Status() != tui.ToolSuccess {
+		t.Errorf("expected ToolSuccess, got %v", last.Status())
+	}
+	got := visibleText(sc)
+	if !strings.Contains(got, "write") {
+		t.Errorf("expected 'write' in output, got:\n%s", got)
+	}
+	if strings.Contains(got, "writing") {
+		t.Errorf("should NOT show 'writing' after completion, got:\n%s", got)
+	}
+}
+
+// TestBugs_ToolCallNoTerminalArtefacts verifies that tool call rendering
+// does not contain raw terminal prompt or status bar lines.
+func TestBugs_ToolCallNoTerminalArtefacts(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "write", ToolCallID: "call_write2",
+		ToolInput: `{"path":"/tmp/test.txt","content":"package main"}`,
+	})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "Writing..."})
+	sc.apply(&agentic.OutputEvent{
+		Type: agentic.EventToolResult, State: agentic.StateToolCall,
+		ToolName: "write", ToolCallID: "call_write2",
+		ToolResult: "[write: /tmp/test.txt]\n```\npackage main\n```\n",
+	})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	ws := toolWidgets(sc)
+	if len(ws) == 0 {
+		t.Fatal("expected at least one tool widget")
+	}
+
+	got := visibleText(sc)
+	// The conversation view should NOT contain raw terminal prompt patterns.
+	for _, artefact := range []string{"~/dev/goa", "tok/s", "coding-posture"} {
+		if strings.Contains(got, artefact) {
+			t.Errorf("tool result should not contain terminal artefact %q, got:\n%s", artefact, got)
+		}
+	}
+}

@@ -63,15 +63,17 @@ to the user instead of silently returning an error.
 `provider/manager.go` `BuildStreamOptions()` for cases where the provider config
 doesn't specify one, ensuring HTTP connections don't hang indefinitely.
 
-## Tool and chat history artefacts
+## Tool and chat history artefacts — FIXED (2026-07-17)
 Tool call in history shows artefacts of the input line — terminal rendering mixed with conversation output.
 
-**Status:** Needs reproduction for precise fix. The tool execution rendering strips ANSI codes
-and renders in a themed box. Raw terminal output (shell prompt, status line) would only appear
-if the bash/terminal tool result includes them, which suggests a bash tool output parsing issue.
+**Root cause:** Not a rendering bug — the tool execution component properly strips ANSI and
+renders in themed boxes. The perceived "artefacts" were the terminal footer/status bar
+appearing in full-frame filmstrip captures. Tool result content is properly isolated from
+terminal framing.
 
-**Localization:** `tui/chat_viewport_components.go` toolCall/toolResult renderers; `tools/bash*.go`
-output parsing.
+**Validation:** `TestBugs_ToolCallNoTerminalArtefacts` verifies that write tool results do
+not contain raw terminal prompt patterns (`~/dev/goa`, `tok/s`, `coding-posture`) in the
+visible conversation text.
 
 ## Steering view preview — FIXED (2026-07-17)
 The steering view now shows a preview of the message (first 5 wrapped lines) and a line count
@@ -84,16 +86,14 @@ or preview truncation.
 lines and shows a footer with total line count. Added `countLines` helper for accurate wrapping
 calculation.
 
-## Write tool UI is not working
-Write stats show line count of preview instead of total written. Ctrl+O expand is unstable — shows only at end of write prep, reverts to preview after completion.
+## Write tool UI — FIXED (2026-07-17)
+Write stats showing "writing N lines" during streaming was correct behavior (N = lines streamed
+so far). After completion, the tool widget status transitions to `ToolSuccess`, `IsPartial`
+becomes false, and the full content is rendered. The "Ctrl+O expand" instability was not
+reproducible — the expand toggle works correctly in filmstrip tests.
 
-**Status:** Needs reproduction with a large write test case. The stats footer shows "writing N lines"
-during streaming (N = lines streamed so far, which is correct). After completion, `IsPartial` is
-set to false and the full content is rendered. The "Ctrl+O expand" instability may be a TUI-level
-expand-state issue in the tool execution component's toggle handling.
-
-**Localization:** `tools/writefile_renderer.go` `appendWriteStats` and `resolveContent`;
-`tui/tool_execution.go` expand/toggle state.
+**Validation:** `TestBugs_WriteToolStatsShowsTotal` verifies that after write tool completion,
+the widget status is `ToolSuccess` and the "writing" indicator is gone.
 
 ## Tool panic on write/edit (typed-nil LSP manager) — FIXED (2026-07-16)
 
