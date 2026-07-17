@@ -17,7 +17,6 @@ import (
 type PlanStatusOverlay struct {
 	Store *plan.Store
 
-	scrollTop int
 	cursor    int
 	viewportW int
 	viewportH int

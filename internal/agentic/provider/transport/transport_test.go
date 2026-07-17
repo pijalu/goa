@@ -171,6 +171,91 @@ func TestHTTPTransportHeaderTimeoutAllowsSlowStream(t *testing.T) {
 	assert.Equal(t, 3, strings.Count(string(body), "data: chunk"))
 }
 
+// TestHTTPLogRecordsMidStreamError is the regression test for the HTTP-log
+// blindness the user challenged ("are you sure a http error would correctly be
+// logged?"): a response whose body drops mid-stream must be logged with an
+// Error and the true stream duration, not as a fast clean (err=None) entry.
+func TestHTTPLogRecordsMidStreamError(t *testing.T) {
+	// Server sends headers + one chunk, then hijacks and abruptly closes the
+	// connection so the client's body read fails mid-stream.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("server does not support hijacking")
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		_ = buf.Flush()
+		// One valid chunk, then a hard close with no terminating 0-chunk.
+		_, _ = buf.WriteString("c\r\ndata: hello\n\n\r\n")
+		_ = buf.Flush()
+		// Abrupt close: client sees unexpected EOF / connection reset.
+	}))
+	defer server.Close()
+
+	log := NewHTTPLog(4)
+	tr := &HTTPTransport{Client: server.Client(), Log: log}
+	resp, err := tr.Do(context.Background(), &TransportRequest{
+		Method: "POST",
+		URL:    server.URL,
+		Body:   []byte(`{}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	_, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	require.Error(t, readErr, "abrupt mid-stream close must surface a read error")
+
+	entries := log.Snapshot()
+	require.Len(t, entries, 1, "exactly one HTTP transaction should be logged")
+	entry := entries[0]
+	assert.NotEmpty(t, entry.Error, "mid-stream body failure must be recorded in the log entry")
+}
+
+// TestHTTPLogDurationReflectsStreamTime verifies DurationMs is measured at
+// stream termination, not frozen at header-arrival time — otherwise a stalled
+// or long stream is logged as an instant, hiding the stall from diagnostics.
+func TestHTTPLogDurationReflectsStreamTime(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Keep the body open ~300ms before the final chunk so the stream's
+		// wall-clock duration is dominated by body time, not header time.
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte("data: done\n\n"))
+	}))
+	defer server.Close()
+
+	log := NewHTTPLog(4)
+	tr := &HTTPTransport{Client: server.Client(), Log: log}
+	resp, err := tr.Do(context.Background(), &TransportRequest{
+		Method: "POST",
+		URL:    server.URL,
+		Body:   []byte(`{}`),
+	})
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	entries := log.Snapshot()
+	require.Len(t, entries, 1)
+	entry := entries[0]
+	assert.Empty(t, entry.Error, "clean stream must have no error")
+	assert.GreaterOrEqual(t, entry.DurationMs, int64(250),
+		"DurationMs must reflect the ~300ms stream, not the sub-ms header time")
+}
+
 func TestParseSSE(t *testing.T) {
 	input := `event: delta
 data: {"text":"hello"}

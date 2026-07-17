@@ -78,6 +78,13 @@ type Agent struct {
 	// within a rolling window.
 	turnToolCallCount int
 
+	// turnHadToolExecution records whether any real (non-synthetic) tool call
+	// executed during the current turn. It scopes the empty-response guard: an
+	// empty stream is only suspicious when the model produced nothing without
+	// any prior tool work. After a tool runs and its result is sent back, an
+	// empty follow-up ("done, nothing more to say") is a legitimate turn end.
+	turnHadToolExecution bool
+
 	// streamingToolCalls tracks tool calls that are still being streamed
 	// (arguments not yet complete). Maps tool call ID to accumulated partial
 	// state so EventToolCallDelta can update the TUI incrementally.

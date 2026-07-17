@@ -489,6 +489,22 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 	}
 	a.recordGenDuration()
 
+	// Empty-response guard: a clean stream end (2xx + [DONE]/EOF) that emitted
+	// no stream events at all (no text/thinking/tool-call deltas — genStartTime
+	// was never set) is not a legitimate answer when the model has done no tool
+	// work this turn. Under provider load it indicates a truncated/failed
+	// response, so it is routed through handleStreamFailure (bounded retry,
+	// then a surfaced message) instead of ending the turn silently. It is
+	// scoped to turns with no real tool execution: after a tool runs and its
+	// result is sent back, an empty follow-up is a legitimate "done, nothing
+	// more to say" turn end. A stream that emitted events but produced empty
+	// text (e.g. loop-detector fixtures) sets genStartTime and is NOT treated
+	// as empty here; thinking-only turns are handled by the silent-stop notice
+	// in finalizeStreamTurn.
+	if !a.turnHadToolExecution && a.genStartTime.IsZero() && len(a.bufferedToolCalls) == 0 {
+		return false, errEmptyResponse
+	}
+
 	toolCallsEncountered := a.completeStreamTurn(ctx)
 	return toolCallsEncountered, nil
 }
@@ -529,6 +545,29 @@ func (a *Agent) finalizeStreamTurn() {
 	a.mu.Lock()
 	a.history = append(a.history, msg)
 	a.mu.Unlock()
+
+	// Silent-stop guard: a reasoning model (e.g. one that streams
+	// reasoning_content) can finish with finish_reason "stop" after emitting
+	// only thinking tokens — no visible answer, no tool calls. Without a
+	// notice the user sees the thinking block collapse and the spinner clear
+	// with no explanation ("session stopped without any message"). When the
+	// turn produced no visible answer content, surface a non-transient system
+	// message so the stop is never silent. The thinking is still preserved in
+	// history (synthesizeAssistantBuffer promotes it to content), so a
+	// follow-up "continue" resumes with full context.
+	if a.contentBuf.Len() == 0 && a.thinkingBuf.Len() > 0 {
+		a.cfg.Logger.Log(Warn, "turn ended with thinking but no answer content (model stopped mid-reasoning)")
+		a.emitEvent(OutputEvent{
+			Type: EventContent,
+			Role: System,
+			Text: "The model stopped after its reasoning step without producing a reply " +
+				"(no answer text or tool calls were returned). This is usually a " +
+				"reasoning-token or output limit on the provider side. Send \"continue\" " +
+				"to resume, or rephrase your request.",
+			Metadata: map[string]string{"category": "system-notification"},
+		})
+	}
+
 	// Emit token/context stats before EventEnd so consumers can log/use them
 	// when the turn officially completes.
 	a.emitTurnStats()
@@ -848,6 +887,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.mu.Lock()
 	a.turnToolCalls = make(map[string]int)
 	a.turnToolCallCount = 0
+	a.turnHadToolExecution = false
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
 	a.thinkingDisplayBuf.Reset()

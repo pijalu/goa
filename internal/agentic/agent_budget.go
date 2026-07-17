@@ -353,6 +353,9 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 
 	// If any call was executed for real, continue so the LLM sees results.
 	if len(realResults) > 0 {
+		a.mu.Lock()
+		a.turnHadToolExecution = true
+		a.mu.Unlock()
 		return true
 	}
 

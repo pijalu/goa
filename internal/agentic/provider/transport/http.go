@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -319,7 +320,6 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 		Method:          req.Method,
 		URL:             req.URL,
 		StatusCode:      httpResp.StatusCode,
-		DurationMs:      time.Since(start).Milliseconds(),
 		ResponseHeaders: headers,
 		RequestSummary:  requestSummaryPtr(req.Body),
 		RequestBody:     truncateTail(string(req.Body), HTTPLogRequestBytes),
@@ -336,6 +336,9 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 	}
 
 	// Return a wrapper that finalizes the log entry when the body is closed.
+	// DurationMs and any mid-stream read error are recorded at finalize time
+	// (not here) so a stalled/failed body is visible in the log rather than
+	// looking like a fast, clean completion.
 	return &TransportResponse{
 		StatusCode: httpResp.StatusCode,
 		Headers:    headers,
@@ -344,6 +347,7 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 			entry:      &entry,
 			capture:    capBody,
 			log:        t.Log,
+			start:      start,
 		},
 	}, nil
 }
@@ -355,25 +359,38 @@ type logOnCloseBody struct {
 	entry   *HTTPLogEntry
 	capture *captureBody
 	log     *HTTPLog
+	start   time.Time
 	once    sync.Once
 }
 
 func (b *logOnCloseBody) Close() error {
-	b.finalize()
+	b.finalize(nil)
 	return b.ReadCloser.Close()
 }
 
 func (b *logOnCloseBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if err != nil {
-		b.finalize()
+		b.finalize(err)
 	}
 	return n, err
 }
 
-func (b *logOnCloseBody) finalize() {
+func (b *logOnCloseBody) finalize(readErr error) {
 	b.once.Do(func() {
 		b.applyCapture()
+		// DurationMs is measured when the stream terminates (EOF, error, or
+		// close), not at header-arrival time, so a long-lived or stalled
+		// stream reports its true wall-clock duration.
+		if !b.start.IsZero() {
+			b.entry.DurationMs = time.Since(b.start).Milliseconds()
+		}
+		// Record a mid-stream read failure so a dropped/stalled connection is
+		// visible in the log instead of looking like a clean completion. A
+		// clean EOF (io.EOF) is the normal terminator, not an error.
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			b.entry.Error = readErr.Error()
+		}
 		l := b.log
 		if l == nil {
 			l = GlobalHTTPLog

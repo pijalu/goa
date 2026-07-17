@@ -596,7 +596,7 @@ func (c *Config) mergeOrchestrator(other *Config) {
 func (c *Config) mergePlan(other *Config) {
 	// Last-write-wins: if the override defines any plan config, use it wholesale.
 	// This matches the pattern of orchestrator role merge (map key overwrite).
-	if other.Plan.Retention.Days != 0 || other.Plan.Retention.Enabled != false {
+	if other.Plan.Retention.Days != 0 || other.Plan.Retention.Enabled {
 		c.Plan.Retention = other.Plan.Retention
 	}
 }

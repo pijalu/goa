@@ -18,6 +18,13 @@ import (
 // server-supplied Retry-After cannot stall the agent for minutes.
 const maxStreamBackoff = 30 * time.Second
 
+// errEmptyResponse is synthesized when a stream ends cleanly (2xx + [DONE]/EOF)
+// but produced no content, no thinking, and no tool calls. Under provider load
+// this signals a truncated/failed response, not a legitimate answer, so it is
+// retried like any other transient stream failure instead of ending the turn
+// silently.
+var errEmptyResponse = errors.New("provider returned an empty response (no content, no thinking, no tool calls)")
+
 // shouldRetryStreamError reports whether err is worth retrying.
 //
 // It trusts the provider hook classification when the error is a
@@ -45,6 +52,11 @@ func shouldRetryStreamError(err error) bool {
 	// non-retryable because isTransientStreamError does not match it.
 	if errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	// An empty clean response is a provider-side truncation (seen under load);
+	// worth a bounded retry rather than a silent turn end.
+	if errors.Is(err, errEmptyResponse) {
+		return true
 	}
 	// Overflow is retried once via the dedicated compress+retry path.
 	if isContextLengthError(err) {
