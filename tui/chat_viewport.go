@@ -210,6 +210,7 @@ func (cv *ChatViewport) ShowReadContent() bool {
 func (cv *ChatViewport) invalidateAllToolWidgets() {
 	for i := range cv.entries {
 		if tc, ok := cv.entries[i].View.(*ToolExecutionComponent); ok {
+			tc.ClearExplicitExpand() // global toggle-all overrides per-widget toggles
 			tc.SetToolViewPolicy(cv)
 		}
 	}

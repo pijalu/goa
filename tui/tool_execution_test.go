@@ -577,6 +577,46 @@ func TestToolExecution_CtrlO_TogglesWriteBody(t *testing.T) {
 	}
 }
 
+// TestToolExecution_PerWidgetExpandWinsWhileStreaming is the P1 regression
+// test: an explicit per-widget expand (Enter/Ctrl+O on a focused block) must
+// win over a collapsed global policy and persist across streaming re-renders.
+func TestToolExecution_PerWidgetExpandWinsWhileStreaming(t *testing.T) {
+	tc := NewToolExecution("write", `{"path":"x.go"}`)
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: false})
+	tc.SetStatus(ToolRunning)
+	if tc.effectiveExpanded() {
+		t.Fatal("expected collapsed initially")
+	}
+	tc.HandleInput("enter") // explicit expand
+	if !tc.effectiveExpanded() {
+		t.Fatal("explicit expand must win over collapsed global policy")
+	}
+	tc.SetArgsPartial(`{"path":"x.go","content":"l1\nl2\nl3"}`) // streaming delta
+	if !tc.effectiveExpanded() {
+		t.Fatal("explicit expand must persist across streaming deltas")
+	}
+	tc.HandleInput("enter") // explicit collapse
+	if tc.effectiveExpanded() {
+		t.Fatal("explicit collapse must win")
+	}
+}
+
+// TestToolExecution_PerWidgetCollapseWinsOverGlobalExpanded is the P1 inverse:
+// when the global policy is expanded, an explicit per-widget collapse must
+// still win (previously the policy overrode it, making collapse impossible).
+func TestToolExecution_PerWidgetCollapseWinsOverGlobalExpanded(t *testing.T) {
+	tc := NewToolExecution("write", `{"path":"x.go"}`)
+	tc.SetToolViewPolicy(stubViewPolicy{expanded: true})
+	tc.SetStatus(ToolRunning)
+	if !tc.effectiveExpanded() {
+		t.Fatal("expected expanded via global policy")
+	}
+	tc.HandleInput("enter") // explicit collapse
+	if tc.effectiveExpanded() {
+		t.Fatal("explicit collapse must win over expanded global policy")
+	}
+}
+
 // TestToolExecution_NoGenericStatsLine asserts the removed uniform
 // "N lines in / M lines out" counter never renders for any tool.
 func TestToolExecution_NoGenericStatsLine(t *testing.T) {

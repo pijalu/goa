@@ -66,6 +66,12 @@ type ToolExecutionComponent struct {
 	args         map[string]any
 	output       string
 	expanded     bool
+	// expandedSet is true once the user has explicitly toggled this block
+	// (Enter/Ctrl+O on the focused widget). An explicit choice wins over the
+	// global view policy (Ctrl+O-all / config default) in BOTH directions — so
+	// collapsing one block while the rest are expanded, or expanding one while
+	// the rest are collapsed, sticks across streaming re-renders.
+	expandedSet  bool
 	status       ToolStatus
 	duration     string
 	isPartial    bool
@@ -338,6 +344,22 @@ func (tc *ToolExecutionComponent) SetExpanded(expanded bool) {
 	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
+}
+
+// setExpandedExplicit records a user-initiated toggle (Enter/Ctrl+O on the
+// focused block): the choice becomes an explicit override that wins over the
+// global view policy until ClearExplicitExpand is called (e.g. by the global
+// Ctrl+O toggle-all).
+func (tc *ToolExecutionComponent) setExpandedExplicit(expanded bool) {
+	tc.expandedSet = true
+	tc.SetExpanded(expanded)
+}
+
+// ClearExplicitExpand drops the per-widget override so the widget follows the
+// global view policy again. Called by the global toggle-all so a fresh Ctrl+O
+// flips every block uniformly regardless of earlier per-widget toggles.
+func (tc *ToolExecutionComponent) ClearExplicitExpand() {
+	tc.expandedSet = false
 }
 
 // SetToolArgs sets the formatted arguments string.
@@ -740,6 +762,11 @@ func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 // false so read output stays silent by default, while the per-widget toggle
 // (Ctrl+O/Enter on the block) still works.
 func (tc *ToolExecutionComponent) effectiveExpanded() bool {
+	// An explicit per-widget toggle wins over the global policy in both
+	// directions, and persists across streaming re-renders.
+	if tc.expandedSet {
+		return tc.expanded
+	}
 	if tc.viewPolicy == nil {
 		return tc.expanded
 	}
@@ -763,7 +790,7 @@ func (tc *ToolExecutionComponent) bgANSI() string {
 // HandleInput processes key events for expand/collapse.
 func (tc *ToolExecutionComponent) HandleInput(data string) {
 	if matchesKey(data, "ctrl+o") || matchesKey(data, "enter") {
-		tc.SetExpanded(!tc.expanded)
+		tc.setExpandedExplicit(!tc.effectiveExpanded())
 	}
 }
 
