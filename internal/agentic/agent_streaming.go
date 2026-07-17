@@ -934,11 +934,13 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 
 	// Surface the failure as a system chat bubble so the user can see the
 	// retry in the conversation history, not just a transient status message.
+	// The message is NOT marked transient so the error history survives
+	// successful retries — the user should know intermittent issues occurred.
 	a.emitEvent(OutputEvent{
 		Type:     EventContent,
 		Role:     System,
 		Text:     formatRetryMessage(streamErr),
-		Metadata: map[string]string{"category": "system-notification", "transient": "true"},
+		Metadata: map[string]string{"category": "system-notification"},
 	})
 
 	toolCallEncountered, retried := a.retryStream(ctx, streamErr, model, opts)
@@ -950,6 +952,13 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	}
 
 	a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+	// Surface the final failure after retries are exhausted.
+	a.emitEvent(OutputEvent{
+		Type:     EventContent,
+		Role:     System,
+		Text:     formatFatalStreamMessage(streamErr),
+		Metadata: map[string]string{"category": "system-notification"},
+	})
 	if ctx.Err() != nil {
 		return true, ctx.Err()
 	}

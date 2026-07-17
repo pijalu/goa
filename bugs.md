@@ -41,20 +41,27 @@ goa got stuck in "Sending request..." without any error message or timeout indic
 Sending another message unsticks the session — pointing to a state-machine bug where
 the status is never cleared when the agent's turn processing ends.
 
-**Root cause:** The agent's `finishProcessing()` method — the guaranteed cleanup path
-called on every exit from the turn-processing loop — did not emit an `EventProgress{Text: ""}`
-event to clear the "Sending request..." status. When the provider stream ended (with or
-without error), the UI stayed permanently stuck on "Sending request..." because the
-progress clear event was only emitted in specific error branches of `handleStreamFailure`,
-not on the general-purpose cleanup path.
+**Root cause (state cleanup):** The agent's `finishProcessing()` method — the guaranteed
+cleanup path called on every exit from the turn-processing loop — did not emit an
+`EventProgress{Text: ""}` event to clear the "Sending request..." status. When the
+provider stream ended (with or without error), the UI stayed permanently stuck on
+"Sending request..." because the progress clear event was only emitted in specific
+error branches of `handleStreamFailure`, not on the general-purpose cleanup path.
 
-**Fix:** `internal/agentic/agent.go` `finishProcessing()` now emits
+**Fix (state cleanup):** `internal/agentic/agent.go` `finishProcessing()` now emits
 `emitEvent(OutputEvent{Type: EventProgress, Text: ""})` before releasing the agent lock,
 ensuring the status is cleared on every exit path (success, error, cancellation).
 
-**Also fixed:** Added default 5-minute request timeout in `provider/manager.go`
-`BuildStreamOptions()` for cases where the provider config doesn't specify one,
-ensuring HTTP connections don't hang indefinitely.
+**Also fixed (error visibility):** The retry message in `handleStreamFailure` was
+marked `transient: "true"`, making it vanish at turn end — the user never saw that an
+error occurred even when the retry succeeded. Now the retry message is non-transient,
+so the error history survives successful retries. Additionally, when all retries are
+exhausted, a clear non-transient system message with full error details is now shown
+to the user instead of silently returning an error.
+
+**Also fixed (belt-and-suspenders):** Added default 5-minute request timeout in
+`provider/manager.go` `BuildStreamOptions()` for cases where the provider config
+doesn't specify one, ensuring HTTP connections don't hang indefinitely.
 
 ## Tool and chat history artefacts
 Tool call in history shows artefacts of the input line — terminal rendering mixed with conversation output.
