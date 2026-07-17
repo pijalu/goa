@@ -113,6 +113,13 @@ type ToolExecutionComponent struct {
 	// tool calls are distinguishable in the chat viewport.
 	agentLabel string
 
+	// outputBytes and outputLines track the size of the tool's output so far,
+	// for the live-progress footer ("elapsed 12.3s · 1.2 KB · 84 lines").
+	// Updated by SetOutput (which is called both for partial progress and for
+	// the final result). Only shown while the tool is still running.
+	outputBytes int
+	outputLines int
+
 	// viewPolicy supplies the global tool-view state (expand mode + preview
 	// line count). When nil, the widget falls back to its own expanded flag and
 	// a default preview count.
@@ -330,10 +337,40 @@ func (tc *ToolExecutionComponent) renderDuration() {
 		}
 		tc.box.duration = "Took " + tc.duration
 	case ToolPending, ToolRunning:
-		tc.box.duration = "elapsed " + d
+		tc.box.duration = "elapsed " + d + tc.progressSuffix()
 	default:
 		tc.box.duration = tc.duration
 	}
+}
+
+// progressSuffix returns the live-progress segment appended to the duration
+// line while a tool is running: " · 1.2 KB · 84 lines". Returns "" when no
+// output has been produced yet so the footer stays clean for fast tools.
+func (tc *ToolExecutionComponent) progressSuffix() string {
+	if tc.outputBytes == 0 {
+		return ""
+	}
+	return " · " + formatByteSize(tc.outputBytes) + " · " + formatLineCount(tc.outputLines)
+}
+
+// formatByteSize returns a human-readable byte count (e.g. "1.2 KB").
+func formatByteSize(n int) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%d B", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
+	}
+}
+
+// formatLineCount returns a human-readable line count (e.g. "84 lines").
+func formatLineCount(n int) string {
+	if n == 1 {
+		return "1 line"
+	}
+	return fmt.Sprintf("%d lines", n)
 }
 
 // ── Setters ──
@@ -635,6 +672,11 @@ func (tc *ToolExecutionComponent) SetAgentLabel(label string) {
 // SetOutput sets the tool's output text.
 func (tc *ToolExecutionComponent) SetOutput(output string) {
 	tc.output = output
+	tc.outputBytes = len(output)
+	tc.outputLines = strings.Count(output, "\n")
+	if output != "" && !strings.HasSuffix(output, "\n") {
+		tc.outputLines++ // final partial line
+	}
 	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()

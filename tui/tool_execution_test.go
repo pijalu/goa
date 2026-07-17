@@ -631,3 +631,80 @@ func TestToolExecution_NoGenericStatsLine(t *testing.T) {
 		}
 	}
 }
+
+// TestToolExecution_LiveProgressFooter is the P0 regression test: while a
+// tool is running, its duration line must show live output growth
+// ("elapsed Xs · N B · M lines") so the user sees progress instead of a
+// bare wall-clock timer. Completed tools show plain "Took Xs" (no suffix),
+// and a running tool with no output yet shows no suffix either.
+func TestToolExecution_LiveProgressFooter(t *testing.T) {
+	// Running tool with streamed output: suffix shows bytes + lines.
+	tc := NewToolExecution("bash", `{"command":"make"}`)
+	tc.startTime = time.Now().Add(-time.Second) // backdate past minDuration
+	tc.SetStatus(ToolRunning)
+	tc.SetOutput("compiling a.c\nlinking b.o\n")
+	rendered := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(rendered, "elapsed") {
+		t.Fatalf("running tool must show elapsed timer, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "26 B") {
+		t.Errorf("footer must show byte count, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "2 lines") {
+		t.Errorf("footer must show line count, got %q", rendered)
+	}
+
+	// Progress update grows the counters.
+	tc.SetOutput("compiling a.c\nlinking b.o\nrunning tests\n")
+	rendered = ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(rendered, "3 lines") {
+		t.Errorf("footer must track growing output, got %q", rendered)
+	}
+
+	// Completed tool: plain "Took" without the progress suffix.
+	tc.SetStatus(ToolSuccess)
+	rendered = ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(rendered, "Took") {
+		t.Errorf("completed tool must show Took, got %q", rendered)
+	}
+	if strings.Contains(rendered, "·") {
+		t.Errorf("completed tool must not show the progress suffix, got %q", rendered)
+	}
+
+	// Running tool with no output yet: no suffix (stays clean for fast tools).
+	tc2 := NewToolExecution("read", `{"path":"x"}`)
+	tc2.startTime = time.Now().Add(-time.Second)
+	tc2.SetStatus(ToolRunning)
+	rendered2 := ansi.Strip(strings.Join(tc2.Render(80), "\n"))
+	if strings.Contains(rendered2, "·") {
+		t.Errorf("running tool with no output must not show the suffix, got %q", rendered2)
+	}
+	if !strings.Contains(rendered2, "elapsed") {
+		t.Errorf("running tool with no output must still show elapsed, got %q", rendered2)
+	}
+}
+
+// TestFormatByteSize / TestFormatLineCount cover the footer unit formatters.
+func TestFormatByteSize(t *testing.T) {
+	cases := []struct {
+		n    int
+		want string
+	}{
+		{0, "0 B"}, {512, "512 B"}, {1023, "1023 B"},
+		{1024, "1.0 KB"}, {1536, "1.5 KB"}, {1024 * 1024, "1.0 MB"},
+	}
+	for _, c := range cases {
+		if got := formatByteSize(c.n); got != c.want {
+			t.Errorf("formatByteSize(%d) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+func TestFormatLineCount(t *testing.T) {
+	if got := formatLineCount(1); got != "1 line" {
+		t.Errorf("formatLineCount(1) = %q, want %q", got, "1 line")
+	}
+	if got := formatLineCount(84); got != "84 lines" {
+		t.Errorf("formatLineCount(84) = %q, want %q", got, "84 lines")
+	}
+}
