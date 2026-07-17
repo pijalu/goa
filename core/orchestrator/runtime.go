@@ -61,6 +61,7 @@ type Runtime struct {
 	objective  string
 	goal       GoalBinder // optional; when set, the run is goal-bound
 	goalID     string     // goal id for the bound goal
+	planID     string     // plan id when the run is plan-bound
 	goalMu     sync.Mutex // guards the goal field
 	goalCallMu sync.Mutex // serializes goal API calls (single-driver design)
 	telemetry  Telemetry  // optional; nil-safe via telemetryOr
@@ -258,6 +259,9 @@ func (r *Runtime) Run(ctx context.Context, objective string) error {
 	}
 	if r.goalID != "" {
 		payload["goal_id"] = r.goalID
+	}
+	if r.planID != "" {
+		payload["plan_id"] = r.planID
 	}
 	r.emit(Event{
 		Type:    EventRunStarted,
@@ -959,6 +963,11 @@ func (r *Runtime) SetGoalBinder(gb GoalBinder) {
 // SetGoalID records the goal id associated with the binder. It is emitted in
 // the run_started event so the run snapshot can later recover it.
 func (r *Runtime) SetGoalID(id string) { r.goalID = id }
+
+// SetPlanID records the plan id associated with the run. It is emitted in the
+// run_started event so the run snapshot can later recover it. Must be called
+// before Run.
+func (r *Runtime) SetPlanID(id string) { r.planID = id }
 
 // GoalBound reports whether the run has a goal binder attached.
 func (r *Runtime) GoalBound() bool {

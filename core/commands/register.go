@@ -79,6 +79,8 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		// pair / reviewer workflows
 		&PairCommand{},
 		&ReviewerCommand{},
+		// plan
+		&PlanCommand{},
 		// provider
 		&ProviderCommand{},
 		// pty

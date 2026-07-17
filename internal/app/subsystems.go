@@ -984,6 +984,14 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	}
 	_ = s.registry.Register(orchCmd)
 
+	// Wire the plan command with execution support now that the adapter exists.
+	if cmd, ok := s.registry.Resolve("plan"); ok {
+		if planCmd, ok := cmd.(*commands.PlanCommand); ok {
+			binder := NewPlanBinder(s.orchAdapter, cfg, projectDir, filepath.Join(projectDir, ".goa", "prompts"))
+			binder.BindPlanCommand(planCmd)
+		}
+	}
+
 	s.dreamScheduler = newDreamScheduler(s)
 	_ = s.dreamScheduler.readSchedulerState()
 	s.dreamScheduler.Start()

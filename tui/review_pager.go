@@ -12,6 +12,7 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/review"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tui/annotate"
 )
 
 // ReviewPager renders a git diff and lets the user navigate, select a base
@@ -28,10 +29,17 @@ type ReviewPager struct {
 	Session *review.Session
 	Diff    string
 
+	// Generic pager core — holds content and anchors (used by PlanPager too).
+	pager *annotate.Pager
+
 	// scrollTop is the index of the first visible line in lines.
 	scrollTop int
 	// cursor is the selected line index within lines.
 	cursor int
+
+	// viewport dimensions; set by the host before the first render.
+	viewportW int
+	viewportH int
 
 	lines []review.DiffLine
 
@@ -78,10 +86,6 @@ type ReviewPager struct {
 
 	// RecentCommits is the list of commits shown by the base selector.
 	RecentCommits []review.CommitInfo
-
-	// viewport dimensions; set by the host before the first render.
-	viewportW int
-	viewportH int
 }
 
 // NewReviewPager creates a pager for the given review session and diff.
@@ -89,6 +93,7 @@ func NewReviewPager(session *review.Session, diff string) *ReviewPager {
 	p := &ReviewPager{
 		Session: session,
 		Diff:    diff,
+		pager:   annotate.NewPager(),
 		lines:   review.ParseDiff(diff),
 	}
 	p.moveCursorToFirstHunk()
@@ -114,9 +119,17 @@ func (p *ReviewPager) moveCursorToFirstHunk() {
 	}
 }
 
-// Render implements Component. It takes the read lock and delegates to
-// renderLocked; renderLocked and every helper it calls (ensureScrollInBounds,
-// currentLine, renderLine, ...) assume the read lock is already held.
+// visibleHeight returns the available content display height.
+func (p *ReviewPager) visibleHeight() int {
+	if p.viewportH > 1 {
+		return p.viewportH - 1 // reserve one row for title
+	}
+	// When no viewport is set, render a large buffer so the compositor can
+	// clamp to the actual terminal height and still cover the full screen.
+	return 200
+}
+
+// Render implements Component. It returns the rendered lines.
 func (p *ReviewPager) Render(width int) []string {
 	return p.renderDiff(width)
 }
@@ -130,7 +143,7 @@ func (p *ReviewPager) renderDiff(width int) []string {
 	if height < 3 {
 		height = 3
 	}
-	p.ensureScrollInBounds()
+	p.cursor, p.scrollTop = annotate.EnsureScrollInBounds(p.cursor, p.scrollTop, len(p.lines), height)
 
 	end := p.scrollTop + height
 	if end > len(p.lines) {
@@ -222,43 +235,6 @@ func (p *ReviewPager) renderLine(line review.DiffLine, width int, hasComment boo
 	}
 }
 
-func (p *ReviewPager) visibleHeight() int {
-	if p.viewportH > 1 {
-		return p.viewportH - 1 // reserve one row for title
-	}
-	// When no viewport is set, render a large buffer so the compositor can
-	// clamp to the actual terminal height and still cover the full screen.
-	return 200
-}
-
-func (p *ReviewPager) ensureScrollInBounds() {
-	if p.cursor < 0 {
-		p.cursor = 0
-	}
-	if p.cursor >= len(p.lines) {
-		p.cursor = len(p.lines) - 1
-	}
-	if p.cursor < 0 {
-		p.cursor = 0
-	}
-	if p.scrollTop > p.cursor {
-		p.scrollTop = p.cursor
-	}
-	height := p.visibleHeight()
-	if p.cursor >= p.scrollTop+height {
-		p.scrollTop = p.cursor - height + 1
-	}
-	if p.scrollTop < 0 {
-		p.scrollTop = 0
-	}
-	if p.scrollTop > len(p.lines)-height {
-		p.scrollTop = len(p.lines) - height
-	}
-	if p.scrollTop < 0 {
-		p.scrollTop = 0
-	}
-}
-
 // HandleInput implements Component. It routes only navigation and action keys;
 // all text entry is delegated to the host via callbacks.
 func (p *ReviewPager) HandleInput(data string) {
@@ -288,18 +264,17 @@ func (p *ReviewPager) HandleInput(data string) {
 	}
 }
 
+// moveCursor moves the cursor by delta rows and keeps it in view. Runs on
+// the commandLoop (sole owner).
+func (p *ReviewPager) moveCursor(delta int) {
+	p.cursor, p.scrollTop = annotate.MoveCursor(p.cursor, p.scrollTop, delta, len(p.lines), p.visibleHeight())
+	p.requestRender()
+}
+
 func (p *ReviewPager) close() {
 	if p.OnClose != nil {
 		p.OnClose()
 	}
-}
-
-// moveCursor moves the cursor by delta rows and keeps it in view. Runs on
-// the commandLoop (sole owner).
-func (p *ReviewPager) moveCursor(delta int) {
-	p.cursor += delta
-	p.ensureScrollInBounds()
-	p.requestRender()
 }
 
 func (p *ReviewPager) requestRender() {

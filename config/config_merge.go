@@ -28,6 +28,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergeTelegram(other)
 	c.mergePermissions(other)
 	c.mergeOrchestrator(other)
+	c.mergePlan(other)
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.
@@ -585,5 +586,17 @@ func (c *Config) mergeOrchestrator(other *Config) {
 	}
 	if other.Orchestrator.Defaults.RunTimeout != "" {
 		c.Orchestrator.Defaults.RunTimeout = other.Orchestrator.Defaults.RunTimeout
+	}
+	if other.Orchestrator.Defaults.ActivityTimeout != "" {
+		c.Orchestrator.Defaults.ActivityTimeout = other.Orchestrator.Defaults.ActivityTimeout
+	}
+}
+
+// mergePlan merges the plan config section.
+func (c *Config) mergePlan(other *Config) {
+	// Last-write-wins: if the override defines any plan config, use it wholesale.
+	// This matches the pattern of orchestrator role merge (map key overwrite).
+	if other.Plan.Retention.Days != 0 || other.Plan.Retention.Enabled != false {
+		c.Plan.Retention = other.Plan.Retention
 	}
 }

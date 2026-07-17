@@ -17,7 +17,7 @@ import (
 	"github.com/pijalu/goa/internal/embeddoc"
 )
 
-//go:embed *.md mode/*/*.md pair/*.md task/*.md pipeline/*.md tools/*.md orchestrate/*.md
+//go:embed *.md mode/*/*.md pair/*.md task/*.md pipeline/*.md tools/*.md orchestrate/*.md plan/*.md
 var embeddedFS embed.FS
 
 // LoadPipelinePrompt returns the stage prompt for a pipeline.
@@ -93,6 +93,23 @@ func LoadCompanionReviewDisabledPrompt() (string, error) {
 		return "", fmt.Errorf("companion review disabled prompt invalid: %w", err)
 	}
 	return doc.Body, nil
+}
+
+// LoadPlanPrompt returns the planner system prompt. If userPromptDir is
+// non-empty and contains plan/planner.md, that file is used instead.
+func LoadPlanPrompt(userPromptDir string) (string, error) {
+	path := "plan/planner.md"
+	if userPromptDir != "" {
+		userPath := filepath.Join(userPromptDir, path)
+		if data, err := os.ReadFile(userPath); err == nil {
+			return string(data), nil
+		}
+	}
+	data, err := embeddedFS.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("plan prompt not found: %w", err)
+	}
+	return string(data), nil
 }
 
 // EmbeddedFS returns the embedded filesystem for use by Registry.

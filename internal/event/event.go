@@ -74,6 +74,10 @@ type ChatEvent struct {
 	ShowOutputModal *ShowOutputModal
 	// ShowReviewPager opens the code-review diff pager.
 	ShowReviewPager *ShowReviewPager
+	// ShowPlanPager opens the plan-annotation pager.
+	ShowPlanPager *ShowPlanPager
+	// ShowPlanStatus opens the plan-status overlay.
+	ShowPlanStatus *ShowPlanStatus
 	// PipelineProgress carries a pipeline stage progress update.
 	PipelineProgress *PipelineProgress
 	// TaskUpdate carries a background task status update.
@@ -104,6 +108,16 @@ type ShowOutputModal struct {
 // ShowReviewPager requests the TUI to open the code-review diff pager.
 type ShowReviewPager struct {
 	Pager any // concrete type is *tui.ReviewPager to avoid an import cycle
+}
+
+// ShowPlanPager requests the TUI to open the plan-annotation pager.
+type ShowPlanPager struct {
+	Store any // concrete type is *plan.Store to avoid an import cycle
+}
+
+// ShowPlanStatus requests the TUI to open the plan-status overlay.
+type ShowPlanStatus struct {
+	Store any // concrete type is *plan.Store to avoid an import cycle
 }
 
 // PipelineProgress carries a pipeline stage progress update.

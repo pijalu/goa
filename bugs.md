@@ -36,20 +36,107 @@ If new items are added, restart the process.
 
 # Open bugs
 
-## Commit skill
-There seems to be a commit skill but it fails:
+## Stuck in sending
+goa can get stuck in sending requests - without any error message / issue / time indication: /Users/muaddib/dev/goa/.goa/exports/goa-export-20260717-082916.zip
+
+The session was unstuck after sending a message - pointing to a network issue or server unavailability that was not correctly catched by goa.
+
+session stuck:
+```
+▾ thinking...
+▏All pass. Let me check the final coverage.
+
+
+All pass. Let me check the final Phase 1 gate coverage.
+
+
+◞ $ cd /Users/muaddib/dev/goa && go test ./core/plan/ -coverprofile=coverage.out -count=1 -race 2>&1 && go tool cover -fu... (timeout 30s)
+ok     github.com/pijalu/goa/core/plan 1.412s  coverage: 90.7% of statements
+elapsed 2.4s
+
+github.com/pijalu/goa/core/plan/mutations.go:242:      UpdateComment                   92.3%
+github.com/pijalu/goa/core/plan/mutations.go:265:      RemoveComment                   90.0%
+github.com/pijalu/goa/core/plan/mutations.go:283:      ResolveComment                  90.9%
+github.com/pijalu/goa/core/plan/mutations.go:319:      StartExecution                  90.0%
+github.com/pijalu/goa/core/plan/mutations.go:342:      StartItem                       88.0%
+github.com/pijalu/goa/core/plan/mutations.go:390:      CompleteItem                    93.3%
+github.com/pijalu/goa/core/plan/mutations.go:415:      BlockItem                       91.7%
+github.com/pijalu/goa/core/plan/mutations.go:436:      SkipItem                        91.7%
+github.com/pijalu/goa/core/plan/render.go:20:          Render                          97.8%
+github.com/pijalu/goa/core/plan/render.go:98:          minInt                          66.7%
+github.com/pijalu/goa/core/plan/render.go:106:         truncateInline                  66.7%
+github.com/pijalu/goa/core/plan/store.go:37:           Create                          79.4%
+github.com/pijalu/goa/core/plan/store.go:115:          Open                            79.2%
+github.com/pijalu/goa/core/plan/store.go:163:          Resolve                         76.5%
+github.com/pijalu/goa/core/plan/store.go:196:          append                          78.6%
+github.com/pijalu/goa/core/plan/store.go:224:          writeSnapshot                   75.0%
+github.com/pijalu/goa/core/plan/store.go:234:          applyEvent                      86.9%
+github.com/pijalu/goa/core/plan/store.go:478:          applyItemFields                 77.8%
+github.com/pijalu/goa/core/plan/store.go:538:          Snapshot                        77.8%
+github.com/pijalu/goa/core/plan/store.go:554:          Close                           80.0%
+total:                                                 (statements)                    90.7%
+Took 2.4s
+
+◝ Sending request...
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (✱ feature/plan)                                                                                                                       coding-posture │ YOLO
+↑193.4K ↓62.5K 129.2 tok/s CH96.5% TC:89 $0.0595 10.7%/1.0M (auto)                                                              (opencode-go) deepseek-v4-flash • high
 ```
 
-
- ✗ read embedded:/commit-msg/SKILL.md
- Error: [read error: file_not_found]
- File not found: embedded:/commit-msg/SKILL.md
- Hint: Check the file path and try again. Use search to find the correct path.
- Took 0.60s
+## Tool and chat history
+Tool call in history will show artefacts of the input line:
+```
+Let me run the tests now.
 
 
- ✓ $ cd /Users/muaddib/dev/goa && git diff --stat && git diff specs/plan-mode.md | head -60
- ```
+◞ $ cd /Users/muaddib/dev/goa && go test ./core/plan/ -count=1 -race -v 2>&1 | tail -40 (timeout 30s)
+elapsed 1.3s
+
+◞ Tool calling
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (✱ feature/plan)                                                                                                                       coding-posture │ YOLO
+↑68.9K ↓61.4K 157.7 tok/s CH98.6% TC:84 $0.0403 10.5%/1.0M (auto)                                                               (opencode-go) deepseek-v4-flash • high
+--- PASS: TestReplay_Idempotent (0.00s)
+=== RUN   TestReplay_FinishWithAllTerminal
+--- PASS: TestReplay_FinishWithAllTerminal (0.00s)
+=== RUN   TestReplay_Fail
+--- PASS: TestReplay_Fail (0.00s)
+=== RUN   TestReplay_BlockPlan
+--- PASS: TestReplay_BlockPlan (0.00s)
+```
+
+## Steering view
+The steering view should only show a preview of the message to be sent - in case of multiple messages/lines, a stat below the preview should show the number of lines to be sent.
+
+The user should be able to edit the message before sending - in such case, the steering is sent to the edit line for update (the steering queue is emptied until the user resubmits)
+
+## Write tool UI is not working
+The write stats are incorrect - the show stats on the preview !
+They should show the number of lines written in total, not in the preview !
+
+ctrl+O to expand does not show anything / unstable - it seems to show only at the end of the write prep - after the write is done it only show the preview again !
+
+eg: Write:
+```
+◉ write ...
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package plan
+
+import (
+{
+… writing 8 lines (Ctrl+O to expand)
+elapsed 7.6s
+
+◠ Calling write...
+```
+
 
 
 # Closed Bugs

@@ -6,6 +6,7 @@ package tui
 
 import (
 	"github.com/pijalu/goa/tools"
+	plantools "github.com/pijalu/goa/tools/plan"
 	goaltui "github.com/pijalu/goa/tui/goal"
 	swarm "github.com/pijalu/goa/tui/swarm"
 )
@@ -28,6 +29,8 @@ func init() {
 	RegisterToolRenderer("SetGoalBudget", goaltui.SetGoalBudgetRenderer{})
 	RegisterToolRenderer("agent", &tools.AgentToolRenderer{})
 	RegisterToolRenderer("agent_swarm", &swarm.AgentSwarmRenderer{})
+	RegisterToolRenderer("plan", &plantools.PlanToolRenderer{})
+	RegisterToolRenderer("task_outcome", &plantools.TaskOutcomeRenderer{})
 }
 
 // SyncToolTheme updates the theme provider used by tool renderers. Call this

@@ -87,6 +87,11 @@ goals:
     enabled: true
     days: 7
 
+plan:
+  retention:
+    enabled: true
+    days: 7
+
 multi_agent:
   enabled: false
   pattern: "pair"

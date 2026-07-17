@@ -22,6 +22,7 @@ func (c *Config) Validate() error {
 	c.validateSkillMode(&ve)
 	c.validateOrchestrator(&ve)
 	c.validateGoals(&ve)
+	c.validatePlan(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
@@ -198,6 +199,12 @@ func (c *Config) validateOrchestrator(ve *internal.ValidationError) {
 				ve.Add(fmt.Sprintf("orchestrator.roles.%s.model: model %q not found in models list", name, role.Model))
 			}
 		}
+		if role.ContextWindow < 0 {
+			ve.Add(fmt.Sprintf("orchestrator.roles.%s.context_window: must be >= 0 (got %d)", name, role.ContextWindow))
+		}
+		if role.MaxTokens < 0 {
+			ve.Add(fmt.Sprintf("orchestrator.roles.%s.max_tokens: must be >= 0 (got %d)", name, role.MaxTokens))
+		}
 	}
 	if oc.Pool.MaxTotalAgents < 0 {
 		ve.Add(fmt.Sprintf("orchestrator.pool.max_total_agents: must be >= 0 (got %d)", oc.Pool.MaxTotalAgents))
@@ -216,5 +223,12 @@ func (c *Config) validateGoals(ve *internal.ValidationError) {
 	gr := c.Goals.Retention
 	if gr.Days < 0 {
 		ve.Add(fmt.Sprintf("goals.retention.days: must be >= 0 (got %d)", gr.Days))
+	}
+}
+
+func (c *Config) validatePlan(ve *internal.ValidationError) {
+	pr := c.Plan.Retention
+	if pr.Days < 0 {
+		ve.Add(fmt.Sprintf("plan.retention.days: must be >= 0 (got %d)", pr.Days))
 	}
 }

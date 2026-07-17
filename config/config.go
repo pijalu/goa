@@ -59,6 +59,7 @@ type Config struct {
 	Telegram           TelegramConfig           `yaml:"telegram"`
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
+	Plan               PlanConfig               `yaml:"plan,omitempty"`
 	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
 	Permissions        []perms.Rule             `yaml:"permissions,omitempty"`
 	// Aliases maps short user-defined names to command invocations.
@@ -256,11 +257,14 @@ type OrchestratorRetentionConfig struct {
 	Days    int  `yaml:"days"`
 }
 
-// OrchestratorRole binds a role to a specific model/provider and tool allowlist.
+// OrchestratorRole binds a role to a specific model/provider, tool allowlist,
+// and optional context-window/max-tokens limits for worker agents.
 type OrchestratorRole struct {
 	Model        string   `yaml:"model"`
 	Provider     string   `yaml:"provider,omitempty"`
 	AllowedTools []string `yaml:"allowed_tools,omitempty"`
+	ContextWindow int     `yaml:"context_window,omitempty"` // tokens; 0 = model default
+	MaxTokens    int      `yaml:"max_tokens,omitempty"`     // compression threshold; 0 = default
 }
 
 // OrchestratorPoolConfig bounds the live agent pool.
@@ -284,6 +288,19 @@ type GoalsConfig struct {
 // GoalsRetentionConfig controls how long terminal normal goals are kept.
 // Enabled=false or Days=0 means "keep forever".
 type GoalsRetentionConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Days    int  `yaml:"days"`
+}
+
+// PlanConfig controls the durable plan subsystem.
+type PlanConfig struct {
+	Retention PlanRetentionConfig `yaml:"retention,omitempty"`
+}
+
+// PlanRetentionConfig controls how long terminal-state plans are kept.
+// Enabled=false or Days=0 means "keep forever". Only plans with status
+// done/blocked/failed are eligible for deletion.
+type PlanRetentionConfig struct {
 	Enabled bool `yaml:"enabled"`
 	Days    int  `yaml:"days"`
 }
