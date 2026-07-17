@@ -986,9 +986,39 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	scene := &Scene{TerminalW: w, TerminalH: h}
 	rendered, _ := t.renderChildren(w, h)
 	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w, h)
+	scene.ChromeHeight = t.bottomChromeHeight(rendered)
 	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
 	extractCursorMarker(scene)
 	return scene
+}
+
+// bottomChromeHeight returns the total rendered height of the fixed chrome
+// stacked BELOW the scrollable transcript (the HeightAllocated child): status
+// bar, goal/steering bubbles, bg panel, input editor, footer. These rows must
+// never enter terminal scrollback when the transcript scrolls. Children above
+// the transcript (the header) scroll with it and are not counted.
+func (t *TUI) bottomChromeHeight(rendered [][]string) int {
+	transcriptIdx := t.transcriptChildIndex()
+	if transcriptIdx < 0 {
+		return 0
+	}
+	chrome := 0
+	for i := transcriptIdx + 1; i < len(t.children); i++ {
+		chrome += len(rendered[i])
+	}
+	return chrome
+}
+
+// transcriptChildIndex returns the index of the scrollable fill child (the
+// conversation viewport), or -1 when none is present. It is the single
+// HeightAllocated component; everything after it is pinned bottom chrome.
+func (t *TUI) transcriptChildIndex() int {
+	for i, child := range t.children {
+		if _, ok := child.(HeightAllocated); ok {
+			return i
+		}
+	}
+	return -1
 }
 
 // renderChildren renders all base children, setting viewport/allocated heights

@@ -15,12 +15,39 @@ Autonomous fix branch for rendering/streaming issues found via session-log analy
 | Item | Status | Commit | Notes |
 |------|--------|--------|-------|
 | Branch setup | done | — | baseline green except P4 RED test |
-| P4 pinned chrome | in-progress | — | repro test RED; render-path pin (compose untouched) |
+| P4 pinned chrome | done | — | compositor rewrite: watermark + DECSTBM region; full suite green incl. race; complexity in budget |
 | P0 live progress | pending | — | |
 | P1 expand mid-stream | pending | — | |
 | P2 steering edit | pending | — | |
 | P3 search lines | pending | — | |
 
+## P4 solution (committed)
+
+Rewrote the compositor around an explicit-scrollback model instead of the old
+accreted six-strategy scroll dispatch:
+
+- **`scrollTop` watermark** — transcript rows emitted into terminal scrollback
+  exactly once, in order, monotonically advancing, and clamped to the chrome
+  band start so chrome can never leak (structural, not heuristic).
+- **One scroll mechanism** (`emitScrollbackAdvance`) with two sub-cases:
+  first-frame top-down write (blank screen) and steady-state bottom
+  scroll-then-write. The old first/large/bare/deleted/shrink/resize strategy
+  dispatch is gone.
+- **`prevWindowFull` discriminator** — a previous window counts as "full" only
+  if every transcript region row is non-blank; partial windows (blank padding
+  from bottom-aligned short content) take the full-range re-emit path. This was
+  the subtle case behind the last content-loss bug.
+- **DECSTBM scroll region** `[1, height-chromeH]` confines native terminal
+  scroll to the transcript, so pinned chrome (status/editor/footer/bubbles)
+  never moves and never enters scrollback.
+- Chrome classification is role-based: the single `HeightAllocated` child is
+  the scrollable transcript; every child after it is pinned chrome
+  (`Scene.ChromeHeight` computed in `buildScene`).
+
+Net −208 lines in compositor.go. Both test emulators (`TermEmulator`,
+`screenEmulator`) gained DECSTBM support.
+
 ## Key lessons
 
 - Compositor virtual-buffer invariant: scrolled-off transcript rows MUST stay in the buffer so differential scroll can emit them to native scrollback. Do NOT cap/shift the canvas in `compose` (broke 15 tests). Pin chrome in the **render/diff path** instead.
+- Reference check: `../pi` renders one flat buffer and lets chrome scroll into history (accepts the leak class); `../opencode` uses OpenTUI, a cell-buffer compositor (GPU-style, internal scroll, no native scrollback). Goa's DECSTBM-region approach pins chrome without OpenTUI's full cell-buffer model.

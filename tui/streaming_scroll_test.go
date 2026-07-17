@@ -23,15 +23,21 @@ type screenEmulator struct {
 	scrollback []string
 	row, col   int
 	pending    strings.Builder
+	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
+	// inclusive): \n scrolls only within the region, so pinned chrome below it
+	// never moves. Defaults to the full screen.
+	scrollTop, scrollBot int
 }
 
 func newScreenEmulator(h, w int) *screenEmulator {
 	return &screenEmulator{
-		h:      h,
-		w:      w,
-		screen: make([]string, h),
-		row:    0,
-		col:    0,
+		h:         h,
+		w:         w,
+		screen:    make([]string, h),
+		row:       0,
+		col:       0,
+		scrollTop: 0,
+		scrollBot: h - 1,
 	}
 }
 
@@ -81,15 +87,23 @@ func (e *screenEmulator) flush() {
 }
 
 func (e *screenEmulator) newLine() {
-	if e.row < e.h-1 {
+	if e.row < e.scrollBot {
 		e.row++
 		return
 	}
-	// Scroll: the top line moves to scrollback, everything shifts up, and
-	// the cursor stays on the (now blank) bottom row.
-	e.scrollback = append(e.scrollback, e.screen[0])
-	copy(e.screen, e.screen[1:])
-	e.screen[e.h-1] = ""
+	if e.row == e.scrollBot {
+		// Scroll within the region: the region's top line moves to scrollback,
+		// everything inside the region shifts up, and a blank row opens at the
+		// region bottom. Rows outside the region are untouched.
+		e.scrollback = append(e.scrollback, e.screen[e.scrollTop])
+		copy(e.screen[e.scrollTop:e.scrollBot], e.screen[e.scrollTop+1:e.scrollBot+1])
+		e.screen[e.scrollBot] = ""
+		return
+	}
+	// Cursor below the region (pinned chrome): plain advance, clamped.
+	if e.row < e.h-1 {
+		e.row++
+	}
 }
 
 // parseEscape consumes a single escape sequence and returns the number of
@@ -141,6 +155,24 @@ func (e *screenEmulator) handleCSI(params string, final byte) {
 	case 'K':
 		e.flush()
 		e.eraseLine(params)
+	case 'r':
+		// DECSTBM: set scroll region ("\x1b[top;bot r" 1-indexed; "\x1b[r" =
+		// full screen). Homes the cursor per DEC spec.
+		e.flush()
+		top, bot := 1, e.h
+		if params != "" {
+			parts := strings.SplitN(params, ";", 2)
+			top = paramInt(parts[0], 1)
+			if len(parts) > 1 {
+				bot = paramInt(parts[1], e.h)
+			}
+		}
+		e.scrollTop = max(0, top-1)
+		e.scrollBot = min(e.h-1, bot-1)
+		if e.scrollBot < e.scrollTop {
+			e.scrollBot = e.scrollTop
+		}
+		e.row, e.col = 0, 0
 	}
 }
 

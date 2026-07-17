@@ -26,10 +26,15 @@ type TermEmulator struct {
 	scrollback  []string
 	row, col    int
 	pendingWrap bool // DEC deferred wrap: last cell filled, next char wraps
+	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
+	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
+	// the region never move, which is how pinned chrome is emulated. Defaults
+	// to the full screen.
+	scrollTop, scrollBot int
 }
 
 func NewTermEmulator(h, w int) *TermEmulator {
-	e := &TermEmulator{w: w, h: h}
+	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1}
 	e.screen = make([][]string, h)
 	for i := range e.screen {
 		e.screen[i] = make([]string, w)
@@ -108,18 +113,27 @@ func (e *TermEmulator) writePrintable(s string, i int) int {
 }
 
 func (e *TermEmulator) lineFeed() {
-	if e.row < e.h-1 {
+	if e.row < e.scrollBot {
 		e.row++
 		return
 	}
-	// Scroll.
-	var top strings.Builder
-	for _, cell := range e.screen[0] {
-		top.WriteString(cell)
+	if e.row == e.scrollBot {
+		// Scroll within the region: the region's top row goes to scrollback,
+		// rows shift up inside [scrollTop, scrollBot], and a blank row opens at
+		// the region bottom. Rows outside the region are untouched.
+		var top strings.Builder
+		for _, cell := range e.screen[e.scrollTop] {
+			top.WriteString(cell)
+		}
+		e.scrollback = append(e.scrollback, top.String())
+		copy(e.screen[e.scrollTop:e.scrollBot], e.screen[e.scrollTop+1:e.scrollBot+1])
+		e.screen[e.scrollBot] = make([]string, e.w)
+		return
 	}
-	e.scrollback = append(e.scrollback, top.String())
-	copy(e.screen, e.screen[1:])
-	e.screen[e.h-1] = make([]string, e.w)
+	// Cursor below the region (pinned chrome): plain advance, clamped.
+	if e.row < e.h-1 {
+		e.row++
+	}
 }
 
 func (e *TermEmulator) parseEscape(s string) int {
@@ -171,6 +185,23 @@ func (e *TermEmulator) applyCSI(params string, final byte) {
 		e.eraseDisplay(params)
 	case 'K':
 		e.eraseLine(params)
+	case 'r':
+		// DECSTBM: set scroll region ("\x1b[top;bot r" 1-indexed; "\x1b[r" =
+		// full screen). Homes the cursor per DEC spec.
+		top, bot := 1, e.h
+		if params != "" {
+			parts := strings.SplitN(params, ";", 2)
+			top = paramInt(parts[0], 1)
+			if len(parts) > 1 {
+				bot = paramInt(parts[1], e.h)
+			}
+		}
+		e.scrollTop = clampInt(top-1, 0, e.h-1)
+		e.scrollBot = clampInt(bot-1, 0, e.h-1)
+		if e.scrollBot < e.scrollTop {
+			e.scrollBot = e.scrollTop
+		}
+		e.row, e.col, e.pendingWrap = 0, 0, false
 	}
 }
 
