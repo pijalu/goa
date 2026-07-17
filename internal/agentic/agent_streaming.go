@@ -301,6 +301,9 @@ func (a *Agent) handleStreamToolCallStart(_ context.Context, _ *provider.Assista
 }
 
 func (a *Agent) handleStreamToolCallDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	a.mu.Lock()
+	a.toolCallDeltasThisRound++
+	a.mu.Unlock()
 	// OpenAI-style delta: a full Partial snapshot is attached.
 	if event.Partial != nil && len(event.Partial.Content) > 0 {
 		a.markGenStart()
@@ -320,6 +323,13 @@ func (a *Agent) handleStreamToolCallDelta(_ context.Context, _ *provider.Assista
 }
 
 func (a *Agent) handleStreamDone(ctx context.Context, stream *provider.AssistantMessageEventStream, _ provider.AssistantMessageEvent) (bool, bool, error) {
+	// P0 diagnostic: record whether this provider streamed tool-call args at
+	// all. A zero count means tool widgets can only appear at call completion
+	// (no live arg streaming) for this provider/model combination.
+	a.mu.Lock()
+	deltas := a.toolCallDeltasThisRound
+	a.mu.Unlock()
+	a.cfg.Logger.Log(Debug, "stream round done: tool_call deltas=%d", deltas)
 	// Capture provider Usage from the stream result.
 	// The usage chunk (stream_options.include_usage) is attached to
 	// the stream result via End() or UpdateResult().
@@ -756,6 +766,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.resetThinkingStall()
 	a.streamingToolCalls = nil
 	a.streamingToolCallsByIndex = nil
+	a.toolCallDeltasThisRound = 0
 }
 
 // checkStreamLoop detects immediate repetition of a suffix within the current

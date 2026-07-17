@@ -95,6 +95,12 @@ type Agent struct {
 	streamingToolCalls        map[string]*partialToolCall
 	streamingToolCallsByIndex map[int]*partialToolCall
 
+	// toolCallDeltasThisRound counts EventToolCallDelta fragments received
+	// during the current stream round. Logged at round end to confirm whether
+	// the active provider actually streams tool-call arguments (P0 diagnostic):
+	// a zero count means the widget can only appear at call completion.
+	toolCallDeltasThisRound int
+
 	// thinkingBuf accumulates delta thinking tokens from the current assistant
 	// response so they can be included in the assistant message when a tool call
 	// is handled. DeepSeek requires reasoning_content to be passed back.
