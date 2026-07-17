@@ -300,7 +300,7 @@ func TestSteeringPending_Render_LeadingBlanksSkipped(t *testing.T) {
 	if !strings.Contains(joined, "hidden") {
 		t.Errorf("expected hidden-count footer, got:\n%s", joined)
 	}
-	if !strings.Contains(joined, "8 line(s) to send (1 hidden)") {
+	if !strings.Contains(joined, "8 line(s) to send (1 hidden, Alt+E to edit)") {
 		t.Errorf("expected total+hidden line counts in footer, got:\n%s", joined)
 	}
 }
