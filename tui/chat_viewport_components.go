@@ -719,12 +719,29 @@ func (m *steeringPending) Render(width int) []string {
 		totalWrapped += countLines(raw, innerWidth)
 	}
 
-	// Show preview (first 5 wrapped lines) + line count.
-	previewLines := wrapped
+	// Show a preview of up to 5 content lines. Leading blank entries (empty
+	// paragraphs) are skipped so a message starting with blank lines shows
+	// real content instead of blanks; blanks between shown lines are kept.
+	previewLines := make([]string, 0, 5)
+	shown := 0
+	consumed := 0
+	for _, raw := range wrapped {
+		if shown >= 5 {
+			break
+		}
+		if raw == "" && len(previewLines) == 0 {
+			consumed++
+			continue // skip leading blanks
+		}
+		previewLines = append(previewLines, raw)
+		consumed++
+		if raw != "" {
+			shown++
+		}
+	}
 	hidden := 0
-	if len(wrapped) > 5 {
-		previewLines = wrapped[:5]
-		hidden = totalWrapped - 5
+	for _, raw := range wrapped[consumed:] {
+		hidden += countLines(raw, innerWidth)
 	}
 
 	for _, raw := range previewLines {

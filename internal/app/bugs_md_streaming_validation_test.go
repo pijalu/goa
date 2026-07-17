@@ -345,7 +345,7 @@ func TestBugs_WriteToolStatsShowsTotal(t *testing.T) {
 	sc.apply(&agentic.OutputEvent{
 		Type: agentic.EventToolResult, State: agentic.StateToolCall,
 		ToolName: "write", ToolCallID: "call_write1",
-		ToolResult: "[write: /tmp/test.txt]\n```\nline1\nline2\nline3\n```\n",
+		ToolResult: "[write: /tmp/test.txt]\n✓ Written — 14 bytes, 3 lines\n```\nline1\nline2\nline3\n```\n",
 	})
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
 
@@ -364,6 +364,30 @@ func TestBugs_WriteToolStatsShowsTotal(t *testing.T) {
 	}
 	if strings.Contains(got, "writing") {
 		t.Errorf("should NOT show 'writing' after completion, got:\n%s", got)
+	}
+	// The stats footer must report the TOTAL lines written (3), not a
+	// preview count. The retained args are the authoritative content source.
+	if !strings.Contains(got, "3 lines") {
+		t.Errorf("expected total '3 lines' stat after completion, got:\n%s", got)
+	}
+}
+
+// TestBugs_ProgressClearClearsStatus validates the bugs.md "stuck in
+// sending" fix: the agent's cleanup path emits EventProgress with empty text
+// on every turn exit, and the app must translate it into a status-spinner
+// clear. Previously handleProgressEvent ignored empty-text events, so the
+// clear emission was a no-op and "Sending request..." could linger.
+func TestBugs_ProgressClearClearsStatus(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "Sending request..."})
+	if got := sc.status.Text(); got != "Sending request..." {
+		t.Fatalf("precondition: expected status 'Sending request...', got %q", got)
+	}
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: ""})
+	if got := sc.status.Text(); got != "" {
+		t.Errorf("expected status cleared by empty progress event, got %q", got)
 	}
 }
 

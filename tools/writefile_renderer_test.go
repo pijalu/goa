@@ -71,6 +71,45 @@ func TestWriteFileRenderer_RenderResult_PreviewLimit(t *testing.T) {
 	}
 }
 
+// TestWriteFileRenderer_CompletedWriteShowsTotalLines reproduces the bugs.md
+// "write stats are incorrect" item: buildWritePreview embeds only the first
+// 10 content lines in the result's fenced block. After completion the widget
+// must still report the TOTAL lines written — taken from the retained tool
+// args — not the preview's line count.
+func TestWriteFileRenderer_CompletedWriteShowsTotalLines(t *testing.T) {
+	r := NewWriteFileRenderer()
+
+	// 25-line file: the result carries the 10-line preview fence exactly as
+	// buildWritePreview produces it.
+	var all []string
+	for i := 1; i <= 25; i++ {
+		all = append(all, "line")
+	}
+	full := strings.Join(all, "\n")
+	preview := strings.Join(all[:10], "\n")
+	out := "[write: big.txt]\n✓ Written — 100 bytes, 25 lines\n```\n" + preview + "\n```\n… 15 more lines (Ctrl+O to expand)\n"
+
+	ctx := tuirender.RenderContext{
+		IsPartial:    false,
+		ArgsComplete: true,
+		Args:         map[string]any{"path": "big.txt", "content": full},
+	}
+	got := ansi.Strip(r.RenderResult(out, ctx))
+	if !strings.Contains(got, "25 lines") {
+		t.Errorf("completed write must show total line count (25), got:\n%s", got)
+	}
+	if strings.Contains(got, "10 lines") {
+		t.Errorf("must not report the preview's line count, got:\n%s", got)
+	}
+
+	// Fallback: without retained args (restored session), the fenced preview
+	// is all there is — rendering must not break.
+	got = ansi.Strip(r.RenderResult(out, tuirender.RenderContext{}))
+	if !strings.Contains(got, "line") {
+		t.Errorf("fenced fallback should still render content, got:\n%s", got)
+	}
+}
+
 func TestWriteFileRenderer_RenderCall_StreamingShowsPath(t *testing.T) {
 	r := NewWriteFileRenderer()
 	call := r.RenderCall(map[string]any{"path": "main.go"}, tuirender.RenderContext{ArgsComplete: false})

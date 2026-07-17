@@ -343,7 +343,14 @@ func (s *SessionStore) ListSessions() ([]SessionInfo, error) {
 		name := strings.TrimSuffix(entry.Name(), ".jsonl")
 
 		// Count events by reading the file
-		count, tokens, firstMsg := s.scanSessionFile(filepath.Join(sessionDir, entry.Name()))
+		count, tokens, firstMsg, hasConversation := s.scanSessionFile(filepath.Join(sessionDir, entry.Name()))
+		if !hasConversation {
+			// Empty session: no user/assistant conversation content (e.g.
+			// only system or stats events, or a session abandoned before the
+			// first reply). Restoring it would show a blank transcript, so it
+			// is hidden from pickers and listings. The file is kept on disk.
+			continue
+		}
 
 		sessions = append(sessions, SessionInfo{
 			Name:         name,
@@ -354,8 +361,13 @@ func (s *SessionStore) ListSessions() ([]SessionInfo, error) {
 		})
 	}
 
-	// Sort by date, newest first
+	// Sort newest first; break ModTime ties by name (session names embed a
+	// timestamp, so the tiebreak stays chronological) for a stable order
+	// when several sessions share a timestamp.
 	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].Date.Equal(sessions[j].Date) {
+			return sessions[i].Name > sessions[j].Name
+		}
 		return sessions[i].Date.After(sessions[j].Date)
 	})
 
@@ -444,10 +456,10 @@ func (s *SessionStore) ImportSession(name, sourcePath string) error {
 	return nil
 }
 
-func (s *SessionStore) scanSessionFile(path string) (count, tokens int, firstMsg string) {
+func (s *SessionStore) scanSessionFile(path string) (count, tokens int, firstMsg string, hasConversation bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, ""
+		return 0, 0, "", false
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -467,6 +479,13 @@ func (s *SessionStore) scanSessionFile(path string) (count, tokens int, firstMsg
 		}
 		if event.ContextStats != nil {
 			tokens = event.ContextStats.EstimatedTokens
+		}
+		// Conversation content: any real user or assistant text. Sessions
+		// holding only system/stats/progress events are "empty" for listing
+		// purposes — restoring them would show a blank transcript.
+		if event.Type == agentic.EventContent && event.Text != "" &&
+			(event.Role == agentic.User || event.Role == agentic.Assistant) {
+			hasConversation = true
 		}
 		// Capture the first user message text.
 		if firstMsg == "" && event.Type == agentic.EventContent && event.Role == "user" && event.Text != "" {

@@ -987,7 +987,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	// Wire the plan command with execution support now that the adapter exists.
 	if cmd, ok := s.registry.Resolve("plan"); ok {
 		if planCmd, ok := cmd.(*commands.PlanCommand); ok {
-			binder := NewPlanBinder(s.orchAdapter, cfg, projectDir, filepath.Join(projectDir, ".goa", "prompts"))
+			binder := NewPlanBinder(s.orchAdapter, cfg, projectDir, filepath.Join(projectDir, ".goa", "prompts"), s.events)
 			binder.BindPlanCommand(planCmd)
 		}
 	}

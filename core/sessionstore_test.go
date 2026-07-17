@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic"
 )
@@ -65,7 +66,7 @@ func TestSessionListAndLoad(t *testing.T) {
 
 	ss := NewSessionStore(dir)
 	ss.StartSession()
-	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Text: "Hello"})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "Hello"})
 	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventEnd})
 
 	if err := ss.Close(); err != nil {
@@ -105,13 +106,13 @@ func TestSessionMultipleSessions(t *testing.T) {
 	ss := NewSessionStore(dir)
 
 	ss.StartSession()
-	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventEnd})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "first"})
 	if err := ss.Close(); err != nil {
 		t.Fatalf("Close first session: %v", err)
 	}
 
 	ss.StartSession()
-	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventEnd})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "second"})
 	if err := ss.Close(); err != nil {
 		t.Fatalf("Close second session: %v", err)
 	}
@@ -122,6 +123,89 @@ func TestSessionMultipleSessions(t *testing.T) {
 	}
 	if len(sessions) != 2 {
 		t.Fatalf("Expected 2 sessions, got %d", len(sessions))
+	}
+}
+
+// TestSessionListSessions_FiltersEmptySessions verifies that sessions with no
+// user/assistant conversation (only system/stats/progress events, or none)
+// are hidden from listings — restoring them would show a blank transcript.
+func TestSessionListSessions_FiltersEmptySessions(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+
+	// Empty-ish session: stats + system notification only, no conversation.
+	ss.StartSession()
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventProgress, Text: "Sending request..."})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.System, Text: "note"})
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close empty session: %v", err)
+	}
+
+	// Real conversation: user text + assistant reply.
+	ss.StartSession()
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, Text: "hello"})
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close conversation session: %v", err)
+	}
+
+	sessions, err := ss.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 listed session (empty filtered out), got %d", len(sessions))
+	}
+	if sessions[0].FirstMessage != "hi" {
+		t.Errorf("listed session should be the conversation, got FirstMessage %q", sessions[0].FirstMessage)
+	}
+}
+
+// TestSessionListSessions_NewestFirst verifies restore listings are ordered
+// from most recent to oldest, with a deterministic tiebreak.
+func TestSessionListSessions_NewestFirst(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+	names := []string{"aaa", "bbb", "ccc"}
+	for _, n := range names {
+		ss.StartSession()
+		ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: n})
+		if err := ss.Close(); err != nil {
+			t.Fatalf("Close session %s: %v", n, err)
+		}
+	}
+
+	// Pin distinct ModTimes so ordering does not depend on filesystem
+	// timestamp granularity: first-written = oldest, last-written = newest.
+	sessionDir := filepath.Join(dir, "sessions")
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	base := time.Now().Add(-time.Hour)
+	for i, e := range entries {
+		p := filepath.Join(sessionDir, e.Name())
+		if err := os.Chtimes(p, base.Add(time.Duration(i)*time.Minute), base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("Chtimes: %v", err)
+		}
+	}
+
+	sessions, err := ss.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("Expected 3 sessions, got %d", len(sessions))
+	}
+	for i := 1; i < len(sessions); i++ {
+		if sessions[i-1].Date.Before(sessions[i].Date) {
+			t.Errorf("sessions not newest-first: [%d]=%v before [%d]=%v",
+				i-1, sessions[i-1].Date, i, sessions[i].Date)
+		}
 	}
 }
 
@@ -288,7 +372,7 @@ func TestSessionWriteEvent_SkipsToolCallDeltas(t *testing.T) {
 	ss.StartSession()
 
 	// Content deltas are small and must still be persisted for replay.
-	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Text: "hello", IsDelta: true})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, Text: "hello", IsDelta: true})
 	// The completed tool-call event is the one we need to replay.
 	ss.WriteEvent(agentic.OutputEvent{
 		Type:       agentic.EventToolCall,

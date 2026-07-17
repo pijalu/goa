@@ -110,6 +110,11 @@ type TUI struct {
 	// OnToggleGoalBubble is called when Ctrl+G is pressed.
 	OnToggleGoalBubble func()
 
+	// OnEditSteering is called when the steering-edit key (Alt+E) is pressed.
+	// The host moves any pending steering message back into the input line
+	// for editing and empties the steering queue.
+	OnEditSteering func()
+
 	// OnCycleThinkingLevel is called when Shift+Tab is pressed.
 	OnCycleThinkingLevel func()
 
@@ -759,6 +764,7 @@ func (s appShortcut) matches(key, altKey string) bool {
 // appShortcuts is the ordered table consumed by resolveAppShortcut.
 var appShortcuts = []appShortcut{
 	{keys: []string{"ctrl+g"}, callback: func(t *TUI) func() { return t.OnToggleGoalBubble }},
+	{keys: []string{"alt+e", "alt+E"}, altAlias: "alt+e", callback: func(t *TUI) func() { return t.OnEditSteering }},
 	{keys: []string{"alt+m", "alt+M"}, altAlias: "alt+m", callback: func(t *TUI) func() { return t.OnChangeMode }},
 	{keys: []string{"alt+o", "alt+O"}, altAlias: "alt+o", callback: func(t *TUI) func() { return t.OnOpenModeSelector }},
 	{keys: []string{"ctrl+shift+m"}, callback: func(t *TUI) func() { return t.OnCycleAutonomy }},

@@ -160,6 +160,30 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 	return true
 }
 
+// handleEditSteering moves pending steering text back into the input line
+// for editing (Alt+E). The steering queue is emptied until the user
+// resubmits; the pending bubble and footer indicator are cleared.
+func (a *App) handleEditSteering(engine *tui.TUI, chat *tui.ChatViewport) {
+	subs := a.subs
+	if subs.agentMgr == nil {
+		return
+	}
+	sq := subs.agentMgr.SteeringQueue()
+	if sq == nil || sq.Len() == 0 {
+		return
+	}
+	pending := sq.Flush()
+	text := strings.Join(pending, "\n\n")
+	if inp := subs.getInput(); inp != nil {
+		inp.SetText(text)
+	}
+	chat.ClearSteeringPending()
+	data := subs.footer.Data()
+	data.SteeringPending = ""
+	subs.footer.SetData(data)
+	engine.RequestRender()
+}
+
 func (a *App) maybeSteerWorkflow(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
 	subs := a.subs
 	if subs.foregroundOrch == nil {

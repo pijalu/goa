@@ -15,7 +15,13 @@ type TransportRequest struct {
 	URL     string
 	Headers map[string]string
 	Body    []byte
-	Timeout int64 // milliseconds
+	// Timeout bounds the connection phase only, in milliseconds: dial, TLS
+	// handshake, request send, and the wait for the first response header.
+	// It deliberately does NOT bound response-body reads — a streaming LLM
+	// response may legitimately take longer than any fixed wall clock on slow
+	// local models. Stalled bodies are guarded by the idle-timeout reader in
+	// the provider runtime, not by this field.
+	Timeout int64
 }
 
 // TransportResponse describes a raw transport response.

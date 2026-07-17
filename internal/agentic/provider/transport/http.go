@@ -282,11 +282,11 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 	// the Transport and the server from using compression.
 	httpReq.Header.Set("Accept-Encoding", "identity")
 
-	var cancelTimeout context.CancelFunc
-	if req.Timeout > 0 {
-		ctx, cancelTimeout = context.WithTimeout(ctx, time.Duration(req.Timeout)*time.Millisecond)
-		httpReq = httpReq.WithContext(ctx)
-	}
+	// The timeout bounds only the connection phase (up to the first response
+	// header). Wrapping the request context with a deadline would also kill
+	// in-flight body reads, aborting long-but-healthy streams from slow local
+	// models; ResponseHeaderTimeout leaves body reads to the idle guard.
+	client = clientWithHeaderTimeout(client, req.Timeout)
 
 	httpResp, err := client.Do(httpReq)
 	if err != nil {
@@ -304,9 +304,6 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 			log = GlobalHTTPLog
 		}
 		log.Add(entry)
-		if cancelTimeout != nil {
-			cancelTimeout()
-		}
 		return nil, err
 	}
 
@@ -338,17 +335,12 @@ func (t *HTTPTransport) Do(ctx context.Context, req *TransportRequest) (*Transpo
 		headLimit: HTTPLogCaptureBytes,
 	}
 
-	respBody := io.ReadCloser(capBody)
-	if cancelTimeout != nil {
-		respBody = &cancelOnCloseReader{r: respBody, cancel: cancelTimeout}
-	}
-
 	// Return a wrapper that finalizes the log entry when the body is closed.
 	return &TransportResponse{
 		StatusCode: httpResp.StatusCode,
 		Headers:    headers,
 		Body: &logOnCloseBody{
-			ReadCloser: respBody,
+			ReadCloser: capBody,
 			entry:      &entry,
 			capture:    capBody,
 			log:        t.Log,
@@ -430,31 +422,40 @@ func requestSummaryPtr(body []byte) *RequestSummary {
 	return &s
 }
 
-// cancelOnCloseReader wraps an io.ReadCloser and cancels the provided context
-// when the body is closed or reaches EOF. This keeps the timeout context alive
-// for the duration of the streaming response instead of cancelling it when the
-// HTTP round trip returns.
-type cancelOnCloseReader struct {
-	r      io.ReadCloser
-	cancel context.CancelFunc
-	once   sync.Once
-}
-
-func (c *cancelOnCloseReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	if err != nil {
-		c.close()
+// clientWithHeaderTimeout returns an *http.Client whose round trip fails when
+// the response headers do not arrive within timeoutMs. The timeout covers the
+// full connection phase — dial, TLS handshake, request send, and the server's
+// time to first header — which is where an unresponsive provider hangs. Body
+// reads are intentionally left unbounded so slow-but-streaming local models
+// are never killed by a wall clock; a stalled body is caught by the
+// idle-timeout reader in the provider runtime instead.
+//
+// A timeout of zero (or a client whose Transport is not an *http.Transport,
+// e.g. a custom test RoundTripper) returns the client unchanged.
+func clientWithHeaderTimeout(client *http.Client, timeoutMs int64) *http.Client {
+	if timeoutMs <= 0 {
+		return client
 	}
-	return n, err
-}
-
-func (c *cancelOnCloseReader) Close() error {
-	c.close()
-	return c.r.Close()
-}
-
-func (c *cancelOnCloseReader) close() {
-	c.once.Do(c.cancel)
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	var tr *http.Transport
+	switch base := client.Transport.(type) {
+	case *http.Transport:
+		tr = base.Clone()
+	case nil:
+		if d, ok := http.DefaultTransport.(*http.Transport); ok {
+			tr = d.Clone()
+		}
+	}
+	if tr == nil {
+		return client
+	}
+	tr.ResponseHeaderTimeout = timeout
+	clone := *client
+	clone.Transport = tr
+	// http.Client.Timeout would re-introduce a whole-request deadline (it
+	// covers body reads); it must stay zero for the connection-phase semantic.
+	clone.Timeout = 0
+	return &clone
 }
 
 // ReadAll drains and closes a transport response body.

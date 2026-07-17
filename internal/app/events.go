@@ -15,6 +15,7 @@ import (
 
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/core/plan"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/review"
 	"github.com/pijalu/goa/multiagent"
@@ -127,7 +128,7 @@ func (a *App) runControlEventReader(done chan struct{}, ch <-chan event.ControlE
 			if !ok {
 				return
 			}
-						a.apply(func() {
+			a.apply(func() {
 				if a.handleControlEvent(ev) {
 					return
 				}
@@ -174,7 +175,7 @@ func (a *App) runFooterEventReader(done chan struct{}, ch <-chan event.FooterEve
 			if !ok {
 				return
 			}
-						a.apply(func() {
+			a.apply(func() {
 				a.handleFooterEvent(ev)
 			})
 		}
@@ -366,6 +367,10 @@ func (a *App) handleChatEvent(ev event.ChatEvent) {
 		a.showOutputModal(ev.ShowOutputModal)
 	case ev.ShowReviewPager != nil:
 		a.showReviewPager(ev.ShowReviewPager)
+	case ev.ShowPlanPager != nil:
+		a.showPlanPager(ev.ShowPlanPager)
+	case ev.ShowPlanStatus != nil:
+		a.showPlanStatus(ev.ShowPlanStatus)
 	case ev.PipelineProgress != nil:
 		a.showPipelineProgress(ev.PipelineProgress)
 	case ev.SteeringInjected != nil:
@@ -428,6 +433,124 @@ func (a *App) showReviewPager(m *event.ShowReviewPager) {
 	var handle *tui.OverlayHandle
 	a.wireReviewPagerCallbacks(pager, &handle, opts)
 	a.showReviewOverlay(pager, &handle, opts)
+}
+
+const planPagerHelpTitle = "q:close n/p:item c:comment s:submit a:approve"
+const planStatusHelpTitle = "q:close ↑↓:select enter:detail"
+
+// showPlanPager opens the plan-annotation pager as an overlay. The pager was
+// constructed by the /plan review command, which wired store-close into
+// OnClose and annotation submission/approval callbacks; this method layers on
+// the overlay chrome (close hides the overlay, comment/confirm modals,
+// approve also closes the overlay since execution then starts).
+func (a *App) showPlanPager(m *event.ShowPlanPager) {
+	if a.subs.tuiEngine == nil || m == nil || m.Pager == nil {
+		return
+	}
+	pager, ok := m.Pager.(*tui.PlanPager)
+	if !ok {
+		return
+	}
+	pager.RequestRender = func() {
+		a.subs.tuiEngine.RequestRender()
+	}
+	w := a.subs.tuiEngine.TerminalCols()
+	h := a.subs.tuiEngine.TerminalRows()
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	geo := reviewOverlayGeometryFor(h)
+	pager.SetViewport(w, geo.height)
+
+	var handle *tui.OverlayHandle
+
+	// Chain the command's OnClose (closes the plan store) with overlay
+	// teardown. The pager's close() calls OnClose when the user presses q.
+	cmdOnClose := pager.OnClose
+	pager.OnClose = func() {
+		if cmdOnClose != nil {
+			cmdOnClose()
+		}
+		if handle != nil && handle.Hide != nil {
+			handle.Hide()
+		}
+		a.reviewSetTitle("")
+	}
+
+	// After a successful approve, execution starts and the pager's review job
+	// is done — close the overlay through the same path as 'q'. A failed
+	// approve (e.g. already approved) keeps the pager open for inspection.
+	cmdOnApprove := pager.OnApprovePlan
+	pager.OnApprovePlan = func() {
+		if cmdOnApprove != nil {
+			cmdOnApprove()
+		}
+		if p := pager.Store.Plan(); p == nil || p.Status != plan.PlanApproved && p.Status != plan.PlanExecuting {
+			return
+		}
+		pagerOnClose := pager.OnClose
+		if pagerOnClose != nil {
+			pagerOnClose()
+		}
+	}
+
+	pager.OnCommentRequest = a.makeCommentRequestHandler(&handle, planPagerHelpTitle)
+	pager.OnConfirm = a.makeConfirmHandler(&handle, planPagerHelpTitle)
+
+	handle = a.subs.tuiEngine.ShowOverlay(pager, tui.OverlayOptions{
+		Width:        geo.width,
+		Height:       geo.height,
+		BottomOffset: geo.bottomOffset,
+		CaptureInput: true,
+	})
+	a.reviewSetTitle(planPagerHelpTitle)
+}
+
+// showPlanStatus opens the read-only plan-status overlay. The store was
+// opened by the /plan status command and is closed here when the overlay is
+// dismissed.
+func (a *App) showPlanStatus(m *event.ShowPlanStatus) {
+	if a.subs.tuiEngine == nil || m == nil || m.Store == nil {
+		return
+	}
+	store, ok := m.Store.(*plan.Store)
+	if !ok {
+		return
+	}
+	overlay := tui.NewPlanStatusOverlay(store)
+	overlay.RequestRender = func() {
+		a.subs.tuiEngine.RequestRender()
+	}
+	w := a.subs.tuiEngine.TerminalCols()
+	h := a.subs.tuiEngine.TerminalRows()
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 24
+	}
+	geo := reviewOverlayGeometryFor(h)
+	overlay.SetViewport(w, geo.height)
+
+	var handle *tui.OverlayHandle
+	overlay.OnClose = func() {
+		_ = store.Close()
+		if handle != nil && handle.Hide != nil {
+			handle.Hide()
+		}
+		a.reviewSetTitle("")
+	}
+
+	handle = a.subs.tuiEngine.ShowOverlay(overlay, tui.OverlayOptions{
+		Width:        geo.width,
+		Height:       geo.height,
+		BottomOffset: geo.bottomOffset,
+		CaptureInput: true,
+	})
+	a.reviewSetTitle(planStatusHelpTitle)
 }
 
 // reviewOverlayGeometry holds the computed size and position for the review
@@ -518,6 +641,13 @@ func (a *App) wireReviewPagerCallbacks(pager *tui.ReviewPager, handlePtr **tui.O
 }
 
 func (a *App) makeReviewCommentRequestHandler(handlePtr **tui.OverlayHandle) func(title, current string, onSubmit func(string)) {
+	return a.makeCommentRequestHandler(handlePtr, reviewHelpTitle)
+}
+
+// makeCommentRequestHandler routes a free-form text entry (e.g. pager
+// comment) through the main input line, restoring overlay input capture and
+// helpTitle when the entry completes.
+func (a *App) makeCommentRequestHandler(handlePtr **tui.OverlayHandle, helpTitle string) func(title, current string, onSubmit func(string)) {
 	return func(title, current string, onSubmit func(string)) {
 		handle := *handlePtr
 		restore := a.reviewReleaseInput(handle)
@@ -527,7 +657,7 @@ func (a *App) makeReviewCommentRequestHandler(handlePtr **tui.OverlayHandle) fun
 		a.requestMainInputWithCancel(title, func(text string) {
 			onSubmit(text)
 			if handle.IsVisible() {
-				a.reviewSetTitle(reviewHelpTitle)
+				a.reviewSetTitle(helpTitle)
 				a.reviewCaptureInput(handle)
 			}
 		}, restore)
@@ -540,6 +670,14 @@ func (a *App) makeReviewCommentRequestHandler(handlePtr **tui.OverlayHandle) fun
 // inline overlay prompt that required typing the full word "yes" and lived
 // inside the pager body (wrong screen region).
 func (a *App) makeReviewConfirmHandler(handlePtr **tui.OverlayHandle) func(question string, onResult func(yes bool)) {
+	return a.makeConfirmHandler(handlePtr, reviewHelpTitle)
+}
+
+// makeConfirmHandler routes a yes/no confirmation through the main input
+// line (same location as comment entry). The user types y/n + Enter; the
+// question title is shown on the input separator. helpTitle is restored when
+// the overlay is still visible after the answer.
+func (a *App) makeConfirmHandler(handlePtr **tui.OverlayHandle, helpTitle string) func(question string, onResult func(yes bool)) {
 	return func(question string, onResult func(yes bool)) {
 		handle := *handlePtr
 		restore := a.reviewReleaseInput(handle)
@@ -552,7 +690,7 @@ func (a *App) makeReviewConfirmHandler(handlePtr **tui.OverlayHandle) func(quest
 			// capture/title while it is still on screen; otherwise leave focus
 			// with the main editor so subsequent commands work.
 			if handle.IsVisible() {
-				a.reviewSetTitle(reviewHelpTitle)
+				a.reviewSetTitle(helpTitle)
 				a.reviewCaptureInput(handle)
 			}
 		}, restore)

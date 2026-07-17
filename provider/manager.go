@@ -716,7 +716,10 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 	applyProviderStreamOptions(&opts, pCfg, pm.authStore)
 	applyModelStreamOptions(&opts, mCfg)
 	if opts.Timeout <= 0 {
-		opts.Timeout = 5 * time.Minute // default 5 min when not configured
+		// Connection-phase guard (dial → first response header) for providers
+		// without a configured timeout; bounds the "stuck in sending" hang
+		// without capping long generations on slow local models.
+		opts.Timeout = 5 * time.Minute
 	}
 	if opts.CacheRetention == "" {
 		opts.CacheRetention = agenticprovider.CacheRetentionShort

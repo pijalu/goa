@@ -202,7 +202,10 @@ type StreamOptions struct {
 	CacheRetention CacheRetention `json:"cache_retention,omitempty"`
 	SessionID      string         `json:"session_id,omitempty"`
 
-	Headers     map[string]string `json:"headers,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// Timeout bounds the connection phase only (dial → first response
+	// header). Body reads are guarded by IdleTimeout, never by Timeout, so
+	// long-running generations on slow models are not capped.
 	Timeout     time.Duration     `json:"timeout,omitempty"`
 	IdleTimeout time.Duration     `json:"idle_timeout,omitempty"`
 

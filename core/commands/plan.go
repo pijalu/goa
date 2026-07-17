@@ -16,6 +16,8 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
 	"github.com/pijalu/goa/core/plan"
+	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/tui"
 )
 
 // PlanCommand manages structured work plans.
@@ -25,8 +27,14 @@ type PlanCommand struct {
 	// Cfg is the current configuration (injected by the app layer).
 	Cfg *config.Config
 	// StartExecution is an optional function to begin execution on approve.
-	// Set by the app layer when the orchestrator is wired.
-	StartExecution func(planID string) error
+	// Set by the app layer when the orchestrator is wired. On success it takes
+	// ownership of the store (closing it when the run ends); on error the
+	// caller keeps ownership.
+	StartExecution func(store *plan.Store) error
+	// OnPlanApproved is an optional callback invoked after a plan is approved
+	// from the review pager, so the app layer can start execution with a
+	// fresh store handle (the pager keeps its own store until closed).
+	OnPlanApproved func(planID string)
 }
 
 // planInput is the parsed form of a /plan colon command.
@@ -193,9 +201,42 @@ func (c *PlanCommand) cmdReview(ctx core.Context, in planInput) error {
 	if err != nil {
 		return err
 	}
-	_ = id
-	// Plan pager opening is handled by the TUI layer via ShowPlanPager event.
-	return fmt.Errorf("plan: review not yet wired to TUI")
+
+	store, err := plan.Open(c.plansDir(), id)
+	if err != nil {
+		return fmt.Errorf("plan: open: %w", err)
+	}
+
+	if ctx.EventBus == nil {
+		// Headless fallback: no pager without a TUI — print the plan instead.
+		defer store.Close()
+		md, _ := plan.Render(store.Plan())
+		ctx.Writef("%s\n", md)
+		return nil
+	}
+
+	pager := tui.NewPlanPager(store)
+	// The pager owns the store while open; the app layer wires overlay-close
+	// into OnClose and may wrap OnApprovePlan to hand the store to the
+	// execution runner (which then owns it).
+	pager.OnClose = func() { _ = store.Close() }
+	pager.OnSubmitAnnotations = func(text string) {
+		if ctx.SubmitToAgent != nil {
+			ctx.SubmitToAgent(text)
+		}
+	}
+	pager.OnApprovePlan = func() {
+		if err := store.Approve(); err != nil {
+			ctx.Flash(fmt.Sprintf("plan %s: %v", id, err))
+			return
+		}
+		ctx.Flash(fmt.Sprintf("✓ plan %s approved", id))
+		if c.OnPlanApproved != nil {
+			c.OnPlanApproved(id)
+		}
+	}
+	ctx.EventBus.Chat <- event.ChatEvent{ShowPlanPager: &event.ShowPlanPager{Pager: pager}}
+	return nil
 }
 
 func (c *PlanCommand) cmdApprove(ctx core.Context, in planInput) error {
@@ -208,25 +249,59 @@ func (c *PlanCommand) cmdApprove(ctx core.Context, in planInput) error {
 	if err != nil {
 		return fmt.Errorf("plan: open: %w", err)
 	}
-	defer store.Close()
+	// Ownership transfers to StartExecution on success; only close while we
+	// still own the store.
+	owned := true
+	defer func() {
+		if owned {
+			_ = store.Close()
+		}
+	}()
 
-	if err := store.Approve(); err != nil {
+	// Idempotent retry: a previous /plan approve may have succeeded while the
+	// execution start failed, leaving the plan approved but idle. Approving
+	// again would error ("cannot approve plan in status approved"), so skip
+	// straight to the execution start in that case.
+	if store.Plan().Status == plan.PlanApproved {
+		ctx.Writef("Plan %q already approved; starting execution.\n", id)
+	} else if err := store.Approve(); err != nil {
 		return fmt.Errorf("plan: approve: %w", err)
 	}
 
 	if c.StartExecution != nil {
-		if err := c.StartExecution(id); err != nil {
+		if err := c.StartExecution(store); err != nil {
 			return fmt.Errorf("plan: start execution: %w", err)
 		}
+		owned = false
 	}
 
-	ctx.Writef( "Plan %q approved and execution started.\n", id)
+	ctx.Writef("Plan %q approved and execution started.\n", id)
 	return nil
 }
 
 func (c *PlanCommand) cmdStatus(ctx core.Context, in planInput) error {
-	_ = in
-	return fmt.Errorf("plan: status not yet wired to TUI")
+	id, err := c.resolveID(ctx, in)
+	if err != nil {
+		return err
+	}
+
+	store, err := plan.Open(c.plansDir(), id)
+	if err != nil {
+		return fmt.Errorf("plan: open: %w", err)
+	}
+
+	if ctx.EventBus == nil {
+		// Headless fallback: print the plan status as Markdown.
+		defer store.Close()
+		md, _ := plan.Render(store.Plan())
+		ctx.Writef("%s\n", md)
+		return nil
+	}
+
+	// Ownership passes to the overlay; the app layer closes the store when
+	// the overlay is dismissed.
+	ctx.EventBus.Chat <- event.ChatEvent{ShowPlanStatus: &event.ShowPlanStatus{Store: store}}
+	return nil
 }
 
 func (c *PlanCommand) cmdReplan(ctx core.Context, in planInput) error {

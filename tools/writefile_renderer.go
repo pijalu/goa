@@ -63,17 +63,21 @@ func (r *WriteFileRenderer) RenderPartial(args map[string]any, ctx tuirender.Ren
 	return r.RenderResult("", ctx)
 }
 
-// resolveContent returns the content to display, preferring the final tool
-// output and falling back to streamed partial args while the call is still
-// in progress.
+// resolveContent returns the content to display. While streaming, the
+// accumulated partial args are the only source. Once the arguments are
+// complete they remain the authoritative full content: the tool result's
+// fenced block is intentionally a short preview (see buildWritePreview), so
+// counting lines from it would report the preview size instead of the total
+// lines written. The result wins when the call failed — the output then
+// carries a sentinel ("(interrupted)", error text) that must be shown — and
+// is the fallback when the args are unavailable (e.g. restored sessions).
 func (r *WriteFileRenderer) resolveContent(output string, ctx tuirender.RenderContext) string {
-	content := extractWriteContent(output)
-	if content == "" && ctx.IsPartial {
-		if partial, ok := ctx.Args["content"].(string); ok && partial != "" {
-			content = partial
+	if partial, ok := ctx.Args["content"].(string); ok && partial != "" {
+		if ctx.IsPartial || (ctx.ArgsComplete && !ctx.IsError) {
+			return partial
 		}
 	}
-	return content
+	return extractWriteContent(output)
 }
 
 // resolvePath returns the file path from the tool output or the parsed args.

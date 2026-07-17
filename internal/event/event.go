@@ -112,7 +112,7 @@ type ShowReviewPager struct {
 
 // ShowPlanPager requests the TUI to open the plan-annotation pager.
 type ShowPlanPager struct {
-	Store any // concrete type is *plan.Store to avoid an import cycle
+	Pager any // concrete type is *tui.PlanPager to avoid an import cycle
 }
 
 // ShowPlanStatus requests the TUI to open the plan-status overlay.

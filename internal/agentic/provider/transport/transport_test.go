@@ -106,6 +106,71 @@ func TestHTTPTransportTimeoutKeepsBodyAlive(t *testing.T) {
 	assert.Contains(t, string(body), "hello")
 }
 
+// TestHTTPTransportHeaderTimeoutFiresOnHang reproduces the bugs.md
+// "stuck in sending" hang: the server accepts the connection but never writes
+// a response header. The connection-phase timeout must abort the request
+// instead of letting it hang forever.
+func TestHTTPTransportHeaderTimeoutFiresOnHang(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // never write headers until the test ends
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+
+	tr := &HTTPTransport{Client: server.Client()}
+	start := time.Now()
+	_, err := tr.Do(context.Background(), &TransportRequest{
+		Method:  "POST",
+		URL:     server.URL,
+		Body:    []byte(`{}`),
+		Timeout: int64(150 * time.Millisecond / time.Millisecond),
+	})
+	require.Error(t, err, "hung header phase must fail, not block forever")
+	assert.Less(t, time.Since(start), 3*time.Second, "timeout should fire promptly")
+}
+
+// TestHTTPTransportHeaderTimeoutAllowsSlowStream is the slow-local-model
+// guard: headers arrive quickly, then the body streams at a pace slower than
+// the connection-phase timeout. The read must NOT be killed — only the header
+// phase is bounded.
+func TestHTTPTransportHeaderTimeoutAllowsSlowStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Stream three chunks 150ms apart — total body time ~450ms, well
+		// beyond the 100ms connection-phase timeout.
+		for i := 0; i < 3; i++ {
+			time.Sleep(150 * time.Millisecond)
+			_, _ = w.Write([]byte("data: chunk\n\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	tr := &HTTPTransport{Client: server.Client()}
+	resp, err := tr.Do(context.Background(), &TransportRequest{
+		Method:  "POST",
+		URL:     server.URL,
+		Body:    []byte(`{}`),
+		Timeout: int64(100 * time.Millisecond / time.Millisecond),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err, "slow streaming body must survive the header timeout")
+	_ = resp.Body.Close()
+	assert.Equal(t, 3, strings.Count(string(body), "data: chunk"))
+}
+
 func TestParseSSE(t *testing.T) {
 	input := `event: delta
 data: {"text":"hello"}

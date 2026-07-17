@@ -142,11 +142,19 @@ func (a *App) handleProgressEvent(ev *agentic.OutputEvent) {
 	// or reconnection/status messages.
 	if ev.PromptProgress != nil {
 		a.setWaitingForReplyStatus(ev.PromptProgress)
+		return
 	}
 	if ev.Text != "" {
 		a.subs.statusMsg.Show(ev.Text)
 		a.subs.tuiEngine.RequestRender()
+		return
 	}
+	// Empty text is the agent's progress-clear signal (emitted by
+	// finishProcessing on every turn-exit path and by the stream retry
+	// logic). Without this branch the "Sending request..." spinner would
+	// linger on any exit path that skips EventEnd.
+	a.subs.statusMsg.Clear()
+	a.subs.tuiEngine.RequestRender()
 }
 
 func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
@@ -243,6 +251,12 @@ func (a *App) endStreamIfDifferent(state agentic.OutputState) {
 func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 	// Ensure any leftover stream is closed before processing a tool result.
 	a.endStreamIfDifferent(agentic.StateToolResult)
+
+	// Normalize: the dedicated ToolResult field is an alias for Text. The
+	// agent emits results in Text; tolerate emitters/tests using ToolResult.
+	if ev.Text == "" && ev.ToolResult != "" {
+		ev.Text = ev.ToolResult
+	}
 
 	a.statsMu.Lock()
 	a.toolResultsSeen++

@@ -149,6 +149,7 @@ func (a *App) attachInputHandlers(inp *tui.Editor, engine *tui.TUI) {
 	engine.OnChangeModel = func() { a.handleChangeModel() }
 	engine.OnToggleThinkingBlocks = func() { a.handleToggleThinkingBlocks() }
 	engine.OnOpenAgentTabs = func() { a.openAgentTabSelector() }
+	engine.OnEditSteering = func() { a.handleEditSteering(engine, subs.chat) }
 	a.wireOrchCommandCallbacks()
 	engine.OnCancelInputRequest = func() bool { return a.cancelPendingMainInput() }
 }
