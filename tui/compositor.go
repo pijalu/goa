@@ -472,15 +472,23 @@ func (c *Compositor) Render(scene *Scene) {
 	defer c.emitTrace()
 
 	resized := (c.prevW != 0 && c.prevW != width) || (c.prevH != 0 && c.prevH != height)
+	widthChanged := c.prevW != 0 && c.prevW != width
 	first := c.prevLines == nil
 	switch {
 	case first:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
 		// emits any off-screen rows into scrollback then draws the window.
 		c.drawWindow(canvas, scene.Cursor, width, height, false)
+	case widthChanged:
+		// Width change: the terminal's scrollback still holds rows laid out at
+		// the OLD width (line wrap differs), so it no longer matches the new
+		// layout. Reset scrollback and re-emit every off-screen row at the new
+		// width so history reads correctly, then repaint the window.
+		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
 	case resized || hasOverlay:
-		// Resize or overlay: drawWindow emits scrolled-off rows then repaints
-		// the visible window (clearing the screen, preserving scrollback).
+		// Height-only resize or overlay: drawWindow emits scrolled-off rows
+		// then repaints the visible window (clearing the screen, preserving
+		// scrollback — content width is unchanged so scrollback stays valid).
 		c.drawWindow(canvas, scene.Cursor, width, height, true)
 	default:
 		c.renderDiff(canvas, scene.Cursor, width, height)
@@ -552,6 +560,58 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	c.vt = vt
 	c.cursorRow = max(0, len(canvas)-1)
 	c.hardwareCursorRow = max(0, len(canvas)-1)
+}
+
+// drawWindowResetScrollback handles a terminal WIDTH change. At a new width
+// the line wrap reflows, so the rows already sitting in the terminal's
+// scrollback (emitted at the old width) no longer correspond to the canvas —
+// leaving them produces a stale, misaligned history. This clears the
+// scrollback (\x1b[3J), resets the watermark, re-emits every off-screen
+// transcript row at the new width, then repaints the visible window. The
+// result is a scrollback that matches the new layout exactly, as if the app
+// had been rendered at this width all along.
+func (c *Compositor) drawWindowResetScrollback(canvas []string, cursor *CursorPos, width, height int) {
+	c.setTracePath("full-reset")
+	c.fullRedrawCount++
+	vt := max(0, len(canvas)-height)
+
+	var buf strings.Builder
+	buf.WriteString("\x1b[?2026h")
+	// Wipe the visible screen AND the scrollback so no old-width rows survive.
+	buf.WriteString("\x1b[2J\x1b[H\x1b[3J")
+	// Reset the watermark so every off-screen row is re-emitted at the new
+	// width (appendOverflow would otherwise treat them as already-scrolled).
+	c.scrollTop = 0
+	c.vt = 0
+	c.reemitScrollback(&buf, canvas, vt, width, height)
+	for i := vt; i < len(canvas); i++ {
+		screenRow := i - vt + 1
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		c.traceWroteRow(screenRow)
+	}
+	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
+	buf.WriteString("\x1b[?2026l")
+	c.terminal.Write([]byte(buf.String()))
+
+	c.scrollTop = vt // everything above the window is now in scrollback
+	c.vt = vt
+	c.cursorRow = max(0, len(canvas)-1)
+	c.hardwareCursorRow = max(0, len(canvas)-1)
+}
+
+// reemitScrollback writes every transcript row above the window (rows
+// [0, vt)) into scrollback at the current width, top-down, after a scrollback
+// reset. It mirrors emitFirstFrameScroll: writing the full transcript and
+// letting line-feeds scroll the top rows off leaves exactly [0, vt) in
+// scrollback and [vt, vt+windowH) on screen.
+func (c *Compositor) reemitScrollback(buf *strings.Builder, canvas []string, vt, width, height int) {
+	windowH, _ := c.transcriptWindow(buf, height)
+	contentEnd := max(0, len(canvas)-c.chromeH)
+	c.emitFirstFrameScroll(buf, canvas, vt, windowH, contentEnd, width)
+	if c.chromeH > 0 {
+		c.resetScrollRegion(buf)
+	}
 }
 
 // renderDiff is the steady-state path: emit newly scrolled-off rows, then

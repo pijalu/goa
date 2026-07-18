@@ -353,11 +353,12 @@ func itoaStr(n int) string {
 	return string(buf[i:])
 }
 
-// TestCompositor_ResizePreservesScrollbackAndEmitsViewportOnly verifies the
-// resize path (review 2.3): on a size change the compositor must NOT emit
-// \x1b[3J (which would wipe scrollback) and must repaint only the visible
-// viewport instead of re-emitting the whole transcript.
-func TestCompositor_ResizePreservesScrollbackAndEmitsViewportOnly(t *testing.T) {
+// TestCompositor_WidthResizeResetsScrollback verifies Plan C: on a WIDTH
+// change the compositor MUST emit \x1b[3J (wiping the now-stale old-width
+// scrollback) and re-emit the off-screen transcript at the new width, so the
+// terminal's history matches the reflowed layout. A height-only change, by
+// contrast, preserves scrollback (content width is unchanged).
+func TestCompositor_WidthResizeResetsScrollback(t *testing.T) {
 	term := &fakeTerminal{w: 20, h: 10}
 	comp := NewCompositor(term)
 
@@ -374,26 +375,65 @@ func TestCompositor_ResizePreservesScrollbackAndEmitsViewportOnly(t *testing.T) 
 	}
 	comp.Render(scene) // first frame populates scrollback
 
-	// Resize to 30 cols x 16 rows (both above the clamp thresholds).
+	// WIDTH change: 20 -> 30 cols (height stays 10).
 	scene.TerminalW = 30
+	beforeWrites := len(term.writes)
+	comp.Render(scene)
+	if len(term.writes) <= beforeWrites {
+		t.Fatalf("no resize frame emitted")
+	}
+	resize := term.writes[len(term.writes)-1]
+
+	if !strings.Contains(resize, "\x1b[3J") {
+		t.Errorf("width resize did NOT reset scrollback (missing \\x1b[3J) — stale old-width history survives: %q", resize)
+	}
+	if !strings.Contains(resize, "\x1b[2J") {
+		t.Errorf("width resize did not clear the screen (missing \\x1b[2J)")
+	}
+	// The whole off-screen transcript is re-emitted at the new width.
+	if crlf := strings.Count(resize, "\r\x1b[2K"); crlf < 20 {
+		t.Errorf("width resize did not re-emit history (%d row-writes, want >= 20): %q", crlf, resize)
+	}
+}
+
+// TestCompositor_HeightOnlyResizePreservesScrollback verifies that a
+// height-ONLY change keeps scrollback intact (no \x1b[3J) and repaints only
+// the visible viewport — content width is unchanged, so scrollback stays
+// valid and re-emitting history would be wasteful.
+func TestCompositor_HeightOnlyResizePreservesScrollback(t *testing.T) {
+	term := &fakeTerminal{w: 20, h: 10}
+	comp := NewCompositor(term)
+
+	content := make([]string, 30)
+	for i := range content {
+		content[i] = "line " + itoaStr(i)
+	}
+	scene := &Scene{
+		TerminalW: 20, TerminalH: 10,
+		Layers: []Layer{
+			{Name: "chat", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: 20, H: 30}, Content: content},
+		},
+	}
+	comp.Render(scene)
+
+	// HEIGHT-only change: 10 -> 16 rows (width stays 20).
 	scene.TerminalH = 16
 	beforeWrites := len(term.writes)
-	comp.Render(scene) // resize frame
+	comp.Render(scene)
 	if len(term.writes) <= beforeWrites {
 		t.Fatalf("no resize frame emitted")
 	}
 	resize := term.writes[len(term.writes)-1]
 
 	if strings.Contains(resize, "\x1b[3J") {
-		t.Errorf("resize wiped scrollback (emitted \\x1b[3J): %q", resize)
+		t.Errorf("height-only resize wiped scrollback (emitted \\x1b[3J): %q", resize)
 	}
 	if !strings.Contains(resize, "\x1b[2J") {
-		t.Errorf("resize did not clear the screen (missing \\x1b[2J)")
+		t.Errorf("height-only resize did not clear the screen (missing \\x1b[2J)")
 	}
-	// The resize frame should repaint at most the new viewport height (16) rows,
-	// not all 30 transcript lines.
+	// Repaint only the new viewport height (16), not all 30 transcript lines.
 	if crlf := strings.Count(resize, "\r\n"); crlf >= 30 {
-		t.Errorf("resize re-emitted the whole transcript (%d \\r\\n, want < 30): %q", crlf, resize)
+		t.Errorf("height-only resize re-emitted the whole transcript (%d \\r\\n, want < 30): %q", crlf, resize)
 	}
 }
 
