@@ -35,30 +35,3 @@ If new items are added, restart the process.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
 ## Open Bugs
-
-### Screen corruption (maybe fixed)
-```
-┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
- ✎ add to the issue to fix:
-   ```
-   [error] The LLM request failed.   LLM request failed (not retryable): stream stalled: no events received from provider for 2m0s
-   ```
-
-   Such error should be retryable
-   6 line(s) to send (Alt+E to edit)
-└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
- ◜ Sending request...
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ◜ Sending request...
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-~/dev/goa (✱ main)                                                                                                                                  coding-posture │ YOLO
-↑116.2K ↓7.9K 37.4 tok/s CH91.2% TC:39 4.6%/1.0M (auto) │ ⏳ add to the issue to fix:
-                                                                                      ```
-                                                                                         [error] Th…                                                (kimi-code) k3 • high
-```
-
-
-
-# Closed Bugs
-
-(all items closed — see `docs/archive/bugs.2026-07-18.md` and earlier archives)
