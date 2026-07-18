@@ -340,9 +340,11 @@ type Compositor struct {
 	curTrace *frameTrace
 }
 
-// NewCompositor creates a Compositor bound to a Terminal.
+// NewCompositor creates a Compositor bound to a Terminal. cursorVisible starts
+// false: TUI.Start hides the hardware cursor before the first frame, so the
+// first cursor-bearing frame must emit the show-cursor transition (\x1b[?25h).
 func NewCompositor(term Terminal) *Compositor {
-	return &Compositor{terminal: term, cursorVisible: true}
+	return &Compositor{terminal: term, cursorVisible: false}
 }
 
 // EnableRenderTrace turns on per-frame JSONL tracing to the given path.
@@ -682,15 +684,34 @@ func (c *Compositor) emitFirstFrameScroll(buf *strings.Builder, canvas []string,
 	}
 }
 
-// emitSteadyScroll writes scrolled-off rows at the region bottom with
-// scroll-then-write (each \n pushes the current bottom row into scrollback,
-// then the new row fills the freed row). Which rows to write depends on how
-// full the previous window was: a full window's visible rows scroll off
-// naturally, so only newly revealed rows are written; a partial window's blank
-// padding would scroll into scrollback without capturing content, so the whole
-// scrolled-off range is re-emitted.
+// emitSteadyScroll advances the transcript window from `from` to `to`, pushing
+// the scrolled-off rows [from, to) into scrollback exactly once and in order.
+//
+// The correct mechanism depends on whether the previous window was FULL:
+//
+//   - Full window (every region row held real content): the canvas layout is
+//     stable frame-to-frame, so the newly revealed rows are exactly
+//     [from+windowH, to+windowH). Writing those at the region bottom with a
+//     line-feed each scrolls the previously-visible rows [from, to) off the
+//     top into scrollback naturally. This is the cheap incremental path.
+//
+//   - Partial / re-anchored window (blank padding, or content that re-flowed
+//     because the transcript grew into an empty region): canvas row indices do
+//     NOT correspond across frames — content is top-anchored (header) or
+//     bottom-anchored (first message) — so index-based "newly revealed" math
+//     is unsound and either duplicates rows (header) or drops them (first
+//     message). The sound fallback is a top-down re-emit of [from, to+windowH):
+//     rows [from, to) scroll into scrollback in order, rows [to, to+windowH)
+//     fill the screen. This is exactly once, gapless, for both anchorings.
 func (c *Compositor) emitSteadyScroll(buf *strings.Builder, canvas []string, from, to, windowH, scrollBot, contentEnd, width int) {
-	writeFrom, writeTo := c.steadyWriteRange(from, to, windowH, contentEnd)
+	if !c.prevWindowFull(windowH) {
+		c.emitTopDownScroll(buf, canvas, from, to, windowH, contentEnd, width)
+		return
+	}
+	writeFrom := from + windowH
+	writeTo := min(to+windowH, contentEnd)
+	writeFrom = max(writeFrom, c.scrollTop)
+	writeFrom = max(writeFrom, 0)
 	buf.WriteString(fmt.Sprintf("\x1b[%d;1H", scrollBot))
 	for i := writeFrom; i < writeTo; i++ {
 		buf.WriteString("\n")
@@ -699,18 +720,29 @@ func (c *Compositor) emitSteadyScroll(buf *strings.Builder, canvas []string, fro
 	}
 }
 
-// steadyWriteRange computes [writeFrom, writeTo) for the steady-state scroll.
-func (c *Compositor) steadyWriteRange(from, to, windowH, contentEnd int) (int, int) {
-	var writeFrom, writeTo int
-	if c.prevWindowFull(windowH) {
-		writeFrom, writeTo = from+windowH, to+windowH
-	} else {
-		writeFrom, writeTo = from, to
+// emitTopDownScroll re-emits the window top-down from canvas row `from`: it
+// homes to the region top, then writes rows [from, writeTo) advancing with
+// line-feeds. The first windowH rows fill the screen; each subsequent
+// line-feed scrolls the region, pushing one of the leading rows into
+// scrollback. Net effect: rows [from, to) land in scrollback in order (exactly
+// once) and rows [to, to+windowH) remain on screen. Rows before `from` are
+// already in scrollback (watermark) and are not rewritten.
+func (c *Compositor) emitTopDownScroll(buf *strings.Builder, canvas []string, from, to, windowH, contentEnd, width int) {
+	buf.WriteString("\x1b[1;1H")
+	writeTo := min(to+windowH, contentEnd)
+	if from < c.scrollTop {
+		from = c.scrollTop
 	}
-	writeFrom = max(writeFrom, c.scrollTop)
-	writeFrom = max(writeFrom, 0)
-	writeTo = min(writeTo, contentEnd)
-	return writeFrom, writeTo
+	if from < 0 {
+		from = 0
+	}
+	for i := from; i < writeTo; i++ {
+		if i > from {
+			buf.WriteString("\n")
+		}
+		buf.WriteString("\r\x1b[2K")
+		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+	}
 }
 
 // prevWindowFull reports whether every transcript region row of the previous
@@ -732,24 +764,6 @@ func (c *Compositor) prevWindowFull(windowH int) bool {
 		}
 	}
 	return true
-}
-
-// prevContentBottom returns the number of transcript rows (excluding chrome)
-// in the previous frame — the index, in transcript coordinates, just past the
-// last transcript row. This is where new content begins in the next frame's
-// transcript. Because the transcript is laid out from the top of the canvas
-// (rows [0, contentEnd)) regardless of how the viewport scrolls, this count is
-// stable across the viewport repositioning that happens when content starts
-// overflowing, unlike a screen-relative bottom.
-func (c *Compositor) prevContentBottom() int {
-	if c.prevLines == nil {
-		return 0
-	}
-	contentEnd := len(c.prevLines) - c.chromeH
-	if contentEnd < 0 {
-		contentEnd = 0
-	}
-	return contentEnd
 }
 
 // setScrollRegion emits DECSTBM to confine scrolling to [1, bot] (1-indexed)
