@@ -1039,12 +1039,12 @@ func TestAgentManager_BuildCompressionConfig_AutoFromModelWindow(t *testing.T) {
 	}
 	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
 
-	cc := am.buildCompressionConfig(cfg, 32768)
+	cc := am.buildCompressionConfig(cfg, "some-model", 32768)
 	if cc.MaxTokens != 0 {
 		t.Errorf("MaxTokens = %d, want 0 (auto from model window)", cc.MaxTokens)
 	}
-	if cc.ThresholdPercent != 80 {
-		t.Errorf("ThresholdPercent = %d, want 80", cc.ThresholdPercent)
+	if cc.Thresholds.TriggerPercent != 80 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 80 (from deprecated token_critical fallback)", cc.Thresholds.TriggerPercent)
 	}
 	if cc.Strategy != agentic.CompressionToolElision {
 		t.Errorf("Strategy = %q, want tool_elision", cc.Strategy)
@@ -1064,15 +1064,192 @@ func TestAgentManager_BuildCompressionConfig_ExplicitWins(t *testing.T) {
 	}
 	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
 
-	cc := am.buildCompressionConfig(cfg, 32768)
+	cc := am.buildCompressionConfig(cfg, "some-model", 32768)
 	if cc.MaxTokens != 4096 {
 		t.Errorf("MaxTokens = %d, want 4096", cc.MaxTokens)
 	}
-	if cc.ThresholdPercent != 50 {
-		t.Errorf("ThresholdPercent = %d, want 50", cc.ThresholdPercent)
+	if cc.Thresholds.TriggerPercent != 50 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 50 (legacy alias wins)", cc.Thresholds.TriggerPercent)
 	}
 	if cc.Strategy != agentic.CompressionSelective {
 		t.Errorf("Strategy = %q, want selective", cc.Strategy)
+	}
+}
+
+// TestAgentManager_BuildCompressionConfig_PerModelOverlay verifies that
+// per-model overrides apply on top of the global section: matching model IDs
+// get the overridden fields, non-matching IDs get the global values, and
+// partial overrides inherit the rest.
+func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
+	newCfg := func() *config.Config {
+		return &config.Config{
+			ContextCompression: config.ContextCompressionConfig{
+				Enabled:             true,
+				MaxTokens:           0,
+				Strategy:            config.AgenticCompressionMicro,
+				PreserveRecentTurns: 4,
+				Thresholds: config.CompressionThresholdsConfig{
+					SoftPercent:    0,
+					TriggerPercent: 80,
+					HardPercent:    95,
+				},
+				PerModel: map[string]config.ModelCompressionOverride{
+					"local-qwen": {
+						MaxTokens: 24576,
+						Strategy:  config.AgenticCompressionHybrid,
+						Thresholds: config.CompressionThresholdsConfig{
+							SoftPercent:    40,
+							TriggerPercent: 65,
+							HardPercent:    90,
+						},
+					},
+					"partial-model": {
+						Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 70},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("full override applies", func(t *testing.T) {
+		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(newCfg(), "local-qwen", 32768)
+		if cc.MaxTokens != 24576 {
+			t.Errorf("MaxTokens = %d, want 24576", cc.MaxTokens)
+		}
+		if cc.Strategy != agentic.CompressionHybrid {
+			t.Errorf("Strategy = %q, want hybrid", cc.Strategy)
+		}
+		if cc.Thresholds.SoftPercent != 40 || cc.Thresholds.TriggerPercent != 65 || cc.Thresholds.HardPercent != 90 {
+			t.Errorf("Thresholds = %+v, want {40 65 90}", cc.Thresholds)
+		}
+	})
+
+	t.Run("partial override inherits global", func(t *testing.T) {
+		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(newCfg(), "partial-model", 32768)
+		if cc.Thresholds.TriggerPercent != 70 {
+			t.Errorf("TriggerPercent = %d, want 70 (override)", cc.Thresholds.TriggerPercent)
+		}
+		if cc.Thresholds.HardPercent != 95 {
+			t.Errorf("HardPercent = %d, want 95 (inherited)", cc.Thresholds.HardPercent)
+		}
+		if cc.Strategy != agentic.CompressionMicro {
+			t.Errorf("Strategy = %q, want micro (inherited)", cc.Strategy)
+		}
+		if cc.PreserveRecentTurns != 4 {
+			t.Errorf("PreserveRecentTurns = %d, want 4 (inherited)", cc.PreserveRecentTurns)
+		}
+	})
+
+	t.Run("unknown model gets global", func(t *testing.T) {
+		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(newCfg(), "other-model", 32768)
+		if cc.Thresholds.TriggerPercent != 80 {
+			t.Errorf("TriggerPercent = %d, want 80 (global)", cc.Thresholds.TriggerPercent)
+		}
+		if cc.Strategy != agentic.CompressionMicro {
+			t.Errorf("Strategy = %q, want micro (global)", cc.Strategy)
+		}
+	})
+
+	t.Run("empty model ID gets global", func(t *testing.T) {
+		am := NewAgentManager(newCfg(), nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(newCfg(), "", 32768)
+		if cc.Thresholds.TriggerPercent != 80 {
+			t.Errorf("TriggerPercent = %d, want 80 (global)", cc.Thresholds.TriggerPercent)
+		}
+	})
+
+	t.Run("legacy threshold_percent in per-model override", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.ContextCompression.PerModel["legacy-model"] = config.ModelCompressionOverride{ThresholdPercent: 55}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "legacy-model", 32768)
+		if cc.Thresholds.TriggerPercent != 55 {
+			t.Errorf("TriggerPercent = %d, want 55 (legacy per-model alias)", cc.Thresholds.TriggerPercent)
+		}
+	})
+}
+
+// TestAgentManager_SetModel_AppliesPerModelOverride verifies that switching
+// the model mid-session re-resolves the compression config so the new model's
+// per-model override takes effect (even with MaxTokens=0/auto).
+func TestAgentManager_SetModel_AppliesPerModelOverride(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:  true,
+			Strategy: config.AgenticCompressionToolElision,
+			Thresholds: config.CompressionThresholdsConfig{
+				TriggerPercent: 80,
+				HardPercent:    95,
+			},
+			PerModel: map[string]config.ModelCompressionOverride{
+				"small-local": {
+					Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 60, HardPercent: 85},
+				},
+			},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	if _, err := am.StartSession(
+		agenticprovider.Model{ID: "big-model", Api: agenticprovider.ApiOpenAICompletions, ContextWindow: 131072},
+		agenticprovider.StreamOptions{},
+		"sys",
+		nil,
+		cfg,
+	); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	am.SetModel(agenticprovider.Model{ID: "small-local", Api: agenticprovider.ApiOpenAICompletions, ContextWindow: 32768})
+
+	got := am.CurrentAgent().CompressionConfig()
+	if got.Thresholds.TriggerPercent != 60 {
+		t.Errorf("after SetModel TriggerPercent = %d, want 60 (per-model override)", got.Thresholds.TriggerPercent)
+	}
+	if got.Thresholds.HardPercent != 85 {
+		t.Errorf("after SetModel HardPercent = %d, want 85 (per-model override)", got.Thresholds.HardPercent)
+	}
+}
+
+// TestAgentManager_RefreshContextCompression verifies that changing
+// context_compression config and calling RefreshContextCompression applies
+// the new thresholds to the live agent (used by /config live-sync).
+func TestAgentManager_RefreshContextCompression(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:    true,
+			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80, HardPercent: 95},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	if _, err := am.StartSession(
+		agenticprovider.Model{ID: "m1", Api: agenticprovider.ApiOpenAICompletions, ContextWindow: 32768},
+		agenticprovider.StreamOptions{},
+		"sys",
+		nil,
+		cfg,
+	); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	if got := am.CurrentAgent().CompressionConfig().Thresholds.TriggerPercent; got != 80 {
+		t.Fatalf("initial TriggerPercent = %d, want 80", got)
+	}
+
+	// User changes the trigger via /config (in-memory config mutated by the
+	// setter, then runtime sync calls RefreshContextCompression).
+	cfg.ContextCompression.Thresholds.TriggerPercent = 65
+	cfg.ContextCompression.Thresholds.SoftPercent = 40
+	am.RefreshContextCompression()
+
+	got := am.CurrentAgent().CompressionConfig()
+	if got.Thresholds.TriggerPercent != 65 {
+		t.Errorf("after refresh TriggerPercent = %d, want 65", got.Thresholds.TriggerPercent)
+	}
+	if got.Thresholds.SoftPercent != 40 {
+		t.Errorf("after refresh SoftPercent = %d, want 40", got.Thresholds.SoftPercent)
 	}
 }
 

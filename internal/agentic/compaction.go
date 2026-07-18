@@ -68,7 +68,7 @@ func (a *Agent) microCompactForced(force bool) {
 	// CacheMissThreshold) or usage is at the hard ceiling where skipping the
 	// mutation risks an overflow. force=true (explicit /compress) always
 	// mutates so a manual invocation always does visible work.
-	const hardCeilingRatio = 0.95
+	hardCeilingRatio := float64(a.cfg.ContextCompression.resolveThresholds().hard) / 100
 	if !force && contextRatio < hardCeilingRatio && !a.cacheAssumedCold() {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Debug, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%)",

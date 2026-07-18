@@ -4,6 +4,7 @@ package core
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -179,7 +180,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		ConfirmTool:       am.confirmTool,
 		HookEngine:        am.hookEngine,
 	}
-	compressionCfg := am.buildCompressionConfig(cfg, mdl.ContextWindow)
+	compressionCfg := am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
 	if cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
 	}
@@ -199,35 +200,112 @@ func (am *AgentManager) SetDisableToolBudget(disabled bool) {
 	am.disableToolBudget = disabled
 }
 
-func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelContextWindow int) agentic.ContextCompressionConfig {
+func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID string, modelContextWindow int) agentic.ContextCompressionConfig {
 	// We intentionally do NOT fall back to modelContextWindow here. When the
 	// user has not configured a compression limit, leaving MaxTokens at 0 lets
 	// the agent use the runtime model window (which may be refreshed later,
 	// e.g., for local models whose loaded context is smaller than the default).
 	// Auto-deriving a hard MaxTokens from the initial model window would make
 	// the value stale and hide the real capacity in the UI.
+	ov := overlayCompressionForModel(cfg.ContextCompression, modelID)
+
 	return agentic.ContextCompressionConfig{
-		MaxTokens:           cfg.ContextCompression.MaxTokens,
-		ThresholdPercent:    compressionThreshold(cfg),
+		MaxTokens:           ov.maxTokens,
+		Thresholds:          am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger),
 		OnContextError:      cfg.ContextCompression.OnContextError,
-		Strategy:            compressionStrategy(cfg),
-		PreserveRecentTurns: cfg.ContextCompression.PreserveRecentTurns,
+		Strategy:            compressionStrategy(ov.strategy),
+		PreserveRecentTurns: ov.preserveRecentTurns,
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
 	}
 }
 
-func compressionThreshold(cfg *config.Config) int {
-	if cfg.ContextCompression.ThresholdPercent > 0 {
-		return cfg.ContextCompression.ThresholdPercent
-	}
-	if cfg.Execution.TokenCritical > 0 {
-		return cfg.Execution.TokenCritical
-	}
-	return 90
+// compressionOverlay holds the effective compression settings after applying
+// a per-model override on top of the global section.
+type compressionOverlay struct {
+	maxTokens           int
+	strategy            string
+	preserveRecentTurns int
+	thresholds          config.CompressionThresholdsConfig
+	legacyTrigger       int
 }
 
-func compressionStrategy(cfg *config.Config) agentic.CompressionStrategy {
-	if s := agentic.CompressionStrategy(cfg.ContextCompression.Strategy); s != "" {
+// overlayCompressionForModel resolves the per-model overlay: start from the
+// global section, then apply non-zero fields of the matching per_model entry
+// (keyed by models[].id, which is what provider.Model.ID carries for the
+// resolved active model).
+func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID string) compressionOverlay {
+	ov := compressionOverlay{
+		maxTokens:           cc.MaxTokens,
+		strategy:            cc.Strategy,
+		preserveRecentTurns: cc.PreserveRecentTurns,
+		thresholds:          cc.Thresholds,
+		legacyTrigger:       cc.ThresholdPercent,
+	}
+	if modelID == "" {
+		return ov
+	}
+	o, ok := cc.PerModel[modelID]
+	if !ok {
+		return ov
+	}
+	if o.MaxTokens != 0 {
+		ov.maxTokens = o.MaxTokens
+	}
+	if o.Strategy != "" {
+		ov.strategy = o.Strategy
+	}
+	if o.PreserveRecentTurns != 0 {
+		ov.preserveRecentTurns = o.PreserveRecentTurns
+	}
+	if o.ThresholdPercent != 0 {
+		ov.legacyTrigger = o.ThresholdPercent
+	}
+	if o.Thresholds.SoftPercent != 0 {
+		ov.thresholds.SoftPercent = o.Thresholds.SoftPercent
+	}
+	if o.Thresholds.TriggerPercent != 0 {
+		ov.thresholds.TriggerPercent = o.Thresholds.TriggerPercent
+	}
+	if o.Thresholds.HardPercent != 0 {
+		ov.thresholds.HardPercent = o.Thresholds.HardPercent
+	}
+	return ov
+}
+
+// resolveAgenticThresholds folds the config-layer thresholds with the legacy
+// threshold_percent alias and the deprecated Execution.TokenCritical fallback,
+// producing the SDK-level thresholds. Precedence: legacy threshold_percent →
+// thresholds.* → TokenCritical (deprecated, logged once) → SDK defaults (0 =
+// let the SDK default apply).
+func (am *AgentManager) resolveAgenticThresholds(cfg *config.Config, t config.CompressionThresholdsConfig, legacyTrigger int) agentic.CompressionThresholds {
+	out := agentic.CompressionThresholds{
+		SoftPercent:    t.SoftPercent,
+		TriggerPercent: t.TriggerPercent,
+		HardPercent:    t.HardPercent,
+	}
+	// Deprecated alias wins over thresholds.trigger_percent when both are set.
+	if legacyTrigger > 0 {
+		out.TriggerPercent = legacyTrigger
+	}
+	if out.TriggerPercent == 0 && cfg.Execution.TokenCritical > 0 {
+		am.logTokenCriticalDeprecationOnce()
+		out.TriggerPercent = cfg.Execution.TokenCritical
+	}
+	return out
+}
+
+// logTokenCriticalDeprecationOnce warns (once per process) that the
+// execution.token_critical fallback for the compression trigger is deprecated.
+var tokenCriticalDeprecationLogged atomic.Bool
+
+func (am *AgentManager) logTokenCriticalDeprecationOnce() {
+	if tokenCriticalDeprecationLogged.CompareAndSwap(false, true) && am.logger != nil {
+		am.logger.Log(agentic.Warn, "execution.token_critical is deprecated as a compression trigger fallback; use context_compression.thresholds.trigger_percent instead")
+	}
+}
+
+func compressionStrategy(s string) agentic.CompressionStrategy {
+	if s := agentic.CompressionStrategy(s); s != "" {
 		return s
 	}
 	return agentic.CompressionToolElision

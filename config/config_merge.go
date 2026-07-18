@@ -536,12 +536,69 @@ func (c *Config) mergeContextCompression(other *Config) {
 		return
 	}
 	c.ContextCompression.Enabled = true
-	c.ContextCompression.MaxTokens = cc.MaxTokens
-	c.ContextCompression.ThresholdPercent = cc.ThresholdPercent
+	// Numeric scalars merge field-wise (0 = inherit from the lower layer),
+	// matching the thresholds/per-model merge below. This fixes the previous
+	// replace-all behavior where a higher layer that enabled compression
+	// without restating every scalar silently reset them to zero.
+	if cc.MaxTokens != 0 {
+		c.ContextCompression.MaxTokens = cc.MaxTokens
+	}
+	if cc.ThresholdPercent != 0 {
+		c.ContextCompression.ThresholdPercent = cc.ThresholdPercent
+	}
+	if cc.PreserveRecentTurns != 0 {
+		c.ContextCompression.PreserveRecentTurns = cc.PreserveRecentTurns
+	}
+	// OnContextError is a bool (explicit false is meaningful), so it keeps
+	// the historical replace semantics: any layer with compression enabled
+	// carries the effective value.
 	c.ContextCompression.OnContextError = cc.OnContextError
-	c.ContextCompression.PreserveRecentTurns = cc.PreserveRecentTurns
 	if cc.Strategy != "" {
 		c.ContextCompression.Strategy = cc.Strategy
+	}
+	mergeCompressionThresholds(&c.ContextCompression.Thresholds, cc.Thresholds)
+	mergeCompressionPerModel(&c.ContextCompression.PerModel, cc.PerModel)
+	if cc.MicroCompaction != (MicroCompactionSettings{}) {
+		c.ContextCompression.MicroCompaction = cc.MicroCompaction
+	}
+}
+
+// mergeCompressionThresholds overlays non-zero threshold fields.
+func mergeCompressionThresholds(dst *CompressionThresholdsConfig, src CompressionThresholdsConfig) {
+	if src.SoftPercent != 0 {
+		dst.SoftPercent = src.SoftPercent
+	}
+	if src.TriggerPercent != 0 {
+		dst.TriggerPercent = src.TriggerPercent
+	}
+	if src.HardPercent != 0 {
+		dst.HardPercent = src.HardPercent
+	}
+}
+
+// mergeCompressionPerModel overlays per-model override entries, merging
+// field-wise so a higher cascade layer can adjust a single field without
+// restating the whole entry.
+func mergeCompressionPerModel(dst *map[string]ModelCompressionOverride, src map[string]ModelCompressionOverride) {
+	for id, o := range src {
+		if *dst == nil {
+			*dst = map[string]ModelCompressionOverride{}
+		}
+		m := (*dst)[id]
+		if o.MaxTokens != 0 {
+			m.MaxTokens = o.MaxTokens
+		}
+		if o.ThresholdPercent != 0 {
+			m.ThresholdPercent = o.ThresholdPercent
+		}
+		mergeCompressionThresholds(&m.Thresholds, o.Thresholds)
+		if o.Strategy != "" {
+			m.Strategy = o.Strategy
+		}
+		if o.PreserveRecentTurns != 0 {
+			m.PreserveRecentTurns = o.PreserveRecentTurns
+		}
+		(*dst)[id] = m
 	}
 }
 

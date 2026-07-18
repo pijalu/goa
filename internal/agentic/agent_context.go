@@ -47,7 +47,7 @@ func (a *Agent) enforceContextCeiling() {
 		return
 	}
 
-	const hardCeilingPercent = 95
+	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	// The fixed per-turn cost (system prompt + tool schemas) is always present;
 	// history must fit in the remainder or the outgoing request still overflows.
@@ -146,7 +146,7 @@ func (a *Agent) checkContextLimit() error {
 	if maxTokens == 0 {
 		return nil
 	}
-	const hardCeilingPercent = 95
+	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	a.mu.Lock()
 	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()

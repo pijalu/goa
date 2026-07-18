@@ -54,7 +54,22 @@ context_compression:
   enabled: true
   # 0 means "auto": use the active model's advertised context window.
   max_tokens: 0
-  threshold_percent: 80
+  # Fill levels (percent of the effective window) at which compression
+  # escalates. soft: early cheap maintenance (0 = disabled); trigger: the
+  # configured strategy fires; hard: emergency ceiling (gate bypass,
+  # escalation, ceiling enforcement, new-turn refusal).
+  # The legacy "threshold_percent" key still works and, when set, overrides
+  # thresholds.trigger_percent (backwards compatibility).
+  thresholds:
+    soft_percent: 0
+    trigger_percent: 80
+    hard_percent: 95
+  # Optional per-model overrides keyed by models[].id, e.g.:
+  # per_model:
+  #   "local-qwen3-8b":
+  #     max_tokens: 24576
+  #     strategy: "hybrid"
+  #     thresholds: { soft_percent: 40, trigger_percent: 65, hard_percent: 90 }
   # Primary strategy: micro compaction after 1h idle.
   # On context-length errors, tool elision is applied as fallback.
   on_context_error: true

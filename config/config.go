@@ -646,13 +646,41 @@ type ThinkingLevelConfig struct {
 
 // ContextCompressionConfig controls automatic conversation history compression.
 type ContextCompressionConfig struct {
-	Enabled             bool                    `yaml:"enabled"`
-	MaxTokens           int                     `yaml:"max_tokens"`
-	ThresholdPercent    int                     `yaml:"threshold_percent"`
-	OnContextError      bool                    `yaml:"on_context_error"`
-	Strategy            string                  `yaml:"strategy"`
-	PreserveRecentTurns int                     `yaml:"preserve_recent_turns"`
-	MicroCompaction     MicroCompactionSettings `yaml:"micro_compaction,omitempty"`
+	Enabled   bool `yaml:"enabled"`
+	MaxTokens int  `yaml:"max_tokens"`
+	// ThresholdPercent is the legacy single trigger level.
+	// Deprecated: use Thresholds.TriggerPercent. When both are set,
+	// ThresholdPercent wins (backwards compatibility).
+	ThresholdPercent    int                                 `yaml:"threshold_percent"`
+	Thresholds          CompressionThresholdsConfig         `yaml:"thresholds,omitempty"`
+	PerModel            map[string]ModelCompressionOverride `yaml:"per_model,omitempty"`
+	OnContextError      bool                                `yaml:"on_context_error"`
+	Strategy            string                              `yaml:"strategy"`
+	PreserveRecentTurns int                                 `yaml:"preserve_recent_turns"`
+	MicroCompaction     MicroCompactionSettings             `yaml:"micro_compaction,omitempty"`
+}
+
+// CompressionThresholdsConfig holds the fill levels (percent of the effective
+// context window) at which compression escalates. Zero fields mean "inherit"
+// (from the global section for per-model overrides, from defaults otherwise).
+type CompressionThresholdsConfig struct {
+	// SoftPercent is the early cheap-maintenance level (0 = disabled).
+	SoftPercent int `yaml:"soft_percent,omitempty"`
+	// TriggerPercent is the main strategy trigger (0 = default).
+	TriggerPercent int `yaml:"trigger_percent,omitempty"`
+	// HardPercent is the emergency ceiling (0 = default 95).
+	HardPercent int `yaml:"hard_percent,omitempty"`
+}
+
+// ModelCompressionOverride overrides selected compression settings for one
+// model, keyed by models[].id under context_compression.per_model. Zero
+// fields inherit the global context_compression values.
+type ModelCompressionOverride struct {
+	MaxTokens           int                        `yaml:"max_tokens,omitempty"`
+	ThresholdPercent    int                        `yaml:"threshold_percent,omitempty"` // Deprecated alias for Thresholds.TriggerPercent.
+	Thresholds          CompressionThresholdsConfig `yaml:"thresholds,omitempty"`
+	Strategy            string                     `yaml:"strategy,omitempty"`
+	PreserveRecentTurns int                        `yaml:"preserve_recent_turns,omitempty"`
 }
 
 // MicroCompactionSettings holds micro-specific config overrides.

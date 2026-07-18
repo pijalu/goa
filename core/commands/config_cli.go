@@ -235,6 +235,12 @@ func syncRuntimeConfig(ctx core.Context, key, value string) error {
 		}
 	case "mode.default.major", "execution.mode":
 		ctx.AgentManager.SetMode(ctx.Config.DefaultModeState())
+	default:
+		// context_compression.* changes apply to the live agent immediately
+		// (thresholds, strategy, max_tokens, on_context_error).
+		if strings.HasPrefix(key, "context_compression.") {
+			ctx.AgentManager.RefreshContextCompression()
+		}
 	}
 	return nil
 }
@@ -272,10 +278,11 @@ func persistModeDefault(ctx core.Context, value string) error {
 // current session and are cleared on restart/session end.
 //
 // Supported overrides:
-//   /config:temp:think_loop_detection:off  — disable thinking-loop detection
-//   /config:temp:think_loop_detection:on   — enable thinking-loop detection
-//   /config:temp:tool_loop_detection:off   — disable tool-call loop detection
-//   /config:temp:tool_loop_detection:on    — enable tool-call loop detection
+//
+//	/config:temp:think_loop_detection:off  — disable thinking-loop detection
+//	/config:temp:think_loop_detection:on   — enable thinking-loop detection
+//	/config:temp:tool_loop_detection:off   — disable tool-call loop detection
+//	/config:temp:tool_loop_detection:on    — enable tool-call loop detection
 func handleConfigTemp(ctx core.Context, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: /config:temp <setting> <on|off>")
@@ -339,39 +346,42 @@ func scalarValue(value string) any {
 type configSetter func(cfg *config.Config, value string) error
 
 var configSetters = map[string]configSetter{
-	"mode.default.major":                    setActiveMajor,
-	"active_provider":                       setString(func(cfg *config.Config) *string { return &cfg.ActiveProvider }),
-	"active_model":                          setActiveModel,
-	"multi_agent.companion_model":           setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
-	"execution.mode":                        setExecutionMode,
-	"mode.plan_file_path":                   setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
-	"execution.max_tool_calls":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),
-	"execution.max_tool_repeat_total":       setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
-	"execution.max_tool_repeat_consecutive": setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatConsecutive }),
-	"execution.max_tool_repeat":             setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
-	"tui.theme":                             setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),
-	"tui.spinner":                           setSpinnerName,
-	"tui.transparency.show_thinking":        setBool(func(cfg *config.Config) *bool { return &cfg.TUI.Transparency.ShowThinking }),
-	"tui.transparency.thinking_collapsed":   setThinkingCollapsed,
-	"logging.level":                         setString(func(cfg *config.Config) *string { return &cfg.Logging.Level }),
-	"logging.file":                          setString(func(cfg *config.Config) *string { return &cfg.Logging.File }),
-	"thinking_level":                        setThinkingLevel,
-	"multi_agent.enabled":                   setBool(func(cfg *config.Config) *bool { return &cfg.MultiAgent.Enabled }),
-	"multi_agent.companion_provider":        setString(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionProvider }),
-	"context_compression.enabled":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.Enabled }),
-	"context_compression.strategy":          setCompressionStrategy,
-	"context_compression.threshold_percent": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
-	"context_compression.max_tokens":        setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
-	"context_compression.on_context_error":  setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
-	"execution.loop_warning":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
-	"execution.loop_interrupt":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
-	"execution.disable_tool_budget":         setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
-	"skills.execution_mode":                 setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
-	"tools.bash.enable_complexity_analysis": setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
-	"tools.bash.jail":                       setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
-	"tools.bash.max_complexity_score":       setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
-	"tools.terminal.sandbox.enabled":        setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
-	"tools.enabled.goal":                    setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
+	"mode.default.major":                             setActiveMajor,
+	"active_provider":                                setString(func(cfg *config.Config) *string { return &cfg.ActiveProvider }),
+	"active_model":                                   setActiveModel,
+	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
+	"execution.mode":                                 setExecutionMode,
+	"mode.plan_file_path":                            setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
+	"execution.max_tool_calls":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),
+	"execution.max_tool_repeat_total":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
+	"execution.max_tool_repeat_consecutive":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatConsecutive }),
+	"execution.max_tool_repeat":                      setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
+	"tui.theme":                                      setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),
+	"tui.spinner":                                    setSpinnerName,
+	"tui.transparency.show_thinking":                 setBool(func(cfg *config.Config) *bool { return &cfg.TUI.Transparency.ShowThinking }),
+	"tui.transparency.thinking_collapsed":            setThinkingCollapsed,
+	"logging.level":                                  setString(func(cfg *config.Config) *string { return &cfg.Logging.Level }),
+	"logging.file":                                   setString(func(cfg *config.Config) *string { return &cfg.Logging.File }),
+	"thinking_level":                                 setThinkingLevel,
+	"multi_agent.enabled":                            setBool(func(cfg *config.Config) *bool { return &cfg.MultiAgent.Enabled }),
+	"multi_agent.companion_provider":                 setString(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionProvider }),
+	"context_compression.enabled":                    setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.Enabled }),
+	"context_compression.strategy":                   setCompressionStrategy,
+	"context_compression.threshold_percent":          setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
+	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
+	"context_compression.thresholds.trigger_percent": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.TriggerPercent }, 0, 100),
+	"context_compression.thresholds.hard_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
+	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
+	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
+	"execution.loop_warning":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
+	"execution.loop_interrupt":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
+	"execution.disable_tool_budget":                  setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
+	"skills.execution_mode":                          setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
+	"tools.bash.enable_complexity_analysis":          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
+	"tools.bash.jail":                                setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
+	"tools.bash.max_complexity_score":                setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
+	"tools.terminal.sandbox.enabled":                 setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
+	"tools.enabled.goal":                             setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
 }
 
 func setActiveMajor(cfg *config.Config, value string) error {

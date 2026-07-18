@@ -316,9 +316,17 @@ type ContextCompressionConfig struct {
 	MaxTokens int
 
 	// ThresholdPercent triggers compression when usage exceeds this
-	// percentage of MaxTokens. Default: 100 (compress only at limit).
+	// percentage of MaxTokens. 0 = default 90.
 	// Recommended for inline mode: 75-80.
+	//
+	// Deprecated: use Thresholds.TriggerPercent. When both are set,
+	// ThresholdPercent wins (backwards compatibility).
 	ThresholdPercent int
+
+	// Thresholds configures the fill levels at which compression escalates:
+	// early cheap maintenance (soft), the main strategy trigger, and the
+	// emergency ceiling (hard). See CompressionThresholds.
+	Thresholds CompressionThresholds
 
 	// OnContextError triggers compression when the LLM returns a
 	// context-length / token-limit error. Default: true.
@@ -515,6 +523,13 @@ func (a *Agent) SetContextCompression(cfg ContextCompressionConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cfg.ContextCompression = cfg
+}
+
+// CompressionConfig returns the current context compression configuration.
+func (a *Agent) CompressionConfig() ContextCompressionConfig {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.ContextCompression
 }
 
 // SetReasoningEffort replaces the reasoning-effort level for subsequent turns.

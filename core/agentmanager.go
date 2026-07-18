@@ -684,8 +684,9 @@ func (am *AgentManager) InjectSystemMessage(content string) error {
 }
 
 // SetModel replaces the active agent's model for subsequent turns and syncs
-// the context compression configuration so the new model's context window is
-// used for ceiling/compaction decisions.
+// the context compression configuration so the new model's context window and
+// any per-model compression overrides are used for ceiling/compaction
+// decisions.
 func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -693,8 +694,36 @@ func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 		return
 	}
 	am.activeAgent.SetModel(mdl)
-	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ContextWindow)
-	if compressionCfg.MaxTokens > 0 {
+	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow)
+	if compressionCfg.MaxTokens > 0 || am.hasCompressionOverride(mdl.ID) {
+		am.activeAgent.SetContextCompression(compressionCfg)
+	}
+}
+
+// hasCompressionOverride reports whether a per-model compression override
+// exists for the given model ID (in which case SetModel must re-apply the
+// compression config even when MaxTokens is 0/auto).
+func (am *AgentManager) hasCompressionOverride(modelID string) bool {
+	if modelID == "" {
+		return false
+	}
+	_, ok := am.cfg.ContextCompression.PerModel[modelID]
+	return ok
+}
+
+// RefreshContextCompression re-resolves the compression config for the
+// active model (including per-model overrides) and applies it to the active
+// agent, so /config changes to context_compression take effect immediately
+// instead of on the next session or model switch.
+func (am *AgentManager) RefreshContextCompression() {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return
+	}
+	mdl := am.activeAgent.Model()
+	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow)
+	if am.cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {
 		am.activeAgent.SetContextCompression(compressionCfg)
 	}
 }

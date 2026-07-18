@@ -16,9 +16,12 @@ func (m *configMenu) settingCompression() {
 	if strategy == "" {
 		strategy = "tool_elision"
 	}
+	trigger := compressionTriggerDisplay(cfg)
 	items := []tui.SelectorItem{
 		{Value: "strategy", Label: "Strategy", Description: strategy},
-		{Value: "threshold", Label: "Trigger threshold", Description: fmt.Sprintf("%d%%", cfg.ContextCompression.ThresholdPercent)},
+		{Value: "soft", Label: "Soft threshold (early maintenance)", Description: percentLabel(cfg.ContextCompression.Thresholds.SoftPercent, "off")},
+		{Value: "threshold", Label: "Trigger threshold", Description: trigger},
+		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "95% (default)")},
 		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
 		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.Enabled)},
 		{Value: "on_context_error", Label: "Compress on context error", Description: boolLabel(cfg.ContextCompression.OnContextError)},
@@ -31,8 +34,12 @@ func (m *configMenu) settingCompression() {
 		switch selected {
 		case "strategy":
 			m.open(m.settingCompressionStrategy)
+		case "soft":
+			m.open(m.settingCompressionSoft)
 		case "threshold":
 			m.open(m.settingCompressionThreshold)
+		case "hard":
+			m.open(m.settingCompressionHard)
 		case "max_tokens":
 			m.open(m.settingCompressionMaxTokens)
 		case "enabled":
@@ -77,13 +84,52 @@ func (m *configMenu) settingCompressionThreshold() {
 		{Value: "90", Label: "90%", Description: "late"},
 		{Value: "100", Label: "100%", Description: "only at the limit"},
 	}
-	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.ThresholdPercent)
+	current := fmt.Sprintf("%d", compressionTriggerValue(m.ctx.Config))
 	m.ctx.SelectOption("Trigger threshold (% of max tokens):", items, current, func(v string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
-		m.applySet("context_compression.threshold_percent", v)
+		m.applySet("context_compression.thresholds.trigger_percent", v)
+		m.back()
+	})
+}
+
+func (m *configMenu) settingCompressionSoft() {
+	m.current = m.settingCompressionSoft
+	items := []tui.SelectorItem{
+		{Value: "0", Label: "off", Description: "no early maintenance"},
+		{Value: "40", Label: "40%", Description: "very early"},
+		{Value: "50", Label: "50%", Description: "early"},
+		{Value: "60", Label: "60%", Description: "moderate"},
+		{Value: "70", Label: "70%", Description: "late"},
+	}
+	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.Thresholds.SoftPercent)
+	m.ctx.SelectOption("Soft threshold — cheap zero-LLM maintenance when cache is cold:", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.thresholds.soft_percent", v)
+		m.back()
+	})
+}
+
+func (m *configMenu) settingCompressionHard() {
+	m.current = m.settingCompressionHard
+	items := []tui.SelectorItem{
+		{Value: "85", Label: "85%", Description: "conservative"},
+		{Value: "90", Label: "90%", Description: "early ceiling"},
+		{Value: "95", Label: "95%", Description: "default"},
+		{Value: "100", Label: "100%", Description: "only at the hard limit"},
+	}
+	current := fmt.Sprintf("%d", compressionHardValue(m.ctx.Config))
+	m.ctx.SelectOption("Hard ceiling (emergency: bypass cache, escalate, refuse new turns):", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.thresholds.hard_percent", v)
 		m.back()
 	})
 }
@@ -118,7 +164,41 @@ func compressionLabel(cfg *config.Config) string {
 	if strategy == "" {
 		strategy = "tool_elision"
 	}
-	return fmt.Sprintf("%s @ %d%%", strategy, cfg.ContextCompression.ThresholdPercent)
+	return fmt.Sprintf("%s @ %d%%", strategy, compressionTriggerValue(cfg))
+}
+
+// compressionTriggerValue resolves the effective trigger percent for display:
+// legacy alias wins, then the thresholds block.
+func compressionTriggerValue(cfg *config.Config) int {
+	if cfg.ContextCompression.ThresholdPercent > 0 {
+		return cfg.ContextCompression.ThresholdPercent
+	}
+	return cfg.ContextCompression.Thresholds.TriggerPercent
+}
+
+// compressionTriggerDisplay renders the trigger value for the menu,
+// annotating when it comes from neither field (SDK default applies).
+func compressionTriggerDisplay(cfg *config.Config) string {
+	if v := compressionTriggerValue(cfg); v > 0 {
+		return fmt.Sprintf("%d%%", v)
+	}
+	return "90% (default)"
+}
+
+// compressionHardValue resolves the effective hard ceiling for display.
+func compressionHardValue(cfg *config.Config) int {
+	if cfg.ContextCompression.Thresholds.HardPercent > 0 {
+		return cfg.ContextCompression.Thresholds.HardPercent
+	}
+	return 95
+}
+
+// percentLabel renders an optional percent value with a fallback label.
+func percentLabel(v int, fallback string) string {
+	if v <= 0 {
+		return fallback
+	}
+	return fmt.Sprintf("%d%%", v)
 }
 
 // maxTokensLabel renders the compression max_tokens value for display.

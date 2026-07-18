@@ -149,11 +149,63 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	if !cc.Enabled {
 		return
 	}
-	if cc.Strategy != "" && cc.Strategy != AgenticCompressionToolElision && cc.Strategy != AgenticCompressionSelective && cc.Strategy != AgenticCompressionSummarize && cc.Strategy != AgenticCompressionHybrid && cc.Strategy != AgenticCompressionMicro {
+	if !validCompressionStrategy(cc.Strategy) {
 		ve.Add(fmt.Sprintf("context_compression.strategy: unknown strategy %q", cc.Strategy))
 	}
 	if cc.ThresholdPercent < 0 || cc.ThresholdPercent > 100 {
 		ve.Add(fmt.Sprintf("context_compression.threshold_percent: must be 0-100 (got %d)", cc.ThresholdPercent))
+	}
+	validateCompressionThresholds(ve, "context_compression.thresholds", cc.Thresholds)
+	for id, o := range cc.PerModel {
+		c.validateCompressionOverride(ve, id, o)
+	}
+}
+
+// validCompressionStrategy reports whether s is empty (inherit) or a known
+// compression strategy.
+func validCompressionStrategy(s string) bool {
+	switch s {
+	case "", AgenticCompressionToolElision, AgenticCompressionSelective, AgenticCompressionSummarize, AgenticCompressionHybrid, AgenticCompressionMicro:
+		return true
+	}
+	return false
+}
+
+// validateCompressionOverride validates one per-model override entry.
+func (c *Config) validateCompressionOverride(ve *internal.ValidationError, id string, o ModelCompressionOverride) {
+	prefix := fmt.Sprintf("context_compression.per_model.%s", id)
+	if c.GetModelByID(id) == nil {
+		ve.Add(fmt.Sprintf("%s: no model with id %q is configured", prefix, id))
+	}
+	if o.ThresholdPercent < 0 || o.ThresholdPercent > 100 {
+		ve.Add(fmt.Sprintf("%s.threshold_percent: must be 0-100 (got %d)", prefix, o.ThresholdPercent))
+	}
+	validateCompressionThresholds(ve, prefix+".thresholds", o.Thresholds)
+	if !validCompressionStrategy(o.Strategy) {
+		ve.Add(fmt.Sprintf("%s.strategy: unknown strategy %q", prefix, o.Strategy))
+	}
+}
+
+// validateCompressionThresholds checks range (0-100) and ordering
+// (soft ≤ trigger ≤ hard) for a thresholds block.
+func validateCompressionThresholds(ve *internal.ValidationError, path string, t CompressionThresholdsConfig) {
+	validatePercentRange(ve, path+".soft_percent", t.SoftPercent)
+	validatePercentRange(ve, path+".trigger_percent", t.TriggerPercent)
+	validatePercentRange(ve, path+".hard_percent", t.HardPercent)
+	validateThresholdOrder(ve, path, "soft_percent", t.SoftPercent, "trigger_percent", t.TriggerPercent)
+	validateThresholdOrder(ve, path, "trigger_percent", t.TriggerPercent, "hard_percent", t.HardPercent)
+	validateThresholdOrder(ve, path, "soft_percent", t.SoftPercent, "hard_percent", t.HardPercent)
+}
+
+func validatePercentRange(ve *internal.ValidationError, path string, v int) {
+	if v < 0 || v > 100 {
+		ve.Add(fmt.Sprintf("%s: must be 0-100 (got %d)", path, v))
+	}
+}
+
+func validateThresholdOrder(ve *internal.ValidationError, path, loName string, lo int, hiName string, hi int) {
+	if lo > 0 && hi > 0 && lo > hi {
+		ve.Add(fmt.Sprintf("%s: %s (%d) must be ≤ %s (%d)", path, loName, lo, hiName, hi))
 	}
 }
 

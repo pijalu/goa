@@ -164,6 +164,8 @@ func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrat
 }
 
 // maybeCompress checks context usage and triggers compression if needed.
+// The escalation tier (soft/trigger/none) is selected from the configured
+// thresholds and the cache gate; the soft tier runs only zero-LLM strategies.
 func (a *Agent) maybeCompress(ctx context.Context) error {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
@@ -176,64 +178,74 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 		strategy = CompressionToolElision
 	}
 
-	// Micro compaction uses its own internal threshold checks.
-	if strategy != CompressionMicro {
-		if !a.shouldProactivelyCompress(cfg.ThresholdPercent, maxTokens) {
-			return nil
-		}
+	if strategy == CompressionMicro {
+		// Micro compaction uses its own internal threshold checks.
+		return a.compressAndReport(ctx)
 	}
 
+	tier := a.proactiveTier(cfg.resolveThresholds(), maxTokens)
+	switch tier {
+	case tierTrigger:
+		if a.cfg.Logger != nil {
+			stats := a.ContextStats()
+			a.cfg.Logger.Log(Info, "Context compression triggered: %d%% usage (%d / %d tokens)",
+				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
+		}
+		return a.compressAndReport(ctx)
+	case tierSoft:
+		if a.cfg.Logger != nil {
+			stats := a.ContextStats()
+			a.cfg.Logger.Log(Info, "Soft-tier context maintenance: %d%% usage (%d / %d tokens)",
+				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
+		}
+		return a.compressSoftAndReport(ctx)
+	default:
+		return nil
+	}
+}
+
+// compressAndReport applies the configured strategy and emits fresh stats.
+func (a *Agent) compressAndReport(ctx context.Context) error {
 	if err := a.compressHistory(ctx); err != nil {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Error, "Context compression failed: %v", err)
 		}
 		return err
 	}
+	a.emitContextStats()
+	return nil
+}
 
-	// Emit stats after compression (public ContextStats acquires the mutex).
+// compressSoftAndReport applies the soft-tier (zero-LLM) strategy derived
+// from the configured one and emits fresh stats. It never calls the LLM and
+// never drops messages.
+func (a *Agent) compressSoftAndReport(ctx context.Context) error {
+	if err := a.compressHistoryWith(ctx, softStrategy(a.cfg.ContextCompression.Strategy), false); err != nil {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Error, "Soft-tier context compression failed: %v", err)
+		}
+		return err
+	}
+	a.emitContextStats()
+	return nil
+}
+
+// emitContextStats emits the post-compression context stats event.
+func (a *Agent) emitContextStats() {
 	newStats := a.ContextStats()
 	a.emitEvent(OutputEvent{
 		Type:         EventContextStats,
 		ContextStats: &newStats,
 	})
-
-	return nil
 }
 
-// shouldProactivelyCompress reports whether threshold-triggered compression
-// should run this turn. It applies the usage threshold AND the cache-aware
-// gate: proactive in-place mutation (tool_elision et al.) rewrites old
-// messages, churning the provider's hot prefix cache into a full re-process
-// on the next turn, so it defers while the cache is presumed hot (recent
-// turn) unless usage is at the hard ceiling where skipping risks overflow.
-// The overflow-recovery path (handleStreamFailure → compressHistoryWith) does
-// NOT go through here, so emergency compression is never gated.
-func (a *Agent) shouldProactivelyCompress(thresholdPercent, maxTokens int) bool {
-	threshold := thresholdPercent
-	if threshold == 0 {
-		threshold = 90
-	}
-	const hardCeilingPercent = 95
-
+// proactiveTier resolves the current usage and selects the compression tier.
+func (a *Agent) proactiveTier(rt resolvedThresholds, maxTokens int) compressionTier {
 	a.mu.Lock()
 	stats := a.computeContextStatsForMax(maxTokens)
-	deferCompression := stats.UsagePercent < hardCeilingPercent && !a.cacheAssumedColdForProactive()
+	tier := a.proactiveTierLocked(stats.UsagePercent, rt)
 	a.mu.Unlock()
-
-	if deferCompression {
-		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Debug, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", stats.UsagePercent)
-		}
-		return false
-	}
-	if stats.UsagePercent < threshold {
-		return false
-	}
-	if a.cfg.Logger != nil {
-		a.cfg.Logger.Log(Info, "Context compression triggered: %d%% usage (%d / %d tokens)",
-			stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
-	}
-	return true
+	return tier
 }
 
 // compressHistory applies the configured compression strategy.
@@ -282,10 +294,7 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 // compressHybrid applies tool_elision then selective if still over threshold.
 // The in-memory steps run under a.mu; Compact (network) runs off-lock.
 func (a *Agent) compressHybrid(ctx context.Context) error {
-	threshold := a.cfg.ContextCompression.ThresholdPercent
-	if threshold == 0 {
-		threshold = 100
-	}
+	threshold := a.cfg.ContextCompression.resolveThresholds().trigger
 
 	a.mu.Lock()
 	a.compressToolElision(true)
@@ -425,14 +434,15 @@ func widenBoundaryForChains(history []Message, boundary int) int {
 // checkSilentOverflow detects providers that silently accept an oversized
 // prompt and return a successful response instead of an error (e.g. z.ai,
 // Xiaomi MiMo-style truncation).  When the estimated context usage exceeds
-// the configured window, it schedules compression for the next turn.
+// the hard ceiling, it schedules compression for the next turn.
 func (a *Agent) checkSilentOverflow() {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
 		return
 	}
+	hard := a.cfg.ContextCompression.resolveThresholds().hard
 	stats := a.computeContextStats()
-	if stats.UsagePercent < 95 {
+	if stats.UsagePercent < hard {
 		return
 	}
 	a.cfg.Logger.Log(Warn, "Silent overflow detected: %d%% usage (%d / %d tokens)",
@@ -440,7 +450,7 @@ func (a *Agent) checkSilentOverflow() {
 	a.emitEvent(OutputEvent{
 		Type:         EventContextStats,
 		ContextStats: &stats,
-		Text:         "warning: context usage ≥ 95% without provider error — proactive compression will fire on next turn",
+		Text:         fmt.Sprintf("warning: context usage ≥ %d%% without provider error — proactive compression will fire on next turn", hard),
 	})
 }
 
@@ -484,13 +494,16 @@ func (a *Agent) handleContextError(err error) {
 	a.compressHistoryWithStrategy(string(strategy), true)
 
 	// If the configured strategy is tool_elision or micro and context is
-	// STILL over the hard ceiling, escalate to selective (remove old turns).
+	// STILL near the hard ceiling, escalate to selective (remove old turns).
 	// This handles text-heavy conversations where eliding tool data leaves
-	// all user+assistant messages intact.
+	// all user+assistant messages intact. The escalation bar sits 5 points
+	// below the hard ceiling so the retry goes out with real headroom
+	// (default: 95-5=90, matching the historical fixed 90%).
 	if strategy == "" || strategy == CompressionToolElision || strategy == CompressionMicro {
 		stats := a.ContextStats()
 		maxTokens := a.effectiveMaxTokens()
-		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
+		escalation := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*escalation/100 {
 			if a.cfg.Logger != nil {
 				a.cfg.Logger.Log(Info, "Tool elision/micro freed insufficient space (%d/%d tokens) — escalating to selective",
 					stats.EstimatedTokens, maxTokens)
@@ -526,7 +539,8 @@ func (a *Agent) compressHistoryWithStrategy(strategy string, force bool) {
 		a.compressToolElision(true)
 		stats := a.computeContextStats()
 		maxTokens := a.effectiveMaxTokens()
-		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*90/100 {
+		escalation := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*escalation/100 {
 			a.compressSelective()
 		}
 		a.mu.Unlock()
