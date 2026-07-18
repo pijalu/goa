@@ -779,6 +779,61 @@ agent:
 
 ---
 
+## 6. Provider Quota — Usage Tracking
+
+The bundled **provider-quota** plugin tracks usage/quota for all configured
+providers and shows a compact quota readout in the status bar.
+
+### Status Bar
+
+The footer shows a rotating quota carousel after the model name:
+
+```
+claude-sonnet-4 • 5h:42% / 5d:30%
+```
+
+With several providers configured, the segment cycles every few seconds,
+labelled by provider (`Z.ai 5h:15% / 5d:8%`). An auth marker may follow:
+`✓` authenticated · `∇` needs re-auth · (none) no quota API.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `/quota` | Full session + per-provider quota breakdown |
+| `/quota:refresh` | Force-refresh all provider quotas |
+| `/quota:json` | Machine-readable JSON output |
+| `/quota:auth-status` | Show per-provider auth state |
+| `/quota:login:<provider>` | OAuth device login (e.g. `opencode`, `kimi`) |
+| `/quota:logout:<provider>` | Clear stored OAuth tokens |
+| `/quota:<provider>` | Force-refresh one provider |
+
+`Ctrl+Shift+Q` force-refreshes quota data without typing a command.
+
+### Authentication
+
+Quota auth is **separate** from model auth. API-key providers (Anthropic,
+OpenAI, Z.ai, MiniMax, OpenRouter) reuse the same key as inference — no extra
+step. OAuth providers (OpenCode, Kimi) need a one-time device-code login:
+
+```
+/quota:login:opencode
+```
+
+Goa prints a verification URL and opens your browser; after you approve, the
+token is stored (`~/.goa/plugins/provider-quota/storage.json`) and refreshed
+automatically. Run `/quota:auth-status` to see which providers are logged in.
+
+### Disabling
+
+```yaml
+plugins:
+  bundled:
+    provider-quota: false
+```
+
+---
+
 ## See Also
 
 - [WORKFLOWS.md](WORKFLOWS.md) — Workflow system reference
@@ -787,4 +842,5 @@ agent:
 - [CONFIGURATION.md](CONFIGURATION.md) — Full configuration reference
 - [TOOLS.md](TOOLS.md) — Tool system reference
 - [TUI.md](TUI.md) — TUI layout and keybindings
+- [PLUGINS.md](PLUGINS.md) — JS plugin system and bridge API
 - [AGENTIC-SDK.md](AGENTIC-SDK.md) — Agent SDK internals

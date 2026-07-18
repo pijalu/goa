@@ -368,44 +368,54 @@ func (b *JSBridge) installRequire(pluginDir string) {
 	var requireAt func(dir string) func(goja.FunctionCall) goja.Value
 	requireAt = func(dir string) func(goja.FunctionCall) goja.Value {
 		return func(call goja.FunctionCall) goja.Value {
-			rel := call.Argument(0).String()
-			path, err := resolveModulePath(dir, rel, pluginDir)
-			if err != nil {
-				throwError(b.vm, err)
-			}
-			if cached, ok := cache[path]; ok {
-				return cached
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				throwError(b.vm, fmt.Errorf("require %s: %v", rel, err))
-			}
-			module := b.vm.NewObject()
-			exports := b.vm.NewObject()
-			module.Set("exports", exports)
-			// Register in cache before executing to break circular imports.
-			cache[path] = exports
-
-			wrapper, werr := b.buildModuleWrapper(string(data))
-			if werr != nil {
-				delete(cache, path)
-				throwError(b.vm, fmt.Errorf("require %s: %v", rel, werr))
-			}
-			// The nested require resolves relative to THIS module's directory.
-			nestedRequire := b.vm.ToValue(requireAt(filepath.Dir(path)))
-			if _, err := wrapper(exports, exports, module, nestedRequire); err != nil {
-				delete(cache, path)
-				throwError(b.vm, fmt.Errorf("require %s: %v", rel, err))
-			}
-			// Support `module.exports = {...}` replacement.
-			if finalExports := module.Get("exports"); finalExports != nil && finalExports != exports {
-				cache[path] = finalExports
-				return finalExports
-			}
-			return exports
+			return b.requireModule(requireAt, cache, dir, pluginDir, call.Argument(0).String())
 		}
 	}
 	b.vm.Set("require", requireAt(pluginDir))
+}
+
+// requireModule resolves, loads, and executes one module, returning its
+// exports. Split from installRequire to stay within the complexity budget.
+func (b *JSBridge) requireModule(requireAt func(string) func(goja.FunctionCall) goja.Value, cache map[string]goja.Value, dir, pluginDir, rel string) goja.Value {
+	path, err := resolveModulePath(dir, rel, pluginDir)
+	if err != nil {
+		throwError(b.vm, err)
+	}
+	if cached, ok := cache[path]; ok {
+		return cached
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		throwError(b.vm, fmt.Errorf("require %s: %v", rel, err))
+	}
+	return b.execModule(requireAt, cache, path, rel, string(data))
+}
+
+// execModule wraps, runs, and caches a loaded module's exports.
+func (b *JSBridge) execModule(requireAt func(string) func(goja.FunctionCall) goja.Value, cache map[string]goja.Value, path, rel, src string) goja.Value {
+	module := b.vm.NewObject()
+	exports := b.vm.NewObject()
+	module.Set("exports", exports)
+	// Register in cache before executing to break circular imports.
+	cache[path] = exports
+
+	wrapper, werr := b.buildModuleWrapper(src)
+	if werr != nil {
+		delete(cache, path)
+		throwError(b.vm, fmt.Errorf("require %s: %v", rel, werr))
+	}
+	// The nested require resolves relative to THIS module's directory.
+	nestedRequire := b.vm.ToValue(requireAt(filepath.Dir(path)))
+	if _, err := wrapper(exports, exports, module, nestedRequire); err != nil {
+		delete(cache, path)
+		throwError(b.vm, fmt.Errorf("require %s: %v", rel, err))
+	}
+	// Support `module.exports = {...}` replacement.
+	if finalExports := module.Get("exports"); finalExports != nil && finalExports != exports {
+		cache[path] = finalExports
+		return finalExports
+	}
+	return exports
 }
 
 // buildModuleWrapper compiles module source into a callable (exports, module,

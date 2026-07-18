@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package app
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/trust"
+	"github.com/pijalu/goa/plugins"
+	"github.com/pijalu/goa/plugins/bundled"
+	"github.com/pijalu/goa/tools"
+)
+
+// newPluginTestSubsystems builds the minimal subsystems needed to exercise
+// loadEnabledPlugins: a plugin manager over a temp root, a command registry,
+// a tool registry, and a config with one provider.
+func newPluginTestSubsystems(t *testing.T) *subsystems {
+	t.Helper()
+	root := t.TempDir()
+	cfgDir := filepath.Join(root, ".goa")
+	trustMgr := trust.NewManager(filepath.Join(cfgDir, "trust.json"))
+	pluginMgr, err := plugins.NewManager(filepath.Join(cfgDir, "plugins"), trustMgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{ConfigDir: cfgDir}
+	cfg.Providers = []config.ProviderConfig{
+		{ID: "anthropic", Provider: "anthropic", APIKey: "sk-ant"},
+	}
+	return &subsystems{
+		cfg:          cfg,
+		projectDir:   root,
+		pluginMgr:    pluginMgr,
+		registry:     core.NewCommandRegistry(),
+		toolRegistry: tools.NewToolRegistry(),
+	}
+}
+
+// TestLoadEnabledPlugins_BundledRegistersQuota drives the real load path:
+// materialize the embedded provider-quota plugin, load it, and confirm the
+// /quota command + segment + hotkey register.
+func TestLoadEnabledPlugins_BundledRegistersQuota(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	loadEnabledPlugins(s)
+
+	if s.pluginRT == nil {
+		t.Fatal("pluginRT not set after load")
+	}
+	// Command registered into the shared registry.
+	if _, ok := s.registry.Resolve("quota"); !ok {
+		t.Fatal("/quota command not registered in shared registry")
+	}
+	// Segment registered on the UI bridge.
+	if len(s.pluginRT.ui.Segments()) == 0 {
+		t.Fatal("quota segment not registered")
+	}
+	// Hotkey registered.
+	if len(s.pluginRT.hotkeys.Registered()) == 0 {
+		t.Fatal("quota hotkey not registered")
+	}
+}
+
+// TestLoadEnabledPlugins_BundledDisabled confirms the config opt-out.
+func TestLoadEnabledPlugins_BundledDisabled(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	s.cfg.Plugins.Bundled = map[string]bool{bundled.ProviderQuotaID: false}
+	loadEnabledPlugins(s)
+	// Nothing enabled → pluginRT stays nil.
+	if s.pluginRT != nil {
+		t.Fatal("pluginRT set despite bundled plugin disabled")
+	}
+}
+
+// TestMaterializeBundledPlugins_Idempotent verifies repeated loads don't
+// error and reuse the versioned dir.
+func TestMaterializeBundledPlugins_Idempotent(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	d1 := materializeBundledPlugins(s)
+	d2 := materializeBundledPlugins(s)
+	if d1 == "" || d1 != d2 {
+		t.Fatalf("materialize not idempotent: %q vs %q", d1, d2)
+	}
+	if !s.pluginMgr.IsEnabled(bundled.ProviderQuotaID) {
+		t.Fatal("provider-quota not enabled after materialize")
+	}
+}
+
+// TestPluginCommandExecutesThroughRouter runs the registered /quota command
+// via the command router to confirm end-to-end output flows.
+func TestPluginCommandExecutesThroughRouter(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	loadEnabledPlugins(s)
+
+	cmd, ok := s.registry.Resolve("quota")
+	if !ok {
+		t.Fatal("quota not resolved")
+	}
+	ctx := core.Context{Config: s.cfg, ProjectDir: s.projectDir}
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+	if err := cmd.Run(ctx, []string{}); err != nil {
+		t.Fatalf("quota run: %v", err)
+	}
+	out := buf.String()
+	if out == "" {
+		t.Fatal("quota produced no output")
+	}
+	if !strings.Contains(out, "Session Usage") || !strings.Contains(out, "Provider Quotas") {
+		t.Fatalf("quota output incomplete:\n%s", out)
+	}
+}
