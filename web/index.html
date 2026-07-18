@@ -598,6 +598,41 @@ Copyright (C) 2026 Pierre Poissinger
         <h4>SOLID by design</h4>
         <p>Small primitives and factories over fat per-type APIs &mdash; the codebase is built to extend.</p>
       </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-layers"/></svg></span></div>
+        <h4>Orchestrator</h4>
+        <p>Hub, fanout, and pipeline topologies with bounded agent pool, goal binding, and headless resume.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-users"/></svg></span></div>
+        <h4>Workflows</h4>
+        <p>Multi-stage, multi-agent pipelines with team collaboration and AgentBus messaging.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-star"/></svg></span></div>
+        <h4>Goals &amp; Plans</h4>
+        <p>Autonomous goals with lifecycle and budgets, plus structured work plans with review pager.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-user"/></svg></span></div>
+        <h4>Companion</h4>
+        <p>Sub-agent code review &mdash; automatic diff review on every change, catching issues early.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-shield"/></svg></span></div>
+        <h4>Execution Modes</h4>
+        <p>YOLO (auto-approve), confirm (pause before each tool), review (queue writes for batch approval).</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-save"/></svg></span></div>
+        <h4>Loop Detection</h4>
+        <p>Five heuristics detect stuck agents: identical calls, token budget, timeout, activity, error rate.</p>
+      </div>
+      <div class="feature-card">
+        <div class="ficon"><span class="ic"><svg><use href="#i-gear"/></svg></span></div>
+        <h4>Git Worktree Isolation</h4>
+        <p>Sandboxed agent filesystem via git worktree &mdash; changes stay isolated until approved.</p>
+      </div>
     </div>
   </section>
 </div>
@@ -652,9 +687,9 @@ Copyright (C) 2026 Pierre Poissinger
     <rect x="44" y="338" width="380" height="100" rx="12" class="node"/>
     <rect x="44" y="338" width="5" height="100" rx="2.5" fill="#7c5cfc"/>
     <text x="68" y="365" class="lbl-title" font-size="15">Agent SDK</text>
-    <text x="68" y="388" font-size="12" fill="#9aa3b8">agent lifecycle and event loop</text>
+    <text x="68" y="388" font-size="12" fill="#9aa3b8">agent lifecycle, event loop, and inter-agent bus</text>
     <text x="68" y="410" class="lbl-mono" font-size="12">Agent / Session</text>
-    <text x="68" y="428" class="lbl-mono" font-size="12">SkillRunner</text>
+    <text x="68" y="428" class="lbl-mono" font-size="12">SkillRunner &middot; AgentBus</text>
   </g>
 
   <!-- Layer 3 right: Tool Registry -->
@@ -663,8 +698,8 @@ Copyright (C) 2026 Pierre Poissinger
     <rect x="496" y="338" width="5" height="100" rx="2.5" fill="#5fc3e4"/>
     <text x="520" y="365" class="lbl-title" font-size="15">Tool Registry</text>
     <text x="520" y="388" font-size="12" fill="#9aa3b8">composable, SOLID primitives</text>
-    <text x="520" y="410" class="lbl-mono" font-size="12">read &middot; edit &middot; bash &middot; search</text>
-    <text x="520" y="428" class="lbl-mono" font-size="12">ssh &middot; bg_exec &middot; memento &middot; webfetch</text>
+    <text x="520" y="410" class="lbl-mono" font-size="12">read &middot; write &middot; edit &middot; search &middot; bash</text>
+    <text x="520" y="428" class="lbl-mono" font-size="12">ssh &middot; python &middot; bg_exec &middot; webfetch &middot; agent</text>
   </g>
 
   <!-- flow: Agent SDK -> Provider -->

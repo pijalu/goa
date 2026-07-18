@@ -111,15 +111,18 @@ var docDescriptions = map[string]string{
 	"GOALS":                 "Autonomous goals — lifecycle, budgets, queues, and control commands",
 	"ORCHESTRATION-DESIGN":  "Design document for the orchestration track",
 	"ORCHESTRATOR":          "Orchestrator usage, roles, topologies, and quick start",
+	"PLAN":                  "Plan mode — structured work planning with review pager and annotation",
 	"PLUGINS":               "JS extensions — create custom tools, commands, and UI elements",
 	"PROFILES":              "Agent profiles — built-in profiles, custom profiles, extends inheritance",
 	"PROFILING":             "CPU, heap, and execution trace profiling while running Goa",
+	"PROVIDER-CONNECTIVITY": "Provider HTTP connectivity: User-Agent, auth flow, transport config, troubleshooting",
 	"PROVIDERS":             "Provider configuration — variants, custom providers, URL templates",
 	"SETUP":                 "Installation and setup guide — first-run wizard, provider configuration",
 	"SKILL-EXECUTION":       "Skill execution modes, sub-agent isolation, and sub-skills",
 	"SKILLS":                "Skills system — built-in skills, custom skills, inline vs sub-agent",
 	"TOOLS":                 "Tool system reference — all native tools, schemas, examples",
 	"TUI":                   "TUI layout and usage — keybindings, panes, transparency features",
+	"TUI-REWORK-PROGRESS":   "TUI rework progress tracker — rendering, streaming, tooling fixes status",
 	"WORKFLOWS":             "Workflows — pre-defined agent pipelines and task automation",
 }
 

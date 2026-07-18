@@ -39,6 +39,9 @@ On first run, Goa walks you through:
 | **🔁 Multi-Agent** | Pair (planner → coder) and reviewer (coder → reviewer) collaboration |
 | **🧠 Orchestrator** | Multi-agent orchestration with hub/fanout/pipeline topologies, bounded agent pool, goal binding, event-sourced run log, and headless resume |
 | **📋 Workflows** | Multi-stage, multi-agent workflows with team collaboration and AgentBus |
+| **🎯 Goals** | Autonomous long-running goals with lifecycle, budgets, and queue management |
+| **📋 Plans** | Structured, event-sourced work planning with review pager and annotation |
+| **🤝 Companion** | Sub-agent code review — automatic diff review on every change |
 | **🧪 Loop Detection** | 5 heuristics (identical calls, token budget, timeout, activity, error rate) |
 | **💾 Session Persistence** | Full JSONL session history with `/save` and `/restore` |
 | **📦 Diagnostic Export** | Self-contained ZIP bundle via `/export` with events, logs, config, and issue description |
@@ -48,6 +51,12 @@ On first run, Goa walks you through:
 | **🔒 Git Worktree Isolation** | Sandboxed agent filesystem via `git worktree` |
 | **🎨 Configurable Spinner** | Choose from 50+ spinner styles via `/config` or `tui.spinner` |
 | **🔍 Priority Search** | Search results ordered by file type (source first) with match counts |
+| **🧠 Thinking Levels** | Configure reasoning effort (off/low/medium/high) per provider |
+| **🧭 Steering** | Guide agent behavior mid-session with Alt+E edit discovery |
+| **🌊 Swarm Mode** | Multi-agent swarm with fan-out/fan-in collaboration |
+| **👥 Pair Mode** | Planner + coder pair programming pipeline |
+| **📊 Session Tree** | Visualize, clone, and fork session history trees |
+| **🧹 Context Compression** | Compress conversation history to fit context windows |
 | **⌨️ History Persistence** | Input history saved across sessions |
 | **🗑️ Model/Provider Mgmt** | Delete models/providers via `/config:remove` or backspace in pickers |
 | **⚡ Direct Tool Execution** | Run tools directly via `/tools:<name>:<key>=<value>,...` |
@@ -112,29 +121,38 @@ On first run, Goa walks you through:
 | [COMMANDS.md](docs/COMMANDS.md) | Complete command system reference |
 | [TOOLS.md](docs/TOOLS.md) | Tool system reference |
 | [SKILLS.md](docs/SKILLS.md) | Skills system reference |
+| [SKILL-EXECUTION.md](docs/SKILL-EXECUTION.md) | Skill execution modes and sub-agent isolation |
 | [PROFILES.md](docs/PROFILES.md) | Agent profiles & resolution |
 | [TUI.md](docs/TUI.md) | TUI layout & usage |
 | [HOTKEYS.md](docs/HOTKEYS.md) | Keyboard shortcuts reference |
 | [AGENTIC-SDK.md](docs/AGENTIC-SDK.md) | How Goa wraps the agentic SDK |
 | [WORKFLOWS.md](docs/WORKFLOWS.md) | Workflow system reference |
 | [ORCHESTRATOR.md](docs/ORCHESTRATOR.md) | Multi-agent topology selector, goal binding, headless resume |
+| [ORCHESTRATION-DESIGN.md](docs/ORCHESTRATION-DESIGN.md) | Orchestration design notes |
+| [PLUGINS.md](docs/PLUGINS.md) | JS extensions via Goja runtime |
+| [PROVIDERS.md](docs/PROVIDERS.md) | Provider configuration & variants |
+| [PROVIDER-CONNECTIVITY.md](docs/PROVIDER-CONNECTIVITY.md) | Provider HTTP connectivity details |
+| [GOALS.md](docs/GOALS.md) | Autonomous goal lifecycle and control |
+| [PLAN.md](docs/PLAN.md) | Plan mode — structured work planning |
+| [USER-GUIDE.md](docs/USER-GUIDE.md) | User guide covering Workflows, Orchestrator, Companion |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development guide |
+| [PROFILING.md](docs/PROFILING.md) | Performance profiling guide |
 | [bugs.md](bugs.md) | Known issues and roadmap |
 | [AGENTS.md](AGENTS.md) | AI agent coding guidelines |
-| [PROFILING.md](docs/PROFILING.md) | Performance profiling guide |
 
 ## Project Structure
 
 ```
 goa/
-├── main.go                  # Entry point
-├── cmd/goa/                 # Cobra CLI root
+├── cmd/goa/main.go          # Entry point
+├── doc.go                   # Module documentation
 ├── config/                  # Config struct, cascade loader, defaults, wizard
 ├── core/                    # Commands, registry, router, agent manager,
 │   │                        # loop detector, execution controller, session store
 │   ├── commands/            # 30+ commands (auto-registered via init())
 │   └── orchestrator/        # Orchestration runtime: bounded pool, handle, store, topology, goal binding
 ├── internal/                # Shared types, enums, errors, git worktree manager
+│   └── agentic/             # Agent SDK
 ├── tui/                     # ANSI TUI: engine, components, overlays, styles
 │   ├── goal/                # Goal status panel
 │   ├── swarm/               # Swarm mode renderer
@@ -147,11 +165,16 @@ goa/
 ├── multiagent/              # Pair & reviewer orchestrators, workflow engine
 ├── workflows/               # Workflow definitions (directory-per-workflow)
 ├── plugins/                 # JS plugin loader & Goja bridge
-├── internal/agentic/        # Agent SDK
-├── chunks/                  # Milestone implementation briefs
+├── prompts/                 # System prompts (mode, skill, orchestrate, plan, goal)
+├── profile/                 # Built-in profile definitions
 ├── docs/                    # Documentation
+├── scripts/                 # Build and development scripts
+├── examples/                # Example configurations
+├── web/                     # Website (GitHub Pages)
 ├── Makefile                 # Build, test, lint, cross-compile
-└── bugs.md                  # Known issues and roadmap
+├── TODO.md                  # Active development tasks
+├── bugs.md                  # Known issues and roadmap
+└── AGENTS.md                # AI agent coding guidelines
 ```
 
 ## Development

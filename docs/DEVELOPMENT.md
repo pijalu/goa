@@ -9,7 +9,7 @@ Copyright (C) 2026 Pierre Poissinger
 ## Prerequisites
 
 ```bash
-# Go 1.22+
+# Go 1.25+
 go version
 
 # Complexity checking tools
@@ -21,8 +21,8 @@ go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
 
 ```
 goa/
-├── main.go                  # Entry point
-├── cmd/goa/root.go          # Cobra CLI root
+├── cmd/goa/main.go          # Entry point
+├── doc.go                   # Module documentation
 ├── config/                  # Configuration cascade
 ├── core/                    # Core engine
 │   ├── command.go           # Command interface + registry
@@ -39,14 +39,17 @@ goa/
 ├── tui/                     # ANSI TUI (inspired by pi/OpenCode/kimi-code)
 ├── tools/                   # Tool implementations
 ├── memory/                  # Memory store
-├── prompts/mode/            # Mode definitions (coder, planner, reviewer)
+├── prompts/                 # System prompts (mode, skill, orchestrate, plan, goal)
 ├── provider/                # Provider management
 ├── skills/                  # Skill registry + runner
 ├── multiagent/              # Multi-agent orchestrators
 ├── plugins/                 # JS plugin system
-├── chunks/                  # Milestone briefs
+├── profile/                 # Built-in profile definitions
+├── scripts/                 # Build and development scripts
 ├── docs/                    # Documentation
+├── web/                     # Website (GitHub Pages)
 ├── Makefile                 # Build automation
+├── TODO.md                  # Active development tasks
 └── bugs.md                  # Known issues and roadmap
 ```
 

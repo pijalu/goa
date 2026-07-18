@@ -8,7 +8,7 @@ Copyright (C) 2026 Pierre Poissinger
 
 ## Prerequisites
 
-- **Go 1.22+** — check with `go version`
+- **Go 1.25+** — check with `go version`
 - **gocognit** (for complexity checks): `go install github.com/uudashr/gocognit/cmd/gocognit@latest`
 - **gocyclo** (for cyclomatic complexity): `go install github.com/fzipp/gocyclo/cmd/gocyclo@latest`
 
