@@ -81,6 +81,12 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		a.cfg.Logger.Log(Warn, "Extending stream horizon from %d to %d (model making progress)", *maxStreams, next)
 		*maxStreams = next
 	}
+	// Hard cap at 250 rounds to prevent runaway when hasStalled returns false
+	// but the model isn't converging (e.g. simulating 1-tool-round forever).
+	if *maxStreams > 250 {
+		a.cfg.Logger.Log(Warn, "Hard round cap (250) reached; ending turn")
+		return true, nil
+	}
 	return false, nil
 }
 
@@ -174,6 +180,15 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 	}
 
 	a.cfg.Logger.Log(Warn, "recovery stream exhausted all %d rounds; ending turn", maxRecoveryRounds)
+	// Surface a visible notification so the user is not left wondering why
+	// processing stopped. The model ignored the recovery hint and kept calling
+	// tools; without this the turn ends silently (spinner clears, no output).
+	a.emitEvent(OutputEvent{
+		Type:  EventContent,
+		State: StateContent,
+		Role:  Assistant,
+		Text:  "[goa-system] The model was stuck in a tool-calling loop and could not produce an answer after a recovery hint. Try rephrasing or asking a more specific question.",
+	})
 	return nil
 }
 
@@ -186,9 +201,10 @@ func (a *Agent) hasStalled() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// If no buffered calls at all, we can't judge progress.
+	// If no buffered calls at all, we can't judge progress from them,
+	// but if real tools were executed this round the model is not stalled.
 	if len(a.bufferedToolCalls) == 0 {
-		return true
+		return !a.turnHadToolExecution
 	}
 
 	// If any buffered call was NOT in budgetToolCalls, it was executed
