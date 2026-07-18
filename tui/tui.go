@@ -145,6 +145,13 @@ type TUI struct {
 	// the pending prompt instead of quitting. If it returns true, the quit is
 	// suppressed.
 	OnCancelInputRequest func() bool
+
+	// pluginHotkeys holds JS-plugin-registered keyboard shortcuts, checked
+	// after built-in appShortcuts. Guarded by pluginHotkeysMu because plugins
+	// register from the plugin runner goroutine while the TUI reads on the
+	// input loop.
+	pluginHotkeys   []pluginHotkey
+	pluginHotkeysMu sync.RWMutex
 }
 
 type overlayEntry struct {
@@ -808,7 +815,47 @@ func (t *TUI) resolveAppShortcut(key string) (func(), bool) {
 			return sc.callback(t), true
 		}
 	}
+	// Plugin-registered hotkeys take lowest precedence (built-ins win ties).
+	if fn, ok := t.resolvePluginHotkey(key); ok {
+		return fn, true
+	}
 	return nil, false
+}
+
+// resolvePluginHotkey matches a decoded key against plugin-registered
+// hotkeys. Returns the handler (invoked on the TUI loop, but the handler
+// itself dispatches onto the plugin VM) and true on match.
+func (t *TUI) resolvePluginHotkey(key string) (func(), bool) {
+	t.pluginHotkeysMu.RLock()
+	defer t.pluginHotkeysMu.RUnlock()
+	for _, hk := range t.pluginHotkeys {
+		if matchesKey(key, hk.keyName) {
+			return hk.handler, hk.handler != nil
+		}
+	}
+	return nil, false
+}
+
+// pluginHotkey is one plugin-registered keyboard shortcut.
+type pluginHotkey struct {
+	keyName string // canonical TUI key name, e.g. "ctrl+shift+q"
+	handler func()
+}
+
+// RegisterPluginHotkey adds a plugin hotkey by canonical key name
+// (e.g. "ctrl+shift+q"). Built-in shortcuts take precedence; a plugin key
+// that collides with a built-in simply never fires. Re-registering the same
+// key replaces the handler. Safe to call from the plugin runner.
+func (t *TUI) RegisterPluginHotkey(keyName string, handler func()) {
+	t.pluginHotkeysMu.Lock()
+	defer t.pluginHotkeysMu.Unlock()
+	for i, hk := range t.pluginHotkeys {
+		if hk.keyName == keyName {
+			t.pluginHotkeys[i].handler = handler
+			return
+		}
+	}
+	t.pluginHotkeys = append(t.pluginHotkeys, pluginHotkey{keyName: keyName, handler: handler})
 }
 
 // appShortcut is one application-level keybinding: a set of accepted key names

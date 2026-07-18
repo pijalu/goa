@@ -34,6 +34,21 @@ type FooterData struct {
 	GoalObjective          string // truncated active/paused/blocked goal objective for the footer
 	SteeringPending        string // pending steering text displayed until consumed by the model
 	OrchestrationStats     string // per-model orchestration stats rendered as an extra footer line
+
+	// PluginSegments holds pre-rendered status-bar segments contributed by JS
+	// plugins (e.g. the quota carousel). They are appended to the right-hand
+	// model side, ordered by priority. Strings are cached by the app layer so
+	// footer rendering never calls back into JavaScript.
+	PluginSegments []PluginSegment
+}
+
+// PluginSegment is one rendered plugin status-bar contribution. It mirrors
+// plugins.UISegmentDef without importing the plugins package (tui must stay
+// dependency-light); the app layer maps between them.
+type PluginSegment struct {
+	ID       string
+	Priority int
+	Text     string // already-rendered, ANSI-safe content
 }
 
 // preserveFooterData merges new data with previously preserved fields so the
@@ -42,6 +57,18 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	data = preserveFooterGitAndMode(prev, data)
 	data = preserveFooterModels(prev, data)
 	data = preserveFooterWorkflow(prev, data)
+	data = preserveFooterPluginSegments(prev, data)
+	return data
+}
+
+// preserveFooterPluginSegments keeps plugin segments across routine footer
+// updates (token stats, activity) that rebuild FooterData without touching
+// plugins. The app layer pushes fresh segments explicitly; a nil update means
+// "keep previous" so ordinary SetData calls never blank the quota carousel.
+func preserveFooterPluginSegments(prev, data FooterData) FooterData {
+	if data.PluginSegments == nil {
+		data.PluginSegments = prev.PluginSegments
+	}
 	return data
 }
 

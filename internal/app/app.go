@@ -126,6 +126,7 @@ func (a *App) Run() bool {
 	a.promptProjectTrustIfNeeded(projectDir)
 
 	engine, chat, inp := a.buildTUI()
+	a.activatePluginUI(engine)
 	// Attach the interactive clarify host callback now that the App exists.
 	attachClarifyTool(subs.toolRegistry, func(title, summary, question string, options []string, step, total int) (string, bool) {
 		card := tui.NewClarifyCard(title, summary, question, options)
@@ -170,6 +171,57 @@ func (a *App) Run() bool {
 		return true
 	}
 	return false
+}
+
+// activatePluginUI connects loaded plugin UI contributions (status-bar
+// segments, hotkeys) to the now-built TUI, and starts draining segment
+// refresh requests. Called once from Run() after buildTUI; a no-op when no
+// plugins loaded.
+func (a *App) activatePluginUI(engine *tui.TUI) {
+	rt := a.subs.pluginRT
+	if rt == nil || engine == nil {
+		return
+	}
+	// Hotkeys: register each plugin hotkey on the TUI by canonical key name.
+	for _, hk := range rt.hotkeys.Registered() {
+		engine.RegisterPluginHotkey(hk.KeyName(), hk.Handler)
+	}
+	// Segments: push the initial render, then re-render on refresh requests.
+	a.pushPluginSegments(engine)
+	go a.drainSegmentRefreshes(engine, rt)
+}
+
+// pushPluginSegments evaluates every registered plugin segment on the plugin
+// VM and pushes the rendered, priority-ordered strings into the footer.
+// Rendering happens here (app layer) so the footer never calls into JS.
+func (a *App) pushPluginSegments(engine *tui.TUI) {
+	rt := a.subs.pluginRT
+	if rt == nil || a.subs.footer == nil {
+		return
+	}
+	defs := rt.ui.Segments()
+	segs := make([]tui.PluginSegment, 0, len(defs))
+	for _, d := range defs {
+		text := ""
+		if d.Render != nil {
+			text = d.Render() // acquires the VM lock inside the bridge
+		}
+		segs = append(segs, tui.PluginSegment{ID: d.ID, Priority: d.Priority, Text: text})
+	}
+	// Preserve all other footer fields; only swap the segment slice.
+	data := a.subs.footer.Data()
+	data.PluginSegments = segs
+	a.subs.footer.SetData(data)
+	engine.RequestRender()
+}
+
+// drainSegmentRefreshes re-renders segments whenever a plugin signals a
+// content change (carousel tick, quota refresh). Exits when the engine stops.
+func (a *App) drainSegmentRefreshes(engine *tui.TUI, rt *pluginRuntime) {
+	ch := rt.ui.RefreshRequests()
+	for range ch {
+		a.pushPluginSegments(engine)
+	}
 }
 
 // Main is the top-level entry point used by cmd/goa. It parses CLI flags,

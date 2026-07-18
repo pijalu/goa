@@ -7,6 +7,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
@@ -69,6 +70,7 @@ func (f *Footer) Render(width int) []string {
 	}
 
 	right2 := f.buildModelDisplay(fg, availW)
+	right2 = f.appendPluginSegments(right2, fg)
 
 	// If still doesn't fit — compact the right side by stripping lower-priority items
 	if leftW+visibleWidth(right2)+minPad > width {
@@ -201,6 +203,64 @@ func (f *Footer) buildModelDisplay(fg string, availWidth int) string {
 	return f.buildMainModelDisplay(fg, availWidth)
 }
 
+// appendPluginSegments appends rendered plugin status-bar segments to the
+// right (model) side, ordered by priority. Each segment is rendered as
+// " • text" so it reads as a suffix of the model display and can be dropped
+// cleanly by stripPluginSegments under width pressure. Empty texts are
+// elided. Segment content is treated as trusted ANSI (plugins are trusted
+// code) but measured with ANSI stripped for layout.
+func (f *Footer) appendPluginSegments(right2, fg string) string {
+	segs := f.sortedPluginSegments()
+	for _, seg := range segs {
+		if strings.TrimSpace(ansi.Strip(seg.Text)) == "" {
+			continue
+		}
+		right2 += fg + " • " + ansi.Reset + seg.Text
+	}
+	return right2
+}
+
+// sortedPluginSegments returns a copy of the plugin segments ordered by
+// priority (lower first), stable for equal priorities.
+func (f *Footer) sortedPluginSegments() []PluginSegment {
+	segs := make([]PluginSegment, len(f.data.PluginSegments))
+	copy(segs, f.data.PluginSegments)
+	sort.SliceStable(segs, func(i, j int) bool { return segs[i].Priority < segs[j].Priority })
+	return segs
+}
+
+// stripPluginSegments drops all appended plugin segments (the first
+// compaction step) by cutting the right side at the last model content before
+// the first plugin segment marker. It is a no-op when no segments are present.
+func (f *Footer) stripPluginSegments(s string) string {
+	if len(f.data.PluginSegments) == 0 {
+		return s
+	}
+	// Segments were appended as " • <text>" after the model display; remove
+	// from the first marker that introduces a plugin segment. We identify it
+	// by matching each known segment text after a " • " separator.
+	cut := len(s)
+	for _, seg := range f.data.PluginSegments {
+		text := strings.TrimSpace(ansi.Strip(seg.Text))
+		if text == "" {
+			continue
+		}
+		idx := strings.LastIndex(ansi.Strip(s), text)
+		if idx >= 0 && idx < cut {
+			cut = idx
+		}
+	}
+	if cut == len(s) {
+		return s
+	}
+	// Back off the trailing " • " separator that introduced the segment.
+	out := s[:cut]
+	if idx := strings.LastIndex(out, " • "); idx >= 0 {
+		out = out[:idx]
+	}
+	return out
+}
+
 // stripProviderPrefix removes the "(provider) " prefix from a model display string.
 // For example, "(lmstudio) llama3" → "llama3". If there's no prefix, returns the original.
 func stripProviderPrefix(model string) string {
@@ -250,6 +310,7 @@ func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 // For main mode: thinking level → activity text → provider prefix → model truncation.
 func (f *Footer) compactRightSide(right2, fg string, targetWidth int) string {
 	steps := []func(string) string{
+		f.stripPluginSegments,
 		f.stripCompanionLabel,
 		f.stripThinkingLevels,
 		f.stripProviderPrefixes,
