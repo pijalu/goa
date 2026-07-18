@@ -136,7 +136,7 @@ func isTokenStart(text string, idx int) bool {
 		return true
 	}
 	ch := text[idx-1]
-	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '"' || ch == '\'' || ch == '='
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '"' || ch == '\'' || ch == '=' || ch == '(' || ch == '['
 }
 
 func (e *Editor) replacePrefix(oldPrefix, newValue string) {
