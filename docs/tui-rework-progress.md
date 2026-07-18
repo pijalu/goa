@@ -3,76 +3,75 @@
 Autonomous fix branch for rendering/streaming/tooling issues found via session-log
 analysis. Work is sequential: each P lands as its own commit with a regression test.
 
-> **Handoff note (for the next agent):** P4, P1, P2 are DONE and committed.
-> Remaining: P0 and P3. Everything below has the design, file:line references,
-> and gotchas needed to finish them. Run `go test ./tui/ -count=1` to confirm the
-> branch is green before starting.
+> **Status: ALL DONE.** P0–P4 committed. Run the full gate before merging:
+> `go vet ./... && go test -count=1 -race ./tui/ ./tools/ ./internal/agentic/ ./internal/app/`
 
 ## Commits on this branch (newest first)
 
 | Commit | Item | What |
 |--------|------|------|
+| `1c5b39b` | P3 | search: wire context_lines through; add max_lines cap |
+| `7ba5ddc` | P0 | agentic: per-round tool-call delta counter logged at stream done |
+| `b4a5d4c` | P0 | tui: live-progress footer (bytes+lines) while tool runs |
+| `b4da356` | P2 | test: fix stale steering-footer assertion (found red at handoff) |
 | `8269910` | P2 | steering edit discoverable (Alt+E hint + keybinding + hotkeys help) |
 | `3c92af0` | P1 | per-widget expand/collapse wins over global policy while streaming |
 | `bfa61b2` | P4 | compositor rewrite: explicit-scrollback watermark + DECSTBM region; chrome pinned |
 | `84d9584` | P4 | RED regression test `tui/pinned_chrome_scrollback_test.go` + this tracker |
 
-## Remaining work
+## P0 solution (committed `b4a5d4c` + `7ba5ddc`)
 
-### P0 — Frozen tool widgets / no live progress (HIGHEST value, needs provider check)
+**Symptom:** while a tool runs, its widget body was empty and the footer showed only
+wall-clock "elapsed Ns" — no bytes/lines growth. Bash output appeared only at exit.
 
-**Symptom:** while a tool runs, its widget body is empty and the footer shows only
-wall-clock "elapsed Ns" — no bytes/lines growth. Bash output appears only at exit.
+**Findings from the trace:**
+- Bash stdout streaming already worked end-to-end (`progressWriter` →
+  `EventToolProgress` → `tracker.OnProgress` → `SetOutput`); tests
+  `TestToolProgress_ShowsPartialOutputWhileRunning` / `TestToolStreamingRepro_*` pass.
+- Arg streaming exists for OpenAI (`EventToolCallDelta` + Partial snapshot) and
+  Anthropic (`input_json_delta` + ContentIndex). For providers emitting neither,
+  no widget can exist before the call arrives — nothing to show "preparing…" in.
+  The visible "frozen" symptom was the missing growth indicator, not missing widgets.
 
-**Root cause (traced in session log):** tool args are NOT streamed. In
-`.goa/sessions/*.jsonl`, every `tool_call` event appears ONCE fully-formed (no
-`IsDelta` tool_call events), so the widget is only created at completion. The
-streaming machinery EXISTS end-to-end but is never fed:
-- `internal/agentic/agent_streaming.go:689 handleToolCallDeltaByIndex` emits
-  `OutputEvent{Type: EventToolCall, IsDelta: true, ToolInput: accumulated}`.
-- `internal/app/stats.go:547 handleToolCall` → `toolTracker().OnCall(ev)`.
-- `internal/tooltracker/tracker.go:146 onCallDelta` → `tc.SetArgsPartial(...)`.
-- `tui/tool_execution.go:363 SetArgsPartial` → `updatePartialArgs` (incremental
-  JSON decoder, verified robust across chunk sizes/escapes in tests).
+**What landed:**
+1. **Live-progress footer** (`tui/tool_execution.go`): `ToolExecutionComponent`
+   tracks `outputBytes`/`outputLines` (updated in `SetOutput`, which serves both
+   partial progress and final result). While Pending/Running the duration line
+   renders `elapsed 12.3s · 1.2 KB · 84 lines`; suffix omitted with no output yet
+   (fast tools stay clean) and dropped on completion (plain `Took Xs`).
+   Helpers: `progressSuffix`, `formatByteSize`, `formatLineCount`.
+   Test: `TestToolExecution_LiveProgressFooter` (+ formatter unit tests).
+2. **Provider delta diagnostic** (`internal/agentic`): `toolCallDeltasThisRound`
+   counted in `handleStreamToolCallDelta`, reset per round, logged at
+   `handleStreamDone` as `stream round done: tool_call deltas=N`. A zero count
+   in session logs proves the active provider/model can't stream args, settling
+   the "verify provider" question with data instead of code reading.
 
-**Fix plan:**
-1. **First, verify whether the active provider emits `EventToolCallDelta`.**
-   `agent_streaming.go:303 handleStreamToolCallDelta` handles both OpenAI-style
-   (Partial snapshot) and Anthropic-style (Delta+ContentIndex). Add a per-turn
-   counter of tool-call deltas, logged at turn end, to confirm whether the
-   provider streams args at all. If the provider can't stream args, go to (2).
-2. **Fallback "preparing …" indicator** while args aren't streaming: the widget
-   shows the assistant-text generation that precedes the call as a byte count.
-3. **Bash stdout/stderr streaming**: `tools/bgexec.go` / `tools/pty_exec.go` pipe
-   output already; forward a throttled `EventToolProgress` with accumulated bytes
-   → `tracker.OnProgress` → `tc.SetOutput(partial)` so the body fills live.
-4. **Universal live-progress footer** for running tools: `elapsed 12.3s · 1.2 KB ·
-   84 lines` (bytes for bash, lines for write/edit). Add counters to
-   `ToolExecutionComponent`, update on each delta/progress event, render next to
-   the duration (`tool_execution.go renderDuration` ~line 310).
-   Tests: fake provider emitting deltas → assert body+footer grow; bash stdout
-   appears before exit.
+## P3 solution (committed `1c5b39b`)
 
-### P3 — Search tool: `context_lines` bug + `max_lines`
-
-**Bug:** `context_lines` is advertised in the schema and parsed into
-`searchParams.ContextLines` (`tools/search.go:100`, defaulted at :117) but NEVER
-used — `searchWithPattern`/`formatResults` don't receive it. The existing test
-`TestSearchTool_Execute_WithContextLines` (`tools/search_test.go:169`) only
-asserts non-empty output, so it passes vacuously. Models learn "search gives no
-context; grep -A5 does" and fall back to bash (measured: 321 bash-grep vs 100
-search calls across 15 sessions).
+**Bug:** `context_lines` was advertised in the schema and parsed into
+`searchParams.ContextLines` but NEVER used — `searchWithPattern`/`formatResults`
+never received it. The old test only asserted non-empty output (passed vacuously).
+Models learned "search gives no context" and fell back to bash grep
+(321 bash-grep vs 100 search calls across 15 sessions).
 
 **Fix:**
-1. Wire `ContextLines` through: capture ±N lines around each match in
-   `searchFile`/`searchFiles`, extend `formatResults`/`formatFileContentLines`
-   to print them (marked distinctly from match lines). Strengthen the test to
-   assert context lines actually appear.
-2. Add **`max_lines`** param (line-oriented cap, matches the `| head -N` habit
-   — user explicitly preferred lines over bytes). Truncate output with a
-   "K truncated" marker. Document in `tools/search.long.md`.
-3. (nice-to-have) `invert_match`, `count_only`, `files_only` modes (60 bash
-   greps used `-v`; 4 used `-c`; 1 `-l`).
+1. `searchResult` gained `Before`/`After`; `searchFile` captures ±N lines per
+   match via the `matchContext` helper (kept gocognit under budget), threaded
+   through `searchFiles` → `searchWithPattern` → `Execute`/`searchPipePattern`.
+2. Rendered grep-style in `formatFileContentLines`: context rows `  N- content`
+   vs match rows `  N: content` (shared `sanitizeSearchLine` helper).
+3. Default `context_lines` changed 1 → 0 (opt-in; plain searches stay compact).
+4. New **`max_lines`** param (schema + params + doc): `truncateOutputLines` caps
+   output content lines like `| head -N`, emitting a
+   `… (K lines truncated by max_lines)` marker after the header.
+5. Tests: `TestSearchTool_Execute_WithContextLines` now asserts context rows
+   actually appear; `TestSearchTool_Execute_ContextLinesDefaultOff`;
+   `TestSearchTool_Execute_MaxLinesTruncates`; `TestTruncateOutputLines` table test.
+   Documented in `tools/search.long.md`.
+
+Not done (nice-to-have, low value): `invert_match`, `count_only`, `files_only`
+modes (60 bash greps used `-v`; 4 `-c`; 1 `-l`).
 
 ## P4 solution (committed `bfa61b2`)
 
