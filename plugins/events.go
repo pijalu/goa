@@ -35,11 +35,13 @@ func (b *EventBus) On(eventName string, handler EventHandler) {
 	b.handlers[eventName] = append(b.handlers[eventName], handler)
 }
 
-// Emit dispatches an event to all registered handlers.
+// Emit dispatches an event to handlers registered for the specific event
+// name plus any wildcard ("*") handlers, which observe every event.
 func (b *EventBus) Emit(eventName string, payload interface{}) {
-	if handlers, ok := b.handlers[eventName]; ok {
-		for _, h := range handlers {
-			h(eventName, payload)
-		}
+	for _, h := range b.handlers[eventName] {
+		h(eventName, payload)
+	}
+	for _, h := range b.handlers["*"] {
+		h(eventName, payload)
 	}
 }

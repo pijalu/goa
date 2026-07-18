@@ -91,8 +91,24 @@ type inputRequest struct {
 // New creates an App from initialized subsystems.
 func New(subs *subsystems) *App {
 	a := &App{subs: subs}
+	subs.sessionUsageFn = a.sessionUsageSnapshot
 	wireSwarmTool(a)
 	return a
+}
+
+// sessionUsageSnapshot returns cumulative session token stats for the plugin
+// goa.sessionUsage bridge. Values are read under statsMu.
+func (a *App) sessionUsageSnapshot() map[string]any {
+	a.statsMu.Lock()
+	defer a.statsMu.Unlock()
+	return map[string]any{
+		"input":      a.tokenPromptTotal,
+		"output":     a.tokenPredictedTotal,
+		"cacheRead":  a.tokenCacheReadTotal,
+		"cacheWrite": a.tokenCacheWriteTotal,
+		"turns":      a.turnCount,
+		"toolCalls":  a.toolCallsTotal,
+	}
 }
 
 // Run starts the TUI, agent session, and event loop. It returns true if the

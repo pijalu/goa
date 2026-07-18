@@ -88,7 +88,11 @@ type subsystems struct {
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
 	pluginMgr         *plugins.Manager
-	runWizard         bool // set when /setup command requests wizard
+	pluginRT          *pluginRuntime // loaded plugin bridges, set by loadEnabledPlugins
+	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
+	// Wired in New() once the App (which owns the counters) exists.
+	sessionUsageFn  func() map[string]any
+	runWizard       bool // set when /setup command requests wizard
 
 	// TUI components (set after InitSubsystems)
 	chat       *tui.ChatViewport

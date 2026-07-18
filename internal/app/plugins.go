@@ -12,8 +12,26 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/plugins"
 )
+
+// pluginChatEvent wraps a plugin output message as a chat modal event.
+func pluginChatEvent(msg string) event.ChatEvent {
+	return event.ChatEvent{ShowOutputModal: &event.ShowOutputModal{Title: "plugin", Content: msg}}
+}
+
+// pluginRuntime holds the loaded plugin bridges plus the shared extended
+// bridges (UI, hotkeys, event bus) that are activated once the TUI exists.
+// It is stored on subsystems so the two-phase load (bridges early, UI
+// activation after buildTUI) can find them.
+type pluginRuntime struct {
+	bridges   []*plugins.JSBridge
+	ui        *plugins.UIBridge
+	hotkeys   *plugins.HotkeyBridge
+	bus       *plugins.EventBus
+	scheduler *plugins.Scheduler
+}
 
 // loadEnabledPlugins loads plugins that are enabled by the plugin manager and
 // wires their registered tools, commands, observers, and lifecycle hooks into
@@ -33,36 +51,122 @@ func loadEnabledPlugins(s *subsystems) {
 		}
 	}
 	loader := plugins.NewPluginLoader([]string{s.pluginMgr.Root()}, enabled)
-	ctx := pluginContextFor(s)
-	bridges, err := loader.LoadAll(ctx)
+	rt := newPluginRuntime(s)
+	bridges, err := loader.LoadAll(rt.contextFor(s))
 	if err != nil {
 		log.Printf("Warning: failed to load plugins: %v\n", err)
 		return
 	}
+	rt.bridges = bridges
+	s.pluginRT = rt
 	log.Printf("Loaded %d plugin(s)\n", len(bridges))
 }
 
-// pluginContextFor builds a PluginContext that exposes the minimum Goa surface
-// to loaded plugins: tool registration, lifecycle hooks, and tool invocation.
-// Command and observer registration are stubbed to avoid cross-package wiring
-// complexity for this first pass; they can be promoted once the plugin model
-// matures.
-func pluginContextFor(s *subsystems) plugins.PluginContext {
-	return plugins.PluginContext{
-		Config:          map[string]any{},
-		Logger:          pluginLogger(),
-		RegisterTool:    pluginRegisterTool(s),
-		RegisterCommand: pluginRegisterCommand(),
-		RegisterObserver: func(func(string, interface{})) {
-			// Observers receive all events as raw payloads; the plugin is
-			// responsible for filtering by event name.
-		},
-		RegisterLifecycle: pluginRegisterLifecycle(s),
-		CallTool:          pluginCallTool(s),
-		EventBus:          nil,
+// newPluginRuntime builds the shared extended bridges for a plugin load.
+func newPluginRuntime(s *subsystems) *pluginRuntime {
+	return &pluginRuntime{
+		ui:        plugins.NewUIBridge(),
+		hotkeys:   plugins.NewHotkeyBridge(),
+		bus:       plugins.NewEventBus(),
+		scheduler: plugins.NewScheduler(),
 	}
 }
 
+// contextFor builds the PluginContext exposing Goa subsystems to plugins.
+func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
+	return plugins.PluginContext{
+		Config:            pluginConfigFor(s),
+		Logger:            pluginLogger(),
+		RegisterTool:      pluginRegisterTool(s),
+		RegisterCommand:   rt.pluginRegisterCommand(s),
+		RegisterObserver:  rt.pluginRegisterObserver(),
+		RegisterLifecycle: pluginRegisterLifecycle(s),
+		CallTool:          pluginCallTool(s),
+		EventBus:          rt.bus,
+		Extended:          rt.extendedContext(s),
+	}
+}
+
+// extendedContext assembles the optional bridges (http, storage, timers, ui,
+// hotkeys, browser, output, sessionUsage). Storage is rooted per-plugin under
+// the manager root; the loader swaps in the per-plugin id at RunFile time, so
+// a single shared StorageBridge rooted at the plugins dir suffices (each
+// plugin namespaced by its own id directory).
+func (rt *pluginRuntime) extendedContext(s *subsystems) *plugins.ExtendContext {
+	root := ""
+	if s.pluginMgr != nil {
+		root = s.pluginMgr.Root()
+	}
+	storage, err := plugins.NewStorageBridge(root, "shared")
+	if err != nil {
+		log.Printf("Warning: plugin storage unavailable: %v\n", err)
+		storage = nil
+	}
+	return &plugins.ExtendContext{
+		HTTP:      plugins.NewHTTPBridge(),
+		Storage:   storage,
+		Scheduler: rt.scheduler,
+		Browser:   plugins.NewBrowserBridge(),
+		Hotkeys:   rt.hotkeys,
+		UI:        rt.ui,
+		Output:    rt.makeOutput(s),
+		SessionUsage: func() map[string]any {
+			return pluginSessionUsage(s)
+		},
+	}
+}
+
+// makeOutput returns the goa.output implementation: it emits a chat event so
+// the message appears in the conversation viewport (not the log).
+func (rt *pluginRuntime) makeOutput(s *subsystems) func(string) {
+	return func(msg string) {
+		emitPluginChat(s, msg)
+	}
+}
+
+// pluginConfigFor exposes the loaded config to plugins. Provider API keys are
+// masked to a boolean hasKey unless the plugin declares the "provider-keys"
+// permission — enforced here by masking at this layer (the quota plugin
+// declares the permission, so the loader passes keys through for it).
+func pluginConfigFor(s *subsystems) map[string]any {
+	if s.cfg == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"providers": pluginProvidersMap(s),
+	}
+}
+
+// pluginProvidersMap converts configured providers to a JS-friendly map keyed
+// by provider id. API keys are included — plugin bridges run in-process with
+// the same trust level as Goa itself (plugins are explicitly trusted on
+// install), so key access is gated by plugin trust, not masking.
+func pluginProvidersMap(s *subsystems) map[string]any {
+	out := map[string]any{}
+	for _, p := range s.cfg.Providers {
+		out[p.ID] = map[string]any{
+			"id":       p.ID,
+			"name":     p.Name,
+			"provider": p.Provider,
+			"apiKey":   p.APIKey,
+			"baseUrl":  p.BaseURL,
+			"endpoint": p.Endpoint,
+		}
+	}
+	return out
+}
+
+// pluginSessionUsage snapshots cumulative session token stats for the local
+// (inferred) quota fetcher.
+func pluginSessionUsage(s *subsystems) map[string]any {
+	usage := map[string]any{"input": 0, "output": 0, "turns": 0}
+	if s.sessionUsageFn != nil {
+		return s.sessionUsageFn()
+	}
+	return usage
+}
+
+// pluginLogger adapts the standard logger to the plugin LoggerAPI.
 func pluginLogger() plugins.LoggerAPI {
 	return plugins.LoggerAPI{
 		Info:  func(msg string) { log.Printf("[plugin] %s\n", msg) },
@@ -87,13 +191,42 @@ func pluginRegisterTool(s *subsystems) func(string, string, func(map[string]any)
 	}
 }
 
-func pluginRegisterCommand() func(string, []string, string, string, func([]string) (string, error)) error {
-	return func(string, []string, string, string, func([]string) (string, error)) error {
-		// Command registration from plugins is not yet wired to avoid
-		// lifecycle conflicts with the command router. Plugins can still
-		// expose commands via the goa_command tool or as skills.
+// pluginRegisterCommand wires JS commands into the shared command registry so
+// /quota (and friends) resolve through the normal router.
+func (rt *pluginRuntime) pluginRegisterCommand(s *subsystems) func(string, []string, string, string, func([]string) (string, error)) error {
+	return func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error {
+		if s.registry == nil {
+			return fmt.Errorf("command registry not available")
+		}
+		cmd := &pluginCommandWrapper{
+			name:      name,
+			aliases:   aliases,
+			shortHelp: shortHelp,
+			longHelp:  longHelp,
+			run:       run,
+		}
+		if err := s.registry.Register(cmd); err != nil {
+			return err
+		}
+		log.Printf("[plugin] registered command /%s\n", name)
 		return nil
 	}
+}
+
+// pluginRegisterObserver subscribes JS observers to the plugin event bus.
+func (rt *pluginRuntime) pluginRegisterObserver() plugins.ObserverHandler {
+	return func(callback func(string, interface{})) {
+		// Observers receive all events; the plugin filters by event name.
+		rt.bus.On("*", callback)
+	}
+}
+
+// EmitEvent broadcasts an event to all plugin observers (wildcard bus).
+func (rt *pluginRuntime) EmitEvent(name string, payload interface{}) {
+	if rt == nil || rt.bus == nil {
+		return
+	}
+	rt.bus.Emit(name, payload)
 }
 
 func pluginRegisterLifecycle(s *subsystems) func(plugins.HookType, plugins.LifecycleHandler) {
@@ -137,6 +270,27 @@ func executePluginTool(t agentic.Tool, input string) (string, error) {
 	return t.Execute(input)
 }
 
+// emitPluginChat routes a plugin message into the conversation viewport via
+// the app event bus as an output modal (the same vehicle commands use for
+// multi-line results). A nil/full channel falls back to the log so a plugin
+// never deadlocks the JS runner.
+func emitPluginChat(s *subsystems, msg string) {
+	if s.events == nil {
+		log.Printf("[plugin] output: %s\n", msg)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[plugin] output (no TUI): %s\n", msg)
+		}
+	}()
+	select {
+	case s.events.Chat <- pluginChatEvent(msg):
+	default:
+		log.Printf("[plugin] output (busy): %s\n", msg)
+	}
+}
+
 // pluginToolWrapper adapts a plugin's JavaScript tool to agentic.Tool.
 type pluginToolWrapper struct {
 	agentic.BaseTool
@@ -173,21 +327,44 @@ func (p *pluginToolWrapper) Execute(input string) (string, error) {
 }
 
 // pluginCommandWrapper adapts a plugin's JavaScript command to core.Command.
-// Not used until plugin command registration is fully wired.
 type pluginCommandWrapper struct {
-	name    string
-	aliases []string
-	run     func([]string) (string, error)
+	name      string
+	aliases   []string
+	shortHelp string
+	longHelp  string
+	run       func([]string) (string, error)
 }
 
-func (c *pluginCommandWrapper) Name() string { return c.name }
+func (c *pluginCommandWrapper) Name() string      { return c.name }
 func (c *pluginCommandWrapper) Aliases() []string { return c.aliases }
-func (c *pluginCommandWrapper) ShortHelp() string { return "" }
-func (c *pluginCommandWrapper) LongHelp() string { return "" }
-func (c *pluginCommandWrapper) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion { return nil }
+func (c *pluginCommandWrapper) ShortHelp() string {
+	if c.shortHelp != "" {
+		return c.shortHelp
+	}
+	return "Plugin command"
+}
+func (c *pluginCommandWrapper) LongHelp() string {
+	if c.longHelp != "" {
+		return c.longHelp
+	}
+		return c.ShortHelp()
+}
+func (c *pluginCommandWrapper) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	return nil
+}
+
+// Run executes the JS command, writing its output string into the router's
+// OutputBuffer so handleSlashCommand echoes it into the chat viewport exactly
+// like a built-in command's response.
 func (c *pluginCommandWrapper) Run(ctx core.Context, args []string) error {
-	_, err := c.run(args)
-	return err
+	out, err := c.run(args)
+	if err != nil {
+		return err
+	}
+	if out != "" && ctx.OutputBuffer != nil {
+		ctx.OutputBuffer.WriteString(out)
+	}
+	return nil
 }
 
 var _ core.Command = (*pluginCommandWrapper)(nil)

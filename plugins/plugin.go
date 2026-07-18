@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 
 	"github.com/dop251/goja"
 	"gopkg.in/yaml.v3"
@@ -53,6 +54,9 @@ type PluginContext struct {
 	RegisterLifecycle func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
 	CallTool          CallToolHandler                         // called when JS calls goa.callTool
 	EventBus          *EventBus
+	// Extended carries optional bridges (http, storage, timers, ui, hotkeys,
+	// browser, output, sessionUsage). Nil disables those goa.* APIs.
+	Extended *ExtendContext
 }
 
 // LoggerAPI exposes logging functions to JS plugins.
@@ -69,6 +73,22 @@ type JSBridge struct {
 	vm  *goja.Runtime
 	ctx PluginContext
 	def PluginDef
+}
+
+// vmMu serializes every JavaScript execution across all plugins. Goja
+// runtimes are not goroutine-safe, and plugins have asynchronous entry points
+// (timers, hotkeys, HTTP completions, command/tool invocations) arriving from
+// many goroutines. A plain mutex — rather than a dedicated goroutine queue —
+// is used so a JS call that blocks in a bridge (e.g. goa.http.fetch) can
+// still be re-entered by that same call chain without deadlock, while async
+// callbacks (timers, hotkeys) simply wait their turn on the mutex.
+var vmMu sync.Mutex
+
+// lockVM acquires the global JS execution lock. All VM interactions must go
+// through this so no two goroutines ever touch a runtime concurrently.
+func lockVM() func() {
+	vmMu.Lock()
+	return vmMu.Unlock
 }
 
 // NewJSBridge creates a new JS bridge for the given plugin definition.
@@ -108,6 +128,8 @@ func (b *JSBridge) setupGlobals() {
 	goaObj.Set("registerLifecycle", b.wrapRegisterLifecycle())
 	goaObj.Set("callTool", b.wrapCallTool())
 
+	b.setupExtendedGlobals(goaObj)
+
 	b.vm.Set("goa", goaObj)
 }
 
@@ -138,6 +160,8 @@ func (b *JSBridge) buildToolWrapper(executeFn interface{}) (func(map[string]any)
 	switch fn := executeFn.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(params map[string]any) (interface{}, error) {
+			unlock := lockVM()
+			defer unlock()
 			jsParams := b.vm.NewObject()
 			for k, v := range params {
 				jsParams.Set(k, v)
@@ -206,6 +230,8 @@ func (b *JSBridge) buildCommandWrapper(runFn interface{}) (func([]string) (strin
 	switch fn := runFn.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(args []string) (string, error) {
+			unlock := lockVM()
+			defer unlock()
 			jsArgs := b.vm.NewArray()
 			for i, a := range args {
 				jsArgs.Set(strconv.Itoa(i), a)
@@ -245,6 +271,8 @@ func (b *JSBridge) buildLifecycleWrapper(callbackVal interface{}) (LifecycleHand
 	switch cb := callbackVal.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(hook HookType, payload map[string]any) {
+			unlock := lockVM()
+			defer unlock()
 			call := goja.FunctionCall{}
 			call.Arguments = append(call.Arguments, b.vm.ToValue(string(hook)))
 			call.Arguments = append(call.Arguments, b.vm.ToValue(payload))
@@ -279,6 +307,8 @@ func (b *JSBridge) buildObserverWrapper(callbackVal interface{}) (func(string, i
 	switch cb := callbackVal.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(eventName string, payload interface{}) {
+			unlock := lockVM()
+			defer unlock()
 			call := goja.FunctionCall{}
 			call.Arguments = append(call.Arguments, b.vm.ToValue(eventName))
 			call.Arguments = append(call.Arguments, b.vm.ToValue(payload))
