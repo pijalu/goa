@@ -604,7 +604,7 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	if sr.title != "Compression settings:" {
 		t.Fatalf("title = %q, want Compression settings:", sr.title)
 	}
-	want := []string{"strategy", "threshold", "max_tokens", "enabled", "on_context_error"}
+	want := []string{"strategy", "soft", "threshold", "hard", "max_tokens", "enabled", "on_context_error"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d compression items, got %d", len(want), len(sr.options))
 	}
@@ -641,8 +641,10 @@ func TestConfigMenu_CompressionStrategyChange(t *testing.T) {
 func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          true,
-			ThresholdPercent: 80,
+			Enabled: true,
+			// Seed the tiered field (not the legacy ThresholdPercent alias,
+			// which would win over Thresholds.TriggerPercent on read-back).
+			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80},
 		},
 	}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
@@ -655,8 +657,66 @@ func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 		t.Fatalf("title = %q", sr.title)
 	}
 	sr.onSel("50", true)
-	if cfg.ContextCompression.ThresholdPercent != 50 {
-		t.Errorf("ThresholdPercent = %d, want 50", cfg.ContextCompression.ThresholdPercent)
+	if cfg.ContextCompression.Thresholds.TriggerPercent != 50 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 50", cfg.ContextCompression.Thresholds.TriggerPercent)
+	}
+}
+
+func TestConfigMenu_CompressionSoftChange(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{Enabled: true},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("compression", true)
+	sr.onSel("soft", true)
+	if sr.title != "Soft threshold — cheap zero-LLM maintenance when cache is cold:" {
+		t.Fatalf("title = %q", sr.title)
+	}
+	sr.onSel("40", true)
+	if cfg.ContextCompression.Thresholds.SoftPercent != 40 {
+		t.Errorf("Thresholds.SoftPercent = %d, want 40", cfg.ContextCompression.Thresholds.SoftPercent)
+	}
+}
+
+func TestConfigMenu_CompressionHardChange(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{Enabled: true},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("compression", true)
+	sr.onSel("hard", true)
+	if sr.title != "Hard ceiling (emergency: bypass cache, escalate, refuse new turns):" {
+		t.Fatalf("title = %q", sr.title)
+	}
+	sr.onSel("90", true)
+	if cfg.ContextCompression.Thresholds.HardPercent != 90 {
+		t.Errorf("Thresholds.HardPercent = %d, want 90", cfg.ContextCompression.Thresholds.HardPercent)
+	}
+}
+
+// TestCompressionTriggerValue_LegacyAliasWins locks the documented backwards-
+// compatibility rule: when the deprecated ThresholdPercent alias is set, it
+// takes precedence over Thresholds.TriggerPercent (config/config.go).
+func TestCompressionTriggerValue_LegacyAliasWins(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			ThresholdPercent: 80,
+			Thresholds:       config.CompressionThresholdsConfig{TriggerPercent: 50},
+		},
+	}
+	if got := compressionTriggerValue(cfg); got != 80 {
+		t.Errorf("compressionTriggerValue = %d, want 80 (legacy alias wins)", got)
+	}
+	// Without the legacy alias, the tiered field is used.
+	cfg.ContextCompression.ThresholdPercent = 0
+	if got := compressionTriggerValue(cfg); got != 50 {
+		t.Errorf("compressionTriggerValue = %d, want 50 (tiered field)", got)
 	}
 }
 
