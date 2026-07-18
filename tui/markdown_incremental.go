@@ -31,6 +31,125 @@ type IncrementalMDRenderer struct {
 	// document stabilizes); stableLines is its rendered form.
 	stableText  string
 	stableLines []string
+
+	// boundaryScan caches the scanner state so that when text is a pure
+	// append of the last scanned text, the boundary scan resumes from the
+	// cached position instead of re-scanning from byte 0 (B005).
+	boundaryScan boundaryScanner
+}
+
+// boundaryScanner holds the resumable state of the lastStableBoundary scan.
+// On each Render call with appended text, only the newly-arrived suffix
+// needs scanning; the cached boundary carries forward.
+//
+// The scanner always resumes from the start of the last complete line (the
+// one ending in '\n'). It re-scans the incomplete tail line each time, so
+// line-level classifications (fence open/close, blank, content) are always
+// correct. State (inFence, prevAbsorbsBlank, boundary) is captured at the
+// resume position — the state *before* the incomplete line began.
+type boundaryScanner struct {
+	// resumePos is the byte offset from which to resume scanning on the
+	// next advance call. Always the start of a line (just past a '\n').
+	resumePos int
+	// inFence at resumePos.
+	inFence bool
+	// boundary found so far (monotonically increasing).
+	boundary int
+	// prevAbsorbsBlank at resumePos.
+	prevAbsorbsBlank bool
+	// scannedLen tracks the text length from the last advance call to
+	// detect shrink/edit.
+	scannedLen int
+}
+
+// advance scans new text appended since the last call and returns the
+// updated stable boundary. If text shrank or was edited, the scanner resets
+// and scans from byte 0.
+func (bs *boundaryScanner) advance(text string) int {
+	if len(text) < bs.scannedLen {
+		*bs = boundaryScanner{}
+	}
+	bs.scannedLen = len(text)
+
+	scanFrom := bs.resumePos
+	if scanFrom > len(text) {
+		scanFrom = 0
+		bs.inFence = false
+		bs.boundary = 0
+		bs.prevAbsorbsBlank = false
+	}
+
+	suffix := text[scanFrom:]
+	if suffix == "" {
+		return bs.boundary
+	}
+
+	savedFence := bs.inFence
+	savedAbsorb := bs.prevAbsorbsBlank
+
+	bs.scanLines(suffix, scanFrom)
+	bs.updateResumePos(suffix, scanFrom, savedFence, savedAbsorb)
+	return bs.boundary
+}
+
+// scanLines iterates lines in suffix (starting at byte offset base in the
+// original text) and updates boundary/fence/absorb state.
+func (bs *boundaryScanner) scanLines(suffix string, base int) {
+	lines := strings.SplitAfter(suffix, "\n")
+	pos := base
+	for i, l := range lines {
+		trimmed := strings.TrimRight(l, "\n")
+		isLast := i == len(lines)-1
+		isIncomplete := isLast && !strings.HasSuffix(l, "\n")
+		bs.classifyLine(trimmed, l, isLast, isIncomplete, pos)
+		pos += len(l)
+	}
+}
+
+// classifyLine processes one line and updates the scanner state.
+func (bs *boundaryScanner) classifyLine(trimmed, raw string, isLast, isIncomplete bool, pos int) {
+	switch {
+	case strings.HasPrefix(trimmed, "```"):
+		bs.inFence = !bs.inFence
+		bs.prevAbsorbsBlank = false
+	case !bs.inFence && trimmed == "" && raw != "" && !isLast:
+		if !bs.prevAbsorbsBlank {
+			bs.boundary = pos + len(raw)
+		}
+		bs.prevAbsorbsBlank = false
+	case trimmed == "" && isLast && raw == "":
+		// Trailing-newline artifact.
+	default:
+		if !isIncomplete {
+			bs.prevAbsorbsBlank = lineAbsorbsBlank(trimmed)
+		}
+	}
+}
+
+// lineAbsorbsBlank reports whether a content line belongs to a block type
+// (blockquote, list, table) that absorbs a trailing blank line into itself.
+func lineAbsorbsBlank(trimmed string) bool {
+	t := strings.TrimLeft(trimmed, " \t")
+	return strings.HasPrefix(t, ">") ||
+		isUnorderedListItem(trimmed) || isOrderedListItem(trimmed) ||
+		isTableRow(trimmed) || isTableSeparator(trimmed)
+}
+
+// updateResumePos sets resumePos for the next advance call and restores
+// fence/absorb state when the tail line is incomplete.
+func (bs *boundaryScanner) updateResumePos(suffix string, scanFrom int, savedFence, savedAbsorb bool) {
+	if strings.HasSuffix(suffix, "\n") {
+		bs.resumePos = scanFrom + len(suffix)
+		return
+	}
+	lastNewline := strings.LastIndex(suffix, "\n")
+	if lastNewline >= 0 {
+		bs.resumePos = scanFrom + lastNewline + 1
+	} else {
+		bs.resumePos = scanFrom
+	}
+	bs.inFence = savedFence
+	bs.prevAbsorbsBlank = savedAbsorb
 }
 
 // NewIncrementalMDRenderer wraps a fresh MDStreamRenderer for the given width.
@@ -45,15 +164,18 @@ func NewIncrementalMDRenderer(width int, theme *Theme) *IncrementalMDRenderer {
 func (ir *IncrementalMDRenderer) Render(text string) []string {
 	if text == "" {
 		ir.stableText, ir.stableLines = "", nil
+		ir.boundaryScan = boundaryScanner{}
 		return nil
 	}
 	// If the new text is not an append of the cached stable prefix, reset.
 	if !strings.HasPrefix(text, ir.stableText) {
 		ir.stableText, ir.stableLines = "", nil
+		ir.boundaryScan = boundaryScanner{}
 	}
 
-	// Find the newest stable boundary in the full text.
-	boundary := lastStableBoundary(text)
+	// Find the newest stable boundary, resuming from the cached scan
+	// position when possible (B005: avoids O(n) full-text scan per frame).
+	boundary := ir.boundaryScan.advance(text)
 	if boundary > len(ir.stableText) {
 		// The document stabilized further: render only the newly-stable segment
 		// and append it to the cache (fresh slice to avoid aliasing the tail).

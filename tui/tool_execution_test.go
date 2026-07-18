@@ -708,3 +708,97 @@ func TestFormatLineCount(t *testing.T) {
 		t.Errorf("formatLineCount(84) = %q, want %q", got, "84 lines")
 	}
 }
+
+// TestToolExecution_WriteStreamingProgressFooter verifies B004: during write
+// tool streaming, the duration line must show byte/line progress
+// ("elapsed Xs · Y B · Z lines") just like bash/terminal tools.
+// Previously outputBytes/outputLines were only set by SetOutput, which write
+// tools never call during streaming — args stream via SetArgsPartial instead.
+func TestToolExecution_WriteStreamingProgressFooter(t *testing.T) {
+	tc := NewToolExecution("write", `{"path":"main.go"}`)
+	tc.startTime = time.Now().Add(-time.Second) // backdate past minDuration
+	tc.SetStatus(ToolRunning)
+
+	// Simulate streaming args arriving with content field.
+	tc.SetArgsPartial(`{"path":"main.go","content":"package main\n\nfunc main() {\n}`)
+	rendered := ansi.Strip(strings.Join(tc.Render(80), "\n"))
+
+	if !strings.Contains(rendered, "elapsed") {
+		t.Fatalf("running write tool must show elapsed timer, got %q", rendered)
+	}
+	// Content after JSON unquote: "package main\n\nfunc main() {\n" = 29 bytes, 4 lines.
+	if !strings.Contains(rendered, "29 B") {
+		t.Errorf("write footer must show byte count from content arg, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "4 lines") {
+		t.Errorf("write footer must show line count from content arg, got %q", rendered)
+	}
+
+	// Streaming more content grows the counters.
+	tc.SetArgsPartial(`{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n`)
+	rendered = ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(rendered, "66 B") {
+		t.Errorf("footer must track growing content, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "7 lines") {
+		t.Errorf("footer must track growing line count, got %q", rendered)
+	}
+
+	// After args are complete, the stats persist.
+	tc.SetArgsJSON(`{"path":"main.go","content":"package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n"}`)
+	rendered = ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(rendered, "66 B") {
+		t.Errorf("completed args must retain byte count, got %q", rendered)
+	}
+
+	// Completed tool: "Took" line still shows the stats.
+	tc.SetStatus(ToolSuccess)
+	rendered = ansi.Strip(strings.Join(tc.Render(80), "\n"))
+	if !strings.Contains(rendered, "Took") {
+		t.Errorf("completed write tool must show Took, got %q", rendered)
+	}
+}
+
+// TestUpdateContentProgress unit-tests the content progress extraction.
+func TestUpdateContentProgress(t *testing.T) {
+	tc := NewToolExecution("write", "")
+	tc.args = map[string]any{"content": "hello\nworld\n"}
+	tc.updateContentProgress()
+	if tc.outputBytes != 12 {
+		t.Errorf("outputBytes = %d, want 12", tc.outputBytes)
+	}
+	if tc.outputLines != 2 {
+		t.Errorf("outputLines = %d, want 2", tc.outputLines)
+	}
+
+	// Growing content updates.
+	tc.args["content"] = "hello\nworld\nfoo\n"
+	tc.updateContentProgress()
+	if tc.outputBytes != 16 {
+		t.Errorf("outputBytes = %d, want 16", tc.outputBytes)
+	}
+	if tc.outputLines != 3 {
+		t.Errorf("outputLines = %d, want 3", tc.outputLines)
+	}
+
+	// Shrinking content does NOT decrease (avoids flicker).
+	tc.args["content"] = "hi"
+	tc.updateContentProgress()
+	if tc.outputBytes != 16 {
+		t.Errorf("outputBytes must not decrease, got %d", tc.outputBytes)
+	}
+
+	// Non-string content is ignored.
+	tc.args["content"] = 42
+	tc.updateContentProgress()
+	if tc.outputBytes != 16 {
+		t.Errorf("non-string content must be ignored, got %d", tc.outputBytes)
+	}
+
+	// Missing content key is ignored.
+	delete(tc.args, "content")
+	tc.updateContentProgress()
+	if tc.outputBytes != 16 {
+		t.Errorf("missing content must be ignored, got %d", tc.outputBytes)
+	}
+}

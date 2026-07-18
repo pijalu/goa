@@ -422,29 +422,96 @@ func (t *TUI) applyCommand(cmd func()) {
 // commandLoop and hands it to the Compositor. A 16ms throttle ensures the
 // terminal is updated at most 60 times per second (a ceiling, not a target),
 // so bursty state changes coalesce into a single frame.
+//
+// When at least one tool widget is running, a 100ms periodic ticker fires
+// alongside dirtyChan so the elapsed-time display in tool widgets updates
+// smoothly (~10fps) even when no streaming events arrive. Without this,
+// the elapsed time freezes between events (B002).
 func (t *TUI) renderLoop() {
+	live := newLiveRenderTicker()
+	defer live.stop()
+
 	for {
 		select {
 		case <-t.dirtyChan:
 			if t.stopped.Load() {
 				return
 			}
-			reply := make(chan *Scene, 1)
-			t.snapReq <- reply
-			scene := <-reply
-			func() {
-				defer recoverToLog("render")
-				t.compositor.Render(scene)
-			}()
-			// Throttle to a maximum of ~60fps.
-			select {
-			case <-time.After(16 * time.Millisecond):
-			case <-t.done:
+			t.renderOneFrame()
+			live.sync(t.findChatViewport())
+			if !t.throttle() {
 				return
 			}
+		case <-live.tick:
+			if t.stopped.Load() {
+				return
+			}
+			cv := t.findChatViewport()
+			if cv == nil || !cv.HasRunningToolWidgets() {
+				live.stop()
+				continue
+			}
+			cv.InvalidateRunningToolWidgets()
+			t.renderOneFrame()
 		case <-t.done:
 			return
 		}
+	}
+}
+
+// renderOneFrame requests a snapshot from the commandLoop and hands it to
+// the compositor. Extracted from renderLoop to keep complexity in budget.
+func (t *TUI) renderOneFrame() {
+	reply := make(chan *Scene, 1)
+	t.snapReq <- reply
+	scene := <-reply
+	func() {
+		defer recoverToLog("render")
+		t.compositor.Render(scene)
+	}()
+}
+
+// throttle sleeps ~16ms to cap the frame rate at ~60fps. Returns false if
+// the done channel fired during the wait (loop should exit).
+func (t *TUI) throttle() bool {
+	select {
+	case <-time.After(16 * time.Millisecond):
+		return true
+	case <-t.done:
+		return false
+	}
+}
+
+// liveRenderTicker manages a 100ms periodic ticker that fires when running
+// tool widgets need their elapsed-time display refreshed.
+type liveRenderTicker struct {
+	ticker *time.Ticker
+	tick   <-chan time.Time
+}
+
+func newLiveRenderTicker() *liveRenderTicker { return &liveRenderTicker{} }
+
+// sync starts the ticker if the viewport has running tools, stops it otherwise.
+func (l *liveRenderTicker) sync(cv *ChatViewport) {
+	if cv != nil && cv.HasRunningToolWidgets() {
+		l.start()
+	} else {
+		l.stop()
+	}
+}
+
+func (l *liveRenderTicker) start() {
+	if l.ticker == nil {
+		l.ticker = time.NewTicker(100 * time.Millisecond)
+		l.tick = l.ticker.C
+	}
+}
+
+func (l *liveRenderTicker) stop() {
+	if l.ticker != nil {
+		l.ticker.Stop()
+		l.ticker = nil
+		l.tick = nil
 	}
 }
 

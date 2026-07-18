@@ -108,6 +108,10 @@ type ToolExecutionComponent struct {
 	// duration) so the owning ChatViewport can invalidate its render cache.
 	onInvalidate func()
 
+	// onStatusChange is called when the tool's status transitions. The
+	// viewport uses it to maintain the running-tool counter (B002).
+	onStatusChange func(old, new ToolStatus)
+
 	// agentLabel is the owning agent's display label (e.g. "coder"). When set,
 	// it is rendered as a colored prefix on the tool header so multiple agents'
 	// tool calls are distinguishable in the chat viewport.
@@ -422,11 +426,35 @@ func (tc *ToolExecutionComponent) SetArgsComplete() {
 func (tc *ToolExecutionComponent) SetArgsPartial(args string) {
 	tc.toolArgs = args
 	tc.updatePartialArgs(args)
+	// Update byte/line progress from the content arg so the duration line
+	// shows live stats ("elapsed 1.2s · 3.4 KB · 42 lines") during write
+	// streaming. This mirrors how SetOutput tracks outputBytes/outputLines
+	// for bash/terminal progress events.
+	tc.updateContentProgress()
 	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
 		tc.onInvalidate()
+	}
+}
+
+// updateContentProgress extracts byte/line counts from the "content" arg
+// (present in write/edit tools) and stores them for progressSuffix().
+// Only updates when content is present and growing — avoids flicker when
+// other args (path, etc.) arrive after content.
+func (tc *ToolExecutionComponent) updateContentProgress() {
+	content, ok := tc.args["content"].(string)
+	if !ok || content == "" {
+		return
+	}
+	n := len(content)
+	if n > tc.outputBytes {
+		tc.outputBytes = n
+		tc.outputLines = strings.Count(content, "\n")
+		if !strings.HasSuffix(content, "\n") {
+			tc.outputLines++
+		}
 	}
 }
 
@@ -632,6 +660,7 @@ func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
 		tc.args = args
 		tc.argsComplete = true
+		tc.updateContentProgress()
 	}
 	tc.toolArgs = FormatToolArgs(tc.toolName, argsJSON)
 	tc.invalidateBody()
@@ -709,6 +738,7 @@ func (tc *ToolExecutionComponent) IsPartial() bool {
 
 // SetStatus changes the execution status.
 func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
+	old := tc.status
 	tc.status = status
 	if status == ToolSuccess || status == ToolError {
 		tc.isPartial = false
@@ -718,6 +748,9 @@ func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
 	tc.Invalidate()
 	if tc.onInvalidate != nil {
 		tc.onInvalidate()
+	}
+	if tc.onStatusChange != nil && old != status {
+		tc.onStatusChange(old, status)
 	}
 }
 

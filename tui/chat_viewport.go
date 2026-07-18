@@ -128,6 +128,12 @@ type ChatViewport struct {
 	// flag so the ticker (which may run on a different goroutine) can safely
 	// request the patch without mutating shared render caches directly.
 	toolWidgetsDirty atomic.Bool
+
+	// runningToolCount tracks how many tool widgets are currently in
+	// ToolRunning state. Updated by SetStatus (on the commandLoop) and read
+	// by the renderLoop's live ticker via HasRunningToolWidgets. Atomic so
+	// both goroutines can access it without a lock (B002).
+	runningToolCount atomic.Int64
 }
 
 // SetViewportHeight records the terminal viewport height. It is called by
@@ -663,6 +669,15 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 			}
 		}
 	})
+	// Track running-tool count for the render loop's live ticker (B002).
+	tc.onStatusChange = func(old, new ToolStatus) {
+		if old == ToolRunning {
+			cv.runningToolCount.Add(-1)
+		}
+		if new == ToolRunning {
+			cv.runningToolCount.Add(1)
+		}
+	}
 	// Attach the global tool-view policy so the widget honours the config
 	// default and live Ctrl+O toggles from its first render.
 	tc.SetToolViewPolicy(cv)
@@ -769,6 +784,14 @@ func (cv *ChatViewport) AddAgentToolExecution(label, name, argsJSON string) *Too
 // Render so all shared state mutations stay on the render goroutine.
 func (cv *ChatViewport) InvalidateRunningToolWidgets() {
 	cv.toolWidgetsDirty.Store(true)
+}
+
+// HasRunningToolWidgets reports whether any tool widget is currently in
+// ToolRunning state. Safe for cross-goroutine reads (uses an atomic counter
+// maintained by SetStatus on the commandLoop). Used by the render loop to
+// decide whether to keep the live refresh ticker alive (B002).
+func (cv *ChatViewport) HasRunningToolWidgets() bool {
+	return cv.runningToolCount.Load() > 0
 }
 
 // patchRunningToolWidgets updates the spinner frame for every running tool

@@ -357,3 +357,53 @@ func TestSteeringPending_Render_SanitizesControlBytes(t *testing.T) {
 		t.Errorf("expected literal \\e[2K in render, got:\n%s", joined)
 	}
 }
+
+// TestChatViewport_HasRunningToolWidgets verifies B002: the viewport correctly
+// reports whether any tool widget is in ToolRunning state, which the render
+// loop uses to decide whether to keep the live refresh ticker alive.
+func TestChatViewport_HasRunningToolWidgets(t *testing.T) {
+	cv := NewChatViewport()
+
+	// No tools: false.
+	if cv.HasRunningToolWidgets() {
+		t.Error("expected false when no tool widgets exist")
+	}
+
+	// Add a pending tool: false (not running yet).
+	tc1 := cv.AddToolExecution("read", `{"path":"a.go"}`)
+	if cv.HasRunningToolWidgets() {
+		t.Error("expected false for pending tool")
+	}
+
+	// Set to running: true.
+	tc1.SetStatus(ToolRunning)
+	if !cv.HasRunningToolWidgets() {
+		t.Error("expected true when a tool is running")
+	}
+
+	// Add a second running tool: still true.
+	tc2 := cv.AddToolExecution("bash", `{"command":"make"}`)
+	tc2.SetStatus(ToolRunning)
+	if !cv.HasRunningToolWidgets() {
+		t.Error("expected true with two running tools")
+	}
+
+	// Complete first tool: still true (second is running).
+	tc1.SetStatus(ToolSuccess)
+	if !cv.HasRunningToolWidgets() {
+		t.Error("expected true when one tool is still running")
+	}
+
+	// Complete all: false.
+	tc2.SetStatus(ToolSuccess)
+	if cv.HasRunningToolWidgets() {
+		t.Error("expected false when all tools are complete")
+	}
+
+	// Error state also counts as not running.
+	tc3 := cv.AddToolExecution("write", `{"path":"b.go"}`)
+	tc3.SetStatus(ToolError)
+	if cv.HasRunningToolWidgets() {
+		t.Error("expected false for errored tool")
+	}
+}

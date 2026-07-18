@@ -104,3 +104,49 @@ func equalLines(a, b []string) bool {
 	}
 	return true
 }
+
+// TestBoundaryScanner_MatchesFullScan verifies that the incremental boundary
+// scanner produces the same result as the original lastStableBoundary at
+// every step of a growing document (B005 optimization correctness).
+func TestBoundaryScanner_MatchesFullScan(t *testing.T) {
+	docs := []string{
+		// Simple paragraphs with blank lines.
+		"# Title\n\npara one\n\npara two\n\npara three\n",
+		// Fenced code with internal blanks.
+		"before\n\n```go\ncode\n\nmore\n```\n\nafter\n",
+		// Mixed: list, table, blockquote, fence.
+		"# H\n\npara\n\n```go\ncode\n```\n\n- a\n- b\n\n| x |\n|---|\n| 1 |\n\n> q\n\nend\n",
+		// No boundaries at all.
+		"single line no newline",
+		// Ends mid-line.
+		"para\n\npartial",
+	}
+
+	for _, doc := range docs {
+		var bs boundaryScanner
+		// Feed the doc in 1-byte increments (worst case for the scanner).
+		for i := 1; i <= len(doc); i++ {
+			text := doc[:i]
+			got := bs.advance(text)
+			want := lastStableBoundary(text)
+			if got != want {
+				t.Errorf("doc %q at byte %d: incremental=%d, full=%d", doc[:20], i, got, want)
+				break
+			}
+		}
+	}
+}
+
+// TestBoundaryScanner_ResetOnShrink verifies the scanner resets correctly
+// when text is replaced rather than appended.
+func TestBoundaryScanner_ResetOnShrink(t *testing.T) {
+	var bs boundaryScanner
+	full := "para one\n\npara two\n\npara three\n"
+	bs.advance(full)
+	shorter := "para one\n\n"
+	got := bs.advance(shorter)
+	want := lastStableBoundary(shorter)
+	if got != want {
+		t.Errorf("after shrink: incremental=%d, full=%d", got, want)
+	}
+}
