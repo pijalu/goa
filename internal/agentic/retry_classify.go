@@ -98,6 +98,8 @@ var transientStreamPatterns = []string{
 	"idle timeout",
 	"stream disconnected",
 	"stream idle",
+	"stream stalled", // event-level stall watchdog (consumeStream): provider sent keep-alives but no real events
+	"no events received",
 	"stream ended prematurely", // SSE parser: missing finish_reason/[DONE]
 	"ended prematurely",
 	"unexpected eof",

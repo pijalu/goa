@@ -285,7 +285,9 @@ func renderContains(lines []string, sub string) bool {
 // accepts single paragraphs, and a returned "line" containing '\n' paints as
 // several terminal rows, desyncing the compositor (overlapping redraw bug).
 // TestSteeringPending_Render_LeadingBlanksSkipped: a message starting with
-// blank lines must preview real content, not blank rows.
+// blank lines must preview real content, not a blank row. The bubble is
+// capped at ONE preview line; every additional wrapped line is reported as
+// "+N lines" in the footer stat.
 func TestSteeringPending_Render_LeadingBlanksSkipped(t *testing.T) {
 	m := newSteeringPending("\n\nalpha\nbeta\ngamma\ndelta\nepsilon\nzeta")
 	lines := m.Render(40)
@@ -293,15 +295,14 @@ func TestSteeringPending_Render_LeadingBlanksSkipped(t *testing.T) {
 	if !strings.Contains(joined, "alpha") {
 		t.Errorf("expected first content line 'alpha' in preview, got:\n%s", joined)
 	}
-	// 7 content lines total (>5): zeta hidden, footer must report hidden count.
-	if strings.Contains(joined, "zeta") {
-		t.Errorf("expected 6th content line hidden from preview, got:\n%s", joined)
+	// Only one preview line: the second content line must NOT be shown.
+	if strings.Contains(joined, "beta") {
+		t.Errorf("expected preview capped at 1 line, got:\n%s", joined)
 	}
-	if !strings.Contains(joined, "hidden") {
-		t.Errorf("expected hidden-count footer, got:\n%s", joined)
-	}
-	if !strings.Contains(joined, "8 line(s) to send (1 hidden, Alt+E to edit)") {
-		t.Errorf("expected total+hidden line counts in footer, got:\n%s", joined)
+	// 8 wrapped visual lines total (2 leading blanks + 6 content), 1 shown:
+	// footer must report "+7 lines".
+	if !strings.Contains(joined, "+7 lines") {
+		t.Errorf("expected '+7 lines' footer stat, got:\n%s", joined)
 	}
 }
 
@@ -317,15 +318,17 @@ func TestSteeringPending_Render_MultiLine(t *testing.T) {
 			t.Errorf("rendered line %d contains an embedded newline: %q", i, l)
 		}
 	}
-	// Box structure: top border + 4 content rows (blank line preserved) + footer + bottom.
-	if got, want := len(lines), 7; got != want {
-		t.Errorf("expected %d rows (border + 4 content + footer + border), got %d: %q", want, got, lines)
+	// Box structure: top border + 1 preview row + footer + bottom border.
+	if got, want := len(lines), 4; got != want {
+		t.Errorf("expected %d rows (border + 1 preview + footer + border), got %d: %q", want, got, lines)
 	}
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"✎ first line", "second line", "third line"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("expected %q in render, got:\n%s", want, joined)
-		}
+	if !strings.Contains(joined, "✎ first line") {
+		t.Errorf("expected preview line %q in render, got:\n%s", "✎ first line", joined)
+	}
+	// 4 wrapped visual lines, 1 shown → "+3 lines" stat.
+	if !strings.Contains(joined, "+3 lines") {
+		t.Errorf("expected '+3 lines' footer stat, got:\n%s", joined)
 	}
 }
 
@@ -337,9 +340,6 @@ func TestSteeringPending_Render_ShowsEditAffordance(t *testing.T) {
 	out := ansi.Strip(strings.Join(m.Render(80), "\n"))
 	if !strings.Contains(out, "Alt+E") {
 		t.Errorf("steering bubble should advertise the Alt+E edit affordance, got:\n%s", out)
-	}
-	if !strings.Contains(out, "to send") {
-		t.Errorf("bubble should keep the line-count footer, got:\n%s", out)
 	}
 }
 
@@ -355,6 +355,130 @@ func TestSteeringPending_Render_SanitizesControlBytes(t *testing.T) {
 	}
 	if !strings.Contains(joined, `\e[2K`) {
 		t.Errorf("expected literal \\e[2K in render, got:\n%s", joined)
+	}
+}
+
+// TestSteeringPending_Render_BordersAndDefaultBackground: every row of the
+// box must be delimited by │ side borders (the old renderer drew ┌/└ corners
+// but left content rows open), and no row may carry a background SGR fill
+// (the old renderer painted input_bg only on the text span, leaving a
+// default-background stripe on the right edge).
+func TestSteeringPending_Render_BordersAndDefaultBackground(t *testing.T) {
+	m := newSteeringPending("border check")
+	lines := m.Render(40)
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 rows (border+preview+footer+border), got %d", len(lines))
+	}
+	for i, l := range lines {
+		if strings.Contains(l, "\x1b[48") {
+			t.Errorf("line %d carries a background fill; bubble must use default bg: %q", i, l)
+		}
+		if vw := visibleWidth(l); vw != 40 {
+			t.Errorf("line %d visible width = %d, want exactly 40: %q", i, vw, l)
+		}
+	}
+	// Content rows (preview + footer) must open AND close with │.
+	for _, i := range []int{1, 2} {
+		plain := ansi.Strip(lines[i])
+		if !strings.HasPrefix(plain, "│") || !strings.HasSuffix(plain, "│") {
+			t.Errorf("content row %d must be delimited by │ on both sides: %q", i, plain)
+		}
+	}
+}
+
+// TestSteeringPending_Render_MessageCountStat: with more than one queued
+// message the footer must show "(N messages)" so the user sees the whole
+// queue is pending, not just the last submission.
+func TestSteeringPending_Render_MessageCountStat(t *testing.T) {
+	m := newSteeringPending("first")
+	m.SetMessages([]string{"first", "second", "third"})
+	out := ansi.Strip(strings.Join(m.Render(50), "\n"))
+	if !strings.Contains(out, "(3 messages)") {
+		t.Errorf("expected '(3 messages)' stat for a 3-message queue, got:\n%s", out)
+	}
+	// Single message: no count stat.
+	m.SetMessages([]string{"only"})
+	out = ansi.Strip(strings.Join(m.Render(50), "\n"))
+	if strings.Contains(out, "messages)") {
+		t.Errorf("single-message queue must not show a count stat, got:\n%s", out)
+	}
+}
+
+// TestChatViewport_AddSteeringPending_MergesIntoSingleBubble: a second
+// steering submission must merge into the existing bubble (one entry, two
+// queued messages) instead of replacing it and hiding the first message.
+func TestChatViewport_AddSteeringPending_MergesIntoSingleBubble(t *testing.T) {
+	cv := NewChatViewport()
+	cv.AddSteeringPending("first steering")
+	cv.AddSteeringPending("second steering")
+
+	if cv.pendingSteering < 0 {
+		t.Fatal("expected pending steering entry")
+	}
+	e := cv.entries[cv.pendingSteering]
+	if e.Data.Type != ConsoleSteeringPending {
+		t.Fatalf("pending entry type = %d, want ConsoleSteeringPending", e.Data.Type)
+	}
+	sv, ok := e.View.(*steeringPending)
+	if !ok {
+		t.Fatalf("pending view type = %T, want *steeringPending", e.View)
+	}
+	msgs := sv.Messages()
+	if len(msgs) != 2 || msgs[0] != "first steering" || msgs[1] != "second steering" {
+		t.Errorf("merged messages = %v, want [first steering, second steering]", msgs)
+	}
+	if e.Data.Text != "first steering\n\nsecond steering" {
+		t.Errorf("entry data text = %q, want merged content", e.Data.Text)
+	}
+	// Only ONE steering entry may exist in the conversation.
+	count := 0
+	for _, entry := range cv.entries {
+		if entry.Data.Type == ConsoleSteeringPending {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("steering entries = %d, want exactly 1 (merged bubble)", count)
+	}
+}
+
+// TestChatViewport_Append_PendingSteeringReappendInvalidatesCache is the
+// screen-corruption regression: when a new message arrives while the
+// steering bubble is pending, Append removes and re-appends the bubble. The
+// re-appended entry must be fully invalidated — a stale lineOffset made
+// updateLastEntry patch the frame cache at the OLD position, leaving ghost
+// content on screen until the next resize forced a full rebuild.
+func TestChatViewport_Append_PendingSteeringReappendInvalidatesCache(t *testing.T) {
+	cv := NewChatViewport()
+	cv.AddUserMessage("hello")
+	cv.AddSteeringPending("fix this")
+
+	// Render so every entry has a populated cache (this is when stale
+	// lineOffset values do damage).
+	cv.Render(80)
+
+	cv.AddAssistantMessage("working...")
+	if cv.pendingSteering < 0 {
+		t.Fatal("pending steering index should remain after adding message")
+	}
+	e := cv.entries[cv.pendingSteering]
+	if !e.dirty || e.renderedLines != nil || e.renderedWidth != 0 {
+		t.Errorf("re-appended pending entry must be re-rendered, got dirty=%v lines=%v w=%d",
+			e.dirty, e.renderedLines, e.renderedWidth)
+	}
+
+	// The frame cache must render the bubble at the true bottom position.
+	lines := cv.Render(80)
+	if len(lines) == 0 {
+		t.Fatal("expected rendered lines")
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "working...") || !strings.Contains(joined, "fix this") {
+		t.Errorf("frame must contain both the new message and the bubble, got:\n%s", joined)
+	}
+	// The bubble's top border must come AFTER the assistant message.
+	if strings.Index(joined, "working...") > strings.Index(joined, "fix this") {
+		t.Errorf("bubble must render below the new message, got:\n%s", joined)
 	}
 }
 

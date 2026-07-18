@@ -664,29 +664,44 @@ func (m *infoMessage) Render(width int) []string {
 	return []string{padToWidth(content, width)}
 }
 
-// steeringPending renders a pending steering message that stays pinned at the
-// bottom of the chat until it is consumed by the model.
-type steeringPending struct{ text string }
+// steeringPending renders the pending steering queue as a compact bordered
+// bubble pinned at the bottom of the chat until the queued messages are
+// consumed by the model. The bubble shows exactly one preview line; when the
+// merged content spans more lines a "+N lines" stat appears in the footer,
+// and when more than one message is queued a "(N messages)" stat appears.
+// It uses the terminal default background (no bg fill) with │ side borders.
+type steeringPending struct{ messages []string }
 
-func newSteeringPending(text string) *steeringPending { return &steeringPending{text: text} }
-func (m *steeringPending) SetText(t string)            { m.text = t }
-func (m *steeringPending) HandleInput(string)          {}
-func (m *steeringPending) Invalidate()                 {}
+func newSteeringPending(text string) *steeringPending {
+	return &steeringPending{messages: []string{text}}
+}
+
+// SetMessages replaces the queued messages (merged display + stats).
+func (m *steeringPending) SetMessages(msgs []string) { m.messages = msgs }
+
+// Messages returns the queued steering messages in order.
+func (m *steeringPending) Messages() []string { return m.messages }
+
+// SetText replaces the queue with a single message (session-restore path).
+func (m *steeringPending) SetText(t string)   { m.messages = []string{t} }
+func (m *steeringPending) HandleInput(string) {}
+func (m *steeringPending) Invalidate()        {}
+
 func (m *steeringPending) Render(width int) []string {
-	if width <= 0 || m.text == "" {
+	if width <= 0 || len(m.messages) == 0 {
 		return nil
 	}
-	bg := ansi.Bg(TheTheme.ColorHex("input_bg"))
 	fg := ansi.Fg(TheTheme.ColorHex("system_msg"))
-	border := ansi.Fg(TheTheme.ColorHex("border_default"))
+	bd := ansi.Fg(TheTheme.ColorHex("border_default"))
 	reset := ansi.Reset
 
 	// Sanitize before Strip: pasted text is untrusted — raw ESC bytes must
 	// become visible `\e` text, not reach the terminal. Strip afterwards is a
 	// no-op on real sequences (Sanitize already escaped their ESC) but keeps
 	// defense-in-depth for anything produced by goa itself.
-	clean := ansi.Strip(ansi.Sanitize(m.text))
-	innerWidth := width - 4
+	merged := strings.Join(m.messages, "\n\n")
+	clean := ansi.Strip(ansi.Sanitize(merged))
+	innerWidth := width - 4 // "│ " + content + " │"
 	if innerWidth < 1 {
 		innerWidth = 1
 	}
@@ -695,70 +710,60 @@ func (m *steeringPending) Render(width int) []string {
 	// would return "lines" containing '\n', which paint as several terminal
 	// rows and desync the compositor's line accounting (overlapping redraw).
 	var wrapped []string
-	paragraphs := strings.Split(clean, "\n")
-	for i, para := range paragraphs {
-		prefix := "  "
-		if i == 0 {
-			prefix = "✎ "
-		}
+	for i, para := range strings.Split(clean, "\n") {
 		if strings.TrimSpace(para) == "" {
 			wrapped = append(wrapped, "")
 			continue
 		}
+		prefix := "  "
+		if i == 0 {
+			prefix = "✎ "
+		}
 		wrapped = append(wrapped, ansi.Wrap(prefix+para, innerWidth)...)
 	}
 
-	var lines []string
-	top := border + "┌" + strings.Repeat("─", width-2) + "┐" + reset
-	bot := border + "└" + strings.Repeat("─", width-2) + "┘" + reset
-	lines = append(lines, padToWidth(top, width))
-
-	// Count total wrapped lines for the footer stat.
-	totalWrapped := 0
-	for _, raw := range wrapped {
-		totalWrapped += countLines(raw, innerWidth)
+	// box draws one bordered row with the terminal default background:
+	// "│ <content padded to innerWidth> │" — exactly width visible columns.
+	box := func(content string) string {
+		return bd + "│" + fg + " " + padToWidth(content, innerWidth) + " " + bd + "│" + reset
+	}
+	hline := func(l, r string) string {
+		return bd + l + strings.Repeat("─", width-2) + r + reset
 	}
 
-	// Show a preview of up to 5 content lines. Leading blank entries (empty
-	// paragraphs) are skipped so a message starting with blank lines shows
-	// real content instead of blanks; blanks between shown lines are kept.
-	previewLines := make([]string, 0, 5)
-	shown := 0
-	consumed := 0
+	lines := []string{hline("┌", "┐")}
+
+	// One-line preview: the first non-blank wrapped line. Leading blanks are
+	// skipped so a message starting with blank lines shows real content.
+	preview := ""
 	for _, raw := range wrapped {
-		if shown >= 5 {
+		if raw != "" {
+			preview = raw
 			break
 		}
-		if raw == "" && len(previewLines) == 0 {
-			consumed++
-			continue // skip leading blanks
-		}
-		previewLines = append(previewLines, raw)
-		consumed++
-		if raw != "" {
-			shown++
-		}
 	}
-	hidden := 0
-	for _, raw := range wrapped[consumed:] {
-		hidden += countLines(raw, innerWidth)
+	if preview != "" {
+		lines = append(lines, box(preview))
 	}
 
-	for _, raw := range previewLines {
-		body := " " + padToWidth(raw, innerWidth) + " "
-		lines = append(lines, padToWidth(bg+fg+body+reset, width))
+	// Hidden lines = every wrapped visual line except the single preview row.
+	hidden := len(wrapped)
+	if preview != "" {
+		hidden--
 	}
 
-	// Footer with line count + the edit affordance (Alt+E recalls the pending
-	// message into the input line for editing).
-	footerText := fmt.Sprintf("  %d line(s) to send (Alt+E to edit)", totalWrapped)
+	// Footer stats: message count, hidden line count, edit affordance.
+	var parts []string
+	if n := len(m.messages); n > 1 {
+		parts = append(parts, fmt.Sprintf("(%d messages)", n))
+	}
 	if hidden > 0 {
-		footerText = fmt.Sprintf("  %d line(s) to send (%d hidden, Alt+E to edit)", totalWrapped, hidden)
+		parts = append(parts, fmt.Sprintf("+%d lines", hidden))
 	}
-	footerBody := " " + padToWidth(footerText, innerWidth) + " "
-	lines = append(lines, padToWidth(bg+ansi.Fg(TheTheme.ColorHex("system_msg"))+footerBody+reset, width))
+	parts = append(parts, "(Alt+E to edit)")
+	lines = append(lines, box(strings.Join(parts, " ")))
 
-	lines = append(lines, padToWidth(bot, width))
+	lines = append(lines, hline("└", "┘"))
 	return lines
 }
 
@@ -773,24 +778,4 @@ func (cv *ChatViewport) LastToolComponent() *ToolExecutionComponent {
 		return nil
 	}
 	return e.View.(*ToolExecutionComponent)
-}
-
-// countLines returns the number of terminal lines a string occupies when
-// wrapped at the given width, counting embedded newlines as line breaks.
-func countLines(s string, width int) int {
-	if width <= 0 {
-		return 0
-	}
-	lines := 0
-	for _, part := range strings.Split(s, "\n") {
-		l := ansi.Width(part) / width
-		if ansi.Width(part)%width > 0 || ansi.Width(part) == 0 {
-			l++
-		}
-		lines += l
-	}
-	if lines == 0 {
-		return 1
-	}
-	return lines
 }

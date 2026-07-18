@@ -38,6 +38,12 @@ func TestShouldRetryStreamError(t *testing.T) {
 		{"premature SSE bare", errors.New("SSE stream ended prematurely: no finish_reason"), true},
 		{"connection reset bare", errors.New("read tcp: connection reset by peer"), true},
 		{"unrecognized bare", errors.New("something else entirely"), false},
+
+		// The event-level stall watchdog error (consumeStream CloseWithError)
+		// is a bare fmt.Errorf, not a ProviderError — it must be retryable so a
+		// provider that sends keep-alives but no real events gets a bounded
+		// retry instead of killing the turn as "not retryable".
+		{"event stall watchdog", errors.New("stream stalled: no events received from provider for 2m0s"), true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

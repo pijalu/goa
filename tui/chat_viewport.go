@@ -363,6 +363,14 @@ func (cv *ChatViewport) Append(e MessageEntry) int {
 		cv.pendingSteering = -1
 		cv.RemoveLast([]ConsoleItemType{ConsoleSteeringPending})
 		id := cv.Append(e)
+		// The re-appended entry moves to a new position: its cached rendered
+		// lines and lineOffset are stale. Invalidating them forces a re-render
+		// at the correct offset — otherwise updateLastEntry patches the frame
+		// cache at the OLD offset and corrupts the screen until a resize.
+		pending.dirty = true
+		pending.renderedWidth = 0
+		pending.renderedLines = nil
+		pending.lineOffset = 0
 		cv.Append(pending)
 		return id
 	}
@@ -417,9 +425,24 @@ func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool)
 	return MessageEntry{}, false
 }
 
-// AddSteeringPending adds or updates a pending steering bubble that stays at
-// the bottom of the chat until ClearSteeringPending is called.
+// AddSteeringPending adds a steering message to the pending bubble that stays
+// at the bottom of the chat until ClearSteeringPending is called. When a
+// bubble is already present, the new message is merged into it: the bubble
+// keeps a single entry whose content is the queue of messages (displayed
+// merged, with a "(N messages)" stat) so the user sees every queued steering
+// message, not just the last one.
 func (cv *ChatViewport) AddSteeringPending(text string) {
+	if cv.pendingSteering >= 0 && cv.pendingSteering < len(cv.entries) {
+		if e := &cv.entries[cv.pendingSteering]; e.Data.Type == ConsoleSteeringPending {
+			if sv, ok := e.View.(*steeringPending); ok {
+				sv.SetMessages(append(sv.Messages(), text))
+				e.Data.Text = strings.Join(sv.Messages(), "\n\n")
+				e.dirty = true
+				cv.generation++
+				return
+			}
+		}
+	}
 	cv.ClearSteeringPending()
 	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleSteeringPending, Text: text}, View: newSteeringPending(text)})
 }
