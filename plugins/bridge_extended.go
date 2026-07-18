@@ -47,7 +47,8 @@ func (b *JSBridge) setupExtendedGlobals(goaObj *goja.Object) {
 	b.setupSessionUsage(goaObj, ext.SessionUsage)
 }
 
-// setupHTTP registers goa.http.fetch(url, opts).
+// setupHTTP registers goa.http.fetch(url, opts). The actual request goes
+// through httpDo, a package-level hook tests can override to avoid network.
 func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 	if httpB == nil {
 		return
@@ -55,10 +56,16 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 	httpObj := b.vm.NewObject()
 	httpObj.Set("fetch", func(call goja.FunctionCall) goja.Value {
 		req := b.buildHTTPRequest(call)
-		resp := httpB.Do(req)
+		resp := httpDo(httpB, req)
 		return b.vm.ToValue(httpResponseToMap(resp))
 	})
 	goaObj.Set("http", httpObj)
+}
+
+// httpDo performs an HTTP request. It's a variable so tests can substitute a
+// mock without network access; production code assigns the real Do.
+var httpDo = func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
+	return b.Do(req)
 }
 
 // buildHTTPRequest parses goa.http.fetch arguments.
@@ -191,6 +198,27 @@ func (b *JSBridge) mustFunc(v goja.Value, what string) func() {
 	}
 }
 
+// jsBool coerces a goja value to bool without triggering the ToBoolean
+// panic present on some goja versions for undefined/native values.
+func jsBool(v goja.Value) bool {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return false
+	}
+	if b, ok := v.Export().(bool); ok {
+		return b
+	}
+	// Truthiness fallback for numbers/strings.
+	switch x := v.Export().(type) {
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	case string:
+		return x != ""
+	}
+	return false
+}
+
 // setupBrowser registers goa.openBrowser(url).
 func (b *JSBridge) setupBrowser(goaObj *goja.Object, br *BrowserBridge) {
 	if br == nil {
@@ -213,9 +241,9 @@ func (b *JSBridge) setupHotkeys(goaObj *goja.Object, hk *HotkeyBridge) {
 		obj := call.Argument(0).ToObject(b.vm)
 		def := HotkeyDef{
 			Key:         obj.Get("key").String(),
-			Ctrl:        obj.Get("ctrl").ToBoolean(),
-			Alt:         obj.Get("alt").ToBoolean(),
-			Shift:       obj.Get("shift").ToBoolean(),
+			Ctrl:        jsBool(obj.Get("ctrl")),
+			Alt:         jsBool(obj.Get("alt")),
+			Shift:       jsBool(obj.Get("shift")),
 			Description: obj.Get("description").String(),
 		}
 		if handler := obj.Get("handler"); handler != nil {
