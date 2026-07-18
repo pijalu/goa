@@ -24,6 +24,10 @@ type LockEntry struct {
 	Hash    string    `json:"hash"`
 	Enabled bool      `json:"enabled"`
 	Updated time.Time `json:"updated"`
+	// Dir is the absolute install path. Empty means the default location
+	// (<managerRoot>/<id>); bundled plugins set it to their versioned
+	// materialized directory (<managerRoot>/bundled/<id>@<version>).
+	Dir string `json:"dir,omitempty"`
 }
 
 // Lockfile tracks installed plugins and their content hashes. All methods

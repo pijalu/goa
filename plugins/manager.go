@@ -187,7 +187,10 @@ func (m *Manager) Verify(id string) error {
 // verifyIntegrityLocked recomputes the plugin hash and compares it to the
 // lockfile entry. Caller must hold m.mu (or m.lock's lock).
 func (m *Manager) verifyIntegrityLocked(entry LockEntry) error {
-	dir := filepath.Join(m.root, entry.ID)
+	dir := entry.Dir
+	if dir == "" {
+		dir = filepath.Join(m.root, entry.ID)
+	}
 	current, err := hashPluginDir(dir)
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", entry.ID, err)

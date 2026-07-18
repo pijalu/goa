@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/dop251/goja"
@@ -347,11 +348,115 @@ func (b *JSBridge) RunFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("read plugin %s: %w", path, err)
 	}
+	b.installRequire(filepath.Dir(path))
 	_, err = b.vm.RunString(string(data))
 	if err != nil {
 		return fmt.Errorf("execute plugin %s: %w", path, err)
 	}
 	return nil
+}
+
+// installRequire registers a scoped CommonJS-style require() that loads JS
+// modules relative to the requiring module's directory (Node semantics). Each
+// module is wrapped in a function with (module, exports, require) so modules
+// use exports.foo = ... or module.exports = .... The module cache is
+// per-bridge so repeated requires return the same exports object and circular
+// requires don't infinitely recurse. Paths are confined to the plugin
+// directory to prevent reading arbitrary files.
+func (b *JSBridge) installRequire(pluginDir string) {
+	cache := map[string]goja.Value{}
+	var requireAt func(dir string) func(goja.FunctionCall) goja.Value
+	requireAt = func(dir string) func(goja.FunctionCall) goja.Value {
+		return func(call goja.FunctionCall) goja.Value {
+			rel := call.Argument(0).String()
+			path, err := resolveModulePath(dir, rel, pluginDir)
+			if err != nil {
+				throwError(b.vm, err)
+			}
+			if cached, ok := cache[path]; ok {
+				return cached
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				throwError(b.vm, fmt.Errorf("require %s: %v", rel, err))
+			}
+			module := b.vm.NewObject()
+			exports := b.vm.NewObject()
+			module.Set("exports", exports)
+			// Register in cache before executing to break circular imports.
+			cache[path] = exports
+
+			wrapper, werr := b.buildModuleWrapper(string(data))
+			if werr != nil {
+				delete(cache, path)
+				throwError(b.vm, fmt.Errorf("require %s: %v", rel, werr))
+			}
+			// The nested require resolves relative to THIS module's directory.
+			nestedRequire := b.vm.ToValue(requireAt(filepath.Dir(path)))
+			if _, err := wrapper(exports, exports, module, nestedRequire); err != nil {
+				delete(cache, path)
+				throwError(b.vm, fmt.Errorf("require %s: %v", rel, err))
+			}
+			// Support `module.exports = {...}` replacement.
+			if finalExports := module.Get("exports"); finalExports != nil && finalExports != exports {
+				cache[path] = finalExports
+				return finalExports
+			}
+			return exports
+		}
+	}
+	b.vm.Set("require", requireAt(pluginDir))
+}
+
+// buildModuleWrapper compiles module source into a callable (exports, module,
+// require) function.
+func (b *JSBridge) buildModuleWrapper(src string) (func(goja.Value, ...goja.Value) (goja.Value, error), error) {
+	wrapped := "(function(exports, module, require) {\n" + src + "\n})"
+	v, err := b.vm.RunString(wrapped)
+	if err != nil {
+		return nil, err
+	}
+	fn, ok := goja.AssertFunction(v)
+	if !ok {
+		return nil, fmt.Errorf("module wrapper is not a function")
+	}
+	return fn, nil
+}
+
+// resolveModulePath resolves rel against the requiring module's directory
+// (dir) while confining the result to the plugin root (pluginDir).
+func resolveModulePath(dir, rel, pluginDir string) (string, error) {
+	if rel == "" {
+		return "", fmt.Errorf("require: empty path")
+	}
+	clean := filepath.Clean(filepath.Join(dir, rel))
+	base := filepath.Clean(pluginDir)
+	if clean != base && !hasPathPrefix(clean, base) {
+		return "", fmt.Errorf("require: path %q escapes plugin directory", rel)
+	}
+	if filepath.Ext(clean) == "" {
+		clean += ".js"
+	}
+	return clean, nil
+}
+
+// hasPathPrefix reports whether path is inside base (or equal to base),
+// using a filepath-aware relative check.
+func hasPathPrefix(path, base string) bool {
+	if path == base {
+		return true
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return false
+	}
+	// Inside base when the relative path neither escapes (..) nor is absolute.
+	return rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// throwError raises a JS exception from a Go error.
+func throwError(vm *goja.Runtime, err error) {
+	panic(vm.ToValue(err.Error()))
 }
 
 // PluginLoader scans plugin directories, loads manifests, and

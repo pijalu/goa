@@ -633,6 +633,19 @@ type TransparencyConfig struct {
 type PluginsConfig struct {
 	Dirs    []string `yaml:"dirs"`
 	Enabled []string `yaml:"enabled"`
+	// Bundled toggles built-in (embedded) plugins by id. A plugin loads when
+	// its entry is absent or true; setting it to false opts out. Defaults to
+	// enabled so built-ins like provider-quota work out of the box.
+	Bundled map[string]bool `yaml:"bundled,omitempty"`
+}
+
+// BundledEnabled reports whether a bundled plugin loads. Absent entry = true.
+func (p PluginsConfig) BundledEnabled(id string) bool {
+	if p.Bundled == nil {
+		return true
+	}
+	enabled, ok := p.Bundled[id]
+	return !ok || enabled
 }
 
 // ThinkingLevelConfig controls per-role reasoning effort settings.

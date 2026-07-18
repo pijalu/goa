@@ -14,6 +14,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/plugins"
+	"github.com/pijalu/goa/plugins/bundled"
 )
 
 // pluginChatEvent wraps a plugin output message as a chat modal event.
@@ -33,24 +34,34 @@ type pluginRuntime struct {
 	scheduler *plugins.Scheduler
 }
 
-// loadEnabledPlugins loads plugins that are enabled by the plugin manager and
-// wires their registered tools, commands, observers, and lifecycle hooks into
-// Goa's subsystems. It is safe to call when no plugins are enabled.
+// loadEnabledPlugins materializes bundled plugins, then loads all enabled
+// plugins (bundled + user-installed) and wires their registered tools,
+// commands, observers, and lifecycle hooks into Goa's subsystems. It is safe
+// to call when no plugins are enabled.
 func loadEnabledPlugins(s *subsystems) {
 	if s.pluginMgr == nil {
 		return
 	}
+	// Materialize bundled (embedded) plugins so they are trusted + enabled.
+	bundledDir := materializeBundledPlugins(s)
+
 	enabled := s.pluginMgr.EnabledIDs()
 	if len(enabled) == 0 {
 		return
 	}
+	// Verify user-installed plugins (bundled ones were hashed at materialize).
 	for _, id := range enabled {
 		if err := s.pluginMgr.Verify(id); err != nil {
 			log.Printf("Warning: skipping plugin %s: %v\n", id, err)
 			return
 		}
 	}
-	loader := plugins.NewPluginLoader([]string{s.pluginMgr.Root()}, enabled)
+	// Scan the install root and the bundled dir for enabled plugins.
+	dirs := []string{s.pluginMgr.Root()}
+	if bundledDir != "" {
+		dirs = append(dirs, bundledDir)
+	}
+	loader := plugins.NewPluginLoader(dirs, enabled)
 	rt := newPluginRuntime(s)
 	bridges, err := loader.LoadAll(rt.contextFor(s))
 	if err != nil {
@@ -70,6 +81,32 @@ func newPluginRuntime(s *subsystems) *pluginRuntime {
 		bus:       plugins.NewEventBus(),
 		scheduler: plugins.NewScheduler(),
 	}
+}
+
+// materializeBundledPlugins copies each enabled bundled (embedded) plugin
+// into the manager's bundled dir and enables it. Returns the bundled dir to
+// scan, or "" when none are enabled. Failures are logged, not fatal — a
+// broken bundled plugin must not block startup.
+func materializeBundledPlugins(s *subsystems) string {
+	if !s.cfg.Plugins.BundledEnabled(bundled.ProviderQuotaID) {
+		return ""
+	}
+	m, err := bundled.ProviderQuotaSource()
+	if err != nil {
+		log.Printf("Warning: bundled provider-quota manifest: %v\n", err)
+		return ""
+	}
+	src := plugins.BundledSource{
+		ID:       m.ID,
+		Version:  m.Version,
+		ReadFile: bundled.ReadFile,
+		ReadDir:  bundled.ReadDir,
+	}
+	if _, err := s.pluginMgr.MaterializeBundled(src); err != nil {
+		log.Printf("Warning: materialize bundled plugin %s: %v\n", m.ID, err)
+		return ""
+	}
+	return s.pluginMgr.BundledDir()
 }
 
 // contextFor builds the PluginContext exposing Goa subsystems to plugins.
