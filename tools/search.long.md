@@ -19,7 +19,11 @@ Parameters:
   recursive      boolean — Search subdirectories recursively (default: true)
   case_sensitive boolean — Case-sensitive search (default: false)
   max_results    integer — Max total matched lines to return
-  context_lines  integer — Context lines around each match
+  context_lines  integer — Lines of context around each match, grep -C style
+                 (default: 0 = off). Context rows render with a '-' separator
+                 (e.g. "  12- ...") vs ':' for match rows.
+  max_lines      integer — Cap on output content lines, like '| head -N'.
+                 Truncated output is marked '… (K lines truncated by max_lines)'.
   showing        integer — Content lines per file (default: 10% of max_results, 0 = line numbers only)
 
 Output format (per file):

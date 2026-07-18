@@ -183,7 +183,103 @@ func TestSearchTool_Execute_WithContextLines(t *testing.T) {
 		t.Fatalf("Search should succeed: %v", err)
 	}
 	if len(result) < 1 {
-		t.Error("Expected search results with context")
+		t.Fatal("Expected search results with context")
+	}
+	// P3 regression: context_lines was advertised but never wired through, so
+	// no context ever appeared. The match line uses ':' while context lines
+	// must appear with the grep-style '-' separator.
+	if !strings.Contains(result, "2: func target() {}") {
+		t.Errorf("expected match line with ':' separator, got:\n%s", result)
+	}
+	if !strings.Contains(result, "1- line1") {
+		t.Errorf("expected before-context '1- line1', got:\n%s", result)
+	}
+	if !strings.Contains(result, "3- line3") {
+		t.Errorf("expected after-context '3- line3', got:\n%s", result)
+	}
+}
+
+// TestSearchTool_Execute_ContextLinesDefaultOff: without an explicit
+// context_lines, match output stays compact (no '-' context rows).
+func TestSearchTool_Execute_ContextLinesDefaultOff(t *testing.T) {
+	dir := t.TempDir()
+	content := "line1\nfunc target() {}\nline3\n"
+	if err := os.WriteFile(filepath.Join(dir, "test.go"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{WorktreeMgr: nil, Threads: 2, MaxResults: 50}
+	result, err := tool.Execute(`{"pattern": "target", "path": "` + dir + `"}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if !strings.Contains(result, "2: func target() {}") {
+		t.Errorf("expected match line, got:\n%s", result)
+	}
+	if strings.Contains(result, "1- line1") || strings.Contains(result, "3- line3") {
+		t.Errorf("context must be off by default, got:\n%s", result)
+	}
+}
+
+// TestSearchTool_Execute_MaxLinesTruncates: max_lines caps output content
+// lines and appends a truncation marker, mirroring '| head -N'.
+func TestSearchTool_Execute_MaxLinesTruncates(t *testing.T) {
+	dir := t.TempDir()
+	var sb strings.Builder
+	for i := 1; i <= 20; i++ {
+		sb.WriteString("match here\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "big.go"), []byte(sb.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &SearchTool{WorktreeMgr: nil, Threads: 2, MaxResults: 50}
+	result, err := tool.Execute(`{"pattern": "match", "path": "` + dir + `", "showing": 20, "max_lines": 5}`)
+	if err != nil {
+		t.Fatalf("Search should succeed: %v", err)
+	}
+	if !strings.Contains(result, "truncated by max_lines") {
+		t.Errorf("expected max_lines truncation marker, got:\n%s", result)
+	}
+	// Count rendered content lines ("  N: match here"); must not exceed the cap.
+	count := strings.Count(result, ": match here")
+	if count > 5 {
+		t.Errorf("expected at most 5 content lines, got %d:\n%s", count, result)
+	}
+}
+
+// TestTruncateOutputLines covers the max_lines helper directly.
+func TestTruncateOutputLines(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		maxLines   int
+		wantLines  int // lines in capped output (0 = unchanged body)
+		wantMarker bool
+	}{
+		{"disabled", "a\nb\nc\n", 0, 3, false},
+		{"under cap", "a\nb\n", 5, 2, false},
+		{"at cap", "a\nb\nc\n", 3, 3, false},
+		{"over cap", "a\nb\nc\nd\ne\n", 2, 2, true},
+		{"empty", "", 3, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			capped, marker := truncateOutputLines(tc.body, tc.maxLines)
+			gotLines := 0
+			if capped != "" {
+				gotLines = strings.Count(capped, "\n")
+			}
+			if gotLines != tc.wantLines {
+				t.Errorf("capped has %d lines, want %d (capped=%q)", gotLines, tc.wantLines, capped)
+			}
+			if (marker != "") != tc.wantMarker {
+				t.Errorf("marker = %q, wantMarker=%v", marker, tc.wantMarker)
+			}
+			if tc.wantMarker && !strings.Contains(marker, "truncated by max_lines") {
+				t.Errorf("marker must name the cause, got %q", marker)
+			}
+		})
 	}
 }
 

@@ -36,6 +36,12 @@ type searchResult struct {
 	LineNum int
 	Line    string
 	Score   int // number of regex matches on this line
+	// Before/After hold up to contextLines lines of surrounding file content
+	// (excluding the match line itself), captured at search time. They are
+	// rendered with a '-' separator (grep-style) to distinguish them from
+	// match lines (':' separator). Nil when context_lines is 0.
+	Before []string
+	After  []string
 }
 
 // Schema returns the tool schema for search.
@@ -72,7 +78,11 @@ func (t *SearchTool) Schema() agentic.ToolSchema {
 				},
 				"context_lines": map[string]any{
 					"type":        "integer",
-					"description": "Context lines shown around each match.",
+					"description": "Context lines shown around each match (grep -C style).",
+				},
+				"max_lines": map[string]any{
+					"type":        "integer",
+					"description": "Cap on output content lines (match + context); truncates with a marker like '| head -N'.",
 				},
 				"showing": map[string]any{
 					"type":        "integer",
@@ -98,6 +108,7 @@ type searchParams struct {
 	CaseSensitive bool     `json:"case_sensitive"`
 	MaxResults    int      `json:"max_results"`
 	ContextLines  int      `json:"context_lines"`
+	MaxLines      int      `json:"max_lines"`
 	Showing       int      `json:"showing"`
 	Threads       int      `json:"threads"`
 	Exclude       []string `json:"exclude"`
@@ -114,8 +125,8 @@ func (t *SearchTool) normalizeSearchParams(p *searchParams, input string) (rootP
 	if p.Threads <= 0 {
 		p.Threads = defaultInt(t.Threads, 4)
 	}
-	if p.ContextLines <= 0 {
-		p.ContextLines = 1
+	if p.ContextLines < 0 {
+		p.ContextLines = 0
 	}
 
 	// Parse raw JSON to detect missing optional fields
@@ -145,7 +156,7 @@ func (t *SearchTool) normalizeSearchParams(p *searchParams, input string) (rootP
 }
 
 // searchPipePattern attempts splitting pattern on | and merging results.
-func (t *SearchTool) searchPipePattern(files []string, pattern string, caseSensitive bool, threads, maxResults, showing int) (string, bool) {
+func (t *SearchTool) searchPipePattern(files []string, pattern string, caseSensitive bool, threads, maxResults, showing, contextLines, maxLines int) (string, bool) {
 	if !strings.Contains(pattern, "|") {
 		return "", false
 	}
@@ -157,7 +168,7 @@ func (t *SearchTool) searchPipePattern(files []string, pattern string, caseSensi
 		if part == "" {
 			continue
 		}
-		results := t.searchWithPattern(files, part, caseSensitive, threads)
+		results := t.searchWithPattern(files, part, caseSensitive, threads, contextLines)
 		for _, res := range results {
 			key := fmt.Sprintf("%s:%d", res.Path, res.LineNum)
 			if !seen[key] {
@@ -170,7 +181,7 @@ func (t *SearchTool) searchPipePattern(files []string, pattern string, caseSensi
 		return "", false
 	}
 	t.sortResults(combined)
-	return t.formatResults(combined, pattern, maxResults, showing), true
+	return t.formatResults(combined, pattern, maxResults, showing, maxLines), true
 }
 
 // Execute performs the search.
@@ -196,19 +207,19 @@ func (t *SearchTool) Execute(input string) (string, error) {
 		return "[search: no matching files found]", nil
 	}
 
-	results := t.searchWithPattern(files, p.Pattern, p.CaseSensitive, p.Threads)
+	results := t.searchWithPattern(files, p.Pattern, p.CaseSensitive, p.Threads, p.ContextLines)
 	if len(results) == 0 {
-		if out, ok := t.searchPipePattern(files, p.Pattern, p.CaseSensitive, p.Threads, p.MaxResults, p.Showing); ok {
+		if out, ok := t.searchPipePattern(files, p.Pattern, p.CaseSensitive, p.Threads, p.MaxResults, p.Showing, p.ContextLines, p.MaxLines); ok {
 			return out, nil
 		}
 	}
 
 	t.sortResults(results)
-	return t.formatResults(results, p.Pattern, p.MaxResults, p.Showing), nil
+	return t.formatResults(results, p.Pattern, p.MaxResults, p.Showing, p.MaxLines), nil
 }
 
 // searchWithPattern compiles a regex and searches the given files.
-func (t *SearchTool) searchWithPattern(files []string, pattern string, caseSensitive bool, threads int) []searchResult {
+func (t *SearchTool) searchWithPattern(files []string, pattern string, caseSensitive bool, threads int, contextLines int) []searchResult {
 	patternStr := pattern
 	if !caseSensitive {
 		patternStr = "(?i:" + pattern + ")"
@@ -217,7 +228,7 @@ func (t *SearchTool) searchWithPattern(files []string, pattern string, caseSensi
 	if err != nil {
 		return nil
 	}
-	return t.searchFiles(files, re, caseSensitive, threads)
+	return t.searchFiles(files, re, caseSensitive, threads, contextLines)
 }
 
 func (t *SearchTool) walkRecursiveFiles(rootPath, glob, excludeGlob string, excludes []string) []string {
@@ -367,7 +378,7 @@ func (t *SearchTool) shouldSkipDir(name string, excludes []string) bool {
 	return false
 }
 
-func (t *SearchTool) searchFiles(files []string, re *regexp.Regexp, caseSensitive bool, threads int) []searchResult {
+func (t *SearchTool) searchFiles(files []string, re *regexp.Regexp, caseSensitive bool, threads int, contextLines int) []searchResult {
 	resultChan := make(chan searchResult, 100)
 	var wg sync.WaitGroup
 	fileChan := make(chan string, len(files))
@@ -375,7 +386,7 @@ func (t *SearchTool) searchFiles(files []string, re *regexp.Regexp, caseSensitiv
 	worker := func() {
 		defer wg.Done()
 		for f := range fileChan {
-			for _, m := range t.searchFile(f, re, caseSensitive) {
+			for _, m := range t.searchFile(f, re, caseSensitive, contextLines) {
 				resultChan <- m
 			}
 		}
@@ -438,7 +449,7 @@ func (t *SearchTool) sortResults(results []searchResult) {
 	})
 }
 
-func (t *SearchTool) formatResults(results []searchResult, pattern string, maxResults, showing int) string {
+func (t *SearchTool) formatResults(results []searchResult, pattern string, maxResults, showing, maxLines int) string {
 	groups := groupAndSortResults(results)
 	fileLimit := computeFileLimit(maxResults, showing)
 
@@ -460,13 +471,39 @@ func (t *SearchTool) formatResults(results []searchResult, pattern string, maxRe
 		formatFileContentLines(&buf, g, maxResults, showing, &totalShown)
 	}
 
+	body := buf.String()
+	truncNote := ""
+	if maxLines > 0 {
+		body, truncNote = truncateOutputLines(body, maxLines)
+	}
+
 	remaining := len(results) - countLinesShown(groups, showing)
 	totalFiles := len(groups)
+	header := ""
 	if remaining > 0 {
-		return fmt.Sprintf("[search: %q] — %d matches across %d files, showing %d (%d truncated)\n%s",
-			pattern, len(results), totalFiles, totalShown, remaining, buf.String())
+		header = fmt.Sprintf("[search: %q] — %d matches across %d files, showing %d (%d truncated)\n",
+			pattern, len(results), totalFiles, totalShown, remaining)
+	} else {
+		header = fmt.Sprintf("[search: %q] — %d matches across %d files\n", pattern, len(results), totalFiles)
 	}
-	return fmt.Sprintf("[search: %q] — %d matches across %d files\n%s", pattern, len(results), totalFiles, buf.String())
+	return header + truncNote + body
+}
+
+// truncateOutputLines caps body at maxLines lines. When truncation occurs it
+// returns the capped body plus a "… (K lines truncated by max_lines)" marker
+// line to prepend after the header, mirroring the '| head -N' habit.
+func truncateOutputLines(body string, maxLines int) (capped, marker string) {
+	if maxLines <= 0 || body == "" {
+		return body, ""
+	}
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) <= maxLines {
+		return body, ""
+	}
+	dropped := len(lines) - maxLines
+	capped = strings.Join(lines[:maxLines], "\n") + "\n"
+	marker = fmt.Sprintf("… (%d lines truncated by max_lines)\n", dropped)
+	return capped, marker
 }
 
 type fileGroup struct {
@@ -547,17 +584,34 @@ func formatFileContentLines(buf *bytes.Buffer, g *fileGroup, maxResults, showing
 		if *totalShown >= maxResults || (showing > 0 && i >= showing) {
 			break
 		}
+		printSearchContext(buf, r.Before, r.LineNum-len(r.Before))
 		// Sanitize: matched file content is untrusted — raw ESC bytes would
 		// reach both the model context and the TUI renderer, where a stray
 		// "\e[2K" erases the user's screen. Truncate rune-safely: a byte cut
 		// can split a multi-byte rune and render as '�'.
-		content := ansi.Sanitize(strings.TrimSpace(r.Line))
-		if ansi.Width(content) > 120 {
-			content = ansi.Truncate(content, 120) + "…"
-		}
+		content := sanitizeSearchLine(r.Line)
 		fmt.Fprintf(buf, "  %d: %s\n", r.LineNum, content)
 		(*totalShown)++
+		printSearchContext(buf, r.After, r.LineNum+1)
 	}
+}
+
+// printSearchContext renders surrounding (non-match) lines with a '-'
+// separator, grep-style, to distinguish them from match lines (':').
+func printSearchContext(buf *bytes.Buffer, lines []string, startNum int) {
+	for j, cl := range lines {
+		fmt.Fprintf(buf, "  %d- %s\n", startNum+j, sanitizeSearchLine(cl))
+	}
+}
+
+// sanitizeSearchLine strips ANSI escapes, trims, and rune-safely truncates
+// a single result line for display.
+func sanitizeSearchLine(s string) string {
+	content := ansi.Sanitize(strings.TrimSpace(s))
+	if ansi.Width(content) > 120 {
+		content = ansi.Truncate(content, 120) + "…"
+	}
+	return content
 }
 
 func countLinesShown(groups []*fileGroup, showing int) int {
@@ -605,8 +659,10 @@ func (t *SearchTool) Examples() []string {
 	}
 }
 
-// searchFile searches a single file for pattern matches.
-func (t *SearchTool) searchFile(path string, re *regexp.Regexp, caseSensitive bool) []searchResult {
+// searchFile searches a single file for pattern matches. When contextLines
+// > 0, up to that many lines before and after each match are captured into
+// the result's Before/After fields for grep-style context display.
+func (t *SearchTool) searchFile(path string, re *regexp.Regexp, caseSensitive bool, contextLines int) []searchResult {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -624,14 +680,35 @@ func (t *SearchTool) searchFile(path string, re *regexp.Regexp, caseSensitive bo
 		// Regex already handles case-insensitivity via (?i:) prefix when needed
 		matches := re.FindAllStringIndex(line, -1)
 		if len(matches) > 0 {
-			results = append(results, searchResult{
+			r := searchResult{
 				Path:    path,
 				LineNum: i + 1,
 				Line:    line,
 				Score:   len(matches),
-			})
+			}
+			r.Before, r.After = matchContext(lines, i, contextLines)
+			results = append(results, r)
 		}
 	}
 
 	return results
+}
+
+// matchContext returns up to n lines before and after index i (excluding the
+// match line itself), clamped to the file bounds. Returns nils when n <= 0.
+func matchContext(lines []string, i, n int) (before, after []string) {
+	if n <= 0 {
+		return nil, nil
+	}
+	from := i - n
+	if from < 0 {
+		from = 0
+	}
+	before = lines[from:i]
+	to := i + 1 + n
+	if to > len(lines) {
+		to = len(lines)
+	}
+	after = lines[i+1 : to]
+	return before, after
 }
