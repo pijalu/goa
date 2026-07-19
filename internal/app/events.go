@@ -283,9 +283,6 @@ func (a *App) handleSteeringInputControl(si *event.SteeringInput) bool {
 	}
 	a.subs.foregroundOrch.InjectSteering(si.Text)
 	a.subs.chat.AddSteeringPending(si.Text)
-	if a.subs.footer != nil {
-		a.subs.footer.SetData(tui.FooterData{SteeringPending: si.Text})
-	}
 	return true
 }
 
@@ -388,11 +385,6 @@ func (a *App) handleSteeringInjected(injected *event.SteeringInput) {
 	if subs.chat != nil {
 		subs.chat.ClearSteeringPending()
 		subs.chat.AddSystemMessage(fmt.Sprintf("[steering injected] %s", injected.Text))
-	}
-	if subs.footer != nil {
-		data := subs.footer.Data()
-		data.SteeringPending = ""
-		subs.footer.SetData(data)
 	}
 	if subs.tuiEngine != nil {
 		subs.tuiEngine.RequestRender()
@@ -860,9 +852,6 @@ func (a *App) handleWorkflowProgressEvent(e *event.WorkflowProgress) {
 	} else {
 		data.SteeringHint = ""
 	}
-	// Clear pending steering indicator; the steering has been consumed
-	// when a new progress event fires.
-	data.SteeringPending = ""
 	if activity != "" {
 		data.Activity = activity
 	}

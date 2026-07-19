@@ -123,7 +123,7 @@ func TestFooter_RefreshGit_UsesWorkdir(t *testing.T) {
 func TestFooter_SetData_PreservesWorkdir(t *testing.T) {
 	f := NewFooter()
 	f.SetData(FooterData{Workdir: "/tmp/goa-workdir"})
-	f.SetData(FooterData{SteeringPending: "steer me"})
+	f.SetData(FooterData{Stats: "↑1k ↓2k"})
 	if got := f.Data().Workdir; got != "/tmp/goa-workdir" {
 		t.Errorf("expected Workdir preserved, got %q", got)
 	}

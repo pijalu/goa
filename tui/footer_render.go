@@ -120,15 +120,6 @@ func (f *Footer) buildLeftSide(fg string) string {
 		hint := ansi.Fg("#d29922") + f.data.SteeringHint + ansi.Reset + fg
 		left2 = appendWithSep(left2, hint)
 	}
-	if f.data.SteeringPending != "" {
-		pendingText := f.data.SteeringPending
-		if len(pendingText) > 40 {
-			pendingText = pendingText[:40] + "…"
-		}
-		hint := "⏳ " + pendingText
-		colored := ansi.Fg("#d29922") + hint + ansi.Reset + fg
-		left2 = appendWithSep(left2, colored)
-	}
 	return left2
 }
 

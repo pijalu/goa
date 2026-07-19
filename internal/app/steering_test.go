@@ -42,9 +42,6 @@ func TestHandleEditSteering_RecallsPendingIntoEditor(t *testing.T) {
 	sq.Append("first steering")
 	sq.Append("second steering")
 	chat.AddSteeringPending("first steering")
-	data := subs.footer.Data()
-	data.SteeringPending = "first steering"
-	subs.footer.SetData(data)
 
 	app.handleEditSteering(engine, chat)
 
@@ -54,8 +51,8 @@ func TestHandleEditSteering_RecallsPendingIntoEditor(t *testing.T) {
 	if sq.Len() != 0 {
 		t.Errorf("steering queue should be flushed, got %d pending", sq.Len())
 	}
-	if got := subs.footer.Data().SteeringPending; got != "" {
-		t.Errorf("footer steering indicator = %q, want cleared", got)
+	if chat.HasSteeringPending() {
+		t.Error("steering bubble should be cleared after edit recall")
 	}
 }
 

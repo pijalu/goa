@@ -455,6 +455,11 @@ func (cv *ChatViewport) ClearSteeringPending() {
 	cv.RemoveLast([]ConsoleItemType{ConsoleSteeringPending})
 }
 
+// HasSteeringPending reports whether a pending steering bubble is present.
+func (cv *ChatViewport) HasSteeringPending() bool {
+	return cv.pendingSteering >= 0
+}
+
 // resetRenderCaches invalidates every entry's cache and clears the frame cache.
 func (cv *ChatViewport) resetRenderCaches(width int) {
 	cv.renderCache.width = width

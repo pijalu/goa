@@ -153,9 +153,6 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 		sq.Append(text)
 	}
 	chat.AddSteeringPending(text)
-	data := subs.footer.Data()
-	data.SteeringPending = text
-	subs.footer.SetData(data)
 	engine.RequestRender()
 	return true
 }
@@ -178,9 +175,6 @@ func (a *App) handleEditSteering(engine *tui.TUI, chat *tui.ChatViewport) {
 		inp.SetText(text)
 	}
 	chat.ClearSteeringPending()
-	data := subs.footer.Data()
-	data.SteeringPending = ""
-	subs.footer.SetData(data)
 	engine.RequestRender()
 }
 
@@ -195,8 +189,6 @@ func (a *App) maybeSteerWorkflow(engine *tui.TUI, chat *tui.ChatViewport, text s
 	}
 	chat.AddSteeringPending(text)
 	subs.foregroundOrch.InjectSteering(text)
-	// Show pending indicator in footer until steering is consumed by the model.
-	subs.footer.SetData(tui.FooterData{SteeringPending: text})
 	engine.RequestRender()
 	return true
 }
