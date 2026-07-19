@@ -514,7 +514,6 @@ func (c *Compositor) Render(scene *Scene) {
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
 	c.prevH = height
-	scene.prevTermW = width
 }
 
 // emitOverflow emits into scrollback every transcript row that has scrolled
