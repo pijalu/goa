@@ -16,6 +16,7 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/metrics"
 	"github.com/pijalu/goa/internal/tooltracker"
+	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -644,6 +645,9 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		a.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
 	}
 
+	// Record per-turn usage to the global store (best-effort, non-fatal).
+	a.recordTurnUsageLocked()
+
 	// Compute cost from active model's pricing config
 	stats := a.buildFooterStatsLocked()
 	a.statsMu.Unlock()
@@ -660,6 +664,51 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
+}
+
+// recordTurnUsageLocked appends the just-completed turn's token usage to the
+// global usage store for /usage. It is best-effort: store errors never break
+// the session. Requires a.statsMu to be held (called from handleTokenStats,
+// after last-turn fields are updated).
+func (a *App) recordTurnUsageLocked() {
+	if a.lastTurnPromptN == 0 && a.lastTurnPredictedN == 0 {
+		return // nothing recorded for this turn
+	}
+	st, err := a.usageStoreOpen()
+	if err != nil || st == nil {
+		return
+	}
+	subs := a.subs
+	_ = st.Add(usage.Record{
+		Project:    subs.projectDir,
+		Provider:   subs.cfg.ActiveProvider,
+		Model:      activeModelName(subs),
+		PromptN:    a.lastTurnPromptN,
+		PredictedN: a.lastTurnPredictedN,
+		CacheRead:  a.lastTurnCacheRead,
+		CacheWrite: a.lastTurnCacheWrite,
+	})
+}
+
+// usageStoreOpen lazily opens the global usage store, caching the result.
+func (a *App) usageStoreOpen() (*usage.Store, error) {
+	if a.usageStore != nil {
+		return a.usageStore, nil
+	}
+	if a.usageStoreTried {
+		return nil, nil // already failed once; don't retry every turn
+	}
+	a.usageStoreTried = true
+	p, err := usage.DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	st, err := usage.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	a.usageStore = st
+	return st, nil
 }
 
 // buildFooterStatsLocked requires a.statsMu to be held by the caller.

@@ -18,6 +18,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/acp"
+	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
 )
@@ -55,6 +56,11 @@ type App struct {
 	lastTurnCacheWrite int
 	lastTurnSpeed      float64
 	turnCount          int
+
+	// usageStore records per-turn token usage to the global SQLite DB for
+	// /usage. Lazily opened on first recorded turn; nil until then.
+	usageStore     *usage.Store
+	usageStoreTried bool
 
 	// Compression counters for the footer.
 	microCompacts int
@@ -149,6 +155,10 @@ func (a *App) Run() bool {
 	if subs.dreamScheduler != nil {
 		subs.dreamScheduler.writeSchedulerState()
 		subs.dreamScheduler.Stop()
+	}
+	if a.usageStore != nil {
+		_ = a.usageStore.Close()
+		a.usageStore = nil
 	}
 	engine.Stop()
 

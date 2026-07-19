@@ -107,6 +107,8 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		&ExchangeCommand{},
 		&PromptCommand{},
 		&StatsCommand{},
+		// usage
+		&UsageCommand{},
 		// ui
 		&UICommand{},
 		// workflows
