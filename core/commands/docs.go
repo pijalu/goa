@@ -16,6 +16,7 @@ import (
 	"github.com/pijalu/goa/docs"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tui"
 )
 
 // DocsCommand provides access to embedded documentation.
@@ -517,7 +518,13 @@ func printToolDocs(out core.OutputWriter, tool agentic.Tool) {
 		return
 	}
 	if ld := doc.LongDoc(); ld != "" {
-		writeFmt(out, "Description:\n  %s\n\n", strings.ReplaceAll(ld, "\n", "\n  "))
+		writeStr(out, "Description:\n")
+		// Render the long doc through the chat markdown pipeline so headers,
+		// emphasis, and lists are styled instead of shown literally.
+		for _, line := range renderMarkdownForTerminal(ld, 100) {
+			writeFmt(out, "  %s\n", line)
+		}
+		writeStr(out, "\n")
 	}
 	if ex := doc.Examples(); len(ex) > 0 {
 		writeStr(out, "Examples:\n")
@@ -525,6 +532,13 @@ func printToolDocs(out core.OutputWriter, tool agentic.Tool) {
 			writeFmt(out, "  %s\n", e)
 		}
 	}
+}
+
+// renderMarkdownForTerminal renders markdown text to styled terminal lines
+// using the shared MDStreamRenderer + active theme. Extracted for testability.
+func renderMarkdownForTerminal(md string, width int) []string {
+	r := tui.NewMDStreamRenderer(width, tui.TheTheme)
+	return r.Render(md)
 }
 
 func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
