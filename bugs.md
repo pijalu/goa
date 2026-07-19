@@ -211,3 +211,22 @@ app feels sluggish on open.
   plugin/background init completes; keep existing tests deterministic via the
   sync path.
 - Validation: time-to-first-frame before/after; live boot feels immediate.
+
+**Status:** FIXED —
+- Profiled the boot: config+subsystem init was ~550ms; narrowed it to
+  `loadEnabledPlugins` inside `assembleSubsystems` (goja VM + fetcher
+  `require`s + quota prime = ~0.5s). Everything else was sub-millisecond.
+- Moved the plugin load off the critical path: `assembleSubsystems` no longer
+  calls it; `Run()` now spawns `startAsyncPluginLoad` AFTER the first
+  `RenderNow`. The load runs in a goroutine and activates the plugin UI on the
+  command loop via `ApplySync` (TUI stays single-owner).
+- Thread safety: `pluginRT` is now guarded by `pluginRTMu` (set/getPluginRT);
+  `pushPluginSegments`/`activatePluginUI` read via the accessor; segment shows
+  "[…]" until the load lands (existing placeholder).
+- Result: time-to-first-frame ~550ms → ~8ms (~65×). The quota segment appears
+  asynchronously once loaded (validated live: `[28%|34%]` after switching to a
+  quota-backed provider).
+- Tests: `TestStartAsyncPluginLoad_LoadsInBackground` (returns immediately,
+  `pluginsLoaded` closes, runtime+command registered),
+  `TestStartAsyncPluginLoad_NoPluginsFlagSkips`. Existing plugin/quota tests
+  updated to the setter and pass with `-race`.
