@@ -336,6 +336,12 @@ func (a *App) refreshFooterFromConfig() {
 		return
 	}
 	subs := a.subs
+	// Provider/model may have changed: re-evaluate plugin segments (e.g. the
+	// quota segment) so the footer does not keep showing the previous
+	// provider's cached data. pushPluginSegments preserves the other fields.
+	if subs.tuiEngine != nil {
+		a.pushPluginSegments(subs.tuiEngine)
+	}
 	data := tui.FooterData{
 		Workdir:                subs.projectDir,
 		Model:                  activeModelDisplay(subs),

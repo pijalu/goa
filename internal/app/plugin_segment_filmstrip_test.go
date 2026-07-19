@@ -160,3 +160,56 @@ func TestFilmstrip_NoPluginRuntimeNoSegment(t *testing.T) {
 		t.Fatalf("segment leaked into footer without plugin runtime: %q", node.Text)
 	}
 }
+
+// TestFilmstrip_ProviderSwitchRefreshesSegment covers the live bug "switching
+// to a local provider still shows the previous provider's quota": the footer
+// segment is a cached string, so changing cfg.ActiveProvider must re-evaluate
+// the plugin segment render — not wait for the plugin's periodic refresh.
+// refreshFooterFromConfig (fired by /model's FooterRefresh) must re-push
+// segments even though the plugin never calls goa.ui.refreshSegment.
+func TestFilmstrip_ProviderSwitchRefreshesSegment(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	// Segment text derives from the active provider, like the quota plugin.
+	rt := newPluginRuntime(sc.app.subs)
+	rt.ui.AddSegment(plugins.UISegmentDef{
+		ID:       "quota",
+		Priority: 10,
+		Render: func() string {
+			if sc.app.subs.cfg.ActiveProvider == "lmstudio" {
+				return "[∞]"
+			}
+			return "[9%|30%]"
+		},
+	})
+	sc.app.subs.pluginRT = rt
+	sc.app.activatePluginUI(sc.engine)
+
+	read := func() string {
+		sc.engine.RenderNow()
+		frame := sc.engine.AgentFrame()
+		if node := frame.FindNode("Footer"); node != nil {
+			return node.Text
+		}
+		return ""
+	}
+
+	sc.app.subs.cfg.ActiveProvider = "kimi-code"
+	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
+	if got := read(); !strings.Contains(got, "9%|30%") {
+		t.Fatalf("initial kimi quota segment missing: %q", got)
+	}
+
+	// Switch to a local provider via the /model path (config change + footer
+	// refresh event), WITHOUT any plugin refreshSegment call.
+	sc.app.subs.cfg.ActiveProvider = "lmstudio"
+	sc.engine.ApplySync(func() { sc.app.refreshFooterFromConfig() })
+
+	got := read()
+	if !strings.Contains(got, "[∞]") {
+		t.Fatalf("after provider switch the segment must show the local provider, got: %q", got)
+	}
+	if strings.Contains(got, "9%|30%") {
+		t.Fatalf("stale kimi quota still shown after provider switch: %q", got)
+	}
+}
