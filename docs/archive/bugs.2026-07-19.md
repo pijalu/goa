@@ -131,6 +131,31 @@ projection as the color, so the color is explained.
 **Tests.** New `TestQuota_BudgetSummaryPlentyOfRoom`. Existing color threshold
 tests (`TestQuota_SegmentColor*`) unchanged and PASS.
 
+### Quota display refinements (follow-up, same session)
+
+Four display changes requested on the `/quota` screen + footer segment:
+
+1. **Per-window color.** The footer segment `[8%|30%]` now colors each
+   window's percentage by its OWN projected level (green/orange/red), not one
+   shared worst-window color. Added `goa.segmentColor(name)` to the JS bridge
+   (`plugins/bridge_extended.go`) so the plugin builds a pre-colored string
+   (`colorizedSegment`); falls back to the single-color `{text,color}` object
+   on hosts without the new bridge fn.
+2. **Merged Usage + % columns.** `/quota` no longer shows the redundant
+   `42/100` fraction plus a separate `%` column; Usage is now `bar + 42%`.
+3. **Per-provider/per-window Status.** Replaced the single global
+   `_plenty of room_` footer line (which followed only the active provider and
+   appeared/disappeared) with a per-window `Status` column ("plenty of room" /
+   "close to limit" / "over budget") driven by the same pace projection.
+4. **"At reset" column.** `/quota` now shows the projected usage % at window
+   reset (`atResetPct`, same projection as the footer color).
+
+**Tests.** New `TestQuota_TableMergesUsageAndPct`,
+`TestQuota_TableHasAtResetAndStatus`, `TestQuota_SegmentPerWindowColorsDistinct`;
+updated `TestQuota_SegmentColorInBudget` to assert per-window coloring. All
+PASS. Live PTY: footer shows `[green 8%|orange 30%]`; `/quota` shows the merged
+Usage, At reset, and Status columns.
+
 ## 7. Steering status line (redundant ⏳)
 
 **Root cause.** Pending steering was shown twice: a footer `⏳ <text>` line and

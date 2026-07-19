@@ -36,4 +36,4 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-(none — all items closed and archived to docs/archive/bugs.2026-07-19.md)
+(none — all items closed and archived to `docs/archive/bugs.2026-07-19.md`)
