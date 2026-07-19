@@ -305,6 +305,12 @@ func (e *Editor) handleCompletionInput(data string) bool {
 		}
 		return true
 	case matchesKey(data, KeyEscape):
+		if e.searchMode {
+			// In history-search mode, Esc exits the search (restoring the
+			// title/completer), not just the popup.
+			e.exitSearchMode()
+			return true
+		}
 		e.clearCompletion()
 		return true
 	}

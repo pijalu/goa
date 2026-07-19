@@ -24,6 +24,7 @@ const (
 	CatMostUsed CompCategory = iota // top frequent items
 	CatCommand                      // base commands
 	CatModifier                     // parameter variants
+	CatHistory                      // history-search entries
 )
 
 // Completion represents a single completion candidate.

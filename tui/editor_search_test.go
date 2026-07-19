@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // TestHistorySearcher_EmptyQueryShowsRecent covers bugs.md "inputline search":
@@ -126,5 +128,63 @@ func TestEditor_SearchArrowNavigation(t *testing.T) {
 	ed.HandleInput("down")
 	if ed.compState.Idx == start {
 		t.Error("down arrow should move the search selection")
+	}
+}
+
+// TestHistorySearcher_SetsDisplayAndCategory covers the live report that the
+// search popup rendered blank rows under a "Most Used" header: the popup
+// renders Completion.Display (HistorySearcher only set Value) and groups by
+// Completion.Category (zero value = CatMostUsed).
+func TestHistorySearcher_SetsDisplayAndCategory(t *testing.T) {
+	s := NewHistorySearcher([]string{"git status", "go build"})
+	for _, c := range s.Complete("") {
+		if c.Display == "" {
+			t.Errorf("Completion.Display empty for %q — popup renders blank", c.Value)
+		}
+		if c.Display != c.Value {
+			t.Errorf("Completion.Display = %q, want %q", c.Display, c.Value)
+		}
+		if c.Category == CatMostUsed {
+			t.Errorf("history item %q must not be CatMostUsed (shows 'Most Used' header)", c.Value)
+		}
+	}
+}
+
+// TestEditor_SearchModeSetsTitle covers the request that the input shows a
+// "history search" title while searching, cleared on exit.
+func TestEditor_SearchModeSetsTitle(t *testing.T) {
+	ed := NewEditor()
+	ed.SetFocused(true)
+	ed.SetHistory([]string{"alpha", "beta"})
+
+	ed.HandleInput("ctrl+r")
+	if !strings.Contains(strings.ToLower(ed.Title()), "history search") {
+		t.Errorf("search mode should title the input 'history search', got %q", ed.Title())
+	}
+	ed.HandleInput(KeyEscape)
+	if ed.Title() != "" {
+		t.Errorf("exiting search should clear the title, got %q", ed.Title())
+	}
+}
+
+// TestEditor_SearchPopupRendersEntryText drives the popup renderer itself:
+// the visible lines must contain the history entry text (not blank rows).
+func TestEditor_SearchPopupRendersEntryText(t *testing.T) {
+	ed := NewEditor()
+	ed.SetFocused(true)
+	ed.SetHistory([]string{"git status", "go build ./...", "go test ./tui/"})
+
+	ed.HandleInput("ctrl+r")
+	lines := ed.PopupLines(60)
+	var sb strings.Builder
+	for _, l := range lines {
+		sb.WriteString(ansi.Strip(l) + "\n")
+	}
+	joined := sb.String()
+	if !strings.Contains(joined, "go test ./tui/") {
+		t.Errorf("popup should render the newest history entry text, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "Most Used") {
+		t.Errorf("history search popup must not show a 'Most Used' header, got:\n%s", joined)
 	}
 }

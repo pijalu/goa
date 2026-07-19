@@ -42,7 +42,7 @@ func (s *HistorySearcher) Complete(query string) []Completion {
 			continue
 		}
 		if strings.Contains(strings.ToLower(entry), lowerQuery) {
-			matches = append(matches, Completion{Value: entry})
+			matches = append(matches, Completion{Value: entry, Display: entry, Category: CatHistory})
 			seen[entry] = true
 		}
 	}
@@ -58,7 +58,7 @@ func (s *HistorySearcher) recent(n int) []Completion {
 		if entry == "" || seen[entry] {
 			continue
 		}
-		out = append(out, Completion{Value: entry})
+		out = append(out, Completion{Value: entry, Display: entry, Category: CatHistory})
 		seen[entry] = true
 	}
 	return out
@@ -81,6 +81,7 @@ func (e *Editor) enterSearchMode() {
 	}
 	e.searchMode = true
 	e.searchSearcher = NewHistorySearcher(e.history)
+	e.SetTitle("history search")
 	// Save current buffer as the initial search query
 	if e.Text() == "" {
 		e.searchQuery = ""
@@ -96,6 +97,7 @@ func (e *Editor) exitSearchMode() {
 	e.searchMode = false
 	e.searchSearcher = nil
 	e.searchQuery = ""
+	e.SetTitle("")
 	e.clearCompletion()
 }
 

@@ -309,6 +309,8 @@ func categoryHeader(cat CompCategory) string {
 		return "── Commands ──"
 	case CatModifier:
 		return "── Modifiers ──"
+	case CatHistory:
+		return "── History ──"
 	default:
 		return "──"
 	}
