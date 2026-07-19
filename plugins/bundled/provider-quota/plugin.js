@@ -320,37 +320,6 @@ function projectedRatio(lim) {
 }
 
 
-// budgetSummary returns a short human explanation of the active provider's
-// budget status (bugs.md "Quota color"), e.g. "plenty of room" or "on track
-// to hit session quota". Derived from the same projection as budgetColor.
-function budgetSummary(entry) {
-	if (!entry || !entry.limits || entry.limits.length === 0) {
-		return "";
-	}
-	var worst = -1;
-	var label = "";
-	for (var i = 0; i < entry.limits.length; i++) {
-		var lim = entry.limits[i];
-		if (!lim.limit || lim.limit <= 0) {
-			continue;
-		}
-		var r = projectedRatio(lim);
-		if (r > worst) {
-			worst = r;
-			label = lim.label || "quota";
-		}
-	}
-	if (worst < 0) {
-		return "";
-	}
-	if (worst > 1.0) {
-		return "over budget — projected to exceed " + label;
-	}
-	if (worst > 0.8) {
-		return "close to " + label + " limit";
-	}
-	return "plenty of room";
-}
 
 // --- /quota command -------------------------------------------------------
 

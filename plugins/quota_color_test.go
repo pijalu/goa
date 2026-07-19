@@ -55,8 +55,12 @@ func TestQuota_SegmentColorInBudget(t *testing.T) {
 		t.Fatalf("in-budget segment should be green, got: %q", seg)
 	}
 	// Compact form: session|weekly percentages without window labels.
-	if !strings.Contains(seg, "[10%|") {
+	if !strings.Contains(seg, "[") || !strings.Contains(seg, "10%") {
 		t.Fatalf("segment missing quota text: %q", seg)
+	}
+	// Per-window coloring: each window's percentage carries its own color.
+	if strings.Count(seg, rgbOk) < 2 {
+		t.Fatalf("segment should color each window separately (want >=2 ok colors): %q", seg)
 	}
 }
 

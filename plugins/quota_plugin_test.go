@@ -7,8 +7,10 @@ package plugins
 import (
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/ansi"
 )

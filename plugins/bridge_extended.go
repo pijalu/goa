@@ -321,6 +321,19 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 	goaObj.Set("ui", uiObj)
 }
 
+// setupSegmentColor registers goa.segmentColor(name), returning the active
+// theme's hex color for a semantic name ("ok", "warn", "critical", "pending")
+// so a plugin can build a pre-colored multi-part segment string. Returns ""
+// when coloring is unavailable.
+func (b *JSBridge) setupSegmentColor(goaObj *goja.Object, fn func(string) string) {
+	if fn == nil {
+		return
+	}
+	goaObj.Set("segmentColor", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(fn(call.Argument(0).String()))
+	})
+}
+
 // segmentText converts a JS render() return value into the segment string
 // pushed to the footer. A plain string passes through unchanged. An object
 // {text, color} names a semantic color ("ok", "warn", "critical", "pending")

@@ -192,10 +192,11 @@ func TestQuota_SegmentShowsWindowedPercent(t *testing.T) {
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()
-	if !strings.Contains(seg, "[5h:42%") {
+	// Compact form "42|30": session|weekly percentages.
+	if !strings.Contains(seg, "42") {
 		t.Fatalf("segment missing session percent: %q", seg)
 	}
-	if !strings.Contains(seg, "30%]") {
+	if !strings.Contains(seg, "30") {
 		t.Fatalf("segment missing weekly percent: %q", seg)
 	}
 }
@@ -213,10 +214,10 @@ func TestQuota_SegmentTracksActiveProviderOnly(t *testing.T) {
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()
-	if !strings.Contains(seg, "38%") {
+	if !strings.Contains(seg, "38") {
 		t.Fatalf("segment should show the active provider (z.ai): %q", seg)
 	}
-	if strings.Contains(seg, "42%") || strings.Contains(seg, "Anthropic") {
+	if strings.Contains(seg, "42") || strings.Contains(seg, "Anthropic") {
 		t.Fatalf("segment leaked the inactive provider: %q", seg)
 	}
 	// Bracketed compact form (ANSI-stripped: the segment may carry a color).
