@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// loadKimiFetcher evaluates fetchers/kimi.js in a fresh bridge and returns the
+// callKimiFetch loads fetchers/kimi.js via the plugin require and returns the
 // result of calling fetch with the given ctx JSON. httpDo must already be
 // mocked by the caller.
 func callKimiFetch(t *testing.T, ctxJSON string) string {
@@ -24,10 +24,8 @@ func callKimiFetch(t *testing.T, ctxJSON string) string {
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	v, err := bridge.vm.RunString(`
 		(function() {
-			var module = { exports: {} };
-			var require = globalThis.__require;
-			` + readModuleSource(t, "fetchers/kimi.js") + `
-			var out = module.exports.fetch(` + ctxJSON + `);
+			var fetcher = globalThis.__require("fetchers/kimi.js");
+			var out = fetcher.fetch(` + ctxJSON + `);
 			if (out.error) { return "error:" + out.error; }
 			var parts = [];
 			for (var i = 0; i < out.limits.length; i++) {

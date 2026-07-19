@@ -18,39 +18,26 @@
 // windows the account has. Labels are derived from the window duration so a
 // plan change (5h→6h, 7d→30d) still renders correctly.
 
+var hq = require("../lib/http-quota.js");
+
 var DEFAULT_BASE = "https://api.kimi.com/coding/v1";
 
+var desc = {
+	auth: hq.apiKeyAuth().auth,
+	authError: "no_api_key",
+	url: function(ctx) {
+		var base = trimSlash(ctx.config.baseUrl || ctx.config.endpoint || DEFAULT_BASE);
+		// The inference endpoint is .../coding/v1; the quota API hangs off it.
+		return base + (/\/usages$/.test(base) ? "" : "/usages");
+	},
+	headers: hq.bearerHeaders,
+	map: function(body) {
+		return { plan: planLabel(body), limits: extractLimits(body) };
+	}
+};
+
 function fetch(ctx) {
-	var cfg = (ctx && ctx.config) || {};
-	var apiKey = cfg.apiKey || "";
-	if (!apiKey) {
-		return { error: "no_api_key", plan: null, limits: [] };
-	}
-	var base = trimSlash(cfg.baseUrl || cfg.endpoint || DEFAULT_BASE);
-	// The inference endpoint is .../coding/v1; the quota API hangs off it.
-	var url = base + (/\/usages$/.test(base) ? "" : "/usages");
-	var resp = goa.http.fetch(url, {
-		method: "GET",
-		headers: {
-			"Authorization": "Bearer " + apiKey,
-			"Accept": "application/json"
-		},
-		timeoutMs: 15000
-	});
-	if (resp.error) {
-		return { error: resp.error, plan: null, limits: [] };
-	}
-	if (resp.status === 401 || resp.status === 403) {
-		return { error: "auth_required", plan: null, limits: [] };
-	}
-	if (resp.status !== 200) {
-		return { error: "http_" + resp.status, plan: null, limits: [] };
-	}
-	var body = parseJSON(resp.body);
-	if (!body) {
-		return { error: "bad_response", plan: null, limits: [] };
-	}
-	return { plan: planLabel(body), limits: extractLimits(body) };
+	return hq.runFetch(desc, ctx);
 }
 
 // extractLimits maps the usages payload onto the shared {label, used, limit,
@@ -174,7 +161,6 @@ function sameQuotaList(out, q) {
 }
 
 function trimSlash(s) { return String(s).replace(/\/+$/, ""); }
-function parseJSON(s) { try { return JSON.parse(s); } catch (e) { return null; } }
 function num(v) { var n = Number(v); return isNaN(n) ? 0 : n; }
 
 module.exports = {

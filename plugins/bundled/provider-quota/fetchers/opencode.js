@@ -6,11 +6,12 @@
 // The console exposes usage EVENTS (not quota windows): GET /api/usage/rows
 // returns per-request rows carrying costMicroCents, scoped to an org via the
 // x-org-id header (discovered from GET /api/orgs). OpenCode Go's published
-// plan limits are fixed ($12 / 24h, $30 / 7d, $60 / 30d), so the quota bars
+// plan limits are fixed ($12 / 5h, $30 / 7d, $60 / 30d), so the quota bars
 // are computed as observed spend over each window against those limits — the
 // same model OpenUsage documents for this provider.
 
 var oauth = require("../lib/oauth.js");
+var hq = require("../lib/http-quota.js");
 
 var AUTH = {
 	type: "oauth",
@@ -68,11 +69,7 @@ function discoverOrg(token) {
 	if (cached) {
 		return cached;
 	}
-	var resp = get(BASE + "/api/orgs", token, null);
-	if (!resp || resp.status !== 200) {
-		return null;
-	}
-	var orgs = parseJSON(resp.body);
+	var orgs = hq.getJSON(BASE + "/api/orgs", authHeaders(token, null), identity);
 	if (!orgs || !orgs.length || !orgs[0].id) {
 		return null;
 	}
@@ -91,18 +88,8 @@ function sumWindowSpend(token, orgId, range, sinceMs) {
 		if (cursor) {
 			url += "&cursor=" + encodeURIComponent(cursor);
 		}
-		var resp = get(url, token, orgId);
-		if (!resp) {
-			return -1;
-		}
-		if (resp.status === 401 || resp.status === 403) {
-			return -1;
-		}
-		if (resp.status !== 200) {
-			return -1;
-		}
-		var body = parseJSON(resp.body);
-		if (!body || !body.items) {
+		var body = hq.getJSON(url, authHeaders(token, orgId), identity);
+		if (!body || body.error !== undefined || !body.items) {
 			return -1;
 		}
 		var done = accumulate(body.items, sinceMs, function(c) { total += c; });
@@ -127,22 +114,21 @@ function accumulate(items, sinceMs, add) {
 		if (!isNaN(created) && created < sinceMs) {
 			return true;
 		}
-		add(num(row.costMicroCents));
+		add(hq.num(row.costMicroCents));
 	}
 	return false;
 }
 
-// get performs an authenticated GET with the optional org header.
-function get(url, token, orgId) {
+// authHeaders builds the Bearer + optional org header for console API calls.
+function authHeaders(token, orgId) {
 	var headers = { "Authorization": "Bearer " + token, "Accept": "application/json" };
 	if (orgId) {
 		headers["x-org-id"] = orgId;
 	}
-	return goa.http.fetch(url, { method: "GET", headers: headers, timeoutMs: 15000 });
+	return headers;
 }
 
-function parseJSON(s) { try { return JSON.parse(s); } catch (e) { return null; } }
-function num(v) { var n = Number(v); return isNaN(n) ? 0 : n; }
+function identity(b) { return b; }
 
 module.exports = {
 	name: "OpenCode",

@@ -123,11 +123,9 @@ func TestFetcherAnthropic_ParsesWindows(t *testing.T) {
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	v, err := bridge.vm.RunString(`
 		(function() {
-			var module = { exports: {} };
-			var require = globalThis.__require;
-			` + readModuleSource(t, "fetchers/anthropic.js") + `
+			var fetcher = globalThis.__require("fetchers/anthropic.js");
 			var ctx = { config: { apiKey: "sk" }, session: {} };
-			var out = module.exports.fetch(ctx);
+			var out = fetcher.fetch(ctx);
 			return out.plan + "|" + out.limits.length + "|" + out.limits[0].label + ":" + out.limits[0].used + "/" + out.limits[0].limit;
 		})()
 	`)
@@ -148,10 +146,8 @@ func TestFetcherAnthropic_NoAPIKey(t *testing.T) {
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
 	v, _ := bridge.vm.RunString(`
 		(function() {
-			var module = { exports: {} };
-			var require = globalThis.__require;
-			` + readModuleSource(t, "fetchers/anthropic.js") + `
-			return module.exports.fetch({ config: {}, session: {} }).error;
+			var fetcher = globalThis.__require("fetchers/anthropic.js");
+			return fetcher.fetch({ config: {}, session: {} }).error;
 		})()
 	`)
 	if got := v.String(); got != "no_api_key" {
