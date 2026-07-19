@@ -23,9 +23,11 @@ func NewHistorySearcher(history []string) *HistorySearcher {
 
 // Complete returns history entries matching the query by substring.
 // Entries are returned newest-first (reverse of internal oldest-first order).
+// An empty query returns the most recent entries (up to 10) so the search
+// popup is populated as soon as history search is opened.
 func (s *HistorySearcher) Complete(query string) []Completion {
 	if query == "" {
-		return nil
+		return s.recent(10)
 	}
 	lowerQuery := strings.ToLower(query)
 	var matches []Completion
@@ -45,6 +47,21 @@ func (s *HistorySearcher) Complete(query string) []Completion {
 		}
 	}
 	return matches
+}
+
+// recent returns up to n most recent unique history entries, newest-first.
+func (s *HistorySearcher) recent(n int) []Completion {
+	var out []Completion
+	seen := make(map[string]bool)
+	for i := len(s.history) - 1; i >= 0 && len(out) < n; i-- {
+		entry := s.history[i]
+		if entry == "" || seen[entry] {
+			continue
+		}
+		out = append(out, Completion{Value: entry})
+		seen[entry] = true
+	}
+	return out
 }
 
 // toggleHistorySearch enters or exits history search mode.

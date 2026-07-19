@@ -126,8 +126,12 @@ func (e *Editor) handleEditKeys(data string) bool {
 	case e.kb.Matches(data, KbHistorySearchPrev):
 		if e.searchMode {
 			e.cycleSearchMatch()
-			return true
+		} else {
+			// Not in search mode: enter it (mirrors ctrl+r) rather than
+			// leaking the raw "ctrl+s" key name into the buffer.
+			e.enterSearchMode()
 		}
+		return true
 	}
 	return false
 }

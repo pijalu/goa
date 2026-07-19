@@ -13,7 +13,9 @@ import "strings"
 // a render request, so no timer or goroutine is needed.
 // Debounce is handled by the render loop's pacing (50ms interval).
 func (e *Editor) scheduleAutoComp() {
-	if e.completer == nil {
+	// History-search mode drives its own completion from the searcher, so it
+	// must refresh even when no base completer is configured.
+	if e.completer == nil && !e.searchMode {
 		return
 	}
 	// Cancel any pending timer
