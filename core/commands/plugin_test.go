@@ -257,7 +257,7 @@ func TestPluginCommand_CompletionProducesFullPath(t *testing.T) {
 		t.Fatalf("enable: %v", err)
 	}
 	// disable: offers the enabled test-plugin as a full colon path.
-	ids := cmd.CompleteArgs(core.Context{}, "disable:pro")
+	ids := cmd.CompleteArgs(core.Context{}, "disable:test")
 	if len(ids) == 0 {
 		t.Fatal("no completions for /plugin:disable:pro")
 	}

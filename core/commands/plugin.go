@@ -99,6 +99,15 @@ func completePluginIDs(m *plugins.Manager, prefix string, wantEnabled *bool) []c
 	return out
 }
 
+// prefixedIDs prefixes each completion Value with "<sub>:" so the completion
+// engine (which prepends "/plugin:") yields the full path "/plugin:<sub>:<id>".
+func prefixedIDs(sub string, comps []core.ArgCompletion) []core.ArgCompletion {
+	for i := range comps {
+		comps[i].Value = sub + ":" + comps[i].Value
+	}
+	return comps
+}
+
 // boolPtr is a tiny helper for optional bool filters.
 func boolPtr(b bool) *bool { return &b }
 
