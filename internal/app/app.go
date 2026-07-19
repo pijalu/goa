@@ -208,6 +208,10 @@ func (a *App) activatePluginUI(engine *tui.TUI) {
 	for _, hk := range rt.hotkeys.Registered() {
 		engine.RegisterPluginHotkey(hk.KeyName(), hk.Handler)
 	}
+	// Completion: plugin commands (e.g. /quota) registered after the TUI was
+	// built must be pushed into the completer's snapshot, or they resolve but
+	// are never proposed. Runs on the command loop, same as Complete().
+	a.refreshCommandCompletion()
 	// Segments: push the initial render, then re-render on refresh requests.
 	a.pushPluginSegments(engine)
 	go a.drainSegmentRefreshes(engine, rt)

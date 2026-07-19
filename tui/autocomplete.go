@@ -66,6 +66,17 @@ func NewCommandCompleter(commands []string, descriptions map[string]string) *Com
 	}
 }
 
+// SetCommands replaces the command list and descriptions. Used when commands
+// are registered after construction (e.g. plugin commands like /quota loaded
+// asynchronously at startup).
+func (c *CommandCompleter) SetCommands(commands []string, descriptions map[string]string) {
+	if descriptions == nil {
+		descriptions = make(map[string]string)
+	}
+	c.commands = commands
+	c.descriptions = descriptions
+}
+
 // SetFreqOrder sets command usage frequencies for smart completion sorting.
 func (c *CommandCompleter) SetFreqOrder(freqs map[string]int) {
 	c.freqOrder = freqs

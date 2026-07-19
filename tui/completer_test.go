@@ -372,3 +372,48 @@ func containsValue(results []Completion, value string) bool {
 	}
 	return false
 }
+
+// TestCommandCompleter_SetCommandsLateRegistration reproduces the /quota bug:
+// plugin commands register in the shared registry AFTER the completer
+// snapshotted command names at TUI build time. Without SetCommands, the
+// late-registered command resolves on execute but is never proposed.
+func TestCommandCompleter_SetCommandsLateRegistration(t *testing.T) {
+	cc := NewCommandCompleter([]string{"/help"}, map[string]string{"/help": "Help"})
+
+	if containsValue(cc.Complete("/q"), "/quota") {
+		t.Fatal("/quota unexpectedly present before registration")
+	}
+
+	// Simulate the async plugin load landing: registry now has /quota,
+	// completer gets re-snapshotted.
+	names, descs := collectNamesForTest(
+		[][2]string{{"/help", "Help"}, {"/quota", "Show provider quota"}},
+	)
+	cc.SetCommands(names, descs)
+
+	results := cc.Complete("/q")
+	if !containsValue(results, "/quota") {
+		t.Fatalf("expected /quota after SetCommands, got %v", results)
+	}
+	for _, r := range results {
+		if r.Value == "/quota" && r.Description != "Show provider quota" {
+			t.Errorf("expected description to follow SetCommands, got %q", r.Description)
+		}
+	}
+
+	// Nil descriptions must not panic and must clear stale descriptions.
+	cc.SetCommands([]string{"/help"}, nil)
+	if containsValue(cc.Complete("/q"), "/quota") {
+		t.Fatal("/quota should be gone after re-snapshot without it")
+	}
+}
+
+func collectNamesForTest(cmds [][2]string) ([]string, map[string]string) {
+	names := make([]string, 0, len(cmds))
+	descs := make(map[string]string, len(cmds))
+	for _, c := range cmds {
+		names = append(names, c[0])
+		descs[c[0]] = c[1]
+	}
+	return names, descs
+}

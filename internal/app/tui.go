@@ -202,6 +202,7 @@ func (a *App) configureInputEditor(inp *tui.Editor, engine *tui.TUI) {
 	fileComp := tui.NewFileCompleter(subs.projectDir)
 	inp.SetCompleter(tui.NewCombinedCompleter(cmdCompleter, fileComp))
 	subs.inputEditor = inp
+	subs.cmdCompleter = cmdCompleter
 	inp.SetMaxLines(3)
 	inp.SetTUI(engine)
 }
@@ -278,6 +279,20 @@ func (a *App) buildCommandCompleter() *tui.CommandCompleter {
 	cmdCompleter.SetMinThreshold(a.subs.cfg.Completion.MinUsageThreshold)
 	cmdCompleter.SetMaxMostUsed(a.subs.cfg.Completion.MaxMostUsed)
 	return cmdCompleter
+}
+
+// refreshCommandCompletion re-snapshots the command registry into the live
+// completer. Commands registered after buildCommandCompleter ran — plugin
+// commands like /quota, whose load is async — otherwise resolve on execute
+// but never appear in completion. No-op if the completer was never built.
+func (a *App) refreshCommandCompletion() {
+	subs := a.subs
+	if subs.cmdCompleter == nil {
+		return
+	}
+	cmdNames, descriptions := collectCmdNames(subs.registry)
+	addAliases(cmdNames, descriptions, subs.cfg.Aliases)
+	subs.cmdCompleter.SetCommands(cmdNames, descriptions)
 }
 
 // collectCmdNames returns all command names and descriptions from the given

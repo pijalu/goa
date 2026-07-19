@@ -79,6 +79,10 @@ type subsystems struct {
 	taskBus           *tasks.Bus           // retained so /tools:agent:on can rebuild the tool
 	projectDir        string
 	inputEditor       *tui.Editor // the input line, set after buildTUI
+	// cmdCompleter backs the editor's /command completion. Retained so plugin
+	// commands (e.g. /quota), registered by the async plugin load after the
+	// TUI is built, can be pushed into the live completer.
+	cmdCompleter      *tui.CommandCompleter
 	commandStats      *CommandStats
 	stateStore        *core.StateStore
 	goalManager       *core.GoalManager

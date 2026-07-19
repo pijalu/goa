@@ -138,6 +138,48 @@ func TestStartAsyncPluginLoad_LoadsInBackground(t *testing.T) {
 	}
 }
 
+// TestStartAsyncPluginLoad_RefreshesCompletion reproduces the "/quota missing
+// from completion" bug: the completer snapshots command names when the TUI is
+// built, but plugin commands register later, on the async-load goroutine. The
+// async load must re-snapshot the live completer, or plugin commands resolve
+// on execute yet are never proposed.
+func TestStartAsyncPluginLoad_RefreshesCompletion(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	a := New(s)
+	engine := tui.NewTUI(&testTerminal{w: 80, h: 24})
+
+	// TUI built before plugins load: completer has no /quota yet.
+	names, descs := collectCmdNames(s.registry)
+	s.cmdCompleter = tui.NewCommandCompleter(names, descs)
+	for _, c := range s.cmdCompleter.Complete("/q") {
+		if c.Value == "/quota" {
+			t.Fatal("/quota unexpectedly present before plugin load")
+		}
+	}
+
+	a.startAsyncPluginLoad(engine)
+	select {
+	case <-a.pluginsLoaded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("async plugin load did not complete in time")
+	}
+
+	// Loops are not running in this test, so ApplySync ran activatePluginUI
+	// inline — including the completion refresh.
+	found := false
+	for _, c := range s.cmdCompleter.Complete("/q") {
+		if c.Value == "/quota" {
+			found = true
+			if c.Description == "" {
+				t.Error("/quota completion lost its description")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("/quota not proposed by completion after async plugin load")
+	}
+}
+
 // TestStartAsyncPluginLoad_NoPluginsFlagSkips confirms the --no-plugins flag
 // short-circuits the async loader (no goroutine, no channel).
 func TestStartAsyncPluginLoad_NoPluginsFlagSkips(t *testing.T) {
