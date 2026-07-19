@@ -75,6 +75,7 @@ var optionKeyAliases = map[string]string{
 	"ø": "alt+o",
 	"π": "alt+p",
 	"å": "alt+a",
+	"ê": "alt+e",
 }
 
 // altKeyName returns the alt+<base> key name for a printable character that

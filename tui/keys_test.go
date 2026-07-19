@@ -342,6 +342,7 @@ func TestAltKeyName(t *testing.T) {
 		{"µ", "alt+m"},
 		{"¬", "alt+l"},
 		{"†", "alt+t"},
+		{"ê", "alt+e"},
 		{"a", ""},
 		{"", ""},
 	}
