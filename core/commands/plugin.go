@@ -11,6 +11,7 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
 	"github.com/pijalu/goa/plugins"
+	"github.com/pijalu/goa/tui"
 )
 
 // PluginCommand manages Goa plugins: install, list, remove, enable, disable.
@@ -45,8 +46,12 @@ func (c *PluginCommand) CompleteArgs(ctx core.Context, prefix string) []core.Arg
 		sub := strings.ToLower(arg[:idx])
 		idPrefix := strings.TrimLeft(arg[idx+1:], " \t")
 		switch sub {
-		case "enable", "disable", "remove", "uninstall":
-			return completePluginIDs(c.Manager, idPrefix)
+		case "enable":
+			return completePluginIDs(c.Manager, idPrefix, boolPtr(false))
+		case "disable":
+			return completePluginIDs(c.Manager, idPrefix, boolPtr(true))
+		case "remove", "uninstall":
+			return completePluginIDs(c.Manager, idPrefix, nil)
 		}
 		return nil
 	}
@@ -70,9 +75,15 @@ func (c *PluginCommand) CompleteArgs(ctx core.Context, prefix string) []core.Arg
 }
 
 // completePluginIDs returns completion candidates for installed plugin IDs.
-func completePluginIDs(m *plugins.Manager, prefix string) []core.ArgCompletion {
+// When wantEnabled is non-nil, only plugins in that enabled state are offered:
+// /plugin enable completes only disabled plugins, /plugin disable only enabled
+// ones; remove/uninstall pass nil to offer all.
+func completePluginIDs(m *plugins.Manager, prefix string, wantEnabled *bool) []core.ArgCompletion {
 	var out []core.ArgCompletion
 	for _, e := range m.List() {
+		if wantEnabled != nil && e.Enabled != *wantEnabled {
+			continue
+		}
 		if prefix == "" || strings.HasPrefix(e.ID, prefix) {
 			state := "disabled"
 			if e.Enabled {
@@ -84,13 +95,16 @@ func completePluginIDs(m *plugins.Manager, prefix string) []core.ArgCompletion {
 	return out
 }
 
+// boolPtr is a tiny helper for optional bool filters.
+func boolPtr(b bool) *bool { return &b }
+
 // Run executes the plugin command.
 func (c *PluginCommand) Run(ctx core.Context, args []string) error {
 	if c.Manager == nil {
 		return fmt.Errorf("plugin manager not configured")
 	}
 	if len(args) == 0 {
-		return c.list(ctx)
+		return c.interactive(ctx)
 	}
 
 	sub := strings.ToLower(args[0])
@@ -179,4 +193,60 @@ func shortHash(h string) string {
 		return h
 	}
 	return h[:8]
+}
+
+// interactive opens a selector listing installed plugins so the user can
+// toggle each one enabled/disabled — mirroring /config → Tools. Selecting a
+// row flips that plugin's state (persisted to the lockfile via
+// Manager.Enable/Disable) and re-opens the selector; Esc closes it.
+func (c *PluginCommand) interactive(ctx core.Context) error {
+	entries := c.Manager.List()
+	if len(entries) == 0 {
+		ctx.Writef("No plugins installed.\n")
+		return nil
+	}
+	ctx.SelectOption("Plugins (enter to toggle):", c.selectorItems(), "", func(selected string, ok bool) {
+		if !ok {
+			return
+		}
+		c.toggle(ctx, selected)
+	})
+	return nil
+}
+
+// selectorItems builds one selector row per installed plugin: the value is the
+// plugin id, the label its name, and the description its current state
+// (on/off, mirroring /config → Tools) plus the integrity hash.
+func (c *PluginCommand) selectorItems() []tui.SelectorItem {
+	entries := c.Manager.List()
+	items := make([]tui.SelectorItem, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, tui.SelectorItem{
+			Value:       e.ID,
+			Label:       e.ID,
+			Description: boolLabel(e.Enabled) + " · " + shortHash(e.Hash),
+		})
+	}
+	return items
+}
+
+// toggle flips a plugin's enabled state, persists it, and re-opens the
+// selector so the user can keep toggling.
+func (c *PluginCommand) toggle(ctx core.Context, id string) {
+	if id == "" {
+		return
+	}
+	var err error
+	if c.Manager.IsEnabled(id) {
+		err = c.Manager.Disable(id)
+	} else {
+		err = c.Manager.Enable(id)
+	}
+	if err != nil {
+		ctx.Flash("Plugin " + id + ": " + err.Error())
+	} else {
+		ctx.Flash("Plugin " + id + " " + toggleNextLabel(c.Manager.IsEnabled(id)))
+	}
+	// Re-open the selector with fresh state.
+	_ = c.interactive(ctx)
 }

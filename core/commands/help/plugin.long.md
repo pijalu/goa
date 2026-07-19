@@ -1,8 +1,14 @@
-/plugin                         list installed plugins
+/plugin                         interactively list & toggle plugins (enter = enable/disable)
+/plugin list                    list installed plugins as text
 /plugin install <git-url>     install a plugin from a git URL
 /plugin remove <id>             uninstall a plugin
 /plugin enable <id>             activate an installed plugin
 /plugin disable <id>            deactivate an installed plugin
+
+With no arguments, /plugin opens an interactive selector (like /config →
+Tools): one row per installed plugin showing its on/off state. Press Enter on
+a row to toggle that plugin enabled/disabled; the change is saved to the
+plugin lockfile on disk immediately. Press Esc to close.
 
 Plugins are installed under ~/.goa/plugins by default. Each plugin must
 contain a plugin.yaml manifest with id, name, version, and entry fields.
