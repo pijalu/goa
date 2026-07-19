@@ -34,4 +34,6 @@ If new items are added, restart the process.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
-## Open Bugs
+# Open Bugs
+
+(none — all items closed and archived to docs/archive/bugs.2026-07-19.md)

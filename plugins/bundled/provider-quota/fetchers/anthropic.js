@@ -37,7 +37,8 @@ function fetch(ctx) {
 			label: "Session (5h)",
 			used: num(usage.session.used),
 			limit: num(usage.session.limit),
-			resetsAt: usage.session.reset_at || usage.session.resets_at || null
+			resetsAt: usage.session.reset_at || usage.session.resets_at || null,
+			periodMs: 5 * 3600000
 		});
 	}
 	if (usage.weekly) {
@@ -45,7 +46,8 @@ function fetch(ctx) {
 			label: "Weekly",
 			used: num(usage.weekly.used),
 			limit: num(usage.weekly.limit),
-			resetsAt: usage.weekly.reset_at || usage.weekly.resets_at || null
+			resetsAt: usage.weekly.reset_at || usage.weekly.resets_at || null,
+			periodMs: 7 * 86400000
 		});
 	}
 	var plan = (body.plan && body.plan.name) || body.plan || null;

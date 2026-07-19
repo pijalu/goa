@@ -36,7 +36,8 @@ function fetch(ctx) {
 			label: "Session (5h)",
 			used: num(data.session.used),
 			limit: num(data.session.limit),
-			resetsAt: data.session.reset_at || null
+			resetsAt: data.session.reset_at || null,
+			periodMs: 5 * 3600000
 		});
 	}
 	if (data.weekly) {
@@ -44,7 +45,8 @@ function fetch(ctx) {
 			label: "Weekly",
 			used: num(data.weekly.used),
 			limit: num(data.weekly.limit),
-			resetsAt: data.weekly.reset_at || null
+			resetsAt: data.weekly.reset_at || null,
+			periodMs: 7 * 86400000
 		});
 	}
 	if (data.web_search) {

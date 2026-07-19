@@ -77,6 +77,20 @@ func TestLoadEnabledPlugins_BundledDisabled(t *testing.T) {
 	}
 }
 
+// TestLoadEnabledPlugins_NoPluginsFlag confirms the --no-plugins CLI flag
+// skips plugin loading entirely, even when plugins are installed and enabled.
+func TestLoadEnabledPlugins_NoPluginsFlag(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	s.noPlugins = true
+	loadEnabledPlugins(s)
+	if s.pluginRT != nil {
+		t.Fatal("pluginRT set despite --no-plugins")
+	}
+	if _, ok := s.registry.Resolve("quota"); ok {
+		t.Fatal("/quota registered despite --no-plugins")
+	}
+}
+
 // TestMaterializeBundledPlugins_Idempotent verifies repeated loads don't
 // error and reuse the versioned dir.
 func TestMaterializeBundledPlugins_Idempotent(t *testing.T) {

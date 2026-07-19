@@ -60,6 +60,24 @@ func runJS(t *testing.T, ctx PluginContext, src string) *JSBridge {
 	return bridge
 }
 
+// goaResult reads a __result-style property the test JS assigned on the goa
+// object (e.g. `goa.__result = ...`). Tests must read it off the goa object,
+// not the global scope — `goa.x = v` never creates a JS global.
+func goaResult(t *testing.T, bridge *JSBridge, prop string) goja.Value {
+	t.Helper()
+	unlock := lockVM()
+	defer unlock()
+	goaVal := bridge.vm.Get("goa")
+	if goaVal == nil {
+		t.Fatal("goa global not installed")
+	}
+	v := goaVal.ToObject(bridge.vm).Get(prop)
+	if v == nil {
+		t.Fatalf("goa.%s not set by test JS", prop)
+	}
+	return v
+}
+
 func TestJS_HTTPFetch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -72,9 +90,7 @@ func TestJS_HTTPFetch(t *testing.T) {
 		var resp = goa.http.fetch("`+srv.URL+`", { method: "GET" });
 		goa.__result = resp.status + ":" + resp.body;
 	`)
-	unlock := lockVM()
-	defer unlock()
-	got := bridge.vm.Get("__result").String()
+	got := goaResult(t, bridge, "__result").String()
 	if !strings.HasPrefix(got, "200:") || !strings.Contains(got, `"plan":"pro"`) {
 		t.Fatalf("__result = %q", got)
 	}
@@ -86,9 +102,7 @@ func TestJS_HTTPFetchErrorShape(t *testing.T) {
 		var resp = goa.http.fetch("http://example.com/x", {});
 		goa.__result = resp.error;
 	`)
-	unlock := lockVM()
-	defer unlock()
-	if got := bridge.vm.Get("__result").String(); !strings.Contains(got, "https required") {
+	if got := goaResult(t, bridge, "__result").String(); !strings.Contains(got, "https required") {
 		t.Fatalf("error = %q", got)
 	}
 }
@@ -101,12 +115,10 @@ func TestJS_StorageRoundTrip(t *testing.T) {
 		goa.storage.delete("token");
 		goa.__after = goa.storage.get("token");
 	`)
-	unlock := lockVM()
-	defer unlock()
-	if got := bridge.vm.Get("__result").String(); got != "abc123:1" {
+	if got := goaResult(t, bridge, "__result").String(); got != "abc123:1" {
 		t.Fatalf("__result = %q", got)
 	}
-	if got := bridge.vm.Get("__after").String(); got != "" {
+	if got := goaResult(t, bridge, "__after").String(); got != "" {
 		t.Fatalf("__after = %q, want empty", got)
 	}
 }
@@ -144,9 +156,7 @@ func TestJS_SessionUsage(t *testing.T) {
 		var u = goa.sessionUsage();
 		goa.__result = u.input + ":" + u.output;
 	`)
-	unlock := lockVM()
-	defer unlock()
-	if got := bridge.vm.Get("__result").String(); got != "142300:28900" {
+	if got := goaResult(t, bridge, "__result").String(); got != "142300:28900" {
 		t.Fatalf("__result = %q", got)
 	}
 }
@@ -163,9 +173,9 @@ func TestJS_RegisterSegmentAndHotkey(t *testing.T) {
 	if len(segs) != 1 || segs[0].ID != "quota" {
 		t.Fatalf("Segments = %v", segs)
 	}
-	unlock := lockVM()
+	// Render acquires the VM lock itself (app render loop calls it unlocked);
+	// do NOT wrap it in lockVM here — vmMu is not reentrant.
 	rendered := segs[0].Render()
-	unlock()
 	if rendered != "5h:42%" {
 		t.Fatalf("Render = %q", rendered)
 	}

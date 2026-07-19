@@ -2,7 +2,7 @@
 //
 // Tracks usage/quota for all configured providers. Registers:
 //   /quota  (+ :refresh :json :auth-status :login:<p> :logout:<p>)
-//   a status-bar segment with a rotating quota carousel
+//   a status-bar segment tracking the active provider's quota
 //   a hotkey (Ctrl+Shift+Q) to force-refresh quota data
 //
 // Architecture: JS owns polling + caching per the plan. Fetching happens in
@@ -12,20 +12,16 @@
 // Modules (require):
 //   lib/format.js   — bars, percentages, durations, token formatting
 //   lib/oauth.js    — device-code flow + token refresh
-//   lib/carousel.js — status segment rotation
 //   fetchers/*.js   — per-provider quota fetchers
 
 var format = require("./lib/format.js");
 var oauth = require("./lib/oauth.js");
-var carouselLib = require("./lib/carousel.js");
 
 // --- Fetcher registry -----------------------------------------------------
 
 var _fetchers = {};       // id -> fetcher module
 var _cache = {};          // id -> last quota result
 var _lastFetch = {};      // id -> ms epoch of last fetch
-var _providers = [];      // ordered ids with data, for the carousel
-var _carousel = new carouselLib.Carousel(3000);
 var _fallbackId = "local";
 
 function register(id, mod) {
@@ -46,8 +42,9 @@ register(_fallbackId, require("./fetchers/local.js"));
 
 // providerConfigFor returns the {apiKey, baseUrl, ...} config map for a
 // fetcher id, matching against goa.config().providers (keyed by config id).
-// The fetcher id may differ from the config provider id (e.g. zai vs z.ai),
-// so we match on the provider identity field when present, else the id.
+// The fetcher id may differ from the config provider id (e.g. zai vs z.ai,
+// kimi vs kimi-code), so we match on the provider identity field when
+// present, else the id, with normalization + known aliases.
 function providerConfigFor(fetcherId) {
 	var providers = (goa.config() && goa.config().providers) || {};
 	// Direct id match first.
@@ -55,14 +52,15 @@ function providerConfigFor(fetcherId) {
 		return providers[fetcherId];
 	}
 	// Match on provider identity (config `provider:` field) — covers
-	// "z.ai" config id mapping to the "zai" fetcher, "kimi", etc.
+	// "z.ai" config id mapping to the "zai" fetcher, "kimi-code" → "kimi", etc.
+	var wanted = normalizeId(fetcherId);
 	for (var key in providers) {
 		var p = providers[key];
 		if (!p) {
 			continue;
 		}
 		var ident = (p.provider || p.id || key).toLowerCase();
-		if (ident === fetcherId || ident === normalizeId(fetcherId)) {
+		if (ident === fetcherId || normalizeId(ident) === wanted || fetcherAliases(wanted, normalizeId(ident))) {
 			return p;
 		}
 	}
@@ -72,6 +70,16 @@ function providerConfigFor(fetcherId) {
 // normalizeId strips dots/dashes so "z.ai" matches "zai".
 function normalizeId(id) {
 	return String(id).replace(/[.\-_]/g, "").toLowerCase();
+}
+
+// fetcherAliases reports whether a normalized config identity belongs to a
+// normalized fetcher id. Covers branding variants the identity string alone
+// cannot express: kimi-code/kimi-for-coding → kimi, moonshot → kimi.
+function fetcherAliases(fetcher, ident) {
+	if (fetcher === "kimi") {
+		return ident === "kimicode" || ident === "kimiforcoding" || ident === "moonshot";
+	}
+	return false;
 }
 
 // sessionContext builds the ctx passed to fetchers: provider config + session
@@ -111,7 +119,6 @@ function refreshDue(fetcherId, force) {
 	}
 	result._fetchedAt = now;
 	_cache[fetcherId] = result;
-	refreshProviderList();
 	return result;
 }
 
@@ -139,53 +146,123 @@ function refreshAllDue(force) {
 	}
 }
 
-// refreshProviderList rebuilds the ordered provider list for the carousel:
-// API-backed providers with data (no error, has limits), most-recently-
-// fetched first. The local fallback only joins the carousel when no real
-// provider has data — it's the fallback, not a rotation peer.
-function refreshProviderList() {
-	var list = [];
-	for (var id in _cache) {
+// --- Status segment (cache read only) -------------------------------------
+
+// activeFetcherId resolves which provider the status segment tracks: the
+// currently active provider from goa config, mapped through the same
+// normalization/alias rules as providerConfigFor. Falls back to the local
+// (inferred) fetcher when the active provider has no quota API, so the
+// footer still shows something meaningful (session tokens).
+function activeFetcherId() {
+	var active = (goa.config() && goa.config().activeProvider) || "";
+	if (!active) {
+		return _fallbackId;
+	}
+	var wanted = normalizeId(active);
+	for (var id in _fetchers) {
 		if (id === _fallbackId) {
 			continue;
 		}
-		var entry = _cache[id];
-		if (entry && !entry.error && entry.limits && entry.limits.length > 0) {
-			list.push(id);
+		if (normalizeId(id) === wanted || fetcherAliases(normalizeId(id), wanted)) {
+			return id;
 		}
 	}
-	list.sort(function(a, b) { return (_cache[b]._fetchedAt || 0) - (_cache[a]._fetchedAt || 0); });
-	// Fall back to local only when nothing else has data.
-	if (list.length === 0 && _cache[_fallbackId] && !_cache[_fallbackId].error) {
-		list.push(_fallbackId);
+	// The active provider id may be a config alias (e.g. "my-kimi") whose
+	// identity field carries the real provider; match via providerConfigFor.
+	for (var fid in _fetchers) {
+		if (fid === _fallbackId) {
+			continue;
+		}
+		var cfg = providerConfigFor(fid);
+		if (cfg && cfg.id && normalizeId(cfg.id) === wanted) {
+			return fid;
+		}
 	}
-	_providers = list;
+	// Active provider has no quota API (or none configured): local fallback.
+	return _fallbackId;
 }
 
-// --- Status segment (cache read only) -------------------------------------
-
-// statusRender returns the compact quota text for the footer. Reads the cache
-// only — fetching is the scheduler's job. Empty string when nothing to show.
+// statusRender returns the compact quota segment for the footer, tracking
+// ONLY the active provider: "[5h:7% / wk:21%]" with a semantic color derived
+// from projected window-end usage (green in-budget, orange close, red
+// overrun, white when the projection is still pending). Reads the cache
+// only — fetching is the scheduler's job.
 function statusRender() {
-	if (_providers.length === 0) {
+	var id = activeFetcherId();
+	if (!id) {
 		return "";
 	}
-	var idx = _carousel.current() % _providers.length;
-	var id = _providers[idx];
 	var entry = _cache[id];
 	if (!entry) {
-		return "";
+		return { text: "[…]", color: "pending" };
+	}
+	if (entry.error) {
+		if (entry.error === "auth_required") {
+			return { text: "[∇ auth]", color: "warn" };
+		}
+		if (entry.error === "no_api_key") {
+			return ""; // not configured for quota — stay silent
+		}
+		return { text: "[⚠]", color: "warn" };
 	}
 	var text = formatShort(id, entry);
-	// Prefix with provider label when cycling through multiple providers.
-	if (_providers.length > 1) {
-		var name = (_fetchers[id] && _fetchers[id].name) || id;
-		text = name + " " + text;
+	if (text === "") {
+		return "";
 	}
-	return text;
+	return { text: "[" + text + "]", color: budgetColor(entry) };
 }
 
-// formatShort renders "5h:42% / 5d:30%" (windowed) or "142K tok" (local).
+// budgetColor estimates window-end usage from elapsed progress: green when
+// the projected final usage stays comfortably under the limit, orange when
+// close, red when the projection overruns. The worst window wins. "pending"
+// when no window carries enough timing info to project.
+function budgetColor(entry) {
+	if (!entry.limits || entry.limits.length === 0) {
+		return "pending";
+	}
+	var worst = -1;
+	for (var i = 0; i < entry.limits.length; i++) {
+		var lim = entry.limits[i];
+		if (!lim.limit || lim.limit <= 0) {
+			continue;
+		}
+		var ratio = projectedRatio(lim);
+		if (ratio > worst) {
+			worst = ratio;
+		}
+	}
+	if (worst < 0) {
+		return "pending"; // no bounded window to project from
+	}
+	if (worst > 1.0) {
+		return "critical";
+	}
+	if (worst > 0.8) {
+		return "warn";
+	}
+	return "ok";
+}
+
+// projectedRatio estimates the window-end usage fraction: used/limit scaled
+// by the fraction of the window already elapsed (from resetsAt + periodMs).
+// Without timing info it degrades to the raw used/limit fraction.
+function projectedRatio(lim) {
+	var raw = lim.used / lim.limit;
+	var resetsAtMs = format.toMs(lim.resetsAt);
+	if (!lim.periodMs || !resetsAtMs) {
+		return raw;
+	}
+	var remaining = resetsAtMs - Date.now();
+	var elapsed = lim.periodMs - remaining;
+	if (elapsed <= 0 || elapsed >= lim.periodMs) {
+		return raw;
+	}
+	var projected = lim.used / (elapsed / lim.periodMs);
+	return projected / lim.limit;
+}
+
+// formatShort renders "5h:42% / wk:30%" (up to two bounded windows) or
+// "142K tok" (local unbounded fallback).
 function formatShort(id, entry) {
 	if (entry.local) {
 		var used = entry.limits[0] ? entry.limits[0].used : 0;
@@ -222,20 +299,6 @@ function shortTag(label) {
 	return String(label).substring(0, 4);
 }
 
-// authMark returns the auth indicator for the segment: "✓" logged in,
-// "∇" needs re-auth, "" for no-quota-API/local providers.
-function authMark(id) {
-	var fetcher = _fetchers[id];
-	if (!fetcher || !fetcher.auth || fetcher.auth.type === "none") {
-		return "";
-	}
-	if (fetcher.auth.type === "api_key") {
-		return providerConfigFor(id).apiKey ? " ✓" : " ∇";
-	}
-	// OAuth
-	return oauth.hasToken(id) ? " ✓" : " ∇";
-}
-
 // --- /quota command -------------------------------------------------------
 
 // quotaCommand dispatches /quota[:sub[:arg]].
@@ -268,99 +331,98 @@ function quotaCommand(args) {
 	}
 }
 
-// renderFull builds the full /quota breakdown.
+// renderFull builds the full /quota breakdown as markdown: headings plus
+// tables, rendered richly by goa's markdown pipeline (no console codes here).
 function renderFull() {
 	refreshAllDue(true);
 	var out = [];
-	out.push("Session Usage (current)");
+	out.push("## Session Usage (current)");
+	out.push("");
 	out.push(renderSessionTable());
 	out.push("");
-	out.push("Provider Quotas:");
-	var shown = 0;
+	out.push("## Provider Quotas");
+	out.push("");
+	var rows = [];
 	for (var id in _fetchers) {
 		if (id === _fallbackId) {
 			continue; // local rendered last
 		}
-		var block = renderProviderBlock(id);
-		if (block) {
-			out.push(block);
-			shown++;
-		}
+		appendProviderRows(rows, id);
 	}
-	if (shown === 0) {
-		out.push("  (no provider quota APIs configured)");
+	appendLocalRow(rows);
+	if (rows.length === 0) {
+		out.push("(no provider quota APIs configured)");
+		return out.join("\n");
 	}
-	// Local fallback always last.
-	out.push(renderLocalBlock());
+	out.push("| Provider | Window | Usage | % | Resets in |");
+	out.push("| --- | --- | --- | ---: | --- |");
+	for (var i = 0; i < rows.length; i++) {
+		out.push(rows[i]);
+	}
 	return out.join("\n");
 }
 
-// renderSessionTable renders the per-session token/cost table from
-// goa.sessionUsage.
+// renderSessionTable renders the per-session token table from
+// goa.sessionUsage as a markdown table.
 function renderSessionTable() {
 	var u = goa.sessionUsage ? goa.sessionUsage() : {};
-	var input = u.input || 0;
-	var output = u.output || 0;
-	var turns = u.turns || 0;
 	var lines = [];
-	lines.push("  Msgs      Input      Output");
-	lines.push("  " + format.pad(turns, 6) + format.pad(format.tokens(input), 11) + format.tokens(output));
+	lines.push("| Msgs | Input | Output |");
+	lines.push("| ---: | ---: | ---: |");
+	lines.push("| " + (u.turns || 0) + " | " + format.tokens(u.input || 0) + " | " + format.tokens(u.output || 0) + " |");
 	return lines.join("\n");
 }
 
-// renderProviderBlock renders one provider's quota block, or "" when the
-// provider has no usable data (not configured / auth missing and never
-// fetched).
-function renderProviderBlock(id) {
+// appendProviderRows appends one markdown row per quota window for provider
+// id, or a single status row for auth/error states. Providers with no usable
+// data (not configured, never fetched) contribute nothing.
+function appendProviderRows(rows, id) {
 	var fetcher = _fetchers[id];
 	var entry = _cache[id];
 	if (!entry) {
-		return "";
+		return;
 	}
 	var name = fetcher.name || id;
-	var lines = [];
 	if (entry.error) {
-		if (entry.error === "auth_required") {
-			lines.push("  " + name + "  — auth required (run /quota:login:" + id + ")");
-			return lines.join("\n");
-		}
 		if (entry.error === "no_api_key") {
-			return ""; // not configured; skip quietly
+			return; // not configured; skip quietly
 		}
-		lines.push("  " + name + "  — error: " + entry.error);
-		return lines.join("\n");
+		if (entry.error === "auth_required") {
+			rows.push("| " + name + " | — | — | — | auth required — `/quota:login:" + id + "` |");
+			return;
+		}
+		rows.push("| " + name + " | — | — | — | error: " + entry.error + " |");
+		return;
 	}
-	var planSuffix = entry.plan ? " (" + entry.plan + ")" : "";
-	lines.push("  " + name + planSuffix);
+	var display = entry.plan ? name + " (" + entry.plan + ")" : name;
 	for (var i = 0; i < entry.limits.length; i++) {
-		lines.push(renderLimitLine(entry.limits[i], entry));
+		rows.push(renderLimitRow(display, entry.limits[i], entry));
 	}
-	return lines.join("\n");
 }
 
-// renderLimitLine renders one "Label  ████░░  42%  → +1h 48m" line.
-function renderLimitLine(lim, entry) {
-	var label = format.pad(lim.label, 16);
+// renderLimitRow renders one quota window as a markdown table row:
+// "| Kimi (Advanced) | Session (5h) | 4/100 | 8% | +1h 36m |".
+function renderLimitRow(display, lim, entry) {
+	var reset = lim.resetsAt ? format.durationUntil(lim.resetsAt) : "—";
 	if (!lim.limit || lim.limit <= 0) {
 		// Unbounded / accumulated (e.g. local tokens, OpenAI cost).
 		var val = entry.costUnit === "cents"
 			? format.cost(lim.used / 100)
 			: format.tokens(lim.used);
-		return "    " + label + val + (lim.resetsAt ? "  → " + format.durationUntil(lim.resetsAt) : "");
+		return "| " + display + " | " + lim.label + " | " + val + " | — | " + reset + " |";
 	}
 	var p = format.pct(lim.used, lim.limit);
-	var reset = lim.resetsAt ? "  → " + format.durationUntil(lim.resetsAt) : "";
-	return "    " + label + format.bar(p, 10) + "  " + format.padLeft(p + "%", 4) + reset;
+	return "| " + display + " | " + lim.label + " | " + format.bar(p, 8) + " " + format.tokens(lim.used) + "/" + format.tokens(lim.limit) + " | " + p + "% | " + reset + " |";
 }
 
-// renderLocalBlock renders the local/inferred fallback block.
-function renderLocalBlock() {
+// appendLocalRow appends the local/inferred fallback row.
+function appendLocalRow(rows) {
 	var entry = _cache[_fallbackId];
-	if (!entry || !entry.limits || entry.limits.length === 0) {
-		return "  Local (inferred)  — no quota API\n    Tokens used     0";
+	var used = 0;
+	if (entry && entry.limits && entry.limits.length > 0) {
+		used = entry.limits[0].used;
 	}
-	var used = entry.limits[0].used;
-	return "  Local (inferred)  — no quota API\n    Tokens used     " + format.tokens(used) + " / unlimited";
+	rows.push("| Local (inferred) | Session tokens | " + format.tokens(used) + " | — | — |");
 }
 
 // renderJSON emits machine-readable quota data.
@@ -380,28 +442,30 @@ function renderJSON() {
 	return JSON.stringify(out, null, 2);
 }
 
-// renderAuthStatus lists each OAuth provider and its auth state.
+// renderAuthStatus lists each provider's quota auth state as a markdown table.
 function renderAuthStatus() {
-	var lines = ["Quota auth status:"];
-	var any = false;
+	var rows = [];
 	for (var id in _fetchers) {
 		var f = _fetchers[id];
 		if (!f.auth || f.auth.type === "none") {
 			continue;
 		}
-		any = true;
 		var state;
 		if (f.auth.type === "api_key") {
 			state = providerConfigFor(id).apiKey ? "api key ✓" : "no api key ∇";
 		} else {
 			state = oauth.hasToken(id) ? "authenticated ✓" : "not authenticated ∇";
 		}
-		lines.push("  " + format.pad(f.name || id, 12) + state);
+		rows.push("| " + (f.name || id) + " | " + state + " |");
 	}
-	if (!any) {
-		lines.push("  (no providers with quota auth configured)");
+	if (rows.length === 0) {
+		return "(no providers with quota auth configured)";
 	}
-	return lines.join("\n");
+	var out = ["## Quota auth status", "", "| Provider | State |", "| --- | --- |"];
+	for (var i = 0; i < rows.length; i++) {
+		out.push(rows[i]);
+	}
+	return out.join("\n");
 }
 
 // loginProvider starts the OAuth device flow for a provider.
@@ -439,7 +503,6 @@ function logoutProvider(id) {
 	}
 	oauth.logout(id);
 	delete _cache[id];
-	refreshProviderList();
 	goa.ui.refreshSegment("quota");
 	return "Logged out " + (_fetchers[id].name || id) + ".";
 }
@@ -464,11 +527,11 @@ goa.ui.addSegment({
 	id: "quota",
 	priority: 10,
 	render: function() {
-		var text = statusRender();
-		if (!text) {
+		var seg = statusRender();
+		if (!seg) {
 			return "";
 		}
-		return text;
+		return seg;
 	}
 });
 
@@ -483,13 +546,9 @@ goa.registerHotkey({
 	}
 });
 
-// Start the carousel (rotates the segment across providers) and the refresh
-// scheduler (fetches due quotas every 60s). Initial fetch kicks immediately.
-_carousel.start(function() {
-	goa.ui.refreshSegment("quota");
-	return _providers.length;
-});
-
+// The refresh scheduler fetches due quotas every 60s and repaints the
+// segment. No carousel: the segment tracks only the active provider, so a
+// rotation timer would just churn the footer.
 goa.setInterval(function() {
 	refreshAllDue(false);
 	goa.ui.refreshSegment("quota");

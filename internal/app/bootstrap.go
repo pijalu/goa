@@ -40,6 +40,7 @@ type RuntimeOptions struct {
 	Plain            bool
 	Yes              bool
 	NoMemory         bool
+	NoPlugins        bool
 	MemoryBudget     int
 	MaxTurns         int
 	Timeout          time.Duration
@@ -255,6 +256,7 @@ type runtimeFlagDefs struct {
 	plain            *bool
 	yes              *bool
 	noMemory         *bool
+	noPlugins        *bool
 	memoryBudget     *int
 	maxTurns         *int
 	timeout          *time.Duration
@@ -301,6 +303,7 @@ func defineRuntimeFlags() runtimeFlagDefs {
 		plain:            flag.Bool("plain", false, "Force plain, uncolored output in headless mode"),
 		yes:              flag.Bool("yes", false, "Auto-approve tool confirmations in headless mode"),
 		noMemory:         flag.Bool("no-memory", false, "Do not inject long-term memory into the system prompt"),
+		noPlugins:        flag.Bool("no-plugins", false, "Start without loading any plugins (bundled and installed)"),
 		memoryBudget:     flag.Int("memory-budget", 0, "Maximum tokens for memory injection (0=auto)"),
 		maxTurns:         flag.Int("max-turns", 0, "Maximum agent turns in headless mode (0=unlimited)"),
 		timeout:          flag.Duration("timeout", 0, "Overall session timeout in headless mode (0=none)"),
@@ -342,6 +345,7 @@ func (r *runtimeFlagDefs) collectInto() RuntimeOptions {
 		Plain:            *r.plain,
 		Yes:              *r.yes,
 		NoMemory:         *r.noMemory,
+		NoPlugins:        *r.noPlugins,
 		MemoryBudget:     *r.memoryBudget,
 		MaxTurns:         *r.maxTurns,
 		Timeout:          *r.timeout,

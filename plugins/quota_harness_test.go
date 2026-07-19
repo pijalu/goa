@@ -19,6 +19,7 @@ type quotaTestEnv struct {
 	mu         sync.Mutex
 	responders []quotaResponder
 	outputs    []string
+	browserURLs []string
 	commands   map[string]func([]string) (string, error)
 	segments   *UIBridge
 	hotkeys    *HotkeyBridge
@@ -44,8 +45,16 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 		segments: NewUIBridge(),
 		hotkeys:  NewHotkeyBridge(),
 		storage:  st,
-		config:   map[string]any{"providers": map[string]any{}},
+		config: map[string]any{
+			"providers":      map[string]any{},
+			"activeProvider": "anthropic",
+		},
 	}
+}
+
+// setActiveProvider sets the active provider id in the mocked goa.config().
+func (e *quotaTestEnv) setActiveProvider(id string) {
+	e.config["activeProvider"] = id
 }
 
 // respond registers a canned JSON response for any URL containing substr.
@@ -74,12 +83,25 @@ func (e *quotaTestEnv) context() PluginContext {
 			HTTP:      NewHTTPBridge(),
 			Storage:   e.storage,
 			Scheduler: NewScheduler(),
-			Browser:   &BrowserBridge{open: func(string) error { return nil }},
+			Browser: &BrowserBridge{open: func(u string) error {
+				e.mu.Lock()
+				e.browserURLs = append(e.browserURLs, u)
+				e.mu.Unlock()
+				return nil
+			}},
 			Hotkeys:   e.hotkeys,
 			UI:        e.segments,
 			Output:    func(m string) { e.mu.Lock(); e.outputs = append(e.outputs, m); e.mu.Unlock() },
 			SessionUsage: func() map[string]any {
 				return map[string]any{"input": 142300, "output": 28900, "turns": 15, "toolCalls": 20}
+			},
+			// Named colors so tests can assert the semantic color a segment
+			// requests: each name maps to a distinct hex the test greps for
+			// (ok=#3fb950, warn=#d29922, critical=#f85149, pending=#8b949e).
+			SegmentColor: func(name string) string {
+				return map[string]string{
+					"ok": "#3fb950", "warn": "#d29922", "critical": "#f85149", "pending": "#8b949e",
+				}[name]
 			},
 		},
 	}
@@ -139,6 +161,16 @@ func (e *quotaTestEnv) lastOutput() string {
 		return ""
 	}
 	return e.outputs[len(e.outputs)-1]
+}
+
+// lastBrowserURL returns the most recent URL passed to goa.openBrowser.
+func (e *quotaTestEnv) lastBrowserURL() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.browserURLs) == 0 {
+		return ""
+	}
+	return e.browserURLs[len(e.browserURLs)-1]
 }
 
 // hotkeyDef returns the first registered hotkey.

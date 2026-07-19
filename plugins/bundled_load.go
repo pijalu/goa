@@ -5,6 +5,7 @@
 package plugins
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -43,23 +44,35 @@ func (s BundledSource) fsRoot() string {
 // MaterializeBundled copies a bundled plugin from its embed FS into the
 // manager's bundled directory and enables it in the lockfile. It returns the
 // materialized directory path. Safe to call on every startup: when the target
-// versioned dir already exists with a matching hash, it is reused.
+// versioned dir already exists AND its content hash still matches the
+// lockfile entry, it is reused; otherwise it is re-materialized so an
+// embedded-content change (dev builds, patched plugins) never runs stale
+// code silently.
 func (m *Manager) MaterializeBundled(src BundledSource) (string, error) {
 	if src.ID == "" || src.Version == "" {
 		return "", fmt.Errorf("bundled source requires id and version")
 	}
 	target := filepath.Join(m.root, "bundled", src.ID+"@"+src.Version)
 
-	// Fast path: already materialized for this version.
+	// Fast path: already materialized for this version with intact content
+	// matching the embedded source.
 	if _, err := os.Stat(filepath.Join(target, "plugin.yaml")); err == nil {
-		m.mu.Lock()
-		m.enableBundledLocked(src, target)
-		m.mu.Unlock()
-		return target, nil
+		if m.bundledContentIntact(src, target) {
+			m.mu.Lock()
+			m.enableBundledLocked(src, target)
+			m.mu.Unlock()
+			return target, nil
+		}
+		// Content drift (stale or tampered copy): fall through and
+		// re-materialize from the trusted embedded source.
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", fmt.Errorf("mkdir bundled root: %w", err)
+	}
+	// Clear any previous materialization so deleted files do not linger.
+	if err := os.RemoveAll(target); err != nil {
+		return "", fmt.Errorf("reset bundled plugin dir: %w", err)
 	}
 	if err := copyEmbedDir(src, src.fsRoot(), target); err != nil {
 		return "", fmt.Errorf("materialize bundled plugin %s: %w", src.ID, err)
@@ -87,6 +100,67 @@ func (m *Manager) MaterializeBundled(src BundledSource) (string, error) {
 		return "", fmt.Errorf("save lockfile: %w", err)
 	}
 	return target, nil
+}
+
+// bundledContentIntact reports whether the on-disk materialized copy still
+// matches the EMBEDDED source content. The copy is reused only when every
+// embedded file exists on disk with identical content and no extra files
+// linger; otherwise the copy is stale (older embedded build) or was modified,
+// and must be re-materialized. This is what lets dev builds ship plugin
+// changes without a version bump.
+func (m *Manager) bundledContentIntact(src BundledSource, target string) bool {
+	match, err := embedDirMatches(src, src.fsRoot(), target)
+	return err == nil && match
+}
+
+// embedDirMatches reports whether the directory tree at diskPath is byte-for-
+// byte identical to the embed FS subtree at embedPath (same files, same
+// contents, same set — extras on disk count as drift).
+func embedDirMatches(src BundledSource, embedPath, diskPath string) (bool, error) {
+	entries, err := src.ReadDir(embedPath)
+	if err != nil {
+		return false, err
+	}
+	diskEntries, err := os.ReadDir(diskPath)
+	if err != nil {
+		return false, err
+	}
+	if len(entries) != len(diskEntries) {
+		return false, nil
+	}
+	diskNames := make(map[string]bool, len(diskEntries))
+	for _, de := range diskEntries {
+		diskNames[de.Name()] = true
+	}
+	for _, e := range entries {
+		ok, err := embedEntryMatches(src, e, embedPath, diskPath, diskNames)
+		if err != nil || !ok {
+			return ok, err
+		}
+	}
+	return true, nil
+}
+
+// embedEntryMatches compares one embed FS entry (file or dir) against its
+// on-disk counterpart.
+func embedEntryMatches(src BundledSource, e fs.DirEntry, embedPath, diskPath string, diskNames map[string]bool) (bool, error) {
+	if !diskNames[e.Name()] {
+		return false, nil
+	}
+	ep := embedPath + "/" + e.Name()
+	dp := filepath.Join(diskPath, e.Name())
+	if e.IsDir() {
+		return embedDirMatches(src, ep, dp)
+	}
+	want, err := src.ReadFile(ep)
+	if err != nil {
+		return false, err
+	}
+	got, err := os.ReadFile(dp)
+	if err != nil || !bytes.Equal(want, got) {
+		return false, nil
+	}
+	return true, nil
 }
 
 // enableBundledLocked records an already-materialized bundled plugin as

@@ -89,6 +89,7 @@ type subsystems struct {
 	lifecycleRegistry *plugins.LifecycleRegistry
 	pluginMgr         *plugins.Manager
 	pluginRT          *pluginRuntime // loaded plugin bridges, set by loadEnabledPlugins
+	noPlugins         bool           // --no-plugins: skip plugin load entirely
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn  func() map[string]any
@@ -217,7 +218,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
-	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry)
+	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)
 	modeRegistry := core.NewModeRegistry(promptReg)
 	loadUserModes(modeRegistry, cfg.ConfigDir, projectDir)
@@ -538,7 +539,7 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 	}
 }
 
-func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry) skillCommandBundle {
+func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry, pluginsEnabled bool) skillCommandBundle {
 	cfgDir := cfg.ConfigDir
 	if cfgDir == "" {
 		cfgDir = filepath.Join(projectDir, ".goa")
@@ -549,18 +550,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		log.Printf("Warning: failed to create plugin manager: %v\n", err)
 	}
 
-	skillDirs := append(config.DefaultSkillDirs(projectDir), cfg.Skills.Dirs...)
-	if pluginMgr != nil {
-		skillDirs = append(skillDirs, pluginMgr.EnabledSkillDirs()...)
-	}
-	skillRegistry := skills.NewSkillRegistry(skillDirs)
-	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
-	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
-	if err := skillRegistry.LoadAll(); err != nil {
-		log.Printf("Warning: failed to load skills: %v\n", err)
-	} else if len(skillRegistry.List()) > 0 {
-		log.Printf("Loaded %d skills from %d directories\n", len(skillRegistry.List()), len(skillDirs))
-	}
+	skillRegistry := newSkillRegistry(cfg, projectDir, pluginMgr, pluginsEnabled, trustMgr)
 
 	goalCmd := &commands.GoalCommand{
 		Mode:             goalManager.Mode,
@@ -622,6 +612,25 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		goaTool:       goaTool,
 		pluginMgr:     pluginMgr,
 	}
+}
+
+// newSkillRegistry assembles the skill directories (defaults + configured +
+// enabled-plugin skills) and loads the registry. Plugin skill dirs are
+// included only when plugins are enabled (--no-plugins skips them).
+func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.Manager, pluginsEnabled bool, trustMgr *trust.Manager) *skills.SkillRegistry {
+	skillDirs := append(config.DefaultSkillDirs(projectDir), cfg.Skills.Dirs...)
+	if pluginMgr != nil && pluginsEnabled {
+		skillDirs = append(skillDirs, pluginMgr.EnabledSkillDirs()...)
+	}
+	skillRegistry := skills.NewSkillRegistry(skillDirs)
+	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
+	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
+	if err := skillRegistry.LoadAll(); err != nil {
+		log.Printf("Warning: failed to load skills: %v\n", err)
+	} else if n := len(skillRegistry.List()); n > 0 {
+		log.Printf("Loaded %d skills from %d directories\n", n, len(skillDirs))
+	}
+	return skillRegistry
 }
 
 // registerGoaCommandTool creates the goa_command tool now that the command
@@ -956,6 +965,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		logger:            ab.agentLogger,
 		lifecycleRegistry: base.lifecycleRegistry,
 		pluginMgr:         sc.pluginMgr,
+		noPlugins:         opts.NoPlugins,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,
 		perfLoad:          opts.PerfLoad,

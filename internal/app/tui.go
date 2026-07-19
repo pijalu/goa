@@ -279,7 +279,10 @@ func (a *App) buildCommandCompleter() *tui.CommandCompleter {
 	return cmdCompleter
 }
 
-// collectCmdNames returns all command names and descriptions from the given registry.
+// collectCmdNames returns all command names and descriptions from the given
+// registry. Command aliases are intentionally NOT listed: they still resolve
+// when typed (CommandRegistry.Resolve), but surfacing them as separate
+// entries makes one command look like two (e.g. /plugin vs /plugins).
 func collectCmdNames(registry *core.CommandRegistry) ([]string, map[string]string) {
 	allCmds := registry.All()
 	cmdNames := make([]string, 0, len(allCmds))
@@ -289,9 +292,9 @@ func collectCmdNames(registry *core.CommandRegistry) ([]string, map[string]strin
 		cmdNames = append(cmdNames, name)
 		descriptions[name] = c.ShortHelp()
 		for _, alias := range c.Aliases() {
-			a := "/" + alias
-			cmdNames = append(cmdNames, a)
-			descriptions[a] = c.ShortHelp()
+			// Description-only entry: keeps the alias discoverable in help
+			// text without a duplicate row in the completion popup.
+			descriptions["/"+alias] = c.ShortHelp()
 		}
 	}
 	return cmdNames, descriptions

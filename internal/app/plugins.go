@@ -15,6 +15,7 @@ import (
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/plugins"
 	"github.com/pijalu/goa/plugins/bundled"
+	"github.com/pijalu/goa/tui"
 )
 
 // pluginChatEvent wraps a plugin output message as a chat modal event.
@@ -39,7 +40,7 @@ type pluginRuntime struct {
 // commands, observers, and lifecycle hooks into Goa's subsystems. It is safe
 // to call when no plugins are enabled.
 func loadEnabledPlugins(s *subsystems) {
-	if s.pluginMgr == nil {
+	if s.pluginMgr == nil || s.noPlugins {
 		return
 	}
 	// Materialize bundled (embedded) plugins so they are trusted + enabled.
@@ -150,7 +151,24 @@ func (rt *pluginRuntime) extendedContext(s *subsystems) *plugins.ExtendContext {
 		SessionUsage: func() map[string]any {
 			return pluginSessionUsage(s)
 		},
+		SegmentColor: pluginSegmentColor,
 	}
+}
+
+// pluginSegmentColor maps a semantic segment color name to the active theme's
+// hex color, so plugin status segments can be styled without emitting console
+// codes. "" falls back to unstyled (the footer's default status color).
+func pluginSegmentColor(name string) string {
+	token := map[string]string{
+		"ok":       "tool_success",
+		"warn":     "token_warning",
+		"critical": "token_critical",
+		"pending":  "system_msg",
+	}[name]
+	if token == "" {
+		return ""
+	}
+	return tui.TheTheme.ColorHex(token)
 }
 
 // makeOutput returns the goa.output implementation: it emits a chat event so
@@ -170,7 +188,9 @@ func pluginConfigFor(s *subsystems) map[string]any {
 		return map[string]any{}
 	}
 	return map[string]any{
-		"providers": pluginProvidersMap(s),
+		"providers":      pluginProvidersMap(s),
+		"activeProvider": s.cfg.ActiveProvider,
+		"activeModel":    s.cfg.ActiveModel,
 	}
 }
 

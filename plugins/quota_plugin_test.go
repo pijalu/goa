@@ -175,6 +175,61 @@ func TestQuota_LoginAPIKeyProviderNoOp(t *testing.T) {
 	}
 }
 
+// TestQuota_LoginRelativeVerificationURI is the regression for the broken
+// opencode authorization link: the real console.opencode.ai device endpoint
+// returns RELATIVE verification URIs ("/device?user_code=…"), which were
+// printed verbatim as an unusable host-less link. The flow must resolve them
+// against the issuer origin.
+func TestQuota_LoginRelativeVerificationURI(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("opencode", map[string]any{"provider": "opencode"})
+	// Exact shape observed from the live endpoint.
+	env.respond("console.opencode.ai/auth/device/code", 200, `{
+		"device_code": "9bSrUCbMvMhe6K8zbLw1zaHr67aruh3qHP4y0Wo2",
+		"user_code": "PCDM-TDQM",
+		"verification_uri": "/device",
+		"verification_uri_complete": "/device?user_code=PCDM-TDQM",
+		"expires_in": 900, "interval": 5
+	}`)
+
+	env.load(t)
+	out := env.callCommand("quota", "login", "opencode")
+	if !strings.Contains(out, "Opening browser") {
+		t.Fatalf("login output = %q", out)
+	}
+	got := env.lastOutput()
+	want := "https://console.opencode.ai/device?user_code=PCDM-TDQM"
+	if !strings.Contains(got, want) {
+		t.Fatalf("relative verification URI not absolutized: got %q, want %q inside", got, want)
+	}
+	if !strings.Contains(got, "Enter code: PCDM-TDQM") {
+		t.Fatalf("user code missing from output: %q", got)
+	}
+	// The browser must receive the same absolutized URL, not the relative path.
+	if got := env.lastBrowserURL(); got != want {
+		t.Fatalf("openBrowser URL = %q, want %q", got, want)
+	}
+}
+
+// TestQuota_LoginRelativeVerificationURINoComplete covers the fallback when
+// only the relative verification_uri (no _complete variant) is returned.
+func TestQuota_LoginRelativeVerificationURINoComplete(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("opencode", map[string]any{"provider": "opencode"})
+	env.respond("console.opencode.ai/auth/device/code", 200, `{
+		"device_code": "dev-xyz", "user_code": "FGDD-HDHN",
+		"verification_uri": "/device", "interval": 5
+	}`)
+
+	env.load(t)
+	env.callCommand("quota", "login", "opencode")
+	got := env.lastOutput()
+	want := "https://console.opencode.ai/device"
+	if !strings.Contains(got, want) {
+		t.Fatalf("verification_uri not absolutized: got %q, want %q inside", got, want)
+	}
+}
+
 // --- logout ---
 
 func TestQuota_LogoutClearsTokens(t *testing.T) {
@@ -259,17 +314,20 @@ func TestQuota_CarouselPrefersAPIProvidersOverLocal(t *testing.T) {
 	}
 }
 
-func TestQuota_SegmentMultiProviderLabelsName(t *testing.T) {
+func TestQuota_SegmentMultiProviderShowsActiveOnly(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
 	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100}}}`)
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
+	// anthropic is active (harness default) → only anthropic's quota shows.
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()
-	// Multiple providers → segment prefixed with the provider name.
-	if !strings.Contains(seg, "Anthropic") && !strings.Contains(seg, "Z.ai") {
-		t.Fatalf("multi-provider segment should label the provider: %q", seg)
+	if !strings.Contains(seg, "42%") {
+		t.Fatalf("segment should show active provider quota: %q", seg)
+	}
+	if strings.Contains(seg, "38%") {
+		t.Fatalf("inactive provider quota leaked into segment: %q", seg)
 	}
 }

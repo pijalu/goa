@@ -1,6 +1,6 @@
 id: provider-quota
 name: Provider Quota
-version: 1.0.0
+version: 1.1.0
 description: Universal usage/quota tracker for all configured providers. Adds a /quota command with a full breakdown and a compact quota carousel in the status bar.
 entry: plugin.js
 goa_min_version: 0.1.0

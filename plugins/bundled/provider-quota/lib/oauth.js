@@ -82,7 +82,10 @@ function startDeviceFlow(providerId, cfg, onDone) {
 		return;
 	}
 
-	var verifyUrl = data.verification_uri_complete || data.verification_uri || cfg.verificationUri || cfg.authUrl;
+	var verifyUrl = absolutizeURL(
+		data.verification_uri_complete || data.verification_uri || cfg.verificationUri || cfg.authUrl,
+		cfg.authUrl
+	);
 	var userCode = data.user_code || "";
 	goa.output("Authorize " + providerId + " quota access:\n  " + verifyUrl +
 		(userCode ? "\nEnter code: " + userCode : ""));
@@ -165,6 +168,34 @@ function hasToken(providerId) {
 
 // --- helpers ---
 
+// absolutizeURL resolves a verification URI against the device-code endpoint
+// that issued it. RFC 8628 servers return absolute URLs, but some (OpenCode)
+// return relative paths like "/device?user_code=…"; printing or opening
+// those verbatim gives the user a dead link, so root them at the issuer's
+// origin (scheme + host). Absolute URLs pass through unchanged.
+function absolutizeURL(url, baseURL) {
+	if (!url) {
+		return url;
+	}
+	if (/^https?:\/\//i.test(url)) {
+		return url;
+	}
+	var origin = originOf(baseURL);
+	if (!origin) {
+		return url;
+	}
+	if (url.charAt(0) !== "/") {
+		return origin + "/" + url;
+	}
+	return origin + url;
+}
+
+// originOf extracts "https://host[:port]" from a URL, or "" when unparsable.
+function originOf(url) {
+	var m = String(url || "").match(/^(https?:\/\/[^\/]+)/i);
+	return m ? m[1] : "";
+}
+
 function parseJSON(body) {
 	if (!body) {
 		return null;
@@ -186,4 +217,5 @@ exports.refreshToken = refreshToken;
 exports.startDeviceFlow = startDeviceFlow;
 exports.logout = logout;
 exports.hasToken = hasToken;
+exports.absolutizeURL = absolutizeURL;
 exports.REFRESH_SKEW_MS = REFRESH_SKEW_MS;

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // ExtendContext carries the optional subsystems a plugin may use beyond the
@@ -28,6 +29,11 @@ type ExtendContext struct {
 	// SessionUsage returns cumulative token stats for the local/inferred
 	// quota fetcher. Nil disables goa.sessionUsage().
 	SessionUsage func() map[string]any
+	// SegmentColor maps a semantic color name ("ok", "warn", "critical",
+	// "pending") to an ANSI-escapable hex color for status-bar segments.
+	// Nil disables coloring (segment text renders unstyled). Wired by the
+	// app layer to the active TUI theme so plugins never emit console codes.
+	SegmentColor func(name string) string
 }
 
 // setupExtendedGlobals wires the optional goa.* APIs onto the goa object.
@@ -277,11 +283,20 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 		if rv := obj.Get("render"); rv != nil {
 			if fn, ok := goja.AssertFunction(rv); ok {
 				def.Render = func() string {
+					// The app render loop calls this from its own goroutine
+					// (drainSegmentRefreshes), which does NOT hold the VM lock.
+					// Serialize with timers/hotkeys so goja's single-goroutine
+					// rule is preserved, and contain panics so a broken plugin
+					// cannot crash the UI goroutine (see the provider-quota
+					// nil-deref crash in vm.halted).
+					unlock := lockVM()
+					defer unlock()
+					defer func() { _ = recover() }()
 					res, err := fn(goja.Undefined())
 					if err != nil {
 						return ""
 					}
-					return res.String()
+					return b.segmentText(res)
 				}
 			}
 		}
@@ -303,6 +318,31 @@ func (b *JSBridge) setupUI(goaObj *goja.Object, ui *UIBridge) {
 		return b.vm.ToValue("modal registered: " + obj.Get("id").String())
 	})
 	goaObj.Set("ui", uiObj)
+}
+
+// segmentText converts a JS render() return value into the segment string
+// pushed to the footer. A plain string passes through unchanged. An object
+// {text, color} names a semantic color ("ok", "warn", "critical", "pending")
+// resolved through the app-injected SegmentColor mapper, so plugins request a
+// meaning, never a console code. Unknown/absent colors render unstyled.
+func (b *JSBridge) segmentText(v goja.Value) string {
+	obj, isObj := v.Export().(map[string]interface{})
+	if !isObj {
+		return v.String()
+	}
+	text, _ := obj["text"].(string)
+	if text == "" {
+		return ""
+	}
+	colorName, _ := obj["color"].(string)
+	if colorName == "" || b.ctx.Extended == nil || b.ctx.Extended.SegmentColor == nil {
+		return text
+	}
+	hex := b.ctx.Extended.SegmentColor(colorName)
+	if hex == "" {
+		return text
+	}
+	return ansi.Fg(hex) + text + ansi.Reset
 }
 
 // setupOutput registers goa.output(msg).

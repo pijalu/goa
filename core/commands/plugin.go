@@ -32,9 +32,56 @@ func (c *PluginCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
-// CompleteArgs provides argument completions.
+// CompleteArgs provides argument completions: subcommand names, then plugin
+// IDs for enable/disable/remove.
 func (c *PluginCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	return nil
+	if c.Manager == nil {
+		return nil
+	}
+	// The router passes the full arg string (e.g. "en" or "enable pro");
+	// complete a subcommand when no space yet, a plugin id otherwise.
+	arg := strings.TrimPrefix(prefix, ":")
+	if idx := strings.IndexAny(arg, " \t"); idx >= 0 {
+		sub := strings.ToLower(arg[:idx])
+		idPrefix := strings.TrimLeft(arg[idx+1:], " \t")
+		switch sub {
+		case "enable", "disable", "remove", "uninstall":
+			return completePluginIDs(c.Manager, idPrefix)
+		}
+		return nil
+	}
+	subs := []core.ArgCompletion{
+		{Value: "list", Description: "List installed plugins and their state"},
+		{Value: "enable", Description: "Enable an installed plugin"},
+		{Value: "disable", Description: "Disable an enabled plugin"},
+		{Value: "install", Description: "Install a plugin from a git URL"},
+		{Value: "remove", Description: "Remove an installed plugin"},
+	}
+	if arg == "" {
+		return subs
+	}
+	var out []core.ArgCompletion
+	for _, s := range subs {
+		if strings.HasPrefix(s.Value, arg) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// completePluginIDs returns completion candidates for installed plugin IDs.
+func completePluginIDs(m *plugins.Manager, prefix string) []core.ArgCompletion {
+	var out []core.ArgCompletion
+	for _, e := range m.List() {
+		if prefix == "" || strings.HasPrefix(e.ID, prefix) {
+			state := "disabled"
+			if e.Enabled {
+				state = "enabled"
+			}
+			out = append(out, core.ArgCompletion{Value: e.ID, Description: state})
+		}
+	}
+	return out
 }
 
 // Run executes the plugin command.
@@ -117,10 +164,12 @@ func (c *PluginCommand) list(ctx core.Context) error {
 	ctx.Writef("Installed plugins:\n")
 	for _, e := range entries {
 		status := "disabled"
+		hint := "  → /plugin enable " + e.ID
 		if e.Enabled {
 			status = "enabled"
+			hint = "  → /plugin disable " + e.ID
 		}
-		ctx.Writef("  %s (%s, hash %s)\n", e.ID, status, shortHash(e.Hash))
+		ctx.Writef("  %s (%s, hash %s)%s\n", e.ID, status, shortHash(e.Hash), hint)
 	}
 	return nil
 }

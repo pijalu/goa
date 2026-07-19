@@ -7,6 +7,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/core"
@@ -118,5 +119,69 @@ func TestPluginCommand_UnknownSubcommand(t *testing.T) {
 	cmd := &PluginCommand{Manager: mgr}
 	if err := cmd.Run(core.Context{}, []string{"foo"}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestPluginCommand_ListShowsToggleHint verifies bare /plugin output tells the
+// user how to enable/disable each plugin (the one-command management UX).
+func TestPluginCommand_ListShowsToggleHint(t *testing.T) {
+	mgr := newTestPluginManager(t)
+	cmd := &PluginCommand{Manager: mgr}
+	_ = cmd.Run(core.Context{}, []string{"install", "https://example.com/p.git"})
+
+	var buf strings.Builder
+	if err := cmd.Run(core.Context{OutputBuffer: &buf}, []string{}); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "test-plugin") {
+		t.Fatalf("list missing plugin: %q", out)
+	}
+	if !strings.Contains(out, "/plugin enable test-plugin") {
+		t.Fatalf("list missing enable hint for disabled plugin: %q", out)
+	}
+	if err := cmd.Run(core.Context{}, []string{"enable", "test-plugin"}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	buf.Reset()
+	if err := cmd.Run(core.Context{OutputBuffer: &buf}, []string{}); err != nil {
+		t.Fatalf("list after enable: %v", err)
+	}
+	if !strings.Contains(buf.String(), "/plugin disable test-plugin") {
+		t.Fatalf("list missing disable hint for enabled plugin: %q", buf.String())
+	}
+}
+
+// TestPluginCommand_CompletesSubcommandsAndIDs covers the completion contract:
+// subcommand names with no arg, plugin ids after enable/disable/remove.
+func TestPluginCommand_CompletesSubcommandsAndIDs(t *testing.T) {
+	mgr := newTestPluginManager(t)
+	cmd := &PluginCommand{Manager: mgr}
+	_ = cmd.Run(core.Context{}, []string{"install", "https://example.com/p.git"})
+
+	subs := cmd.CompleteArgs(core.Context{}, "")
+	if len(subs) == 0 {
+		t.Fatal("no subcommand completions for empty prefix")
+	}
+	foundEnable := false
+	for _, s := range subs {
+		if s.Value == "enable" {
+			foundEnable = true
+		}
+	}
+	if !foundEnable {
+		t.Fatalf("enable not offered: %v", subs)
+	}
+
+	// Prefix-filtered subcommand.
+	d := cmd.CompleteArgs(core.Context{}, "di")
+	if len(d) != 1 || d[0].Value != "disable" {
+		t.Fatalf("prefix di = %v, want [disable]", d)
+	}
+
+	// Plugin id completion after a subcommand.
+	ids := cmd.CompleteArgs(core.Context{}, "disable te")
+	if len(ids) != 1 || ids[0].Value != "test-plugin" {
+		t.Fatalf("id completion = %v, want [test-plugin]", ids)
 	}
 }

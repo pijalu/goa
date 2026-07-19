@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
 )
@@ -56,6 +58,39 @@ func TestInitSpinner_UsesConfiguredName(t *testing.T) {
 
 	if spinnerIsEmpty(t) {
 		t.Error("expected 'dots' spinner, got disabled")
+	}
+}
+
+// TestCollectCmdNames_HidesAliases is the regression for the duplicate
+// /plugin + /plugins completion entries: the popup must list one entry per
+// command (the canonical name) while aliases keep resolving when typed.
+func TestCollectCmdNames_HidesAliases(t *testing.T) {
+	reg := core.NewCommandRegistry()
+	if err := reg.Register(&commands.PluginCommand{}); err != nil {
+		t.Fatal(err)
+	}
+	names, descriptions := collectCmdNames(reg)
+	for _, n := range names {
+		if n == "/plugins" {
+			t.Fatalf("alias /plugins listed as a completion entry: %v", names)
+		}
+	}
+	found := false
+	for _, n := range names {
+		if n == "/plugin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("/plugin missing from completion names: %v", names)
+	}
+	// The alias keeps a description so help tooling stays informative.
+	if descriptions["/plugins"] == "" {
+		t.Fatal("alias description lost")
+	}
+	// And the alias still resolves through the registry.
+	if _, ok := reg.Resolve("plugins"); !ok {
+		t.Fatal("/plugins alias no longer resolves")
 	}
 }
 

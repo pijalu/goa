@@ -214,3 +214,45 @@ func TestOAuth_NoRefreshWhenFresh(t *testing.T) {
 		t.Fatalf("fresh token not reused: %q", got)
 	}
 }
+
+// TestOAuth_AbsolutizeURL covers the relative-URL resolution table:
+// absolute URLs pass through, root-relative and bare paths resolve against
+// the issuer origin, and edge inputs degrade safely.
+func TestOAuth_AbsolutizeURL(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
+	bridge.installRequire(quotaPluginDir)
+	unlock := lockVM()
+	defer unlock()
+	bridge.vm.Set("__require", bridge.vm.Get("require"))
+	v, err := bridge.vm.RunString(`
+		(function() {
+			var oauth = require("lib/oauth.js");
+			var a = oauth.absolutizeURL;
+			return [
+				a("/device?user_code=PCDM-TDQM", "https://console.opencode.ai/auth/device/code"),
+				a("/device", "https://console.opencode.ai/auth/device/code"),
+				a("device", "https://console.opencode.ai/auth/device/code"),
+				a("https://other.example.com/activate", "https://console.opencode.ai/auth/device/code"),
+				a("HTTP://UPPER.example.com/x", "https://console.opencode.ai/auth/device/code"),
+				a("", "https://console.opencode.ai/auth/device/code"),
+				a("/device", "")
+			].join("\n");
+		})()
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"https://console.opencode.ai/device?user_code=PCDM-TDQM",
+		"https://console.opencode.ai/device",
+		"https://console.opencode.ai/device",
+		"https://other.example.com/activate",
+		"HTTP://UPPER.example.com/x",
+		"",
+		"/device", // no base to resolve against — pass through
+	}, "\n")
+	if got := v.String(); got != want {
+		t.Fatalf("absolutizeURL table mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
