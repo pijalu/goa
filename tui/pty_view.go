@@ -129,7 +129,7 @@ func (pv *PTYView) Render(width int) []string {
 	}
 
 	// Bottom border with controls
-	status := "Ctrl+C to close"
+	status := "ctrl+c to close"
 	lines = append(lines, padToWidth(border+"├─ "+status+ansi.Reset, width))
 	lines = append(lines, padToWidth(border+"└"+strings.Repeat("─", width-2)+"┘"+ansi.Reset, width))
 

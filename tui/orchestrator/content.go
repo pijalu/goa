@@ -59,7 +59,7 @@ func (c *AgentContent) Render(width int) []string {
 // navHintLine is the faint one-line hint shown at the bottom of every tab so
 // the user can discover tab navigation without reading the docs.
 func navHintLine() string {
-	return ansi.Faint + "  Ctrl+x tabs · /orchestrate:tab:<n>" + ansi.Reset
+	return ansi.Faint + "  ctrl+x tabs · /orchestrate:tab:<n>" + ansi.Reset
 }
 
 // HandleInput is a no-op (display only).

@@ -54,7 +54,8 @@ func TestQuota_SegmentColorInBudget(t *testing.T) {
 	if !strings.Contains(seg, rgbOk) {
 		t.Fatalf("in-budget segment should be green, got: %q", seg)
 	}
-	if !strings.Contains(seg, "[5h:10%") {
+	// Compact form: session|weekly percentages without window labels.
+	if !strings.Contains(seg, "[10%|") {
 		t.Fatalf("segment missing quota text: %q", seg)
 	}
 }
@@ -95,19 +96,19 @@ func TestQuota_SegmentColorPendingNoData(t *testing.T) {
 	}
 }
 
-// TestQuota_SegmentColorPendingUnbounded: a provider with no bounded windows
-// (the local fallback) cannot project → pending/white treatment.
-func TestQuota_SegmentColorPendingUnbounded(t *testing.T) {
+// TestQuota_SegmentColorLocalInfinite: the local provider has no quota limit,
+// so it shows the infinite symbol in green rather than a percentage.
+func TestQuota_SegmentColorLocalInfinite(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	// Active provider "local" maps to the local fetcher via fallback id.
 	env.setActiveProvider("local")
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()
-	if !strings.Contains(seg, rgbPending) {
-		t.Fatalf("unbounded local segment should be pending/white, got: %q", seg)
+	if !strings.Contains(seg, rgbOk) {
+		t.Fatalf("local segment should be green/ok, got: %q", seg)
 	}
-	if !strings.Contains(seg, "tok") {
-		t.Fatalf("local segment should show token count: %q", seg)
+	if !strings.Contains(seg, "∞") {
+		t.Fatalf("local segment should show the infinite symbol, got: %q", seg)
 	}
 }

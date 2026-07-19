@@ -20,7 +20,7 @@ var _ tuirender.ToolRenderer = (*PythonRenderer)(nil)
 
 // NewPythonRenderer returns a renderer for the python tool.
 func NewPythonRenderer() *PythonRenderer {
-	return &PythonRenderer{KeyExpand: "Ctrl+O"}
+	return &PythonRenderer{KeyExpand: KeyExpandLabel}
 }
 
 const (
@@ -120,7 +120,7 @@ func (r *PythonRenderer) keyExpand() string {
 	if r.KeyExpand != "" {
 		return r.KeyExpand
 	}
-	return "Ctrl+O"
+	return KeyExpandLabel
 }
 
 // PreviewLines returns the default number of lines to show when collapsed.

@@ -26,7 +26,7 @@ const writeFilePreviewLines = 5
 var _ tuirender.ToolRenderer = (*WriteFileRenderer)(nil)
 
 func NewWriteFileRenderer() *WriteFileRenderer {
-	return &WriteFileRenderer{KeyExpand: "Ctrl+O"}
+	return &WriteFileRenderer{KeyExpand: KeyExpandLabel}
 }
 
 func (r *WriteFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {

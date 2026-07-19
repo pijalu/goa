@@ -47,7 +47,7 @@ func (h *Header) SetTools(tools []string) { h.tools = tools }
 func (h *Header) SetModel(model string) { h.modelName = model }
 
 func (h *Header) buildHints() {
-	h.hints = "Ctrl+C/D exit  |  / commands  |  Tab complete  |  ↑↓ history"
+	h.hints = "ctrl+c/d exit  |  / commands  |  tab complete  |  ↑↓ history"
 }
 
 // Render renders the header with mascot+logo on top and version/info below.

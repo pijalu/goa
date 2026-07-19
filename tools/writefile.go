@@ -249,7 +249,7 @@ func buildWritePreview(path, content string) string {
 	}
 	preview += "```\n"
 	if len(lines) > previewLines {
-		preview += fmt.Sprintf("… %d more lines (Ctrl+O to expand)\n", len(lines)-previewLines)
+		preview += fmt.Sprintf("… %d more lines (%s to expand)\n", len(lines)-previewLines, KeyExpandLabel)
 	}
 	return preview
 }

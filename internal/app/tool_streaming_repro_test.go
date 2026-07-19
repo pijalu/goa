@@ -194,15 +194,15 @@ func TestToolStreaming_GlobalToggleExpand(t *testing.T) {
 
 	// Summary: body is truncated and the stats line advertises Ctrl+O.
 	summary := renderToolBody(t, sc)
-	if !strings.Contains(summary, "Ctrl+O to expand") {
-		t.Fatalf("summary should advertise Ctrl+O, got:\n%s", summary)
+	if !strings.Contains(summary, "ctrl+o to expand") {
+		t.Fatalf("summary should advertise ctrl+o, got:\n%s", summary)
 	}
 
-	// Ctrl+O → Full: every widget expands; no more "Ctrl+O to expand" hint.
+	// Ctrl+O → Full: every widget expands; no more "ctrl+o to expand" hint.
 	sc.engine.SendKey("ctrl+o")
 	full := renderToolBody(t, sc)
-	if strings.Contains(full, "Ctrl+O to expand") {
-		t.Fatalf("after Ctrl+O the expand hint should be gone, got:\n%s", full)
+	if strings.Contains(full, "ctrl+o to expand") {
+		t.Fatalf("after ctrl+o the expand hint should be gone, got:\n%s", full)
 	}
 }
 
@@ -218,7 +218,7 @@ func TestToolStreaming_ConfigDefaultFull(t *testing.T) {
 		ToolName: "bash", ToolCallID: "b1", Text: strings.Repeat("line\n", 30)})
 
 	body := renderToolBody(t, sc)
-	if strings.Contains(body, "Ctrl+O to expand") {
+	if strings.Contains(body, "ctrl+o to expand") {
 		t.Fatalf("config view=full should start expanded (no hint), got:\n%s", body)
 	}
 }

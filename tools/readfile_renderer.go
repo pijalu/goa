@@ -23,7 +23,7 @@ type ReadFileRenderer struct {
 var _ tuirender.ToolRenderer = (*ReadFileRenderer)(nil)
 
 func NewReadFileRenderer() *ReadFileRenderer {
-	return &ReadFileRenderer{KeyExpand: "Ctrl+O"}
+	return &ReadFileRenderer{KeyExpand: KeyExpandLabel}
 }
 
 func (r *ReadFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {
@@ -124,7 +124,7 @@ func parseReadEnd(line string) (shown, remaining int) {
 // formatReadContent renders read content lines for the expanded (Full) view.
 // Numbered lines keep their number (muted) with the code body highlighted by
 // language; unnumbered/plain lines fall back to the toolOutput color. When the
-// read was truncated, a "… N more lines (Ctrl+O to expand)" hint is appended.
+// read was truncated, a "… N more lines (ctrl+o to expand)" hint is appended.
 func formatReadContent(content []string, path string, remaining int, key string) string {
 	lang := getLanguageFromPath(path)
 	var b strings.Builder

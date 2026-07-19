@@ -87,7 +87,7 @@ func TestWriteFileRenderer_CompletedWriteShowsTotalLines(t *testing.T) {
 	}
 	full := strings.Join(all, "\n")
 	preview := strings.Join(all[:10], "\n")
-	out := "[write: big.txt]\n✓ Written — 100 bytes, 25 lines\n```\n" + preview + "\n```\n… 15 more lines (Ctrl+O to expand)\n"
+	out := "[write: big.txt]\n✓ Written — 100 bytes, 25 lines\n```\n" + preview + "\n```\n… 15 more lines (ctrl+o to expand)\n"
 
 	ctx := tuirender.RenderContext{
 		IsPartial:    false,
@@ -178,7 +178,7 @@ func TestWriteFileRenderer_WriteStatsDuringPreparation(t *testing.T) {
 				args := map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}"}
 				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10})
 			},
-			want: []string{"writing 3 lines", "Ctrl+O"},
+			want: []string{"writing 3 lines", "ctrl+o"},
 		},
 		{
 			name: "streaming content exceeds preview",
@@ -186,7 +186,7 @@ func TestWriteFileRenderer_WriteStatsDuringPreparation(t *testing.T) {
 				args := map[string]any{"path": "big.go", "content": strings.Repeat("line\n", 19) + "line"}
 				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10})
 			},
-			want: []string{"writing 20 lines", "10 more lines", "Ctrl+O"},
+			want: []string{"writing 20 lines", "10 more lines", "ctrl+o"},
 		},
 		{
 			name: "single line uses singular",
@@ -212,7 +212,7 @@ func TestWriteFileRenderer_WriteStatsDuringPreparation(t *testing.T) {
 				args := map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}"}
 				return r.RenderPartial(args, tuirender.RenderContext{IsPartial: true, Args: args, PreviewLines: 10, Expanded: true})
 			},
-			notWant: []string{"writing", "Ctrl+O"},
+			notWant: []string{"writing", "ctrl+o"},
 		},
 	}
 	for _, tc := range cases {

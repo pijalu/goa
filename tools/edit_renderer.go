@@ -30,7 +30,7 @@ var (
 )
 
 func NewEditFileRenderer() *EditFileRenderer {
-	return &EditFileRenderer{KeyExpand: "Ctrl+O"}
+	return &EditFileRenderer{KeyExpand: KeyExpandLabel}
 }
 
 var (

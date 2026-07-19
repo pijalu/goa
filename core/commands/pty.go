@@ -180,7 +180,7 @@ func monitorSession(ctx core.Context, id string) error {
 		return nil
 	}
 	ctx.ShowPTYOverlay(id)
-	writeFmt(ctx, "Monitoring session %s. Press Ctrl+C or Escape to close.\n", id)
+	writeFmt(ctx, "Monitoring session %s. Press ctrl+c or Escape to close.\n", id)
 	return nil
 }
 

@@ -4,153 +4,202 @@ SPDX-License-Identifier: GPL-3.0-or-later
 Copyright (C) 2026 Pierre Poissinger
 -->
 
-# Archived Bugs — 2026-07-19
+# Bug Fixes — 2026-07-19
 
-All three open bugs closed. Fix plans, tests, and validation below.
+All open bugs from `bugs.md` addressed. Each entry below states the root cause,
+the fix, the test approach, and the validation performed. Quality gates
+(`go vet`, `staticcheck`, `gocognit -over 15`, `gocyclo -over 12`,
+`go test -count=1 -race -cover ./...`) were run separately; no new violations
+were introduced (the single `applyToolResultToWidget` U1000 note is
+pre-existing and unchanged at HEAD).
 
----
+## 1. hotkey — uppercase → lowercase
 
-## Bug 1 — Plugin: two commands, no enable/disable UX, no no-plugins CLI
+**Root cause.** User-facing hotkey labels were hardcoded with capital letters
+(`Ctrl+O`, `Alt+E`, `Ctrl+x`, `Ctrl+C/D`) across tool renderers and TUI hints,
+while internal key names were already lowercase.
 
-**Report.** `/plugin` and `/plugins` appeared as two commands; the command
-should list plugins and allow enable/disable; there should be a command line
-to run without any plugins enabled.
+**Fix.** Lowercased every display label and centralized the expand hint:
+- Added `tools.KeyExpandLabel = "ctrl+o"` (`tools/renderer_common.go`) and used
+  it in all six tool renderers + `python_renderer.keyExpand()` +
+  `writefile.go` preview hint.
+- `tui/chat_viewport_components.go`: `(Alt+E to edit)` → `(alt+e to edit)`.
+- `tui/orchestrator/content.go`: `Ctrl+x tabs` → `ctrl+x tabs`.
+- `tui/header.go`: `Ctrl+C/D exit … Tab complete` → `ctrl+c/d … tab complete`.
+- `tui/pty_view.go`, `core/commands/pty.go`: `Ctrl+C to close` → `ctrl+c …`.
 
-**Root cause.** `collectCmdNames` (internal/app/tui.go) appended every command
-alias as a separate completion entry, so the popup listed `/plugin` AND
-`/plugins`. Bare `/plugin` listed plugins but gave no enable/disable hint and
-offered no argument completion. No `--no-plugins` flag existed.
+**Tests.** Updated display-assertion tests to the new spec
+(`readfile_renderer_test`, `writefile_renderer_test`, `chat_viewport_test`,
+`tool_streaming_repro_test`, `orchestrator/content_test`). Pass-through tests
+that used `Ctrl+O` only as a function argument were intentionally left.
 
-**Fix.**
-- `collectCmdNames` no longer lists aliases as completion entries (they still
-  resolve when typed); aliases keep their description for help.
-- `/plugin` list output now appends a `→ /plugin enable|disable <id>` hint per
-  plugin, and `CompleteArgs` completes subcommands (list/enable/disable/
-  install/remove) and plugin IDs.
-- New `--no-plugins` CLI flag: skips plugin loading entirely
-  (`loadEnabledPlugins` gates on `subsystems.noPlugins`) and excludes
-  plugin-contributed skill dirs (`initSkillAndCommandLayer(pluginsEnabled)`).
+**Validation.** Live PTY boot: header renders `ctrl+c/d exit`, no `Ctrl+C/D`.
 
-**Tests.**
-- `TestCollectCmdNames_HidesAliases` (internal/app/tui_test.go)
-- `TestPluginCommand_ListShowsToggleHint`,
-  `TestPluginCommand_CompletesSubcommandsAndIDs` (core/commands/plugin_test.go)
-- `TestLoadEnabledPlugins_NoPluginsFlag` (internal/app/plugins_integration_test.go)
+## 2. alt-e does not work on macOS
 
-**Validation (PTY, real terminal).**
-- `/plug` popup shows only `/plugin` + modifiers — no `/plugins` duplicate.
-- `/plugin` prints `provider-quota (enabled, hash …) → /plugin disable provider-quota`.
-- `goa --no-plugins` starts with no quota segment in the footer at all.
+**Root cause.** `tui/keys.go` `optionKeyAliases` maps macOS Option-key glyphs
+back to `alt+<base>`, but had no entry for `ê` (produced by Option+e on
+international layouts), so Alt+E was dead there.
 
----
+**Fix.** Added `"ê": "alt+e"` to `optionKeyAliases`. (Did **not** rebind to
+ctrl+e as the bug suggested — ctrl+e is already `KbCursorLineEnd`; the alias
+fix is minimal and preserves the existing shortcut.)
 
-## Bug 2 — Quota not working on kimi (no message, "0 tok")
+**Tests.** `TestAltKeyName` table extended with `{"ê", "alt+e"}` (RED → GREEN).
 
-**Report.** Quota on kimi does not work — no message and shows "0 tok".
-Should show a clear message when auth is required/failed, and show
-session(5h)/weekly/monthly percent quota usage.
+## 3. inputline search does not work
 
-**Root causes (three, stacked).**
-1. `fetchers/kimi.js` was written against a guessed API shape
-   (`data.session.used`) and the wrong host (`api.moonshot.ai`). The real
-   endpoint is `GET https://api.kimi.com/coding/v1/usages` returning
-   `{usage, limits:[{window,detail}], user:{membership:{level}}}` with
-   string-typed numerics — parsing yielded zero limits, so the provider
-   dropped out of the carousel and the footer fell back to local "0 tok".
-2. `providerConfigFor("kimi")` never matched the user's configured provider
-   (`id/provider: kimi-code`), so the fetcher got an empty config (no API
-   key, no endpoint).
-3. `refreshProviderList()` excluded all errored entries from the carousel, so
-   an `auth_required` provider was invisible in the footer; the `authMark()`
-   helper was dead code.
+**Root causes (two).**
+- `ctrl+s` was only consumed when already in search mode
+  (`tui/editor_input.go`); otherwise it fell through and the literal string
+  `ctrl+s` was inserted as printable text.
+- `HistorySearcher.Complete("")` returned `nil`, so `ctrl+r` showed no popup
+  until the user typed.
 
 **Fix.**
-- Rewrote `fetchers/kimi.js` against the verified live API (API-key auth —
-  the same key used for inference; no OAuth needed). Parses `limits[]` by
-  window duration → "Session (5h)" / "Weekly (Nd)" / "Monthly (Nd)" labels,
-  top-level `usage` as Weekly, plan from `user.membership.level`
-  ("LEVEL_ADVANCED" → "Advanced"). 401/403 → `auth_required`; missing key →
-  `no_api_key`.
-- `providerConfigFor` now normalizes ids and maps known aliases
-  (`kimi-code`/`kimi-for-coding`/`moonshot` → `kimi`).
-- Carousel keeps `auth_required` providers in rotation; `statusRender` renders
-  them as `Kimi ∇ auth`; `formatShort` handles error entries (`∇ auth`,
-  `⚠ <err>`).
-- `MaterializeBundled` fast path now verifies the on-disk content hash against
-  the lockfile and re-materializes on drift — the stale `provider-quota@1.0.0`
-  copy kept serving the old fetcher even after the source was fixed (found
-  during validation). Plugin version bumped to 1.1.0.
+- `tui/editor_input.go`: `ctrl+s` now enters search mode when not already in
+  it (mirrors ctrl+r); cycles only when already searching.
+- `tui/editor_search.go`: `Complete("")` returns the last 10 unique history
+  entries (new `recent()` helper), so the popup is populated immediately and
+  stays populated when the query is emptied.
+- `tui/editor_autocomp.go`: `scheduleAutoComp` no longer early-returns on a nil
+  base completer when in search mode (search has its own searcher).
 
-**Tests.**
-- `TestFetcherKimi_ParsesRealAPIShape`, `TestFetcherKimi_NoAPIKey`,
-  `TestFetcherKimi_AuthFailed`, `TestFetcherKimi_MonthlyWindow`,
-  `TestQuota_KimiCodeConfigMatchesKimiFetcher`,
-  `TestQuota_SegmentShowsAuthMarker`,
-  `TestQuota_SegmentShowsWindowedPercent` (plugins/quota_kimi_test.go)
-- `TestMaterializeBundled_RematerializesOnContentDrift`
-  (plugins/bundled_load_test.go)
+**Tests.** New `tui/editor_search_test.go`: empty-query shows last-10, dedupe,
+ctrl+s enters search (no literal leak), ctrl+r shows popup on empty query,
+popup survives emptying the query, arrow-key navigation. All RED → GREEN.
 
-**Validation (PTY, real terminal, live API key).**
-- Footer: `Kimi 5h:6% / wk:21%` rotating with `OpenCode ∇ auth`.
-- `/quota`: `Kimi (Advanced) Session (5h) █░░░░░░░░░ 6% → +1h 57m, Weekly
-  ██░░░░░░░░ 21% → +4d 23h`.
-- Live endpoint confirmed with curl: `GET https://api.kimi.com/coding/v1/usages`
-  returns 200 with the documented shape using the inference API key.
+## 4. terminal resize
 
----
+**Status (updated).** Initially mis-diagnosed as "already fixed" — the existing
+tests only asserted the visible window and the resize byte stream, never the
+terminal scrollback. A concrete repro (long content > screen, then widen)
+proved the bug was REAL.
 
-## Bug 3 — Quota crash (nil pointer in goja VM)
+**Root cause.** `Scene.compose` only materializes canvas rows in
+`[placeStart, visibleEnd)`; older history rows stay `""`. On a width change,
+`drawWindowResetScrollback` wipes scrollback (`\x1b[3J`) and re-emits the whole
+off-screen transcript from that canvas — so the unmaterialized rows were
+re-emitted as BLANK, erasing visible history (the "black screen"). The
+byte-level test (`TestCompositor_WidthResizeResetsScrollback`) passed because
+it only counted `\r\x1b[2K` writes, not their content; the filmstrip tests only
+checked the visible window, never scrollback.
 
-**Report.** `panic: runtime error: invalid memory address or nil pointer
-dereference [recovered, repanicked]`, SIGSEGV in
-`plugins.(*JSBridge).setupUI.func1.1` (bridge_extended.go:280) via
-`pushPluginSegments` on the `drainSegmentRefreshes` goroutine.
+**Fix.** On a width-change frame the compositor now tells `compose` (via a new
+`Scene.WidthChanged` flag, computed before `compose` runs) to materialize the
+FULL canvas from row 0, so the scrollback reset re-emits real content instead
+of blanks. Minimal, stateless (no cross-frame field — the TUI builds a fresh
+Scene each frame).
 
-**Root cause.** The segment `Render` closure called the JS render function
-WITHOUT acquiring the global VM lock (`lockVM()`), unlike scheduler callbacks
-(`invokeSafe`), hotkeys, tool/command/observer wrappers. The app render loop
-(`drainSegmentRefreshes` goroutine) ran JS concurrently with a scheduler timer
-callback on the same goja runtime; the timer's VM mutation clobbered `vm.prg`
-mid-`__call`, and goja's `vm.halted()` dereferenced nil `vm.prg.code`
-(goja vm.go:610). The comment at app.go:207 ("acquires the VM lock inside the
-bridge") described intent, not reality.
+**Tests.** New `tui/compositor_resize_emulator_test.go`
+(`TestCompositor_ResizeReflowsHistoryIntoScrollback`) replays the writes
+through `TermEmulator` (scroll-region + scrollback aware) across a growth
+sequence + width resize and asserts the oldest history survives in scrollback
+and is not replaced by blank rows. RED before the fix, GREEN after.
 
-**Contributing factor (found during testing).** The bridge's JS test file was
-named `bridge_js_test.go` — the `_js` suffix makes the Go tool treat it as
-GOOS=js-constrained and silently EXCLUDE it on darwin/linux, so the bridge
-tests never ran in CI (they were also broken: read `vm.Get("__result")` while
-the JS assigned `goa.__result`). Renamed to `bridge_runtime_test.go`, fixed
-the bit-rot via a `goaResult` helper, and removed the outer `lockVM()` around
-`segs[0].Render()` in `TestJS_RegisterSegmentAndHotkey` (vmMu is not
-reentrant; Render now self-locks).
+**Validation.** Live PTY 94→116 col resize after `/hotkeys`: the top-of-history
+content (`Navigation`, first table row) survives; previously it was wiped.
 
-**Fix.** `def.Render` in `setupUI` now acquires `lockVM()` and recovers
-panics, matching every other JS entry point — a misbehaving plugin render
-returns "" instead of crashing the UI goroutine.
+## 5. Quota — provider switch / local ∞ / unknown hidden
 
-**Tests.**
-- `TestSegmentRender_SerializedWithScheduler` — hammers the render closure
-  from 4 goroutines × 200 iterations while a JS interval timer mutates state,
-  under `-race` (plugins/segment_render_test.go).
-- `TestSegmentRender_JSPanicContained` — throwing render returns ""; healthy
-  segment unaffected.
-- All previously-dead bridge tests now run and pass
-  (plugins/bridge_runtime_test.go).
+**Root cause.** The footer segment re-resolves the active provider on each
+render (`activeFetcherId()` reads `goa.config().activeProvider` live), so the
+stale-read was transient; but local providers showed a bare token count and
+unknown providers silently fell back to local with no explanation.
 
-**Validation.**
-- `go test -race ./plugins/` green; full `go test -race ./...` green.
-- PTY run of the real TUI: no crash, quota segment renders and rotates.
+**Fix** (`plugins/bundled/provider-quota/plugin.js`).
+- Local providers now render `[∞]` (green) in the segment.
+- `/quota` prints "_Quota tracking is not supported for provider `<id>`_" when
+  the active provider has no quota API (`appendUnsupportedNote`).
 
----
+**Tests.** New `TestQuota_ProviderSwitchUpdatesSegment` (segment tracks the new
+provider after a switch), `TestQuota_UnsupportedProviderStatesNotSupported`,
+`TestQuota_SegmentColorLocalInfinite` (local → green ∞). Updated color/format
+tests. All PASS.
 
-## Code-quality gates (guideline #6)
+## 6. Quota color — unexplained orange
 
-- `go vet ./...` — clean.
-- `staticcheck ./...` — 8 pre-existing `unused` (U1000) warnings, all in code
-  untouched by this change (verified against baseline; one, `saveInputHistory`,
-  dates to the initial commit).
-- `gocognit -over 15 .` — identical set to baseline (no new entries).
-- `gocyclo -over 12 .` — baseline identical after extracting `newSkillRegistry`
-  from `initSkillAndCommandLayer` (the added `pluginsEnabled` branch had
-  pushed it to 13; the extraction brought it back under budget).
-- `go test -count=1 -race -cover ./...` — all green.
+**Root cause.** The footer color is derived from *projected window-end usage*
+(green/orange/red), not the raw percentage, and a fetch error also renders
+orange — so the color's meaning was invisible to the user.
+
+**Fix.** Added `budgetSummary()` to the plugin; `/quota` now appends a
+human-readable status line (e.g. "_plenty of room_", "_close to Session (5h)
+limit_", "_over budget — projected to exceed …_") derived from the same
+projection as the color, so the color is explained.
+
+**Tests.** New `TestQuota_BudgetSummaryPlentyOfRoom`. Existing color threshold
+tests (`TestQuota_SegmentColor*`) unchanged and PASS.
+
+## 7. Steering status line (redundant ⏳)
+
+**Root cause.** Pending steering was shown twice: a footer `⏳ <text>` line and
+the pinned chat bubble. The bubble is the source of truth.
+
+**Fix.** Removed the `FooterData.SteeringPending` field and its render block
+(`tui/footer_render.go`), plus all set/clear wiring in
+`internal/app/submithandler.go` and `internal/app/events.go`. The chat bubble
+(`AddSteeringPending`/`ClearSteeringPending`) is unchanged and remains visible
+until the message is consumed.
+
+**Tests.** Added `ChatViewport.HasSteeringPending()` and updated
+`steering_test.go` to assert the bubble (not a footer field) is cleared on edit
+recall. Footer tests updated (`footer_git_test.go`). All PASS.
+
+## 8. Quota simplification on short screen
+
+**Fix.** The footer segment now uses the compact form always:
+`[8%|24%]` (session|weekly percentages, window labels dropped) instead of
+`[5h:8% / wk:24%]`; single-window providers show `[8%]`. This is the
+"compressed" target from the bug and fits short screens. The full windowed form
+remains in `/quota`.
+
+**Note on spec.** The bug text labelled the format "session - weekly -
+monthly" but showed only two values, and no monthly window exists in any
+current fetcher; the implemented two-value compact form matches the concrete
+`[8%|24%]` example. True width-adaptive rendering (a third, even-smaller tier)
+would require passing footer width into the JS segment `render()` — a bridge
+API change that does not exist today; noted as a possible follow-up.
+
+**Tests.** Updated `TestQuota_SegmentShowsWindowedQuota`,
+`TestQuota_SegmentShowsWindowedPercent`, `TestQuota_SegmentColorInBudget`,
+`TestQuota_CarouselPrefersAPIProvidersOverLocal`,
+`TestQuota_SegmentMultiProviderShowsActiveOnly`,
+`TestQuota_SegmentTracksActiveProviderOnly`. All PASS. Live PTY: footer shows
+`[1%|28%]`.
+
+## 9. Additional spinner animations
+
+**Fix.** Added three spinners to `internal/spinner/spinners.json` (verified
+absent before). Frame lists are palindromes where the bug asked for
+back-and-forth, because spinner playback is strictly cyclic
+(`frames[i % len]`):
+- `orbit`: ⊙ ⊚ ⊛ ⊚
+- `quadrant`: ◴ ◷ ◶ ◵
+- `flare`: ✴ ✳ ✵ ✷ ✸ ✹ ✺ ✹ ✸ ✷ ✵ ✳
+
+**Tests.** New `internal/spinner/spinner_test.go`: builtin load, the three new
+spinners exist with exact frames and positive interval, `Names()` lists them.
+All PASS.
+
+## 10. Full model stats (/usage)
+
+**Fix.** Implemented a cross-session usage feature backed by SQLite
+(`mattn/go-sqlite3`, already a dependency):
+- New `internal/usage` package: `Store` (SQLite at `~/.goa/usage.db`) recording
+  per-turn `Record{Project, Provider, Model, PromptN, PredictedN, CacheRead,
+  CacheWrite}`; `Query(ByProject|ByProvider|ByModel)` and `Sum` aggregations.
+- App records each completed turn's tokens via `recordTurnUsageLocked()`
+  (best-effort, lazily opened, closed on shutdown) in `internal/app/stats.go`.
+- New `/usage` command (`core/commands/usage.go`): global totals plus
+  per-project / per-provider / per-model tables; scopes `all|project|provider|
+  model|here`. Help at `core/commands/help/usage.long.md`; registered in
+  `core/commands/register.go`.
+
+**Tests.** `internal/usage/usage_test.go` (add/query/filter/sum/empty/idempotent
+open) and `core/commands/usage_test.go` (global shows all sections, scope
+filtering, `here` scoping, empty-store guidance, unknown scope, token
+formatting). All PASS.
+
+**Validation.** Live PTY: `/usage` renders `## Global usage (all projects)` and
+appears in the `/`-completion list.

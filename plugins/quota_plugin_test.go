@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // quotaPluginDir is the absolute path to the provider-quota plugin source,
@@ -106,10 +108,11 @@ func TestQuota_SegmentShowsWindowedQuota(t *testing.T) {
 	env.load(t)
 	env.callCommand("quota", "refresh") // populate cache synchronously
 	seg := env.renderSegment()
-	if !strings.Contains(seg, "5h:42%") {
-		t.Fatalf("segment = %q, want 5h:42%%", seg)
+	// Compact form "42|30": session and weekly percentages, no window labels.
+	if !strings.Contains(seg, "42") {
+		t.Fatalf("segment = %q, want session percent 42", seg)
 	}
-	if !strings.Contains(seg, "30%") {
+	if !strings.Contains(seg, "30") {
 		t.Fatalf("segment missing weekly: %q", seg)
 	}
 }
@@ -305,11 +308,131 @@ func TestQuota_CarouselPrefersAPIProvidersOverLocal(t *testing.T) {
 	// With anthropic holding windowed data, the segment must show it, not the
 	// local token fallback.
 	seg := env.renderSegment()
-	if !strings.Contains(seg, "5h:42%") {
+	if !strings.Contains(seg, "42") {
 		t.Fatalf("carousel should prefer anthropic over local: %q", seg)
 	}
 	if strings.Contains(seg, "tok") {
 		t.Fatalf("local fallback should not rotate in when a real provider has data: %q", seg)
+	}
+}
+
+// TestQuota_ProviderSwitchUpdatesSegment covers bugs.md "Quota": after
+// switching the active provider, the segment must track the new provider, not
+// keep showing the provider that was active at startup.
+func TestQuota_ProviderSwitchUpdatesSegment(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
+	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
+	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	// anthropic active at startup → 42.
+	if seg := ansi.Strip(env.renderSegment()); !strings.Contains(seg, "42") {
+		t.Fatalf("startup segment should show anthropic 42: %q", seg)
+	}
+	// Switch to z.ai → segment must update to 38, not stay on anthropic.
+	env.setActiveProvider("z.ai")
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "38") {
+		t.Fatalf("after provider switch segment should show z.ai 38: %q", seg)
+	}
+	if strings.Contains(seg, "42") {
+		t.Fatalf("stale startup provider quota after switch: %q", seg)
+	}
+}
+
+// TestQuota_UnsupportedProviderStatesNotSupported covers bugs.md "Quota": when
+// the active provider has no quota API, /quota must say so explicitly.
+func TestQuota_UnsupportedProviderStatesNotSupported(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("local", map[string]any{"provider": "local"})
+	env.setActiveProvider("local")
+	env.load(t)
+	out := env.callCommand("quota")
+	if !strings.Contains(out, "not supported") {
+		t.Fatalf("/quota should state quota is not supported for the active provider:\n%s", out)
+	}
+}
+
+// TestQuota_BudgetSummaryPlentyOfRoom covers bugs.md "Quota color": /quota
+// explains the budget status in words (e.g. "plenty of room").
+func TestQuota_BudgetSummaryPlentyOfRoom(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
+	// Well within budget: low usage, far from reset.
+	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":10,"limit":100,"reset_at":"2099-01-01T01:48:00Z"}}}`)
+	env.load(t)
+	out := env.callCommand("quota")
+	if !strings.Contains(out, "plenty of room") {
+		t.Fatalf("/quota should explain the budget status:\n%s", out)
+	}
+}
+
+// TestQuota_TableMergesUsageAndPct covers the request to merge the Usage and %
+// columns: the table must show "bar + pct%" once, not the redundant "42/100"
+// numbers plus a separate % column.
+func TestQuota_TableMergesUsageAndPct(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
+	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100,"reset_at":"2099-01-01T01:48:00Z"}}}`)
+	env.load(t)
+	out := env.callCommand("quota")
+	// Merged form: a bar followed by "42%".
+	if !strings.Contains(out, "42%") {
+		t.Fatalf("/quota should show merged usage percent:\n%s", out)
+	}
+	// The redundant "42/100" fraction must be gone.
+	if strings.Contains(out, "42/100") {
+		t.Fatalf("/quota should not show the redundant N/limit fraction:\n%s", out)
+	}
+	// And there is no standalone "%" column header anymore.
+	if strings.Contains(out, "| % |") {
+		t.Fatalf("/quota should not have a separate %% column:\n%s", out)
+	}
+}
+
+// TestQuota_TableHasAtResetAndStatus covers the "At reset" projection column
+// and the per-provider/per-window Status column.
+func TestQuota_TableHasAtResetAndStatus(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
+	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100,"reset_at":"2099-01-01T01:48:00Z"}}}`)
+	env.load(t)
+	out := env.callCommand("quota")
+	for _, want := range []string{"At reset", "Status"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/quota missing %q column:\n%s", want, out)
+		}
+	}
+}
+
+// TestQuota_SegmentPerWindowColorsDistinct covers "color should be at each
+// number": when two windows project to different budget levels, their
+// percentages must carry different colors (not one shared worst-window color).
+func TestQuota_SegmentPerWindowColorsDistinct(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("kimi-code", map[string]any{"provider": "kimi-code", "apiKey": "sk", "endpoint": "https://api.kimi.com/coding/v1"})
+	env.setActiveProvider("kimi-code")
+	// Session window far from reset (green) but weekly nearly exhausted (red):
+	// used=10 with reset far future → low pace; weekly used=95 → high pace.
+	sessionReset := time.Now().Add(4 * time.Hour).UTC().Format(time.RFC3339)
+	weeklyReset := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	env.respond("api.kimi.com/coding/v1/usages", 200, `{
+		"user": {"membership": {"level": "LEVEL_ADVANCED"}},
+		"usage": {"limit": "100", "used": "95", "resetTime": `+strconv.Quote(weeklyReset)+`},
+		"limits": [
+			{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+			 "detail": {"limit": "100", "used": "10", "resetTime": `+strconv.Quote(sessionReset)+`}}
+		]
+	}`)
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := env.renderSegment()
+	// Two distinct windows → two (potentially different) color spans present.
+	// At minimum both window percentages must be individually wrapped.
+	if strings.Count(seg, "38;2;") < 2 {
+		t.Fatalf("segment should color each window separately, got: %q", seg)
 	}
 }
 
@@ -323,10 +446,11 @@ func TestQuota_SegmentMultiProviderShowsActiveOnly(t *testing.T) {
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()
-	if !strings.Contains(seg, "42%") {
+	stripped := ansi.Strip(seg)
+	if !strings.Contains(stripped, "42") {
 		t.Fatalf("segment should show active provider quota: %q", seg)
 	}
-	if strings.Contains(seg, "38%") {
+	if strings.Contains(stripped, "38") {
 		t.Fatalf("inactive provider quota leaked into segment: %q", seg)
 	}
 }

@@ -760,7 +760,7 @@ func (m *steeringPending) Render(width int) []string {
 	if hidden > 0 {
 		parts = append(parts, fmt.Sprintf("+%d lines", hidden))
 	}
-	parts = append(parts, "(Alt+E to edit)")
+	parts = append(parts, "(alt+e to edit)")
 	lines = append(lines, box(strings.Join(parts, " ")))
 
 	lines = append(lines, hline("└", "┘"))

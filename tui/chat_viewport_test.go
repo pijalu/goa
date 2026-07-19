@@ -338,8 +338,8 @@ func TestSteeringPending_Render_MultiLine(t *testing.T) {
 func TestSteeringPending_Render_ShowsEditAffordance(t *testing.T) {
 	m := newSteeringPending("please also fix the tests")
 	out := ansi.Strip(strings.Join(m.Render(80), "\n"))
-	if !strings.Contains(out, "Alt+E") {
-		t.Errorf("steering bubble should advertise the Alt+E edit affordance, got:\n%s", out)
+	if !strings.Contains(out, "alt+e") {
+		t.Errorf("steering bubble should advertise the alt+e edit affordance, got:\n%s", out)
 	}
 }
 

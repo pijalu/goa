@@ -182,10 +182,11 @@ function activeFetcherId() {
 }
 
 // statusRender returns the compact quota segment for the footer, tracking
-// ONLY the active provider: "[5h:7% / wk:21%]" with a semantic color derived
-// from projected window-end usage (green in-budget, orange close, red
-// overrun, white when the projection is still pending). Reads the cache
-// only — fetching is the scheduler's job.
+// ONLY the active provider. Local providers show "[∞]" (no quota). API
+// providers show "[8%|24%]" (session|weekly), each percentage colored by its
+// OWN projected window-end usage (green in-budget, orange close, red overrun,
+// default when still pending) via goa.segmentColor. Reads the cache only —
+// fetching is the scheduler's job.
 function statusRender() {
 	var id = activeFetcherId();
 	if (!id) {
@@ -204,11 +205,69 @@ function statusRender() {
 		}
 		return { text: "[⚠]", color: "warn" };
 	}
-	var text = formatShort(id, entry);
-	if (text === "") {
+	// Local providers have no quota limit: show the infinite symbol.
+	if (entry.local) {
+		return { text: "[∞]", color: "ok" };
+	}
+	return colorizedSegment(entry);
+}
+
+// colorizedSegment builds "[8%|24%]" with each window's percentage wrapped in
+// its own semantic color. Falls back to the single worst-window color when
+// goa.segmentColor is unavailable (older hosts).
+function colorizedSegment(entry) {
+	var parts = [];
+	for (var i = 0; i < entry.limits.length && parts.length < 2; i++) {
+		var lim = entry.limits[i];
+		if (!lim.limit || lim.limit <= 0) {
+			continue;
+		}
+		parts.push({ pct: format.pct(lim.used, lim.limit) + "%", color: ratioColor(projectedRatio(lim)) });
+	}
+	if (parts.length === 0) {
 		return "";
 	}
-	return { text: "[" + text + "]", color: budgetColor(entry) };
+	if (typeof goa.segmentColor !== "function") {
+		// No per-part coloring: join plain and let the bridge apply one color.
+		var plain = [];
+		for (var j = 0; j < parts.length; j++) {
+			plain.push(parts[j].pct);
+		}
+		return { text: "[" + plain.join("|") + "]", color: budgetColor(entry) };
+	}
+	var out = "[";
+	for (var k = 0; k < parts.length; k++) {
+		if (k > 0) {
+			out += "|";
+		}
+		var hex = goa.segmentColor(parts[k].color);
+		out += hex ? ansiWrap(hex, parts[k].pct) : parts[k].pct;
+	}
+	out += "]";
+	return out; // plain string: bridge passes pre-colored text through
+}
+
+// ansiWrap wraps s in a 24-bit foreground color + reset (matches ansi.Fg).
+function ansiWrap(hex, s) {
+	var m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex);
+	if (!m) {
+		return s;
+	}
+	return "\x1b[38;2;" + parseInt(m[1], 16) + ";" + parseInt(m[2], 16) + ";" + parseInt(m[3], 16) + "m" + s + "\x1b[0m";
+}
+
+// ratioColor maps a projected window-end ratio to a semantic color name.
+function ratioColor(ratio) {
+	if (ratio < 0) {
+		return "pending";
+	}
+	if (ratio > 1.0) {
+		return "critical";
+	}
+	if (ratio > 0.8) {
+		return "warn";
+	}
+	return "ok";
 }
 
 // budgetColor estimates window-end usage from elapsed progress: green when
@@ -260,42 +319,37 @@ function projectedRatio(lim) {
 	return projected / lim.limit;
 }
 
-// formatShort renders "5h:42% / wk:30%" (up to two bounded windows) or
-// "142K tok" (local unbounded fallback).
-function formatShort(id, entry) {
-	if (entry.local) {
-		var used = entry.limits[0] ? entry.limits[0].used : 0;
-		return format.tokens(used) + " tok";
+
+// budgetSummary returns a short human explanation of the active provider's
+// budget status (bugs.md "Quota color"), e.g. "plenty of room" or "on track
+// to hit session quota". Derived from the same projection as budgetColor.
+function budgetSummary(entry) {
+	if (!entry || !entry.limits || entry.limits.length === 0) {
+		return "";
 	}
-	var parts = [];
-	for (var i = 0; i < entry.limits.length && parts.length < 2; i++) {
+	var worst = -1;
+	var label = "";
+	for (var i = 0; i < entry.limits.length; i++) {
 		var lim = entry.limits[i];
 		if (!lim.limit || lim.limit <= 0) {
 			continue;
 		}
-		var tag = shortTag(lim.label);
-		parts.push(tag + ":" + format.pct(lim.used, lim.limit) + "%");
+		var r = projectedRatio(lim);
+		if (r > worst) {
+			worst = r;
+			label = lim.label || "quota";
+		}
 	}
-	return parts.join(" / ");
-}
-
-// shortTag maps a limit label to a compact tag: "Session (5h)" → "5h".
-function shortTag(label) {
-	var m = String(label).match(/\(([^)]+)\)/);
-	if (m) {
-		return m[1];
+	if (worst < 0) {
+		return "";
 	}
-	var lower = String(label).toLowerCase();
-	if (lower.indexOf("week") >= 0) {
-		return "wk";
+	if (worst > 1.0) {
+		return "over budget — projected to exceed " + label;
 	}
-	if (lower.indexOf("session") >= 0) {
-		return "sess";
+	if (worst > 0.8) {
+		return "close to " + label + " limit";
 	}
-	if (lower.indexOf("month") >= 0) {
-		return "mo";
-	}
-	return String(label).substring(0, 4);
+	return "plenty of room";
 }
 
 // --- /quota command -------------------------------------------------------
@@ -349,12 +403,15 @@ function renderFull() {
 		appendProviderRows(rows, id);
 	}
 	appendLocalRow(rows);
+	// bugs.md "Quota": when the active provider has no quota API, say so
+	// rather than silently showing only the local/inferred row.
+	appendUnsupportedNote(out);
 	if (rows.length === 0) {
 		out.push("(no provider quota APIs configured)");
 		return out.join("\n");
 	}
-	out.push("| Provider | Window | Usage | % | Resets in |");
-	out.push("| --- | --- | --- | ---: | --- |");
+	out.push("| Provider | Window | Usage | At reset | Resets in | Status |");
+	out.push("| --- | --- | --- | ---: | --- | --- |");
 	for (var i = 0; i < rows.length; i++) {
 		out.push(rows[i]);
 	}
@@ -387,10 +444,10 @@ function appendProviderRows(rows, id) {
 			return; // not configured; skip quietly
 		}
 		if (entry.error === "auth_required") {
-			rows.push("| " + name + " | — | — | — | auth required — `/quota:login:" + id + "` |");
+			rows.push("| " + name + " | — | — | — | — | auth required — `/quota:login:" + id + "` |");
 			return;
 		}
-		rows.push("| " + name + " | — | — | — | error: " + entry.error + " |");
+		rows.push("| " + name + " | — | — | — | — | error: " + entry.error + " |");
 		return;
 	}
 	var display = entry.plan ? name + " (" + entry.plan + ")" : name;
@@ -400,7 +457,10 @@ function appendProviderRows(rows, id) {
 }
 
 // renderLimitRow renders one quota window as a markdown table row:
-// "| Kimi (Advanced) | Session (5h) | 4/100 | 8% | +1h 36m |".
+// "| Kimi (Advanced) | Session (5h) | ██░░ 8% | 8% | +1h 36m | plenty of room |".
+// Usage merges the bar + current % (the redundant "4/100" numbers and the
+// separate % column are gone). "At reset" projects the % at window end from
+// the current pace. "Status" is the per-window level in words.
 // Cost windows (entry.costUnit === "cents") render dollar amounts.
 function renderLimitRow(display, lim, entry) {
 	var reset = lim.resetsAt ? format.durationUntil(lim.resetsAt) : "—";
@@ -410,13 +470,33 @@ function renderLimitRow(display, lim, entry) {
 		var val = isCost
 			? format.cost(lim.used / 100)
 			: format.tokens(lim.used);
-		return "| " + display + " | " + lim.label + " | " + val + " | — | " + reset + " |";
+		return "| " + display + " | " + lim.label + " | " + val + " | — | " + reset + " | — |";
 	}
 	var p = format.pct(lim.used, lim.limit);
-	var usage = isCost
-		? format.bar(p, 8) + " " + format.cost(lim.used / 100) + "/" + format.cost(lim.limit / 100)
-		: format.bar(p, 8) + " " + format.tokens(lim.used) + "/" + format.tokens(lim.limit);
-	return "| " + display + " | " + lim.label + " | " + usage + " | " + p + "% | " + reset + " |";
+	var usage = format.bar(p, 8) + " " + p + "%";
+	var atReset = atResetPct(lim);
+	return "| " + display + " | " + lim.label + " | " + usage + " | " + atReset + " | " + reset + " | " + windowStatus(lim) + " |";
+}
+
+// atResetPct returns the projected usage % at window reset (e.g. "8%"),
+// derived from the same pace projection as the footer color. Falls back to the
+// raw current % when there is not enough timing info to project.
+function atResetPct(lim) {
+	return Math.round(projectedRatio(lim) * 100) + "%";
+}
+
+// windowStatus returns the per-window budget level in words ("plenty of
+// room", "close to limit", "over budget"), matching the footer color for that
+// window's projected window-end usage.
+function windowStatus(lim) {
+	var r = projectedRatio(lim);
+	if (r > 1.0) {
+		return "over budget";
+	}
+	if (r > 0.8) {
+		return "close to limit";
+	}
+	return "plenty of room";
 }
 
 // appendLocalRow appends the local/inferred fallback row.
@@ -426,7 +506,21 @@ function appendLocalRow(rows) {
 	if (entry && entry.limits && entry.limits.length > 0) {
 		used = entry.limits[0].used;
 	}
-	rows.push("| Local (inferred) | Session tokens | " + format.tokens(used) + " | — | — |");
+	rows.push("| Local (inferred) | Session tokens | " + format.tokens(used) + " | — | — | — |");
+}
+
+// appendUnsupportedNote adds a "quota not supported" note to the /quota output
+// when the active provider resolved to the local fallback (i.e. it has no
+// quota API), so the user understands why no real quota window is shown.
+function appendUnsupportedNote(out) {
+	var active = (goa.config() && goa.config().activeProvider) || "";
+	if (active === "") {
+		return;
+	}
+	if (activeFetcherId() === _fallbackId) {
+		out.push("");
+		out.push("_Quota tracking is not supported for provider `" + active + "` — showing local session tokens._");
+	}
 }
 
 // renderJSON emits machine-readable quota data.

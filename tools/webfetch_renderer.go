@@ -20,7 +20,7 @@ var _ tuirender.ToolRenderer = (*WebFetchRenderer)(nil)
 
 // NewWebFetchRenderer creates a new webfetch renderer.
 func NewWebFetchRenderer() *WebFetchRenderer {
-	return &WebFetchRenderer{KeyExpand: "Ctrl+O"}
+	return &WebFetchRenderer{KeyExpand: KeyExpandLabel}
 }
 
 func (r *WebFetchRenderer) RenderCall(args map[string]any, ctx tuirender.RenderContext) string {

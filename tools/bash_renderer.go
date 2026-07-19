@@ -22,7 +22,7 @@ type BashRenderer struct {
 var _ tuirender.ToolRenderer = (*BashRenderer)(nil)
 
 func NewBashRenderer() *BashRenderer {
-	return &BashRenderer{KeyExpand: "Ctrl+O"}
+	return &BashRenderer{KeyExpand: KeyExpandLabel}
 }
 
 var (

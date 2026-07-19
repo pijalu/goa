@@ -51,6 +51,7 @@ func (b *JSBridge) setupExtendedGlobals(goaObj *goja.Object) {
 	b.setupUI(goaObj, ext.UI)
 	b.setupOutput(goaObj, ext.Output)
 	b.setupSessionUsage(goaObj, ext.SessionUsage)
+	b.setupSegmentColor(goaObj, ext.SegmentColor)
 }
 
 // setupHTTP registers goa.http.fetch(url, opts). The actual request goes

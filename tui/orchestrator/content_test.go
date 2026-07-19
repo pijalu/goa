@@ -63,7 +63,7 @@ func TestAgentContent_ShowsNavHint(t *testing.T) {
 	v.SelectByKey("stats")
 
 	statsHint := strings.Join(stripAll(c.Render(80)), "\n")
-	if !strings.Contains(statsHint, "Ctrl+x tabs") {
+	if !strings.Contains(statsHint, "ctrl+x tabs") {
 		t.Errorf("stats tab missing nav hint:\n%s", statsHint)
 	}
 }

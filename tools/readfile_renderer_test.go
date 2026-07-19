@@ -69,7 +69,7 @@ func TestReadFileRenderer_RenderResult_TruncatedShowsHint(t *testing.T) {
 	if !strings.Contains(stripped, "450 more lines") {
 		t.Errorf("expanded truncated read should show 'more lines' hint, got %q", result)
 	}
-	if !strings.Contains(stripped, "Ctrl+O") {
+	if !strings.Contains(stripped, "ctrl+o") {
 		t.Errorf("hint should mention the expand key, got %q", result)
 	}
 }

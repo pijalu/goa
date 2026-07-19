@@ -58,6 +58,12 @@ type Scene struct {
 	// the start of the chrome band, so chrome can never scroll off the top.
 	// 0 = no pinned chrome (the whole canvas is scrollable transcript).
 	ChromeHeight int
+
+	// WidthChanged reports that the terminal width differs from the previous
+	// frame. The Compositor sets it before calling compose; on a width change
+	// compose must materialize the FULL canvas (not just the visible window),
+	// because the scrollback reset re-emits every off-screen row from it.
+	WidthChanged bool
 }
 
 // compose builds the virtual-buffer canvas from the Scene's base layers, each
@@ -85,6 +91,13 @@ func (s *Scene) compose(prevViewportTop int) (canvas []string, hasOverlay bool) 
 	placeStart := viewportStart
 	if prevViewportTop >= 0 && prevViewportTop < viewportStart {
 		placeStart = prevViewportTop
+	}
+	// On a WIDTH change the compositor wipes the terminal scrollback (\x1b[3J)
+	// and re-emits the whole off-screen transcript from this canvas, so every
+	// row must be materialized — the steady-state optimization (skip rows above
+	// placeStart) would re-emit them as blanks, erasing visible history.
+	if s.WidthChanged {
+		placeStart = 0
 	}
 
 	for _, l := range s.Layers {
@@ -467,13 +480,17 @@ func (c *Compositor) Render(scene *Scene) {
 	if c.chromeH < 0 {
 		c.chromeH = 0
 	}
+	resized := (c.prevW != 0 && c.prevW != width) || (c.prevH != 0 && c.prevH != height)
+	widthChanged := c.prevW != 0 && c.prevW != width
+	first := c.prevLines == nil
+	// Tell compose whether this is a width-change frame BEFORE building the
+	// canvas: a width change triggers the scrollback-reset path, which needs
+	// the full off-screen transcript materialized.
+	scene.WidthChanged = widthChanged
 	canvas, hasOverlay := scene.compose(c.vt)
 	c.beginTrace(scene, canvas, width, height)
 	defer c.emitTrace()
 
-	resized := (c.prevW != 0 && c.prevW != width) || (c.prevH != 0 && c.prevH != height)
-	widthChanged := c.prevW != 0 && c.prevW != width
-	first := c.prevLines == nil
 	switch {
 	case first:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
@@ -497,6 +514,7 @@ func (c *Compositor) Render(scene *Scene) {
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
 	c.prevH = height
+	scene.prevTermW = width
 }
 
 // emitOverflow emits into scrollback every transcript row that has scrolled
