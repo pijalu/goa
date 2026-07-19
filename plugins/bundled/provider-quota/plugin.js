@@ -181,9 +181,10 @@ function activeFetcherId() {
 	return _fallbackId;
 }
 // isLocalProvider reports whether the currently active provider is a genuine
-// local provider (config provider type "local", e.g. LM Studio). A NON-local
-// provider that merely has no quota fetcher is NOT local — it must not show
-// the infinity segment.
+// local provider: config provider type lm-studio / ollama / local, or a
+// localhost/127.0.0.1 endpoint (mirrors Goa's own local detection). A
+// NON-local provider that merely has no quota fetcher is NOT local — it must
+// not show the infinity segment.
 function isLocalProvider() {
 	var active = (goa.config() && goa.config().activeProvider) || "";
 	if (!active) {
@@ -203,8 +204,13 @@ function isLocalProvider() {
 	if (!p) {
 		return false;
 	}
-	var ptype = (p.provider || p.id || "").toLowerCase();
-	return ptype === "local";
+	var ptype = (p.provider || "").toLowerCase();
+	if (ptype === "local" || ptype === "lm-studio" || ptype === "lmstudio" || ptype === "ollama") {
+		return true;
+	}
+	// No/unknown provider type: a localhost endpoint means it's local.
+	var endpoint = (p.endpoint || p.baseUrl || "").toLowerCase();
+	return endpoint.indexOf("localhost") >= 0 || endpoint.indexOf("127.0.0.1") >= 0;
 }
 
 

@@ -33,28 +33,32 @@ func (c *PluginCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
-// CompleteArgs provides argument completions: subcommand names, then plugin
-// IDs for enable/disable/remove.
+// CompleteArgs provides argument completions using goa's colon syntax:
+// /plugin:<sub>[:<id>]. Subcommand names complete after the first colon;
+// plugin IDs complete after /plugin:enable:, /plugin:disable:, /plugin:remove:.
 func (c *PluginCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
 	if c.Manager == nil {
 		return nil
 	}
-	// The router passes the full arg string (e.g. "en" or "enable pro");
-	// complete a subcommand when no space yet, a plugin id otherwise.
 	arg := strings.TrimPrefix(prefix, ":")
-	if idx := strings.IndexAny(arg, " \t"); idx >= 0 {
+	// Second colon → complete a plugin id for the given subcommand. The
+	// completion engine prepends "/plugin:" to each Value, so the id Value
+	// must itself carry the subcommand (e.g. "disable:provider-quota") or the
+	// result collapses to "/plugin:<id>".
+	if idx := strings.Index(arg, ":"); idx >= 0 {
 		sub := strings.ToLower(arg[:idx])
-		idPrefix := strings.TrimLeft(arg[idx+1:], " \t")
+		idPrefix := arg[idx+1:]
 		switch sub {
 		case "enable":
-			return completePluginIDs(c.Manager, idPrefix, boolPtr(false))
+			return prefixedIDs(sub, completePluginIDs(c.Manager, idPrefix, boolPtr(false)))
 		case "disable":
-			return completePluginIDs(c.Manager, idPrefix, boolPtr(true))
+			return prefixedIDs(sub, completePluginIDs(c.Manager, idPrefix, boolPtr(true)))
 		case "remove", "uninstall":
-			return completePluginIDs(c.Manager, idPrefix, nil)
+			return prefixedIDs(sub, completePluginIDs(c.Manager, idPrefix, nil))
 		}
 		return nil
 	}
+	// First colon (or none yet) → complete the subcommand name.
 	subs := []core.ArgCompletion{
 		{Value: "list", Description: "List installed plugins and their state"},
 		{Value: "enable", Description: "Enable an installed plugin"},
@@ -111,22 +115,22 @@ func (c *PluginCommand) Run(ctx core.Context, args []string) error {
 	switch sub {
 	case "install":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: /plugin install <git-url>")
+			return fmt.Errorf("usage: /plugin:install:<git-url>")
 		}
 		return c.install(ctx, args[1])
 	case "remove", "uninstall":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: /plugin remove <id>")
+			return fmt.Errorf("usage: /plugin:remove:<id>")
 		}
 		return c.remove(ctx, args[1])
 	case "enable":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: /plugin enable <id>")
+			return fmt.Errorf("usage: /plugin:enable:<id>")
 		}
 		return c.enable(ctx, args[1])
 	case "disable":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: /plugin disable <id>")
+			return fmt.Errorf("usage: /plugin:disable:<id>")
 		}
 		return c.disable(ctx, args[1])
 	case "list", "ls":
@@ -141,7 +145,7 @@ func (c *PluginCommand) install(ctx core.Context, source string) error {
 	if err != nil {
 		return err
 	}
-	ctx.Writef("Installed plugin %s. Run /plugin enable %s to activate it.\n", id, id)
+	ctx.Writef("Installed plugin %s. Run /plugin:enable:%s to activate it.\n", id, id)
 	return nil
 }
 
@@ -178,10 +182,10 @@ func (c *PluginCommand) list(ctx core.Context) error {
 	ctx.Writef("Installed plugins:\n")
 	for _, e := range entries {
 		status := "disabled"
-		hint := "  → /plugin enable " + e.ID
+		hint := "  → /plugin:enable:" + e.ID
 		if e.Enabled {
 			status = "enabled"
-			hint = "  → /plugin disable " + e.ID
+			hint = "  → /plugin:disable:" + e.ID
 		}
 		ctx.Writef("  %s (%s, hash %s)%s\n", e.ID, status, shortHash(e.Hash), hint)
 	}

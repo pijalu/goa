@@ -234,13 +234,44 @@ func TestPluginCommand_CompletesSubcommandsAndIDs(t *testing.T) {
 	}
 
 	// Plugin id completion after a subcommand: enable offers the disabled
-	// test-plugin; disable does NOT (it's not enabled yet).
-	ids := cmd.CompleteArgs(core.Context{}, "enable te")
-	if len(ids) != 1 || ids[0].Value != "test-plugin" {
-		t.Fatalf("enable completion = %v, want [test-plugin]", ids)
+	// test-plugin (full colon path); disable does NOT (it's not enabled yet).
+	ids := cmd.CompleteArgs(core.Context{}, "enable:te")
+	if len(ids) != 1 || ids[0].Value != "enable:test-plugin" {
+		t.Fatalf("enable completion = %v, want [enable:test-plugin]", ids)
 	}
-	if got := cmd.CompleteArgs(core.Context{}, "disable te"); len(got) != 0 {
+	if got := cmd.CompleteArgs(core.Context{}, "disable:te"); len(got) != 0 {
 		t.Fatalf("disable should not offer a disabled plugin, got %v", got)
+	}
+}
+
+// TestPluginCommand_CompletionProducesFullPath is the regression test for the
+// live bug where completing after /plugin:disable: produced
+// "/plugin:provider-quota" (subcommand dropped, → "unknown subcommand"). The
+// completer prepends "/plugin:" to each Value, so the Value must carry the
+// subcommand, yielding "/plugin:disable:provider-quota".
+func TestPluginCommand_CompletionProducesFullPath(t *testing.T) {
+	mgr := newTestPluginManager(t)
+	cmd := &PluginCommand{Manager: mgr}
+	_ = cmd.Run(core.Context{}, []string{"install", "https://example.com/p.git"})
+	if err := cmd.Manager.Enable("test-plugin"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	// disable: offers the enabled test-plugin as a full colon path.
+	ids := cmd.CompleteArgs(core.Context{}, "disable:pro")
+	if len(ids) == 0 {
+		t.Fatal("no completions for /plugin:disable:pro")
+	}
+	found := false
+	for _, c := range ids {
+		if c.Value == "disable:test-plugin" {
+			found = true
+		}
+		if c.Value == "test-plugin" {
+			t.Errorf("completion dropped the subcommand: got bare %q (would render /plugin:test-plugin)", c.Value)
+		}
+	}
+	if !found {
+		t.Errorf("want full path disable:test-plugin, got %v", ids)
 	}
 }
 
@@ -255,20 +286,27 @@ func TestPluginCommand_CompletionFiltersByState(t *testing.T) {
 	if err := cmd.Manager.Enable("test-plugin"); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
+	// idOf strips the "<sub>:" prefix from a completion Value to the bare id.
+	idOf := func(v string) string {
+		if i := strings.Index(v, ":"); i >= 0 {
+			return v[i+1:]
+		}
+		return v
+	}
 
 	// enable → only disabled (none of the enabled test-plugin).
-	for _, c := range cmd.CompleteArgs(core.Context{}, "enable ") {
-		if mgr.IsEnabled(c.Value) {
+	for _, c := range cmd.CompleteArgs(core.Context{}, "enable:") {
+		if mgr.IsEnabled(idOf(c.Value)) {
 			t.Errorf("enable offered enabled plugin %q", c.Value)
 		}
 	}
 	// disable → only enabled (test-plugin present).
 	found := false
-	for _, c := range cmd.CompleteArgs(core.Context{}, "disable ") {
-		if !mgr.IsEnabled(c.Value) {
+	for _, c := range cmd.CompleteArgs(core.Context{}, "disable:") {
+		if !mgr.IsEnabled(idOf(c.Value)) {
 			t.Errorf("disable offered disabled plugin %q", c.Value)
 		}
-		if c.Value == "test-plugin" {
+		if c.Value == "disable:test-plugin" {
 			found = true
 		}
 	}

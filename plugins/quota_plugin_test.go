@@ -430,6 +430,36 @@ func TestQuota_LocalProviderStillShowsInfinity(t *testing.T) {
 	}
 }
 
+// TestQuota_LocalProviderByEndpointShowsInfinity covers the real-world case
+// from the user report: an LM Studio entry with NO provider type field but a
+// localhost endpoint must be detected as local and show [∞].
+func TestQuota_LocalProviderByEndpointShowsInfinity(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// No "provider" field — only a localhost endpoint, like the user's config.
+	env.setProvider("lmstudio", map[string]any{"endpoint": "http://localhost:1234/v1"})
+	env.setActiveProvider("lmstudio")
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "∞") {
+		t.Fatalf("localhost-endpoint provider (no type) should show ∞, got %q", seg)
+	}
+}
+
+// TestQuota_LocalProviderLMStudioTypeShowsInfinity covers a provider typed
+// "lm-studio" (Goa's canonical local type) → shows [∞].
+func TestQuota_LocalProviderLMStudioTypeShowsInfinity(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("lmstudio", map[string]any{"provider": "lm-studio", "endpoint": "http://localhost:1234/v1"})
+	env.setActiveProvider("lmstudio")
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "∞") {
+		t.Fatalf("lm-studio typed provider should show ∞, got %q", seg)
+	}
+}
+
 // TestQuota_BudgetSummaryPlentyOfRoom covers bugs.md "Quota color": /quota
 // explains the budget status in words (e.g. "plenty of room").
 func TestQuota_BudgetSummaryPlentyOfRoom(t *testing.T) {
