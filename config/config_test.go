@@ -340,6 +340,34 @@ func TestDeepMergeProviders(t *testing.T) {
 	}
 }
 
+// TestDeepMergeFontStyles verifies font_styles survive the config cascade: a
+// layer that omits font_styles must not clobber one that set them (the bug
+// where a project config's tui: section reset the home layer's italic:false).
+func TestDeepMergeFontStyles(t *testing.T) {
+	false_ := false
+	true_ := true
+	base := &Config{}
+	base.TUI.FontStyles.Italic = &false_
+	// Override layer sets theme but NO font_styles — Italic must be preserved.
+	override := &Config{}
+	override.TUI.Theme = "dark"
+	base.DeepMerge(override)
+	if base.TUI.FontStyles.ItalicEnabled() {
+		t.Error("Italic=false from the base layer was clobbered by a tui: override without font_styles")
+	}
+	// A layer that DOES set font_styles overrides per-style.
+	override2 := &Config{}
+	override2.TUI.FontStyles.Italic = &true_
+	override2.TUI.FontStyles.Bold = &false_
+	base.DeepMerge(override2)
+	if !base.TUI.FontStyles.ItalicEnabled() {
+		t.Error("explicit italic=true override not applied")
+	}
+	if base.TUI.FontStyles.BoldEnabled() {
+		t.Error("explicit bold=false override not applied")
+	}
+}
+
 // TestDeepMergeSkillsDirs verifies Skills.Dirs concatenation.
 func TestDeepMergeSkillsDirs(t *testing.T) {
 	base := &Config{Skills: SkillsConfig{Dirs: []string{"dir1"}}}

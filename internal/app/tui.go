@@ -15,6 +15,7 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/background"
 	"github.com/pijalu/goa/internal/spinner"
 	"github.com/pijalu/goa/tui"
@@ -363,6 +364,20 @@ func initTheme(cfg *config.Config) {
 		tui.TheTheme = tui.DarkTheme()
 	}
 	tui.SyncToolTheme()
+	initFontStyles(cfg)
+}
+
+// initFontStyles applies the configured SGR font-style toggles (bold/italic/
+// underline/strikethrough) to the process-global ansi gate used by the
+// markdown and inline renderers.
+func initFontStyles(cfg *config.Config) {
+	fs := cfg.TUI.FontStyles
+	ansi.SetFontStyles(ansi.FontStyles{
+		Bold:          fs.BoldEnabled(),
+		Italic:        fs.ItalicEnabled(),
+		Underline:     fs.UnderlineEnabled(),
+		Strikethrough: fs.StrikethroughEnabled(),
+	})
 }
 
 // initSpinner sets the active spinner from config. An empty or unset spinner

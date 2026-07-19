@@ -433,6 +433,25 @@ func (c *Config) mergeTUI(other *Config) {
 	}
 	mergeToolDisplay(&c.TUI.Tools, &other.TUI.Tools)
 	mergeHistoryConfig(&c.TUI.History, &other.TUI.History)
+	mergeFontStyles(&c.TUI.FontStyles, &other.TUI.FontStyles)
+}
+
+// mergeFontStyles deep-merges the per-style toggles: only styles explicitly
+// set in src override dst, so a config layer that omits font_styles does not
+// clobber a layer that set them (each toggle is a *bool, nil = unset).
+func mergeFontStyles(dst, src *FontStylesConfig) {
+	if src.Bold != nil {
+		dst.Bold = src.Bold
+	}
+	if src.Italic != nil {
+		dst.Italic = src.Italic
+	}
+	if src.Underline != nil {
+		dst.Underline = src.Underline
+	}
+	if src.Strikethrough != nil {
+		dst.Strikethrough = src.Strikethrough
+	}
 }
 
 // mergeToolDisplay merges the tools display config. Non-zero PreviewLines and

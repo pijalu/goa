@@ -579,6 +579,35 @@ type TUIConfig struct {
 	Spinner        string                `yaml:"spinner"`
 	Tools          ToolDisplayConfig     `yaml:"tools"`
 	History        HistoryConfig         `yaml:"history"`
+	FontStyles     FontStylesConfig      `yaml:"font_styles"`
+}
+
+// FontStylesConfig toggles SGR font-style support in rendered output
+// (markdown, tool help). Italic is opt-out-capable because some terminals
+// render it poorly; all styles default to enabled.
+type FontStylesConfig struct {
+	// Bold enables bold (\e[1m) for **text**. Default true.
+	Bold *bool `yaml:"bold,omitempty"`
+	// Italic enables italic (\e[3m) for *text* and _text_. Default true.
+	Italic *bool `yaml:"italic,omitempty"`
+	// Underline enables underline (\e[4m) for links. Default true.
+	Underline *bool `yaml:"underline,omitempty"`
+	// Strikethrough enables strikethrough (\e[9m) for ~~text~~. Default true.
+	Strikethrough *bool `yaml:"strikethrough,omitempty"`
+}
+
+// BoldEnabled reports whether bold styling is enabled (default true).
+func (f FontStylesConfig) BoldEnabled() bool { return f.Bold == nil || *f.Bold }
+
+// ItalicEnabled reports whether italic styling is enabled (default true).
+func (f FontStylesConfig) ItalicEnabled() bool { return f.Italic == nil || *f.Italic }
+
+// UnderlineEnabled reports whether underline styling is enabled (default true).
+func (f FontStylesConfig) UnderlineEnabled() bool { return f.Underline == nil || *f.Underline }
+
+// StrikethroughEnabled reports whether strikethrough styling is enabled (default true).
+func (f FontStylesConfig) StrikethroughEnabled() bool {
+	return f.Strikethrough == nil || *f.Strikethrough
 }
 
 // HistoryConfig controls per-session input history loading and search.

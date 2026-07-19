@@ -140,6 +140,22 @@ func TestRenderInline_ItalicUnderscore(t *testing.T) {
 	}
 }
 
+// TestRenderInline_ItalicUnderscoreNotIntraWord covers the CommonMark flanking
+// rule: intra-word underscores (snake_case) are NOT emphasis and must stay
+// literal — otherwise identifiers like KEEP_VISIBLE_TOP get mangled.
+func TestRenderInline_ItalicUnderscoreNotIntraWord(t *testing.T) {
+	theme := DarkTheme()
+	for _, in := range []string{"KEEP_VISIBLE_TOP", "foo_bar_baz", "a_b_c"} {
+		if got := renderInline(in, theme); got != in {
+			t.Errorf("renderInline(%q) = %q, want unchanged (intra-word _ is not italic)", in, got)
+		}
+	}
+	// But spaced underscores still italicize.
+	if got := renderInline("a _slanted_ word", theme); !strings.Contains(got, ansi.Italic) {
+		t.Errorf("spaced _slanted_ should italicize, got %q", got)
+	}
+}
+
 // TestRenderInline_FontStyleGate verifies the config-driven font-style gate:
 // a disabled style emits no SGR (text passes through with markers stripped to
 // the gated-empty sequence), while enabled styles emit their codes.

@@ -341,7 +341,10 @@ func renderInlineItalic(text string) string {
 }
 
 // renderItalicMarker replaces marker-delimited spans (single * or _) with
-// italic ANSI, skipping the bold double-marker form.
+// italic ANSI, skipping the bold double-marker form. For '_' (unlike '*'),
+// CommonMark flanking rules apply: intra-word underscores (snake_case) are
+// NOT emphasis, so a '_' immediately preceded and followed by a letter/digit
+// is left literal.
 func renderItalicMarker(text string, marker byte) string {
 	var out strings.Builder
 	pos := 0
@@ -374,6 +377,12 @@ func renderItalicMarker(text string, marker byte) string {
 			pos = closeIdx + 2
 			continue
 		}
+		// '_' cannot open/close emphasis intra-word (snake_case stays literal).
+		if marker == '_' && isIntraWord(text, idx, closeIdx) {
+			out.WriteString(text[pos : idx+1])
+			pos = idx + 1
+			continue
+		}
 		content := text[idx+1 : closeIdx]
 		out.WriteString(text[pos:idx])
 		out.WriteString(ansi.StyleItalic())
@@ -383,6 +392,21 @@ func renderItalicMarker(text string, marker byte) string {
 	}
 	out.WriteString(text[pos:])
 	return out.String()
+}
+
+// isIntraWord reports whether an opening '_' at openIdx (closing at closeIdx)
+// is intra-word: both flanked by letters/digits, in which case it is not an
+// emphasis delimiter per CommonMark.
+func isIntraWord(text string, openIdx, closeIdx int) bool {
+	if openIdx == 0 || closeIdx+1 >= len(text) {
+		return false
+	}
+	return isAlphaNum(text[openIdx-1]) && isAlphaNum(text[closeIdx+1])
+}
+
+// isAlphaNum reports whether b is an ASCII letter or digit.
+func isAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // renderInlineStrikethrough replaces ~~text~~ with strikethrough ANSI (gated
