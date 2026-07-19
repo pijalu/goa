@@ -129,8 +129,8 @@ func TestQuota_SegmentEmptyWhenNoData(t *testing.T) {
 func TestQuota_AuthStatus(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
-	env.setProvider("opencode", map[string]any{"provider": "opencode"})
 	env.load(t)
+	registerStubOAuth(t, env)
 
 	out := env.callCommand("quota", "auth-status")
 	if !strings.Contains(out, "Anthropic") {
@@ -140,7 +140,7 @@ func TestQuota_AuthStatus(t *testing.T) {
 		t.Fatalf("auth-status should show anthropic api key ok: %q", out)
 	}
 	if !strings.Contains(out, "not authenticated ∇") {
-		t.Fatalf("auth-status should show opencode needs auth: %q", out)
+		t.Fatalf("auth-status should show the OAuth provider needs auth: %q", out)
 	}
 }
 
@@ -148,19 +148,19 @@ func TestQuota_AuthStatus(t *testing.T) {
 
 func TestQuota_LoginStartsDeviceFlow(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	env.setProvider("opencode", map[string]any{"provider": "opencode"})
-	env.respond("console.opencode.ai/auth/device/code", 200, `{
+	env.respond("auth.example.com/device/code", 200, `{
 		"device_code": "dev-abc", "user_code": "ABC-DEF",
-		"verification_uri": "https://console.opencode.ai/activate", "interval": 5
+		"verification_uri": "https://auth.example.com/activate", "interval": 5
 	}`)
 
 	env.load(t)
-	out := env.callCommand("quota", "login", "opencode")
+	registerStubOAuth(t, env)
+	out := env.callCommand("quota", "login", stubOAuthID)
 	if !strings.Contains(out, "Opening browser") {
 		t.Fatalf("login output = %q", out)
 	}
 	// Device flow printed the verification URL + code.
-	if !strings.Contains(env.lastOutput(), "console.opencode.ai/activate") {
+	if !strings.Contains(env.lastOutput(), "auth.example.com/activate") {
 		t.Fatalf("no verification URL in output: %q", env.lastOutput())
 	}
 }
@@ -176,15 +176,13 @@ func TestQuota_LoginAPIKeyProviderNoOp(t *testing.T) {
 }
 
 // TestQuota_LoginRelativeVerificationURI is the regression for the broken
-// opencode authorization link: the real console.opencode.ai device endpoint
-// returns RELATIVE verification URIs ("/device?user_code=…"), which were
-// printed verbatim as an unusable host-less link. The flow must resolve them
-// against the issuer origin.
+// authorization link: a device endpoint returning RELATIVE verification URIs
+// ("/device?user_code=…", as console.opencode.ai does) produced an unusable
+// host-less link. The flow must resolve them against the issuer origin.
 func TestQuota_LoginRelativeVerificationURI(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	env.setProvider("opencode", map[string]any{"provider": "opencode"})
-	// Exact shape observed from the live endpoint.
-	env.respond("console.opencode.ai/auth/device/code", 200, `{
+	// Exact shape observed from the live console.opencode.ai endpoint.
+	env.respond("auth.example.com/device/code", 200, `{
 		"device_code": "9bSrUCbMvMhe6K8zbLw1zaHr67aruh3qHP4y0Wo2",
 		"user_code": "PCDM-TDQM",
 		"verification_uri": "/device",
@@ -193,12 +191,13 @@ func TestQuota_LoginRelativeVerificationURI(t *testing.T) {
 	}`)
 
 	env.load(t)
-	out := env.callCommand("quota", "login", "opencode")
+	registerStubOAuth(t, env)
+	out := env.callCommand("quota", "login", stubOAuthID)
 	if !strings.Contains(out, "Opening browser") {
 		t.Fatalf("login output = %q", out)
 	}
 	got := env.lastOutput()
-	want := "https://console.opencode.ai/device?user_code=PCDM-TDQM"
+	want := "https://auth.example.com/device?user_code=PCDM-TDQM"
 	if !strings.Contains(got, want) {
 		t.Fatalf("relative verification URI not absolutized: got %q, want %q inside", got, want)
 	}
@@ -215,16 +214,16 @@ func TestQuota_LoginRelativeVerificationURI(t *testing.T) {
 // only the relative verification_uri (no _complete variant) is returned.
 func TestQuota_LoginRelativeVerificationURINoComplete(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	env.setProvider("opencode", map[string]any{"provider": "opencode"})
-	env.respond("console.opencode.ai/auth/device/code", 200, `{
+	env.respond("auth.example.com/device/code", 200, `{
 		"device_code": "dev-xyz", "user_code": "FGDD-HDHN",
 		"verification_uri": "/device", "interval": 5
 	}`)
 
 	env.load(t)
-	env.callCommand("quota", "login", "opencode")
+	registerStubOAuth(t, env)
+	env.callCommand("quota", "login", stubOAuthID)
 	got := env.lastOutput()
-	want := "https://console.opencode.ai/device"
+	want := "https://auth.example.com/device"
 	if !strings.Contains(got, want) {
 		t.Fatalf("verification_uri not absolutized: got %q, want %q inside", got, want)
 	}
@@ -234,17 +233,17 @@ func TestQuota_LoginRelativeVerificationURINoComplete(t *testing.T) {
 
 func TestQuota_LogoutClearsTokens(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	env.setProvider("opencode", map[string]any{"provider": "opencode"})
 	env.load(t)
+	registerStubOAuth(t, env)
 
 	// Simulate a stored token, then log out.
-	env.storage.Set("opencode.access_token", "tok")
-	env.storage.Set("opencode.refresh_token", "ref")
-	out := env.callCommand("quota", "logout", "opencode")
+	env.storage.Set(stubOAuthID+".access_token", "tok")
+	env.storage.Set(stubOAuthID+".refresh_token", "ref")
+	out := env.callCommand("quota", "logout", stubOAuthID)
 	if !strings.Contains(out, "Logged out") {
 		t.Fatalf("logout = %q", out)
 	}
-	if got := env.storage.Get("opencode.access_token"); got != "" {
+	if got := env.storage.Get(stubOAuthID + ".access_token"); got != "" {
 		t.Fatalf("token not cleared: %q", got)
 	}
 }
@@ -253,12 +252,12 @@ func TestQuota_LogoutClearsTokens(t *testing.T) {
 
 func TestQuota_AuthRequiredShownInBreakdown(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	env.setProvider("opencode", map[string]any{"provider": "opencode"})
-	// No token stored → fetcher returns auth_required.
+	// No token stored → the OAuth fetcher returns auth_required.
 	env.load(t)
+	registerStubOAuth(t, env)
 	out := env.callCommand("quota")
-	if !strings.Contains(out, "auth required") || !strings.Contains(out, "OpenCode") {
-		t.Fatalf("expected auth-required note for opencode:\n%s", out)
+	if !strings.Contains(out, "auth required") || !strings.Contains(out, stubOAuthName) {
+		t.Fatalf("expected auth-required note for the OAuth provider:\n%s", out)
 	}
 }
 

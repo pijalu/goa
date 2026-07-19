@@ -35,7 +35,6 @@ register("zai", require("./fetchers/zai.js"));
 register("kimi", require("./fetchers/kimi.js"));
 register("minimax", require("./fetchers/minimax.js"));
 register("openrouter", require("./fetchers/openrouter.js"));
-register("opencode", require("./fetchers/opencode.js"));
 register(_fallbackId, require("./fetchers/local.js"));
 
 // --- Provider config resolution ------------------------------------------
@@ -522,7 +521,7 @@ goa.registerCommand({
 		"  /quota:refresh         Force-refresh all provider quotas\n" +
 		"  /quota:json            Machine-readable JSON output\n" +
 		"  /quota:auth-status     Show per-provider auth state\n" +
-		"  /quota:login:<id>      OAuth device login (opencode, kimi)\n" +
+		"  /quota:login:<id>      OAuth device login (OAuth providers only)\n" +
 		"  /quota:logout:<id>     Clear stored OAuth tokens\n" +
 		"  /quota:<id>            Force-refresh one provider",
 	run: quotaCommand

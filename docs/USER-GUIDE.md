@@ -781,30 +781,31 @@ agent:
 
 ## 6. Provider Quota — Usage Tracking
 
-The bundled **provider-quota** plugin tracks usage/quota for all configured
+The bundled **provider-quota** plugin tracks usage/quota for configured
 providers and shows a compact quota readout in the status bar.
 
 ### Status Bar
 
-The footer shows a rotating quota carousel after the model name:
+The footer shows the **active provider's** quota after the model name,
+bracketed and color-coded by projected window-end usage:
 
 ```
-claude-sonnet-4 • 5h:42% / 5d:30%
+(kimi-code) k3 • high • [5h:7% / wk:21%]
 ```
 
-With several providers configured, the segment cycles every few seconds,
-labelled by provider (`Z.ai 5h:15% / 5d:8%`). An auth marker may follow:
-`✓` authenticated · `∇` needs re-auth · (none) no quota API.
+Color: green = comfortably in budget · orange = close to the limit · red =
+projected to run out · white = still pending. Auth problems show as
+`[∇ auth]`; a provider with no quota API falls back to local session tokens.
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/quota` | Full session + per-provider quota breakdown |
+| `/quota` | Full session + per-provider quota breakdown (markdown tables) |
 | `/quota:refresh` | Force-refresh all provider quotas |
 | `/quota:json` | Machine-readable JSON output |
 | `/quota:auth-status` | Show per-provider auth state |
-| `/quota:login:<provider>` | OAuth device login (e.g. `opencode`, `kimi`) |
+| `/quota:login:<provider>` | OAuth device login (OAuth providers only) |
 | `/quota:logout:<provider>` | Clear stored OAuth tokens |
 | `/quota:<provider>` | Force-refresh one provider |
 
@@ -813,16 +814,21 @@ labelled by provider (`Z.ai 5h:15% / 5d:8%`). An auth marker may follow:
 ### Authentication
 
 Quota auth is **separate** from model auth. API-key providers (Anthropic,
-OpenAI, Z.ai, MiniMax, OpenRouter) reuse the same key as inference — no extra
-step. OAuth providers (OpenCode, Kimi) need a one-time device-code login:
+OpenAI, Z.ai, Kimi, MiniMax, OpenRouter) reuse the same key as inference — no
+extra step. OAuth providers (none bundled by default) would need a one-time
+device-code login via `/quota:login:<provider>`; the token is stored
+(`~/.goa/plugins/provider-quota/storage.json`) and refreshed automatically.
+Run `/quota:auth-status` to see provider auth state.
 
-```
-/quota:login:opencode
-```
+### Supported providers
 
-Goa prints a verification URL and opens your browser; after you approve, the
-token is stored (`~/.goa/plugins/provider-quota/storage.json`) and refreshed
-automatically. Run `/quota:auth-status` to see which providers are logged in.
+Anthropic · OpenAI · Z.ai · Kimi · MiniMax · OpenRouter, plus a local
+(inferred) fallback that counts session tokens.
+
+OpenCode was removed: its real quota percentages (rolling/weekly/monthly)
+are served only by the web app's cookie-session RPCs, which the OAuth
+device flow cannot access programmatically — the console spend analytics
+under-reported actual usage, making the bars misleading.
 
 ### Disabling
 

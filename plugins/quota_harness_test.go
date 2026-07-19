@@ -25,6 +25,7 @@ type quotaTestEnv struct {
 	hotkeys    *HotkeyBridge
 	storage    *StorageBridge
 	config     map[string]any
+	bridge     *JSBridge // set by load, used to inject test stubs
 }
 
 type quotaResponder struct {
@@ -107,6 +108,48 @@ func (e *quotaTestEnv) context() PluginContext {
 	}
 }
 
+// --- stub OAuth provider ---------------------------------------------------
+
+// stubOAuthID / stubOAuthName identify the test-only OAuth fetcher tests
+// inject into the loaded plugin. It exercises the generic OAuth machinery
+// (device flow, login/logout commands, auth_required handling) without a
+// bundled OAuth provider.
+const (
+	stubOAuthID   = "testoauth"
+	stubOAuthName = "TestOAuth"
+)
+
+// registerStubOAuth injects a stub OAuth fetcher into the loaded plugin's VM
+// scope. register() is a top-level function in plugin.js, so it is callable
+// from the bridge after load; the stub's fetch always reports auth_required
+// (the state these tests drive).
+func registerStubOAuth(t *testing.T, e *quotaTestEnv) {
+	t.Helper()
+	if e.bridge == nil {
+		t.Fatal("registerStubOAuth called before env.load")
+	}
+	unlock := lockVM()
+	defer unlock()
+	_, err := e.bridge.vm.RunString(`
+		register("` + stubOAuthID + `", {
+			name: "` + stubOAuthName + `",
+			auth: {
+				type: "oauth",
+				clientId: "test-client",
+				authUrl: "https://auth.example.com/device/code",
+				tokenUrl: "https://auth.example.com/device/token",
+				verificationUri: "https://auth.example.com/device"
+			},
+			refreshInterval: 300000,
+			quotaEndpoint: true,
+			fetch: function() { return { error: "auth_required", plan: null, limits: [] }; }
+		});
+	`)
+	if err != nil {
+		t.Fatalf("register stub oauth provider: %v", err)
+	}
+}
+
 // load installs the mock httpDo, loads the plugin from disk, and restores.
 func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 	t.Helper()
@@ -127,6 +170,7 @@ func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 	if err != nil {
 		t.Fatalf("LoadFrom provider-quota: %v", err)
 	}
+	e.bridge = bridge
 	return bridge
 }
 
