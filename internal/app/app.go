@@ -62,6 +62,12 @@ type App struct {
 	usageStore     *usage.Store
 	usageStoreTried bool
 
+	// pluginsLoaded signals completion of the async plugin load (nil when the
+	// sync load path was used). Tests wait on it for deterministic assertions.
+	pluginsLoaded chan struct{}
+	// pluginLoadOnce guards the async load so it runs at most once.
+	pluginLoadOnce sync.Once
+
 	// Compression counters for the footer.
 	microCompacts int
 	compacts      int
@@ -149,6 +155,12 @@ func (a *App) Run() bool {
 	}
 	engine.RenderNow()
 
+	// Plugins (goja VM + fetcher requires + quota prime) are the startup
+	// bottleneck (~0.5s). Load them in the background AFTER the first frame so
+	// the app feels immediate; the UI activates via the command loop when the
+	// load lands. Tests can wait on a.pluginsLoaded.
+	a.startAsyncPluginLoad(engine)
+
 	done := a.setupEventHandlers(engine, chat, inp)
 	engine.RunLoops() // launch the commandLoop (sole state owner) + renderLoop
 	<-done
@@ -185,10 +197,10 @@ func (a *App) Run() bool {
 
 // activatePluginUI connects loaded plugin UI contributions (status-bar
 // segments, hotkeys) to the now-built TUI, and starts draining segment
-// refresh requests. Called once from Run() after buildTUI; a no-op when no
-// plugins loaded.
+// refresh requests. Called from Run() (sync no-op before the async load) and
+// again on the command loop once the async plugin load completes.
 func (a *App) activatePluginUI(engine *tui.TUI) {
-	rt := a.subs.pluginRT
+	rt := a.subs.getPluginRT()
 	if rt == nil || engine == nil {
 		return
 	}
@@ -205,7 +217,7 @@ func (a *App) activatePluginUI(engine *tui.TUI) {
 // VM and pushes the rendered, priority-ordered strings into the footer.
 // Rendering happens here (app layer) so the footer never calls into JS.
 func (a *App) pushPluginSegments(engine *tui.TUI) {
-	rt := a.subs.pluginRT
+	rt := a.subs.getPluginRT()
 	if rt == nil || a.subs.footer == nil {
 		return
 	}
@@ -232,6 +244,32 @@ func (a *App) drainSegmentRefreshes(engine *tui.TUI, rt *pluginRuntime) {
 	for range ch {
 		a.pushPluginSegments(engine)
 	}
+}
+
+// startAsyncPluginLoad kicks off the plugin load in the background so startup
+// is not blocked by the goja VM spin-up, fetcher requires, and quota prime.
+// The UI is activated on the command loop (via ApplySync) once the load
+// completes, keeping TUI state single-owner. No-op when plugins are disabled
+// or already loaded.
+func (a *App) startAsyncPluginLoad(engine *tui.TUI) {
+	subs := a.subs
+	if subs.noPlugins || subs.pluginMgr == nil {
+		return
+	}
+	a.pluginsLoaded = make(chan struct{})
+	a.pluginLoadOnce.Do(func() {
+		go func() {
+			defer close(a.pluginsLoaded)
+			// Load plugins (heavy: goja VM + requires + quota prime) off the
+			// critical path. This sets subs.pluginRT when done.
+			loadEnabledPlugins(subs)
+			// Activate the freshly loaded plugin UI on the command loop so all
+			// TUI mutations stay serialized with input/render handling.
+			if subs.getPluginRT() != nil {
+				engine.ApplySync(func() { a.activatePluginUI(engine) })
+			}
+		}()
+	})
 }
 
 // Main is the top-level entry point used by cmd/goa. It parses CLI flags,

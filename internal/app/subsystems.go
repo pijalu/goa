@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -88,8 +89,12 @@ type subsystems struct {
 	trustMgr          *trust.Manager
 	lifecycleRegistry *plugins.LifecycleRegistry
 	pluginMgr         *plugins.Manager
-	pluginRT          *pluginRuntime // loaded plugin bridges, set by loadEnabledPlugins
-	noPlugins         bool           // --no-plugins: skip plugin load entirely
+	// pluginRT holds loaded plugin bridges, set by loadEnabledPlugins. It is
+	// written on the async plugin-load goroutine and read on the command loop,
+	// so access is guarded by pluginRTMu.
+	pluginRTMu sync.RWMutex
+	pluginRT   *pluginRuntime
+	noPlugins  bool // --no-plugins: skip plugin load entirely
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
 	sessionUsageFn  func() map[string]any
@@ -1014,8 +1019,6 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	if s.modelValidator != nil {
 		s.modelValidator.Start(context.Background(), 5*time.Minute)
 	}
-
-	loadEnabledPlugins(s)
 
 	s.startOrchestratorCleanup()
 

@@ -65,3 +65,149 @@ broken.
 
 **Status:** FIXED — see `docs/archive/bugs.2026-07-19.md` (quota section) and
 `TestFilmstrip_ProviderSwitchRefreshesSegment`.
+
+## /plugin does not work as expected (interactive enable/disable + screen corruption)
+
+`/plugin` currently dumps its list as raw multi-line text via `ctx.Writef`,
+which corrupts the screen (lines overwrite/duplicate outside the layout — see
+capture). It should instead show an interactive list of plugins and let the
+user enable/disable each, the same way `/config` → Tools toggles optional
+tools, and persist the choice to disk.
+
+### Current broken output (screen corruption)
+```
+│ ⚡ Switched to model: k3
+  /plan  Manage structured work plans
+› /plugin  Manage plugins
+│ │ /plugin
+  /profile  Alias for /mode
+── Modifiers ──
+│ Installed plugins:   provider-quota (enabled, hash b916e0aa)  → /plugin disable provider-quota
+╰───╯│ │ /plugin                                                          │╰───╯   ← duplicated/overwritten rows
+```
+
+### Root cause
+`PluginCommand.list` writes a multi-line string with `ctx.Writef`. The TUI
+renders chat content as laid-out components; a raw multi-line dump bypasses
+that layout and collides with the completion popup / input border, producing
+duplicated and overwritten rows.
+
+### Fix plan
+- Make `/plugin` (no args) open an interactive selector (like
+  `/config` → Tools `settingTools`): one row per installed plugin showing its
+  enabled/disabled state; selecting a row toggles it.
+- Persist via the existing `plugins.Manager.Enable/Disable` (which already
+  write the lockfile to disk) — no new persistence needed.
+- Keep the text subcommands (`enable|disable|install|remove|list`) for
+  scripting; only the no-arg form becomes interactive.
+- Test approach: unit-test the selector items builder (one item per plugin,
+  state label) and the toggle handler (Enable/Disable called, lockfile saved,
+  re-opens selector); prove the no-arg path uses SelectOption instead of
+  Writef.
+- Validation: live PTY — `/plugin` shows a navigable list, toggling a plugin
+  persists across restart, no screen corruption.
+
+## /plugin enable|disable completion should filter by state
+
+`/plugin enable <Tab>` and `/plugin disable <Tab>` must complete installed
+plugin ids, but the candidates must be filtered by current state: `enable`
+offers only DISABLED plugins, `disable` only ENABLED ones. Today all ids are
+offered for both (see `completePluginIDs` in core/commands/plugin.go, which
+ignores the subcommand).
+
+### Fix plan
+- Pass the subcommand into `completePluginIDs` and filter `Manager.List()` by
+  `Enabled` (enable → !Enabled, disable → Enabled).
+- Test: table-driven over enable/disable with a mixed enabled/disabled set,
+  asserting only the correct subset is offered.
+
+**Status:** FIXED — `completePluginIDs` takes a `*bool` state filter; enable→
+disabled-only, disable→enabled-only, remove→all. Tests:
+`TestPluginCommand_CompletesSubcommandsAndIDs`,
+`TestPluginCommand_CompletionFiltersByState`.
+
+## /tools help renders raw markdown instead of styled output
+
+`/tools:<name>` prints the tool's long description as raw markdown (headers
+`#`, `##`, emphasis markers `_…_` are shown literally) instead of rendered
+styling. The chat markdown pipeline is not applied to the tool-help output.
+
+### Fix plan
+- Route the tool long-description through the same markdown renderer used for
+  assistant/chat content, so headers/bold/italic/lists render.
+- Depends on the font-style extension below for italic/bold support.
+
+**Status:** FIXED — `printToolDocs` now routes `LongDoc()` through
+`tui.NewMDStreamRenderer` (`renderMarkdownForTerminal`), so headings/emphasis
+render as SGR styling. Test: `TestPrintToolDocs_RendersMarkdown`.
+
+## Terminal font styles: bold/italic/underline/strikethrough + markdown support
+
+The TUI only supports a subset of SGR attributes. Add first-class support for
+bold (`\e[1m`), italic (`\e[3m`), underline (`\e[4m`), and strikethrough
+(`\e[9m`) in the style/ANSI layer, and wire the markdown renderer to emit them
+(so `_italic_`, `**bold**`, `~~strike~~` work). Sample escapes:
+```
+echo -e "\e[1mbold\e[0m"
+echo -e "\e[3mitalic\e[0m"
+echo -e "\e[4munderline\e[0m"
+echo -e "\e[9mstrikethrough\e[0m"
+```
+
+### Config
+Add a terminal config to enable/disable these extensions (esp. italic, which
+some terminals render poorly). e.g. `tui.font_styles` with per-style toggles
+(bold/italic/underline/strikethrough), default on except italic if detection
+is unreliable.
+
+### Fix plan
+- Extend the internal/ansi style model + theme to carry the 4 attributes and
+  emit the matching SGR codes (with a matching disable on reset).
+- Markdown renderer: map `**`/`*`/`_`/`~~` to the new attributes, honoring the
+  config toggles.
+- Tests: ANSI sequence unit tests per style; markdown rendering tests showing
+  `_x_`→italic, `**x**`→bold, `~~x~~`→strike; config-off paths emit no codes.
+
+**Status:** FIXED —
+- Added `ansi.Strikethrough` + per-style resets and an `ansi.FontStyles` gate
+  (`internal/ansi/fontstyles.go`) with `Style{Bold,Italic,Underline,
+  Strikethrough}` helpers.
+- Markdown inline renderer emits the gate for bold/italic/underline/
+  strikethrough; `_italic_` now works (with CommonMark flanking so snake_case
+  stays literal); `~~x~~` uses real `\e[9m` (was faint).
+- Config `tui.font_styles.{bold,italic,underline,strikethrough}` (default all
+  on), wired at startup via `initFontStyles`; `mergeTUI` now deep-merges
+  `font_styles` so a config layer without them doesn't clobber the home layer
+  (this was the reason the toggle initially appeared not to work live).
+- Tests: `TestRenderInline_Strikethrough`, `_ItalicUnderscore`,
+  `_ItalicUnderscoreNotIntraWord`, `_FontStyleGate`, `TestDeepMergeFontStyles`.
+  Live PTY confirmed `italic:false` suppresses italic while bold stays.
+
+## Startup feels slow — init should be async for a "direct" first frame
+
+Goa's startup does too much synchronous work before the first usable frame:
+plugin loading, and "time-dependent" tasks (history scan, token-stats priming,
+quota fetch, dream scheduler, etc.) block the boot sequence. Startup should
+show the first frame / accept input as fast as possible and run plugins +
+time-dependent work in the background.
+
+### Current behavior
+Boot is serialized: config load → subsystem init (incl. plugin manager +
+plugin load) → TUI build → first render. Any slow step (plugin VM spin-up,
+disk scans, network-ish priming) delays the first interactive frame, so the
+app feels sluggish on open.
+
+### Fix plan
+- Profile the boot path to find the real blocking steps (plugin load,
+  history scan, scheduler start, any synchronous I/O before first render).
+- Move plugin activation and time-dependent background tasks (history load,
+  schedulers, quota refresh) off the critical path: render the first frame
+  and accept input immediately, then start them in a goroutine that reports
+  back via the existing event loop.
+- Preserve correctness: no data races on shared subsystems; the UI must show
+  a sensible placeholder (e.g. quota "[…]") until the async work lands, and
+  tests must still see deterministic completion (sync hooks for tests).
+- Test approach: a startup ordering test proving first render happens before
+  plugin/background init completes; keep existing tests deterministic via the
+  sync path.
+- Validation: time-to-first-frame before/after; live boot feels immediate.

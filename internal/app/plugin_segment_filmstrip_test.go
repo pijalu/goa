@@ -29,7 +29,7 @@ func TestFilmstrip_PluginSegmentVisibleInFooterAcrossTurn(t *testing.T) {
 		Priority: 10,
 		Render:   func() string { return "5h:42% / 5d:30%" },
 	})
-	sc.app.subs.pluginRT = rt
+	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
 
 	// Sanity: segment pushed to footer before any event.
@@ -91,7 +91,7 @@ func TestFilmstrip_PluginSegmentRefreshUpdatesFooter(t *testing.T) {
 		Priority: 10,
 		Render:   func() string { return current },
 	})
-	sc.app.subs.pluginRT = rt
+	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
 
 	read := func() string {
@@ -132,7 +132,7 @@ func TestFilmstrip_PluginSegmentSurvivesStatsUpdate(t *testing.T) {
 		Priority: 10,
 		Render:   func() string { return "5h:42%" },
 	})
-	sc.app.subs.pluginRT = rt
+	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
 	sc.engine.ApplySync(func() { sc.app.pushPluginSegments(sc.engine) })
 
@@ -182,7 +182,7 @@ func TestFilmstrip_ProviderSwitchRefreshesSegment(t *testing.T) {
 			return "[9%|30%]"
 		},
 	})
-	sc.app.subs.pluginRT = rt
+	sc.app.subs.setPluginRT(rt)
 	sc.app.activatePluginUI(sc.engine)
 
 	read := func() string {

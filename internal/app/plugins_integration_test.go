@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -15,6 +16,7 @@ import (
 	"github.com/pijalu/goa/plugins"
 	"github.com/pijalu/goa/plugins/bundled"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tui"
 )
 
 // newPluginTestSubsystems builds the minimal subsystems needed to exercise
@@ -102,6 +104,52 @@ func TestMaterializeBundledPlugins_Idempotent(t *testing.T) {
 	}
 	if !s.pluginMgr.IsEnabled(bundled.ProviderQuotaID) {
 		t.Fatal("provider-quota not enabled after materialize")
+	}
+}
+
+// TestStartAsyncPluginLoad_LoadsInBackground covers the startup-speed feature:
+// plugins load on a background goroutine (so the first frame is not blocked),
+// pluginsLoaded closes on completion, and the plugin runtime + UI activate.
+func TestStartAsyncPluginLoad_LoadsInBackground(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	a := New(s)
+	engine := tui.NewTUI(&testTerminal{w: 80, h: 24})
+
+	start := time.Now()
+	a.startAsyncPluginLoad(engine)
+	// startAsyncPluginLoad must return immediately (not block on the ~0.5s load).
+	if d := time.Since(start); d > 200*time.Millisecond {
+		t.Fatalf("startAsyncPluginLoad blocked %v; it must return immediately", d)
+	}
+	if a.pluginsLoaded == nil {
+		t.Fatal("pluginsLoaded channel not set")
+	}
+	// Wait for the background load to complete, then the runtime must be set.
+	select {
+	case <-a.pluginsLoaded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("async plugin load did not complete in time")
+	}
+	if s.getPluginRT() == nil {
+		t.Fatal("pluginRT not set after async load")
+	}
+	if _, ok := s.registry.Resolve("quota"); !ok {
+		t.Fatal("/quota not registered after async load")
+	}
+}
+
+// TestStartAsyncPluginLoad_NoPluginsFlagSkips confirms the --no-plugins flag
+// short-circuits the async loader (no goroutine, no channel).
+func TestStartAsyncPluginLoad_NoPluginsFlagSkips(t *testing.T) {
+	s := newPluginTestSubsystems(t)
+	s.noPlugins = true
+	a := New(s)
+	a.startAsyncPluginLoad(tui.NewTUI(&testTerminal{w: 80, h: 24}))
+	if a.pluginsLoaded != nil {
+		t.Fatal("pluginsLoaded should be nil when plugins are disabled")
+	}
+	if s.getPluginRT() != nil {
+		t.Fatal("pluginRT set despite --no-plugins")
 	}
 }
 

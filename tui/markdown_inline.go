@@ -313,7 +313,7 @@ func renderInlineCode(text string, theme *Theme) string {
 	return out.String()
 }
 
-// renderInlineBold replaces **text** with bold ANSI.
+// renderInlineBold replaces **text** with bold ANSI (gated by font styles).
 func renderInlineBold(text string) string {
 	var out strings.Builder
 	pos := 0
@@ -323,7 +323,7 @@ func renderInlineBold(text string) string {
 			break
 		}
 		out.WriteString(text[pos:start])
-		out.WriteString(ansi.Bold)
+		out.WriteString(ansi.StyleBold())
 		out.WriteString(content)
 		out.WriteString(ansi.Reset)
 		pos = end
@@ -332,45 +332,51 @@ func renderInlineBold(text string) string {
 	return out.String()
 }
 
-// renderInlineItalic replaces *text* with italic ANSI.
-// It skips ** which was already handled by renderInlineBold.
+// renderInlineItalic replaces *text* and _text_ with italic ANSI (gated by
+// font styles). It skips ** which was already handled by renderInlineBold.
 func renderInlineItalic(text string) string {
+	text = renderItalicMarker(text, '*')
+	text = renderItalicMarker(text, '_')
+	return text
+}
+
+// renderItalicMarker replaces marker-delimited spans (single * or _) with
+// italic ANSI, skipping the bold double-marker form.
+func renderItalicMarker(text string, marker byte) string {
 	var out strings.Builder
 	pos := 0
 	for {
-		// Find a single * that is not preceded or followed by *
-		idx := strings.Index(text[pos:], "*")
+		idx := strings.IndexByte(text[pos:], marker)
 		if idx < 0 {
 			break
 		}
 		idx += pos
-		// Skip ** (bold markers already processed)
-		if idx+1 < len(text) && text[idx+1] == '*' {
+		// Skip the double (bold) marker — already processed by renderInlineBold.
+		if idx+1 < len(text) && text[idx+1] == marker {
 			out.WriteString(text[pos : idx+2])
 			pos = idx + 2
 			continue
 		}
-		if idx > 0 && text[idx-1] == '*' {
+		if idx > 0 && text[idx-1] == marker {
 			out.WriteString(text[pos : idx+1])
 			pos = idx + 1
 			continue
 		}
-		// Find closing *
-		closeIdx := strings.Index(text[idx+1:], "*")
+		// Find the closing single marker.
+		closeIdx := strings.IndexByte(text[idx+1:], marker)
 		if closeIdx < 0 {
 			break
 		}
 		closeIdx += idx + 1
-		// Ensure closing is not part of **
-		if closeIdx+1 < len(text) && text[closeIdx+1] == '*' {
-			// This is an opening **, not a closing *
+		// Ensure closing is not part of a double marker.
+		if closeIdx+1 < len(text) && text[closeIdx+1] == marker {
 			out.WriteString(text[pos : closeIdx+2])
 			pos = closeIdx + 2
 			continue
 		}
 		content := text[idx+1 : closeIdx]
 		out.WriteString(text[pos:idx])
-		out.WriteString(ansi.Italic)
+		out.WriteString(ansi.StyleItalic())
 		out.WriteString(content)
 		out.WriteString(ansi.Reset)
 		pos = closeIdx + 1
@@ -379,7 +385,8 @@ func renderInlineItalic(text string) string {
 	return out.String()
 }
 
-// renderInlineStrikethrough replaces ~~text~~ with faint ANSI.
+// renderInlineStrikethrough replaces ~~text~~ with strikethrough ANSI (gated
+// by font styles).
 func renderInlineStrikethrough(text string) string {
 	var out strings.Builder
 	pos := 0
@@ -389,7 +396,7 @@ func renderInlineStrikethrough(text string) string {
 			break
 		}
 		out.WriteString(text[pos:start])
-		out.WriteString(ansi.Faint)
+		out.WriteString(ansi.StyleStrikethrough())
 		out.WriteString(content)
 		out.WriteString(ansi.Reset)
 		pos = end
@@ -437,7 +444,7 @@ func renderInlineLinks(text string, theme *Theme) string {
 
 		linkText := text[bracketOpen+1 : bracketClose]
 		out.WriteString(text[pos:bracketOpen])
-		out.WriteString(ansi.Underline + color)
+		out.WriteString(ansi.StyleUnderline() + color)
 		out.WriteString(linkText)
 		out.WriteString(ansi.Reset)
 		pos = parenClose + 1

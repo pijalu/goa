@@ -70,8 +70,23 @@ func loadEnabledPlugins(s *subsystems) {
 		return
 	}
 	rt.bridges = bridges
-	s.pluginRT = rt
+	s.setPluginRT(rt)
 	log.Printf("Loaded %d plugin(s)\n", len(bridges))
+}
+
+// setPluginRT stores the loaded plugin runtime (async-load safe).
+func (s *subsystems) setPluginRT(rt *pluginRuntime) {
+	s.pluginRTMu.Lock()
+	s.pluginRT = rt
+	s.pluginRTMu.Unlock()
+}
+
+// getPluginRT returns the loaded plugin runtime, or nil before the async load
+// completes (async-load safe).
+func (s *subsystems) getPluginRT() *pluginRuntime {
+	s.pluginRTMu.RLock()
+	defer s.pluginRTMu.RUnlock()
+	return s.pluginRT
 }
 
 // newPluginRuntime builds the shared extended bridges for a plugin load.
@@ -113,7 +128,10 @@ func materializeBundledPlugins(s *subsystems) string {
 // contextFor builds the PluginContext exposing Goa subsystems to plugins.
 func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
 	return plugins.PluginContext{
+		// Live config: goa.config() re-reads the current provider/model on
+		// every call so plugins (e.g. quota) see switches immediately.
 		Config:            pluginConfigFor(s),
+		ConfigFunc:        func() map[string]any { return pluginConfigFor(s) },
 		Logger:            pluginLogger(),
 		RegisterTool:      pluginRegisterTool(s),
 		RegisterCommand:   rt.pluginRegisterCommand(s),

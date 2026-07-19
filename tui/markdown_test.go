@@ -125,9 +125,57 @@ func TestRenderInline_Code(t *testing.T) {
 func TestRenderInline_Strikethrough(t *testing.T) {
 	theme := DarkTheme()
 	got := renderInline("~~deleted~~", theme)
-	want := ansi.Faint + "deleted" + ansi.Reset
+	want := ansi.Strikethrough + "deleted" + ansi.Reset
 	if got != want {
 		t.Errorf("renderInline strikethrough = %q, want %q", got, want)
+	}
+}
+
+func TestRenderInline_ItalicUnderscore(t *testing.T) {
+	theme := DarkTheme()
+	got := renderInline("_hello_", theme)
+	want := ansi.Italic + "hello" + ansi.Reset
+	if got != want {
+		t.Errorf("renderInline _italic_ = %q, want %q", got, want)
+	}
+}
+
+// TestRenderInline_FontStyleGate verifies the config-driven font-style gate:
+// a disabled style emits no SGR (text passes through with markers stripped to
+// the gated-empty sequence), while enabled styles emit their codes.
+func TestRenderInline_FontStyleGate(t *testing.T) {
+	theme := DarkTheme()
+	cases := []struct {
+		name    string
+		gate    ansi.FontStyles
+		input   string
+		wantSeq string // expected SGR ("" = style suppressed)
+	}{
+		{"bold on", ansi.FontStyles{Bold: true}, "**x**", ansi.Bold},
+		{"bold off", ansi.FontStyles{}, "**x**", ""},
+		{"italic on", ansi.FontStyles{Italic: true}, "*x*", ansi.Italic},
+		{"italic off", ansi.FontStyles{}, "*x*", ""},
+		{"italic underscore on", ansi.FontStyles{Italic: true}, "_x_", ansi.Italic},
+		{"strike on", ansi.FontStyles{Strikethrough: true}, "~~x~~", ansi.Strikethrough},
+		{"strike off", ansi.FontStyles{}, "~~x~~", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := ansi.ActiveFontStyles()
+			ansi.SetFontStyles(tc.gate)
+			defer ansi.SetFontStyles(prev)
+			got := renderInline(tc.input, theme)
+			if tc.wantSeq == "" {
+				// Style suppressed: the raw SGR for that style must not appear.
+				if strings.Contains(got, "\x1b[1m") || strings.Contains(got, "\x1b[3m") || strings.Contains(got, "\x1b[9m") {
+					t.Errorf("style should be suppressed, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantSeq) {
+				t.Errorf("renderInline(%q) missing %q, got %q", tc.input, tc.wantSeq, got)
+			}
+		})
 	}
 }
 
