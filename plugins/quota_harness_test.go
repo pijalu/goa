@@ -73,9 +73,22 @@ func (e *quotaTestEnv) setProvider(configID string, p map[string]any) {
 // context builds the PluginContext routing goa.* through the mocks.
 func (e *quotaTestEnv) context() PluginContext {
 	noop := func(string) {}
+	// Config is a FROZEN snapshot of the state at load time (mirroring the
+	// pre-fix production behavior); ConfigFunc reads live state. This lets
+	// tests prove that goa.config() uses the live path (ConfigFunc) rather
+	// than the stale snapshot.
+	snapshot := map[string]any{
+		"providers":      e.config["providers"],
+		"activeProvider": e.config["activeProvider"],
+		"activeModel":    e.config["activeModel"],
+	}
 	return PluginContext{
-		Config: e.config,
-		Logger: LoggerAPI{noop, noop, noop, noop},
+		Config: snapshot,
+		// Mirror the production wiring: goa.config() re-reads live state via
+		// ConfigFunc, so tests that mutate e.config after load (provider
+		// switch) exercise the same path the app uses.
+		ConfigFunc: func() map[string]any { return e.config },
+		Logger:     LoggerAPI{noop, noop, noop, noop},
 		RegisterCommand: func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error {
 			e.commands[name] = run
 			return nil

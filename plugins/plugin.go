@@ -47,14 +47,19 @@ type CallToolHandler func(name string, params map[string]any) (interface{}, erro
 
 // PluginContext provides the JS plugin with access to Goa subsystems.
 type PluginContext struct {
-	Config            map[string]any
-	Logger            LoggerAPI
-	RegisterTool      ToolHandler                             // called when JS calls goa.registerTool
-	RegisterCommand   CommandHandler                          // called when JS calls goa.registerCommand
-	RegisterObserver  ObserverHandler                         // called when JS calls goa.registerObserver
-	RegisterLifecycle func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
-	CallTool          CallToolHandler                         // called when JS calls goa.callTool
-	EventBus          *EventBus
+	Config map[string]any
+	// ConfigFunc, when set, is called on every goa.config() invocation so the
+	// plugin always sees the LIVE config (e.g. after a provider/model switch).
+	// It takes precedence over the static Config snapshot, which is kept for
+	// tests and simple plugins.
+	ConfigFunc         func() map[string]any
+	Logger             LoggerAPI
+	RegisterTool       ToolHandler                             // called when JS calls goa.registerTool
+	RegisterCommand    CommandHandler                          // called when JS calls goa.registerCommand
+	RegisterObserver   ObserverHandler                         // called when JS calls goa.registerObserver
+	RegisterLifecycle  func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
+	CallTool           CallToolHandler                         // called when JS calls goa.callTool
+	EventBus           *EventBus
 	// Extended carries optional bridges (http, storage, timers, ui, hotkeys,
 	// browser, output, sessionUsage). Nil disables those goa.* APIs.
 	Extended *ExtendContext
@@ -108,8 +113,12 @@ func NewJSBridge(def PluginDef, ctx PluginContext) *JSBridge {
 func (b *JSBridge) setupGlobals() {
 	goaObj := b.vm.NewObject()
 
-	// goa.config() — returns config as JS object
+	// goa.config() — returns config as JS object. Prefer the live ConfigFunc
+	// (so provider/model switches are visible) over the static snapshot.
 	goaObj.Set("config", func() map[string]any {
+		if b.ctx.ConfigFunc != nil {
+			return b.ctx.ConfigFunc()
+		}
 		return b.ctx.Config
 	})
 

@@ -100,12 +100,14 @@ func TestQuota_SegmentColorPendingNoData(t *testing.T) {
 	}
 }
 
-// TestQuota_SegmentColorLocalInfinite: the local provider has no quota limit,
-// so it shows the infinite symbol in green rather than a percentage.
+// TestQuota_SegmentColorLocalInfinite: a genuine local provider (type "local")
+// has no quota limit, so it shows the infinite symbol in green rather than a
+// percentage.
 func TestQuota_SegmentColorLocalInfinite(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	// Active provider "local" maps to the local fetcher via fallback id.
-	env.setActiveProvider("local")
+	// A configured local provider (e.g. LM Studio) → the local fetcher.
+	env.setProvider("lmstudio", map[string]any{"provider": "local"})
+	env.setActiveProvider("lmstudio")
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()

@@ -357,6 +357,79 @@ func TestQuota_UnsupportedProviderStatesNotSupported(t *testing.T) {
 	}
 }
 
+// TestQuota_ConfigFuncReflectsProviderSwitch is the regression test for the
+// LIVE bug "switching provider still shows the old provider's quota": the
+// plugin must read the active provider through goa.config() freshly on each
+// render, not from a load-time snapshot. This mirrors the app wiring
+// (ConfigFunc) and proves the segment follows a post-load provider change.
+func TestQuota_ConfigFuncReflectsProviderSwitch(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("kimi-code", map[string]any{"provider": "kimi-code", "apiKey": "sk", "endpoint": "https://api.kimi.com/coding/v1"})
+	env.setProvider("lmstudio", map[string]any{"provider": "local"})
+	env.respond("api.kimi.com/coding/v1/usages", 200, `{
+		"user": {"membership": {"level": "LEVEL_ADVANCED"}},
+		"usage": {"limit": "100", "used": "9", "resetTime": "2099-01-01T01:48:00Z"},
+		"limits": [
+			{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+			 "detail": {"limit": "100", "used": "30", "resetTime": "2099-01-01T01:48:00Z"}}
+		]
+	}`)
+	// Start on kimi: segment shows kimi windowed quota.
+	env.setActiveProvider("kimi-code")
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	if seg := ansi.Strip(env.renderSegment()); !strings.Contains(seg, "%") {
+		t.Fatalf("kimi segment should show a percentage, got %q", seg)
+	}
+
+	// Switch to the local provider AFTER load — the segment must follow
+	// (local providers render the infinite symbol, not kimi's numbers).
+	env.setActiveProvider("lmstudio")
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "∞") {
+		t.Fatalf("after switch to local the segment must show ∞, got %q (stale config?)", seg)
+	}
+	if strings.Contains(seg, "30") {
+		t.Fatalf("stale kimi quota still shown after provider switch: %q", seg)
+	}
+}
+
+// TestQuota_NonLocalUnsupportedProviderHidesSegment covers the report
+// "(opencode-go) deepseek-v4-flash • high • [∞]": a NON-local provider with no
+// quota API must NOT show the local infinity symbol — the segment must be
+// removed entirely. Only genuine local providers (provider type "local") show
+// [∞].
+func TestQuota_NonLocalUnsupportedProviderHidesSegment(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// opencode-go is a real (non-local) provider with no quota fetcher.
+	env.setProvider("opencode-go", map[string]any{"provider": "opencode", "apiKey": "sk"})
+	env.setActiveProvider("opencode-go")
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if strings.Contains(seg, "∞") {
+		t.Fatalf("non-local unsupported provider must not show ∞, got %q", seg)
+	}
+	if strings.TrimSpace(seg) != "" {
+		t.Fatalf("non-local unsupported provider should hide the quota segment, got %q", seg)
+	}
+}
+
+// TestQuota_LocalProviderStillShowsInfinity guards the other side: a genuine
+// local provider (type "local") keeps the [∞] segment.
+func TestQuota_LocalProviderStillShowsInfinity(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("lmstudio", map[string]any{"provider": "local"})
+	env.setActiveProvider("lmstudio")
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "∞") {
+		t.Fatalf("genuine local provider should show ∞, got %q", seg)
+	}
+}
+
 // TestQuota_BudgetSummaryPlentyOfRoom covers bugs.md "Quota color": /quota
 // explains the budget status in words (e.g. "plenty of room").
 func TestQuota_BudgetSummaryPlentyOfRoom(t *testing.T) {

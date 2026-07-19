@@ -180,6 +180,33 @@ function activeFetcherId() {
 	// Active provider has no quota API (or none configured): local fallback.
 	return _fallbackId;
 }
+// isLocalProvider reports whether the currently active provider is a genuine
+// local provider (config provider type "local", e.g. LM Studio). A NON-local
+// provider that merely has no quota fetcher is NOT local — it must not show
+// the infinity segment.
+function isLocalProvider() {
+	var active = (goa.config() && goa.config().activeProvider) || "";
+	if (!active) {
+		return false;
+	}
+	var providers = (goa.config() && goa.config().providers) || {};
+	var p = providers[active];
+	if (!p) {
+		// The active id may be an alias: find the entry whose id matches.
+		for (var key in providers) {
+			if (normalizeId(key) === normalizeId(active)) {
+				p = providers[key];
+				break;
+			}
+		}
+	}
+	if (!p) {
+		return false;
+	}
+	var ptype = (p.provider || p.id || "").toLowerCase();
+	return ptype === "local";
+}
+
 
 // statusRender returns the compact quota segment for the footer, tracking
 // ONLY the active provider. Local providers show "[∞]" (no quota). API
@@ -205,8 +232,12 @@ function statusRender() {
 		}
 		return { text: "[⚠]", color: "warn" };
 	}
-	// Local providers have no quota limit: show the infinite symbol.
+	// Local fallback: only genuine local providers show "[∞]". A NON-local
+	// provider with no quota API must hide the segment entirely.
 	if (entry.local) {
+		if (!isLocalProvider()) {
+			return ""; // unsupported non-local provider — remove the section
+		}
 		return { text: "[∞]", color: "ok" };
 	}
 	return colorizedSegment(entry);
