@@ -250,7 +250,8 @@ tools:
 tui:
   theme: dark                        # dark | light | custom
   layout: default                    # default | wide | minimal | debug
-  spinner: arc                        # spinner style: arc, dots, line, star, or none
+  spinner: arc                       # arc, dots, line, star, orbit, quadrant, flare, none
+  show_timestamps: false             # Show timestamps in the chat viewport
   transparency:
     show_thinking: true              # Show reasoning/thinking blocks
     show_streaming: true             # Show streaming status indicators
@@ -264,6 +265,17 @@ tui:
   tools:
     view: summary                    # summary (N-line preview) | full (everything)
     preview_lines: 10                # lines shown per tool block in summary mode
+  # Font style toggles (all enabled by default — disable if your terminal
+  # renders them poorly).
+  font_styles:
+    bold: true                       # **bold** → \e[1m
+    italic: true                     # *italic* / _italic_ → \e[3m
+    underline: true                  # links → \e[4m
+    strikethrough: true              # ~~strikethrough~~ → \e[9m
+  # Input history configuration.
+  history:
+    max_loaded: 100                  # Max history entries loaded from disk on
+                                     # startup and session restore (0 = disabled)
 
 # ── Memory ─────────────────────────────────────────────────────────
 memory:
@@ -313,10 +325,12 @@ orchestrator:
 
 # ── Plugins ────────────────────────────────────────────────────────
 plugins:
-  enabled: ["*"]                     # Enable all plugins
+  enabled: ["*"]                     # Enable all plugins, or list specific IDs
   dirs:
     - ~/.goa/plugins
     - .goa/plugins
+  bundled:                           # Disable built-in bundled plugins
+    provider-quota: true             #   false → skip the provider-quota plugin
 
 # ── Aliases ───────────────────────────────────────────────────────
 aliases:

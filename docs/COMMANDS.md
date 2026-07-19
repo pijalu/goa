@@ -521,16 +521,33 @@ key=value syntax. Supported types:
   integers:   max_results=50, context_lines=3
 ```
 
-### `/plugins` — Plugin management
+### `/plugin` — Plugin management
 
 ```
-Usage: /plugins [list|reload]
-Aliases: (none)
+Usage: /plugin[:<subcommand>[:<arg>]]
+Aliases: /plugins
 
-Manage JS plugins.
-  /plugins        → List all loaded plugins
-  /plugins reload → Reload all plugins from disk
+Manage JS plugins — install, list, enable, disable, remove.
+
+  /plugin                          Interactive selector (Enter to toggle on/off)
+  /plugin:list                     List installed plugins with status and hash
+  /plugin:install:<git-url>        Install a plugin from a git URL
+  /plugin:remove:<id>              Uninstall a plugin
+  /plugin:enable:<id>              Activate a disabled plugin (trust-gated)
+  /plugin:disable:<id>             Deactivate an enabled plugin
 ```
+
+Installation workflow:
+```
+/plugin:install:https://github.com/user/my-plugin.git   → clone + validate + hash
+/trust:my-plugin                                          → approve (first time only)
+/plugin:enable:my-plugin                                  → activate
+/reload                                                   → load the JS runtime
+```
+
+See [PLUGINS.md](PLUGINS.md) for the full plugin development guide and API
+reference. The **provider-quota** plugin (bundled) is the canonical reference
+implementation.
 
 ### `/hotkeys` — Show keyboard shortcuts
 
@@ -816,6 +833,28 @@ Manage trust decisions for external domains and resources.
   /trust:allow:<domain>          → Trust a domain
   /trust:deny:<domain>           → Deny a domain
   /trust:prompt:<domain>         → Prompt for a domain
+```
+
+### `/usage` — Show cross-session usage statistics
+
+```
+Usage: /usage[:scope]
+Aliases: (none)
+
+Show cumulative token usage across all Goa sessions (stored in
+`~/.goa/usage.db`). Each model turn is recorded with project, provider, and
+model tags.
+
+  /usage or /usage:all      Global totals + per-project/provider/model breakdowns
+  /usage:project            Usage grouped by project
+  /usage:provider           Usage grouped by provider
+  /usage:model              Usage grouped by model
+  /usage:here               Usage for the current project only
+
+Examples:
+  /usage
+  /usage:model
+  /usage:here
 ```
 
 ### `/ui` — UI control commands
