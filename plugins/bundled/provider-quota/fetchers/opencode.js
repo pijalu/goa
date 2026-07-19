@@ -1,7 +1,14 @@
-// fetchers/opencode.js — OpenCode quota via OAuth + console API.
+// fetchers/opencode.js — OpenCode quota via OAuth + console usage API.
 //
-// OpenCode uses OAuth device-code auth for its quota console, separate from
-// model access. Token lifecycle is owned by lib/oauth.js.
+// OpenCode uses OAuth device-code auth for its console, separate from model
+// access. Token lifecycle is owned by lib/oauth.js.
+//
+// The console exposes usage EVENTS (not quota windows): GET /api/usage/rows
+// returns per-request rows carrying costMicroCents, scoped to an org via the
+// x-org-id header (discovered from GET /api/orgs). OpenCode Go's published
+// plan limits are fixed ($12 / 24h, $30 / 7d, $60 / 30d), so the quota bars
+// are computed as observed spend over each window against those limits — the
+// same model OpenUsage documents for this provider.
 
 var oauth = require("../lib/oauth.js");
 
@@ -10,52 +17,128 @@ var AUTH = {
 	clientId: "goa-plugin",
 	authUrl: "https://console.opencode.ai/auth/device/code",
 	tokenUrl: "https://console.opencode.ai/auth/device/token",
-	verificationUri: "https://console.opencode.ai/activate"
+	verificationUri: "https://console.opencode.ai/device"
 };
+
+var BASE = "https://console.opencode.ai";
+
+// Plan windows: [label, rangeParam, windowMs, limitDollars]. The console's
+// range enum is 24h/7d/30d; the plan's 5h session window is computed by
+// pulling the 24h range and filtering rows to the last 5h by timestamp.
+var WINDOWS = [
+	["Session (5h)", "24h", 5 * 3600000, 12],
+	["Weekly (7d)", "7d", 7 * 86400000, 30],
+	["Monthly (30d)", "30d", 30 * 86400000, 60]
+];
+
+var MAX_PAGES = 20; // 20 × 100 rows = 2000 events per window, plenty
 
 function fetch(ctx) {
 	var token = oauth.getToken("opencode", AUTH);
 	if (!token) {
 		return { error: "auth_required", plan: null, limits: [] };
 	}
-	var resp = goa.http.fetch("https://console.opencode.ai/api/usage", {
-		method: "GET",
-		headers: { "Authorization": "Bearer " + token },
-		timeoutMs: 15000
-	});
-	if (resp.error) {
-		return { error: resp.error, plan: null, limits: [] };
+	var orgId = discoverOrg(token);
+	if (!orgId) {
+		return { error: "no_org", plan: null, limits: [] };
 	}
-	if (resp.status === 401 || resp.status === 403) {
-		return { error: "auth_required", plan: null, limits: [] };
-	}
-	if (resp.status !== 200) {
-		return { error: "http_" + resp.status, plan: null, limits: [] };
-	}
-	var body = parseJSON(resp.body);
-	if (!body) {
-		return { error: "bad_response", plan: null, limits: [] };
-	}
-	var data = body.data || body;
+	var now = Date.now();
 	var limits = [];
-	if (data.session) {
+	for (var i = 0; i < WINDOWS.length; i++) {
+		var w = WINDOWS[i];
+		var microCents = sumWindowSpend(token, orgId, w[1], now - w[2]);
+		if (microCents < 0) {
+			return { error: "usage_fetch_failed", plan: null, limits: [] };
+		}
 		limits.push({
-			label: "Session (5h)",
-			used: num(data.session.used),
-			limit: num(data.session.limit),
-			resetsAt: data.session.reset_at || null
+			label: w[0],
+			used: Math.round(microCents / 10000), // micro-cents → cents
+			limit: w[3] * 100, // dollars → cents
+			resetsAt: null,
+			periodMs: w[2]
 		});
 	}
-	if (data.weekly) {
-		limits.push({
-			label: "Weekly",
-			used: num(data.weekly.used),
-			limit: num(data.weekly.limit),
-			resetsAt: data.weekly.reset_at || null
-		});
+	return { plan: "OpenCode Go", limits: limits, costUnit: "cents" };
+}
+
+// discoverOrg returns the first org id the token can see, cached in storage
+// so routine refreshes stay a single request per window.
+function discoverOrg(token) {
+	var cached = goa.storage.get("opencode.org_id");
+	if (cached) {
+		return cached;
 	}
-	var plan = data.plan || (body.plan && body.plan.name) || null;
-	return { plan: plan, limits: limits };
+	var resp = get(BASE + "/api/orgs", token, null);
+	if (!resp || resp.status !== 200) {
+		return null;
+	}
+	var orgs = parseJSON(resp.body);
+	if (!orgs || !orgs.length || !orgs[0].id) {
+		return null;
+	}
+	goa.storage.set("opencode.org_id", orgs[0].id);
+	return orgs[0].id;
+}
+
+// sumWindowSpend pages /api/usage/rows and sums costMicroCents for events at
+// or after sinceMs. Returns -1 on a transport/auth failure so the caller can
+// surface an error instead of a bogus zero.
+function sumWindowSpend(token, orgId, range, sinceMs) {
+	var total = 0;
+	var cursor = null;
+	for (var page = 0; page < MAX_PAGES; page++) {
+		var url = BASE + "/api/usage/rows?scope=organization&range=" + range + "&pageSize=100";
+		if (cursor) {
+			url += "&cursor=" + encodeURIComponent(cursor);
+		}
+		var resp = get(url, token, orgId);
+		if (!resp) {
+			return -1;
+		}
+		if (resp.status === 401 || resp.status === 403) {
+			return -1;
+		}
+		if (resp.status !== 200) {
+			return -1;
+		}
+		var body = parseJSON(resp.body);
+		if (!body || !body.items) {
+			return -1;
+		}
+		var done = accumulate(body.items, sinceMs, function(c) { total += c; });
+		if (done) {
+			return total;
+		}
+		cursor = body.nextCursor;
+		if (!cursor) {
+			return total;
+		}
+	}
+	return total;
+}
+
+// accumulate adds each row's costMicroCents to add() when the row is inside
+// the window. Rows are newest-first, so the first row older than sinceMs ends
+// the scan (returns true).
+function accumulate(items, sinceMs, add) {
+	for (var i = 0; i < items.length; i++) {
+		var row = items[i];
+		var created = Date.parse(row.createdAt || row.lastUsedAt || "");
+		if (!isNaN(created) && created < sinceMs) {
+			return true;
+		}
+		add(num(row.costMicroCents));
+	}
+	return false;
+}
+
+// get performs an authenticated GET with the optional org header.
+function get(url, token, orgId) {
+	var headers = { "Authorization": "Bearer " + token, "Accept": "application/json" };
+	if (orgId) {
+		headers["x-org-id"] = orgId;
+	}
+	return goa.http.fetch(url, { method: "GET", headers: headers, timeoutMs: 15000 });
 }
 
 function parseJSON(s) { try { return JSON.parse(s); } catch (e) { return null; } }
@@ -64,7 +147,7 @@ function num(v) { var n = Number(v); return isNaN(n) ? 0 : n; }
 module.exports = {
 	name: "OpenCode",
 	auth: AUTH,
-	refreshInterval: 60000, // 1 min — OAuth polling during login
+	refreshInterval: 300000, // 5 min — spend changes slowly
 	quotaEndpoint: true,
 	fetch: fetch
 };

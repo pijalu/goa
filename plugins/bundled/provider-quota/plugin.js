@@ -402,17 +402,22 @@ function appendProviderRows(rows, id) {
 
 // renderLimitRow renders one quota window as a markdown table row:
 // "| Kimi (Advanced) | Session (5h) | 4/100 | 8% | +1h 36m |".
+// Cost windows (entry.costUnit === "cents") render dollar amounts.
 function renderLimitRow(display, lim, entry) {
 	var reset = lim.resetsAt ? format.durationUntil(lim.resetsAt) : "—";
+	var isCost = entry.costUnit === "cents";
 	if (!lim.limit || lim.limit <= 0) {
 		// Unbounded / accumulated (e.g. local tokens, OpenAI cost).
-		var val = entry.costUnit === "cents"
+		var val = isCost
 			? format.cost(lim.used / 100)
 			: format.tokens(lim.used);
 		return "| " + display + " | " + lim.label + " | " + val + " | — | " + reset + " |";
 	}
 	var p = format.pct(lim.used, lim.limit);
-	return "| " + display + " | " + lim.label + " | " + format.bar(p, 8) + " " + format.tokens(lim.used) + "/" + format.tokens(lim.limit) + " | " + p + "% | " + reset + " |";
+	var usage = isCost
+		? format.bar(p, 8) + " " + format.cost(lim.used / 100) + "/" + format.cost(lim.limit / 100)
+		: format.bar(p, 8) + " " + format.tokens(lim.used) + "/" + format.tokens(lim.limit);
+	return "| " + display + " | " + lim.label + " | " + usage + " | " + p + "% | " + reset + " |";
 }
 
 // appendLocalRow appends the local/inferred fallback row.
