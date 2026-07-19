@@ -36,4 +36,32 @@ If new items are added, restart the process.
 
 # Open Bugs
 
-(none — all items closed and archived to `docs/archive/bugs.2026-07-19.md`)
+## Quota — provider switch still shows previous provider's limits (follow-up)
+
+Switching to a local provider via /model (e.g. lmstudio google/gemma-4-e4b)
+still shows the previous provider's quota (`[9%|30%]` from Kimi) in the footer,
+even though the model line correctly shows the new provider.
+
+### Root cause
+Footer plugin segments are cached strings: `pushPluginSegments` only
+re-evaluates the JS `Render()` when the plugin calls `goa.ui.refreshSegment`.
+A /model provider switch fires `FooterRefresh` → `refreshFooterFromConfig`,
+which rebuilds `FooterData` but PRESERVES the cached `PluginSegments` (by
+design, so token-stats churn doesn't blank them) — so the stale quota string
+persists until the plugin's next 60s tick. The earlier fix's test
+(`TestQuota_ProviderSwitchUpdatesSegment`) called `renderSegment()` directly
+and bypassed this app-level cache, so it passed while the live path stayed
+broken.
+
+### Fix plan
+- In `refreshFooterFromConfig` (internal/app/events.go), re-push plugin
+  segments via `pushPluginSegments` before rebuilding FooterData, so a
+  provider/model change re-evaluates the segment against the new config.
+- Test approach: app-level Filmstrip test that changes `cfg.ActiveProvider`
+  and calls only `refreshFooterFromConfig` (no plugin `refreshSegment`),
+  asserting the footer segment text switches and the stale value is gone.
+- Validation: prove the test is RED without the fix (temp-revert), GREEN with
+  it; then live PTY check of /model to a local provider.
+
+**Status:** FIXED — see `docs/archive/bugs.2026-07-19.md` (quota section) and
+`TestFilmstrip_ProviderSwitchRefreshesSegment`.
