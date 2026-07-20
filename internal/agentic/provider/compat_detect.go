@@ -33,7 +33,7 @@ func fingerprintProvider(providerName Provider, baseURL string) providerFingerpr
 	p := strings.ToLower(string(providerName))
 
 	return providerFingerprint{
-		isZai:          matchesProviderOrURL(p, url, "zai", "zai-coding-cn", "api.z.ai", "open.bigmodel.cn"),
+		isZai:          matchesProviderOrURL(p, url, "zai", "zai-api", "zai-coding", "zai-coding-cn", "zai-coding-plan", "api.z.ai", "open.bigmodel.cn"),
 		isTogether:     matchesProviderOrURL(p, url, "together", "api.together.ai", "api.together.xyz"),
 		isMoonshot:     matchesProviderOrURL(p, url, "moonshotai", "moonshotai-cn", "api.moonshot."),
 		isOpenRouter:   matchesProviderOrURL(p, url, "openrouter", "openrouter.ai"),

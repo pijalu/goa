@@ -99,3 +99,69 @@ func TestLookupByPrefix_CaseInsensitive(t *testing.T) {
 		t.Errorf("Provider = %q, want %q", m.Provider, provider.ProviderAnthropic)
 	}
 }
+
+// TestGetModels_PerProviderSharedIDs is the regression for "glm-5.2 is not
+// shown in the list for z.ai": identical model IDs registered under two
+// providers (zai coding plan, zai-api pay-per-token) must not evict each
+// other — the ID-keyed map is first-wins, but per-provider listings must be
+// complete for BOTH providers.
+func TestGetModels_PerProviderSharedIDs(t *testing.T) {
+	zaiModels := GetModels(provider.ProviderZai)
+	zaiAPIModels := GetModels(provider.ProviderZaiApi)
+
+	zaiIDs := map[string]bool{}
+	for _, m := range zaiModels {
+		zaiIDs[m.ID] = true
+	}
+	for _, id := range []string{"glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5v-turbo"} {
+		if !zaiIDs[id] {
+			t.Errorf("GetModels(zai) missing %q (evicted by zai-api duplicate?)", id)
+		}
+	}
+
+	apiIDs := map[string]bool{}
+	for _, m := range zaiAPIModels {
+		apiIDs[m.ID] = true
+	}
+	for _, id := range []string{"glm-4.5", "glm-4.6", "glm-5", "glm-5.2"} {
+		if !apiIDs[id] {
+			t.Errorf("GetModels(zai-api) missing %q", id)
+		}
+	}
+}
+
+// TestGetModelForProvider_ProviderExactMetadata verifies provider-specific
+// pricing survives shared IDs: zai's glm-5.2 is quota-priced (zero), while
+// zai-api's glm-5.2 carries per-token API pricing.
+func TestGetModelForProvider_ProviderExactMetadata(t *testing.T) {
+	zai := GetModelForProvider(provider.ProviderZai, "glm-5.2")
+	if zai == nil {
+		t.Fatal("GetModelForProvider(zai, glm-5.2) = nil")
+	}
+	if zai.Provider != provider.ProviderZai {
+		t.Errorf("Provider = %q, want zai", zai.Provider)
+	}
+	if zai.Cost.Input != 0 || zai.Cost.Output != 0 {
+		t.Errorf("zai glm-5.2 cost = %+v, want zero (quota plan)", zai.Cost)
+	}
+	if zai.ThinkingFormat != provider.ThinkingFormatZai {
+		t.Errorf("ThinkingFormat = %q, want zai", zai.ThinkingFormat)
+	}
+
+	api := GetModelForProvider(provider.ProviderZaiApi, "glm-5.2")
+	if api == nil {
+		t.Fatal("GetModelForProvider(zai-api, glm-5.2) = nil")
+	}
+	if api.Provider != provider.ProviderZaiApi {
+		t.Errorf("Provider = %q, want zai-api", api.Provider)
+	}
+	if api.Cost.Input != 0.0000014 || api.Cost.Output != 0.0000044 {
+		t.Errorf("zai-api glm-5.2 cost = %+v, want per-token 1.4/4.4 per Mtok", api.Cost)
+	}
+
+	// Unknown provider falls back to the ID-global entry.
+	fallback := GetModelForProvider(provider.ProviderCustom, "glm-5.2")
+	if fallback == nil {
+		t.Fatal("GetModelForProvider(custom, glm-5.2) = nil, want ID-global fallback")
+	}
+}

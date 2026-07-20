@@ -30,7 +30,15 @@ GO_PACKAGES := ./cmd/... ./config/... ./core/... ./internal/... ./memory/... \
 
 # ── Build ────────────────────────────────────────────────────────────────
 
-build: clean
+# models regenerates the model catalog (internal/agentic/provider/models/
+# models_generated.go) from models.dev. Best-effort: when models.dev is
+# unreachable, the generator warns and keeps the checked-in catalog, so
+# offline builds still work. Runs on every build to keep model metadata
+# (context windows, pricing, new models) current.
+models:
+	$(GO) generate ./internal/agentic/provider/models/
+
+build: clean models
 	$(GO) build $(LD_FLAGS) -o $(BINARY) ./cmd/goa
 
 # ── Clean ────────────────────────────────────────────────────────────────
@@ -79,7 +87,7 @@ install:
 
 # ── Cross-compile ────────────────────────────────────────────────────────
 
-cross:
+cross: models
 	mkdir -p dist
 	GOOS=linux   GOARCH=amd64 $(GO) build $(LD_FLAGS) -o dist/$(BINARY)-linux-amd64 ./cmd/goa
 	GOOS=linux   GOARCH=arm64 $(GO) build $(LD_FLAGS) -o dist/$(BINARY)-linux-arm64 ./cmd/goa

@@ -92,6 +92,38 @@ func TestDetectOpenAICompat_ZAI(t *testing.T) {
 	}
 }
 
+func TestDetectOpenAICompat_ZaiVariants(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider Provider
+		baseURL  string
+	}{
+		{"coding plan by provider name", ProviderZai, "https://api.z.ai/api/coding/paas/v4"},
+		{"general api by provider name", ProviderZaiApi, "https://api.z.ai/api/paas/v4"},
+		{"coding plan by URL", "custom", "https://api.z.ai/api/coding/paas/v4"},
+		{"general api by URL", "custom", "https://api.z.ai/api/paas/v4"},
+		{"CN bigmodel coding by URL", "custom", "https://open.bigmodel.cn/api/coding/paas/v4"},
+		{"CN bigmodel by URL", "custom", "https://open.bigmodel.cn/api/paas/v4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compat := DetectOpenAICompat(Model{Provider: tc.provider, BaseURL: tc.baseURL})
+			if *compat.ThinkingFormat != "zai" {
+				t.Errorf("ThinkingFormat = %q, want zai", *compat.ThinkingFormat)
+			}
+			if *compat.SupportsReasoningEffort {
+				t.Error("SupportsReasoningEffort = true, want false for z.ai")
+			}
+			if *compat.SupportsStore {
+				t.Error("SupportsStore = true, want false for z.ai (non-standard)")
+			}
+			if *compat.SupportsDeveloperRole {
+				t.Error("SupportsDeveloperRole = true, want false for z.ai (non-standard)")
+			}
+		})
+	}
+}
+
 func TestDetectOpenAICompat_CustomDefaults(t *testing.T) {
 	// Unknown provider should get OpenAI defaults (no detection overrides)
 	compat := DetectOpenAICompat(Model{Provider: ProviderCustom, BaseURL: "https://custom.example.com"})

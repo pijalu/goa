@@ -75,3 +75,28 @@ func TestEphemeralSystemMessage_TagNotSentToModel(t *testing.T) {
 	}
 	// ...but provider.Message has no ephemeral field, so the tag cannot leak.
 }
+
+// TestEphemeralSystemMessage_NotEmittedToObservers is the regression for the
+// "hidden steering" bug: the [goa-system] round-limit nudge was emitted as a
+// content event, so the TUI rendered an internal control message and the
+// model parroted it as a user-facing "budget". Ephemeral injections must
+// reach history (the model sees them) without producing observer events.
+func TestEphemeralSystemMessage_NotEmittedToObservers(t *testing.T) {
+	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
+	obs := &mockEventObserver{}
+	a.AddObserver(obs)
+
+	a.InjectEphemeralSystemMessage("[goa-system] internal control note")
+
+	// History receives the message (model-visible during the turn)...
+	a.mu.Lock()
+	histLen := len(a.history)
+	a.mu.Unlock()
+	if histLen != 1 {
+		t.Fatalf("expected 1 history entry after injection, got %d", histLen)
+	}
+	// ...but no event is emitted to observers.
+	if got := len(obs.Events()); got != 0 {
+		t.Fatalf("ephemeral injection leaked %d observer events: %+v", got, obs.Events())
+	}
+}

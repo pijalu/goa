@@ -41,11 +41,13 @@ const (
 	ProviderOpenRouter Provider = "openrouter"
 	ProviderLMStudio   Provider = "lm-studio"
 	ProviderOllama     Provider = "ollama"
-	ProviderKimi        Provider = "kimi"
-	ProviderKimiCode    Provider = "kimi-code"
-	ProviderOpenCode    Provider = "opencode"
-	ProviderOpenCodeGo  Provider = "opencode-go"
-	ProviderCustom      Provider = "custom"
+	ProviderKimi       Provider = "kimi"
+	ProviderKimiCode   Provider = "kimi-code"
+	ProviderZai        Provider = "zai"
+	ProviderZaiApi     Provider = "zai-api"
+	ProviderOpenCode   Provider = "opencode"
+	ProviderOpenCodeGo Provider = "opencode-go"
+	ProviderCustom     Provider = "custom"
 )
 
 // Transport indicates the wire protocol for API communication.

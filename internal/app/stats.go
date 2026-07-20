@@ -781,15 +781,15 @@ func hasBuiltinCost(c provider.ModelPricing) bool {
 }
 
 // builtinCostToPricing maps the registry's ModelPricing onto the per-1M
-// PricingConfig used by computeCost. The registered cost values (models.go,
-// via models_generated.go) are already expressed per 1M tokens, so they map
-// directly — no unit conversion.
+// PricingConfig used by computeCost. Registry cost values (models.go and
+// models_generated.go alike) are per-token rates; PricingConfig is per 1M
+// tokens, so the rates scale by 1e6.
 func builtinCostToPricing(c provider.ModelPricing) config.PricingConfig {
 	return config.PricingConfig{
-		InputPer1M:      c.Input,
-		OutputPer1M:     c.Output,
-		CacheReadPer1M:  c.CacheRead,
-		CacheWritePer1M: c.CacheWrite,
+		InputPer1M:      c.Input * 1e6,
+		OutputPer1M:     c.Output * 1e6,
+		CacheReadPer1M:  c.CacheRead * 1e6,
+		CacheWritePer1M: c.CacheWrite * 1e6,
 	}
 }
 

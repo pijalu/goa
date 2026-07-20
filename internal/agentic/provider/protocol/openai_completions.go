@@ -155,6 +155,15 @@ func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOp
 		return
 	}
 	level := resolveThinkingLevel(model, opts, profile)
+	// An explicit "off" disables thinking on the server (pi does the same for
+	// z.ai: thinking:{type:"disabled"}) instead of omitting the body, so a
+	// server-side sticky thinking default cannot leak through.
+	if opts.Reasoning == schema.ThinkingOff {
+		for k, v := range thinkingDisabledBodyForFormat(format) {
+			body[k] = v
+		}
+		return
+	}
 	for k, v := range thinkingBodyForFormat(format, level) {
 		body[k] = v
 	}
@@ -851,6 +860,17 @@ func deepseekThinking(level string) map[string]any {
 }
 func zaiThinking(level string) map[string]any {
 	return map[string]any{"thinking": map[string]any{"type": "enabled", "clear_thinking": false}}
+}
+
+// thinkingDisabledBodyForFormat returns the explicit "thinking off" body for
+// formats that support one. Formats without a disable signal return nil (the
+// body is simply omitted, as before).
+func thinkingDisabledBodyForFormat(format string) map[string]any {
+	switch format {
+	case "zai":
+		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
+	}
+	return nil
 }
 func togetherThinking(level string) map[string]any {
 	body := map[string]any{"reasoning": map[string]any{"enabled": true}}

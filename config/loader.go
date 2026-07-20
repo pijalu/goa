@@ -125,6 +125,9 @@ func (cl *CascadeLoader) Load() (*Config, error) {
 	// Convert deprecated ProviderConfig.DefaultModel into explicit ModelConfig entries.
 	cfg.migrateProviderDefaultModels()
 
+	// Drop selector sentinel values ("__add__" etc.) persisted by older versions.
+	cfg.sanitizeSelectorSentinels()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -607,6 +610,40 @@ func (c *Config) repairActiveProviderModel() {
 		}
 		c.Models = append(c.Models, ModelConfig{ID: c.ActiveModel, ProviderID: providerID, Model: c.ActiveModel})
 	}
+}
+
+// sanitizeSelectorSentinels drops selector sentinel values ("__add__",
+// "__delete__*", etc.) that older versions could persist as provider or
+// model IDs when a picker's '+' hotkey leaked the sentinel into config.
+// It also clears active_provider/active_model when they hold a sentinel so
+// repairActiveProviderModel cannot resurrect them. Runs before validation.
+func (c *Config) sanitizeSelectorSentinels() {
+	isSentinel := func(id string) bool {
+		return strings.HasPrefix(id, "__") && strings.HasSuffix(id, "__") && len(id) > 4
+	}
+
+	if isSentinel(c.ActiveProvider) {
+		c.ActiveProvider = ""
+	}
+	if isSentinel(c.ActiveModel) {
+		c.ActiveModel = ""
+	}
+
+	providers := c.Providers[:0]
+	for _, p := range c.Providers {
+		if !isSentinel(p.ID) {
+			providers = append(providers, p)
+		}
+	}
+	c.Providers = providers
+
+	models := c.Models[:0]
+	for _, m := range c.Models {
+		if !isSentinel(m.ID) && !isSentinel(m.ProviderID) {
+			models = append(models, m)
+		}
+	}
+	c.Models = models
 }
 
 // migrateLegacyMode converts old config fields to the new mode system.

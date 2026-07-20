@@ -18,6 +18,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/internal/acp"
+	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
@@ -59,7 +60,7 @@ type App struct {
 
 	// usageStore records per-turn token usage to the global SQLite DB for
 	// /usage. Lazily opened on first recorded turn; nil until then.
-	usageStore     *usage.Store
+	usageStore      *usage.Store
 	usageStoreTried bool
 
 	// pluginsLoaded signals completion of the async plugin load (nil when the
@@ -307,6 +308,7 @@ func runApp() bool {
 
 	loader := config.NewCascadeLoader(projectDir, cliFlags["config"], cliFlags)
 	cfg := LoadConfig(loader, projectDir)
+	enableModelsDevCatalog()
 	subs := InitSubsystems(cfg, loader, projectDir, runtimeOpts)
 	switch {
 	case runtimeOpts.DreamMode():
@@ -327,6 +329,18 @@ func runApp() bool {
 	default:
 		return New(subs).Run()
 	}
+}
+
+// enableModelsDevCatalog loads the cached models.dev catalog (~/.goa/cache/
+// models.dev.json) and kicks off a background refresh when the cache is
+// stale. Model pickers then prefer the fresh catalog, falling back to the
+// embedded registry when models.dev is unreachable. Never blocks startup.
+func enableModelsDevCatalog() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	models.EnableModelsDevCatalog(filepath.Join(home, ".goa", "cache"))
 }
 
 // applyProfilingDefaults fills in default profile file names when the user

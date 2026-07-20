@@ -138,10 +138,59 @@ func showModelSelector(host core.UIHost, cfg *config.Config, saver config.Config
 	return nil
 }
 
+// modelListForProvider returns the model list for an add-model picker: the
+// provider's live /models list merged with the built-in registry models for
+// that provider. Live entries win on ID conflict; registry entries fill gaps
+// (e.g. z.ai's coding endpoint, whose /models list is incomplete). On live
+// fetch error the registry list alone is returned (may still be empty).
+func modelListForProvider(host core.UIHost, providerID string) []provider.ModelInfo {
+	var live []provider.ModelInfo
+	if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
+		if pm, ok := ctx.ProviderManager.(interface {
+			ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
+		}); ok {
+			live, _ = pm.ListModelsCached(providerID, modelCacheTTL)
+		} else {
+			live, _ = ctx.ProviderManager.ListModels(providerID)
+		}
+	}
+
+	var registry []provider.ModelInfo
+	if pm, ok := host.(interface {
+		ListRegistryModels(string) []provider.ModelInfo
+	}); ok {
+		registry = pm.ListRegistryModels(providerID)
+	} else if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
+		if pm, ok := ctx.ProviderManager.(interface {
+			ListRegistryModels(string) []provider.ModelInfo
+		}); ok {
+			registry = pm.ListRegistryModels(providerID)
+		}
+	}
+
+	seen := make(map[string]bool, len(live))
+	out := append([]provider.ModelInfo{}, live...)
+	for _, m := range live {
+		seen[m.ID] = true
+	}
+	for _, m := range registry {
+		if !seen[m.ID] {
+			out = append(out, m)
+			seen[m.ID] = true
+		}
+	}
+	return out
+}
+
 // runAddModelFromSelector guides the user through adding a model from the
 // provider's available model list, similar to /config's add model flow.
+// The active provider is used by default; the provider picker only appears
+// when no provider is active or the active one is unknown.
 func runAddModelFromSelector(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
-	// Show provider selection
+	if cfg.ActiveProvider != "" && cfg.GetProviderByID(cfg.ActiveProvider) != nil {
+		pickModelFromProvider(host, cfg, saver, cfg.ActiveProvider)
+		return
+	}
 	providers := configuredProviderItemsSimple(cfg)
 	if len(providers) == 0 {
 		host.Flash("No providers configured. Use /config to add one.")
@@ -159,29 +208,12 @@ func runAddModelFromSelector(host core.UIHost, cfg *config.Config, saver config.
 	})
 }
 
-// pickModelFromProvider fetches models from the given provider and shows a
-// selector for the user to pick one to add.
+// pickModelFromProvider fetches models from the given provider (live list
+// merged with registry models) and shows a selector to pick one to add.
 func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID string) {
-	ctx, ok := host.(core.Context)
-	var models []provider.ModelInfo
-	var err error
-	if ok && ctx.ProviderManager != nil {
-		if pm, ok := ctx.ProviderManager.(interface {
-			ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
-		}); ok {
-			models, err = pm.ListModelsCached(providerID, 5*time.Minute)
-		} else {
-			models, err = ctx.ProviderManager.ListModels(providerID)
-		}
-	}
-	if err != nil || len(models) == 0 {
-		// Fallback: prompt for manual model string
-		host.ShowInput("Model name:", "", func(modelName string, ok bool) {
-			if !ok || modelName == "" {
-				return
-			}
-			addAndShowModel(host, cfg, saver, providerID, modelName)
-		})
+	models := modelListForProvider(host, providerID)
+	if len(models) == 0 {
+		promptCustomModelName(host, cfg, saver, providerID)
 		return
 	}
 	items := make([]tui.SelectorItem, 0, len(models)+1)
@@ -200,15 +232,20 @@ func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.Co
 			return
 		}
 		if selected == "__custom__" {
-			host.ShowInput("Model name:", "", func(modelName string, ok bool) {
-				if !ok || modelName == "" {
-					return
-				}
-				addAndShowModel(host, cfg, saver, providerID, modelName)
-			})
+			promptCustomModelName(host, cfg, saver, providerID)
 			return
 		}
 		addAndShowModel(host, cfg, saver, providerID, selected)
+	})
+}
+
+// promptCustomModelName asks for a model name manually and adds it.
+func promptCustomModelName(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID string) {
+	host.ShowInput("Model name:", "", func(modelName string, ok bool) {
+		if !ok || modelName == "" {
+			return
+		}
+		addAndShowModel(host, cfg, saver, providerID, modelName)
 	})
 }
 

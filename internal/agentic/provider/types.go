@@ -55,6 +55,8 @@ const (
 	ProviderOllama     = schema.ProviderOllama
 	ProviderKimi       = schema.ProviderKimi
 	ProviderKimiCode   = schema.ProviderKimiCode
+	ProviderZai        = schema.ProviderZai
+	ProviderZaiApi     = schema.ProviderZaiApi
 	ProviderOpenCode   = schema.ProviderOpenCode
 	ProviderOpenCodeGo = schema.ProviderOpenCodeGo
 	ProviderCustom     = schema.ProviderCustom
@@ -117,6 +119,7 @@ const (
 	ThinkingFormatSeparateField      = schema.ThinkingFormatSeparateField
 	ThinkingFormatNoOutput           = schema.ThinkingFormatNoOutput
 	ThinkingFormatTextPrefixed       = schema.ThinkingFormatTextPrefixed
+	ThinkingFormatZai                = schema.ThinkingFormatZai
 )
 
 // Re-exported caching type.

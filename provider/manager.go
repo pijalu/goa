@@ -19,10 +19,10 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
-	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
-	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
+	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 	_ "github.com/pijalu/goa/internal/agentic/provider/openai"
+	"github.com/pijalu/goa/internal/auth"
 )
 
 // ModelInfo describes an LLM model from a provider's model list.
@@ -197,6 +197,37 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 	return result.Data, nil
 }
 
+// ListRegistryModels returns catalog models for a provider config ID, as
+// ModelInfo. Source priority: the models.dev runtime catalog (freshest,
+// when loaded/refreshed) first, then the embedded built-in registry — so a
+// models.dev-only model still shows up even before the next build embeds it.
+// This complements ListModels (live /models fetch): providers whose endpoint
+// does not serve a complete model list (e.g. z.ai's coding plan) still offer
+// their known models in add-model pickers.
+func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
+	pCfg := pm.cfg.GetProviderByID(providerID)
+	if pCfg == nil {
+		return nil
+	}
+	prov, _ := inferProviderIdentity(*pCfg)
+
+	seen := map[string]bool{}
+	var out []ModelInfo
+	for _, m := range models.GetRuntimeModels(prov) {
+		if !seen[m.ID] {
+			out = append(out, ModelInfo{ID: m.ID})
+			seen[m.ID] = true
+		}
+	}
+	for _, m := range models.GetModels(prov) {
+		if !seen[m.ID] {
+			out = append(out, ModelInfo{ID: m.ID})
+			seen[m.ID] = true
+		}
+	}
+	return out
+}
+
 // TestConnection tests connectivity to a provider by listing models.
 func (pm *ProviderManager) TestConnection(providerID string) (latency time.Duration, modelCount int, err error) {
 	start := time.Now()
@@ -267,8 +298,11 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 
 	var mdl agenticprovider.Model
 
-	// Try the built-in model registry first.
-	if m := models.GetModel(modelName); m != nil {
+	// Try the built-in model registry first, provider-exact so shared model
+	// IDs keep their provider-specific metadata (e.g. glm-5.2 quota pricing
+	// on zai vs per-token pricing on zai-api).
+	prov, _ := inferProviderIdentity(*pCfg)
+	if m := models.GetModelForProvider(prov, modelName); m != nil {
 		mdl = mergeRegistryModel(*m, *pCfg, mCfg, modelName)
 	} else {
 		// Fallback: construct a minimal Model for custom/local providers.
@@ -381,6 +415,8 @@ var knownProviderPrefixes = []string{
 	string(agenticprovider.ProviderOllama),
 	string(agenticprovider.ProviderKimi),
 	string(agenticprovider.ProviderKimiCode),
+	string(agenticprovider.ProviderZai),
+	string(agenticprovider.ProviderZaiApi),
 	string(agenticprovider.ProviderCustom),
 }
 
@@ -485,11 +521,34 @@ func applyModelConfigToFallback(mdl *agenticprovider.Model, mCfg config.ModelCon
 	if mCfg.ThinkingLevel != "" {
 		mdl.Reasoning = true
 	}
+	inferProviderModelTraits(mdl)
 	if budgets := effectiveThinkingBudgets(mCfg); len(budgets) > 0 {
 		mdl.ThinkingBudgets = budgets
 	}
 	if mCfg.Compat != "" {
 		mdl.Compat = parseCompatJSON(api, mCfg.Compat)
+	}
+}
+
+// inferProviderModelTraits fills reasoning/thinking capabilities for known
+// provider+model families when a raw model ID bypasses the registry (e.g. the
+// user typed "glm-5.2" instead of picking it from the model list). Without
+// this, z.ai GLM models resolved through the fallback path would not send the
+// thinking body, silently disabling reasoning.
+func inferProviderModelTraits(mdl *agenticprovider.Model) {
+	detected := agenticprovider.DetectOpenAICompat(*mdl)
+	format := ""
+	if detected.ThinkingFormat != nil {
+		format = *detected.ThinkingFormat
+	}
+	switch format {
+	case "zai":
+		// All GLM chat models on z.ai reasoning-enable via the thinking body.
+		mdl.Reasoning = true
+		mdl.ThinkingFormat = agenticprovider.ThinkingFormatZai
+	case "deepseek":
+		mdl.Reasoning = true
+		mdl.ThinkingFormat = agenticprovider.ThinkingFormatChunkedReasoning
 	}
 }
 
@@ -549,6 +608,11 @@ var endpointHeuristics = []struct {
 	{"api.moonshot.cn", agenticprovider.ProviderKimi, agenticprovider.ApiOpenAICompletions},
 	{"api.moonshot.ai", agenticprovider.ProviderKimi, agenticprovider.ApiOpenAICompletions},
 	{"api.kimi.com/coding", agenticprovider.ProviderKimiCode, agenticprovider.ApiOpenAICompletions},
+	// Coding endpoint first: it is a substring-superset of the general one.
+	{"api.z.ai/api/coding", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
+	{"api.z.ai", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
+	{"open.bigmodel.cn/api/coding", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
+	{"open.bigmodel.cn", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
 }
 
 func matchProviderEndpoint(endpoint string) (agenticprovider.Provider, agenticprovider.Api) {

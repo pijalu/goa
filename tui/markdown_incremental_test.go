@@ -150,3 +150,64 @@ func TestBoundaryScanner_ResetOnShrink(t *testing.T) {
 		t.Errorf("after shrink: incremental=%d, full=%d", got, want)
 	}
 }
+
+// TestIncrementalMD_StreamedFenceNeverFlattens is the regression for the
+// reported rendering bug: a multi-line fenced code block streamed in
+// multi-byte chunks was rendered as a single space-joined paragraph (fence
+// markers dropped). Root cause: boundaryScanner.updateResumePos restored
+// pre-chunk fence state whenever a chunk ended mid-line, losing a fence-open
+// that completed in the same chunk; the next in-fence blank line was then
+// accepted as a block boundary and the fence was split mid-content.
+//
+// The 1-byte-chunk tests never caught it because a 1-byte suffix that
+// completes the fence line always ends with "\n" — the restore path was
+// never taken with a pending fence toggle. Chunk sizes ≥ 4 bytes make the
+// fence line and an incomplete following line share a chunk.
+func TestIncrementalMD_StreamedFenceNeverFlattens(t *testing.T) {
+	doc := "All clean and pushed. Here's the flow:\n\n## CLI Build & Release Flow\n\n```\nMakefile:\n  all: quality test build-cli        ← local dev (includes CLI)\n  release: quality test cross-build   ← local release (includes CLI)\n\nCI/CD:\n  quality-and-test ──┬──→ build-cli (matrix: 6 binaries) ──┐\n                     │                                      ├──→ release (on tags)\n                     └──→ compat-test ──────────────────────┘\n```\n\n**`build-cli` job** (matrix):\n- `cd cmd/frigolite` (the separate Go module)\n- Done."
+
+	full := NewMDStreamRenderer(100, TheTheme)
+	want := full.Render(doc)
+
+	for _, chunk := range []int{1, 3, 4, 7, 13, 64} {
+		incr := NewIncrementalMDRenderer(100, TheTheme)
+		for end := chunk; ; end += chunk {
+			e := end
+			if e > len(doc) {
+				e = len(doc)
+			}
+			text := doc[:e]
+			got := incr.Render(text)
+			if !equalLines(got, full.Render(text)) {
+				t.Fatalf("chunk=%d end=%d: streamed render diverged from full render\ngot:\n%s\nwant:\n%s",
+					chunk, e, strings.Join(got, "\n"), strings.Join(full.Render(text), "\n"))
+			}
+			if e >= len(doc) {
+				break
+			}
+		}
+		if !equalLines(incr.Render(doc), want) {
+			t.Fatalf("chunk=%d: final render mismatch", chunk)
+		}
+	}
+}
+
+// TestBoundaryScanner_FenceOpenFollowedByIncompleteLine pins the scanner
+// invariant directly: when a suffix contains a complete fence-open line
+// followed by an incomplete content line, the fence state must survive into
+// the next advance call (inFence=true at resumePos).
+func TestBoundaryScanner_FenceOpenFollowedByIncompleteLine(t *testing.T) {
+	var bs boundaryScanner
+	// Chunk ends mid-line right after the fence opener completed.
+	bs.advance("para\n\n```\nMakef")
+	bs.advance("para\n\n```\nMakefile:\nline2\n\ninside blank\n")
+	// The blank line after line2 is INSIDE the fence: no boundary past the
+	// paragraph break may be created from it.
+	full := lastStableBoundary("para\n\n```\nMakefile:\nline2\n\ninside blank\n")
+	if bs.boundary != full {
+		t.Errorf("boundary = %d, want %d (fence state lost across chunks)", bs.boundary, full)
+	}
+	if full > len("para\n\n") {
+		t.Errorf("test invariant broken: full-doc boundary %d should stop at the paragraph break", full)
+	}
+}

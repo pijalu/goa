@@ -115,33 +115,68 @@ func (t *SkillRunnerTool) Execute(input string) (string, error) {
 	return output, nil
 }
 
-// executeInline returns the skill body (plus sub-skills and imports) and the
-// task as the tool result. The calling agent then follows the instructions
-// using its own tools within the same session.
+// executeInline returns the skill instructions and the task as the tool
+// result. The calling agent then follows the instructions using its own
+// tools within the same session.
+//
+// The result is framed as an ACTIVE execution context, not documentation:
+// models otherwise read the raw skill body as reference text and conclude
+// "the skill didn't execute" instead of performing the task. License/HTML
+// comment headers are stripped so only actionable content reaches the model.
 func (t *SkillRunnerTool) executeInline(skill *Skill, task string) string {
 	var b strings.Builder
+	b.WriteString(fmt.Sprintf("You are now executing the skill %q. The instructions below are ACTIVE — ", skill.Meta.Name))
+	b.WriteString("perform the task immediately using your available tools (bash, read, write, etc.). ")
+	b.WriteString("Do NOT quote, summarize, or describe these instructions; carry them out.\n\n")
 	b.WriteString(fmt.Sprintf("# Skill: %s\n\n", skill.Meta.Name))
-	b.WriteString(skill.Body)
+	b.WriteString(stripSkillNoise(skill.Body))
 	if subs := t.Registry.SubSkills(skill.Meta.Name); len(subs) > 0 {
 		b.WriteString("\n\n## Sub-skills\n")
 		for _, sub := range subs {
-			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, sub.Body))
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, stripSkillNoise(sub.Body)))
 		}
 	}
 	if imports := t.Registry.ImportedSkills(skill.Meta.Name); len(imports) > 0 {
 		b.WriteString("\n\n## Imported skills\n")
 		for _, imp := range imports {
-			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, imp.Body))
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, stripSkillNoise(imp.Body)))
 		}
 	}
 	b.WriteString(fmt.Sprintf("\n\n## Task\n%s\n", task))
-	b.WriteString("\nFollow the skill instructions above and complete the task using available tools.")
+	b.WriteString("\nBegin executing now. When done, return only the task's final output.")
 	if t.Renderer != nil {
 		if rendered := RenderSkillToolResult(t.Renderer, skill.Meta.Name, "inline", b.String()); rendered != "" {
 			return rendered
 		}
 	}
 	return b.String()
+}
+
+// stripSkillNoise removes non-actionable noise from a skill body before it is
+// injected as a tool result: leading HTML comment blocks (SPDX/license
+// headers every bundled SKILL.md carries) and any "[Skill: <name>]" marker
+// lines. Comments inside the body after real content are also dropped — the
+// model only needs the instructions.
+func stripSkillNoise(body string) string {
+	s := strings.TrimLeft(body, " \t\r\n")
+	// Drop leading HTML comment blocks (one or more), e.g. SPDX headers.
+	for strings.HasPrefix(s, "<!--") {
+		end := strings.Index(s, "-->")
+		if end < 0 {
+			break
+		}
+		s = strings.TrimLeft(s[end+3:], " \t\r\n")
+	}
+	// Drop "[Skill: <name>]" marker lines anywhere in the body.
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[Skill:") && strings.HasSuffix(trimmed, "]") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), " \t\r\n")
 }
 
 // runSubAgent spawns a sub-agent via AgentPool with the skill body as its
@@ -215,17 +250,17 @@ func excludeToolNames(names []string, excluded ...string) []string {
 func (t *SkillRunnerTool) buildSubAgentPrompt(skill *Skill, task string) (string, string) {
 	systemPrompt := "You are a skill executor. Execute the instructions in the user message and return the final output. Do not plan, summarize, or explain the instructions; perform the work immediately. Use the bash tool for shell commands. Return only the final output."
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("[Skill: %s]\n%s\n", skill.Meta.Name, skill.Body))
+	b.WriteString(fmt.Sprintf("# Skill: %s\n%s\n", skill.Meta.Name, stripSkillNoise(skill.Body)))
 	if subs := t.Registry.SubSkills(skill.Meta.Name); len(subs) > 0 {
 		b.WriteString("\n## Sub-skills\n")
 		for _, sub := range subs {
-			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, sub.Body))
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, stripSkillNoise(sub.Body)))
 		}
 	}
 	if imports := t.Registry.ImportedSkills(skill.Meta.Name); len(imports) > 0 {
 		b.WriteString("\n## Imported skills\n")
 		for _, imp := range imports {
-			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, imp.Body))
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, stripSkillNoise(imp.Body)))
 		}
 	}
 	if task == "" {

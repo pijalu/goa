@@ -73,10 +73,14 @@ function normalizeId(id) {
 
 // fetcherAliases reports whether a normalized config identity belongs to a
 // normalized fetcher id. Covers branding variants the identity string alone
-// cannot express: kimi-code/kimi-for-coding → kimi, moonshot → kimi.
+// cannot express: kimi-code/kimi-for-coding → kimi, moonshot → kimi;
+// zai-coding/zai-coding-cn/zai-coding-plan → zai (same quota monitor).
 function fetcherAliases(fetcher, ident) {
 	if (fetcher === "kimi") {
 		return ident === "kimicode" || ident === "kimiforcoding" || ident === "moonshot";
+	}
+	if (fetcher === "zai") {
+		return ident === "zaicoding" || ident === "zaicodingcn" || ident === "zaicodingplan" || ident === "zhipu";
 	}
 	return false;
 }

@@ -43,6 +43,8 @@ var providerEnvVars = map[Provider][]string{
 	ProviderOpenCodeGo: {"OPENCODE_API_KEY"},
 	ProviderKimi:       {"MOONSHOT_API_KEY", "KIMI_API_KEY"},
 	ProviderKimiCode:   {"KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"},
+	ProviderZai:        {"ZAI_API_KEY"},
+	ProviderZaiApi:     {"ZAI_API_KEY"},
 }
 
 // localProviders need no API key.

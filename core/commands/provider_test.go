@@ -76,6 +76,99 @@ func TestProviderCommand_WithArgs_SwitchesProvider(t *testing.T) {
 	}
 }
 
+// TestProviderCommand_PickerAddRunsWizard is a regression test for the bug
+// where pressing '+' in /provider's selector emitted "__add__" and the picker
+// treated it as a provider ID — switching to provider "__add__" and persisting
+// it. The '+' hotkey must open the add-provider wizard instead.
+func TestProviderCommand_PickerAddRunsWizard(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "k3",
+		Providers: []config.ProviderConfig{
+			{ID: "kimi-code", Name: "Kimi Code", Endpoint: "https://api.kimi.com/coding/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "k3", ProviderID: "kimi-code", Model: "k3"},
+		},
+	}
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+
+	cmd := &ProviderCommand{}
+	if err := cmd.Run(*ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sr.title != "Select provider:" {
+		t.Fatalf("expected provider picker, got %q", sr.title)
+	}
+
+	// User presses '+' — the selector emits "__add__".
+	sr.onSel("__add__", true)
+
+	// The wizard asks for the provider type; it must NOT switch to "__add__".
+	if sr.title != "Select provider type:" {
+		t.Fatalf("expected add-provider wizard, got selector %q", sr.title)
+	}
+	if cfg.ActiveProvider == "__add__" {
+		t.Fatal("ActiveProvider was set to __add__ — the sentinel leaked into config")
+	}
+	if cfg.ActiveProvider != "kimi-code" {
+		t.Errorf("ActiveProvider = %q, want unchanged kimi-code", cfg.ActiveProvider)
+	}
+
+	// Pick the zai preset; it needs an API key.
+	sr.onSel("zai", true)
+	if !strings.HasPrefix(ir.prompt, "API key for ") {
+		t.Fatalf("expected API key prompt, got %q", ir.prompt)
+	}
+	ir.onSub("zai-key-123", true)
+
+	if got := cfg.GetProviderByID("zai"); got == nil {
+		t.Fatal("provider zai was not added to config")
+	} else {
+		if got.Endpoint != "https://api.z.ai/api/coding/paas/v4" {
+			t.Errorf("zai endpoint = %q, want coding endpoint", got.Endpoint)
+		}
+		if got.APIKey != "zai-key-123" {
+			t.Errorf("zai APIKey = %q, want zai-key-123", got.APIKey)
+		}
+	}
+	if saver.savedCfg == nil {
+		t.Error("expected the added provider to be persisted")
+	}
+	if cfg.ActiveProvider != "kimi-code" {
+		t.Errorf("ActiveProvider = %q after add, want unchanged kimi-code", cfg.ActiveProvider)
+	}
+}
+
+// TestProviderCommand_PickerAddCancelLeavesConfig verifies cancelling the
+// wizard leaves provider state untouched.
+func TestProviderCommand_PickerAddCancelLeavesConfig(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "openai",
+		Providers:      []config.ProviderConfig{{ID: "openai", Name: "OpenAI"}},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+
+	cmd := &ProviderCommand{}
+	if err := cmd.Run(*ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	sr.onSel("__add__", true)
+	// Cancel the preset selection.
+	sr.onSel("", false)
+
+	if cfg.ActiveProvider != "openai" {
+		t.Errorf("ActiveProvider = %q, want openai", cfg.ActiveProvider)
+	}
+	if len(cfg.Providers) != 1 {
+		t.Errorf("Providers = %d, want 1 (no provider added)", len(cfg.Providers))
+	}
+}
+
 // TestRouterExecute_ProviderStatusSuffix verifies the router dispatches the
 // "?" suffix through StatusProvider when implemented.
 func TestRouterExecute_ProviderStatusSuffix(t *testing.T) {
@@ -146,5 +239,43 @@ func TestRouterParse_RemovedCommands(t *testing.T) {
 	}
 	if _, ok := reg.Resolve("profiles"); ok {
 		t.Error("/profiles should not be registered (consolidated into /profile)")
+	}
+}
+
+// TestProviderCommand_SwitchClearsForeignModel is the regression for
+// "Switched to: zai / k3": switching to a provider with no configured models
+// must not leave the previous provider's model active. A preset provider
+// falls back to its default model; a custom provider clears the model.
+func TestProviderCommand_SwitchClearsForeignModel(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "kimi-code",
+		ActiveModel:    "k3",
+		Providers: []config.ProviderConfig{
+			{ID: "kimi-code", Name: "Kimi Code", Endpoint: "https://api.kimi.com/coding/v1"},
+			{ID: "zai", Name: "Z.ai Coding", Endpoint: "https://api.z.ai/api/coding/paas/v4"},
+			{ID: "my-custom", Name: "Custom", Endpoint: "http://example.com/v1"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "k3", ProviderID: "kimi-code", Model: "k3"},
+		},
+	}
+	ctx, _, _, _ := newMenuTestContext(t, cfg)
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+
+	// Switch to zai (preset): model must become the preset default, not stay k3.
+	applyProviderSelection(*ctx, cfg, saver, "zai")
+	if cfg.ActiveModel == "k3" {
+		t.Fatal("ActiveModel stayed k3 after switching to zai — foreign model leaked")
+	}
+	if cfg.ActiveModel != "glm-5.2" {
+		t.Errorf("ActiveModel = %q, want preset default glm-5.2", cfg.ActiveModel)
+	}
+
+	// Switch to a custom provider with no preset: model must clear.
+	cfg.ActiveModel = "glm-5.2"
+	applyProviderSelection(*ctx, cfg, saver, "my-custom")
+	if cfg.ActiveModel != "" {
+		t.Errorf("ActiveModel = %q after switching to custom provider, want cleared", cfg.ActiveModel)
 	}
 }

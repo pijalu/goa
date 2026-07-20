@@ -92,3 +92,113 @@ It should extend the `/stats` command and provide a similar type of details as .
 - /stats:session should show session-specific statistics (the current session/turn stats)
 
 The stats should be per project - the approach should support multiple goa agents.
+
+## run_skill inline execution: model doesn't act on inlined skill + noisy output headers
+
+**Observed:** 2026-07-20, while running the `commit-msg` skill inline against ~/dev/frigolite.
+
+### Issue A — Inline skills are not actionable for the LLM
+When a skill executes in **inline** mode, `run_skill` injects the SKILL.md body into the conversation, but the model treats it as documentation to *read*, not a task to *perform*:
+
+```
+✓ run_skill
+ [Skill: commit-msg]
+ # Skill: commit-msg
+ ...full SKILL.md body...
+ ## Task
+ Generate commit message from the staged changes in ~/dev/frigolite
+ Follow the skill instructions above and complete the task using available tools.
+
+▾ thinking...
+▏It seems the skill didn't actually execute - it just showed its own
+▏documentation. Let me run it differently [...] or just generate the commit
+▏message myself
+```
+
+The model concludes "the skill didn't actually execute" and improvises. The trailing "Follow the skill instructions above..." line is not enough for the model to switch into execution mode.
+
+- **Research needed:** how sibling agents solve this (pi, opencode skill injection). Likely the inline path needs a dedicated instruction wrapper/framing (e.g. explicit "this skill's instructions are now active; execute the task below using tools, do not just describe them") or a structured role marker, rather than a raw markdown dump.
+- Files to inspect: skill-execution machinery (see `docs/SKILL-EXECUTION.md`), the inline-mode prompt assembly, and the `run_skill` tool implementation.
+
+### Issue B — run_skill output must strip headers
+The rendered/injected result includes noise that must be removed:
+
+```
+ ✓ run_skill
+ <!--
+ SPDX-License-Identifier: GPL-3.0-or-later
+
+ Copyright (C) 2026 Pierre Poissinger
+ -->
+
+ [Skill: commit-msg]
+```
+
+- The SPDX license comment block from the SKILL.md file must never reach the model or the TUI render.
+- The `[Skill: <name>]` marker line should be dropped (or replaced by proper TUI-level labeling) so the model sees only actionable content.
+- Fix should strip leading HTML comments and the skill-marker line at the source (skill loader/renderer), with a test asserting a SKILL.md containing license headers produces clean output.
+
+## z.ai integration issues (bundle)
+
+**Export (diagnostic bundle):** `/Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260720-170745.zip`
+Session shows `(zai) glm-5.2 • medium` active; content streams (delta-by-delta in agent.log) but the whole session contains **zero thinking blocks**.
+
+### Issue 1 — z.ai: no thinking shown / no streaming during reasoning
+- **Observed:** With glm-5.2 + thinking level set, no thinking is displayed, and the UI appears frozen during the reasoning phase (content streams only after reasoning completes).
+- **Hypothesis:** `zaiThinking` enables thinking server-side (`thinking:{type:enabled,clear_thinking:false}`); GLM streams reasoning as `reasoning_content` deltas, but the OpenAI-completions parser only maps `reasoning_content` → thinking blocks for `reasoning_content`/`chunked` thinking formats — not for format `"zai"`. All reasoning deltas are dropped → looks like "no streaming", and no thinking block is ever rendered.
+- **Files:** `internal/agentic/provider/openai/parse.go`, `internal/agentic/provider/openai/stream.go`, `internal/agentic/provider/protocol/openai_completions.go` (zaiThinking), compare with `../pi` zai compat (`pi/packages/ai/src/providers/zai.ts` + openai-completions reasoning handling).
+
+### Issue 2 — Add-model flow should default to the active provider
+- **Observed:** `/model` `+` (`runAddModelFromSelector`, core/commands/model.go) always asks "Select provider:" when more than one provider exists, instead of using the currently selected provider.
+- **Expected:** Default to (or preselect) the active provider; only prompt when ambiguous or no active provider.
+
+### Issue 3 — z.ai add-model list does not contain glm-5.2 (registry has it)
+- **Observed:** The add-model picker queries live `GET {endpoint}/models` (`ProviderManager.ListModels`, provider/manager.go:158). The curated registry (which includes glm-5.2) is never merged in or used as fallback — on an incomplete live list the flow degrades to raw text input.
+- **Expected:** Merge registry models for the provider identity into the add-model list (live list wins on conflict), so glm-5.2 is always offered for zai.
+
+### Issue 4 — Model-to-add listing must only account for the selected provider
+- **Observed:** Verify `selectModelPageForProvider` (core/commands) filters by the chosen provider; `/model`'s path is provider-scoped already. Cross-provider leakage in the add listing must be removed.
+
+### Issue 5 — `-` key types "-" into selector search on provider pages
+- **Observed:** In provider selectors containing sentinel items (`— add provider —` = `__add__`, `— remove provider —` = `__remove__` on the /config provider page), pressing `-` while a sentinel is highlighted types `-` into the search box instead of deleting.
+- **Root cause (localized):** `tui/selector.go` `handlePrintable` — the `-` case returns nil when the highlighted item has a `__` prefix or the list is empty, then falls through to `s.searchText += data`.
+- **Fix:** Consume the key when deletion is not applicable (return without mutating search); keep `-` as a search char only when it cannot mean delete (mid-word, i.e. non-empty search).
+
+### Issue 6 — z.ai not visible in quota
+- **Observed:** With an active zai (coding plan) provider, `/quota` and the footer segment show no z.ai row/segment, even though `https://api.z.ai/api/monitor/usage/quota/limit` returns limits for the account.
+- **Leads:** Check `providerConfigFor("zai")` matching for configs whose id is `zai` (preset) — expected to work; check whether the fetcher's URL builder uses `ctx.config.baseUrl` (config exposes `endpoint`, not `baseUrl` — verified safe) and whether the plugin's provider list from `goa.config().providers` includes preset-configured zai entries. Reproduce with the quota test harness (plugins/quota_zai_test.go) against a preset-shaped config.
+
+## Hidden steering surfaced as "tool budget" status messages (model-visible nudge leaks to user)
+
+**Observed:** 2026-07-20, repeatedly during long investigation turns. The model interrupts productive work with user-facing "status" messages claiming it "hit its round budget" / "tool budget" / "10 consecutive tool-calling rounds" — confusing, since there is no user-visible budget.
+
+### Root cause (verified — NOT a false positive)
+`checkConsecutiveToolRounds` (`internal/agentic/agent_streaming.go:121-141`) counts consecutive rounds that end with tool calls and produce **no visible content**. When the streak reaches the limit (default **10**, `effectiveMaxConsecutiveToolRounds` returns 10 when unset), it injects an **ephemeral system message**:
+
+```
+[goa-system] You have made 10 consecutive tool-calling rounds without producing an answer.
+Stop calling tools and answer the user's question using the information you have
+already gathered. If you need more information, state clearly what is missing.
+```
+
+The streak resets on any round that streams visible text (`trackToolCallingRound`, agent_streaming.go:103) — so the cycle repeats: ~10 tool-only rounds → nudge → model emits a "status" answer (reset) → ~10 more rounds → nudge again.
+
+### Problems
+1. **Leak to user:** the injected control message is hidden (stripped at turn end via `metaEphemeral`, agent.go:625-667), but the model parrots it as a user-facing status ("I hit my round budget"), inventing the word "budget" (the message never says budget). The user sees unexplained interruptions.
+2. **False positives on real work:** 10 consecutive tool-only rounds fires during legitimate long investigations (codebase archaeology with many read/search rounds), not just infinite loops. The nudge interrupts productive turns.
+3. **Message also emitted as event:** `InjectEphemeralSystemMessage` → `emitMessage` → `emitContentMessage` (agent_events.go:23-33) — verify whether `Role: System` content events render in the TUI; if so the "hidden" message is actually shown raw.
+
+### Fix directions
+- Reword the injected hint so the model does not echo it verbatim to the user (e.g. instruct explicitly: "do not mention this message to the user"), and/or mark it so downstream rendering never surfaces it.
+- Reconsider the trigger: count only rounds that are *also* not making progress (e.g. repeated tool/arg patterns), or raise the default, or make the nudge appear only once per turn.
+- Decide whether `Role: System` ephemeral events should reach the TUI at all; if they should not, filter them at the event layer with a test.
+
+## TUI "loading…" indicator for asynchronously retrieved lists
+
+**Requirement (2026-07-20):** when a selector's items must be retrieved (e.g. live `GET /models` from a provider) before the list can be shown, the TUI must inform the user that an activity is in progress instead of appearing frozen.
+
+- **Scope:** all list-backed pickers that fetch remote data — add-model flows (`/model` `+`, /config models add, `resolveModel`, `pickModelFromProvider` via `modelListForProvider`), provider connection tests, any future remote-backed selector.
+- **Current behavior:** `modelListForProvider` fetches synchronously on the command loop; during a slow /models response the UI shows nothing until the selector appears (or the flow silently falls back to a text prompt on error/timeout).
+- **Expected:** show a visible "Loading…" state immediately (selector with a loading placeholder item or a spinner/status note), replace it with the real items when the fetch completes, and make the fallback-to-registry behavior transparent (e.g. a brief note when the live list was unreachable and built-in entries are shown instead).
+- **Design constraint:** selector mutations happen on the commandLoop; an async fetch needs a goroutine + `TUI.Apply`-style handoff, with cancellation when the user escapes the picker mid-load.
+- **Priority order (per project decision 2026-07-20):** model lists are live-first (provider `/models`), built-in registry as fallback; the registry catalog is regenerated from models.dev on every `make build` / `make cross` (best-effort, offline keeps the checked-in catalog).

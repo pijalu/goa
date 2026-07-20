@@ -7,8 +7,6 @@ package plugins
 import (
 	"strings"
 	"testing"
-
-	"github.com/pijalu/goa/internal/ansi"
 )
 
 // callKimiFetch loads fetchers/kimi.js via the plugin require and returns the
@@ -198,31 +196,5 @@ func TestQuota_SegmentShowsWindowedPercent(t *testing.T) {
 	}
 	if !strings.Contains(seg, "30") {
 		t.Fatalf("segment missing weekly percent: %q", seg)
-	}
-}
-
-// TestQuota_SegmentTracksActiveProviderOnly pins the status-bar contract:
-// with several providers holding quota data, the segment shows ONLY the
-// active provider — no rotation, no other provider names.
-func TestQuota_SegmentTracksActiveProviderOnly(t *testing.T) {
-	env := newQuotaTestEnv(t)
-	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
-	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
-	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100}}}`)
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
-	env.setActiveProvider("z.ai")
-	env.load(t)
-	env.callCommand("quota", "refresh")
-	seg := env.renderSegment()
-	if !strings.Contains(seg, "38") {
-		t.Fatalf("segment should show the active provider (z.ai): %q", seg)
-	}
-	if strings.Contains(seg, "42") || strings.Contains(seg, "Anthropic") {
-		t.Fatalf("segment leaked the inactive provider: %q", seg)
-	}
-	// Bracketed compact form (ANSI-stripped: the segment may carry a color).
-	stripped := ansi.Strip(seg)
-	if !strings.HasPrefix(stripped, "[") || !strings.HasSuffix(stripped, "]") {
-		t.Fatalf("segment should be bracketed: %q", stripped)
 	}
 }

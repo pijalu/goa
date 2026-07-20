@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
-	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -91,16 +90,8 @@ func (m *configMenu) promptOtherModel(onSelected func(string), baseLen int, know
 const modelCacheTTL = 5 * time.Minute
 
 func (m *configMenu) resolveModel(providerID, modelName string, onSelected func(string), baseLen int) {
-	var models []provider.ModelInfo
-	var err error
-	if pm, ok := m.ctx.ProviderManager.(interface {
-		ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
-	}); ok {
-		models, err = pm.ListModelsCached(providerID, modelCacheTTL)
-	} else {
-		models, err = m.ctx.ProviderManager.ListModels(providerID)
-	}
-	if err != nil || len(models) == 0 {
+	models := modelListForProvider(m.ctx, providerID)
+	if len(models) == 0 {
 		if modelName != "" {
 			m.returnTo(baseLen)
 			onSelected(modelName)

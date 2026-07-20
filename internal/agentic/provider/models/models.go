@@ -247,6 +247,111 @@ var modelDefs = []provider.Model{
 		ThinkingFormat: provider.ThinkingFormatReasoningContent,
 	},
 
+	// ── Z.ai Coding Plan ──
+	// Subscription/quota endpoint (api.z.ai/api/coding/paas/v4): costs are
+	// intentionally zero — usage is plan-quota, not per-token billing (same
+	// convention as Kimi Code's k3). Model metadata from models.dev
+	// "zai-coding-plan" (mirrors pi's default "zai" provider).
+	{
+		ID: "glm-4.5-air", Name: "GLM-4.5-Air", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZai,
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 98304, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-4.7", Name: "GLM-4.7", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZai,
+		Reasoning: true, ContextWindow: 204800, MaxTokens: 131072, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5-turbo", Name: "GLM-5-Turbo", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZai,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5.1", Name: "GLM-5.1", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZai,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5.2", Name: "GLM-5.2", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZai,
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5v-turbo", Name: "GLM-5V-Turbo", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZai,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+
+	// ── Z.ai (general API) ──
+	// Pay-per-token endpoint (api.z.ai/api/paas/v4). Pricing from models.dev
+	// "zai" ($/M-token converted to per-token).
+	{
+		ID: "glm-4.5", Name: "GLM-4.5", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 98304, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000006, Output: 0.0000022},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-4.5-air", Name: "GLM-4.5-Air", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 98304, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000002, Output: 0.0000011},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-4.6", Name: "GLM-4.6", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 204800, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000006, Output: 0.0000022},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-4.7", Name: "GLM-4.7", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 204800, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000006, Output: 0.0000022},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-4.7-flash", Name: "GLM-4.7-Flash", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-4.7-flashx", Name: "GLM-4.7-FlashX", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.00000007, Output: 0.0000004},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5", Name: "GLM-5", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 204800, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.000001, Output: 0.0000032},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5-turbo", Name: "GLM-5-Turbo", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000012, Output: 0.000004},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5.1", Name: "GLM-5.1", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000014, Output: 0.0000044},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5.2", Name: "GLM-5.2", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000014, Output: 0.0000044},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+	{
+		ID: "glm-5v-turbo", Name: "GLM-5V-Turbo", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderZaiApi,
+		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000012, Output: 0.000004},
+		ThinkingFormat: provider.ThinkingFormatZai,
+	},
+
 	// ── Qwen ──
 	{
 		ID: "qwen/qwen3.5-9b", Name: "Qwen 3.5 9B", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderCustom,

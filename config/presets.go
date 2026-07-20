@@ -32,7 +32,7 @@ type ProviderPreset struct {
 // PresetProviders returns the list of known provider presets.
 // These cover the most common OpenAI-compatible LLM providers:
 // local-first (LM Studio, Ollama) and cloud (OpenAI, OpenRouter,
-// DeepSeek, Moonshot, Kimi Code, Opencode). Users can add additional
+// DeepSeek, Moonshot, Kimi Code, Z.ai, Opencode). Users can add additional
 // providers via the "Custom" wizard option or by editing their config.
 func PresetProviders() []ProviderPreset {
 	return []ProviderPreset{
@@ -134,6 +134,29 @@ func PresetProviders() []ProviderPreset {
 				"normalize_null_descriptions": true,
 				"tool_call_id_max_length":     64,
 			},
+		},
+		{
+			// Z.ai GLM Coding Plan — subscription/quota endpoint (same surface
+			// pi exposes as its default "zai" provider). Costs are zero:
+			// usage is plan-quota, not per-token billing. See the zai quota
+			// fetcher (plugins/bundled/provider-quota/fetchers/zai.js).
+			ID:           "zai",
+			Name:         "Z.ai Coding",
+			Endpoint:     "https://api.z.ai/api/coding/paas/v4",
+			DefaultModel: "glm-5.2",
+			NeedsAPIKey:  true,
+			Provider:     AgenticProviderZai,
+			API:          AgenticAPIOpenAICompletions,
+		},
+		{
+			// Z.ai general API — pay-per-token endpoint (models.dev "zai").
+			ID:           "zai-api",
+			Name:         "Z.ai",
+			Endpoint:     "https://api.z.ai/api/paas/v4",
+			DefaultModel: "glm-5.2",
+			NeedsAPIKey:  true,
+			Provider:     AgenticProviderZaiApi,
+			API:          AgenticAPIOpenAICompletions,
 		},
 	}
 }

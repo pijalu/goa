@@ -173,6 +173,9 @@ func (s *Selector) handlePrintable(data string) *string {
 						return &v
 					}
 				}
+				// Deletion is not applicable (sentinel item or empty list):
+				// consume the key instead of polluting the search filter.
+				return nil
 			}
 		}
 		s.searchText += data

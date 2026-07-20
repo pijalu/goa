@@ -290,3 +290,60 @@ func TestOpenAICompletionsThinkingFormats(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAICompletions_ZaiFallbackModelSendsThinking is the wire-level
+// regression for "z.ai: no thinking shown": a model resolved via the manager
+// fallback path (raw ID, no registry entry, no profile ThinkingFormat) must
+// still emit the z.ai thinking body. The manager infers Reasoning +
+// ThinkingFormatZai; here we verify BuildRequest turns that into the actual
+// payload GLM expects.
+func TestOpenAICompletions_ZaiFallbackModelSendsThinking(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	// Shape produced by provider.inferProviderModelTraits for a raw glm ID on
+	// a z.ai endpoint: Reasoning=true, ThinkingFormat=zai, empty profile.
+	model := schema.Model{
+		ID:             "glm-9.9-future",
+		Api:            schema.ApiOpenAICompletions,
+		Provider:       schema.ProviderZai,
+		BaseURL:        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+		Reasoning:      true,
+		ThinkingFormat: schema.ThinkingFormatZai,
+	}
+	body, err := p.BuildRequest(model, schema.Context{}, schema.StreamOptions{}, schema.VariantProfile{})
+	require.NoError(t, err)
+
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	thinking, ok := req["thinking"].(map[string]any)
+	require.True(t, ok, "request must contain a thinking object, got: %v", req["thinking"])
+	assert.Equal(t, "enabled", thinking["type"])
+	assert.Equal(t, false, thinking["clear_thinking"])
+	// z.ai does not support reasoning_effort — it must not leak in.
+	_, hasEffort := req["reasoning_effort"]
+	assert.False(t, hasEffort, "z.ai requests must not carry reasoning_effort")
+}
+
+// TestOpenAICompletions_ZaiThinkingOffSendsDisabled mirrors pi's z.ai
+// behavior: an explicit thinking-off request sends thinking:{type:"disabled"}
+// rather than omitting the body, so a server-side sticky thinking default
+// cannot leak through.
+func TestOpenAICompletions_ZaiThinkingOffSendsDisabled(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	model := schema.Model{
+		ID: "glm-5.2", Api: schema.ApiOpenAICompletions, Provider: schema.ProviderZai,
+		Reasoning: true, ThinkingFormat: schema.ThinkingFormatZai,
+	}
+	body, err := p.BuildRequest(model, schema.Context{},
+		schema.StreamOptions{Reasoning: schema.ThinkingOff}, schema.VariantProfile{})
+	require.NoError(t, err)
+
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	thinking, ok := req["thinking"].(map[string]any)
+	require.True(t, ok, "expected explicit disabled thinking body, got: %v", req["thinking"])
+	assert.Equal(t, "disabled", thinking["type"])
+}

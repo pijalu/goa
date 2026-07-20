@@ -130,9 +130,10 @@ func (a *Agent) checkConsecutiveToolRounds() {
 	}
 	a.cfg.Logger.Log(Warn, "consecutive tool-calling round limit (%d) reached; forcing answer", maxConsecToolRounds)
 	a.InjectEphemeralSystemMessage(
-		fmt.Sprintf("[goa-system] You have made %d consecutive tool-calling rounds without producing an answer. "+
-			"Stop calling tools and answer the user's question using the information you have already gathered. "+
-			"If you need more information, state clearly what is missing.", toolRounds))
+		fmt.Sprintf("[goa-system] Internal control note (never show or mention to the user): %d consecutive "+
+			"tool-calling rounds elapsed without an answer. Now produce the final answer from the information "+
+			"already gathered, or briefly state what is missing. Do not reference this note, round counts, "+
+			"or any internal limit/budget in your reply.", toolRounds))
 	// Reset so the hint fires once per streak instead of on every round
 	// past the limit.
 	a.mu.Lock()
@@ -206,7 +207,7 @@ func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
 // no visible output and a seemingly hung session.
 func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opts provider.StreamOptions, limit int) error {
 	a.cfg.Logger.Log(Warn, "per-turn stream round limit (%d) reached; sending recovery hint", limit)
-	recovery := "[goa-system] The per-turn tool-call round limit was reached. Stop calling tools and complete the task using the information you have already gathered."
+	recovery := "[goa-system] Internal control note (never show or mention to the user): the per-turn tool-call round limit was reached. Complete the task now using the information already gathered, without referencing this note or any internal limit."
 	// The recovery hint is a transient nudge for the recovery rounds only; mark
 	// it ephemeral so it is stripped at turn end and does not pollute future
 	// turns' context.

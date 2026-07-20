@@ -18,6 +18,7 @@ import (
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 	"github.com/pijalu/goa/internal/auth"
 )
+
 // TestProviderManagerActive verifies active provider selection.
 func TestProviderManagerActive(t *testing.T) {
 	cfg := &config.Config{
@@ -202,6 +203,33 @@ func TestResolveActiveModel_Fallback(t *testing.T) {
 	}
 }
 
+// TestResolveActiveModel_ZaiRawModelIDGetsThinking is the regression for
+// "z.ai: no thinking shown": a glm model switched to as a raw ID (no
+// ModelConfig, registry miss — e.g. a model the registry doesn't know) must
+// still resolve with reasoning + zai thinking format so the thinking body is
+// sent. Before the fix, the fallback path produced Reasoning=false and
+// applyThinking skipped the body entirely.
+func TestResolveActiveModel_ZaiRawModelIDGetsThinking(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "zai",
+		ActiveModel:    "glm-9.9-future", // unknown to the registry
+		Providers: []config.ProviderConfig{
+			{ID: "zai", Endpoint: "https://api.z.ai/api/coding/paas/v4"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel failed: %v", err)
+	}
+	if !mdl.Reasoning {
+		t.Error("Reasoning = false for z.ai fallback model, want true")
+	}
+	if mdl.ThinkingFormat != agenticprovider.ThinkingFormatZai {
+		t.Errorf("ThinkingFormat = %q, want zai", mdl.ThinkingFormat)
+	}
+}
+
 // TestBuildStreamOptions_NoProvider verifies BuildStreamOptions returns defaults with no provider.
 func TestBuildStreamOptions_NoProvider(t *testing.T) {
 	pm := NewProviderManager(&config.Config{})
@@ -241,6 +269,8 @@ func TestInferProviderIdentity_Presets(t *testing.T) {
 		{"ollama", "ollama", agenticprovider.ProviderOllama, agenticprovider.ApiOpenAICompletions},
 		{"deepseek", "deepseek", agenticprovider.ProviderDeepSeek, agenticprovider.ApiOpenAICompletions},
 		{"openrouter", "openrouter", agenticprovider.ProviderOpenRouter, agenticprovider.ApiOpenAICompletions},
+		{"zai coding preset", "zai", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
+		{"zai api preset", "zai-api", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -286,6 +316,50 @@ func TestInferProviderIdentity_ExplicitOverrides(t *testing.T) {
 	}
 	if api != agenticprovider.ApiAnthropicMessages {
 		t.Errorf("API = %q, want %q", api, agenticprovider.ApiAnthropicMessages)
+	}
+}
+
+// TestInferProviderIdentity_ZaiEndpoints pins the endpoint heuristics for
+// z.ai: the coding-plan endpoint maps to ProviderZai, the general API to
+// ProviderZaiApi. The coding URL contains "api.z.ai" as a substring, so the
+// ordering of endpointHeuristics matters — this guards against regressions
+// that would route coding-plan users to the paid API identity.
+func TestInferProviderIdentity_ZaiEndpoints(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		wantProv agenticprovider.Provider
+	}{
+		{"https://api.z.ai/api/coding/paas/v4", agenticprovider.ProviderZai},
+		{"https://api.z.ai/api/paas/v4", agenticprovider.ProviderZaiApi},
+		{"https://open.bigmodel.cn/api/coding/paas/v4", agenticprovider.ProviderZai},
+		{"https://open.bigmodel.cn/api/paas/v4", agenticprovider.ProviderZaiApi},
+	}
+	for _, tt := range tests {
+		t.Run(tt.endpoint, func(t *testing.T) {
+			prov, api := inferProviderIdentity(config.ProviderConfig{ID: "custom", Endpoint: tt.endpoint})
+			if prov != tt.wantProv {
+				t.Errorf("Provider = %q, want %q", prov, tt.wantProv)
+			}
+			if api != agenticprovider.ApiOpenAICompletions {
+				t.Errorf("API = %q, want openai-completions", api)
+			}
+		})
+	}
+}
+
+// TestStripKnownProviderPrefix_Zai verifies zai-prefixed model IDs resolve to
+// their bare registry IDs (e.g. "zai/glm-5.2" → "glm-5.2").
+func TestStripKnownProviderPrefix_Zai(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"zai/glm-5.2", "glm-5.2"},
+		{"zai-api/glm-5.2", "glm-5.2"},
+		{"glm-5.2", "glm-5.2"},
+		{"unknown/glm-5.2", "unknown/glm-5.2"},
+	}
+	for _, tt := range tests {
+		if got := stripKnownProviderPrefix(tt.in); got != tt.want {
+			t.Errorf("stripKnownProviderPrefix(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 

@@ -634,6 +634,10 @@ const metaEphemeral = "ephemeral"
 // at turn end so it is not re-sent (and does not add noise/context) on future
 // turns. Use for transient nudges (e.g. the recovery hint); use
 // InjectSystemMessage for durable runtime notices (tool changes).
+//
+// The message is deliberately NOT emitted to observers: it is an internal
+// control nudge for the model, and rendering it would confuse the user (the
+// model also tends to parrot it as a user-facing "budget" status).
 func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	msg := Message{
 		Type:    Content,
@@ -644,7 +648,6 @@ func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	a.mu.Lock()
 	a.history = append(a.history, msg)
 	a.mu.Unlock()
-	a.emitMessage(msg)
 }
 
 // stripEphemeralSystemMessages removes ephemeral system messages from history.

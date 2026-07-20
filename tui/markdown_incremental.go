@@ -84,16 +84,17 @@ func (bs *boundaryScanner) advance(text string) int {
 		return bs.boundary
 	}
 
-	savedFence := bs.inFence
-	savedAbsorb := bs.prevAbsorbsBlank
-
 	bs.scanLines(suffix, scanFrom)
-	bs.updateResumePos(suffix, scanFrom, savedFence, savedAbsorb)
+	bs.updateResumePos(suffix, scanFrom)
 	return bs.boundary
 }
 
 // scanLines iterates lines in suffix (starting at byte offset base in the
-// original text) and updates boundary/fence/absorb state.
+// original text) and updates boundary/fence/absorb state. The incomplete
+// tail line (no trailing newline) is NOT classified: resumePos will point at
+// its start, so it is re-scanned on the next advance call. Classifying it
+// early is harmful — a partial "```x" line would toggle the fence state and
+// a later restore could resurrect stale state (see updateResumePos).
 func (bs *boundaryScanner) scanLines(suffix string, base int) {
 	lines := strings.SplitAfter(suffix, "\n")
 	pos := base
@@ -101,7 +102,9 @@ func (bs *boundaryScanner) scanLines(suffix string, base int) {
 		trimmed := strings.TrimRight(l, "\n")
 		isLast := i == len(lines)-1
 		isIncomplete := isLast && !strings.HasSuffix(l, "\n")
-		bs.classifyLine(trimmed, l, isLast, isIncomplete, pos)
+		if !isIncomplete {
+			bs.classifyLine(trimmed, l, isLast, false, pos)
+		}
 		pos += len(l)
 	}
 }
@@ -135,9 +138,14 @@ func lineAbsorbsBlank(trimmed string) bool {
 		isTableRow(trimmed) || isTableSeparator(trimmed)
 }
 
-// updateResumePos sets resumePos for the next advance call and restores
-// fence/absorb state when the tail line is incomplete.
-func (bs *boundaryScanner) updateResumePos(suffix string, scanFrom int, savedFence, savedAbsorb bool) {
+// updateResumePos sets resumePos for the next advance call: the start of the
+// incomplete tail line, or just past the end when the suffix is complete.
+// No state restore is needed: scanLines classifies only complete lines, so
+// inFence/prevAbsorbsBlank already hold the state as of the last complete
+// line — exactly the resume state. (The previous restore-from-saved approach
+// resurrected pre-suffix state, losing fence opens that completed mid-chunk
+// and splitting fenced blocks at in-fence blank lines.)
+func (bs *boundaryScanner) updateResumePos(suffix string, scanFrom int) {
 	if strings.HasSuffix(suffix, "\n") {
 		bs.resumePos = scanFrom + len(suffix)
 		return
@@ -148,8 +156,6 @@ func (bs *boundaryScanner) updateResumePos(suffix string, scanFrom int, savedFen
 	} else {
 		bs.resumePos = scanFrom
 	}
-	bs.inFence = savedFence
-	bs.prevAbsorbsBlank = savedAbsorb
 }
 
 // NewIncrementalMDRenderer wraps a fresh MDStreamRenderer for the given width.

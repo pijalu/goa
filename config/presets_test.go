@@ -54,6 +54,8 @@ func presetExpectations() []presetExpectation {
 		{"deepseek", "DeepSeek", "deepseek-v4-flash", true},
 		{"kimi", "Moonshot", "kimi-k2.6", true},
 		{"kimi-code", "Kimi Code", "kimi-for-coding", true},
+		{"zai", "Z.ai Coding", "glm-5.2", true},
+		{"zai-api", "Z.ai", "glm-5.2", true},
 	}
 }
 
@@ -79,6 +81,34 @@ func assertPreset(t *testing.T, tt presetExpectation) {
 func TestFindPreset_Missing(t *testing.T) {
 	if p := FindPreset("nonexistent"); p != nil {
 		t.Errorf("FindPreset('nonexistent') = %+v, want nil", p)
+	}
+}
+
+// TestPresetProviders_ZaiEndpoints pins the z.ai preset endpoints: "zai" is
+// the GLM Coding Plan (subscription/quota, mirroring pi's default z.ai
+// provider), "zai-api" is the pay-per-token general API. Swapping these
+// would silently bill subscription users or break quota tracking.
+func TestPresetProviders_ZaiEndpoints(t *testing.T) {
+	zai := FindPreset("zai")
+	if zai == nil {
+		t.Fatal("FindPreset(zai) = nil")
+	}
+	if zai.Endpoint != "https://api.z.ai/api/coding/paas/v4" {
+		t.Errorf("zai Endpoint = %q, want coding endpoint", zai.Endpoint)
+	}
+	if zai.Provider != AgenticProviderZai {
+		t.Errorf("zai Provider = %q, want %q", zai.Provider, AgenticProviderZai)
+	}
+
+	api := FindPreset("zai-api")
+	if api == nil {
+		t.Fatal("FindPreset(zai-api) = nil")
+	}
+	if api.Endpoint != "https://api.z.ai/api/paas/v4" {
+		t.Errorf("zai-api Endpoint = %q, want general endpoint", api.Endpoint)
+	}
+	if api.Provider != AgenticProviderZaiApi {
+		t.Errorf("zai-api Provider = %q, want %q", api.Provider, AgenticProviderZaiApi)
 	}
 }
 
@@ -108,6 +138,7 @@ func TestPresetProviders_StableOrder(t *testing.T) {
 	expected := []string{
 		"openai", "lmstudio", "ollama", "openrouter",
 		"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
+		"zai", "zai-api",
 	}
 	if len(presets) != len(expected) {
 		t.Fatalf("PresetProviders() = %d presets, want %d", len(presets), len(expected))

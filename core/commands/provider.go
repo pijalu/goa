@@ -122,6 +122,10 @@ func showProviderPicker(host core.UIHost, cfg *config.Config, saver config.Confi
 		if !ok || selected == "" {
 			return
 		}
+		if selected == "__add__" {
+			runAddProviderFromPicker(host, cfg, saver)
+			return
+		}
 		if strings.HasPrefix(selected, "__delete__") {
 			providerID := strings.TrimPrefix(selected, "__delete__")
 			confirmAndRemoveProvider(host, cfg, saver, providerID)
@@ -133,6 +137,81 @@ func showProviderPicker(host core.UIHost, cfg *config.Config, saver config.Confi
 		applyProviderSelection(host, cfg, saver, selected)
 	})
 	return nil
+}
+
+// runAddProviderFromPicker guides the user through adding a provider from the
+// /provider picker ('+' hotkey), mirroring /model's runAddModelFromSelector.
+// Without this, the selector's "__add__" sentinel would be treated as a
+// provider ID and persisted as the active provider.
+func runAddProviderFromPicker(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
+	ctx, ok := host.(core.Context)
+	if !ok {
+		host.Flash("Add provider: use /config to add a provider interactively.")
+		return
+	}
+	ctx.SelectOption("Select provider type:", buildProviderPresetItems(), "", func(v string, ok bool) {
+		if !ok || v == "" {
+			return
+		}
+		if v == "__custom__" {
+			promptCustomProvider(ctx, cfg, saver)
+			return
+		}
+		preset := config.FindPreset(v)
+		if preset == nil {
+			return
+		}
+		finalizePresetProviderFromPicker(ctx, cfg, saver, preset)
+	})
+}
+
+// finalizePresetProviderFromPicker adds a preset provider, prompting for an
+// API key when the preset requires one.
+func finalizePresetProviderFromPicker(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, preset *config.ProviderPreset) {
+	if !preset.NeedsAPIKey {
+		finalizePickedProvider(host, cfg, saver, preset.ID, preset.Name, preset.Endpoint, "")
+		return
+	}
+	host.ShowInput("API key for "+preset.Name+":", "", func(apiKey string, ok bool) {
+		if !ok {
+			return
+		}
+		finalizePickedProvider(host, cfg, saver, preset.ID, preset.Name, preset.Endpoint, apiKey)
+	})
+}
+
+// promptCustomProvider collects endpoint, API key and ID for a custom provider.
+func promptCustomProvider(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
+	host.ShowInput("Provider endpoint (e.g. https://api.example.com/v1):", "", func(endpoint string, ok bool) {
+		if !ok || endpoint == "" {
+			return
+		}
+		host.ShowInput("API key (optional, press Enter to skip):", "", func(apiKey string, ok bool) {
+			if !ok {
+				return
+			}
+			defaultID := config.DeriveProviderID(endpoint)
+			host.ShowInput("Provider ID (short identifier, e.g. 'my-provider'):", defaultID, func(id string, ok bool) {
+				if !ok || id == "" {
+					return
+				}
+				finalizePickedProvider(host, cfg, saver, id, id, endpoint, apiKey)
+			})
+		})
+	})
+}
+
+// finalizePickedProvider upserts the provider and persists the change.
+func finalizePickedProvider(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, id, name, endpoint, apiKey string) {
+	upsertProviderConfig(cfg, id, name, endpoint, apiKey)
+	if saver != nil {
+		if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
+			host.Flash("Failed to save: " + err.Error())
+			return
+		}
+	}
+	host.Flash("Provider '" + id + "' added.")
+	host.FooterRefresh()
 }
 
 // confirmAndRemoveProvider shows a confirmation and removes a provider.
@@ -183,12 +262,13 @@ func providerPickerDesc(cfg *config.Config, p config.ProviderConfig) string {
 
 // applyProviderSelection switches the active provider, picks a valid model for
 // it when the current model is foreign, persists, and notifies the UI.
+// When the provider has no configured model, the preset default is used; if
+// there is none (custom provider), the active model is cleared — a foreign
+// model must never remain active on the new provider.
 func applyProviderSelection(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, selected string) {
 	cfg.ActiveProvider = selected
 	if !isModelForProvider(cfg, cfg.ActiveModel, selected) {
-		if m := firstModelForProvider(cfg, selected); m != nil {
-			cfg.ActiveModel = m.ID
-		}
+		cfg.ActiveModel = defaultModelForProvider(cfg, selected)
 	}
 	if saver != nil {
 		if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
@@ -198,6 +278,18 @@ func applyProviderSelection(host core.UIHost, cfg *config.Config, saver config.C
 	}
 	host.Flash("Switched to: " + selected + " / " + cfg.ActiveModel)
 	host.FooterRefresh()
+}
+
+// defaultModelForProvider returns the first configured model for providerID,
+// else the preset's default model, else "".
+func defaultModelForProvider(cfg *config.Config, providerID string) string {
+	if m := firstModelForProvider(cfg, providerID); m != nil {
+		return m.ID
+	}
+	if preset := config.FindPreset(providerID); preset != nil {
+		return preset.DefaultModel
+	}
+	return ""
 }
 
 // ProvidersCommand and ModelsCommand were removed. Their functionality is

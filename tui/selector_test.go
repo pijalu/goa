@@ -210,6 +210,75 @@ func TestSelector_FilterMatchesDescription(t *testing.T) {
 	}
 }
 
+// TestSelector_MinusOnSentinelDoesNotSearch is the regression for "-' does
+// not work on provider, it types '-' in the search": pressing '-' while a
+// sentinel item (__add__/__remove__) is highlighted must not pollute the
+// search filter.
+func TestSelector_MinusOnSentinelDoesNotSearch(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "__add__", Label: "— add provider —"},
+		{Value: "zai", Label: "zai"},
+	}, "__add__", result) // cursor starts on the sentinel
+
+	s.HandleInput("-")
+
+	if s.searchText != "" {
+		t.Fatalf("searchText = %q after '-' on sentinel, want empty", s.searchText)
+	}
+	select {
+	case v := <-result:
+		t.Fatalf("unexpected emit %q: '-' on a sentinel must be consumed, not emitted", v)
+	default:
+	}
+}
+
+// TestSelector_MinusOnDeletableEmitsDelete verifies '-' on a normal item
+// emits the __delete__ sentinel (unchanged behavior).
+func TestSelector_MinusOnDeletableEmitsDelete(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "__add__", Label: "— add provider —"},
+		{Value: "zai", Label: "zai"},
+	}, "zai", result) // cursor on the deletable item
+
+	s.HandleInput("-")
+
+	select {
+	case v := <-result:
+		if v != "__delete__zai" {
+			t.Fatalf("emit = %q, want __delete__zai", v)
+		}
+	default:
+		t.Fatal("expected __delete__ emit for '-' on a deletable item")
+	}
+	if s.searchText != "" {
+		t.Fatalf("searchText = %q, want empty", s.searchText)
+	}
+}
+
+// TestSelector_MinusMidWordStillSearches verifies '-' keeps working as a
+// search character once the filter is non-empty (e.g. "glm-4.5").
+func TestSelector_MinusMidWordStillSearches(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "glm-4.5", Label: "glm-4.5"},
+		{Value: "glm-4.7", Label: "glm-4.7"},
+	}, "", result)
+
+	s.HandleInput("g")
+	s.HandleInput("l")
+	s.HandleInput("m")
+	s.HandleInput("-")
+
+	if s.searchText != "glm-" {
+		t.Fatalf("searchText = %q, want glm-", s.searchText)
+	}
+	if len(s.filtered) != 2 {
+		t.Fatalf("filtered = %d items for glm-, want 2", len(s.filtered))
+	}
+}
+
 func TestSelector_FilterBackspace(t *testing.T) {
 	result := make(chan string, 1)
 	s := NewSelector("Test", []SelectorItem{

@@ -846,3 +846,55 @@ tui:
 		t.Errorf("Tools.ShowRead = false, want true")
 	}
 }
+
+// TestLoad_SanitizesSelectorSentinels is the regression for the /provider
+// '+' bug that persisted a provider with ID "__add__" into the home config
+// (observed in a real user export). Load must drop sentinel providers/models
+// and clear sentinel active_provider/active_model so the picker state cannot
+// resurrect them.
+func TestLoad_SanitizesSelectorSentinels(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	t.Setenv("HOME", homeDir)
+
+	writeConfig(t, filepath.Join(homeDir, ".goa", "config.yaml"), `
+active_provider: __add__
+active_model: some-model
+providers:
+  - id: openai
+    name: OpenAI
+    endpoint: https://api.openai.com/v1
+  - id: __add__
+    name: ""
+    endpoint: ""
+models:
+  - id: some-model
+    provider: openai
+    model: some-model
+  - id: leaked-model
+    provider: __add__
+    model: leaked-model
+`)
+
+	loader := NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.GetProviderByID("__add__") != nil {
+		t.Error("sentinel provider __add__ survived load sanitization")
+	}
+	if cfg.GetProviderByID("openai") == nil {
+		t.Error("legitimate provider openai was dropped by sanitization")
+	}
+	if cfg.ActiveProvider == "__add__" {
+		t.Error("ActiveProvider still holds the __add__ sentinel")
+	}
+	for _, m := range cfg.Models {
+		if m.ProviderID == "__add__" || m.ID == "__add__" {
+			t.Errorf("sentinel-linked model survived sanitization: %+v", m)
+		}
+	}
+}
