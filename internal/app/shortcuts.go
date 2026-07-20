@@ -182,14 +182,6 @@ func (a *App) handleChangeModel() {
 	_, _ = subs.cmdRouter.Execute(ctx, result)
 }
 
-
-func saveHomeProvidersAndModels(cfg *config.Config, saver config.ConfigSaver) error {
-	if saver == nil {
-		return nil
-	}
-	return saver.SaveHomeProvidersAndModels(cfg)
-}
-
 // handleToggleThinkingBlocks toggles the thinking-blocks collapsed state and
 // persists the change to the home config.
 func (a *App) handleToggleThinkingBlocks() {
