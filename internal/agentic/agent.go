@@ -268,6 +268,9 @@ type Agent struct {
 	// per turn, so legitimate long investigations are interrupted by a single
 	// hint rather than a repeating nudge/answer cycle.
 	toolRoundNudgeFired bool
+	// autoContinueCount tracks how many times this turn auto-continued after a
+	// detected premature stop (bounded by maxAutoContinuePerTurn).
+	autoContinueCount int
 }
 
 // partialToolCall tracks a tool call whose arguments are still being

@@ -558,9 +558,78 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 		return turnContinues
 	}
 
+	// No tool calls: check for a premature stop before finalizing. Some
+	// providers (deepseek/opencode-go) emit finish_reason=stop mid-task after
+	// a long tool-work streak, truncating the reply mid-sentence. When the
+	// turn did real tool work and the final answer is clearly incomplete,
+	// auto-continue with a steer instead of ending the turn — the user should
+	// not have to type "continue".
+	if a.shouldAutoContinue() {
+		a.autoContinueCount++
+		a.cfg.Logger.Log(Warn, "premature stop detected (incomplete output after tool work); auto-continuing turn (attempt %d/%d)", a.autoContinueCount, maxAutoContinuePerTurn)
+		a.InjectEphemeralSystemMessage(
+			"[goa-system] Internal control note (never show or mention to the user): your previous reply was cut " +
+				"off mid-task before completion. Continue the work immediately and finish it now. Do not restart, " +
+				"do not re-summarize, and do not stop until the task is fully done.")
+		return true // treat like a continuing round; re-stream
+	}
+
 	// No tool calls: finalizeTurn appends the message and emits end events.
 	a.finalizeStreamTurn()
 	return false
+}
+
+// maxAutoContinuePerTurn bounds how many times a turn may auto-continue after
+// a detected premature stop, so a provider that keeps truncating cannot loop.
+const maxAutoContinuePerTurn = 3
+
+// shouldAutoContinue reports whether a finish_reason=stop that ended the round
+// looks premature: the turn did real tool work and the streamed answer is
+// clearly truncated mid-task, and the auto-continue budget is not exhausted.
+func (a *Agent) shouldAutoContinue() bool {
+	if a.autoContinueCount >= maxAutoContinuePerTurn {
+		return false
+	}
+	if !a.turnHadToolExecution {
+		return false // no tool work → a plain (possibly short) answer is legitimate
+	}
+	a.mu.Lock()
+	content := a.contentBuf.String()
+	a.mu.Unlock()
+	return looksTruncated(content)
+}
+
+// looksTruncated reports whether streamed answer text ends mid-task. Signals,
+// in priority order: a trailing continuation marker (: , ; - ( …), a trailing
+// intent phrase ("let me", "I'll", "I will", ...), or no terminal punctuation
+// at all (a real summary ends with . ! ? or a markdown structure).
+func looksTruncated(content string) bool {
+	s := strings.TrimRight(content, " \t\r\n")
+	if s == "" {
+		return false // empty is handled by the empty-response / silent-stop guards
+	}
+	last := s[len(s)-1]
+	// Terminal punctuation or closing markdown = complete.
+	if strings.ContainsRune(".!?)`\"']}|>*_", rune(last)) {
+		return false
+	}
+	// Explicit continuation markers.
+	if strings.ContainsRune(":;,(-–—…", rune(last)) {
+		return true
+	}
+	// Trailing intent phrase (last 40 chars, case-insensitive).
+	tail := s
+	if len(tail) > 40 {
+		tail = tail[len(tail)-40:]
+	}
+	tail = strings.ToLower(tail)
+	for _, phrase := range []string{"let me", "i'll", "i will", "i'm going to", "now i", "next i", "i need to", "let's"} {
+		if strings.Contains(tail, phrase) {
+			return true
+		}
+	}
+	// No terminal punctuation and no closing structure → likely truncated.
+	return true
 }
 
 // finishStreamTurn handles a stream that ended without an explicit EventDone.
@@ -1015,6 +1084,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.overflowRecoveryAttempted = false
 	a.consecutiveToolRounds = 0
 	a.toolRoundNudgeFired = false
+	a.autoContinueCount = 0
 	a.mu.Unlock()
 
 	if err := a.maybeCompress(ctx); err != nil {

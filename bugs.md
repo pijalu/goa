@@ -35,6 +35,38 @@ If new items are added, restart the process.
 
 # Open TODO
 
+## Agent stops mid-task requiring manual "continue" (premature `finish_reason=stop`)
+
+**Export:** `/Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260720-221251.zip` · **Session:** `1784574228_n4qzkao8` · **Provider/Model:** `opencode-go` / `deepseek-v4-flash` · autonomy yolo
+
+### Observed
+During a long "execute the REVIEW.md fixes" task, the agent stopped 3+ times mid-work; the user had to type `continue the fixing`, `all the items of the plan must be fixed`, and `resume` to keep it going. Each stop left the task incomplete.
+
+### Root-cause analysis (verified from the bundle)
+The stops are **provider-side premature turn terminations, not goa guardrails**:
+- `diagnostics/trace.json` + `logs/http.jsonl`: the turn before each manual continue ends with `finish_reason="stop"` (not `length`, not an error, not a goa round-limit).
+- Decisive data point (seq 13, 21:59:33): the API returned `stop` after only **25 output tokens** (13 reasoning + the fragment `"Let me fix both the call site and the function:"` — an *incomplete sentence* ending in a colon). The model was mid-fix on a UNION `SetOp` bug and the stream simply ended.
+- Prior to the stop: 24-25 consecutive `finish_reason="tool_calls"` rounds (deep tool-work loop, ~427 messages, ~285K cache-read tokens).
+- After each stop, goa correctly goes idle (State 2) — there is no auto-continue, so the turn just ends and waits for the user.
+- No `context.Canceled`, no transport error, no goa consecutive-round nudge fired (nudges are ephemeral + stripped; not present in the exported request — and even if fired, they *force an answer*, they don't truncate to 25 tokens).
+
+### Why this happens
+1. **DeepSeek/opencode-go emits a spurious `stop`** after long tool-calling streaks — a provider quirk where the model terminates mid-completion (seen before as "reasoning loop / early stop" behavior). The `finish_reason=stop` is indistinguishable from a genuine end-of-turn from goa's perspective.
+2. **goa has no "premature stop" detector**: when `finish_reason=stop` arrives but the turn clearly isn't done (assistant text ends mid-sentence / task plan incomplete / last message was a tool result awaiting follow-up), goa treats it as a normal turn end instead of auto-resuming or nudging the model to continue.
+3. **No auto-continue on truncated turns**: unlike the auto-resume that exists for transport aborts, a `stop` after a tool-result chain with incomplete output is surfaced as final.
+
+### Fix directions
+- **Detect suspicious stops:** flag `finish_reason=stop` as premature when (a) the final assistant content ends mid-sentence (trailing `:`, `,`, no terminal punctuation, or very low output-token count with high reasoning ratio), or (b) the preceding N rounds were all `tool_calls` and the assistant produced no conclusive answer. On detection, auto-continue with a "continue" steer (like the transport-abort resume) instead of ending the turn.
+- **Provider quirk mitigation:** for `deepseek`/`opencode-go` profiles, consider a `continuations`-style retry when `stop` arrives with an unfinished tool-work chain (the anomaly detector in `diagnostics/trace.json` already flags "last request sent a tool result; verify the model responded" — wire that into an auto-resume).
+- **Surface it:** if goa does end the turn on a suspicious stop, tell the user ("model stopped early; reply `continue` to resume") rather than silently going idle.
+- **Files:** `internal/agentic/agent_streaming.go` (`handleStreamDone`, turn-end logic), `internal/agentic/agent_turn_stats.go`, anomaly flag in `internal/logs/export` (trace.go); provider profile `variants/opencode-go.json`, `variants/deepseek.json`.
+
+### Repro / verification
+RED: replay a tool-call-chain stream ending in `finish_reason=stop` with mid-sentence content (e.g. trailing "…the function:") → turn ends, no auto-continue.
+GREEN: same stream → goa detects the premature stop and auto-steers "continue" (or surfaces a clear "stopped early" notice), verified by a filmstrip of the turn not ending.
+
+---
+
 ## ctrl-k deletes to end of buffer instead of end of line
 
 **Observed 2026-07-20:** in a multi-line input, `ctrl-k` deletes everything from the cursor to the end of the whole buffer. Readline/bash semantics: kill from cursor to end of the *current line* only.
