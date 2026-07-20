@@ -253,7 +253,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
 			agentPool.SetOrchestrator(foregroundOrch)
 			wireCompanionCreation(agentPool, agentBundle.agentMgr, agentBundle.stateSnapshot)
-			registerSkillRunnerIfNeeded(subs.toolRegistry, skillBundle.skillRegistry, agentPool, promptReg, cfg)
+			registerSkillRunner(subs.toolRegistry, skillBundle.skillRegistry, agentPool, promptReg, cfg)
 			registerBuiltinWorkflows(workflowReg)
 			restoreSessionState(agentBundle.agentMgr, agentBundle.stateSnapshot, requestReviewTool, delegateTool, cfg)
 			wireAgentBus(agentBundle.agentMgr, agentPool, foregroundOrch, cfg.MultiAgent.MaxCompanionCycles)
@@ -873,11 +873,13 @@ func restoreCompanionHistory(agent *agentic.Agent, rawHistory []json.RawMessage)
 	}
 }
 
-func registerSkillRunnerIfNeeded(toolRegistry *tools.ToolRegistry, skillRegistry *skills.SkillRegistry, pool *multiagent.AgentPool, promptReg *prompts.Registry, cfg *config.Config) {
-	if cfg.Skills.ExecutionMode != config.AgenticSkillModeSubAgent {
-		return
-	}
-	skillRunner := skills.NewSkillRunnerTool(skillRegistry, pool, promptReg)
+// registerSkillRunner registers the run_skill tool so the model can execute
+// action skills in any execution mode. In inline mode the tool returns the
+// skill instructions as its result; in sub-agent mode it spawns a dedicated
+// sub-agent via the pool.
+func registerSkillRunner(toolRegistry *tools.ToolRegistry, skillRegistry *skills.SkillRegistry, pool *multiagent.AgentPool, promptReg *prompts.Registry, cfg *config.Config) {
+	inline := cfg.Skills.ExecutionMode != config.AgenticSkillModeSubAgent
+	skillRunner := skills.NewSkillRunnerTool(skillRegistry, pool, promptReg, inline)
 	toolRegistry.Register(skillRunner)
 }
 

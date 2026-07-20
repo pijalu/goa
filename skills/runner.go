@@ -15,25 +15,34 @@ import (
 	"github.com/pijalu/goa/multiagent"
 )
 
-// SkillRunnerTool wraps sub-agent skill execution as an agentic.Tool.
-// Inline skills do NOT use this tool — they work via <available_skills> XML
-// in the system prompt, where the LLM is told to use the read tool to load
-// the SKILL.md file on demand.
+// SkillRunnerTool wraps skill execution as an agentic.Tool.
 //
-// Only sub-agent skills are executed through this tool: it spawns a sub-agent
-// via AgentPool with the skill body as system prompt and returns the result.
+// In sub-agent execution mode it spawns a sub-agent via AgentPool with the
+// skill body as system prompt and returns the collected result.
+//
+// In inline execution mode it returns the skill body (plus any sub-skills and
+// imports) as the tool result, so the calling agent follows the instructions
+// with its own tools — no sub-agent is spawned.
+//
+// Knowledge/inline skills do NOT need this tool — they work via
+// <available_skills> XML in the system prompt, where the LLM is told to use
+// the read tool to load the SKILL.md file on demand.
 type SkillRunnerTool struct {
 	Registry *SkillRegistry
-	Pool     *multiagent.AgentPool // required
+	Pool     *multiagent.AgentPool // required in sub-agent mode; unused inline
 	Renderer PromptRenderer        // for rendering tool result templates
+	// Inline reports whether skills execute inline (tool result returns the
+	// skill instructions) instead of spawning a sub-agent.
+	Inline bool
 }
 
-// NewSkillRunnerTool creates a skill runner tool for sub-agent execution.
-func NewSkillRunnerTool(registry *SkillRegistry, pool *multiagent.AgentPool, renderer PromptRenderer) *SkillRunnerTool {
+// NewSkillRunnerTool creates a skill runner tool for the given execution mode.
+func NewSkillRunnerTool(registry *SkillRegistry, pool *multiagent.AgentPool, renderer PromptRenderer, inline bool) *SkillRunnerTool {
 	return &SkillRunnerTool{
 		Registry: registry,
 		Pool:     pool,
 		Renderer: renderer,
+		Inline:   inline,
 	}
 }
 
@@ -65,7 +74,9 @@ type skillRunParams struct {
 	Task      string `json:"task"`
 }
 
-// Execute runs a skill with the given input in sub-agent mode.
+// Execute runs a skill with the given input. In inline mode the skill
+// instructions are returned as the tool result; in sub-agent mode a
+// dedicated sub-agent executes the skill and its output is returned.
 func (t *SkillRunnerTool) Execute(input string) (string, error) {
 	var p skillRunParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {
@@ -86,6 +97,10 @@ func (t *SkillRunnerTool) Execute(input string) (string, error) {
 		return "", fmt.Errorf("skill %q not found — use /skills to list available skills", skillName)
 	}
 
+	if t.Inline {
+		return t.executeInline(skill, task), nil
+	}
+
 	output, err := t.runSubAgent(skill, task)
 	if err != nil {
 		return "", err
@@ -98,6 +113,35 @@ func (t *SkillRunnerTool) Execute(input string) (string, error) {
 		}
 	}
 	return output, nil
+}
+
+// executeInline returns the skill body (plus sub-skills and imports) and the
+// task as the tool result. The calling agent then follows the instructions
+// using its own tools within the same session.
+func (t *SkillRunnerTool) executeInline(skill *Skill, task string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("# Skill: %s\n\n", skill.Meta.Name))
+	b.WriteString(skill.Body)
+	if subs := t.Registry.SubSkills(skill.Meta.Name); len(subs) > 0 {
+		b.WriteString("\n\n## Sub-skills\n")
+		for _, sub := range subs {
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", sub.Meta.Name, sub.Body))
+		}
+	}
+	if imports := t.Registry.ImportedSkills(skill.Meta.Name); len(imports) > 0 {
+		b.WriteString("\n\n## Imported skills\n")
+		for _, imp := range imports {
+			b.WriteString(fmt.Sprintf("\n### %s\n%s\n", imp.Meta.Name, imp.Body))
+		}
+	}
+	b.WriteString(fmt.Sprintf("\n\n## Task\n%s\n", task))
+	b.WriteString("\nFollow the skill instructions above and complete the task using available tools.")
+	if t.Renderer != nil {
+		if rendered := RenderSkillToolResult(t.Renderer, skill.Meta.Name, "inline", b.String()); rendered != "" {
+			return rendered
+		}
+	}
+	return b.String()
 }
 
 // runSubAgent spawns a sub-agent via AgentPool with the skill body as its

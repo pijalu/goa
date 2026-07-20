@@ -133,24 +133,36 @@ func TestRegisterSubAgentTools_IndependentToggles(t *testing.T) {
 	}
 }
 
-func TestRegisterSkillRunnerIfNeeded_RegistersForSubAgentMode(t *testing.T) {
+// TestRegisterSkillRunner_RegistersForBothModes verifies the run_skill tool
+// is registered in every execution mode: in sub-agent mode it spawns a
+// sub-agent, in inline mode it returns the skill body as its tool result.
+// The mode is carried on the tool so Execute can dispatch accordingly.
+func TestRegisterSkillRunner_RegistersForBothModes(t *testing.T) {
 	skillReg := skills.NewSkillRegistry(nil)
 	skillReg.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	_ = skillReg.LoadAll()
 	pool := multiagent.NewAgentPool(provider.Model{}, provider.StreamOptions{}, nil)
 	promptReg := prompts.NewRegistry(prompts.EmbeddedFS())
-	toolReg := tools.NewToolRegistry()
 
+	toolReg := tools.NewToolRegistry()
 	cfg := &config.Config{Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeSubAgent}}
-	registerSkillRunnerIfNeeded(toolReg, skillReg, pool, promptReg, cfg)
-	if _, ok := toolReg.Get("run_skill"); !ok {
-		t.Error("expected run_skill tool to be registered in subagent mode")
+	registerSkillRunner(toolReg, skillReg, pool, promptReg, cfg)
+	subTool, ok := toolReg.Get("run_skill")
+	if !ok {
+		t.Fatal("expected run_skill tool to be registered in subagent mode")
+	}
+	if rt, ok := subTool.(*skills.SkillRunnerTool); !ok || rt.Inline {
+		t.Errorf("subagent mode: expected SkillRunnerTool with Inline=false, got %T", subTool)
 	}
 
 	toolReg2 := tools.NewToolRegistry()
 	cfg2 := &config.Config{Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline}}
-	registerSkillRunnerIfNeeded(toolReg2, skillReg, pool, promptReg, cfg2)
-	if _, ok := toolReg2.Get("run_skill"); ok {
-		t.Error("expected run_skill tool NOT to be registered in inline mode")
+	registerSkillRunner(toolReg2, skillReg, pool, promptReg, cfg2)
+	inlineTool, ok := toolReg2.Get("run_skill")
+	if !ok {
+		t.Fatal("expected run_skill tool to be registered in inline mode")
+	}
+	if rt, ok := inlineTool.(*skills.SkillRunnerTool); !ok || !rt.Inline {
+		t.Errorf("inline mode: expected SkillRunnerTool with Inline=true, got %T", inlineTool)
 	}
 }

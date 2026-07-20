@@ -233,10 +233,10 @@ func writeTestSkill(t *testing.T, dir, name, frontmatter string) {
 	}
 }
 
-// In inline execution mode the run_skill tool is not registered, so the
-// <available_skills> listing must not advertise action skills with
-// tool="run_skill" — the model would call a nonexistent tool.
-func TestAvailableSkillsSection_InlineModeNoRunSkill(t *testing.T) {
+// In inline execution mode the run_skill tool is registered (it returns the
+// skill body as its tool result), so the <available_skills> listing must
+// advertise action skills with tool="run_skill".
+func TestAvailableSkillsSection_InlineModeRunSkill(t *testing.T) {
 	dir := t.TempDir()
 	writeTestSkill(t, dir, "review", "name: review\ndescription: Review code\ncategory: action")
 
@@ -247,15 +247,16 @@ func TestAvailableSkillsSection_InlineModeNoRunSkill(t *testing.T) {
 
 	subs := newTestSubsystems(dir)
 	subs.skillRegistry = skillReg
-	// default (empty) execution mode == inline: run_skill is NOT registered
+	// inline execution mode: run_skill IS registered (inline variant)
 	subs.toolRegistry = tools.NewToolRegistry()
+	subs.toolRegistry.Register(&mockTool{name: "run_skill"})
 
 	got := availableSkillsSection(subs)
-	if strings.Contains(got, `tool="run_skill"`) {
-		t.Errorf("inline mode must not advertise run_skill:\n%s", got)
+	if !strings.Contains(got, `tool="run_skill"`) {
+		t.Errorf("inline mode should advertise run_skill:\n%s", got)
 	}
-	if !strings.Contains(got, "/skill:run:review") {
-		t.Errorf("action skill should be invocable via /skill:run:<name>:\n%s", got)
+	if strings.Contains(got, "/skill:run:") {
+		t.Errorf("action skills must not be advertised with the user-only slash command:\n%s", got)
 	}
 }
 

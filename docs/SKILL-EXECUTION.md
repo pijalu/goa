@@ -4,8 +4,10 @@
 
 A skill can be executed in one of two modes:
 
-- **Inline**: The skill body is sent as a user message to the main agent. The main agent executes the instructions using its own tools.
-- **Sub-agent**: The skill body is executed by a dedicated sub-agent. The sub-agent returns the result to the main agent.
+- **Inline**: The model calls the `run_skill` tool, which returns the skill body (plus any sub-skills and imports) as the tool result. The main agent then executes the instructions using its own tools.
+- **Sub-agent**: The model calls the `run_skill` tool, which spawns a dedicated sub-agent with the skill body as its system prompt. The sub-agent's result is returned as the tool result.
+
+In both modes the `run_skill` tool is registered and the `<available_skills>` prompt section advertises action skills with `tool="run_skill"` — the model always has a uniform invocation path. (`/skill:run:<name>` remains available as the user-facing slash command.)
 
 Mode selection is determined by, in order of precedence:
 
