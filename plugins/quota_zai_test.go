@@ -87,3 +87,39 @@ func TestQuota_SegmentTracksActiveProviderOnly(t *testing.T) {
 		t.Fatalf("segment should be bracketed: %q", stripped)
 	}
 }
+
+// TestQuota_ZaiAppearsInFullQuotaOutput is the regression for "z.ai does not
+// appear in /quota either": with a working key and monitor API, the z.ai
+// provider must render a row in the full /quota command output (not just the
+// footer segment).
+func TestQuota_ZaiAppearsInFullQuotaOutput(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
+	env.setActiveProvider("zai")
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.load(t)
+	out := env.callCommand("quota")
+	if !strings.Contains(out, "Z.ai") {
+		t.Fatalf("/quota output must contain the Z.ai provider row, got:\n%s", out)
+	}
+	if !strings.Contains(out, "41") {
+		t.Fatalf("/quota output must contain the z.ai usage figure 41, got:\n%s", out)
+	}
+}
+
+// TestQuota_ZaiKeylessShowsNoAPIKeyRow verifies a configured-but-keyless z.ai
+// provider surfaces a "no API key" status row in /quota instead of vanishing
+// silently (bugs.md: z.ai not visible in /quota).
+func TestQuota_ZaiKeylessShowsNoAPIKeyRow(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("zai", map[string]any{"provider": "zai", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
+	env.setActiveProvider("zai")
+	env.load(t)
+	out := env.callCommand("quota")
+	if !strings.Contains(out, "Z.ai") {
+		t.Fatalf("/quota output must contain the Z.ai provider row even when keyless, got:\n%s", out)
+	}
+	if !strings.Contains(out, "no API key") {
+		t.Fatalf("/quota output must explain the missing key, got:\n%s", out)
+	}
+}

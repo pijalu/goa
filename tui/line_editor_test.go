@@ -373,3 +373,60 @@ type mockCompleter struct {
 func (m *mockCompleter) Complete(prefix string) []Completion {
 	return m.results
 }
+
+// TestLineEditor_deleteToEnd_MultiLine verifies ctrl-k kills only to the end
+// of the current line, not the whole buffer (readline semantics).
+func TestLineEditor_deleteToEnd_MultiLine(t *testing.T) {
+	e := NewLineEditor()
+	e.SetText("hello\nworld\nfoo")
+	e.SetCursor(2) // mid first line
+	e.deleteToEnd()
+	if e.Text() != "he\nworld\nfoo" {
+		t.Errorf("Text() = %q, want %q", e.Text(), "he\nworld\nfoo")
+	}
+	if e.Cursor() != 2 {
+		t.Errorf("Cursor() = %d, want 2", e.Cursor())
+	}
+
+	// Cursor mid second line: only that line's tail is killed.
+	e.SetText("hello\nworld\nfoo")
+	e.SetCursor(8) // "hello\nwo|rld"
+	e.deleteToEnd()
+	if e.Text() != "hello\nwo\nfoo" {
+		t.Errorf("Text() = %q, want %q", e.Text(), "hello\nwo\nfoo")
+	}
+
+	// Cursor on last line, no trailing newline: kills to buffer end.
+	e.SetText("hello\nworld")
+	e.SetCursor(7)
+	e.deleteToEnd()
+	if e.Text() != "hello\nw" {
+		t.Errorf("Text() = %q, want %q", e.Text(), "hello\nw")
+	}
+}
+
+// TestLineEditor_deleteToStart_MultiLine verifies ctrl-u kills only to the
+// start of the current line, not the whole buffer (readline unix-line-discard).
+func TestLineEditor_deleteToStart_MultiLine(t *testing.T) {
+	e := NewLineEditor()
+	e.SetText("hello\nworld\nfoo")
+	e.SetCursor(9) // "hello\nwor|ld"
+	e.deleteToStart()
+	if e.Text() != "hello\nld\nfoo" {
+		t.Errorf("Text() = %q, want %q", e.Text(), "hello\nld\nfoo")
+	}
+	if e.Cursor() != 6 { // start of second line
+		t.Errorf("Cursor() = %d, want 6", e.Cursor())
+	}
+
+	// Cursor on first line: kills to buffer start (unchanged).
+	e.SetText("hello\nworld")
+	e.SetCursor(3)
+	e.deleteToStart()
+	if e.Text() != "lo\nworld" {
+		t.Errorf("Text() = %q, want %q", e.Text(), "lo\nworld")
+	}
+	if e.Cursor() != 0 {
+		t.Errorf("Cursor() = %d, want 0", e.Cursor())
+	}
+}

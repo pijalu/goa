@@ -15,5 +15,6 @@ func (e *Editor) doUndo() {
 	if snap := e.undo.Undo(current); snap != nil {
 		e.buf = []rune(snap.Text)
 		e.pos = snap.Cursor
+		e.dirty = len(e.buf) > 0
 	}
 }

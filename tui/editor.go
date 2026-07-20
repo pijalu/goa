@@ -35,6 +35,10 @@ type Editor struct {
 	pos     int // cursor position in grapheme clusters
 	history []string
 	histIdx int // -1 = editing new, >=0 = browsing history
+	// dirty is true when the buffer content was typed/edited by the user
+	// (not empty, not a pristine history recall). Arrow Up/Down recalls
+	// history only when not dirty, so in-progress text is never clobbered.
+	dirty bool
 
 	// pendingCallbacks collects callbacks queued during HandleInput dispatch
 	// so they run after state mutation is complete.
@@ -317,6 +321,7 @@ func (e *Editor) clearLocked() {
 	e.buf = nil
 	e.pos = 0
 	e.histIdx = -1
+	e.dirty = false
 	e.scroll = 0
 	e.clearCompletion()
 	e.historyDraft = nil
@@ -340,6 +345,7 @@ func (e *Editor) insertRune(r rune) {
 	e.clearPreferredCol()
 	e.buf = append(e.buf[:e.pos], append([]rune{r}, e.buf[e.pos:]...)...)
 	e.pos++
+	e.dirty = true
 }
 
 func (e *Editor) insertString(s string) {
@@ -479,6 +485,7 @@ func (e *Editor) backspace() {
 	startRune := BytePosToRuneIndex(text, startByte)
 	e.buf = append(e.buf[:startRune], e.buf[e.pos:]...)
 	e.pos = startRune
+	e.dirty = len(e.buf) > 0
 	e.clearPreferredCol()
 	e.updateAutoComp()
 }
@@ -494,6 +501,7 @@ func (e *Editor) deleteForward() {
 	endByte := NextGraphemeEnd(text, bytePos)
 	endRune := BytePosToRuneIndex(text, endByte)
 	e.buf = append(e.buf[:e.pos], e.buf[endRune:]...)
+	e.dirty = len(e.buf) > 0
 }
 
 func (e *Editor) moveLeft() {
@@ -705,6 +713,7 @@ func (e *Editor) navigateHistory(direction int) {
 		if e.historyDraft != nil {
 			e.setTextLocked(*e.historyDraft)
 			e.historyDraft = nil
+			e.dirty = len(e.buf) > 0 // restored draft is user-typed content
 		} else {
 			e.clearLocked()
 		}
@@ -750,12 +759,16 @@ func (e *Editor) applyHistoryIndex() {
 		if e.historyDraft != nil {
 			e.setTextLocked(*e.historyDraft)
 			e.historyDraft = nil
+			// The restored draft is user-typed content — mark dirty so Up/Down
+			// does not immediately recall over it again.
+			e.dirty = len(e.buf) > 0
 		} else {
 			e.clearLocked()
 		}
 		return
 	}
 	e.setTextLocked(e.history[e.histIdx])
+	e.dirty = false // pristine history recall — not user-edited
 }
 
 // isOnFirstVisualLine returns true if the cursor is on the first visual line.

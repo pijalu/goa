@@ -189,44 +189,56 @@ func (e *Editor) handleCursorKeys(data string) bool {
 	return false
 }
 
-// handleCursorUp handles Up arrow: history browsing or visual line up.
+// handleCursorUp handles Up arrow: history browsing (only when the input is
+// not dirty — typed content must never be clobbered) or visual line up.
 func (e *Editor) handleCursorUp() {
-	if len(e.buf) == 0 {
-		e.navigateHistory(-1)
-	} else if e.histIdx > -1 && e.isOnFirstVisualLine() {
-		e.navigateHistory(-1)
-	} else if e.isOnFirstVisualLine() {
-		// Cursor is on the first visual line. If it is already at the start
-		// of the buffer, recall history rather than doing nothing; otherwise
-		// move to the start of the line.
-		if e.pos == 0 {
+	if !e.dirty {
+		switch {
+		case len(e.buf) == 0:
 			e.navigateHistory(-1)
-		} else {
+			return
+		case e.histIdx > -1 && e.isOnFirstVisualLine():
+			e.navigateHistory(-1)
+			return
+		case e.isOnFirstVisualLine() && e.pos == 0:
+			e.navigateHistory(-1)
+			return
+		}
+	}
+	if e.isOnFirstVisualLine() {
+		// Cursor is on the first visual line: move to the start of the line.
+		if e.pos != 0 {
 			e.clearPreferredCol()
 			e.pos = findLineStart(string(e.buf), e.pos)
 			e.adjustScrollToCursor()
 		}
-	} else {
-		e.lineUp()
+		return
 	}
+	e.lineUp()
 }
 
-// handleCursorDown handles Down arrow: history browsing or visual line down.
+// handleCursorDown handles Down arrow: history browsing (only when the input
+// is not dirty) or visual line down.
 func (e *Editor) handleCursorDown() {
-	if e.histIdx > -1 && e.isOnLastVisualLine() {
-		e.navigateHistory(1)
-	} else if len(e.buf) == 0 && e.histIdx > -1 {
-		// Empty buffer while still in history browsing mode: allow Down to
-		// return to the newer entry / empty line even if visual-line checks
-		// would not trigger.
-		e.navigateHistory(1)
-	} else if e.isOnLastVisualLine() {
+	if !e.dirty {
+		switch {
+		case e.histIdx > -1 && e.isOnLastVisualLine():
+			e.navigateHistory(1)
+			return
+		case len(e.buf) == 0 && e.histIdx > -1:
+			// Empty buffer while still in history browsing mode: allow Down to
+			// return to the newer entry / empty line.
+			e.navigateHistory(1)
+			return
+		}
+	}
+	if e.isOnLastVisualLine() {
 		e.clearPreferredCol()
 		e.pos = findLineEnd(string(e.buf), e.pos)
 		e.adjustScrollToCursor()
-	} else {
-		e.lineDown()
+		return
 	}
+	e.lineDown()
 }
 
 // handlePrintable processes printable character input with fish-style undo coalescing.

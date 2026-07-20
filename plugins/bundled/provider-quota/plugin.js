@@ -66,6 +66,15 @@ function providerConfigFor(fetcherId) {
 	return {};
 }
 
+// providerConfigured reports whether a fetcher id resolves to a real provider
+// entry in goa.config().providers (any id/identity match), regardless of
+// whether it has an API key. Used to decide whether a no_api_key quota row
+// should be surfaced (configured but keyless) or hidden (not configured).
+function providerConfigured(fetcherId) {
+	var p = providerConfigFor(fetcherId);
+	return p && (p.id || p.provider || p.endpoint || p.baseUrl);
+}
+
 // normalizeId strips dots/dashes so "z.ai" matches "zai".
 function normalizeId(id) {
 	return String(id).replace(/[.\-_]/g, "").toLowerCase();
@@ -451,7 +460,14 @@ function appendProviderRows(rows, id) {
 	var name = fetcher.name || id;
 	if (entry.error) {
 		if (entry.error === "no_api_key") {
-			return; // not configured; skip quietly
+			// Surface the reason instead of vanishing silently: a provider that
+			// is configured (present in goa.config().providers) but has no key
+			// must tell the user *why* it has no quota row, otherwise it looks
+			// like z.ai is "not supported" (bugs.md: z.ai not visible in /quota).
+			if (providerConfigured(id)) {
+				rows.push("| " + name + " | — | — | — | — | no API key — set via `/login " + id + "` |");
+			}
+			return;
 		}
 		if (entry.error === "auth_required") {
 			rows.push("| " + name + " | — | — | — | — | auth required — `/quota:login:" + id + "` |");

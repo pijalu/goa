@@ -190,15 +190,21 @@ func (e *LineEditor) deleteToStart() {
 	if e.pos <= 0 {
 		return
 	}
-	e.buf = e.buf[e.pos:]
-	e.pos = 0
+	// Kill to the start of the current line only (readline unix-line-discard),
+	// preserving any preceding lines.
+	start := findLineStart(string(e.buf), e.pos)
+	e.buf = append(e.buf[:start], e.buf[e.pos:]...)
+	e.pos = start
 }
 
 func (e *LineEditor) deleteToEnd() {
 	if e.pos >= len(e.buf) {
 		return
 	}
-	e.buf = e.buf[:e.pos]
+	// Kill to the end of the current line only (readline kill-line),
+	// preserving any following lines.
+	end := findLineEnd(string(e.buf), e.pos)
+	e.buf = append(e.buf[:e.pos], e.buf[end:]...)
 }
 
 func (e *LineEditor) deleteWordBack() {
