@@ -158,6 +158,15 @@ type Context struct {
 	// immediately and onSelected runs later.
 	SelectOptionFunc func(title string, options []tui.SelectorItem, current string, onSelected func(selected string, ok bool))
 
+	// SelectOptionAsyncFunc is like SelectOptionFunc but for options that must
+	// be fetched asynchronously (e.g. a provider's live GET /models). The UI
+	// shows a loading placeholder immediately, runs fetch in a goroutine, and
+	// replaces the placeholder with the fetched items (or a fallback) on the
+	// command loop. This keeps the UI responsive instead of appearing frozen
+	// during slow remote list retrieval. Optional; when nil, callers fall back
+	// to fetching synchronously then SelectOption.
+	SelectOptionAsyncFunc func(title string, fetch func() []tui.SelectorItem, onSelected func(selected string, ok bool))
+
 	// ShowInputFunc is an optional callback for a single-line text prompt.
 	// The onSubmit callback is invoked with the result when the user confirms
 	// or cancels. This is async-friendly: the caller returns immediately and
@@ -429,6 +438,19 @@ func (c Context) SelectOption(title string, options []tui.SelectorItem, current 
 	} else if onSelected != nil {
 		onSelected("", false)
 	}
+}
+
+// SelectOptionAsync shows a loading placeholder, runs fetch in the background,
+// and swaps in the fetched items when ready. Falls back to a synchronous fetch
+// + SelectOption when no async callback is configured. onSelected receives the
+// confirmed value, or ("", false) on cancel.
+func (c Context) SelectOptionAsync(title string, fetch func() []tui.SelectorItem, onSelected func(selected string, ok bool)) {
+	if c.SelectOptionAsyncFunc != nil {
+		c.SelectOptionAsyncFunc(title, fetch, onSelected)
+		return
+	}
+	// Fallback: synchronous fetch, then a normal selector.
+	c.SelectOption(title, fetch(), "", onSelected)
 }
 
 // ShowInput shows a single-line input prompt and invokes onSubmit with the result.

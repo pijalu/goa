@@ -229,25 +229,27 @@ func runAddModelFromSelector(host core.UIHost, cfg *config.Config, saver config.
 }
 
 // pickModelFromProvider fetches models from the given provider (live list
-// merged with registry models) and shows a selector to pick one to add.
+// merged with registry models) and shows a selector to pick one to add. The
+// fetch runs asynchronously behind a loading placeholder so the UI stays
+// responsive during a slow GET /models (falls back to synchronous when the
+// host has no async-select support).
 func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID string) {
-	models := modelListForProvider(host, providerID)
-	if len(models) == 0 {
-		promptCustomModelName(host, cfg, saver, providerID)
-		return
-	}
-	items := make([]tui.SelectorItem, 0, len(models)+1)
-	for _, mod := range models {
-		desc := providerID
-		if modelIndex(cfg.Models, mod.ID) >= 0 {
-			desc += " ✓ configured"
+	fetch := func() []tui.SelectorItem {
+		models := modelListForProvider(host, providerID)
+		items := make([]tui.SelectorItem, 0, len(models)+1)
+		for _, mod := range models {
+			desc := providerID
+			if modelIndex(cfg.Models, mod.ID) >= 0 {
+				desc += " ✓ configured"
+			}
+			items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
 		}
-		items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
+		items = append(items, tui.SelectorItem{
+			Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
+		})
+		return items
 	}
-	items = append(items, tui.SelectorItem{
-		Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
-	})
-	host.SelectOption("Select model to add:", items, "", func(selected string, ok bool) {
+	onSelected := func(selected string, ok bool) {
 		if !ok || selected == "" {
 			return
 		}
@@ -256,7 +258,12 @@ func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.Co
 			return
 		}
 		addAndShowModel(host, cfg, saver, providerID, selected)
-	})
+	}
+	if ctx, ok := host.(core.Context); ok {
+		ctx.SelectOptionAsync("Select model to add:", fetch, onSelected)
+		return
+	}
+	host.SelectOption("Select model to add:", fetch(), "", onSelected)
 }
 
 // promptCustomModelName asks for a model name manually and adds it.

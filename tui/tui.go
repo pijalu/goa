@@ -937,6 +937,26 @@ func (t *TUI) routeToCapturingOverlay(data, key string) bool {
 // The caller blocks on the returned channel until the user selects or cancels.
 // title is shown at the top; currentValue is marked with a ✓ indicator.
 func (t *TUI) ShowSelector(title string, items []SelectorItem, currentValue string) <-chan string {
+	_, result := t.showSelector(title, items, currentValue)
+	return result
+}
+
+// ShowSelectorLoading displays a selector pre-populated with a single
+// "Loading…" placeholder item and returns both the live *Selector and the
+// result channel. The caller fetches items asynchronously and pushes them via
+// TUI.Apply(func() { sel.SetItems(realItems) }) when ready, giving the user
+// immediate feedback instead of a frozen UI while a remote list (e.g. a
+// provider's GET /models) is retrieved. On a tiny terminal it behaves like
+// ShowSelector (inline cancel).
+func (t *TUI) ShowSelectorLoading(title, loadingLabel string) (*Selector, <-chan string) {
+	if loadingLabel == "" {
+		loadingLabel = "Loading…"
+	}
+	placeholder := []SelectorItem{{Value: "", Label: loadingLabel, Description: "please wait"}}
+	return t.showSelector(title, placeholder, "")
+}
+
+func (t *TUI) showSelector(title string, items []SelectorItem, currentValue string) (*Selector, <-chan string) {
 	result := make(chan string, 1)
 	sel := NewSelector(title, items, currentValue, result)
 	sel.SetTUI(t)
@@ -947,7 +967,7 @@ func (t *TUI) ShowSelector(title string, items []SelectorItem, currentValue stri
 		go func() {
 			result <- ""
 		}()
-		return result
+		return sel, result
 	}
 	h := len(items) + 4
 	if h > termH {
@@ -961,7 +981,7 @@ func (t *TUI) ShowSelector(title string, items []SelectorItem, currentValue stri
 	sel.SetDone(func() {
 		handle.Hide()
 	})
-	return result
+	return sel, result
 }
 
 // ShowInput displays a single-line input prompt as an overlay.

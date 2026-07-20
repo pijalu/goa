@@ -66,6 +66,28 @@ func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 			}
 		}()
 	}
+	// Async variant: show a loading placeholder immediately, fetch items in a
+	// goroutine, and swap them in on the command loop — keeps the UI responsive
+	// while a remote list (e.g. provider GET /models) is retrieved.
+	ctx.SelectOptionAsyncFunc = func(title string, fetch func() []tui.SelectorItem, onSelected func(string, bool)) {
+		sel, ch := subs.tuiEngine.ShowSelectorLoading(title, "Loading…")
+		go func() {
+			items := fetch()
+			subs.tuiEngine.Apply(func() {
+				if len(items) > 0 {
+					sel.SetItems(items)
+				} else {
+					sel.SetItems([]tui.SelectorItem{{Value: "", Label: "(no items)", Description: "fetch returned nothing"}})
+				}
+			})
+		}()
+		go func() {
+			selected := <-ch
+			if onSelected != nil {
+				app.apply(func() { onSelected(selected, selected != "") })
+			}
+		}()
+	}
 	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
 		if inp := subs.getInput(); inp != nil {
 			inp.SetText(current)
