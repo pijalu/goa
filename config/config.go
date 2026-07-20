@@ -85,6 +85,7 @@ type ExecutionConfig struct {
 	MaxToolRepeatTotal       int                    `yaml:"max_tool_repeat_total"`
 	MaxToolRepeatConsecutive int                    `yaml:"max_tool_repeat_consecutive"`
 	MaxToolCalls             int                    `yaml:"max_tool_calls"`
+	MaxToolErrorStreak       int                    `yaml:"max_tool_error_streak"`
 	DisableToolBudget        bool                   `yaml:"disable_tool_budget"`
 	ToolCallLimitResetWindow int                    `yaml:"tool_call_limit_reset_window"`
 	MaxStreamRounds          int                    `yaml:"max_stream_rounds"`

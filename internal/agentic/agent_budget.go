@@ -144,6 +144,13 @@ func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 		return true
 	}
 
+	// Error-streak guardrail: the same tool has failed several times in a row
+	// (with any arguments). Nudge the model once per episode to change approach.
+	if streakMsg := a.errorStreakSkipMessage(tc.ToolName); streakMsg != "" {
+		a.applyToolGuardrail(tc, callKey, streakMsg, false, false, windowCount, consecutiveCount)
+		return true
+	}
+
 	// First occurrence: emit tool call event for TUI, then buffer.
 	// If a streaming partial was already emitted from handleToolCallPartial,
 	// emit a final event (IsDelta=false) so the TUI transitions to running.
@@ -249,22 +256,104 @@ func (a *Agent) applyToolBudgetSkip(tc provider.ContentBlock, msg string) {
 	}
 }
 
+// errorStreakSkipMessage returns a loop-guardrail message when the incoming
+// call targets a tool that is currently in an unbroken streak of consecutive
+// failures at or beyond MaxToolErrorStreak. It returns "" when the call may
+// execute. The nudge fires only once per episode (errStreakNudged) so the tool
+// is not hard-blocked: after the hint the model may retry, and a single success
+// (or switching tools) resets the streak. This catches stall patterns exact
+// tool+args matching cannot — a model retrying one failing tool with
+// ever-changing inputs.
+func (a *Agent) errorStreakSkipMessage(toolName string) string {
+	if a.cfg.MaxToolErrorStreak <= 0 {
+		return ""
+	}
+	a.mu.Lock()
+	streak := a.errStreak
+	active := a.errStreakTool == toolName && streak >= a.cfg.MaxToolErrorStreak && !a.errStreakNudged
+	if active {
+		a.errStreakNudged = true
+	}
+	a.mu.Unlock()
+	if !active {
+		return ""
+	}
+	a.cfg.Logger.Log(Warn, "Error-streak loop: tool %q failed %d consecutive times; substituting hint", toolName, streak)
+	return fmt.Sprintf("[goa-system] Loop guardrail: tool %q has failed %d consecutive times without progress. Stop calling it and change your approach: use a different tool, gather what is missing, or produce a final answer.", toolName, streak)
+}
+
+// recordToolExecOutcome folds one executed (non-skipped) tool result into the
+// loop-detection state. It must be called with a.mu NOT held; it locks
+// internally. Two orthogonal signals are updated:
+//
+//   - stateEpoch: bumped when a state-mutating tool succeeds, which resets the
+//     no-progress repeat horizon (see recordToolCallInBudgetWindow).
+//   - errStreak: consecutive failures of the same tool, for the error-streak
+//     guardrail (see errorStreakSkipMessage). Any success or tool change resets.
+func (a *Agent) recordToolExecOutcome(name string, execErr error) {
+	mutates := a.toolMutatesState(name)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if execErr == nil {
+		if mutates {
+			a.stateEpoch++
+		}
+		a.errStreakTool = ""
+		a.errStreak = 0
+		a.errStreakNudged = false
+		return
+	}
+	if a.errStreakTool == name {
+		a.errStreak++
+	} else {
+		a.errStreakTool = name
+		a.errStreak = 1
+		a.errStreakNudged = false
+	}
+}
+
+// toolMutatesState reports whether a successful call to the named tool may
+// change observable state, via the optional StateMutator interface. Tools that
+// do not implement StateMutator are treated as read-only (no epoch bump).
+func (a *Agent) toolMutatesState(name string) bool {
+	t, ok := a.reg.Get(name)
+	if !ok {
+		return false
+	}
+	m, ok := t.(StateMutator)
+	return ok && m.MutatesState()
+}
+
 // recordToolCallInBudgetWindow tracks the rolling-window duplicate count and
 // consecutive duplicate count for a tool call. It must be called with a.mu held.
 //
+// State-aware horizon: before counting, the current stateEpoch is compared to
+// the epoch seen at the previous call. A successful state-mutating call bumps
+// stateEpoch (see recordToolExecOutcome), which resets BOTH the consecutive
+// counter and the rolling window. This is what makes edit→test(fail)→edit
+// cycles safe: each successful edit opens a new epoch, so re-running the exact
+// same test command afterwards is treated as a fresh observation, not a stall.
+//
 // The consecutive counter increments when the current call matches the
 // immediately previous call; otherwise it resets to 1. This catches stuck loops
-// where the model repeats the same call back-to-back.
+// where the model repeats the same call back-to-back with no state change.
 //
 // The rolling-window counter counts how many times the current call key appears
-// in the last ToolCallLimitResetWindow calls (or an effective default window
-// when the config is unset). This catches duplicates that are spaced out by a
-// few different calls.
+// in the last ToolCallLimitResetWindow calls of the CURRENT epoch. This catches
+// duplicates spaced out by read-only calls (which do not bump the epoch).
 //
 // Returns (windowCount, consecutiveCount, windowExceeded, consecutiveExceeded).
 func (a *Agent) recordToolCallInBudgetWindow(callKey string) (windowCount, consecutiveCount int, windowExceeded, consecutiveExceeded bool) {
 	if a.cfg.DisableToolBudget {
 		return 0, 0, false, false
+	}
+
+	// Reset the repeat horizon when the world changed since the last call.
+	if a.stateEpoch != a.epochAtLastCall {
+		a.recentToolCalls = nil
+		a.consecutiveCount = 0
+		a.lastCallKey = ""
+		a.epochAtLastCall = a.stateEpoch
 	}
 
 	window := a.effectiveToolWindowSize()
@@ -345,6 +434,14 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 
 	a.appendAssistantToolCallMessage(tcs)
 	realResults := a.scheduleAndRunToolCalls(ctx, tcs)
+	// Fold each real execution outcome into loop detection: successful
+	// state-mutating calls bump the state epoch (resetting the repeat horizon
+	// for the NEXT round), and consecutive same-tool failures feed the
+	// error-streak guardrail. Skipped (budget/guardrail) calls have no real
+	// result and are ignored here.
+	for _, r := range realResults {
+		a.recordToolExecOutcome(r.Name, r.Err)
+	}
 	a.appendToolResults(tcs, realResults)
 
 	a.contentBuf.Reset()

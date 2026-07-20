@@ -928,6 +928,11 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.recentToolCalls = nil
 	a.lastCallKey = ""
 	a.consecutiveCount = 0
+	a.stateEpoch = 0
+	a.epochAtLastCall = 0
+	a.errStreakTool = ""
+	a.errStreak = 0
+	a.errStreakNudged = false
 	a.streamLoopDetected = false
 	a.overflowRecoveryAttempted = false
 	a.mu.Unlock()

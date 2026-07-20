@@ -106,6 +106,7 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	mergeIntIfSet(&dst.MaxToolRepeatTotal, src.MaxToolRepeatTotal)
 	mergeIntIfSet(&dst.MaxToolRepeatConsecutive, src.MaxToolRepeatConsecutive)
 	mergeIntIfSet(&dst.MaxToolCalls, src.MaxToolCalls)
+	mergeIntIfSet(&dst.MaxToolErrorStreak, src.MaxToolErrorStreak)
 	mergeIntIfSet(&dst.ToolCallLimitResetWindow, src.ToolCallLimitResetWindow)
 	mergeIntIfSet(&dst.ThinkingStallWarnSeconds, src.ThinkingStallWarnSeconds)
 	mergeIntIfSet(&dst.ThinkingStallStopSeconds, src.ThinkingStallStopSeconds)

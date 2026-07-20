@@ -24,6 +24,11 @@ import (
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
+// titleBrand is the brand prefix used for the terminal window title. It is a
+// single source of truth so the running-command, project-dir, and stats titles
+// stay consistent.
+const titleBrand = "🪔"
+
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
@@ -222,7 +227,7 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 		})
 	}
 
-	engine.SetTitle("goa - " + filepath.Base(subs.projectDir))
+	engine.SetTitle(titleBrand + " - " + filepath.Base(subs.projectDir))
 
 	subs.chat = chat
 	subs.footer = footer

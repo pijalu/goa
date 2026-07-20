@@ -259,6 +259,11 @@ func (t *EditFileTool) Access(input string) ToolAccess {
 	return ToolAccess{WritePaths: []string{p.Path}}
 }
 
+// MutatesState reports that a successful edit changes file state. The loop
+// guardrails treat it as a state mutation that resets the no-progress repeat
+// horizon (so edit→test→edit cycles never trip the loop detector).
+func (t *EditFileTool) MutatesState() bool { return true }
+
 //go:embed editfile.short.md editfile.long.md
 var editfileDocs embed.FS
 

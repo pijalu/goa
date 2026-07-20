@@ -266,6 +266,11 @@ func (t *WriteFileTool) Access(input string) ToolAccess {
 	return ToolAccess{WritePaths: []string{p.Path}}
 }
 
+// MutatesState reports that a successful write changes file state. The loop
+// guardrails treat it as a state mutation that resets the no-progress repeat
+// horizon (so write→test→write cycles never trip the loop detector).
+func (t *WriteFileTool) MutatesState() bool { return true }
+
 //go:embed writefile.short.md writefile.long.md
 var writefileDocs embed.FS
 

@@ -313,6 +313,11 @@ func (t *TerminalTool) Access(input string) ToolAccess {
 	return ToolAccess{Category: "shell"}
 }
 
+// MutatesState reports that a successful terminal command may change shared
+// state. The loop guardrails treat it as a state mutation that resets the
+// no-progress repeat horizon.
+func (t *TerminalTool) MutatesState() bool { return true }
+
 //go:embed terminal.short.md terminal.long.md
 var terminalDocs embed.FS
 

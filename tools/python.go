@@ -381,6 +381,11 @@ func (t *PythonTool) Access(input string) ToolAccess {
 	return ToolAccess{Category: "shell"}
 }
 
+// MutatesState reports that a successful python execution may change shared
+// state (the embedded os module can write files). The loop guardrails treat it
+// as a state mutation that resets the no-progress repeat horizon.
+func (t *PythonTool) MutatesState() bool { return true }
+
 //go:embed python.short.md python.long.md
 var pythonDocs embed.FS
 

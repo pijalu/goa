@@ -96,3 +96,18 @@ type LoopAnnotated interface {
 	Tool
 	LoopHints() ToolLoopHints
 }
+
+// StateMutator is an optional interface a Tool may implement to declare that a
+// successful execution can change shared state (the filesystem, a shell
+// environment, an external service). The tool-loop guardrails use it to reset
+// the "no-progress" repeat horizon: when a mutating call succeeds, the world
+// may have changed, so re-running a previously seen exact call is meaningful
+// again rather than a stall. Tools that only read (read, search, fetch) must
+// NOT implement this. Tools that can write (edit, write, bash, python,
+// terminal, sub-agents) should return true.
+type StateMutator interface {
+	Tool
+	// MutatesState reports whether a successful execution of this tool may
+	// change observable state. It is consulted only after a call succeeds.
+	MutatesState() bool
+}

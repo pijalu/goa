@@ -382,6 +382,11 @@ func (t *BashTool) Access(input string) ToolAccess {
 	return ToolAccess{Category: "shell"}
 }
 
+// MutatesState reports that a successful bash command may change shared state
+// (files, build artifacts, processes). The loop guardrails treat it as a state
+// mutation that resets the no-progress repeat horizon.
+func (t *BashTool) MutatesState() bool { return true }
+
 //go:embed bash.short.md bash.long.md
 var bashDocs embed.FS
 

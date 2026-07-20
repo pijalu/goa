@@ -28,15 +28,22 @@ execution:
   auto_save_model: true
   max_tool_repeat_total: 0
   # Maximum number of CONSECUTIVE identical tool calls (same tool + same args)
-  # before a hard loop guard fires. A soft "already executed" hint is emitted
-  # at the second consecutive call. Keep this low: 2 means the second repeat is
-  # blocked, 3 means two repeats are allowed.
+  # before a hard loop guard fires. The repeat horizon is STATE-AWARE: a
+  # successful state-changing call (edit/write/bash/python/terminal) resets
+  # the consecutive counter, so edit -> test(fail) -> edit cycles never trip
+  # this guard. Only identical repeats with NO intervening change count.
   max_tool_repeat_consecutive: 2
   # Maximum number of duplicate occurrences of the SAME tool call within the
   # rolling window below. Different tool calls do NOT count toward this limit.
-  # Set generously for real coding tasks; it only catches repeated identical
-  # calls, not a high volume of distinct calls.
+  # The window only spans the current "state epoch": a successful edit/write/
+  # shell call resets it, so legitimate re-runs after a change are not flagged.
   max_tool_calls: 3
+  # Maximum number of CONSECUTIVE failing calls of the SAME tool (any args)
+  # tolerated before a loop guard fires once, telling the model to stop and
+  # change approach. This catches a model retrying one tool with ever-changing
+  # inputs that all fail (e.g. an interpreter missing a feature) — a pattern
+  # exact tool+args matching cannot see. Resets on any success or tool switch.
+  max_tool_error_streak: 4
   # Number of recent tool calls inspected for the duplicate-window limit above.
   # A call outside this window is no longer counted as a duplicate.
   tool_call_limit_reset_window: 10

@@ -183,6 +183,27 @@ type Agent struct {
 	lastCallKey      string
 	consecutiveCount int
 
+	// stateEpoch is a monotonically increasing counter bumped every time a
+	// state-mutating tool (StateMutator) executes successfully. It implements
+	// the state-aware repeat horizon: a repeated exact tool call is only a
+	// stall when nothing changed since its previous run. epochAtLastCall
+	// records the epoch observed at the most recent buffered call; when it
+	// differs from stateEpoch, the repeat horizon (rolling window +
+	// consecutive counter) is reset so edit→test→edit cycles never trip the
+	// loop guardrail.
+	stateEpoch      int
+	epochAtLastCall int
+
+	// errStreakTool and errStreak count CONSECUTIVE failing calls of the same
+	// tool, regardless of arguments. This catches a model wrestling one tool
+	// that keeps erroring with ever-changing inputs (e.g. an interpreter that
+	// lacks a feature), which exact tool+args matching cannot see. The streak
+	// resets on any success or any different tool. errStreakNudged ensures the
+	// guardrail nudges once per episode instead of blocking the tool.
+	errStreakTool   string
+	errStreak       int
+	errStreakNudged bool
+
 	// stopBatchAfterThis is set when a tool result requests that the current
 	// tool batch end after this result (e.g. UpdateGoal setting a non-active
 	// status). It causes completeStreamTurn to report no further tool calls
@@ -400,6 +421,14 @@ type Config struct {
 	// window is no longer counted as a duplicate. Default: 0 (an effective
 	// default of max(3*MaxToolCalls, 10) is used).
 	ToolCallLimitResetWindow int
+	// MaxToolErrorStreak is the maximum number of CONSECUTIVE failing calls of
+	// the SAME tool (regardless of arguments) tolerated before a loop
+	// guardrail fires once, telling the model to stop and change approach.
+	// Unlike the exact-match repeat guards, this catches a model retrying one
+	// tool with ever-changing inputs that all fail (e.g. a script interpreter
+	// missing a feature). The streak resets on any success or any different
+	// tool. Default: 0 (disabled). A value around 4 is recommended.
+	MaxToolErrorStreak int
 	// ReasoningEffort controls the amount of reasoning the model performs.
 	// Values are provider-specific (e.g. "low"/"medium"/"high" for OpenAI,
 	// "on"/"off" for Gemma). The zero value ("") omits the parameter.
