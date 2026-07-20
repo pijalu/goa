@@ -219,11 +219,19 @@ func pluginConfigFor(s *subsystems) map[string]any {
 func pluginProvidersMap(s *subsystems) map[string]any {
 	out := map[string]any{}
 	for _, p := range s.cfg.Providers {
+		apiKey := p.APIKey
+		// Fall back to the auth store (e.g. key set via /login) so providers
+		// authenticated outside ProviderConfig.APIKey are still seen as
+		// authenticated by plugins — otherwise the quota plugin drops them as
+		// no_api_key and they vanish from /quota (bugs.md z.ai #6).
+		if apiKey == "" && s.providerMgr != nil {
+			apiKey = s.providerMgr.ResolveAPIKey(p.ID)
+		}
 		out[p.ID] = map[string]any{
 			"id":       p.ID,
 			"name":     p.Name,
 			"provider": p.Provider,
-			"apiKey":   p.APIKey,
+			"apiKey":   apiKey,
 			"baseUrl":  p.BaseURL,
 			"endpoint": p.Endpoint,
 		}

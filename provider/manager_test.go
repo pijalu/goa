@@ -990,3 +990,47 @@ func TestActive_NilReceiver(t *testing.T) {
 		t.Errorf("Active() = (%v, %q), want (nil, \"\")", p, model)
 	}
 }
+
+// TestResolveAPIKey_AuthStoreFallback verifies ResolveAPIKey returns the key
+// from the auth store when ProviderConfig.APIKey is empty (the /login case),
+// so plugins see the provider as authenticated (bugs.md z.ai #6).
+func TestResolveAPIKey_AuthStoreFallback(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{ID: "zai", Provider: "zai"}},
+	}
+	pm := NewProviderManager(cfg)
+	store, err := auth.NewStore("")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.SetAPIKey("zai", "test-zai-key"); err != nil {
+		t.Fatalf("SetAPIKey: %v", err)
+	}
+	pm.SetAuthStore(store)
+
+	if got := pm.ResolveAPIKey("zai"); got != "test-zai-key" {
+		t.Errorf("ResolveAPIKey = %q, want %q (auth store fallback)", got, "test-zai-key")
+	}
+	if got := pm.ResolveAPIKey("unknown"); got != "" {
+		t.Errorf("ResolveAPIKey(unknown) = %q, want empty", got)
+	}
+	var nilPM *ProviderManager
+	if got := nilPM.ResolveAPIKey("zai"); got != "" {
+		t.Errorf("nil ResolveAPIKey = %q, want empty", got)
+	}
+}
+
+// TestResolveAPIKey_ConfigKeyWins verifies an explicit ProviderConfig.APIKey
+// takes precedence over the auth store.
+func TestResolveAPIKey_ConfigKeyWins(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{{ID: "zai", Provider: "zai", APIKey: "config-key"}},
+	}
+	pm := NewProviderManager(cfg)
+	store, _ := auth.NewStore("")
+	_ = store.SetAPIKey("zai", "store-key")
+	pm.SetAuthStore(store)
+	if got := pm.ResolveAPIKey("zai"); got != "config-key" {
+		t.Errorf("ResolveAPIKey = %q, want config key %q", got, "config-key")
+	}
+}

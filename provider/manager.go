@@ -807,6 +807,23 @@ func (pm *ProviderManager) effectiveAPIKey(provider *config.ProviderConfig) stri
 	return resolveAPIKey(pm.authStore, provider.ID)
 }
 
+// ResolveAPIKey returns the effective API key for a provider id: the explicit
+// config key if present, else the credential from the auth store (API key or
+// OAuth access token). Returns "" when no credential is available. Used by the
+// plugin bridge so providers authenticated via /login (key in the auth store,
+// not in ProviderConfig.APIKey) are still seen as authenticated — otherwise
+// the quota plugin treats them as no_api_key and drops them (bugs.md z.ai #6).
+func (pm *ProviderManager) ResolveAPIKey(providerID string) string {
+	if pm == nil || pm.cfg == nil {
+		return ""
+	}
+	pCfg := pm.cfg.GetProviderByID(providerID)
+	if pCfg == nil {
+		return ""
+	}
+	return pm.effectiveAPIKey(pCfg)
+}
+
 func applyProviderStreamOptions(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
 	if pCfg == nil {
 		return
