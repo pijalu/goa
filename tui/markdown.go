@@ -84,6 +84,11 @@ func (r *MDStreamRenderer) Render(text string) []string {
 			result = append(result, r.renderTable(header, sep, rows)...)
 			i += consumed
 
+		case startsWithBlockGlyph(line):
+			var consumed int
+			result, consumed = r.renderGraphLines(lines, i, result)
+			i += consumed
+
 		case trimmed == "":
 			// Blank line - skip but may separate paragraphs
 			i++
@@ -97,4 +102,19 @@ func (r *MDStreamRenderer) Render(text string) []string {
 	}
 
 	return result
+}
+
+// renderGraphLines renders a run of consecutive graph bar/legend lines
+// (e.g. /usage split bars) starting at index start. Each line renders
+// standalone — never soft-wrapped into a paragraph — and one empty line is
+// appended after the run so the next section stays clear even though source
+// blank lines are dropped by the renderer. Returns the updated output and
+// the number of source lines consumed.
+func (r *MDStreamRenderer) renderGraphLines(lines []string, start int, result []string) ([]string, int) {
+	i := start
+	for i < len(lines) && startsWithBlockGlyph(lines[i]) {
+		result = append(result, ansi.Wrap(renderInline(lines[i], r.theme), r.width)...)
+		i++
+	}
+	return append(result, ""), i - start
 }

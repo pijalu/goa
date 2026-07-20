@@ -13,6 +13,15 @@ import (
 
 // ── Block detection ─────────────────────────────────────────────
 
+// startsWithBlockGlyph reports whether a line begins with a (possibly
+// ANSI-colored) █ or ■ glyph — a graph bar or legend line such as the
+// /usage split bars. These are standalone display lines, not prose, and
+// must never be soft-wrapped into a paragraph.
+func startsWithBlockGlyph(line string) bool {
+	trimmed := strings.TrimLeft(ansi.Strip(line), " \t")
+	return strings.HasPrefix(trimmed, "█") || strings.HasPrefix(trimmed, "■")
+}
+
 func isThematicBreak(s string) bool {
 	if len(s) < 3 {
 		return false
@@ -133,7 +142,8 @@ func (r *MDStreamRenderer) collectParagraph(lines []string, start int) (content 
 			isUnorderedListItem(lines[i]) ||
 			isOrderedListItem(lines[i]) ||
 			isTableRow(lines[i]) ||
-			isTableSeparator(lines[i]) {
+			isTableSeparator(lines[i]) ||
+			startsWithBlockGlyph(lines[i]) {
 			break
 		}
 		content = append(content, lines[i])

@@ -218,6 +218,14 @@ func TestUsageCommand_SectionShowsShareColumnAndColoredBar(t *testing.T) {
 	if !strings.Contains(out, "anthropic 80%") || !strings.Contains(out, "ollama 20%") {
 		t.Errorf("legend percentages wrong:\n%s", out)
 	}
+	// Legend is one entry per line.
+	if !strings.Contains(out, "anthropic 80%\n") || !strings.Contains(out, "ollama 20%\n") {
+		t.Errorf("legend entries should be one per line:\n%s", out)
+	}
+	// One empty line separates the graph from whatever follows.
+	if !strings.Contains(out, "ollama 20%\n\n") {
+		t.Errorf("graph should be followed by an empty line:\n%q", out)
+	}
 	if !strings.Contains(out, "| Share |") {
 		t.Errorf("table should carry a Share column:\n%s", out)
 	}

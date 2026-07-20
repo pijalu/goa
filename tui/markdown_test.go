@@ -35,6 +35,64 @@ func TestMDStreamRenderer_Paragraph(t *testing.T) {
 	}
 }
 
+func TestMDStreamRenderer_GraphLinesStayStandalone(t *testing.T) {
+	theme := DarkTheme()
+	r := NewMDStreamRenderer(80, theme)
+	// /usage-style output: table, then a colored bar + legend lines, then the
+	// next section heading. Before the fix, the bar and legend lines were
+	// collected as one paragraph and soft-wrapped onto a single line.
+	input := "| Name | Share |\n" +
+		"| --- | ---: |\n" +
+		"| a | 53% |\n" +
+		"\n" +
+		"\x1b[38;2;122;162;247m████████████████████\x1b[0m\n" +
+		"\x1b[38;2;122;162;247m■\x1b[0m /proj/a 53%\n" +
+		"\x1b[38;2;187;154;247m■\x1b[0m /proj/b 43%\n" +
+		"\x1b[38;2;125;207;255m■\x1b[0m /proj/c 4%\n" +
+		"\n" +
+		"### By provider\n"
+	lines := r.Render(input)
+
+	// Each legend entry must survive as its own rendered line.
+	joined := strings.Join(lines, "\n")
+	plain := ansi.Strip(joined)
+	for _, want := range []string{"■ /proj/a 53%", "■ /proj/b 43%", "■ /proj/c 4%"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("legend entry %q missing or mangled:\n%s", want, plain)
+		}
+	}
+	// No line may contain two legend entries (the soft-wrap collapse).
+	for _, l := range lines {
+		p := ansi.Strip(l)
+		if strings.Count(p, "■") > 1 {
+			t.Errorf("multiple legend entries collapsed onto one line: %q", p)
+		}
+	}
+	// One empty line must separate the legend run from the next heading:
+	// find the last legend line, expect "" before "By provider" content.
+	lastLegend, headingIdx := -1, -1
+	for i, l := range lines {
+		p := ansi.Strip(l)
+		if strings.Contains(p, "/proj/c 4%") {
+			lastLegend = i
+		}
+		if strings.Contains(p, "By provider") {
+			headingIdx = i
+		}
+	}
+	if lastLegend < 0 || headingIdx < 0 {
+		t.Fatalf("legend or heading not found in output:\n%s", plain)
+	}
+	if headingIdx != lastLegend+2 || ansi.Strip(lines[lastLegend+1]) != "" {
+		t.Errorf("expected exactly one empty line between legend and heading, got lines %d..%d: %q",
+			lastLegend, headingIdx, lines[lastLegend:headingIdx+1])
+	}
+	// Colors must survive (truecolor SGR in output).
+	if !strings.Contains(joined, "\x1b[38;2;") {
+		t.Errorf("graph colors should survive rendering:\n%q", joined)
+	}
+}
+
 func TestMDStreamRenderer_CodeBlock(t *testing.T) {
 	theme := DarkTheme()
 	r := NewMDStreamRenderer(40, theme)

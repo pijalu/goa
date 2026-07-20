@@ -387,13 +387,12 @@ func writeSplitBar(b *strings.Builder, segs []barSegment) {
 	}
 	b.WriteString(ansi.Reset)
 	b.WriteString("\n")
-	for i, s := range segs {
-		fmt.Fprintf(b, "%s■%s %s %d%%  ", ansi.Fg(s.color), ansi.Reset, s.label,
+	for _, s := range segs {
+		fmt.Fprintf(b, "%s■%s %s %d%%\n", ansi.Fg(s.color), ansi.Reset, s.label,
 			sharePct(s.value, total))
-		if (i+1)%4 == 0 && i+1 < len(segs) {
-			b.WriteString("\n")
-		}
 	}
+	// Two trailing newlines: one ends the last legend line, one keeps an
+	// empty line between the graph and the next section.
 	b.WriteString("\n\n")
 }
 
