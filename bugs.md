@@ -167,6 +167,28 @@ Session shows `(zai) glm-5.2 • medium` active; content streams (delta-by-delta
 ### Issue 6 — z.ai not visible in quota
 - **Observed:** With an active zai (coding plan) provider, `/quota` and the footer segment show no z.ai row/segment, even though `https://api.z.ai/api/monitor/usage/quota/limit` returns limits for the account.
 - **Leads:** Check `providerConfigFor("zai")` matching for configs whose id is `zai` (preset) — expected to work; check whether the fetcher's URL builder uses `ctx.config.baseUrl` (config exposes `endpoint`, not `baseUrl` — verified safe) and whether the plugin's provider list from `goa.config().providers` includes preset-configured zai entries. Reproduce with the quota test harness (plugins/quota_zai_test.go) against a preset-shaped config.
+- **Re-confirmed 2026-07-21:** still nothing visible — footer shows `(zai) glm-5.2 • high` active with no quota segment at all. User expectation: z.ai quota support visible in footer/quota output like other providers.
+
+### Issue 7 — z.ai footer stats: tok/s is nonsense
+- **Observed 2026-07-21:** footer after a z.ai (glm-5.2, thinking high) turn:
+  `↑147.8K ↓4.1K 212864.6 tok/s CH80.0% TC:28 $0.3791 6.9%/1.0M (auto)  (zai) glm-5.2 • high`
+  `212864.6 tok/s` is impossible — with ↓4.1K output tokens this implies a measured generation window of ~19 ms.
+- **Root-cause lead:** speed comes from `fallbackOutputSpeed` (`internal/agentic/agent_turn_stats.go:21`) = outputTokens / `genDuration`, where `genDuration` = `markGenStart` → `recordGenDuration` (first token → done). For z.ai, GLM's reasoning phase streams as `reasoning_content` which the openai-completions parser drops for format `"zai"` (see Issue 1) — if `markGenStart` is triggered by the first *mapped* delta instead of stream open, the entire reasoning phase is excluded from the timing window and the duration collapses to the short content tail (or near-zero when content arrives in few chunks), producing absurd tok/s. Also possible: `markGenStart` not reset between the 28 tool-call rounds (`TC:28`), so only the last round's tail is measured.
+- **Fix direction:** start the timing window at stream request open (or first received SSE event of any kind, including unmapped reasoning deltas), reset per round, and clamp/validate the derived value (e.g. ignore windows below a sanity threshold). Verify against z.ai session logs with thinking enabled.
+- **Files:** `internal/agentic/agent_turn_stats.go`, `internal/agentic/agent.go` (genStartTime lifecycle), `internal/agentic/agent_migrate.go:89`, consumer `internal/app/stats.go:721,941`.
+
+## `-` key does not delete in the `/model` picker
+
+**Observed 2026-07-21:** pressing `-` on a model in the model list does nothing (no delete confirmation). Selector-level handling is verified working, so the break is in the picker wiring.
+
+### Verified NOT the bug
+- `tui/selector.go` `handlePrintable:161-185` — `-` on a deletable item emits `__delete__<id>`; consumed silently on `__`-sentinel items; still usable as search char mid-filter. Covered by `TestSelector_MinusOnDeletableEmitsDelete` / `MinusOnSentinelDoesNotSearch` / `MinusMidWordStillSearches` (all pass).
+- `core/commands/model.go:127-131` — the `/model` callback does handle `__delete__` → `confirmAndRemoveModel` → confirm → remove → re-show picker.
+- `tui/tui.go:939-965` `ShowSelector` overlay + emit/done wiring — shared with `/provider`, correct.
+
+### Prime suspect (unverified)
+- `internal/app/shortcuts.go:184` and `:298` open `"Select model:"` pickers **directly** via `tuiEngine.ShowSelector`, bypassing `runModelCommand`'s callback. Their result handlers must handle `__delete__`/`__add__` sentinels themselves — not yet read/confirmed. If they don't, `-` on those pickers silently does nothing (or worse, switches to a model literally named `__delete__<id>`).
+- **Open question (discriminator):** does `-` fail when the picker is opened via `/model`, or only via shortcut/footer? If only via shortcut → shortcuts.go handlers are the fix site; route results through the shared `confirmAndRemoveModel` logic.
 
 ## Hidden steering surfaced as "tool budget" status messages (model-visible nudge leaks to user)
 

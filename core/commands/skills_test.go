@@ -122,14 +122,49 @@ func TestRunSkill_Inline(t *testing.T) {
 	if submitted == "" {
 		t.Fatal("expected submitFunc to be called")
 	}
-	if !strings.Contains(submitted, "Skill: test-gen") {
-		t.Errorf("expected skill header in submission, got: %s", submitted)
+	if !strings.Contains(submitted, `skill "test-gen" is now active`) {
+		t.Errorf("expected active-skill framing in submission, got: %s", submitted)
 	}
 	if !strings.Contains(submitted, "Skill body for test-gen") {
 		t.Errorf("expected full skill body in submission, got: %s", submitted)
 	}
 	if !strings.Contains(submitted, "src/main.go") {
 		t.Errorf("expected task in submission, got: %s", submitted)
+	}
+}
+
+// TestRunSkill_InlineStripsNoise verifies inline injection strips SPDX license
+// comment blocks and never emits the bare "[Skill:]" marker (bugs.md run_skill
+// Issue B), while framing the body as instructions to execute (Issue A).
+func TestRunSkill_InlineStripsNoise(t *testing.T) {
+	var buf strings.Builder
+	var submitted string
+	submitFunc := func(s string) { submitted = s }
+	sk := testSkill("commit-msg", "Generate commit message", true, "")
+	sk.Body = "<!--\nSPDX-License-Identifier: GPL-3.0-or-later\n\nCopyright (C) 2026 Pierre Poissinger\n-->\n\n[Skill: commit-msg]\n# Skill: commit-msg\nGenerate the commit message from staged changes."
+	reg := newSkillRegistry(map[string]*skills.Skill{"commit-msg": sk})
+
+	err := runSkill(skillTestContextWithHistory(&buf), reg, submitFunc, []string{"commit-msg", "~/dev/frigolite"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if submitted == "" {
+		t.Fatal("expected submitFunc to be called")
+	}
+	if strings.Contains(submitted, "SPDX-License-Identifier") {
+		t.Errorf("SPDX header must be stripped from inline injection, got: %s", submitted)
+	}
+	if strings.Contains(submitted, "<!--") || strings.Contains(submitted, "-->") {
+		t.Errorf("HTML comment must be stripped from inline injection, got: %s", submitted)
+	}
+	if strings.Contains(submitted, "[Skill: commit-msg]") {
+		t.Errorf("[Skill:] marker must be stripped from inline injection, got: %s", submitted)
+	}
+	if !strings.Contains(submitted, "Generate the commit message from staged changes.") {
+		t.Errorf("actionable body must be preserved, got: %s", submitted)
+	}
+	if !strings.Contains(submitted, "execute") {
+		t.Errorf("expected execute-framing (Issue A), got: %s", submitted)
 	}
 }
 
@@ -163,7 +198,7 @@ func TestRunSkill_InlineNoSubmitFunc(t *testing.T) {
 	if !strings.Contains(buf.String(), "Skill body for test-gen") {
 		t.Errorf("expected full skill body written to output, got: %s", buf.String())
 	}
-	if !strings.Contains(buf.String(), "Task: src/main.go") {
+	if !strings.Contains(buf.String(), "src/main.go") {
 		t.Errorf("expected task in output, got: %s", buf.String())
 	}
 }
@@ -248,8 +283,8 @@ func TestRunSkill_ActionSkill_Inline_Execution(t *testing.T) {
 	if submitted == "" {
 		t.Fatal("expected submitFunc to be called with full skill body")
 	}
-	if !strings.Contains(submitted, "Skill: golang-check") {
-		t.Errorf("expected skill header in submission, got: %s", submitted)
+	if !strings.Contains(submitted, `skill "golang-check" is now active`) {
+		t.Errorf("expected active-skill framing in submission, got: %s", submitted)
 	}
 	if !strings.Contains(submitted, "Skill body for golang-check") {
 		t.Errorf("expected full skill body in submission, got: %s", submitted)
@@ -278,8 +313,8 @@ func TestRunSkill_ActionSkill_BeforeConversation_SubmitsAsUserMessage(t *testing
 	if submitted == "" {
 		t.Fatal("expected action skill to be submitted as user message before conversation")
 	}
-	if !strings.Contains(submitted, "Skill: golang-check") {
-		t.Errorf("expected skill header in submission, got: %s", submitted)
+	if !strings.Contains(submitted, `skill "golang-check" is now active`) {
+		t.Errorf("expected active-skill framing in submission, got: %s", submitted)
 	}
 	if !strings.Contains(submitted, "Skill body for golang-check") {
 		t.Errorf("expected full skill body in submission, got: %s", submitted)

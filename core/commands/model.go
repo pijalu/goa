@@ -71,6 +71,11 @@ func (c *ModelCommand) Run(ctx core.Context, args []string) error {
 }
 
 func runModelCommand(host core.UIHost, pm core.ProviderManager, cfg *config.Config, saver config.ConfigSaver, args []string) error {
+	// "/model add" mirrors "/config add model": it must work even when no
+	// provider is active yet, so it is handled before the provider guards.
+	if len(args) > 0 && args[0] == "add" {
+		return runModelAdd(host, cfg, saver, args[1:])
+	}
 	if pm == nil {
 		writeStr(host, "No provider configured.\n")
 		return nil
@@ -180,6 +185,21 @@ func modelListForProvider(host core.UIHost, providerID string) []provider.ModelI
 		}
 	}
 	return out
+}
+
+// runModelAdd handles "/model add". With no arguments it opens the
+// interactive add-model flow (same as pressing '+' in the model picker).
+// With <id> <provider-id> <model-name> it adds the model directly, mirroring
+// "/config add model".
+func runModelAdd(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, args []string) error {
+	if len(args) == 0 {
+		runAddModelFromSelector(host, cfg, saver)
+		return nil
+	}
+	if len(args) < 3 {
+		return fmt.Errorf("usage: /model add <id> <provider-id> <model-name>")
+	}
+	return doAddModel(cfg, saver, host, args[0], args[1], args[2])
 }
 
 // runAddModelFromSelector guides the user through adding a model from the

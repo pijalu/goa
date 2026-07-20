@@ -36,7 +36,7 @@ func (i *InlineSkillInjector) Inject(systemPrompt string, enabledSkills []string
 		if !skill.Meta.Inline && categoryOrDefault(skill.Meta.Category) != SkillCategoryKnowledge {
 			continue
 		}
-		result += fmt.Sprintf("\n\n## Skill: %s\n%s\n## End Skill", name, skill.Body)
+		result += fmt.Sprintf("\n\n## Skill: %s\n%s\n## End Skill", name, StripSkillNoise(skill.Body))
 	}
 	return result
 }

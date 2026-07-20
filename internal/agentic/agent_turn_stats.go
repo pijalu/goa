@@ -5,9 +5,20 @@ package agentic
 import "time"
 
 func (a *Agent) markGenStart() {
+	a.genSawEvent = true
 	if a.genStartTime.IsZero() {
 		a.genStartTime = time.Now()
 	}
+}
+
+// startGenTiming opens the output-speed timing window at stream start. The
+// window must span the whole generation — including reasoning phases that
+// stream as unmapped deltas (e.g. z.ai GLM reasoning_content) — otherwise only
+// the short content tail is measured and the derived tok/s is absurd
+// (bugs.md z.ai Issue 7). markGenStart remains as a safety net for streams
+// that bypass startGenTiming, but is a no-op once the window is open.
+func (a *Agent) startGenTiming() {
+	a.genStartTime = time.Now()
 }
 
 // recordGenDuration captures the wall-clock generation time of the stream that

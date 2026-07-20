@@ -134,10 +134,15 @@ type Agent struct {
 	// When set, emitTurnStats uses these real token counts instead of estimates.
 	providerUsage *provider.Usage
 
-	// genStartTime is the wall-clock time of the first streamed token in the
-	// current stream. Used to compute output tok/s as a fallback when the
-	// provider (LM Studio, llama.cpp, Ollama) omits timing fields.
+	// genStartTime is the wall-clock time the current stream started (window
+	// opens in consumeStream). Used to compute output tok/s as a fallback when
+	// the provider (LM Studio, llama.cpp, Ollama) omits timing fields.
 	genStartTime time.Time
+	// genSawEvent reports whether the current stream emitted any mapped event
+	// (text/thinking/tool-call delta). Drives the empty-response guard; kept
+	// separate from genStartTime, which now opens at stream start for speed
+	// timing and so is always set even for empty streams.
+	genSawEvent bool
 	// genDuration is the wall-clock generation time of the last completed stream
 	// (first token → done), used to derive output speed when provider timings
 	// are unavailable.

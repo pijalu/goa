@@ -131,6 +131,99 @@ func (p *testProviderManager) BuildStreamOptions() agenticprovider.StreamOptions
 	return agenticprovider.StreamOptions{}
 }
 
+// TestModelCommand_Add verifies "/model add <id> <provider-id> <model-name>"
+// behaves like "/config add model": a direct upsert persisted via the saver,
+// and no attempt to switch the active model.
+func TestModelCommand_Add(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveModel = "llama3"
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, []string{"add", "gpt-4o", "openai", "gpt-4o-2024"}); err != nil {
+		t.Fatalf("Run add: %v", err)
+	}
+
+	idx := modelIndex(ctx.Config.Models, "gpt-4o")
+	if idx < 0 {
+		t.Fatalf("model not added: %+v", ctx.Config.Models)
+	}
+	got := ctx.Config.Models[idx]
+	if got.ProviderID != "openai" || got.Model != "gpt-4o-2024" {
+		t.Errorf("model = %+v, want provider=openai model=gpt-4o-2024", got)
+	}
+	if saver.savedCfg == nil {
+		t.Error("config not persisted")
+	}
+	if ctx.Config.ActiveModel != "llama3" {
+		t.Errorf("ActiveModel = %q, want unchanged %q", ctx.Config.ActiveModel, "llama3")
+	}
+	if !strings.Contains(buf.String(), "Added model gpt-4o") {
+		t.Errorf("output = %q, want 'Added model gpt-4o'", buf.String())
+	}
+}
+
+// TestModelCommand_AddUpsert verifies adding an existing model ID updates it
+// in place instead of duplicating it, matching doAddModel semantics.
+func TestModelCommand_AddUpsert(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.Models = []config.ModelConfig{{ID: "gpt-4o", ProviderID: "old", Model: "old-name"}}
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, []string{"add", "gpt-4o", "openai", "gpt-4o-2024"}); err != nil {
+		t.Fatalf("Run add: %v", err)
+	}
+
+	if len(ctx.Config.Models) != 1 {
+		t.Fatalf("expected upsert, got %d models", len(ctx.Config.Models))
+	}
+	got := ctx.Config.Models[0]
+	if got.ProviderID != "openai" || got.Model != "gpt-4o-2024" {
+		t.Errorf("model = %+v, want provider=openai model=gpt-4o-2024", got)
+	}
+}
+
+// TestModelCommand_AddUsage verifies "/model add" with incomplete arguments
+// returns a usage error instead of switching to a model literally named "add".
+func TestModelCommand_AddUsage(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveModel = "llama3"
+
+	cmd := &ModelCommand{}
+	err := cmd.Run(ctx, []string{"add", "gpt-4o"})
+	if err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Errorf("err = %v, want usage error", err)
+	}
+	if ctx.Config.ActiveModel != "llama3" {
+		t.Errorf("ActiveModel = %q, want unchanged %q", ctx.Config.ActiveModel, "llama3")
+	}
+}
+
+// TestModelCommand_AddNoProvider verifies "/model add" works without any
+// active provider, mirroring "/config add model".
+func TestModelCommand_AddNoProvider(t *testing.T) {
+	ctx := newModeTestContext()
+	saver := &fakeConfigSaver{}
+	ctx.ConfigSaver = saver
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, []string{"add", "gpt-4o", "openai", "gpt-4o-2024"}); err != nil {
+		t.Fatalf("Run add: %v", err)
+	}
+	if modelIndex(ctx.Config.Models, "gpt-4o") < 0 {
+		t.Errorf("model not added without provider: %+v", ctx.Config.Models)
+	}
+}
+
 // TestModelCommand_StatusShowsCurrent verifies /model? prints the live state.
 func TestModelCommand_StatusShowsCurrent(t *testing.T) {
 	cmd := &ModelCommand{}

@@ -286,7 +286,9 @@ func (a *Agent) hasStalled() bool {
 // the initial provider context and request options.
 
 func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMessageEventStream, opts provider.StreamOptions) (bool, error) {
-	a.genStartTime = time.Time{} // reset per stream; recorded on first token
+	a.genStartTime = time.Time{} // reset per stream; window opens below
+	a.genSawEvent = false        // reset per stream; set on first mapped event
+	a.startGenTiming()           // time from stream start, not first mapped event
 
 	// Event-level stall watchdog: unlike the byte-level idle timeout in the
 	// HTTP reader — which is reset by every byte, including SSE keep-alive
@@ -579,18 +581,18 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 	a.recordGenDuration()
 
 	// Empty-response guard: a clean stream end (2xx + [DONE]/EOF) that emitted
-	// no stream events at all (no text/thinking/tool-call deltas — genStartTime
-	// was never set) is not a legitimate answer when the model has done no tool
+	// no stream events at all (no text/thinking/tool-call deltas — genSawEvent
+	// is false) is not a legitimate answer when the model has done no tool
 	// work this turn. Under provider load it indicates a truncated/failed
 	// response, so it is routed through handleStreamFailure (bounded retry,
 	// then a surfaced message) instead of ending the turn silently. It is
 	// scoped to turns with no real tool execution: after a tool runs and its
 	// result is sent back, an empty follow-up is a legitimate "done, nothing
 	// more to say" turn end. A stream that emitted events but produced empty
-	// text (e.g. loop-detector fixtures) sets genStartTime and is NOT treated
+	// text (e.g. loop-detector fixtures) sets genSawEvent and is NOT treated
 	// as empty here; thinking-only turns are handled by the silent-stop notice
 	// in finalizeStreamTurn.
-	if !a.cfg.AllowEmptyResponse && !a.turnHadToolExecution && a.genStartTime.IsZero() && len(a.bufferedToolCalls) == 0 {
+	if !a.cfg.AllowEmptyResponse && !a.turnHadToolExecution && !a.genSawEvent && len(a.bufferedToolCalls) == 0 {
 		return false, errEmptyResponse
 	}
 

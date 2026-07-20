@@ -980,3 +980,13 @@ func TestBuildStreamOptions_UsesAuthStoreOAuthAccessToken(t *testing.T) {
 
 // TestListModels_UsesAuthStoreAPIKey verifies ListModels resolves the API key
 // from the auth store when the provider config has none (E1): OAuth/API-key
+
+// TestActive_NilReceiver verifies Active is safe on a nil *ProviderManager
+// (typed-nil interface), returning no provider instead of panicking.
+func TestActive_NilReceiver(t *testing.T) {
+	var pm *ProviderManager
+	p, model := pm.Active()
+	if p != nil || model != "" {
+		t.Errorf("Active() = (%v, %q), want (nil, \"\")", p, model)
+	}
+}

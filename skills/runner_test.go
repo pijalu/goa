@@ -225,9 +225,9 @@ func TestStripSkillNoise(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := stripSkillNoise(tt.in)
+			got := StripSkillNoise(tt.in)
 			if got != tt.want {
-				t.Errorf("stripSkillNoise() = %q, want %q", got, tt.want)
+				t.Errorf("StripSkillNoise() = %q, want %q", got, tt.want)
 			}
 			for _, n := range tt.noise {
 				if strings.Contains(got, n) {

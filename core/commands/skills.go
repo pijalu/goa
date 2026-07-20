@@ -283,11 +283,16 @@ func runSkillInline(ctx core.Context, skill *skills.Skill, task string, submitFu
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("[Skill: %s]\n%s\n", skill.Meta.Name, skill.Body))
+	// Strip SPDX/comment noise and the bare "[Skill:]" marker (Issue B), and
+	// frame the body as active instructions to execute — not documentation to
+	// read (Issue A) — so the model performs the task instead of describing it.
+	sb.WriteString(fmt.Sprintf("The skill %q is now active. Its instructions follow; execute them using the available tools. Do not just describe or re-read them.\n\n", skill.Meta.Name))
+	sb.WriteString(skills.StripSkillNoise(skill.Body))
+	sb.WriteString("\n")
 	if task != "" {
-		sb.WriteString(fmt.Sprintf("\nTask: %s\n", task))
+		sb.WriteString(fmt.Sprintf("\n## Task\n%s\n", task))
 	} else {
-		sb.WriteString("\nApply the skill instructions to the current context.\n")
+		sb.WriteString("\n## Task\nApply the skill instructions above to the current context and complete the work now.\n")
 	}
 	if submitFunc != nil {
 		submitFunc(sb.String())

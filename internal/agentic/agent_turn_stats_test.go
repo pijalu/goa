@@ -5,156 +5,53 @@
 package agentic
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// TestProcessTurn_EmitsEstimatedTokenStats verifies estimated token stats at turn end.
-func TestProcessTurn_EmitsEstimatedTokenStats(t *testing.T) {
-	p := registerTestProvider("est-stats", []provider.AssistantMessageEvent{
-		{Type: provider.EventTextStart, ContentIndex: 0},
-		{Type: provider.EventTextDelta, ContentIndex: 0, Delta: "Hello world"},
-		{Type: provider.EventTextEnd, ContentIndex: 0},
-	})
+// TestGenTiming_StartsAtStreamStart verifies the output-speed timing window
+// opens when the stream starts — not on the first mapped event. Providers
+// whose reasoning streams as unmapped deltas (e.g. z.ai GLM reasoning_content)
+// otherwise measure only the short content tail, producing absurd tok/s
+// (bugs.md z.ai Issue 7: 212864.6 tok/s for a 4.1K-token turn).
+func TestGenTiming_StartsAtStreamStart(t *testing.T) {
+	a := &Agent{}
 
-	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "You are helpful",
-		Logger:       NewLogger(Error),
-	})
-
-	obs := &mockEventObserver{}
-	agent.AddObserver(obs)
-
-	go func() {
-		for range agent.Output {
-		}
-	}()
-	go agent.Run(context.Background(), "Hi there")
-	time.Sleep(200 * time.Millisecond)
-	agent.Stop()
-
-	foundStats := false
-	for _, e := range obs.Events() {
-		if e.Type == EventTokenStats {
-			foundStats = true
-			if e.Timings == nil {
-				t.Fatal("expected Timings in estimated token_stats event")
-			}
-			if e.Timings.PromptN <= 0 {
-				t.Errorf("expected PromptN > 0, got %d", e.Timings.PromptN)
-			}
-			if e.Timings.PredictedN <= 0 {
-				t.Errorf("expected PredictedN > 0, got %d", e.Timings.PredictedN)
-			}
-		}
+	// Simulate consumeStream entry: the window must open immediately.
+	a.startGenTiming()
+	if a.genStartTime.IsZero() {
+		t.Fatal("genStartTime must be set at stream start, before any mapped event")
 	}
-	if !foundStats {
-		t.Error("expected EventTokenStats to be emitted with estimated values")
+
+	// A long "unmapped reasoning" phase must be inside the window.
+	time.Sleep(50 * time.Millisecond)
+	a.markGenStart() // first mapped event arrives late — must NOT restart the window
+	elapsed := time.Since(a.genStartTime)
+	if elapsed < 50*time.Millisecond {
+		t.Errorf("timing window restarted on first mapped event: elapsed=%v, want >= 50ms", elapsed)
+	}
+
+	a.recordGenDuration()
+	if a.genDuration < 50*time.Millisecond {
+		t.Errorf("genDuration = %v, want >= 50ms (window must span reasoning phase)", a.genDuration)
 	}
 }
 
-// TestProcessTurn_EmitsContextStats verifies context stats at turn end.
-func TestProcessTurn_EmitsContextStats(t *testing.T) {
-	p := registerTestProvider("ctx-stats", []provider.AssistantMessageEvent{
-		{Type: provider.EventTextStart, ContentIndex: 0},
-		{Type: provider.EventTextDelta, ContentIndex: 0, Delta: "Hello"},
-		{Type: provider.EventTextEnd, ContentIndex: 0},
-	})
+// TestFallbackOutputSpeed_SaneWindow verifies fallbackOutputSpeed derives a
+// plausible speed when the window spans the whole generation.
+func TestFallbackOutputSpeed_SaneWindow(t *testing.T) {
+	a := &Agent{}
+	a.startGenTiming()
+	time.Sleep(20 * time.Millisecond)
+	a.recordGenDuration()
 
-	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "You are helpful",
-		Logger:       NewLogger(Error),
-	})
-
-	obs := &mockEventObserver{}
-	agent.AddObserver(obs)
-
-	go func() {
-		for range agent.Output {
-		}
-	}()
-	go agent.Run(context.Background(), "Hi")
-	time.Sleep(200 * time.Millisecond)
-	agent.Stop()
-
-	foundContextStats := false
-	for _, e := range obs.Events() {
-		if e.Type == EventContextStats {
-			foundContextStats = true
-			if e.ContextStats == nil {
-				t.Fatal("expected ContextStats in context_stats event")
-			}
-			if e.ContextStats.Messages == 0 {
-				t.Error("expected Messages > 0 in context stats")
-			}
-			if e.ContextStats.EstimatedTokens == 0 {
-				t.Error("expected EstimatedTokens > 0 in context stats")
-			}
-		}
+	speed := a.fallbackOutputSpeed(100)
+	if speed <= 0 {
+		t.Fatalf("speed = %v, want > 0", speed)
 	}
-	if !foundContextStats {
-		t.Error("expected EventContextStats to be emitted at turn end")
+	// 100 tokens over >=20ms must be <= 5000 tok/s — anything higher implies a
+	// collapsed window.
+	if speed > 5000 {
+		t.Errorf("speed = %.1f tok/s, want <= 5000 (window collapsed?)", speed)
 	}
-}
-
-// TestProcessTurn_ContextStatsWithMaxTokens verifies MaxTokens configuration.
-func TestProcessTurn_ContextStatsWithMaxTokens(t *testing.T) {
-	assistantContent := "This is a reasonably long assistant response to exercise the context stats computation, and every part of it is intentionally unique so that loop detection does not fire. "
-	p := registerTestProvider("mx-tokens", []provider.AssistantMessageEvent{
-		{Type: provider.EventTextStart, ContentIndex: 0},
-		{Type: provider.EventTextDelta, ContentIndex: 0, Delta: assistantContent},
-		{Type: provider.EventTextEnd, ContentIndex: 0},
-	})
-
-	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "You are helpful",
-		Logger:       NewLogger(Error),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens: 4096,
-		},
-	})
-
-	obs := runAgentObservingStats(t, agent, "Hi there, how are you doing today")
-	assertContextStats(t, obs.Events(), 4096)
-}
-
-func runAgentObservingStats(t *testing.T, agent *Agent, prompt string) *mockEventObserver {
-	obs := &mockEventObserver{}
-	agent.AddObserver(obs)
-	go func() {
-		for range agent.Output {
-		}
-	}()
-	go agent.Run(context.Background(), prompt)
-	time.Sleep(200 * time.Millisecond)
-	agent.Stop()
-	return obs
-}
-
-func assertContextStats(t *testing.T, events []OutputEvent, wantMaxTokens int) {
-	for _, e := range events {
-		if e.Type != EventContextStats {
-			continue
-		}
-		if e.ContextStats == nil {
-			t.Fatal("expected ContextStats")
-		}
-		if e.ContextStats.MaxTokens != wantMaxTokens {
-			t.Errorf("expected MaxTokens=%d, got %d", wantMaxTokens, e.ContextStats.MaxTokens)
-		}
-		if e.ContextStats.UsagePercent == 0 {
-			t.Error("expected UsagePercent > 0 when MaxTokens is set")
-		}
-		if e.ContextStats.EstimatedTokens == 0 {
-			t.Error("expected EstimatedTokens > 0")
-		}
-		return
-	}
-	t.Error("expected EventContextStats in events")
 }

@@ -69,6 +69,9 @@ func (pm *ProviderManager) SetAuthStore(store *auth.Store) {
 // configured active provider is not found (no silent fallback to a different
 // provider, which would route requests to the wrong endpoint).
 func (pm *ProviderManager) Active() (*config.ProviderConfig, string) {
+	if pm == nil || pm.cfg == nil {
+		return nil, ""
+	}
 	provider := pm.cfg.GetProviderByID(pm.cfg.ActiveProvider)
 	if provider == nil && pm.cfg.ActiveProvider == "" {
 		provider = pm.cfg.PreferredProvider()
