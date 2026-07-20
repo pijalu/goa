@@ -67,21 +67,7 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 
-	// Track consecutive tool-calling rounds and inject a forced-answer hint
-	// when the model keeps requesting tools without producing a text answer.
-	// A round that streamed visible text (contentBuf non-empty) is NOT a
-	// silent tool round — the user saw an answer fragment — so it resets the
-	// streak instead of incrementing it. Only tool-call-only rounds count.
-	a.mu.Lock()
-	hadContent := a.contentBuf.Len() > 0
-	a.mu.Unlock()
-	if hadContent {
-		a.mu.Lock()
-		a.consecutiveToolRounds = 0
-		a.mu.Unlock()
-	} else {
-		a.checkConsecutiveToolRounds()
-	}
+	a.trackToolCallingRound()
 
 	// Check whether the tool-call round limit is reached and the model has stalled.
 	// If so, run the recovery stream (which injects a hint and does a final LLM
@@ -107,6 +93,24 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 	return false, nil
+}
+
+// trackToolCallingRound updates the consecutive tool-calling round streak
+// after a round that ended with tool calls. A round that streamed visible
+// text (contentBuf non-empty) is NOT a silent tool round — the user saw an
+// answer fragment — so it resets the streak instead of incrementing it.
+// Only tool-call-only rounds count toward the forced-answer hint.
+func (a *Agent) trackToolCallingRound() {
+	a.mu.Lock()
+	hadContent := a.contentBuf.Len() > 0
+	a.mu.Unlock()
+	if hadContent {
+		a.mu.Lock()
+		a.consecutiveToolRounds = 0
+		a.mu.Unlock()
+		return
+	}
+	a.checkConsecutiveToolRounds()
 }
 
 // checkConsecutiveToolRounds increments the consecutive tool-calling round
