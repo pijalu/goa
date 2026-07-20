@@ -264,6 +264,10 @@ type Agent struct {
 	// MaxConsecutiveToolRounds to detect "infinite tool-calling loops" where
 	// every call has unique inputs and existing repeat guardrails never fire.
 	consecutiveToolRounds int
+	// toolRoundNudgeFired ensures the forced-answer nudge fires at most once
+	// per turn, so legitimate long investigations are interrupted by a single
+	// hint rather than a repeating nudge/answer cycle.
+	toolRoundNudgeFired bool
 }
 
 // partialToolCall tracks a tool call whose arguments are still being

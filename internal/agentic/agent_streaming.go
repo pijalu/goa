@@ -128,6 +128,16 @@ func (a *Agent) checkConsecutiveToolRounds() {
 	if maxConsecToolRounds <= 0 || toolRounds < maxConsecToolRounds {
 		return
 	}
+	a.mu.Lock()
+	if a.toolRoundNudgeFired {
+		// Already nudged this turn — don't interrupt legitimate long
+		// investigations with a repeating nudge/answer cycle.
+		a.consecutiveToolRounds = 0
+		a.mu.Unlock()
+		return
+	}
+	a.toolRoundNudgeFired = true
+	a.mu.Unlock()
 	a.cfg.Logger.Log(Warn, "consecutive tool-calling round limit (%d) reached; forcing answer", maxConsecToolRounds)
 	a.InjectEphemeralSystemMessage(
 		fmt.Sprintf("[goa-system] Internal control note (never show or mention to the user): %d consecutive "+
@@ -185,7 +195,10 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 }
 
 // effectiveMaxConsecutiveToolRounds returns the configured max consecutive
-// tool-calling rounds, defaulting to 10. A value of 0 disables the guardrail.
+// tool-calling rounds, defaulting to 15. A value of 0 disables the guardrail.
+// The default is deliberately higher than a typical investigation's round
+// count so legitimate multi-round work (codebase archaeology) is not
+// interrupted; the nudge also fires at most once per turn (toolRoundNudgeFired).
 func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
 	if a.cfg.MaxConsecutiveToolRounds > 0 {
 		return a.cfg.MaxConsecutiveToolRounds
@@ -193,7 +206,7 @@ func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
 	if a.cfg.MaxConsecutiveToolRounds < 0 {
 		return 0 // explicitly disabled
 	}
-	return 10
+	return 15
 }
 
 // runRecoveryStream sends a clear system message to the LLM when the per-turn
@@ -1001,6 +1014,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.streamLoopDetected = false
 	a.overflowRecoveryAttempted = false
 	a.consecutiveToolRounds = 0
+	a.toolRoundNudgeFired = false
 	a.mu.Unlock()
 
 	if err := a.maybeCompress(ctx); err != nil {

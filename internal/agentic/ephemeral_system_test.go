@@ -100,3 +100,46 @@ func TestEphemeralSystemMessage_NotEmittedToObservers(t *testing.T) {
 		t.Fatalf("ephemeral injection leaked %d observer events: %+v", got, obs.Events())
 	}
 }
+
+// TestConsecutiveToolRounds_NudgeFiresOncePerTurn verifies the forced-answer
+// nudge fires at most once per turn, so legitimate long investigations are not
+// interrupted by a repeating nudge/answer cycle (bugs.md hidden-steering).
+func TestConsecutiveToolRounds_NudgeFiresOncePerTurn(t *testing.T) {
+	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 2})
+
+	countEphemeral := func() int {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		n := 0
+		for _, m := range a.history {
+			if m.Metadata[metaEphemeral] == "true" {
+				n++
+			}
+		}
+		return n
+	}
+
+	// First streak reaching the limit → one nudge.
+	a.checkConsecutiveToolRounds() // round 1
+	a.checkConsecutiveToolRounds() // round 2 → nudge
+	if got := countEphemeral(); got != 1 {
+		t.Fatalf("after first streak, ephemeral nudges = %d, want 1", got)
+	}
+
+	// Second streak reaching the limit in the same turn → no additional nudge.
+	a.checkConsecutiveToolRounds() // round 1
+	a.checkConsecutiveToolRounds() // round 2 → suppressed (already fired)
+	if got := countEphemeral(); got != 1 {
+		t.Fatalf("after second streak, ephemeral nudges = %d, want still 1 (once per turn)", got)
+	}
+}
+
+// TestEffectiveMaxConsecutiveToolRounds_DefaultRaised verifies the default
+// consecutive-tool-round limit is 15 (raised from 10 to avoid interrupting
+// legitimate long investigations).
+func TestEffectiveMaxConsecutiveToolRounds_DefaultRaised(t *testing.T) {
+	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
+	if got := a.effectiveMaxConsecutiveToolRounds(); got != 15 {
+		t.Errorf("default = %d, want 15", got)
+	}
+}
