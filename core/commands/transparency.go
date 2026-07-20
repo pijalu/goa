@@ -194,13 +194,40 @@ type StatsCommand struct{}
 
 func (c *StatsCommand) Name() string      { return "stats" }
 func (c *StatsCommand) Aliases() []string { return []string{} }
-func (c *StatsCommand) ShortHelp() string { return "Show token usage and performance statistics" }
+func (c *StatsCommand) ShortHelp() string {
+	return "Show usage statistics (global by default, :session for current session)"
+}
 func (c *StatsCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
+// Run routes /stats: default (no args) shows the global per-project usage
+// summary from the persistent usage store (like /usage); ":session" (or a
+// turn number) shows the current session's per-turn detail. This realizes the
+// "Full usage statistics" feature: global insights by default, session
+// drill-down on demand.
 func (c *StatsCommand) Run(ctx core.Context, args []string) error {
-	return showStats(ctx, ctx, args)
+	if len(args) > 0 && (args[0] == "session" || args[0] == ":session") {
+		return showStats(ctx, ctx, args[1:])
+	}
+	if len(args) > 0 && isNumeric(args[0]) {
+		// /stats <n> drills into turn #n of the current session.
+		return showStats(ctx, ctx, args)
+	}
+	// Default: global usage summary across projects/providers/models.
+	return (&UsageCommand{}).Run(ctx, args)
+}
+
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // showStats displays token usage statistics across turns.
