@@ -196,7 +196,7 @@ func TestAgent_EmptyResponseExhaustsSurfaced(t *testing.T) {
 // synthesized empty-response error must be retryable (transient), unlike a
 // user deadline.
 func TestShouldRetryStreamError_EmptyResponse(t *testing.T) {
-	if !shouldRetryStreamError(errEmptyResponse) {
+	if !shouldRetryStreamError(context.Background(), errEmptyResponse) {
 		t.Error("errEmptyResponse must be classified retryable")
 	}
 }

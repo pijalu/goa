@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -134,17 +135,14 @@ func (d Dimension) column() string {
 }
 
 // Query aggregates usage grouped by dim. project != "" filters to one project
-// (for per-project views); empty means global across all projects.
-func (s *Store) Query(dim Dimension, project string) ([]Stat, error) {
+// (for per-project views); empty means global across all projects. since
+// restricts to events recorded at or after that time; zero means all time.
+func (s *Store) Query(dim Dimension, project string, since time.Time) ([]Stat, error) {
+	where, args := usageWhere(project, since)
 	q := `SELECT ` + dim.column() + `, COUNT(*), COALESCE(SUM(prompt),0), COALESCE(SUM(predicted),0),
 		COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
-		FROM usage_events`
-	args := []any{}
-	if project != "" {
-		q += ` WHERE project = ?`
-		args = append(args, project)
-	}
-	q += ` GROUP BY ` + dim.column() + ` ORDER BY (COALESCE(SUM(prompt),0)+COALESCE(SUM(predicted),0)) DESC`
+		FROM usage_events` + where + ` GROUP BY ` + dim.column() +
+		` ORDER BY (COALESCE(SUM(prompt),0)+COALESCE(SUM(predicted),0)) DESC`
 
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
@@ -162,17 +160,85 @@ func (s *Store) Query(dim Dimension, project string) ([]Stat, error) {
 	return out, rows.Err()
 }
 
-// Sum returns the grand total across an optional project filter.
-func (s *Store) Sum(project string) (Stat, error) {
+// Sum returns the grand total across an optional project/time filter.
+func (s *Store) Sum(project string, since time.Time) (Stat, error) {
+	where, args := usageWhere(project, since)
 	q := `SELECT COUNT(*), COALESCE(SUM(prompt),0), COALESCE(SUM(predicted),0),
-		COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0) FROM usage_events`
-	args := []any{}
-	if project != "" {
-		q += ` WHERE project = ?`
-		args = append(args, project)
-	}
+		COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0) FROM usage_events` + where
 	var st Stat
 	st.Key = "total"
 	err := s.db.QueryRow(q, args...).Scan(&st.Turns, &st.PromptN, &st.PredictedN, &st.CacheRead, &st.CacheWrite)
 	return st, err
+}
+
+// usageWhere builds the WHERE clause shared by all aggregations: an optional
+// project equality filter and an optional created_at lower bound.
+func usageWhere(project string, since time.Time) (string, []any) {
+	var clauses []string
+	var args []any
+	if project != "" {
+		clauses = append(clauses, `project = ?`)
+		args = append(args, project)
+	}
+	if !since.IsZero() {
+		clauses = append(clauses, `created_at >= ?`)
+		args = append(args, since.Unix())
+	}
+	if len(clauses) == 0 {
+		return "", nil
+	}
+	return ` WHERE ` + strings.Join(clauses, ` AND `), args
+}
+
+// DayCount is one UTC calendar day of activity.
+type DayCount struct {
+	Day    time.Time // UTC midnight
+	Turns  int
+	Tokens int // prompt + predicted
+}
+
+// DailyCounts returns per-day activity for the last n days ending today
+// (UTC), oldest first. Days with no events are included with zero values so
+// heatmap rendering needs no gap handling. n <= 0 defaults to 365.
+func (s *Store) DailyCounts(project string, days int) ([]DayCount, error) {
+	if days <= 0 {
+		days = 365
+	}
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	start := today.AddDate(0, 0, -(days - 1))
+
+	where, args := usageWhere(project, start)
+	q := `SELECT (created_at / 86400) * 86400, COUNT(*),
+		COALESCE(SUM(prompt),0) + COALESCE(SUM(predicted),0)
+		FROM usage_events` + where + ` GROUP BY created_at / 86400`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byDay := map[int64]DayCount{}
+	for rows.Next() {
+		var unixDay, turns, tokens int64
+		if err := rows.Scan(&unixDay, &turns, &tokens); err != nil {
+			return nil, err
+		}
+		byDay[unixDay] = DayCount{
+			Day:    time.Unix(unixDay, 0).UTC(),
+			Turns:  int(turns),
+			Tokens: int(tokens),
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]DayCount, 0, days)
+	for d := start; !d.After(today); d = d.AddDate(0, 0, 1) {
+		if dc, ok := byDay[d.Unix()]; ok {
+			out = append(out, dc)
+		} else {
+			out = append(out, DayCount{Day: d})
+		}
+	}
+	return out, nil
 }

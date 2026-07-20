@@ -61,8 +61,15 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 	}
 
 	if !toolCallEncountered {
+		a.mu.Lock()
+		a.consecutiveToolRounds = 0
+		a.mu.Unlock()
 		return true, nil
 	}
+
+	// Track consecutive tool-calling rounds and inject a forced-answer hint
+	// when the model keeps requesting tools without producing a text answer.
+	a.checkConsecutiveToolRounds()
 
 	// Check whether the tool-call round limit is reached and the model has stalled.
 	// If so, run the recovery stream (which injects a hint and does a final LLM
@@ -131,6 +138,18 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 		return a.cfg.MaxStreamRounds
 	}
 	return 50
+}
+
+// effectiveMaxConsecutiveToolRounds returns the configured max consecutive
+// tool-calling rounds, defaulting to 10. A value of 0 disables the guardrail.
+func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
+	if a.cfg.MaxConsecutiveToolRounds > 0 {
+		return a.cfg.MaxConsecutiveToolRounds
+	}
+	if a.cfg.MaxConsecutiveToolRounds < 0 {
+		return 0 // explicitly disabled
+	}
+	return 10
 }
 
 // runRecoveryStream sends a clear system message to the LLM when the per-turn
@@ -935,6 +954,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.errStreakNudged = false
 	a.streamLoopDetected = false
 	a.overflowRecoveryAttempted = false
+	a.consecutiveToolRounds = 0
 	a.mu.Unlock()
 
 	if err := a.maybeCompress(ctx); err != nil {
@@ -990,7 +1010,10 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// surface them immediately with a clear, final message instead of burning
 	// the retry budget and delaying the user-visible failure. Overflow is
 	// always retryable here (the once-only guard above bounds it).
-	if !shouldRetryStreamError(streamErr) {
+	// The parent context is passed so that context.Canceled from a transport
+	// abort (ctx still alive) is retried, while user-cancel (ctx also done)
+	// is surfaced immediately.
+	if !shouldRetryStreamError(ctx, streamErr) {
 		a.cfg.Logger.Log(Warn, "stream error not retryable; surfacing immediately: %v", streamErr)
 		a.emitEvent(OutputEvent{
 			Type:     EventContent,

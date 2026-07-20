@@ -412,6 +412,15 @@ type Config struct {
 	// After this many rounds, if the model is still making tool calls, a
 	// recovery hint is injected. Set to 0 for unlimited (default).
 	MaxStreamRounds int
+	// MaxConsecutiveToolRounds is the maximum number of consecutive LLM rounds
+	// that end with finish_reason="tool_calls" before a forced-answer hint is
+	// injected. Unlike MaxStreamRounds (which counts total rounds including
+	// text-only ones), this counter increments only on rounds where the model
+	// produced no visible answer and requested more tool calls, catching the
+	// "infinite tool-calling loop" where every call has unique inputs. When the
+	// limit is reached, the model is told to stop calling tools and answer with
+	// what it has. Set to 0 to disable (default: 10).
+	MaxConsecutiveToolRounds int
 	// DisableToolBudget when true disables the per-turn tool-call budget check
 	// entirely, allowing unlimited tool calls per turn. Useful for sessions with
 	// many small tool calls. Set via config or session-level toggle.

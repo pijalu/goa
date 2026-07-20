@@ -34,7 +34,7 @@ func TestStore_AddAndQueryByProvider(t *testing.T) {
 		}
 	}
 
-	byProv, err := st.Query(ByProvider, "")
+	byProv, err := st.Query(ByProvider, "", time.Time{})
 	if err != nil {
 		t.Fatalf("Query ByProvider: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestStore_QueryFiltersByProject(t *testing.T) {
 	st.Add(Record{Project: "/b", Provider: "zai", Model: "glm", PromptN: 10, PredictedN: 5})
 
 	// Per-project: /b only.
-	got, err := st.Query(ByModel, "/b")
+	got, err := st.Query(ByModel, "/b", time.Time{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestStore_QueryFiltersByProject(t *testing.T) {
 	}
 
 	// Global: both models.
-	all, err := st.Query(ByModel, "")
+	all, err := st.Query(ByModel, "", time.Time{})
 	if err != nil {
 		t.Fatalf("Query global: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestStore_Sum(t *testing.T) {
 	st.Add(Record{Project: "/a", Provider: "kimi", Model: "k2", PromptN: 100, PredictedN: 50, CacheRead: 7, CacheWrite: 3})
 	st.Add(Record{Project: "/a", Provider: "kimi", Model: "k2", PromptN: 20, PredictedN: 10})
 
-	sum, err := st.Sum("")
+	sum, err := st.Sum("", time.Time{})
 	if err != nil {
 		t.Fatalf("Sum: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestStore_Sum(t *testing.T) {
 
 func TestStore_EmptyQueryReturnsNoRows(t *testing.T) {
 	st := openTemp(t)
-	got, err := st.Query(ByProject, "")
+	got, err := st.Query(ByProject, "", time.Time{})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -119,4 +119,92 @@ func TestOpen_CreatesDirAndIsIdempotent(t *testing.T) {
 		t.Fatalf("re-Open: %v", err)
 	}
 	s2.Close()
+}
+
+func TestStore_QuerySinceFiltersOldEvents(t *testing.T) {
+	st := openTemp(t)
+	now := time.Now()
+	st.Add(Record{Project: "/a", Provider: "kimi", Model: "k2", PromptN: 100, At: now.AddDate(0, 0, -40)})
+	st.Add(Record{Project: "/a", Provider: "kimi", Model: "k2", PromptN: 50, At: now.AddDate(0, 0, -2)})
+
+	rows, err := st.Query(ByModel, "", now.AddDate(0, 0, -7))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PromptN != 50 {
+		t.Errorf("since filter should keep only the recent event: %+v", rows)
+	}
+
+	sum, err := st.Sum("", time.Time{})
+	if err != nil {
+		t.Fatalf("Sum: %v", err)
+	}
+	if sum.PromptN != 150 {
+		t.Errorf("zero since should return all events, got prompt=%d want 150", sum.PromptN)
+	}
+	sum7d, err := st.Sum("", now.AddDate(0, 0, -7))
+	if err != nil {
+		t.Fatalf("Sum: %v", err)
+	}
+	if sum7d.PromptN != 50 {
+		t.Errorf("7d Sum prompt = %d, want 50", sum7d.PromptN)
+	}
+}
+
+func TestStore_SinceCombinesWithProject(t *testing.T) {
+	st := openTemp(t)
+	now := time.Now()
+	st.Add(Record{Project: "/a", Provider: "kimi", Model: "k2", PromptN: 10, At: now})
+	st.Add(Record{Project: "/b", Provider: "kimi", Model: "k2", PromptN: 20, At: now})
+
+	rows, err := st.Query(ByModel, "/a", now.AddDate(0, 0, -1))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PromptN != 10 {
+		t.Errorf("project+since should keep only /a's recent event: %+v", rows)
+	}
+}
+
+func TestStore_DailyCountsFillsGaps(t *testing.T) {
+	st := openTemp(t)
+	now := time.Now().UTC()
+	if err := st.Add(Record{Project: "/a", Provider: "p", Model: "m", PromptN: 10, PredictedN: 5, At: now.AddDate(0, 0, -1)}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	days, err := st.DailyCounts("", 3)
+	if err != nil {
+		t.Fatalf("DailyCounts: %v", err)
+	}
+	if len(days) != 3 {
+		t.Fatalf("want 3 day buckets, got %d", len(days))
+	}
+	// Oldest first: day[0] two days ago (empty), day[1] yesterday (15 tokens),
+	// day[2] today (empty).
+	if days[0].Tokens != 0 || days[1].Tokens != 15 || days[2].Tokens != 0 {
+		t.Errorf("gap days must be zero-filled: %+v", days)
+	}
+	if days[1].Turns != 1 {
+		t.Errorf("yesterday turns = %d, want 1", days[1].Turns)
+	}
+	for _, d := range days {
+		if d.Day.Hour() != 0 || d.Day.Location() != time.UTC {
+			t.Errorf("day buckets must be UTC midnight, got %v", d.Day)
+		}
+	}
+}
+
+func TestStore_DailyCountsProjectFilter(t *testing.T) {
+	st := openTemp(t)
+	now := time.Now().UTC()
+	st.Add(Record{Project: "/a", Provider: "p", Model: "m", PromptN: 10, At: now})
+	st.Add(Record{Project: "/b", Provider: "p", Model: "m", PromptN: 20, At: now})
+
+	days, err := st.DailyCounts("/a", 1)
+	if err != nil {
+		t.Fatalf("DailyCounts: %v", err)
+	}
+	if len(days) != 1 || days[0].Tokens != 10 {
+		t.Errorf("project filter should keep only /a: %+v", days)
+	}
 }

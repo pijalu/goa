@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -451,7 +452,13 @@ func (am *AgentManager) fireSessionEnd() {
 }
 
 // Interrupt cancels the current agent turn.
+// Logs the caller's identity so that unexpected cancellations (e.g. from
+// transport-level aborts misrouted through the cancel path) can be traced.
 func (am *AgentManager) Interrupt() error {
+	_, file, line, _ := runtime.Caller(1)
+	if am.logger != nil {
+		am.logger.Log(agentic.Info, "Interrupt() called from %s:%d", file, line)
+	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	if am.cancel != nil {
