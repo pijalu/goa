@@ -311,10 +311,13 @@ func handleConfigTemp(ctx core.Context, args []string) error {
 }
 
 // applyTempOverride applies a session-level temp override to the loop detector.
+// Uses ctx.Flash (not writeFmt) so the confirmation is visible even when the
+// command is internal and its output buffer is discarded by the short-circuit
+// in handleSlashCommand.
 func applyTempOverride(ctx core.Context, kind string, enabled bool) error {
 	ld := ctx.LoopDetector
 	if ld == nil {
-		writeStr(ctx, "Loop detector not available (headless mode). Override not applied.\n")
+		ctx.Flash("Loop detector not available (headless mode). Override not applied.")
 		return nil
 	}
 	ld.SetTempOverride(kind, !enabled) // disabled=true means detection is OFF
@@ -324,9 +327,9 @@ func applyTempOverride(ctx core.Context, kind string, enabled bool) error {
 	}
 	switch kind {
 	case "think":
-		writeFmt(ctx, "Temporary: thinking-loop detection %s (current session only)\n", state)
+		ctx.Flash(fmt.Sprintf("Temporary: thinking-loop detection %s (current session only)", state))
 	case "tool":
-		writeFmt(ctx, "Temporary: tool-call loop detection %s (current session only)\n", state)
+		ctx.Flash(fmt.Sprintf("Temporary: tool-call loop detection %s (current session only)", state))
 	}
 	return nil
 }

@@ -5,6 +5,7 @@
 package agentic
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"

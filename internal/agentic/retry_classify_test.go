@@ -13,13 +13,19 @@ import (
 )
 
 func TestShouldRetryStreamError(t *testing.T) {
+	// All tests use a live (non-canceled) parent context, simulating the
+	// transport-abort scenario where the outer context is still active.
+	liveCtx := context.Background()
+
 	tests := []struct {
 		name string
 		err  error
 		want bool
 	}{
 		{"nil", nil, false},
-		{"context canceled", context.Canceled, false},
+		// Transport abort: context.Canceled with a live parent context
+		// is retryable (server-side connection drop).
+		{"context canceled (transport abort)", context.Canceled, true},
 		{"context deadline", context.DeadlineExceeded, false},
 
 		// Context overflow is always retryable here (once-only guard lives in
@@ -47,9 +53,18 @@ func TestShouldRetryStreamError(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, shouldRetryStreamError(tc.err))
+			assert.Equal(t, tc.want, shouldRetryStreamError(liveCtx, tc.err))
 		})
 	}
+}
+
+// TestShouldRetryStreamError_UserCancel verifies that context.Canceled with a
+// canceled parent context (user pressed Escape/Ctrl+C) is NOT retried.
+func TestShouldRetryStreamError_UserCancel(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel() // immediately cancel
+	assert.False(t, shouldRetryStreamError(cancelledCtx, context.Canceled),
+		"context.Canceled with canceled parent context (user cancel) must not be retried")
 }
 
 func TestRetryBackoffHonorsRetryAfter(t *testing.T) {

@@ -31,27 +31,33 @@ var errEmptyResponse = errors.New("provider returned an empty response (no conte
 // *hooks.ProviderError, and otherwise falls back to a transient-error
 // heuristic for bare mid-stream failures (idle timeout, dropped connection,
 // unexpected EOF). User-imposed deadlines are never retried — retrying
-// them cannot succeed. Context cancellation is NOT excluded: when the
-// transport layer returns context.Canceled from a server-side connection
-// drop, it is wrapped in a *ProviderError and classified by the error hook
-// pipeline. Bare context.Canceled (user Escape / CloseStreamOnCancel)
-// stays non-retryable via the transient-error heuristic.
+// them cannot succeed.
+//
+// Context cancellation requires special handling: when the outer context
+// (parentCtx) is still alive but the stream error is context.Canceled,
+// the transport dropped the connection server-side (e.g. a proxy or load
+// balancer killed the HTTP connection). This is retryable. When the outer
+// context is also canceled (user pressed Escape/Ctrl+C), it is a genuine
+// user cancel and must NOT be retried.
 //
 // Context-overflow errors are always considered retryable here; the
 // once-only semantics are enforced separately in handleStreamFailure via
 // overflowRecoveryAttempted, so we never loop on compression.
-func shouldRetryStreamError(err error) bool {
+func shouldRetryStreamError(parentCtx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
 	// User-imposed deadlines are never retried — retrying them cannot succeed.
-	// Context cancellation is NOT excluded here: when the transport layer
-	// returns context.Canceled (e.g. server-side connection drop), it is wrapped
-	// in a *hooks.ProviderError below and classified by the error hook pipeline.
-	// Bare context.Canceled (from CloseStreamOnCancel / ctx.Err()) stays
-	// non-retryable because isTransientStreamError does not match it.
 	if errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	// Context cancellation: distinguish transport abort from user cancel.
+	// When the outer context is still alive (parentCtx.Err() == nil), a
+	// context.Canceled stream error means the transport dropped the
+	// connection server-side — retryable. When the outer context is also
+	// canceled, the user pressed Escape/Ctrl+C — not retryable.
+	if errors.Is(err, context.Canceled) {
+		return parentCtx.Err() == nil
 	}
 	// An empty clean response is a provider-side truncation (seen under load);
 	// worth a bounded retry rather than a silent turn end.

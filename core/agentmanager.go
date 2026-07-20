@@ -373,10 +373,13 @@ func (am *AgentManager) executeRunner(ctx context.Context, runner agentRunner, i
 				// so the UI does not show the generic "user stopped" message.
 				ev.Text = reason
 			} else {
-				// User-initiated cancellation (Escape/Ctrl+C) is not a connection
-				// error; mark it so the UI can stop gracefully and keep the
-				// conversation resumable from the user's last message.
-				ev.Metadata = map[string]string{"cancelled": "true"}
+				// Distinguish user-initiated cancellation from transport aborts.
+				// When the agent's retry logic has already filtered out transport
+				// drops (ctx.Err() == nil), a context.Canceled here means the user
+				// pressed Escape/Ctrl+C. The metadata "cancelled: user" tells the
+				// UI to show "Generation stopped by user." instead of a generic
+				// cancellation message.
+				ev.Metadata = map[string]string{"cancelled": "true", "cancel_source": "user"}
 			}
 		} else {
 			ev.Text = err.Error()

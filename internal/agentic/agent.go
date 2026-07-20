@@ -252,6 +252,13 @@ type Agent struct {
 	// duplicate tool calls within the rolling budget window (MaxToolCalls /
 	// ToolCallLimitResetWindow). It is reset at the start of each turn.
 	recentToolCalls []string
+
+	// consecutiveToolRounds counts consecutive stream rounds that ended with
+	// the model requesting tool calls (finish_reason="tool_calls"). It resets
+	// to zero when a round produces a text answer without tool calls. Used by
+	// MaxConsecutiveToolRounds to detect "infinite tool-calling loops" where
+	// every call has unique inputs and existing repeat guardrails never fire.
+	consecutiveToolRounds int
 }
 
 // partialToolCall tracks a tool call whose arguments are still being

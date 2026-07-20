@@ -97,6 +97,28 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 	return false, nil
 }
 
+// checkConsecutiveToolRounds increments the consecutive tool-calling round
+// counter and, when the configured limit is reached, injects an ephemeral
+// system message telling the model to stop calling tools and answer with
+// what it has gathered. This catches the "infinite tool-calling loop" where
+// every call has unique inputs and existing repeat guardrails never fire.
+func (a *Agent) checkConsecutiveToolRounds() {
+	a.mu.Lock()
+	a.consecutiveToolRounds++
+	toolRounds := a.consecutiveToolRounds
+	a.mu.Unlock()
+
+	maxConsecToolRounds := a.effectiveMaxConsecutiveToolRounds()
+	if maxConsecToolRounds <= 0 || toolRounds < maxConsecToolRounds {
+		return
+	}
+	a.cfg.Logger.Log(Warn, "consecutive tool-calling round limit (%d) reached; forcing answer", maxConsecToolRounds)
+	a.InjectEphemeralSystemMessage(
+		fmt.Sprintf("[goa-system] You have made %d consecutive tool-calling rounds without producing an answer. "+
+			"Stop calling tools and answer the user's question using the information you have already gathered. "+
+			"If you need more information, state clearly what is missing.", toolRounds))
+}
+
 // startStreamRound builds the provider context and opens a stream.
 // On round 0 it uses the initial context from prepareTurn; on subsequent
 // rounds it rebuilds from the updated history.  Resets per-round flags

@@ -27,7 +27,7 @@ import (
 // titleBrand is the brand prefix used for the terminal window title. It is a
 // single source of truth so the running-command, project-dir, and stats titles
 // stay consistent.
-const titleBrand = "🪔"
+const titleBrand = "⬡"
 
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs

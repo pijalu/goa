@@ -44,7 +44,7 @@ Agent terminates with `context.Canceled` during active streaming, without any us
 
 Observed in a session where the model made 19 sequential tool-calling rounds (never self-terminating). During the 19th round's final streaming (thinking tokens), the stream was aborted with `context.Canceled`. After auto-resume, the new stream was canceled at the first thinking delta.
 
-### Root causes (two separate issues)
+### Root causes (three separate issues)
 
 **Issue A — Transport-level `context.Canceled` misclassified as user cancel:**
 - File: `internal/agentic/agent_streaming.go` — `handleStreamFailure`
@@ -61,16 +61,28 @@ Observed in a session where the model made 19 sequential tool-calling rounds (ne
 - The horizon extension logic (lines 79-83) extends `maxStreams` by 50 when the model is "making progress", up to 250 — but there's no check for "still requesting tools without producing an answer"
 - Fix: Add a configurable limit on consecutive tool-calling rounds (e.g., 10 rounds of `finish_reason: "tool_calls"` triggers a forced-answer hint)
 
+**Issue C — `/config:temp:` output swallowed by internal-command short-circuit:**
+- File: `internal/app/submithandler.go` — line 531
+- `/config` is marked `IsInternal() == true`, so `handleSlashCommand` returns early at line 531 **before displaying the command output** (lines 544-548)
+- `/config:temp:tool_loop_detection:off` correctly writes `"Temporary: tool-call loop detection disabled"` to the output buffer via `handleConfigTemp` → `writeFmt`
+- But this output is never displayed because the internal-command early-return at line 531 discards it
+- The temp override IS applied correctly (the loop detector is disabled), but the user sees no feedback and concludes the command didn't work
+- The interactive `/config` menu (no args) works because it uses the TUI directly, not the output buffer
+- Fix: Either (a) don't short-circuit early for internal commands that produced output, or (b) change `handleConfigTemp` to use `ctx.Flash()` instead of `writeFmt`
+
 ### What's needed
 1. In `shouldRetryStreamError`: when `context.Canceled` arrives but `ctx.Err() == nil`, treat as retryable (transport-level abort, not user cancel)
 2. In `Interrupt()`: log every call with caller identity or stack trace
 3. Add per-turn round counter guardrail (configurable, suggest default 10 consecutive `tool_calls` rounds → force answer)
 4. Fix "Generation stopped by user." label to differentiate user-canceled from system/transport aborts
+5. Fix `/config:temp:` output being discarded by internal-command short-circuit — either display internal command output or use Flash notifications
 
 ### Verification
-RED: Reproduce by connecting to a provider that sporadically drops connections (or simulate with a test provider that returns `context.Canceled` mid-stream). Observed failure: turn terminates with "Generation stopped by user." even though user did not press any key.
+RED: Run `/config:temp:tool_loop_detection:off` — no visible output. The temp override IS applied but user sees nothing.
+RED: Reproduce by connecting to a provider that sporadically drops connections (or simulate with a test provider that returns `context.Canceled` mid-stream). Turn terminates with "Generation stopped by user." even though user did not press any key.
 
-GREEN: Same scenario with fix: retry succeeds, turn continues. `Interrupt()` calls are logged with caller identity.
+GREEN: Same `/config:temp:` command shows "Temporary: tool-call loop detection disabled (current session only)" as output.
+GREEN: Same scenario with transport fix: retry succeeds, turn continues. `Interrupt()` calls are logged with caller identity.
 
 ## Full usage statistics
 Goa should have a general usage statistics feature that provides insights into the tool's usage/models/providers.
