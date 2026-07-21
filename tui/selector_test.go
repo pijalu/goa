@@ -279,6 +279,56 @@ func TestSelector_MinusMidWordStillSearches(t *testing.T) {
 	}
 }
 
+// TestSelector_MinusOnDeletePrefixedItemEmitsDelete is the regression for the
+// "Model delete" bug: a model whose persisted ID begins with "__delete__" (a
+// leaked sentinel saved as a model ID) must still be deletable via '-'. The
+// previous "__" prefix guard treated it as a sentinel and swallowed the key,
+// making the polluted entry impossible to remove.
+func TestSelector_MinusOnDeletePrefixedItemEmitsDelete(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "__delete__deepseek-v4-flash", Label: "__delete__deepseek-v4-flash"},
+		{Value: "k3", Label: "k3"},
+	}, "__delete__deepseek-v4-flash", result) // cursor on the polluted item
+
+	s.HandleInput("-")
+
+	select {
+	case v := <-result:
+		// Selector prepends __delete__; model.go's TrimPrefix("__delete__")
+		// recovers the real (polluted) ID for removal.
+		if v != "__delete____delete__deepseek-v4-flash" {
+			t.Fatalf("emit = %q, want __delete____delete__deepseek-v4-flash", v)
+		}
+	default:
+		t.Fatal("expected __delete__ emit for '-' on a __delete__-prefixed item")
+	}
+	if s.searchText != "" {
+		t.Fatalf("searchText = %q, want empty", s.searchText)
+	}
+}
+
+// TestSelector_MinusOnCustomSentinelConsumed verifies the '__custom__' action
+// row remains non-deletable: '-' must be consumed, not emitted.
+func TestSelector_MinusOnCustomSentinelConsumed(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "__custom__", Label: "── custom model ──"},
+		{Value: "k3", Label: "k3"},
+	}, "__custom__", result) // cursor on the sentinel
+
+	s.HandleInput("-")
+
+	if s.searchText != "" {
+		t.Fatalf("searchText = %q after '-' on __custom__, want empty", s.searchText)
+	}
+	select {
+	case v := <-result:
+		t.Fatalf("unexpected emit %q: '-' on __custom__ must be consumed", v)
+	default:
+	}
+}
+
 func TestSelector_FilterBackspace(t *testing.T) {
 	result := make(chan string, 1)
 	s := NewSelector("Test", []SelectorItem{

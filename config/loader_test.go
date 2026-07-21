@@ -898,3 +898,53 @@ models:
 		}
 	}
 }
+
+// TestLoad_SanitizesDeletePrefixedSentinels is the regression for the
+// "Model delete" bug: a '-' hotkey sentinel ("__delete__<id>") leaked and was
+// persisted verbatim as a model/provider ID. Load must drop those entries so
+// the polluted row cannot resurface in the picker (where the old "__" guard
+// also made it undeletable).
+func TestLoad_SanitizesDeletePrefixedSentinels(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	t.Setenv("HOME", homeDir)
+
+	writeConfig(t, filepath.Join(homeDir, ".goa", "config.yaml"), `
+active_provider: openai
+active_model: deepseek-v4-flash
+providers:
+  - id: openai
+    name: OpenAI
+    endpoint: https://api.openai.com/v1
+models:
+  - id: deepseek-v4-flash
+    provider: openai
+    model: deepseek-v4-flash
+  - id: __delete__deepseek-v4-flash
+    provider: openai
+    model: deepseek-v4-flash
+`)
+
+	loader := NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	for _, m := range cfg.Models {
+		if m.ID == "__delete__deepseek-v4-flash" {
+			t.Errorf("delete-prefixed sentinel model survived sanitization: %+v", m)
+		}
+	}
+	// The legitimate model the sentinel pointed at must be preserved.
+	found := false
+	for _, m := range cfg.Models {
+		if m.ID == "deepseek-v4-flash" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("legitimate model deepseek-v4-flash was dropped by sanitization")
+	}
+}

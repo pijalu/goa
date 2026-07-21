@@ -614,11 +614,21 @@ func (c *Config) repairActiveProviderModel() {
 
 // sanitizeSelectorSentinels drops selector sentinel values ("__add__",
 // "__delete__*", etc.) that older versions could persist as provider or
-// model IDs when a picker's '+' hotkey leaked the sentinel into config.
+// model IDs when a picker's '+'/'-' hotkey leaked the sentinel into config.
 // It also clears active_provider/active_model when they hold a sentinel so
 // repairActiveProviderModel cannot resurrect them. Runs before validation.
+//
+// Two sentinel shapes are recognized:
+//   - bracketed: "__add__", "__custom__" (both prefix and suffix "__")
+//   - delete-prefixed: "__delete__<id>" — emitted by the picker's '-' hotkey
+//     and previously persisted verbatim as a model/provider ID (bugs.md
+//     "Model delete"). This shape has no trailing "__" after the real ID, so
+//     it needs its own prefix check.
 func (c *Config) sanitizeSelectorSentinels() {
 	isSentinel := func(id string) bool {
+		if strings.HasPrefix(id, "__delete__") {
+			return true
+		}
 		return strings.HasPrefix(id, "__") && strings.HasSuffix(id, "__") && len(id) > 4
 	}
 

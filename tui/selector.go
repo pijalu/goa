@@ -151,11 +151,26 @@ func (s *Selector) handleDelete(data string) *string {
 		return nil
 	}
 	item := s.filtered[s.selected]
-	if strings.HasPrefix(item.Value, "__") {
+	if isSelectorSentinel(item.Value) {
 		return nil
 	}
 	v := "__delete__" + item.Value
 	return &v
+}
+
+// isSelectorSentinel reports whether v is a selector action row rather than a
+// deletable data item. The previous guard blocked deletion of any value with
+// a "__" prefix; that also trapped legitimately persisted entries whose IDs
+// began with "__delete__" (a leaked sentinel saved as a model ID, see
+// bugs.md "Model delete"), making them impossible to remove via '-'.
+// Only exact sentinel action rows are non-deletable; a "__delete__"-prefixed
+// value stays deletable so polluted entries can be removed.
+func isSelectorSentinel(v string) bool {
+	switch v {
+	case "__add__", "__custom__":
+		return true
+	}
+	return false
 }
 
 func (s *Selector) handlePrintable(data string) *string {
@@ -168,7 +183,7 @@ func (s *Selector) handlePrintable(data string) *string {
 			case '-':
 				if len(s.filtered) > 0 {
 					item := s.filtered[s.selected]
-					if !strings.HasPrefix(item.Value, "__") {
+					if !isSelectorSentinel(item.Value) {
 						v := "__delete__" + item.Value
 						return &v
 					}
