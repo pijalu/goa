@@ -117,6 +117,8 @@ The mascot/logo is sometimes redrawn mid-session — run a review of the TUI ren
 
 Recent regression — repro correlation: occurs with tool calls and after a terminal tab switch (macOS). Tab switch fires no SIGWINCH; suspect transient wrong values from the per-frame `terminal.Size()` re-query (renderNow) triggering the width-change scrollback-reset path, and/or tool-widget height shrink→regrow re-entering the scroll paths.
 
+Additional detail (user, 21 jul): occurs after a tab switch DURING tool calls. The mascot should be much higher in the scrollback history — it seems the redraw does not draw the active view in the correct ORDER (stale/mis-ordered rows rather than a simple re-emit). This issue existed before but did not surface until the recent fixes (21 jul) — or something else changed that made it more obvious. Check interplay with the session-3 tool-widget elapsed/start-time fixes and any render-order change landed that day (git log around 2026-07-21 touching tui/ and tools/*_renderer.go).
+
 ## Terminal title animation does not work
 The terminal window title animation (hexagon-black startup transition + working animation, see `internal/app/title.go` titleController) does not play. May be related to the startup delay (animation frames starved while the main goroutine is blocked on startup I/O — see Start-up item).
 

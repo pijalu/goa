@@ -50,6 +50,10 @@ type GoalDriver struct {
 	Mode    *goal.GoalMode
 	mu      sync.Mutex
 	driving bool
+	// stop cancels the current drive loop's context. Set by Drive while a
+	// loop is active; called by Stop (ESC hard stop — bugs.md "ESC: hard
+	// stop for ALL ongoing activities"). Nil when no loop is running.
+	stop context.CancelFunc
 }
 
 // Drive executes continuation turns while the goal is active. Only one Drive
@@ -65,15 +69,29 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 		return errors.New("goal driver has no agent")
 	}
 	d.driving = true
+	// Derive a cancellable loop ctx so Stop (ESC hard stop) can end the drive
+	// even when the caller passed context.Background() — which is exactly
+	// what the /goal command does (core/commands/goal.go), previously making
+	// an active goal immune to ESC: Interrupt() cancelled the current turn
+	// and the loop immediately launched the next continuation.
+	ctx, stop := context.WithCancel(ctx)
+	d.stop = stop
 	d.mu.Unlock()
 
 	defer func() {
 		d.mu.Lock()
 		d.driving = false
+		d.stop = nil
 		d.mu.Unlock()
+		stop()
 	}()
 
 	for {
+		// Hard-stop check before launching another turn: without this, a Stop
+		// landing between turns would still start one more continuation.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		active := d.Mode.GetActiveGoal()
 		if active == nil {
 			return nil
@@ -115,6 +133,19 @@ func (d *GoalDriver) Start(ctx context.Context) {
 	go func() {
 		_ = d.Drive(ctx)
 	}()
+}
+
+// Stop cancels the active drive loop: the in-flight turn's context is
+// cancelled and no further continuation turns are launched. It is the goal
+// half of the ESC hard stop (bugs.md "ESC: hard stop for ALL ongoing
+// activities") — App.handleEscape pairs it with AgentManager.Interrupt so the
+// current turn dies AND the loop cannot continue. No-op when no loop runs.
+func (d *GoalDriver) Stop() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.stop != nil {
+		d.stop()
+	}
 }
 
 // driverErrorRules maps error substrings to pause reasons, evaluated in

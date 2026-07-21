@@ -123,6 +123,57 @@ func TestGoalDriver_Drive_NilAgent(t *testing.T) {
 	}
 }
 
+// blockingAgent simulates an in-flight turn: Run blocks until its ctx is
+// cancelled (what a real agent does on Interrupt/Stop) and counts entries.
+type blockingAgent struct {
+	runs    atomic.Int32
+	started chan struct{}
+}
+
+func (a *blockingAgent) Run(ctx context.Context, _ string) error {
+	a.runs.Add(1)
+	select {
+	case a.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestGoalDriver_StopEndsDrive is the regression test for bugs.md "ESC: hard
+// stop for ALL ongoing activities": the /goal command starts the driver on
+// context.Background(), so AgentManager.Interrupt() (ESC) could kill the
+// current turn but the loop immediately launched the next continuation.
+// Stop() must cancel the drive loop itself: the in-flight Run returns, and
+// NO further Run calls happen.
+func TestGoalDriver_StopEndsDrive(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "run forever"}, goal.GoalActorUser)
+	agent := &blockingAgent{started: make(chan struct{}, 8)}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	done := make(chan error, 1)
+	go func() { done <- driver.Drive(context.Background()) }()
+
+	<-agent.started // first continuation turn is in flight
+	driver.Stop()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Drive should return the cancelled ctx error after Stop")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drive did not exit after Stop")
+	}
+	if n := agent.runs.Load(); n != 1 {
+		t.Fatalf("runs = %d after Stop, want exactly 1 (no further continuations)", n)
+	}
+	// Stop with no active loop must be a safe no-op (handleEscape fires it
+	// on every ESC, goal or not).
+	driver.Stop()
+}
+
 func TestGoalDriver_Start(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)

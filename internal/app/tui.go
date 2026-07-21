@@ -170,6 +170,13 @@ func (a *App) handleEscape() {
 	if subs.agentMgr != nil {
 		subs.agentMgr.Interrupt()
 	}
+	// ESC is a HARD STOP for all activities (bugs.md): without this, an
+	// active goal's drive loop — started on context.Background() by the
+	// /goal command — survived the turn interrupt and immediately launched
+	// the next continuation turn.
+	if subs.goalDriver != nil {
+		subs.goalDriver.Stop()
+	}
 	if subs.ptyMgr != nil {
 		subs.ptyMgr.Cleanup()
 	}
