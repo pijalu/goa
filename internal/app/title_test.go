@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/spinner"
 )
 
@@ -214,5 +215,97 @@ func TestTitleController_WorkingBeforeStartupDone(t *testing.T) {
 	}
 	if last != "⬡ - proj" && last != "⬢ - proj" && last != "⬣ - proj" {
 		t.Errorf("unexpected title after startup with working: %q", last)
+	}
+}
+
+// TestTitleSpinnerDefFor_DefaultsToHexagonBlack covers bugs.md "hexagon-black
+// as default for terminal title": with no explicit spinner configured (or the
+// default hexagon status spinner), the title animation uses hexagon-black.
+func TestTitleSpinnerDefFor_DefaultsToHexagonBlack(t *testing.T) {
+	def := titleSpinnerDefFor(nil)
+	want := []string{"⬢", "⬣"}
+	if len(def.Frames) != len(want) || def.Frames[0] != want[0] || def.Frames[1] != want[1] {
+		t.Errorf("titleSpinnerDefFor(nil).Frames = %v, want %v", def.Frames, want)
+	}
+}
+
+// TestTitleSpinnerDefFor_ExplicitSpinnerOverrides verifies an explicit
+// tui.spinner value overrides the title animation frame set.
+func TestTitleSpinnerDefFor_ExplicitSpinnerOverrides(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.TUI.Spinner = "arc"
+	def := titleSpinnerDefFor(cfg)
+	arcDef, _ := spinner.Get("arc")
+	if len(def.Frames) != len(arcDef.Frames) || def.Frames[0] != arcDef.Frames[0] {
+		t.Errorf("titleSpinnerDefFor(arc).Frames = %v, want arc frames %v", def.Frames, arcDef.Frames)
+	}
+}
+
+// TestTitleSpinnerDefFor_NoneDisables verifies "none" disables the title
+// animation (empty frames).
+func TestTitleSpinnerDefFor_NoneDisables(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.TUI.Spinner = "none"
+	def := titleSpinnerDefFor(cfg)
+	if len(def.Frames) != 0 {
+		t.Errorf("titleSpinnerDefFor(none).Frames = %v, want empty", def.Frames)
+	}
+}
+
+// TestTitleStartupHook_FiresOnBothLoadsDone is a filmstrip-style validation
+// of the startup sequence (bugs.md "startup sequence not working"): the boot
+// brand shows first, then when BOTH the plugin and history loads complete the
+// transition plays (g⬡a → g⬡ → ⬡) and the title settles on the base. It
+// proves the explicit startup-done hook drives the sequence end-to-end.
+func TestTitleStartupHook_FiresOnBothLoadsDone(t *testing.T) {
+	sink := &titleSink{}
+	a := New(testSubsystems())
+	a.titleCtl = newTitleController(sink.set, hexDef(), true)
+	defer a.titleCtl.stop()
+	a.titleCtl.setBase("⬡ - goa")
+
+	// Boot brand shown before any load completes.
+	if got := sink.waitLast("g⬡a", 2*time.Second); got != "g⬡a" {
+		t.Fatalf("boot title = %q, want g⬡a", got)
+	}
+
+	a.pluginsLoaded = make(chan struct{})
+	a.historyLoadDone = make(chan struct{})
+	a.startTitleStartupHook()
+
+	// Only one load done: transition must NOT have started yet (still boot
+	// brand, no g⬡ intermediate).
+	close(a.pluginsLoaded)
+	time.Sleep(150 * time.Millisecond)
+	if sink.waitContains("⬡ - goa", 150*time.Millisecond) {
+		t.Fatal("transition/base title appeared before both loads completed")
+	}
+
+	// Both done: transition plays and the title settles on the base.
+	close(a.historyLoadDone)
+	if !sink.waitContains("⬡", 6*time.Second) {
+		t.Fatalf("transition frame ⬡ never appeared; titles: %v", sink.titles)
+	}
+	if got := sink.waitLast("⬡ - goa", 6*time.Second); got != "⬡ - goa" {
+		t.Fatalf("final title = %q, want ⬡ - goa; titles: %v", got, sink.titles)
+	}
+}
+
+// TestTitleStartupHook_FallbackFiresWithoutHook verifies the 5s fallback
+// plays the transition even when the loads never signal (uses a short
+// deadline by calling startupDone directly through the fallback path is not
+// feasible here, so this asserts the hook fires when channels are nil = both
+// already done).
+func TestTitleStartupHook_NilChannelsFireImmediately(t *testing.T) {
+	sink := &titleSink{}
+	a := New(testSubsystems())
+	a.titleCtl = newTitleController(sink.set, hexDef(), true)
+	defer a.titleCtl.stop()
+	a.titleCtl.setBase("⬡ - goa")
+
+	// Nil channels = both loads already done → transition fires immediately.
+	a.startTitleStartupHook()
+	if got := sink.waitLast("⬡ - goa", 6*time.Second); got != "⬡ - goa" {
+		t.Fatalf("final title = %q, want ⬡ - goa; titles: %v", got, sink.titles)
 	}
 }

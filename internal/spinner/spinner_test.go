@@ -95,3 +95,24 @@ func TestHexagonIsDefault(t *testing.T) {
 		t.Error("arc spinner must remain available by name")
 	}
 }
+
+// TestHexagonBlackSpinner covers bugs.md "Create a hexagon-black sequence":
+// the two-frame ⬢⬣ animation must exist at a slow interval.
+func TestHexagonBlackSpinner(t *testing.T) {
+	want := []string{"⬢", "⬣"}
+	d, ok := Get("hexagon-black")
+	if !ok {
+		t.Fatal("spinner \"hexagon-black\" not registered")
+	}
+	if len(d.Frames) != len(want) {
+		t.Fatalf("hexagon-black frames = %v, want %v", d.Frames, want)
+	}
+	for i := range want {
+		if d.Frames[i] != want[i] {
+			t.Errorf("hexagon-black frame[%d] = %q, want %q", i, d.Frames[i], want[i])
+		}
+	}
+	if d.IntervalMS() < 300 {
+		t.Errorf("hexagon-black interval = %dms, want >= 300ms (slow)", d.IntervalMS())
+	}
+}

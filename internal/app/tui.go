@@ -429,8 +429,37 @@ func (a *App) initTitleController(engine *tui.TUI) {
 	if a.subs.cfg != nil {
 		animatedTitle = a.subs.cfg.TUI.AnimatedTitleEnabled()
 	}
-	a.titleCtl = newTitleController(engine.SetTitle, spinnerDefFor(a.subs.cfg), animatedTitle)
+	a.titleCtl = newTitleController(engine.SetTitle, titleSpinnerDefFor(a.subs.cfg), animatedTitle)
 	a.titleCtl.run()
+}
+
+// titleSpinnerDefFor resolves the spinner definition used to animate the
+// window title. The default is hexagon-black (⬢⬣, slow) per bugs.md "Create a
+// hexagon-black sequence — use it as default for terminal title"; an explicit
+// tui.spinner value (other than the default hexagon) overrides it; "none"
+// disables the animation.
+func titleSpinnerDefFor(cfg *config.Config) spinner.Definition {
+	if cfg != nil {
+		switch cfg.TUI.Spinner {
+		case "none":
+			return spinner.Definition{}
+		case "", "hexagon":
+			// Unset or the default status spinner: the title animates with
+			// hexagon-black instead.
+			if def, ok := spinner.Get("hexagon-black"); ok {
+				return def
+			}
+		default:
+			if def, ok := spinner.Get(cfg.TUI.Spinner); ok {
+				return def
+			}
+		}
+	}
+	if def, ok := spinner.Get("hexagon-black"); ok {
+		return def
+	}
+	_, def := spinner.Default()
+	return def
 }
 
 // spinnerDefFor resolves the spinner definition for the title/status
