@@ -215,11 +215,18 @@ func (t *Tracker) register(tc *tui.ToolExecutionComponent, id string) {
 	t.noID = append(t.noID, tc)
 }
 
-// finalize marks a widget's args as complete and transitions it to Running.
+// finalize marks a widget's args as complete. It deliberately does NOT
+// transition to Running: args-complete arrives when the assistant message
+// finishes streaming — for a multi-call batch, ALL calls complete args in
+// one burst before ANY of them executes, so stamping Running here would
+// start every widget's elapsed clock at the same instant (bugs.md
+// "Multi-tool calling and timeout": three sequential 12.4s bash calls all
+// displayed "elapsed 37.2s"). The Running transition happens on the call's
+// first progress event (applyProgress), which is emitted only when that
+// call's Execute actually starts — giving each call its own true start.
 func (t *Tracker) finalize(tc *tui.ToolExecutionComponent, input string) {
 	tc.SetArgsJSON(input)
 	tc.SetArgsComplete()
-	tc.SetStatus(tui.ToolRunning)
 }
 
 // findStreamingNoID returns the NEWEST empty-id widget of name that is still
@@ -249,12 +256,15 @@ func (t *Tracker) adoptStreamingNoID(name, id string) *tui.ToolExecutionComponen
 	return nil
 }
 
-// findRunningNoID returns the newest empty-id widget of name that has reached
-// Running (args complete, awaiting/producing result). Used for progress.
+// findRunningNoID returns the newest empty-id widget of name that is awaiting
+// or producing its result (args complete; Pending or Running). Pending is
+// included because finalize no longer pre-marks Running (execution start is
+// signaled by the first progress event itself — see finalize), so for
+// id-less providers a call's own first progress must still match it.
 func (t *Tracker) findRunningNoID(name string) *tui.ToolExecutionComponent {
 	for i := len(t.noID) - 1; i >= 0; i-- {
 		tc := t.noID[i]
-		if tc.ToolName() == name && tc.Status() == tui.ToolRunning {
+		if tc.ToolName() == name && isInflight(tc) && tc.ArgsComplete() {
 			return tc
 		}
 	}
@@ -301,6 +311,18 @@ func (t *Tracker) retire(tc *tui.ToolExecutionComponent) {
 // ── apply helpers ──
 
 func (t *Tracker) applyProgress(tc *tui.ToolExecutionComponent, text string) {
+	// A progress event is emitted only once the tool's Execute has actually
+	// started (executeToolWithResult injects the emitter at execution time),
+	// so the first progress is the true execution-start signal. Transition
+	// Pending → Running HERE — not at args-complete — otherwise every call of
+	// a multi-call batch gets its startTime stamped together at batch end and
+	// all widgets later show the SAME elapsed (bugs.md "Multi-tool calling
+	// and timeout": three sequential 12.4s bash calls all displayed
+	// "elapsed 37.2s"). SetStatus restarts the timer only on a real status
+	// change, so already-Running widgets are unaffected.
+	if tc.Status() == tui.ToolPending {
+		tc.SetStatus(tui.ToolRunning)
+	}
 	tc.SetOutput(text)
 	tc.SetPartial(true)
 }

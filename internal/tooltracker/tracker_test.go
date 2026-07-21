@@ -26,8 +26,6 @@ func newTestTracker(t *testing.T) (*Tracker, *[]*tui.ToolExecutionComponent) {
 	return tr, made
 }
 
-func ptr[T any](v T) *T { return &v }
-
 // toolStatuses collects the status of every widget the creator ever produced.
 func toolStatuses(widgets []*tui.ToolExecutionComponent) []tui.ToolStatus {
 	out := make([]tui.ToolStatus, len(widgets))
@@ -108,6 +106,57 @@ func TestTracker_MultipleConcurrentEmptyID(t *testing.T) {
 
 // TestTracker_ProgressNeverRetires ensures EventToolProgress updates output but
 // leaves the widget tracked so the later result still resolves it.
+// TestTracker_BatchElapsedStartsAtOwnExecution is the regression test for
+// bugs.md "Multi-tool calling and timeout": three bash calls batched in one
+// assistant message all showed "elapsed 37.2s". Args for all three complete
+// together at batch end (finalize stamps the same startTime); the tools then
+// execute SEQUENTIALLY ~12.4s each. The first progress event of each call —
+// emitted only once that call's Execute starts — must transition its widget
+// to Running so its elapsed clock starts with its own execution, not with
+// the batch's first call.
+func TestTracker_BatchElapsedStartsAtOwnExecution(t *testing.T) {
+	tr, made := newTestTracker(t)
+
+	// Batch: three bash calls' args all complete in one burst.
+	for i, id := range []string{"c1", "c2", "c3"} {
+		tr.OnCall(&agentic.OutputEvent{Type: agentic.EventToolCall, IsDelta: false,
+			ToolName: "bash", ToolInput: `{"command":"go test ./..."}`,
+			ToolCallID: id, Text: itoa(i)})
+	}
+	if len(*made) != 3 {
+		t.Fatalf("expected 3 widgets, got %d", len(*made))
+	}
+
+	// Simulate sequential execution: only c1 has started (progress). c2/c3
+	// sit queued — in the old code they were already Running since batch end.
+	tr.OnProgress(&agentic.OutputEvent{Type: agentic.EventToolProgress,
+		ToolName: "bash", ToolCallID: "c1", Text: "partial output c1"})
+
+	if got := (*made)[0].Status(); got != tui.ToolRunning {
+		t.Fatalf("c1 after own progress: got %v, want Running", got)
+	}
+	// c2/c3 must NOT still count time — they remain Pending until their own
+	// execution begins (their own first progress).
+	for i, w := range (*made)[1:] {
+		if got := w.Status(); got == tui.ToolRunning {
+			t.Fatalf("c%d must not be Running before its own execution (shared batch start bug)", i+2)
+		}
+	}
+
+	// c2 starts later: its progress flips it to Running (startTime restarts
+	// via SetStatus), c3 still waits.
+	tr.OnProgress(&agentic.OutputEvent{Type: agentic.EventToolProgress,
+		ToolName: "bash", ToolCallID: "c2", Text: "partial output c2"})
+	if got := (*made)[1].Status(); got != tui.ToolRunning {
+		t.Fatalf("c2 after own progress: got %v, want Running", got)
+	}
+	if got := (*made)[2].Status(); got == tui.ToolRunning {
+		t.Fatal("c3 must still wait for its own execution")
+	}
+}
+
+func itoa(i int) string { return string(rune('0' + i)) }
+
 func TestTracker_ProgressNeverRetires(t *testing.T) {
 	tr, made := newTestTracker(t)
 
