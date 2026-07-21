@@ -157,11 +157,14 @@ func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("zai")
-	// Exact shape returned by https://api.z.ai/api/monitor/usage/quota/limit.
+	// Exact shape returned by https://api.z.ai/api/monitor/usage/quota/limit
+	// (captured live 2026-07-21, level=pro). unit 3 = hours, 5 = months,
+	// 6 = weeks — verified from reset times: a unit:6/number:1 window resets
+	// +63.6h out (weekly cycle), never a "1d window" (bugs.md).
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"code":200,"data":{"level":"pro","limits":[
 		{"type":"TIME_LIMIT","unit":5,"number":1,"usage":1000,"currentValue":0,"remaining":1000,"percentage":0,"nextResetTime":1787122604987},
 		{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096},
-		{"type":"TOKENS_LIMIT","unit":6,"number":7,"percentage":38,"nextResetTime":1784876204993}
+		{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":38,"nextResetTime":1784876204993}
 	]},"success":true}`)
 	env.load(t)
 	env.warmCache(t)
@@ -174,6 +177,15 @@ func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
 	}
 	if !strings.Contains(out, "38%") {
 		t.Fatalf("z.ai weekly window (38%%) missing:\n%s", out)
+	}
+	if !strings.Contains(out, "Weekly") {
+		t.Fatalf("z.ai unit:6/number:1 window must be labeled Weekly (reset proves a 7-day cycle), got:\n%s", out)
+	}
+	if strings.Contains(out, "1d window") {
+		t.Fatalf("z.ai unit:6 must NOT render as a 1d window (unit is weeks):\n%s", out)
+	}
+	if !strings.Contains(out, "Monthly") {
+		t.Fatalf("z.ai unit:5/number:1 web-search window must be labeled Monthly, got:\n%s", out)
 	}
 	// Footer segment must show the active provider's quota, not vanish.
 	seg := env.renderSegment()

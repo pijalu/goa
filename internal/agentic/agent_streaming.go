@@ -353,13 +353,13 @@ func (a *Agent) handleStreamEvent(ctx context.Context, stream *provider.Assistan
 type streamEventHandler func(*Agent, context.Context, *provider.AssistantMessageEventStream, provider.AssistantMessageEvent) (done bool, toolCallsEncountered bool, err error)
 
 var streamEventHandlers = map[provider.EventType]streamEventHandler{
-	provider.EventTextDelta:       (*Agent).handleStreamTextDelta,
-	provider.EventThinkingDelta:   (*Agent).handleStreamThinkingDelta,
-	provider.EventToolCallEnd:     (*Agent).handleStreamToolCallEnd,
-	provider.EventToolCallStart:   (*Agent).handleStreamToolCallStart,
-	provider.EventToolCallDelta:   (*Agent).handleStreamToolCallDelta,
-	provider.EventDone:            (*Agent).handleStreamDone,
-	provider.EventError:           (*Agent).handleStreamError,
+	provider.EventTextDelta:     (*Agent).handleStreamTextDelta,
+	provider.EventThinkingDelta: (*Agent).handleStreamThinkingDelta,
+	provider.EventToolCallEnd:   (*Agent).handleStreamToolCallEnd,
+	provider.EventToolCallStart: (*Agent).handleStreamToolCallStart,
+	provider.EventToolCallDelta: (*Agent).handleStreamToolCallDelta,
+	provider.EventDone:          (*Agent).handleStreamDone,
+	provider.EventError:         (*Agent).handleStreamError,
 }
 
 func (a *Agent) handleStreamTextDelta(_ context.Context, _ *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
@@ -1271,63 +1271,52 @@ func (a *Agent) buildSystemPrompt() string {
 	return a.cfg.SystemPrompt
 }
 
-// mergeGoalProgress injects the goal context as dedicated volatile system
-// messages placed immediately before the last user message, returning the
-// (possibly grown) slice.
+// persistGoalReminder appends the current goal context to a.history as
+// ordinary USER-role messages, once per turn (called from runInternal right
+// after the user message). kimi-code parity (systemReminderService.ts):
+// the reminder becomes part of the append-only conversation, so every
+// provider request is a strict append of the previous one — the whole prefix
+// (system prompt + full history, reminders included) is served from the
+// provider prompt cache and NOTHING is re-sent per round.
 //
-// It injects up to two slots, in order: the static goal reminder (objective,
-// completion criterion, status notes) and the dynamic per-turn progress
-// (counters, budgets). Both live OUTSIDE the cached prefix on purpose: the
-// static reminder changes on goal create/destroy/status-flip, so baking it
-// into the system-prompt prefix busted the entire provider prompt cache on
-// every goal transition (bugs.md "CRITICAL: /goal destroy caching"). The
-// dynamic progress changes every turn.
+// Two messages are appended, in order: the static reminder (objective,
+// completion criterion, status notes) and the dynamic progress snapshot
+// (turn/token/elapsed counters frozen at turn start). They are NEVER system
+// role: strict chat templates (LM Studio/llama.cpp Jinja) reject any system
+// message after the first with HTTP 400 "System message must be at the
+// beginning".
 //
-// It deliberately does NOT mutate the last user message's content, and the
-// slot messages are appended to the per-request slice only — never to
-// a.history — so every history message stays byte-stable across turns. The
-// cached prefix (system prompt + history) survives; only the volatile
-// trailing slots are re-sent.
-func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.Message {
+// Trade-offs (decided 2026-07-21, bugs.md): reminders persist, so a
+// cancelled goal's text stays in history — accepted per kimi-code; the
+// engine already appends an explicit "Goal cancelled/paused" history note on
+// transitions, which supersedes them. Progress counters are per-turn fresh
+// (a new snapshot each turn), never mid-turn.
+//
+// Concurrency: caller holds no lock (same as the user-message append);
+// emitMessage is invoked outside a.mu like the neighboring call.
+func (a *Agent) persistGoalReminder() {
+	p := a.cfg.GoalStateProvider
 	if p == nil {
-		return msgs
+		return
 	}
-	var slots []provider.Message
 	if reminder := p.ActiveGoalReminder(); reminder != "" {
-		slots = append(slots, provider.Message{
-			Role: provider.RoleSystem,
-			Content: []provider.ContentBlock{{
-				Type: provider.ContentBlockText,
-				Text: "[goal]\n" + reminder,
-			}},
-		})
+		msg := Message{Type: Content, Role: User, Content: "[goal]\n" + reminder}
+		a.history = append(a.history, msg)
+		a.emitMessage(msg)
 	}
 	if progress := p.ActiveGoalProgress(); progress != "" {
-		slots = append(slots, provider.Message{
-			Role: provider.RoleSystem,
-			Content: []provider.ContentBlock{{
-				Type: provider.ContentBlockText,
-				Text: "[goal progress]\n" + progress,
-			}},
-		})
+		msg := Message{Type: Content, Role: User, Content: "[goal progress]\n" + progress}
+		a.history = append(a.history, msg)
+		a.emitMessage(msg)
 	}
-	if len(slots) == 0 {
-		return msgs
-	}
-	// Insert just before the last user message so the conversation still ends
-	// on a user turn (required by most providers).
-	insertAt := len(msgs)
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == provider.RoleUser {
-			insertAt = i
-			break
-		}
-	}
-	out := make([]provider.Message, 0, len(msgs)+len(slots))
-	out = append(out, msgs[:insertAt]...)
-	out = append(out, slots...)
-	out = append(out, msgs[insertAt:]...)
-	return out
+}
+
+// mergeGoalProgress is a passthrough: goal context is persisted once per
+// turn into a.history by persistGoalReminder (kimi-code parity), so there is
+// nothing to merge per request — the history already carries it and the
+// request stays a strict append of the previous one.
+func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.Message {
+	return msgs
 }
 
 // logProviderContext writes a concise summary of the context to the debug log.

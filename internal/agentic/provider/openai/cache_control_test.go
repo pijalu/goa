@@ -284,3 +284,55 @@ func TestCacheControlMarker_Marshaling(t *testing.T) {
 		t.Error("expected nil cache control for none retention")
 	}
 }
+
+// TestBuildParams_CacheMarkerPinnedAcrossRounds is the regression for the
+// moving-breakpoint cache bust found in the LM Studio request capture
+// (bugs.md "cache-hit-first"): the conversation cache_control marker must be
+// pinned to the FIRST user message so request N stays a byte-prefix of
+// request N+1. With the marker on the last message it moved every round,
+// rewriting one history message's bytes and killing llama.cpp's
+// longest-prefix cache match at that point.
+func TestBuildParams_CacheMarkerPinnedAcrossRounds(t *testing.T) {
+	model := provider.Model{
+		ID:       "qwythos-9b-v2",
+		Api:      provider.ApiOpenAICompletions,
+		Provider: provider.ProviderLMStudio,
+		BaseURL:  "http://localhost:1234/v1/chat/completions",
+	}
+	compat := provider.ResolveOpenAICompat(model)
+	opts := provider.StreamOptions{CacheRetention: provider.CacheRetentionShort, SessionID: "s"}
+
+	round1 := provider.Context{
+		SystemPrompt: "sys",
+		Messages:     []provider.Message{provider.NewUserMessage("turn one")},
+	}
+	round2 := provider.Context{
+		SystemPrompt: "sys",
+		Messages: []provider.Message{
+			provider.NewUserMessage("turn one"),
+			{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "reply"}}},
+			provider.NewUserMessage("turn two"),
+		},
+	}
+
+	m1 := buildParams(model, round1, opts, compat)["messages"].([]map[string]interface{})
+	m2 := buildParams(model, round2, opts, compat)["messages"].([]map[string]interface{})
+
+	if len(m2) != len(m1)+2 {
+		t.Fatalf("round2 should append 2 messages, got %d -> %d", len(m1), len(m2))
+	}
+	for i := range m1 {
+		b1, _ := json.Marshal(m1[i])
+		b2, _ := json.Marshal(m2[i])
+		if string(b1) != string(b2) {
+			t.Errorf("message %d changed between rounds (prefix cache bust):\n  r1=%s\n  r2=%s", i, b1, b2)
+		}
+	}
+	// The marker must sit on the FIRST user message in both rounds.
+	if !hasCacheControl(m2[1]) {
+		t.Errorf("first user message must carry the pinned cache marker")
+	}
+	if hasCacheControl(m2[len(m2)-1]) {
+		t.Errorf("last message must NOT carry a fresh cache marker (it would move each round)")
+	}
+}

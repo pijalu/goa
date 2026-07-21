@@ -652,9 +652,9 @@ const metaEphemeral = "ephemeral"
 // model also tends to parrot it as a user-facing "budget" status).
 func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	msg := Message{
-		Type:    Content,
-		Role:    System,
-		Content: content,
+		Type:     Content,
+		Role:     System,
+		Content:  content,
 		Metadata: map[string]string{metaEphemeral: "true"},
 	}
 	a.mu.Lock()
@@ -875,6 +875,11 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 		}
 		a.history = append(a.history, userMsg)
 		a.emitMessage(userMsg)
+
+		// Persist the goal context once per turn (kimi-code parity): the
+		// reminder becomes ordinary append-only history, so the provider
+		// request sequence is strictly append-only and fully prefix-cacheable.
+		a.persistGoalReminder()
 
 		// Process one turn
 		err = a.processTurn(ctx)

@@ -347,3 +347,52 @@ func TestOpenAICompletions_ZaiThinkingOffSendsDisabled(t *testing.T) {
 	require.True(t, ok, "expected explicit disabled thinking body, got: %v", req["thinking"])
 	assert.Equal(t, "disabled", thinking["type"])
 }
+
+// TestOpenAICompletionsCacheMarkerPinnedAcrossRounds is the regression for
+// the moving-breakpoint cache bust found in the LM Studio request capture
+// (bugs.md "cache-hit-first"): the conversation cache_control marker must be
+// pinned to the FIRST user message so request N stays a byte-prefix of
+// request N+1. A last-message marker moved every round, rewriting one history
+// message's bytes and killing llama.cpp's longest-prefix cache match.
+func TestOpenAICompletionsCacheMarkerPinnedAcrossRounds(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICompletions)
+	require.NotNil(t, p)
+
+	profile := schema.VariantProfile{
+		CachePolicy: schema.CachePolicy{Mode: schema.CacheModeShort},
+	}
+	opts := schema.StreamOptions{CacheRetention: schema.CacheRetentionShort, SessionID: "s"}
+	model := schema.Model{ID: "qwythos-9b-v2", Api: schema.ApiOpenAICompletions, Provider: schema.ProviderLMStudio}
+
+	build := func(msgs ...schema.Message) []map[string]any {
+		body, err := p.BuildRequest(model, schema.Context{SystemPrompt: "sys", Messages: msgs}, opts, profile)
+		require.NoError(t, err)
+		var req map[string]any
+		require.NoError(t, json.Unmarshal(body, &req))
+		out, ok := req["messages"].([]any)
+		require.True(t, ok)
+		msgs2 := make([]map[string]any, 0, len(out))
+		for _, m := range out {
+			msgs2 = append(msgs2, m.(map[string]any))
+		}
+		return msgs2
+	}
+
+	r1 := build(schema.NewUserMessage("turn one"))
+	r2 := build(
+		schema.NewUserMessage("turn one"),
+		schema.Message{Role: schema.RoleAssistant, Content: []schema.ContentBlock{{Type: schema.ContentBlockText, Text: "reply"}}},
+		schema.NewUserMessage("turn two"),
+	)
+	require.Len(t, r2, len(r1)+2)
+	for i := range r1 {
+		b1, _ := json.Marshal(r1[i])
+		b2, _ := json.Marshal(r2[i])
+		assert.Equal(t, string(b1), string(b2), "message %d changed between rounds (prefix cache bust)", i)
+	}
+	// The marker must sit on the FIRST user message, not the last.
+	s1, _ := json.Marshal(r2[1])
+	sLast, _ := json.Marshal(r2[len(r2)-1])
+	assert.Contains(t, string(s1), "cache_control", "first user message must carry the pinned marker")
+	assert.NotContains(t, string(sLast), "cache_control", "last message must not carry a moving marker")
+}

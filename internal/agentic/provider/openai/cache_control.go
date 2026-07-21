@@ -32,16 +32,25 @@ func newCacheControl(retention provider.CacheRetention, supportsLong bool) *cach
 }
 
 // applyCacheControl adds Anthropic-style cache_control markers to the
-// system prompt, the last tool definition, and the last user/assistant
-// conversation message. This works
-// across providers that accept Anthropic-style markers.
+// system prompt, the last tool definition, and the FIRST user conversation
+// message. This works across providers that accept Anthropic-style markers.
+//
+// The conversation marker is deliberately pinned to the FIRST user message
+// (the session's opening turn) instead of the last: llama.cpp-style servers
+// (LM Studio, Ollama) do automatic longest-prefix caching — any marker that
+// moves between requests rewrites that history message's bytes and kills the
+// prefix match at that point, forcing a full re-parse of everything after it
+// (bugs.md "cache-hit-first": a moving marker was caught in the request
+// capture diverging between rounds while the message text was identical).
+// Pinned to the opening turn, every request stays a strict append of the
+// previous one and the whole history is cache-served.
 func applyCacheControl(messages []map[string]interface{}, tools []map[string]interface{}, cc *cacheControl) {
 	if cc == nil {
 		return
 	}
 	addCacheControlToSystemPrompt(messages, cc)
 	addCacheControlToLastTool(tools, cc)
-	addCacheControlToLastConversationMessage(messages, cc)
+	addCacheControlToFirstConversationMessage(messages, cc)
 }
 
 func addCacheControlToSystemPrompt(messages []map[string]interface{}, cc *cacheControl) {
@@ -54,11 +63,12 @@ func addCacheControlToSystemPrompt(messages []map[string]interface{}, cc *cacheC
 	}
 }
 
-func addCacheControlToLastConversationMessage(messages []map[string]interface{}, cc *cacheControl) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+// addCacheControlToFirstConversationMessage pins the conversation breakpoint
+// to the FIRST user message (see applyCacheControl for why it must not move).
+func addCacheControlToFirstConversationMessage(messages []map[string]interface{}, cc *cacheControl) {
+	for _, msg := range messages {
 		role, _ := msg["role"].(string)
-		if role == "user" || role == "assistant" {
+		if role == "user" {
 			if addCacheControlToTextContent(msg, cc) {
 				return
 			}

@@ -34,6 +34,7 @@ const (
 	PauseConnError    = "Paused after provider connection error"
 	PauseAuthError    = "Paused after provider authentication error"
 	PauseAPIError     = "Paused after provider API error"
+	PauseRequestError = "Paused after provider request error"
 	PauseModelConfig  = "Paused after model configuration error"
 	PauseRuntimeError = "Paused after runtime error"
 )
@@ -116,27 +117,39 @@ func (d *GoalDriver) Start(ctx context.Context) {
 	}()
 }
 
+// driverErrorRules maps error substrings to pause reasons, evaluated in
+// order (first match wins). Table-driven to keep mapDriverError within the
+// cyclomatic budget. HTTP 4xx request errors (e.g. LM Studio's "400 ...
+// System message must be at the beginning") come BEFORE the connection
+// catch-all: the request reached the server and was rejected — the pause
+// reason must say the request itself was refused, not that the connection
+// failed.
+var driverErrorRules = []struct {
+	reason  string
+	substrs []string
+}{
+	{PauseRateLimit, []string{"rate limit"}},
+	{PauseAuthError, []string{"authentication", "auth"}},
+	{PauseRequestError, []string{"400", "invalid_request", "404", "422", "unprocessable"}},
+	{PauseConnError, []string{"connection"}},
+	{PauseAPIError, []string{"api error"}},
+	{PauseModelConfig, []string{"model config", "not configured"}},
+	{"Paused after detecting a runaway response loop", []string{"runaway loop", "stream loop"}},
+}
+
 func mapDriverError(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "Paused after interruption"
 	}
 	msg := err.Error()
-	switch {
-	case containsCI(msg, "rate limit"):
-		return PauseRateLimit
-	case containsCI(msg, "authentication") || containsCI(msg, "auth"):
-		return PauseAuthError
-	case containsCI(msg, "connection"):
-		return PauseConnError
-	case containsCI(msg, "api error"):
-		return PauseAPIError
-	case containsCI(msg, "model config") || containsCI(msg, "not configured"):
-		return PauseModelConfig
-	case containsCI(msg, "runaway loop") || containsCI(msg, "stream loop"):
-		return "Paused after detecting a runaway response loop"
-	default:
-		return PauseRuntimeError
+	for _, rule := range driverErrorRules {
+		for _, sub := range rule.substrs {
+			if containsCI(msg, sub) {
+				return rule.reason
+			}
+		}
 	}
+	return PauseRuntimeError
 }
 
 func containsCI(s, substr string) bool {

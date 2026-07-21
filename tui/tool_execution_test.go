@@ -640,8 +640,8 @@ func TestToolExecution_NoGenericStatsLine(t *testing.T) {
 func TestToolExecution_LiveProgressFooter(t *testing.T) {
 	// Running tool with streamed output: suffix shows bytes + lines.
 	tc := NewToolExecution("bash", `{"command":"make"}`)
-	tc.startTime = time.Now().Add(-time.Second) // backdate past minDuration
 	tc.SetStatus(ToolRunning)
+	tc.startTime = time.Now().Add(-time.Second) // backdate execution past minDuration
 	tc.SetOutput("compiling a.c\nlinking b.o\n")
 	rendered := ansi.Strip(strings.Join(tc.Render(80), "\n"))
 	if !strings.Contains(rendered, "elapsed") {
@@ -673,8 +673,8 @@ func TestToolExecution_LiveProgressFooter(t *testing.T) {
 
 	// Running tool with no output yet: no suffix (stays clean for fast tools).
 	tc2 := NewToolExecution("read", `{"path":"x"}`)
-	tc2.startTime = time.Now().Add(-time.Second)
 	tc2.SetStatus(ToolRunning)
+	tc2.startTime = time.Now().Add(-time.Second)
 	rendered2 := ansi.Strip(strings.Join(tc2.Render(80), "\n"))
 	if strings.Contains(rendered2, "·") {
 		t.Errorf("running tool with no output must not show the suffix, got %q", rendered2)
@@ -716,8 +716,8 @@ func TestFormatLineCount(t *testing.T) {
 // tools never call during streaming — args stream via SetArgsPartial instead.
 func TestToolExecution_WriteStreamingProgressFooter(t *testing.T) {
 	tc := NewToolExecution("write", `{"path":"main.go"}`)
-	tc.startTime = time.Now().Add(-time.Second) // backdate past minDuration
 	tc.SetStatus(ToolRunning)
+	tc.startTime = time.Now().Add(-time.Second) // backdate execution past minDuration
 
 	// Simulate streaming args arriving with content field.
 	tc.SetArgsPartial(`{"path":"main.go","content":"package main\n\nfunc main() {\n}`)
@@ -823,5 +823,32 @@ func TestToolExecution_RunningIconIsYellowDotNotSpinner(t *testing.T) {
 		if icon == frame {
 			t.Errorf("running icon must not be spinner frame %q", frame)
 		}
+	}
+}
+
+// TestToolExecution_ElapsedStartsAtRunning pins the timeout-display contract:
+// the widget's "elapsed" measures EXECUTION time, starting when the call
+// transitions into ToolRunning — not widget creation. Before the fix, the
+// timer started at NewToolExecution (first streaming delta), so slow local
+// models showed "elapsed 213s" for a "timeout 120s" call (bugs.md).
+func TestToolExecution_ElapsedStartsAtRunning(t *testing.T) {
+	tc := NewToolExecution("bash", `{"command":"go test","timeout":120}`)
+	// Simulate 93s of streaming/approval wait before execution starts.
+	tc.startTime = time.Now().Add(-93 * time.Second)
+	tc.SetStatus(ToolRunning)
+	if el := time.Since(tc.startTime); el > 5*time.Second {
+		t.Fatalf("elapsed should restart at ToolRunning; got %v since start", el)
+	}
+}
+
+// TestToolExecution_RunningAgainKeepsTimer ensures a re-set of ToolRunning
+// (e.g. duplicate non-delta event) does NOT restart the elapsed timer.
+func TestToolExecution_RunningAgainKeepsTimer(t *testing.T) {
+	tc := NewToolExecution("bash", `{"command":"go test","timeout":120}`)
+	tc.SetStatus(ToolRunning)
+	tc.startTime = time.Now().Add(-30 * time.Second) // mid-execution
+	tc.SetStatus(ToolRunning)
+	if el := time.Since(tc.startTime); el < 25*time.Second {
+		t.Fatalf("re-setting ToolRunning must not restart elapsed; got %v", el)
 	}
 }

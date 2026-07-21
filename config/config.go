@@ -585,8 +585,8 @@ type TUIConfig struct {
 	ModeLine       ModeLineSegmentConfig `yaml:"modeline,omitempty"`
 	Spinner        string                `yaml:"spinner"`
 	// AnimatedTitle animates the terminal window title with the spinner while
-	// the agent is working (bugs.md "Animated title bar while working").
-	// Default true; set to false to keep a static title.
+	// the agent is working. Default false (bugs.md 2026-07-21: keep the static
+	// hexagon title during activities); set to true to opt in.
 	AnimatedTitle *bool                 `yaml:"animated_title,omitempty"`
 	Tools          ToolDisplayConfig     `yaml:"tools"`
 	History        HistoryConfig         `yaml:"history"`
@@ -594,9 +594,9 @@ type TUIConfig struct {
 }
 
 // AnimatedTitleEnabled reports whether the animated title bar is enabled
-// (default true unless explicitly disabled).
+// (default false unless explicitly enabled).
 func (c TUIConfig) AnimatedTitleEnabled() bool {
-	return c.AnimatedTitle == nil || *c.AnimatedTitle
+	return c.AnimatedTitle != nil && *c.AnimatedTitle
 }
 
 // FontStylesConfig toggles SGR font-style support in rendered output

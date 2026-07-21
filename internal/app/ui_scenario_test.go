@@ -34,6 +34,7 @@ type uiScenario struct {
 	chat     *tui.ChatViewport
 	status   *tui.StatusMsg
 	footer   *tui.Footer
+	editor   *tui.Editor
 	app      *App
 	film     *tui.Filmstrip
 	term     *testTerminal
@@ -95,6 +96,7 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 		chat:   chat,
 		status: statusBar,
 		footer: footer,
+		editor: inp,
 		app:    app,
 		film:   tui.NewFilmstrip(),
 		term:   term,

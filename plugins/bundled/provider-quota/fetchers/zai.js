@@ -32,11 +32,15 @@ var desc = {
 // mapping with it produced zero limits and the Z.ai row vanished from /quota
 // (bugs.md: z.ai not showing quota).
 //
-// unit encodes the window period (3 = hours, 6 = days); number is the count,
-// so periodMs = number*unit_ms. Labels are derived from the window length so
-// the UI shows "Session (5h)" / "Weekly" style rows. usage is synthesized as
-// percentage/100*limit with limit normalized to 100 so the bar/pct renderers
-// work unchanged.
+// unit encodes the window period (3 = hours, 5 = months, 6 = weeks);
+// number is the count, so periodMs = number*unit_ms. Verified against the
+// live monitor API 2026-07-21: a {"unit":6,"number":1} TOKENS_LIMIT reset
+// lands +63.6h out — impossible for a 1-day window, exact for a weekly
+// cycle; a {"unit":5,"number":1} TIME_LIMIT (web-search credits) resets
+// +28.7d out — a monthly cycle. Labels are derived from the window length so
+// the UI shows "Session (5h)" / "Weekly" / "Monthly" style rows. usage is
+// synthesized as percentage/100*limit with limit normalized to 100 so the
+// bar/pct renderers work unchanged.
 function zaiMap(body) {
 	var data = (body && body.data) || body || {};
 	var raw = data.limits;
@@ -59,20 +63,24 @@ function zaiMap(body) {
 }
 
 // windowPeriodMs derives the window length in ms from the z.ai unit/number
-// pair (unit 3 = hours, 6 = days; number = count of that unit).
+// pair (unit 3 = hours, 5 = months ≈ 30d, 6 = weeks; number = count of that
+// unit). Month is approximate — it only feeds the at-reset projection.
 function windowPeriodMs(w) {
 	var n = hq.num(w.number) || 1;
 	if (w.unit === 3) {
 		return n * 3600000;
 	}
+	if (w.unit === 5) {
+		return n * 30 * 86400000;
+	}
 	if (w.unit === 6) {
-		return n * 86400000;
+		return n * 7 * 86400000;
 	}
 	return 0;
 }
 
 // windowLabel names a window from its period so it renders like the other
-// providers ("Session (5h)", "Weekly", or a day/hour count fallback).
+// providers ("Session (5h)", "Weekly", "Monthly", or a unit-count fallback).
 function windowLabel(w) {
 	var ms = windowPeriodMs(w);
 	if (ms === 5*3600000) {
@@ -81,8 +89,14 @@ function windowLabel(w) {
 	if (ms === 7*86400000) {
 		return "Weekly";
 	}
+	if (ms === 30*86400000) {
+		return "Monthly";
+	}
 	if (w.unit === 6) {
-		return hq.num(w.number) + "d window";
+		return hq.num(w.number) + "w window";
+	}
+	if (w.unit === 5) {
+		return hq.num(w.number) + "mo window";
 	}
 	if (w.unit === 3) {
 		return hq.num(w.number) + "h window";

@@ -19,6 +19,19 @@ Copyright (C) 2026 Pierre Poissinger
    - `gocyclo -over 12 .`
    - `go test -count=1 -race -cover ./...`
    Fix any new issues introduced by the change. Pre-existing warnings are acceptable only if they are unrelated to the change and explicitly noted.
+9. **Cache-hit-first design (CRITICAL for local models).** A cached prefix
+   costs ~0; a full re-parse costs 40-100x more (measured 2026-07-21 on
+   qwythos-9b-v2: 23.6 tok/s generation — a 20K-token re-parse is a 45-90s
+   stall). Therefore every provider request must be **strictly append-only**:
+   never move, rewrite, or re-project content mid-history; volatile
+   per-request text may only ever be appended at the tail. The system prompt
+   (byte 0) must stay byte-identical for the whole session. Anything that
+   "decorates" messages per request (cache_control breakpoints, markers,
+   wrappers) must be pinned to a fixed position — a marker that moves to the
+   newest message each round rewrites history bytes and kills llama.cpp's
+   longest-prefix cache match exactly where it lands. Validate any change to
+   prompt/message construction with a proxy capture proving request N is a
+   byte-prefix of request N+1, and by watching CH% climb in real sessions.
 
 *At the end of the session*: the list should be empty and this file should only contain the guidelines for bug reporting.
 If new items are added, restart the process.

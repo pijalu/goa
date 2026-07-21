@@ -224,6 +224,20 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "gemini-3.5-flash-lite", Name: "Gemini 3.5 Flash Lite", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000003000, Output: 0.0000025000, CacheRead: 0.0000000300, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "gemini-3.6-flash", Name: "Gemini 3.6 Flash", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000015000, Output: 0.0000075000, CacheRead: 0.0000001500, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "gemini-flash-latest", Name: "Gemini Flash Latest", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},

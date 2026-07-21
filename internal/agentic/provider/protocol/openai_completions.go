@@ -365,7 +365,7 @@ func applyOpenAICacheControl(messages []map[string]any, tools []map[string]any, 
 	}
 	addOpenAICacheControlToSystemPrompt(messages, cc)
 	addOpenAICacheControlToLastTool(tools, cc)
-	addOpenAICacheControlToLastConversationMessage(messages, cc)
+	addOpenAICacheControlToFirstConversationMessage(messages, cc)
 }
 
 func addOpenAICacheControlToSystemPrompt(messages []map[string]any, cc *cacheControl) {
@@ -385,11 +385,19 @@ func addOpenAICacheControlToLastTool(tools []map[string]any, cc *cacheControl) {
 	tools[len(tools)-1]["cache_control"] = cc
 }
 
-func addOpenAICacheControlToLastConversationMessage(messages []map[string]any, cc *cacheControl) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		msg := messages[i]
+// addOpenAICacheControlToFirstConversationMessage pins the conversation
+// breakpoint to the FIRST user message (the session's opening turn). It must
+// NOT move between requests: llama.cpp-style servers (LM Studio, Ollama) do
+// automatic longest-prefix caching, and a marker that jumps to the new last
+// message every round rewrites that history message's bytes, killing the
+// prefix match at that point and forcing a full re-parse of everything
+// after it (bugs.md "cache-hit-first": caught in the LM Studio request
+// capture — identical message text, only the marker moved). Pinned to the
+// opening turn, every request stays a strict append of the previous one.
+func addOpenAICacheControlToFirstConversationMessage(messages []map[string]any, cc *cacheControl) {
+	for _, msg := range messages {
 		role, _ := msg["role"].(string)
-		if role == "user" || role == "assistant" {
+		if role == "user" {
 			if addOpenAICacheControlToTextContent(msg, cc) {
 				return
 			}

@@ -98,32 +98,83 @@ func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 		t.Errorf("system prompt should NOT contain dynamic progress, got %q", pctx.SystemPrompt)
 	}
 
-	// Both the static reminder and the dynamic progress must be injected as
-	// volatile system slot messages immediately before the last user message
-	// (static first, then dynamic), NOT baked into the cached prefix or the
-	// user message content.
-	staticIdx := indexOfSystemContaining(pctx.Messages, "STATIC GOAL REMINDER")
-	progressIdx := indexOfSystemContaining(pctx.Messages, "DYNAMIC PROGRESS LINE")
-	lastUserIdx := indexOfLastRole(pctx.Messages, provider.RoleUser)
+	// kimi-code parity (bugs.md 2026-07-21, design A): the goal context is
+	// PERSISTED into the conversation once per turn as ordinary USER-role
+	// messages appended right after the turn's user message — static first,
+	// then dynamic. It is never merged per-request and never system role
+	// (strict chat templates reject mid-conversation system messages with
+	// HTTP 400 "System message must be at the beginning").
+	staticIdx := indexOfSlotContaining(pctx.Messages, "STATIC GOAL REMINDER")
+	progressIdx := indexOfSlotContaining(pctx.Messages, "DYNAMIC PROGRESS LINE")
+	turnIdx := indexOfSlotContaining(pctx.Messages, "user turn")
 	if staticIdx < 0 {
-		t.Fatalf("static reminder should be injected as a system slot message; messages: %+v", pctx.Messages)
+		t.Fatalf("static reminder should be persisted as a user-role history message; messages: %+v", pctx.Messages)
 	}
 	if progressIdx < 0 {
-		t.Fatalf("dynamic progress should be injected as a system message; messages: %+v", pctx.Messages)
+		t.Fatalf("dynamic progress should be persisted as a user-role history message; messages: %+v", pctx.Messages)
 	}
-	if lastUserIdx < 0 {
-		t.Fatal("expected at least one user message")
+	if turnIdx < 0 {
+		t.Fatal("expected the turn's user message")
 	}
-	if staticIdx != lastUserIdx-2 || progressIdx != lastUserIdx-1 {
-		t.Errorf("goal slots should immediately precede the last user message (static, then dynamic): static@%d progress@%d lastUser@%d",
-			staticIdx, progressIdx, lastUserIdx)
+	if staticIdx != turnIdx+1 || progressIdx != turnIdx+2 {
+		t.Errorf("goal reminders must immediately follow the turn's user message (static, then dynamic): turn@%d static@%d progress@%d",
+			turnIdx, staticIdx, progressIdx)
 	}
-	// The last user message must carry only the verbatim user text.
-	lastUser := pctx.Messages[lastUserIdx]
-	for _, b := range lastUser.Content {
-		if strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") || strings.Contains(b.Text, "STATIC GOAL REMINDER") {
-			t.Errorf("last user message must not contain goal text (cache-stable verbatim text): %q", b.Text)
+	// No system-role message may carry goal text — the only system content
+	// allowed is the leading system prompt itself (LM Studio 400 contract).
+	for i, m := range pctx.Messages {
+		if m.Role != provider.RoleSystem {
+			continue
 		}
+		for _, b := range m.Content {
+			if strings.Contains(b.Text, "STATIC GOAL REMINDER") || strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") {
+				t.Errorf("goal text in system-role message %d breaks strict chat templates (400): %q", i, b.Text)
+			}
+		}
+	}
+	// The turn's user message must carry only the verbatim user text.
+	for _, b := range pctx.Messages[turnIdx].Content {
+		if strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") || strings.Contains(b.Text, "STATIC GOAL REMINDER") {
+			t.Errorf("turn user message must not contain goal text (verbatim text): %q", b.Text)
+		}
+	}
+}
+
+// TestGoalReminder_InjectedOncePerTurn pins the per-turn cadence: every Run
+// appends ONE fresh reminder pair (with the current progress snapshot), so
+// turn N+1's history carries both snapshots as ordinary append-only history.
+func TestGoalReminder_InjectedOncePerTurn(t *testing.T) {
+	cap := registerCapturingProvider("goal-per-turn")
+	gp := &mockGoalProvider{
+		staticReminder:  "STATIC GOAL REMINDER",
+		dynamicProgress: "PROGRESS TURN 1",
+	}
+	agent := NewAgent(Config{
+		Model:             testModel(cap.api),
+		SystemPrompt:      "system prompt",
+		Logger:            NewLogger(Error),
+		GoalStateProvider: gp,
+	})
+
+	ctx := context.Background()
+	if err := agent.Run(ctx, "turn one"); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	gp.dynamicProgress = "PROGRESS TURN 2"
+	if err := agent.Run(ctx, "turn two"); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+
+	pctx := cap.Captured()
+	if indexOfSlotContaining(pctx.Messages, "PROGRESS TURN 1") < 0 {
+		t.Errorf("turn 1's reminder snapshot must stay in history (append-only)")
+	}
+	second := indexOfSlotContaining(pctx.Messages, "PROGRESS TURN 2")
+	if second < 0 {
+		t.Fatalf("turn 2 must append a fresh reminder snapshot")
+	}
+	if n := countSlotContaining(pctx.Messages, "STATIC GOAL REMINDER"); n != 2 {
+		t.Errorf("expected exactly 2 persisted static reminders (one per turn), got %d", n)
 	}
 }
 
@@ -147,11 +198,12 @@ func TestBuildProviderContext_NoGoalProvider_NoInjection(t *testing.T) {
 	}
 }
 
-// indexOfSystemContaining returns the index of the first system message whose
-// content contains needle, or -1.
-func indexOfSystemContaining(msgs []provider.Message, needle string) int {
+// indexOfSlotContaining returns the index of the first user-role slot message
+// whose content contains needle, or -1. Goal slots are user-role by contract
+// (strict chat templates reject mid-conversation system messages).
+func indexOfSlotContaining(msgs []provider.Message, needle string) int {
 	for i, m := range msgs {
-		if m.Role != provider.RoleSystem {
+		if m.Role != provider.RoleUser {
 			continue
 		}
 		for _, b := range m.Content {
@@ -163,22 +215,12 @@ func indexOfSystemContaining(msgs []provider.Message, needle string) int {
 	return -1
 }
 
-// indexOfLastRole returns the index of the last message with the given role,
-// or -1.
-func indexOfLastRole(msgs []provider.Message, role provider.Role) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == role {
-			return i
-		}
-	}
-	return -1
-}
-
 // TestBuildProviderContext_GoalDestroyKeepsCachedPrefixStable is the core
-// regression for bugs.md "CRITICAL: /goal destroy caching": destroying a goal
-// (static reminder disappears) must NOT change the system prompt or the
-// cached history prefix — goal text lives only in the volatile pre-user slot,
-// so the provider prompt cache survives a destroy.
+// regression for the goal-destroy cache contract under the persist-per-turn
+// design (bugs.md 2026-07-21, design A): destroying a goal must not rewrite
+// any existing byte — turn 1's persisted reminder stays in history
+// (append-only, kimi-code parity) — and turn 2 must simply append NO new
+// goal text. The whole prefix stays cache-servable.
 func TestBuildProviderContext_GoalDestroyKeepsCachedPrefixStable(t *testing.T) {
 	cap := registerCapturingProvider("goal-destroy")
 	gp := &mockGoalProvider{
@@ -210,51 +252,45 @@ func TestBuildProviderContext_GoalDestroyKeepsCachedPrefixStable(t *testing.T) {
 	}
 	second := cap.Captured()
 
-	// The cached prefix must be byte-identical across the destroy: same system
-	// prompt, and the first turn's HISTORY (its messages minus the volatile
-	// goal slots, which are per-request only and never enter a.history) must
-	// appear unchanged as the leading part of the second request.
+	// The cached prefix must be byte-identical across the destroy: same
+	// system prompt, and the first request's ENTIRE message list (reminders
+	// included — they are ordinary persisted history now) must appear
+	// unchanged as the leading part of the second request.
 	if second.SystemPrompt != first.SystemPrompt {
 		t.Errorf("destroy changed the system prompt (cache bust):\n  before=%q\n  after=%q",
 			first.SystemPrompt, second.SystemPrompt)
 	}
-	firstHistory := stripGoalSlots(first.Messages)
-	for i, m := range firstHistory {
+	for i, m := range first.Messages {
 		if i >= len(second.Messages) {
-			t.Fatalf("second request shrank below the first-turn history (%d < %d)", len(second.Messages), len(firstHistory))
+			t.Fatalf("second request shrank below the first (%d < %d)", len(second.Messages), len(first.Messages))
 		}
 		if !messagesEqual(second.Messages[i], m) {
-			t.Errorf("history message %d changed across destroy (cache bust):\n  before=%+v\n  after=%+v", i, m, second.Messages[i])
+			t.Errorf("history message %d changed across destroy (append-only violated):\n  before=%+v\n  after=%+v", i, m, second.Messages[i])
 		}
 	}
-	assertNoGoalText(t, second.Messages)
+	// Turn 2 must append NO new goal text: exactly the turn-1 pair exists.
+	if n := countSlotContaining(second.Messages, "STATIC GOAL REMINDER"); n != 1 {
+		t.Errorf("destroyed goal must not append new reminders: got %d static reminders, want the 1 from turn 1", n)
+	}
+	if n := countSlotContaining(second.Messages, "DYNAMIC PROGRESS LINE"); n != 1 {
+		t.Errorf("destroyed goal must not append new progress: got %d progress messages, want the 1 from turn 1", n)
+	}
 }
 
-// assertNoGoalText fails the test if any message carries goal slot content.
-func assertNoGoalText(t *testing.T, msgs []provider.Message) {
-	t.Helper()
-	for i, m := range msgs {
+// countSlotContaining returns how many user-role messages contain needle.
+func countSlotContaining(msgs []provider.Message, needle string) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role != provider.RoleUser {
+			continue
+		}
 		for _, b := range m.Content {
-			if strings.Contains(b.Text, "STATIC GOAL REMINDER") || strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") {
-				t.Errorf("goal text leaked into message %d after destroy: %q", i, b.Text)
+			if strings.Contains(b.Text, needle) {
+				n++
 			}
 		}
 	}
-}
-
-// stripGoalSlots removes the volatile goal slot messages (system role with a
-// "[goal]"/"[goal progress]" marker) from a message slice, leaving the
-// provider-cached history.
-func stripGoalSlots(msgs []provider.Message) []provider.Message {
-	out := make([]provider.Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role == provider.RoleSystem && len(m.Content) > 0 &&
-			(strings.HasPrefix(m.Content[0].Text, "[goal]") || strings.HasPrefix(m.Content[0].Text, "[goal progress]")) {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
+	return n
 }
 
 // messagesEqual compares two provider messages by role and text content.

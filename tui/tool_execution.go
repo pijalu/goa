@@ -90,7 +90,12 @@ type ToolExecutionComponent struct {
 	partialValue string // decoded value accumulated for the open field so far
 	renderer     ToolRenderer
 	generic      genericRenderer
-	startTime    time.Time
+	// startTime is the EXECUTION start used for the live "elapsed" display.
+	// It is set at widget creation and reset on the transition into
+	// ToolRunning so the displayed elapsed measures execution only — matching
+	// the tool timeout bound (bugs.md: widget showed "elapsed 213s" for a
+	// "timeout 120s" call because streaming/approval time was counted).
+	startTime time.Time
 
 	// bodyVersion is bumped whenever a body-input changes (output, args,
 	// status, isPartial, argsComplete, expanded, view policy). buildBody
@@ -742,6 +747,13 @@ func (tc *ToolExecutionComponent) SetStatus(status ToolStatus) {
 	tc.status = status
 	if status == ToolSuccess || status == ToolError {
 		tc.isPartial = false
+	}
+	// Restart the elapsed timer when execution actually begins so the display
+	// reflects the execution phase only (streaming/approval time excluded) and
+	// stays within the tool's timeout bound. Re-setting ToolRunning (duplicate
+	// non-delta events) must NOT restart the timer.
+	if status == ToolRunning && old != ToolRunning {
+		tc.startTime = time.Now()
 	}
 	tc.invalidateBody()
 	tc.updateBox()
