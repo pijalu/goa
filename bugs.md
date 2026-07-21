@@ -45,3 +45,86 @@ If new items are added, restart the process.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
+
+# TODO
+## Start-up
+Regression: At startup, Goa inputline is not responsive for couple seconds - likely related to load up items - run a details review of startup sequence.
+
+The inputline should not be impacted by the startup sequence / plugin loading / ...
+
+**Hard requirement:** there must not be *any* HTTP/API calls blocking the startup path — every network call (provider probe, context-window refresh, quota prime, update check, model list, ...) must be fully async, with results applied when they land. goa *MUST* feel fast: first frame + responsive inputline come before any I/O.
+
+## Goal
+Regression: currently a goal execution does not show any status line details:
+```
+Let me start by understanding the current state of the project - what tests exist, what's failing, and what features are implemented.
+
+
+● $ cd /Users/muaddib/dev/frigolite && go test ./... 2>&1 | tail -100 (timeout 120s)
+elapsed 12.8s
+
+
+● $ cd /Users/muaddib/dev/frigolite && go test -count=1 -v ./... 2>&1 | grep -E '^(=== RUN|--- FAIL|--- PASS|ok |FAIL)' |... (timeout 120s)
+elapsed 12.8s
+
+
+● $ cd /Users/muaddib/dev/frigolite && go test -count=1 -v ./... 2>&1 | grep -E 'FAIL' | head -100 (timeout 120s)
+elapsed 12.8s
+
+⬣ Tool calling
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+⟐ [warm.viper] create a detailled plan to implement *all* missing features to allow all test to pass - be complete then execute the plan - size of the
+task should not matter, only matter the completion
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/frigolite (✱ main)                                                                                                             coding-posture │ YOLO
+0.8%/1.0M (auto)                                                                                                    (opencode-go) deepseek-v4-flash • high
+```
+
+Status line update are critical to allow the user to see the progress of the goal execution / the size of the context / the cache.
+
+## Multi-tool calling and timeout:
+Multiple tool calls does not seems to respect timeout - check 3rd tool call
+```
+
+ ● $ cd /Users/muaddib/dev/frigolite && go test ./... 2>&1 | tail -100 (timeout 60s)
+ elapsed 37.2s
+
+
+ ● $ cd /Users/muaddib/dev/frigolite && go test ./... -v 2>&1 | grep -E '(FAIL|--- FAIL|PASS|ok)' | tail -80 (timeout 60s)
+ elapsed 37.2s
+
+
+ ● $ cd /Users/muaddib/dev/frigolite && find . -name "*_test.go" | sort (timeout 10s)
+ elapsed 37.2s
+```
+
+## ESC: hard stop for ALL ongoing activities (global)
+ESC is a hard stop — globally, in every mode, with no exceptions. This is currently not the case.
+
+Pressing ESC must immediately stop, in normal chat, goal mode, orchestrator/swarm runs, and any other mode:
+- every ongoing tool call (bash/pty/exec — including multiple concurrent tool calls from a single turn, sub-agent runs, background exec started by the turn),
+- the in-flight provider stream,
+- the goal driver loop (no further continuation turns launched),
+- orchestrator/swarm runs and any queued continuations/steering,
+
+returning control to the input line at once. Today ESC interrupts the agent turn (agentMgr.Interrupt) + pty cleanup + bg stop, but ongoing tool calls from the current batch and other concurrent activities keep running to completion, and the goal driver launches the next turn.
+
+## Mascot/logo redraw:
+The mascot/logo is sometimes redrawn mid-session — run a review of the TUI render path to identify what triggers these redraws. The header/mascot should render once and stay stable; any re-emit of those rows points to a differential-rendering invalidation bug.
+
+Recent regression — repro correlation: occurs with tool calls and after a terminal tab switch (macOS). Tab switch fires no SIGWINCH; suspect transient wrong values from the per-frame `terminal.Size()` re-query (renderNow) triggering the width-change scrollback-reset path, and/or tool-widget height shrink→regrow re-entering the scroll paths.
+
+## Terminal title animation does not work
+The terminal window title animation (hexagon-black startup transition + working animation, see `internal/app/title.go` titleController) does not play. May be related to the startup delay (animation frames starved while the main goroutine is blocked on startup I/O — see Start-up item).
+
+## Session: slow commands need an "executing xyz..." placeholder
+Session feels slow — every command must immediately show an "executing xyz..." placeholder so the user knows something is happening, then replace it with the result when done. Applies to all /commands (e.g. /session, /quota, /config, ...): no silent gap between submit and first visible feedback.
+
+## Session command: list ordering, filtering, and timestamps
+The /session picker list is wrong on three axes:
+- Ordering: most recent session must be on TOP and be the first/default selection (today it isn't).
+- Filtering: the list must not contain sessions without any actual model turn (empty/no-turn sessions pollute the picker).
+- Timestamps: each entry must show the date/time — date only when the session is NOT from today (today → time only); time format hh:mm; append seconds (:ss) ONLY when needed to disambiguate duplicate hh:mm entries.
