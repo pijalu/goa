@@ -284,6 +284,9 @@ func TestHandleToolCall_FooterBusyIndicator(t *testing.T) {
 	}
 }
 
+// TestHandleToolCall_ToolWidgetShowsRunningDot verifies the running tool
+// widget shows the static amber on-going dot (bugs.md: the spinner must not
+// be used for the tool on-going marker — keep the yellow dot).
 func TestHandleToolCall_ToolWidgetShowsRunningSpinner(t *testing.T) {
 	_, def := spinner.Default()
 	tui.SetSpinner(def)
@@ -301,15 +304,14 @@ func TestHandleToolCall_ToolWidgetShowsRunningSpinner(t *testing.T) {
 	}
 
 	rendered := strings.Join(tc.Render(80), "\n")
-	hasFrame := false
-	for _, f := range def.Frames {
-		if strings.Contains(rendered, f) {
-			hasFrame = true
-			break
-		}
+	if !strings.Contains(rendered, "●") {
+		t.Errorf("expected tool widget to show the running yellow dot (●), got:\n%s", rendered)
 	}
-	if !hasFrame {
-		t.Errorf("expected tool widget to show running spinner frame, got:\n%s", rendered)
+	// It must NOT render any animated spinner frame.
+	for _, f := range def.Frames {
+		if strings.Contains(rendered, f) && f != "●" {
+			t.Errorf("tool widget must not show spinner frame %q, got:\n%s", f, rendered)
+		}
 	}
 }
 

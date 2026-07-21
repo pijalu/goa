@@ -808,7 +808,7 @@ func TestUpdateContentProgress(t *testing.T) {
 // yellow dot": a running tool must show a static amber dot, never an
 // animated spinner frame.
 func TestToolExecution_RunningIconIsYellowDotNotSpinner(t *testing.T) {
-	tc := NewToolExecutionComponent("bash", `{"command":"ls"}`)
+	tc := NewToolExecution("bash", `{"command":"ls"}`)
 	tc.SetStatus(ToolRunning)
 
 	icon, color := tc.statusIcon()

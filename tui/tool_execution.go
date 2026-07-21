@@ -818,10 +818,9 @@ func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 	case ToolPending:
 		return "◉", TheTheme.ColorHex("tool_running")
 	case ToolRunning:
-		if frame := CurrentSpinnerFrame(); frame != "" {
-			return frame, TheTheme.ColorHex("tool_running")
-		}
-		return "⟳", TheTheme.ColorHex("tool_running")
+		// Static amber dot for the on-going marker — never the animated
+		// spinner frame (bugs.md: keep the yellow dot).
+		return "●", TheTheme.ColorHex("tool_running")
 	case ToolSuccess:
 		return "✓", TheTheme.ColorHex("tool_success")
 	case ToolError:

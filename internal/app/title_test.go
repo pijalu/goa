@@ -126,9 +126,13 @@ func TestTitleController_StartupDoneOnce(t *testing.T) {
 	done := make(chan struct{})
 	go func() { tc.startupDone(); close(done) }()
 	<-done
+	// Drain the writer so the transition's final write has landed.
+	sink.waitLast("⬡", 2*time.Second)
 	before := len(sink.titles)
 	tc.startupDone() // must be a no-op
 	tc.startupDone()
+	// Allow any (incorrect) extra writes to flush, then compare.
+	time.Sleep(50 * time.Millisecond)
 	if len(sink.titles) != before {
 		t.Errorf("second startupDone wrote titles: before=%d after=%d", before, len(sink.titles))
 	}
@@ -196,8 +200,18 @@ func TestTitleController_WorkingBeforeStartupDone(t *testing.T) {
 	go func() { tc.startupDone(); close(done) }()
 	<-done
 
-	// After normal mode begins with working=true, the title spins.
-	last := sink.last()
+	// After normal mode begins with working=true, the title spins. Writes are
+	// async, so poll until an animated frame lands (frame[0] ⬡ coincides with
+	// the base glyph; any of the hexagon frames is a valid working frame).
+	last := ""
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		last = sink.last()
+		if last == "⬡ - proj" || last == "⬢ - proj" || last == "⬣ - proj" {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 	if last != "⬡ - proj" && last != "⬢ - proj" && last != "⬣ - proj" {
 		t.Errorf("unexpected title after startup with working: %q", last)
 	}

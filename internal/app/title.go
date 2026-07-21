@@ -260,7 +260,8 @@ func (tc *titleController) stopChan() <-chan struct{} {
 	return tc.stopCh
 }
 
-// stop halts the animation goroutine and any in-flight transition.
+// stop halts the animation goroutine, any in-flight transition, and the
+// writer goroutine (by closing the latest-wins channel).
 func (tc *titleController) stop() {
 	tc.mu.Lock()
 	if tc.stopped {
@@ -271,7 +272,10 @@ func (tc *titleController) stop() {
 	if tc.stopCh != nil {
 		close(tc.stopCh)
 	}
+	writes := tc.writes
 	tc.mu.Unlock()
+	// Close outside the lock: writeLoop may be mid-set on a slow sink.
+	close(writes)
 }
 
 // startupTitleFallback is the maximum time the boot brand stays up waiting
