@@ -600,3 +600,122 @@ func TestEditFileTool_ReplacePattern_LiteralBackslashNIsVerbatim(t *testing.T) {
 		t.Errorf("expected pattern_not_found error, got: %v", err)
 	}
 }
+
+// TestEditFileTool_ReplaceLines_NewStringFallback locks in the regression fix
+// for session 1784574228: a model calling replace_lines with new_string
+// (instead of new_content) must get its replacement applied — previously the
+// tool silently deleted the target range and reported "0 lines affected",
+// leaving files syntactically broken.
+func TestEditFileTool_ReplaceLines_NewStringFallback(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.go")
+	original := "package main\n\nfunc old() {\n\treturn\n}\n"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	result, err := tool.Execute(`{"path": "` + filePath + `", "operation": "replace_lines", "start_line": 3, "end_line": 5, "new_string": "func new() {\n\tprintln(1)\n}"}`)
+	if err != nil {
+		t.Fatalf("replace_lines with new_string fallback should succeed: %v", err)
+	}
+	if !strings.Contains(result, "used new_string") {
+		t.Errorf("expected result to note the new_string fallback, got: %q", result)
+	}
+	data, _ := os.ReadFile(filePath)
+	content := string(data)
+	if !strings.Contains(content, "func new() {") {
+		t.Errorf("replacement content missing from file, got: %q", content)
+	}
+	if strings.Contains(content, "func old() {") {
+		t.Errorf("old lines should have been replaced, got: %q", content)
+	}
+}
+
+// TestEditFileTool_ReplaceLines_MessageReportsRemovedAndInserted ensures the
+// replace_lines result message reports both removed and inserted line counts
+// so a mismatched edit is visible at a glance.
+func TestEditFileTool_ReplaceLines_MessageReportsRemovedAndInserted(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("a\nb\nc\nd\ne\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	result, err := tool.Execute(`{"path": "` + filePath + `", "operation": "replace_lines", "start_line": 2, "end_line": 4, "new_content": "x\ny"}`)
+	if err != nil {
+		t.Fatalf("replace_lines should succeed: %v", err)
+	}
+	if !strings.Contains(result, "replaced 3 lines with 2") {
+		t.Errorf("expected 'replaced 3 lines with 2' in result, got: %q", result)
+	}
+}
+
+// TestEditFileTool_ReplaceLines_MissingContentErrors verifies that
+// replace_lines with neither new_content nor new_string is rejected with a
+// clear missing_parameter error and leaves the file untouched (no silent
+// deletion — the pre-fix behavior).
+func TestEditFileTool_ReplaceLines_MissingContentErrors(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.go")
+	original := "package main\n\nfunc keep() {}\n"
+	if err := os.WriteFile(filePath, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	_, err := tool.Execute(`{"path": "` + filePath + `", "operation": "replace_lines", "start_line": 1, "end_line": 2}`)
+	if err == nil {
+		t.Fatal("expected missing_parameter error for replace_lines without content")
+	}
+	if !strings.Contains(err.Error(), "missing_parameter") && !strings.Contains(err.Error(), "new_content") {
+		t.Errorf("expected error to name new_content, got: %v", err)
+	}
+	data, _ := os.ReadFile(filePath)
+	if string(data) != original {
+		t.Errorf("file must be untouched after rejected edit, got: %q", string(data))
+	}
+}
+
+// TestEditFileTool_InsertAfter_NewStringFallback verifies the new_string
+// fallback also applies to insert_after.
+func TestEditFileTool_InsertAfter_NewStringFallback(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("one\ntwo\nthree\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	_, err := tool.Execute(`{"path": "` + filePath + `", "operation": "insert_after", "start_line": 1, "new_string": "inserted"}`)
+	if err != nil {
+		t.Fatalf("insert_after with new_string fallback should succeed: %v", err)
+	}
+	data, _ := os.ReadFile(filePath)
+	// The write path normalizes away the trailing newline (splitLines drops
+	// the final empty line before Join); assert content, not the trailing \n.
+	if string(data) != "one\ninserted\ntwo\nthree" {
+		t.Errorf("unexpected file content: %q", string(data))
+	}
+}
+
+// TestEditFileTool_DeleteLines_NoContentRequired ensures delete_lines keeps
+// working without any content fields (it is the sanctioned way to remove
+// lines, and the error hint for content-less replace_lines points to it).
+func TestEditFileTool_DeleteLines_NoContentRequired(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "test.txt")
+	if err := os.WriteFile(filePath, []byte("a\nb\nc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &EditFileTool{WorktreeMgr: nil, ProjectDir: dir}
+	if _, err := tool.Execute(`{"path": "` + filePath + `", "operation": "delete_lines", "start_line": 2, "end_line": 2}`); err != nil {
+		t.Fatalf("delete_lines without content should succeed: %v", err)
+	}
+	data, _ := os.ReadFile(filePath)
+	if string(data) != "a\nc" {
+		t.Errorf("unexpected file content: %q", string(data))
+	}
+}

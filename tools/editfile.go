@@ -173,12 +173,17 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 }
 
 func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p editFileParams) (string, error) {
-	op := p.Operation
+	op := EditOperation(p.Operation)
 	if op == "" {
 		return "", errMissingParam()
 	}
 
 	lines, targetPath, fuzzyNote, err := t.readLines(resolvedPath, originalPath)
+	if err != nil {
+		return "", err
+	}
+
+	content, contentNote, err := resolveOpContent(op, p)
 	if err != nil {
 		return "", err
 	}
@@ -196,13 +201,13 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		pattern:      p.Pattern,
 		patternFlags: p.PatternFlags,
 		occurrence:   p.Occurrence,
-		newLines:     splitLines(p.NewContent),
+		newLines:     splitLines(content),
 		indentMode:   IndentMode(defaultStr(p.IndentMode, string(IndentPreserve))),
 	}
 
-	result, affected, opErr := t.runOp(lines, EditOperation(op), ep)
+	result, affected, opErr := t.runOp(lines, op, ep)
 	if opErr != nil {
-		return "", wrapEditOpError(opErr, p.Path, op)
+		return "", wrapEditOpError(opErr, p.Path, string(op))
 	}
 
 	if t.GitStager != nil {
@@ -222,7 +227,18 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
 
-	resultMsg := fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, affected, diff)
+	var resultMsg string
+	if op == OpReplaceLines {
+		// affected = removed line count (see replaceLines); ep.newLines = inserted.
+		// Reporting both makes a mismatched edit (e.g. replacement vanished)
+		// visible at a glance instead of hiding behind "0 lines affected".
+		resultMsg = fmt.Sprintf("[edit: %s] %s — replaced %d lines with %d\n%s", p.Path, op, affected, len(ep.newLines), diff)
+	} else {
+		resultMsg = fmt.Sprintf("[edit: %s] %s — %d lines affected\n%s", p.Path, op, affected, diff)
+	}
+	if contentNote != "" {
+		resultMsg = contentNote + resultMsg
+	}
 	if fuzzyNote != "" {
 		resultMsg = fuzzyNote + "\n" + resultMsg
 	}
@@ -230,6 +246,41 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		resultMsg += diagBlock
 	}
 	return resultMsg, nil
+}
+
+// opRequiresContent reports whether the operation needs replacement content
+// (new_content/new_string) to be meaningful. delete_lines and the classic
+// old_string/new_string replace are excluded: the former deletes by design,
+// the latter is routed before editByOperation.
+func opRequiresContent(op EditOperation) bool {
+	switch op {
+	case OpReplaceLines, OpInsertAfter, OpInsertBefore:
+		return true
+	}
+	return false
+}
+
+// resolveOpContent returns the replacement content for a line/pattern op.
+// Models frequently conflate new_string (classic search/replace) with
+// new_content (line/pattern ops); for content-requiring ops it falls back to
+// new_string so the edit applies the intended content instead of silently
+// deleting the target range (session 1784574228: replace_lines with only
+// new_string deleted lines 116-127 and reported "0 lines affected"). When the
+// op requires content and neither field is set, it returns a
+// missing_parameter error rather than letting a no-op edit through.
+func resolveOpContent(op EditOperation, p editFileParams) (string, string, error) {
+	content := p.NewContent
+	if content == "" && p.NewString != "" && opRequiresContent(op) {
+		return p.NewString, "Note: used new_string as replacement content (new_content was empty)\n", nil
+	}
+	if opRequiresContent(op) && content == "" {
+		return "", "", &internal.ToolError{
+			Tool: "edit", Type: "missing_parameter",
+			Detail:   fmt.Sprintf("operation '%s' requires 'new_content' (or 'new_string') with the replacement text", p.Operation),
+			HintText: "Provide the replacement content in 'new_content'. To delete lines without replacement, use operation 'delete_lines'.",
+		}
+	}
+	return content, "", nil
 }
 
 func wrapEditOpError(opErr error, path, op string) error {
@@ -346,7 +397,10 @@ func (t *EditFileTool) replaceLines(lines []string, startLine, endLine int, newL
 	result = append(result, lines[:start-1]...)
 	result = append(result, adjusted...)
 	result = append(result, lines[end:]...)
-	return result, len(adjusted), nil
+	// Return the removed line count: the result message pairs it with the
+	// inserted count ("replaced N lines with M") so a content-less edit is
+	// immediately visible instead of a misleading "0 lines affected".
+	return result, len(targetLines), nil
 }
 
 func (t *EditFileTool) replacePattern(lines []string, pattern, flags string, occurrence int, newLines []string, indentMode IndentMode) ([]string, int, error) {

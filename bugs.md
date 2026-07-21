@@ -34,6 +34,107 @@ If new items are added, restart the process.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
 # Open TODO
+## edit replace_lines silently deletes lines when model sends new_string instead of new_content
+
+**Export:** `/Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260721-082715.zip` · **Session:** `1784574228_n4qzkao8` · **Provider/Model:** `opencode-go` / `deepseek-v4-flash`
+
+### Observed
+Model called `edit` with `{"operation": "replace_lines", "new_string": "...", "start_line": 116, "end_line": 127}`. The tool deleted lines 116-127, inserted nothing, reported "0 lines affected", and left `frigolite.go` syntactically broken (unclosed for-loop). Same failure on `internal/exec/engine.go` (line 482). Model burned ~50 rounds recovering via Python.
+
+### Root cause (verified from bundle + source)
+- `tools/editfile.go:193-201` — `editByOperation` builds `newLines` only from `p.NewContent`; `new_string` is ignored for line-based ops.
+- `tools/editfile.go:338-350` — `replaceLines` with empty `newLines` = pure deletion.
+- `tools/editfile.go:225` — "0 lines affected" message is false: lines were removed.
+
+### Fix plan
+1. In `editByOperation`: for `replace_lines`/`insert_after`/`insert_before`, if `new_content` is empty and `new_string` is non-empty, fall back to `new_string` and prepend a note to the result.
+2. If both are empty for a content-requiring op → return a `missing_parameter` ToolError naming `new_content` (never silently delete). `delete_lines` unaffected.
+3. Fix the affected-lines message to report removed vs inserted counts accurately.
+4. Tests (`tools/editfile_test.go`): replace_lines with `new_string` only → fallback works, file correct; replace_lines with neither → error, file untouched; insert_after with `new_string` → fallback.
+5. Validate: `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`, `gocyclo -over 12 .`, `go test -count=1 -race -cover ./tools/...`.
+
+### Note
+Duplicated assistant text in the transcript is provider-side repetition (deepseek-v4-flash), not a TUI bug — deltas repeat in `events.jsonl` itself.
+
+## Model delete
+Doing '-' on the following screen, on the model '__delete__deepseek-v4-flash' should trigger the delete but nothing occurs !
+(other model seems to work fine)
+```
+Select model:
+────────────────────────────────────────────────────────────
+search>
+────────────────────────────────────────────────────────────
+› __delete__deepseek-v4-flash  provider=zai model=__delete__deepseek-v4-flash
+  deepseek-v4-flash  provider=opencode-go model=deepseek-v4-flash
+  glm-5-2  provider=zai model=glm-5.2
+  google/gemma-4-e4b  provider=lmstudio model=google/gemma-4-e4b
+  ✓ k3  provider=kimi-code model=k3 (active)
+  kimi-for-coding  provider=kimi-code model=kimi-for-coding
+  qwen/qwen3.5-9b  provider=lmstudio model=qwen/qwen3.5-9b
+  qwythos-9b-v2  provider=lmstudio model=qwythos-9b-v2
+(1 more)
+────────────────────────────────────────────────────────────
+  ↑↓ nav  /  type filter  /  enter  /  esc  /  + add / - delete
+```
+
+## Quota command unresponsive
+when typing `/quota` there is a delay before the screen is shown - there should be a clear indication that the command is being processed
+(the inputline feels frozen)
+
+## Quota
+z.ai does not show up in the quota - no message / no error / no direction:
+```
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ │ /model                                                                                                                                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ /model completed successfully                                                                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⚡ Switched to model: glm-5-2                                                                                                                               │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ │ /quota                                                                                                                                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ## Session Usage (current)                                                                                                                                  │
+│ ┌──────┬───────┬────────┐                                                                                                                                   │
+│ │ Msgs │ Input │ Output │                                                                                                                                   │
+│ ├──────┼───────┼────────┤                                                                                                                                   │
+│ │ 0    │ 0     │ 0      │                                                                                                                                   │
+│ └──────┴───────┴────────┘                                                                                                                                   │
+│                                                                                                                                                             │
+│ ## Provider Quotas                                                                                                                                          │
+│ ┌──────────────────┬────────────────┬──────────────┬──────────┬───────────┬────────────────┐                                                                │
+│ │ Provider         │ Window         │ Usage        │ At reset │ Resets in │ Status         │                                                                │
+│ ├──────────────────┼────────────────┼──────────────┼──────────┼───────────┼────────────────┤                                                                │
+│ │ Kimi (Advanced)  │ Session (5h)   │ ░░░░░░░░ 0%  │ 0%       │ +27m      │ plenty of room │                                                                │
+│ ├──────────────────┼────────────────┼──────────────┼──────────┼───────────┼────────────────┤                                                                │
+│ │ Kimi (Advanced)  │ Weekly         │ ████░░░░ 52% │ 92%      │ +3d 1h    │ close to limit │                                                                │
+│ ├──────────────────┼────────────────┼──────────────┼──────────┼───────────┼────────────────┤                                                                │
+│ │ Local (inferred) │ Session tokens │ 0            │ —        │ —         │ —              │                                                                │
+│ └──────────────────┴────────────────┴──────────────┴──────────┴───────────┴────────────────┘                                                                │
+│                                                                                                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ │ /model                                                                                                                                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✓ /model completed successfully                                                                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ⚡ Switched to model: k3                                                                                                                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/dev/goa (⎇ main)                                                                                                                        coding-posture │ YOLO
+                                                                                                                               (kimi-code) k3 • high • [0%|52%]
+```
+                                                                                                                               
+
+# To validate
 
 ## Agent stops mid-task requiring manual "continue" (premature `finish_reason=stop`)
 
