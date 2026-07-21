@@ -32,3 +32,41 @@ If new items are added, restart the process.
 6. Verify against the original failing command before declaring done.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
+
+# Open TODO
+## CRITICAL: /goal destroy leaves stale goal content in the cached prompt
+
+**Reported 2026-07-21.** Destroying a goal (`/goal cancel`, queue `delete`,
+`/goal replace`) does not fully clear goal content from what the model sees:
+goal text is cached into the prompt in two places, and at least one of them
+appears to survive the destroy.
+
+### Investigation so far (localized)
+- Static reminder: `Agent.buildSystemPrompt`
+  (internal/agentic/agent_streaming.go:1264-1271) prepends
+  `GoalInjector.ActiveGoalReminder()` to the system prompt as the *cacheable
+  prefix*. The injector reads live state (`GoalMode.GetGoal` → fresh snapshot
+  each call, core/goal/mode.go:384-390) — so the static prefix itself
+  correctly disappears/changes on destroy (busting the provider prompt cache
+  from byte 0 — expensive but correct).
+- Queue store: `GoalQueueStore` (core/goal_queue.go) re-reads
+  `upcoming-goals.json` on every op — no in-memory cache; a queue `delete`
+  persists immediately.
+- **Prime suspect (to verify):** `mergeGoalProgress`
+  (agent_streaming.go:1285+) injects the *dynamic* per-turn goal progress
+  ("Status: active, Progress: N turns…") as a dedicated system message before
+  the last user message. If those progress messages persist into `a.history`
+  (not just the outgoing provider slice), then after a destroy the
+  conversation permanently carries "active goal, N turns" steering text for a
+  goal that no longer exists — the model keeps working a dead goal.
+
+### Fix plan
+1. Confirm whether `mergeGoalProgress` mutates `a.history` or only the
+   per-request slice.
+2. Repro: `/goal create` → one turn → `/goal cancel` → inspect next request
+   → assert no goal reminder/progress text present.
+3. Fix per finding: strip goal-progress slot messages from history on goal
+   destroy, or make the slot strictly per-request.
+4. Regression test: destroy → next `buildProviderHistory` contains zero
+   goal-progress messages.
+5. Validate: guideline #6 gates separately.

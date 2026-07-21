@@ -1262,40 +1262,57 @@ func (a *Agent) buildProviderHistory() []provider.Message {
 }
 
 func (a *Agent) buildSystemPrompt() string {
-	sp := a.cfg.SystemPrompt
-	if p := a.cfg.GoalStateProvider; p != nil {
-		if reminder := p.ActiveGoalReminder(); reminder != "" {
-			sp = reminder + "\n\n" + sp
-		}
-	}
-	return sp
+	// The system prompt is the provider-cached prefix: it must stay
+	// byte-identical across the whole session, including goal create/destroy/
+	// status-flips. Goal text therefore does NOT belong here — it is injected
+	// as volatile slot messages by mergeGoalProgress instead (bugs.md
+	// "CRITICAL: /goal destroy caching": a goal reminder in this prefix busted
+	// the entire prompt cache on every goal transition).
+	return a.cfg.SystemPrompt
 }
 
-// mergeGoalProgress injects the dynamic per-turn goal progress as a dedicated
-// system message placed immediately before the last user message, returning the
+// mergeGoalProgress injects the goal context as dedicated volatile system
+// messages placed immediately before the last user message, returning the
 // (possibly grown) slice.
 //
-// It deliberately does NOT mutate the last user message's content. The previous
-// implementation prepended the progress text to the last user message each turn;
-// because that message joins the cached prefix on the next turn, and because it
-// lost its prefix once it was no longer last, its bytes were turn-specific and
-// busted the provider's prompt cache from that point on. A separate progress
-// slot keeps every history message byte-stable across turns, so the cached
-// prefix survives and only the volatile trailing progress is re-sent.
+// It injects up to two slots, in order: the static goal reminder (objective,
+// completion criterion, status notes) and the dynamic per-turn progress
+// (counters, budgets). Both live OUTSIDE the cached prefix on purpose: the
+// static reminder changes on goal create/destroy/status-flip, so baking it
+// into the system-prompt prefix busted the entire provider prompt cache on
+// every goal transition (bugs.md "CRITICAL: /goal destroy caching"). The
+// dynamic progress changes every turn.
+//
+// It deliberately does NOT mutate the last user message's content, and the
+// slot messages are appended to the per-request slice only — never to
+// a.history — so every history message stays byte-stable across turns. The
+// cached prefix (system prompt + history) survives; only the volatile
+// trailing slots are re-sent.
 func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.Message {
 	if p == nil {
 		return msgs
 	}
-	progress := p.ActiveGoalProgress()
-	if progress == "" {
-		return msgs
+	var slots []provider.Message
+	if reminder := p.ActiveGoalReminder(); reminder != "" {
+		slots = append(slots, provider.Message{
+			Role: provider.RoleSystem,
+			Content: []provider.ContentBlock{{
+				Type: provider.ContentBlockText,
+				Text: "[goal]\n" + reminder,
+			}},
+		})
 	}
-	progressMsg := provider.Message{
-		Role: provider.RoleSystem,
-		Content: []provider.ContentBlock{{
-			Type: provider.ContentBlockText,
-			Text: "[goal progress]\n" + progress,
-		}},
+	if progress := p.ActiveGoalProgress(); progress != "" {
+		slots = append(slots, provider.Message{
+			Role: provider.RoleSystem,
+			Content: []provider.ContentBlock{{
+				Type: provider.ContentBlockText,
+				Text: "[goal progress]\n" + progress,
+			}},
+		})
+	}
+	if len(slots) == 0 {
+		return msgs
 	}
 	// Insert just before the last user message so the conversation still ends
 	// on a user turn (required by most providers).
@@ -1306,10 +1323,11 @@ func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.
 			break
 		}
 	}
-	msgs = append(msgs, provider.Message{}) // grow by one
-	copy(msgs[insertAt+1:], msgs[insertAt:])
-	msgs[insertAt] = progressMsg
-	return msgs
+	out := make([]provider.Message, 0, len(msgs)+len(slots))
+	out = append(out, msgs[:insertAt]...)
+	out = append(out, slots...)
+	out = append(out, msgs[insertAt:]...)
+	return out
 }
 
 // logProviderContext writes a concise summary of the context to the debug log.
