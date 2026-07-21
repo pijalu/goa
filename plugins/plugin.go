@@ -84,10 +84,11 @@ type JSBridge struct {
 // vmMu serializes every JavaScript execution across all plugins. Goja
 // runtimes are not goroutine-safe, and plugins have asynchronous entry points
 // (timers, hotkeys, HTTP completions, command/tool invocations) arriving from
-// many goroutines. A plain mutex — rather than a dedicated goroutine queue —
-// is used so a JS call that blocks in a bridge (e.g. goa.http.fetch) can
-// still be re-entered by that same call chain without deadlock, while async
-// callbacks (timers, hotkeys) simply wait their turn on the mutex.
+// many goroutines. The mutex guarantees goja's single-goroutine rule; bridge
+// callbacks that perform blocking work OUTSIDE the runtime (e.g. the HTTP
+// round-trip in goa.http.fetch) must release it via runOutsideVMLock so a
+// slow endpoint cannot starve the other entry points — vmMu is not
+// reentrant, so holding it across a blocking call freezes the whole VM.
 var vmMu sync.Mutex
 
 // lockVM acquires the global JS execution lock. All VM interactions must go

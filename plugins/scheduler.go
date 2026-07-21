@@ -16,8 +16,9 @@ const minInterval = 250 * time.Millisecond
 // Scheduler owns JS timer callbacks (setInterval / setTimeout). Each timer
 // fires on its own goroutine and invokes the callback directly; the callback
 // acquires the global VM lock (lockVM) before touching the goja runtime, so
-// goja's single-goroutine rule is preserved while a blocked bridge call
-// (e.g. goa.http.fetch) can still be re-entered without deadlock.
+// goja's single-goroutine rule is preserved. Bridge calls that block outside
+// the runtime (e.g. goa.http.fetch) release the lock via runOutsideVMLock,
+// so a slow endpoint never starves other entry points waiting on the mutex.
 type Scheduler struct {
 	mu     sync.Mutex
 	nextID int

@@ -64,10 +64,31 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 	httpObj := b.vm.NewObject()
 	httpObj.Set("fetch", func(call goja.FunctionCall) goja.Value {
 		req := b.buildHTTPRequest(call)
-		resp := httpDo()(httpB, req)
+		// The HTTP round-trip runs OUTSIDE the VM lock. A slow/hanging
+		// endpoint can block for the full request timeout; holding vmMu
+		// across it starves every other JS entry point (segment renders,
+		// hotkeys, /quota) — the input freeze that landed exactly when the
+		// quota segment appeared (bugs.md Start-up). vmMu serializes goja
+		// access only; the bridge Do is pure Go and needs no VM.
+		// This function is only ever invoked from JS execution, which by
+		// contract holds vmMu, so the unlock/lock pair is balanced.
+		var resp HTTPResponse
+		runOutsideVMLock(func() { resp = httpDo()(httpB, req) })
 		return b.vm.ToValue(httpResponseToMap(resp))
 	})
 	goaObj.Set("http", httpObj)
+}
+
+// runOutsideVMLock releases the global VM lock for the duration of a blocking
+// bridge call and re-acquires it afterwards (panic-safe via defer). It must
+// only be called from a goja bridge callback — i.e. with vmMu held by the
+// current goroutine — so the unlock/lock pair is balanced. While the lock is
+// released the caller must not touch the goja runtime; other JS entry points
+// (timers, hotkeys, segment renders) may run in the window.
+func runOutsideVMLock(fn func()) {
+	vmMu.Unlock()
+	defer vmMu.Lock()
+	fn()
 }
 
 // httpDoFunc performs an HTTP request. Tests substitute a mock via setHTTPDo

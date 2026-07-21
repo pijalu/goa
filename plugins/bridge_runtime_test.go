@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -200,6 +201,72 @@ func TestJS_UIRefreshSegmentDoesNotBlock(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected at least one refresh request")
+	}
+}
+
+// TestJS_HTTPFetchReleasesVMLock is the regression test for the startup /
+// mid-session input freeze: a JS call blocked in goa.http.fetch (slow or
+// hanging quota endpoint) must NOT keep the global VM lock, otherwise every
+// other JS entry point — including the command loop's segment render — stalls
+// behind the fetch and the input line freezes exactly when the quota segment
+// lands (bugs.md "Start-up: delay matches the status bar quota appearing").
+func TestJS_HTTPFetchReleasesVMLock(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock() // unblock the fetch if the test fails before the end
+	restore := setHTTPDo(func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
+		close(entered)
+		<-release // simulate a slow/hanging endpoint
+		return HTTPResponse{Status: 200, Body: "ok"}
+	})
+	defer restore()
+
+	ctx := newExtendedContext(t, t.TempDir(), NewHTTPBridge())
+	bridge := NewJSBridge(PluginDef{ID: "test"}, ctx)
+
+	// Goroutine A: run JS that blocks inside goa.http.fetch (mirrors the
+	// quota prime firing on a scheduler timer).
+	fetchDone := make(chan struct{})
+	go func() {
+		defer close(fetchDone)
+		unlock := lockVM()
+		defer unlock()
+		_, _ = bridge.vm.RunString(`goa.http.fetch("https://example.com/quota");`)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fetch never reached the HTTP hook")
+	}
+
+	// Goroutine B: while A is blocked in HTTP, the command loop's segment
+	// render must be able to acquire the VM lock and run JS. Before the fix
+	// this blocked until the fetch returned — the observed input freeze.
+	rendered := make(chan struct{})
+	go func() {
+		defer close(rendered)
+		unlock := lockVM()
+		defer unlock()
+		_, _ = bridge.vm.RunString(`1 + 1`)
+	}()
+
+	select {
+	case <-rendered:
+		// VM stayed responsive while HTTP was in flight — the fix works.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("VM lock held across blocking goa.http.fetch — another JS entry point starved")
+	}
+
+	// Let the fetch finish so goroutine A can exit cleanly.
+	unblock()
+	restore()
+	select {
+	case <-fetchDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("fetch goroutine did not finish after HTTP release")
 	}
 }
 
