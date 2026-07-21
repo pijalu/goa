@@ -92,6 +92,12 @@ type ExecutionConfig struct {
 	AutoHealToolCalls        bool                   `yaml:"auto_heal_tool_calls"`
 	ThinkingStallWarnSeconds int                    `yaml:"thinking_stall_warn_seconds"`
 	ThinkingStallStopSeconds int                    `yaml:"thinking_stall_stop_seconds"`
+	// DisableThinkingLoopDetection/DisableToolLoopDetection persistently
+	// disable the corresponding loop detector across sessions. Tri-state:
+	// nil (default) = detection on, true = off, false = explicitly on.
+	// Temporary session-only overrides use /config:temp:* instead.
+	DisableThinkingLoopDetection *bool `yaml:"disable_thinking_loop_detection,omitempty"`
+	DisableToolLoopDetection     *bool `yaml:"disable_tool_loop_detection,omitempty"`
 }
 
 // ProviderConfig configures a single LLM provider (endpoint + auth).

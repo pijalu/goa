@@ -225,6 +225,20 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 }
 
 func syncRuntimeConfig(ctx core.Context, key, value string) error {
+	// Loop-detector overrides sync straight to the detector; they do not
+	// require a running agent, so handle them before the AgentManager guard.
+	switch key {
+	case "execution.disable_thinking_loop_detection":
+		if ctx.LoopDetector != nil {
+			ctx.LoopDetector.SetPersistOverride("think", boolPtrValue(ctx.Config.Execution.DisableThinkingLoopDetection))
+		}
+		return nil
+	case "execution.disable_tool_loop_detection":
+		if ctx.LoopDetector != nil {
+			ctx.LoopDetector.SetPersistOverride("tool", boolPtrValue(ctx.Config.Execution.DisableToolLoopDetection))
+		}
+		return nil
+	}
 	if ctx.AgentManager == nil {
 		return nil
 	}
@@ -325,13 +339,22 @@ func applyTempOverride(ctx core.Context, kind string, enabled bool) error {
 	if !enabled {
 		state = "disabled"
 	}
-	switch kind {
-	case "think":
-		ctx.Flash(fmt.Sprintf("Temporary: thinking-loop detection %s (current session only)", state))
-	case "tool":
-		ctx.Flash(fmt.Sprintf("Temporary: tool-call loop detection %s (current session only)", state))
+	label := "thinking-loop detection"
+	if kind == "tool" {
+		label = "tool-call loop detection"
 	}
+	ctx.Flash(fmt.Sprintf("Temporary: %s %s (current session only). To persist across sessions: /config set execution.disable_%s_loop_detection %v",
+		label, state, tempKindToConfigInfix(kind), !enabled))
 	return nil
+}
+
+// tempKindToConfigInfix maps the temp override kind to the infix used in the
+// persisted config key execution.disable_<infix>_loop_detection.
+func tempKindToConfigInfix(kind string) string {
+	if kind == "think" {
+		return "thinking"
+	}
+	return "tool"
 }
 
 // scalarValue converts common UI values to scalars suitable for YAML.
@@ -378,6 +401,8 @@ var configSetters = map[string]configSetter{
 	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
 	"execution.loop_warning":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
 	"execution.loop_interrupt":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
+	"execution.disable_thinking_loop_detection":      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
+	"execution.disable_tool_loop_detection":          setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
 	"execution.disable_tool_budget":                  setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
 	"skills.execution_mode":                          setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
 	"tools.bash.enable_complexity_analysis":          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
@@ -457,6 +482,16 @@ func setInt(getter func(*config.Config) *int) configSetter {
 func setBool(getter func(*config.Config) *bool) configSetter {
 	return func(cfg *config.Config, value string) error {
 		*getter(cfg) = parseBool(value)
+		return nil
+	}
+}
+
+// setBoolPtr creates a configSetter for tri-state *bool config fields (nil =
+// unset/default). The setter always materialises an explicit value.
+func setBoolPtr(getter func(*config.Config) **bool) configSetter {
+	return func(cfg *config.Config, value string) error {
+		v := parseBool(value)
+		*getter(cfg) = &v
 		return nil
 	}
 }
@@ -549,6 +584,12 @@ func parseBool(value string) bool {
 	default:
 		return false
 	}
+}
+
+// boolPtrValue dereferences a tri-state *bool config field; nil means the
+// feature is at its default (enabled, i.e. not disabled → false).
+func boolPtrValue(v *bool) bool {
+	return v != nil && *v
 }
 
 // parseToggle parses a UI-friendly on/off value.

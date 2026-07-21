@@ -65,6 +65,12 @@ type LoopDetector struct {
 	// /config:temp:tool_loop_detection:off slash commands.
 	tempThinkDisabled bool
 	tempToolDisabled  bool
+
+	// persistThinkDisabled and persistToolDisabled come from the persisted
+	// config (execution.disable_thinking_loop_detection /
+	// disable_tool_loop_detection) and disable detection across sessions.
+	persistThinkDisabled bool
+	persistToolDisabled  bool
 }
 
 // LoopDetectorConfig holds configurable parameters for the loop detector.
@@ -121,6 +127,8 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		thinkLineCounts:         make(map[string]int),
 		thinkWarningThreshold:   cfg.ThinkingLoopWarning,
 		thinkInterruptThreshold: cfg.ThinkingLoopInterrupt,
+		persistThinkDisabled:    cfg.ThinkingDisabled,
+		persistToolDisabled:     cfg.ToolDisabled,
 	}
 }
 
@@ -132,7 +140,7 @@ func (ld *LoopDetector) RecordToolCall(name, input string) LoopWarningLevel {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
 
-	if ld.tempToolDisabled {
+	if ld.tempToolDisabled || ld.persistToolDisabled {
 		return LoopOK
 	}
 
@@ -294,6 +302,19 @@ func (ld *LoopDetector) SetTempOverride(kind string, disabled bool) {
 	}
 }
 
+// SetPersistOverride sets the persistent (config-saved) override for loop
+// detection. This is applied across sessions until the config is changed.
+func (ld *LoopDetector) SetPersistOverride(kind string, disabled bool) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	switch kind {
+	case "think":
+		ld.persistThinkDisabled = disabled
+	case "tool":
+		ld.persistToolDisabled = disabled
+	}
+}
+
 // TempOverride returns the current temp override state for the given kind.
 func (ld *LoopDetector) TempOverride(kind string) bool {
 	ld.mu.Lock()
@@ -303,6 +324,20 @@ func (ld *LoopDetector) TempOverride(kind string) bool {
 		return ld.tempThinkDisabled
 	case "tool":
 		return ld.tempToolDisabled
+	}
+	return false
+}
+
+// Disabled reports whether detection is effectively off for the given kind,
+// whether by a session-level temp override or a persisted config override.
+func (ld *LoopDetector) Disabled(kind string) bool {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	switch kind {
+	case "think":
+		return ld.tempThinkDisabled || ld.persistThinkDisabled
+	case "tool":
+		return ld.tempToolDisabled || ld.persistToolDisabled
 	}
 	return false
 }
@@ -335,7 +370,7 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
 
-	if ld.tempThinkDisabled {
+	if ld.tempThinkDisabled || ld.persistThinkDisabled {
 		return LoopOK
 	}
 
@@ -485,13 +520,15 @@ func startsWithIdentifierAndCode(s string) bool {
 }
 
 // isCodeOp reports whether the byte at the end of an identifier introduces a
-// code construct: function call '(', key/type annotation ':', or assignment '='.
+// code construct: function call '(', key/type annotation ':', assignment '=',
+// or Go short variable declaration ':='.
 func isCodeOp(b byte, hasRest bool, rest string) bool {
 	switch b {
 	case '(':
 		return true
 	case ':':
-		return hasRest && isSpace(rest[0])
+		// "key: value" annotation or Go "x := value" declaration.
+		return hasRest && (isSpace(rest[0]) || rest[0] == '=')
 	case '=':
 		return !hasRest || rest[0] != '='
 	}

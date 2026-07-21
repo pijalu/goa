@@ -307,6 +307,13 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	am.mu.Lock()
 	am.loopStopReason = ""
 	am.mu.Unlock()
+	// Defense in depth: a turn that ends without EventEnd (loop-detector
+	// interrupt, user Escape, stream error) skips finalizeTurn and would leak
+	// its thinking-repeat counters into this turn, instantly re-triggering the
+	// detector on the first delta. Start every turn with a clean slate.
+	if am.loopDetector != nil {
+		am.loopDetector.ResetThinking()
+	}
 	am.executeRunner(ctx, runner, input, images)
 
 	// After the runner finishes, flush any steering input submitted while the
@@ -1178,6 +1185,11 @@ func (am *AgentManager) handleThinkingLoopWarning(lvl LoopWarningLevel) {
 	case LoopCritical, LoopInterrupt:
 		am.logEventF("loop detector: interrupt — thinking loop detected, cancelling turn")
 		am.emitFlash("[goa-system: interrupt] Thinking loop detected — cancelling turn.")
+		am.setLoopStopReason("[goa-system] Agent stopped: the model kept repeating the same line of reasoning (thinking loop). Rephrase the request, provide more context, or disable thinking-loop detection (/config → Loop detection).")
+		// Unlatch: a cancelled turn emits no EventEnd, so finalizeTurn never
+		// calls ResetThinking. Reset here or the next turn's first thinking
+		// delta re-triggers the stale counter and is killed immediately.
+		am.loopDetector.ResetThinking()
 		am.Interrupt()
 	}
 }

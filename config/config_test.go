@@ -783,6 +783,33 @@ func TestMergeExecution_DisableToolBudget(t *testing.T) {
 	}
 }
 
+// TestMergeExecution_LoopDetectionDisable verifies the tri-state loop
+// detection disable fields merge correctly: nil leaves the base untouched,
+// an explicit value overrides (including false-over-true for the cascade).
+func TestMergeExecution_LoopDetectionDisable(t *testing.T) {
+	trueVal, falseVal := true, false
+
+	// nil override leaves base untouched.
+	base := &Config{Execution: ExecutionConfig{DisableThinkingLoopDetection: &trueVal}}
+	base.DeepMerge(&Config{})
+	if base.Execution.DisableThinkingLoopDetection == nil || !*base.Execution.DisableThinkingLoopDetection {
+		t.Error("nil override should not clear DisableThinkingLoopDetection")
+	}
+
+	// Explicit false in a later layer overrides true (cascade: project re-enables
+	// what home disabled).
+	base.DeepMerge(&Config{Execution: ExecutionConfig{DisableThinkingLoopDetection: &falseVal}})
+	if base.Execution.DisableThinkingLoopDetection == nil || *base.Execution.DisableThinkingLoopDetection {
+		t.Error("explicit false should override true")
+	}
+
+	// Tool detection merges independently.
+	base.DeepMerge(&Config{Execution: ExecutionConfig{DisableToolLoopDetection: &trueVal}})
+	if base.Execution.DisableToolLoopDetection == nil || !*base.Execution.DisableToolLoopDetection {
+		t.Error("DisableToolLoopDetection should be true after merge")
+	}
+}
+
 func assertContextCompression(t *testing.T, cfg Config) {
 	t.Helper()
 	if !cfg.ContextCompression.Enabled {

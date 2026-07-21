@@ -333,9 +333,26 @@ func createBackgroundManager(projectDir string) *background.Manager {
 	return mgr
 }
 
+// loopDetectorConfigFrom derives the runtime loop-detector configuration from
+// the persisted user/project config, honouring the persistent disable switches
+// (execution.disable_thinking_loop_detection / disable_tool_loop_detection).
+func loopDetectorConfigFrom(cfg *config.Config) core.LoopDetectorConfig {
+	ldCfg := core.DefaultLoopDetectorConfig()
+	if cfg == nil {
+		return ldCfg
+	}
+	if cfg.Execution.DisableThinkingLoopDetection != nil && *cfg.Execution.DisableThinkingLoopDetection {
+		ldCfg.ThinkingDisabled = true
+	}
+	if cfg.Execution.DisableToolLoopDetection != nil && *cfg.Execution.DisableToolLoopDetection {
+		ldCfg.ToolDisabled = true
+	}
+	return ldCfg
+}
+
 func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 	sessionStore := core.NewSessionStore(filepath.Join(projectDir, ".goa"))
-	loopDetector := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	loopDetector := core.NewLoopDetector(loopDetectorConfigFrom(cfg))
 	eventBus := event.MakeBus(1024, 32, 32, 32)
 
 	stateStore := core.NewStateStore(projectDir)

@@ -163,3 +163,71 @@ func TestLoopDetector_ResetThinking_ClearsAccumulation(t *testing.T) {
 		}
 	}
 }
+
+// sessionTriggerLine is the exact reasoning line that drove the production
+// session (goa-export-20260720-232943) to LoopInterrupt: the model recited the
+// B-tree cellPointerEnd formula six times while re-deriving leafHasRoom. It is
+// a Go short variable declaration and must be treated as structural.
+const sessionTriggerLine = "cellPtrEnd := coff + storage.CellPointerOffset + int(page.CellCount)*2 + 2"
+
+// TestLoopDetector_ThinkingLoop_SessionGoDeclIsStructural reproduces the
+// invalid-stop from the exported session: a repeated Go `:=` declaration line
+// must not trip the thinking-loop detector. Before the isCodeOp fix, the ':'
+// branch required a following space, so `:=` was not recognised as an
+// assignment and the line was counted (wordCount == minThinkWordCount).
+func TestLoopDetector_ThinkingLoop_SessionGoDeclIsStructural(t *testing.T) {
+	if !isStructuralLine(sessionTriggerLine) {
+		t.Fatalf("session trigger line should be structural: %q", sessionTriggerLine)
+	}
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	// Six occurrences interrupted the production turn; twelve must stay LoopOK.
+	for i := 0; i < 12; i++ {
+		if lvl := ld.RecordThinkingDelta(sessionTriggerLine + "\n"); lvl != LoopOK {
+			t.Fatalf("occurrence %d: got %d, want LoopOK (Go := decl must not count)", i+1, lvl)
+		}
+	}
+}
+
+// TestLoopDetector_ThinkingLoop_NoLatchAfterInterrupt guards the regression
+// where a cancelled turn never emitted EventEnd, so the repeat counter stayed
+// latched at the interrupt threshold and the *next* turn was killed on its
+// first thinking delta (a single "The"). After ResetThinking, fresh deltas
+// must not re-trigger.
+func TestLoopDetector_ThinkingLoop_NoLatchAfterInterrupt(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+
+	// Drive the detector to interrupt with a genuine repeated paragraph.
+	for i := 0; i < 6; i++ {
+		ld.RecordThinkingDelta(longLine + "\n")
+	}
+	if lvl := ld.RecordThinkingDelta("x"); lvl != LoopInterrupt {
+		t.Fatalf("precondition: detector should be latched at interrupt, got %d", lvl)
+	}
+
+	// Simulate the manager's interrupt path, which must reset the accumulator.
+	ld.ResetThinking()
+
+	// The next turn starts with a single token (production log: thinking: The).
+	if lvl := ld.RecordThinkingDelta("The"); lvl != LoopOK {
+		t.Fatalf("first delta of new turn re-triggered: got %d, want LoopOK", lvl)
+	}
+	if lvl := ld.RecordThinkingDelta(" quick sanity check\n"); lvl != LoopOK {
+		t.Fatalf("second delta of new turn re-triggered: got %d, want LoopOK", lvl)
+	}
+}
+
+// TestLoopDetector_ThinkingLoop_LatchDemonstratesBug documents the pre-fix
+// failure mode so the latch cannot silently return: without ResetThinking the
+// counter stays at the interrupt threshold and any further delta re-triggers,
+// even one carrying no newline.
+func TestLoopDetector_ThinkingLoop_LatchDemonstratesBug(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	for i := 0; i < 6; i++ {
+		ld.RecordThinkingDelta(longLine + "\n")
+	}
+	// Without a reset, a bare "The" (no newline, counts nothing new) still
+	// reports LoopInterrupt because thinkMaxRepeat is latched.
+	if lvl := ld.RecordThinkingDelta("The"); lvl != LoopInterrupt {
+		t.Fatalf("expected latched interrupt without reset, got %d", lvl)
+	}
+}

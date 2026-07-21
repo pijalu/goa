@@ -510,14 +510,57 @@ func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
 		t.Fatal("thinking-loop should start enabled")
 	}
 
-	// Toggle thinking-loop off.
+	// Selecting think_loop offers temp/persistent actions.
 	sr.onSel("think_loop", true)
+	if sr.title != "Change thinking-loop detection:" {
+		t.Fatalf("expected action chooser, got %q", sr.title)
+	}
+	wantActions := []string{"temp_off", "persist_off"}
+	if len(sr.options) != len(wantActions) {
+		t.Fatalf("expected %d action items, got %d", len(wantActions), len(sr.options))
+	}
+	for i, w := range wantActions {
+		if sr.options[i].Value != w {
+			t.Errorf("action[%d].Value = %q, want %q", i, sr.options[i].Value, w)
+		}
+	}
+
+	// Choose session-only disable.
+	sr.onSel("temp_off", true)
 
 	if !ctx.LoopDetector.TempOverride("think") {
-		t.Error("TempOverride(think) should be true (disabled) after toggle")
+		t.Error("TempOverride(think) should be true (disabled) after temp_off")
 	}
-	if sr.options[0].Description != "off" {
-		t.Errorf("thinking-loop after toggle label = %q, want off", sr.options[0].Description)
+	if sr.options[0].Description != "off (session)" {
+		t.Errorf("thinking-loop after temp_off label = %q, want off (session)", sr.options[0].Description)
+	}
+}
+
+// TestConfigMenu_LoopDetectionPersistToggle verifies the persistent (saved)
+// disable path writes config and flips the live detector.
+func TestConfigMenu_LoopDetectionPersistToggle(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("loop_detection", true)
+	sr.onSel("think_loop", true)
+
+	// Choose persistent disable.
+	sr.onSel("persist_off", true)
+
+	if !ctx.LoopDetector.Disabled("think") {
+		t.Error("Disabled(think) should be true after persist_off")
+	}
+	if ctx.LoopDetector.TempOverride("think") {
+		t.Error("persist_off must not set the session temp override")
+	}
+	if cfg.Execution.DisableThinkingLoopDetection == nil || !*cfg.Execution.DisableThinkingLoopDetection {
+		t.Error("config Execution.DisableThinkingLoopDetection not persisted to true")
+	}
+	if sr.options[0].Description != "off (saved)" {
+		t.Errorf("thinking-loop after persist_off label = %q, want off (saved)", sr.options[0].Description)
 	}
 }
 

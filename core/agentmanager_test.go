@@ -1293,6 +1293,79 @@ func TestAgentManager_ThinkingLoopInterrupts(t *testing.T) {
 	cancel2()
 }
 
+// TestAgentManager_ThinkingLoopSetsStopReason verifies the user-facing
+// regression from the invalid-stop export: when the thinking-loop detector
+// cancels a turn, the manager must record a loop stop reason so the UI shows
+// a clear explanation instead of a bare "context canceled".
+func TestAgentManager_ThinkingLoopSetsStopReason(t *testing.T) {
+	cfg := &config.Config{}
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	am := NewAgentManager(cfg, nil, ld, NewSessionState(internal.ModeState{}), nil, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancel
+	am.running = true
+	am.mu.Unlock()
+
+	am.handleThinkingLoopWarning(LoopInterrupt)
+
+	if ctx.Err() == nil {
+		t.Fatal("LoopInterrupt did not cancel the in-flight turn context")
+	}
+	am.mu.Lock()
+	reason := am.loopStopReason
+	am.mu.Unlock()
+	if reason == "" {
+		t.Fatal("thinking-loop interrupt left loopStopReason empty; UI would show a bare 'context canceled'")
+	}
+	if !strings.Contains(reason, "thinking loop") {
+		t.Errorf("stop reason %q does not explain the thinking loop", reason)
+	}
+}
+
+// TestAgentManager_ThinkingLoopDoesNotLatchAcrossTurns reproduces the exact
+// production failure: the detector interrupts turn N (cancelling its context,
+// so no EventEnd fires), then the user's resumed turn N+1 streams a single
+// "The" delta. Before the fix the latched counter re-triggered LoopInterrupt
+// and killed the resumed turn immediately. After the fix the accumulator is
+// reset on interrupt, so the fresh turn is unaffected.
+func TestAgentManager_ThinkingLoopDoesNotLatchAcrossTurns(t *testing.T) {
+	cfg := &config.Config{}
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	am := NewAgentManager(cfg, nil, ld, NewSessionState(internal.ModeState{}), nil, "")
+
+	// Turn N: stream the repeated session line until the detector interrupts.
+	ctxN, cancelN := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancelN
+	am.running = true
+	am.mu.Unlock()
+
+	line := "I can see the main.ts files are very similar. The pbl version has additional imports from SDK runtime."
+	for i := 0; i < 6; i++ {
+		lvl := ld.RecordThinkingDelta(line + "\n")
+		am.handleThinkingLoopWarning(lvl)
+	}
+	if ctxN.Err() == nil {
+		t.Fatal("turn N was not cancelled by the thinking-loop detector")
+	}
+
+	// Turn N+1 (resume): first delta is the single token seen in the export.
+	ctxN1, cancelN1 := context.WithCancel(context.Background())
+	am.mu.Lock()
+	am.cancel = cancelN1
+	am.running = true
+	am.mu.Unlock()
+
+	lvl := ld.RecordThinkingDelta("The")
+	am.handleThinkingLoopWarning(lvl)
+	if ctxN1.Err() != nil {
+		t.Fatal("resumed turn was cancelled on its first thinking delta — latched loop detector regression")
+	}
+	cancelN1()
+}
+
 // LoopCritical branch previously only flashed "will be paused" without pausing.
 // It must now actually cancel the in-flight turn.
 func TestAgentManager_HandleLoopWarningCriticalInterrupts(t *testing.T) {

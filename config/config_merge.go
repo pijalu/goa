@@ -110,6 +110,12 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	mergeIntIfSet(&dst.ToolCallLimitResetWindow, src.ToolCallLimitResetWindow)
 	mergeIntIfSet(&dst.ThinkingStallWarnSeconds, src.ThinkingStallWarnSeconds)
 	mergeIntIfSet(&dst.ThinkingStallStopSeconds, src.ThinkingStallStopSeconds)
+	if src.DisableThinkingLoopDetection != nil {
+		dst.DisableThinkingLoopDetection = src.DisableThinkingLoopDetection
+	}
+	if src.DisableToolLoopDetection != nil {
+		dst.DisableToolLoopDetection = src.DisableToolLoopDetection
+	}
 }
 
 // mergeIntIfSet copies src into dst when src is non-zero.

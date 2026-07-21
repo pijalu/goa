@@ -819,8 +819,8 @@ func skillsLabel(cfg *config.Config) string {
 func (m *configMenu) settingLoopDetection() {
 	m.current = m.settingLoopDetection
 	items := []tui.SelectorItem{
-		{Value: "think_loop", Label: "Thinking-loop detection", Description: loopDetectionToggleLabel(m.ctx.LoopDetector, "think")},
-		{Value: "tool_loop", Label: "Tool-loop detection", Description: loopDetectionToggleLabel(m.ctx.LoopDetector, "tool")},
+		{Value: "think_loop", Label: "Thinking-loop detection", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "think")},
+		{Value: "tool_loop", Label: "Tool-loop detection", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "tool")},
 		{Value: "thresholds", Label: "Threshold settings", Description: "warn/stop/repeat limits"},
 	}
 	m.ctx.SelectOption("Loop detection settings:", items, "", func(selected string, ok bool) {
@@ -830,54 +830,101 @@ func (m *configMenu) settingLoopDetection() {
 		}
 		switch selected {
 		case "think_loop":
-			m.toggleLoopDetection("think")
+			m.chooseLoopDetectionAction("think")
 		case "tool_loop":
-			m.toggleLoopDetection("tool")
+			m.chooseLoopDetectionAction("tool")
 		case "thresholds":
 			m.open(m.settingLoopThresholds)
 		}
 	})
 }
 
-// loopDetectionToggleLabel returns the display label for a temp loop-detection
-// override. The detection is on unless the loop detector reports it disabled.
-func loopDetectionToggleLabel(ld *core.LoopDetector, kind string) string {
+// loopDetectionStatusLabel reports the effective on/off state and how it was
+// set (temporary session override vs persisted config).
+func loopDetectionStatusLabel(ld *core.LoopDetector, kind string) string {
 	if ld == nil {
 		return "on"
 	}
-	if !ld.TempOverride(kind) {
-		return "on"
+	if ld.TempOverride(kind) {
+		return "off (session)"
 	}
-	return "off"
+	if ld.Disabled(kind) {
+		return "off (saved)"
+	}
+	return "on"
 }
 
-// toggleLoopDetection flips the session-level temp override for the given kind.
-func (m *configMenu) toggleLoopDetection(kind string) {
+// loopDetectionKindLabel returns a human label for the detection kind.
+func loopDetectionKindLabel(kind string) string {
+	if kind == "think" {
+		return "thinking-loop detection"
+	}
+	return "tool-call loop detection"
+}
+
+// loopDetectionConfigKey maps the detection kind to its persisted config key.
+func loopDetectionConfigKey(kind string) string {
+	if kind == "think" {
+		return "execution.disable_thinking_loop_detection"
+	}
+	return "execution.disable_tool_loop_detection"
+}
+
+// chooseLoopDetectionAction offers the choice between a session-only toggle
+// and a persistent (config-saved) change, honouring the current state.
+func (m *configMenu) chooseLoopDetectionAction(kind string) {
 	ld := m.ctx.LoopDetector
 	if ld == nil {
 		m.flash("Loop detector not available.")
 		m.settingLoopDetection()
 		return
 	}
-	disabled := ld.TempOverride(kind)
-	ld.SetTempOverride(kind, !disabled)
-	m.flash(loopDetectionToggleFlash(kind, !disabled))
+	label := loopDetectionKindLabel(kind)
+	tempOff := ld.TempOverride(kind)
+	persistOff := ld.Disabled(kind) && !tempOff
+
+	var items []tui.SelectorItem
+	if tempOff {
+		items = append(items, tui.SelectorItem{Value: "temp_on", Label: "Re-enable (this session)", Description: "clear session override"})
+	} else {
+		items = append(items, tui.SelectorItem{Value: "temp_off", Label: "Disable (this session)", Description: "temporary, current session only"})
+	}
+	if persistOff {
+		items = append(items, tui.SelectorItem{Value: "persist_on", Label: "Re-enable (saved)", Description: "clear saved config override"})
+	} else {
+		items = append(items, tui.SelectorItem{Value: "persist_off", Label: "Disable (saved)", Description: "persist across sessions"})
+	}
+
+	m.ctx.SelectOption("Change "+label+":", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.settingLoopDetection()
+			return
+		}
+		m.applyLoopDetectionAction(kind, selected)
+	})
+}
+
+// applyLoopDetectionAction executes the chosen temp/persist action.
+func (m *configMenu) applyLoopDetectionAction(kind, action string) {
+	ld := m.ctx.LoopDetector
+	label := loopDetectionKindLabel(kind)
+	switch action {
+	case "temp_off":
+		ld.SetTempOverride(kind, true)
+		m.flash(fmt.Sprintf("Temporary: %s disabled (current session only)", label))
+	case "temp_on":
+		ld.SetTempOverride(kind, false)
+		m.flash(fmt.Sprintf("Temporary: %s enabled (current session only)", label))
+	case "persist_off":
+		m.applySet(loopDetectionConfigKey(kind), "true")
+		m.flash(fmt.Sprintf("Saved: %s disabled (persisted across sessions)", label))
+	case "persist_on":
+		m.applySet(loopDetectionConfigKey(kind), "false")
+		m.flash(fmt.Sprintf("Saved: %s enabled (persisted across sessions)", label))
+	}
 	m.settingLoopDetection()
 }
 
-func loopDetectionToggleFlash(kind string, disabled bool) string {
-	state := "enabled"
-	if disabled {
-		state = "disabled"
-	}
-	switch kind {
-	case "think":
-		return fmt.Sprintf("Temporary: thinking-loop detection %s (current session only)", state)
-	case "tool":
-		return fmt.Sprintf("Temporary: tool-call loop detection %s (current session only)", state)
-	}
-	return ""
-}
 
 // settingLoopThresholds is the /config → Loop detection → Thresholds sub-menu.
 func (m *configMenu) settingLoopThresholds() {
