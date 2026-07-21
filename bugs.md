@@ -36,52 +36,6 @@ If new items are added, restart the process.
 # Open TODO
 ## Spinner: hexagon spinner as default
 
-Add a hexagon spinner animation (looping, slow) and make it the default spinner.
-
-Frames:
-```
-⬡⬢⬣⬢
-```
-
-### Fix plan
-1. Add `"hexagon": {"interval": ~400ms, "frames": ["⬡","⬢","⬣","⬢"]}` to `internal/spinner/spinners.json`.
-2. Change `spinner.Default()` (internal/spinner/spinner.go) to prefer `"hexagon"` (currently prefers `"arc"`).
-3. Tests: exact frames/interval (mirror TestRequestedSpinners); `Default()` returns hexagon; `Names()` includes hexagon.
-4. Validate: go vet, staticcheck, gocognit -over 15, gocyclo -over 12, go test -count=1 -race -cover (separately).
-
-## Title bar startup sequence
-
-Set the terminal window title as early as possible to `g⬡a`. When the startup
-sequence is done — explicit hook after async plugin/history load completes
-(5s timer as fallback only) — switch to the actual title `⬡`.
-
-Transition animation (1s frame rate):
-```
-g⬡a ==> g⬡ => ⬡
-```
-
-### Fix plan
-1. Early: in internal/app/tui.go around engine.Start(), call engine.SetTitle("g⬡a") (OSC 0 via ProcessTerminal.SetTitle, already implemented).
-2. Startup-done hook: after async plugin load + background history load complete, trigger the transition g⬡a → g⬡ → ⬡ at 1s/frame; 5s fallback timer if the hook never fires.
-3. Interactive-TUI only (skip headless/tests).
-4. Tests: fake terminal capturing SetTitle calls; verify early title + ordered transition frames; config/default behavior.
-5. Validate: guideline #6 gates separately.
-
-## Animated title bar while working
-
-Animate the title bar with the spinner animation while goa is working;
-configurable; default to the hexagon spinner.
-
-### Fix plan
-1. Hook agent state changes (working → animate title with spinner frames; idle → static ⬡).
-2. Config: TUI.AnimatedTitle (default on); spinner source cfg.TUI.Spinner (default hexagon).
-3. Coordinate with the startup sequence (item above) so there is a single title writer (startup hands off to the working/idle animator).
-4. Tests: state transitions drive SetTitle frames; config disables animation.
-5. Validate: guideline #6 gates separately.
-
-# Open TODO
-## Spinner: hexagon spinner as default
-
 **Source:** ideas.md (2026-07-21). Use the hexagon spinner (looping, slow) as the default spinner:
 ```
 ⬡⬢⬣⬢
@@ -110,48 +64,3 @@ configurable; default to the hexagon spinner.
 2. Hook agent state transitions (working → animate with configured spinner frames at its interval; idle → static `⬡`).
 3. Config: `tui.animated_title` (default true) — reuses `tui.spinner` for the frame set.
 4. Tests: working→idle transitions drive SetTitle with spinner frames then static title; config off disables animation.
-
-# Open TODO
-## Hexagon spinner as default
-Use the hexagon spinner (looping, slow) as the default spinner:
-```
-⬡⬢⬣⬢
-```
-- Root: `internal/spinner/spinners.json` + `spinner.Default()` (currently prefers
-  "arc"). `initSpinner` (internal/app/tui.go:405) uses the default when
-  `cfg.TUI.Spinner` is empty.
-- Plan: add a "hexagon" definition (frames ⬡⬢⬣⬢, slow interval ~400ms) to
-  spinners.json; make `Default()` return hexagon. Keep "arc" available by name.
-- Tests: hexagon frames/interval exact (mirror TestRequestedSpinners);
-  Default() returns hexagon; Get("arc") still works.
-
-## Title bar startup sequence
-Set the terminal title as early as possible to `g⬡a`; when the startup
-sequence completes (explicit hook after async plugin/history load — 5s timer
-as fallback only), animate the transition at 1s frame rate:
-```
-g⬡a ==> g⬡ => ⬡
-```
-- Root: `TUI.SetTitle` (tui/tui.go:172) writes OSC 0 via
-  `ProcessTerminal.SetTitle` (tui/terminal.go:518). Startup points:
-  `internal/app/tui.go:44` (engine.Start), `internal/app/app.go:166`
-  (engine.RunLoops), async plugin load (internal/app/plugins.go
-  startAsyncPluginLoad / activatePluginUI).
-- Plan: set title `g⬡a` before engine.Start; on the startup-done hook (or 5s
-  fallback) run a 1s/frame animator `g⬡a → g⬡ → ⬡` on a dedicated goroutine,
-  single title writer.
-- Tests: fake terminal captures SetTitle calls; sequence ordering + final
-  title; fallback fires when hook never signals.
-
-## Animated title bar while working
-Animate the title bar with the spinner animation while goa is working;
-configurable; defaults to the hexagon spinner.
-- Root: agent working/idle state transitions surface as state events consumed
-  in the app layer (status/footer already react). Config: new
-  `cfg.TUI.AnimatedTitle` (default true) + reuse `cfg.TUI.Spinner` (default
-  hexagon).
-- Plan: title animator owned by the app layer: on working → spin title frames
-  with the configured spinner at its interval; on idle → static `⬡`. Single
-  writer coordinates with the startup sequence (startup handoff → animator).
-- Tests: fake terminal + state events: working shows spinner frames, idle
-  shows static title; config off → title stays static.
