@@ -44,6 +44,34 @@ func (s *titleSink) contains(t string) bool {
 	return false
 }
 
+// waitLast polls until the most recent title equals want (or the deadline
+// passes) and returns the final value. Title writes are asynchronous (a
+// dedicated writer goroutine), so assertions must wait rather than read
+// immediately.
+func (s *titleSink) waitLast(want string, timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.last() == want {
+			return want
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return s.last()
+}
+
+// waitContains polls until some recorded title equals want (or the deadline
+// passes).
+func (s *titleSink) waitContains(want string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if s.contains(want) {
+			return true
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return false
+}
+
 func hexDef() spinner.Definition {
 	return spinner.Definition{Interval: 50, Frames: []string{"⬡", "⬢", "⬣", "⬢"}}
 }
@@ -54,7 +82,7 @@ func TestTitleController_BootShowsBrand(t *testing.T) {
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), true)
 	defer tc.stop()
-	if got := sink.last(); got != "g⬡a" {
+	if got := sink.waitLast("g⬡a", 2*time.Second); got != "g⬡a" {
 		t.Fatalf("boot title = %q, want g⬡a", got)
 	}
 }
@@ -80,11 +108,11 @@ func TestTitleController_StartupDonePlaysTransition(t *testing.T) {
 	}
 
 	for _, want := range []string{"g⬡a", "g⬡", "⬡"} {
-		if !sink.contains(want) {
+		if !sink.waitContains(want, 2*time.Second) {
 			t.Errorf("transition missing frame %q; titles: %v", want, sink.titles)
 		}
 	}
-	if got := sink.last(); got != "⬡ - proj" {
+	if got := sink.waitLast("⬡ - proj", 2*time.Second); got != "⬡ - proj" {
 		t.Errorf("final title = %q, want base title %q", got, "⬡ - proj")
 	}
 }
@@ -122,16 +150,16 @@ func TestTitleController_WorkingAnimatesWithFrames(t *testing.T) {
 	// Working frame = spinner frame + contextual suffix. frame[0] is ⬡, which
 	// coincides with the base glyph; tick to a distinguishable frame.
 	tc.tick() // frame 1 = ⬢
-	if got := sink.last(); got != "⬢ - proj" {
+	if got := sink.waitLast("⬢ - proj", 2*time.Second); got != "⬢ - proj" {
 		t.Errorf("working frame = %q, want %q", got, "⬢ - proj")
 	}
 	tc.tick() // frame 2 = ⬣
-	if got := sink.last(); got != "⬣ - proj" {
+	if got := sink.waitLast("⬣ - proj", 2*time.Second); got != "⬣ - proj" {
 		t.Errorf("working frame = %q, want %q", got, "⬣ - proj")
 	}
 
 	tc.setWorking(false)
-	if got := sink.last(); got != "⬡ - proj" {
+	if got := sink.waitLast("⬡ - proj", 2*time.Second); got != "⬡ - proj" {
 		t.Errorf("idle title = %q, want base %q", got, "⬡ - proj")
 	}
 }

@@ -43,11 +43,14 @@ const titleStartupTransitionInterval = time.Second
 // settles into normal mode where it shows the base title while idle and the
 // spinner animation while the agent works (when animated titles are enabled).
 //
-// All methods are safe for concurrent use; the title write itself is
-// serialized through the set func the caller provides (in production it
-// targets the TUI, whose SetTitle is terminal-safe).
+// Concurrency (bugs.md "goa should not be frozen until completion of the
+// title animation"): title writes NEVER run on the caller's goroutine (in
+// particular never on the TUI commandLoop, which drives input handling). All
+// writes are enqueued on a buffered, latest-wins channel consumed by a single
+// dedicated writer goroutine; a full channel drops the stale pending frame
+// rather than blocking, so a slow terminal can never stall input or the
+// animation ticker.
 type titleController struct {
-	set       func(string) // title sink (TUI.SetTitle in production)
 	frames    []string     // working-animation frames (empty = no animation)
 	interval  time.Duration
 	animated  bool // animated-title config (false = always static)
@@ -59,23 +62,64 @@ type titleController struct {
 	frame   int
 	stopCh  chan struct{} // closed to halt the animation goroutine
 	stopped bool
+
+	// writes carries pending title strings to the writer goroutine. Capacity 1
+	// plus latest-wins drop keeps only the freshest title queued.
+	writes chan string
+	writeCh chan<- string // sink handed to enqueue (writes)
 }
 
-// newTitleController builds a controller. set is the title sink (called with
-// the full title string); def provides the working-animation frames and
-// interval; animated mirrors the tui.animated_title config.
+// newTitleController builds a controller. set is the title sink invoked on a
+// dedicated writer goroutine (TUI.SetTitle in production); def provides the
+// working-animation frames and interval; animated mirrors the
+// tui.animated_title config.
 func newTitleController(set func(string), def spinner.Definition, animated bool) *titleController {
+	writes := make(chan string, 1)
 	tc := &titleController{
-		set:      set,
 		frames:   def.Frames,
 		interval: time.Duration(def.IntervalMS()) * time.Millisecond,
 		animated: animated,
 		phase:    titlePhaseStartup,
 		base:     startupTitleFrames[0],
+		writes:   writes,
+		writeCh:  writes,
 	}
-	// Show the boot brand as early as possible.
-	set(startupTitleFrames[0])
+	tc.enqueue(startupTitleFrames[0]) // boot brand as early as possible
+	go tc.writeLoop(set, writes)
 	return tc
+}
+
+// writeLoop is the sole caller of the title sink. It drains the latest-wins
+// channel until it is closed by stop().
+func (tc *titleController) writeLoop(set func(string), ch <-chan string) {
+	for title := range ch {
+		set(title)
+	}
+}
+
+// enqueue hands a title to the writer goroutine without ever blocking: when a
+// title is already pending, the stale one is dropped in favor of the newest.
+func (tc *titleController) enqueue(title string) {
+	select {
+	case tc.writeCh <- title:
+	default:
+		// A title is already queued; replace it with the freshest.
+		select {
+		case <-tc.writes:
+		default:
+		}
+		select {
+		case tc.writeCh <- title:
+		default:
+		}
+	}
+}
+
+// set writes a title through the non-blocking queue. It replaces the direct
+// sink call so no caller (commandLoop included) ever blocks on a terminal
+// write.
+func (tc *titleController) set(title string) {
+	tc.enqueue(title)
 }
 
 // setBase updates the contextual (static) title shown when idle. During the

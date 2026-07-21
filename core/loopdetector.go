@@ -53,6 +53,13 @@ type LoopDetector struct {
 	thinkMaxRepeat        int
 	thinkWarningThreshold int
 	thinkInterruptThreshold int
+	// thinkInCodeBlock tracks whether the accumulated thinking stream is
+	// currently inside a ```-fenced code block. Fences span many lines, so the
+	// state must persist across lines and deltas — stripping per single line
+	// (after splitting on '\n') never sees the fence and let quoted code lines
+	// count as repeated reasoning, killing legitimate deep-debugging turns
+	// (bugs.md: thinking-loop false positive, exports 20260721-142256/142545).
+	thinkInCodeBlock bool
 
 	// Error tracking (ring buffer). Populated by RecordToolResult; retained as
 	// the integration point for a future (genuinely wired) error-rate check.
@@ -383,6 +390,10 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 		line := trimSpace(ld.thinkPending[:idx])
 		ld.thinkPending = ld.thinkPending[idx+1:]
 
+		if ld.skipCodeFenceLine(line) {
+			continue
+		}
+
 		line = processThinkingLine(line)
 		if line == "" {
 			continue
@@ -407,6 +418,28 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 	}
 }
 
+// skipCodeFenceLine tracks ```-fenced code blocks across lines and reports
+// whether the given line is inside one (or is a fence boundary) and must be
+// skipped. A fence marker line toggles thinkInCodeBlock and is itself skipped;
+// while inside a block every line is skipped until the closing marker. A line
+// that opens and closes a fence on the same line (```code```) is skipped
+// without changing the state. This runs BEFORE processThinkingLine so quoted
+// code never reaches the repetition counter.
+func (ld *LoopDetector) skipCodeFenceLine(line string) bool {
+	fences := strings.Count(line, "```")
+	if fences == 0 {
+		return ld.thinkInCodeBlock
+	}
+	if fences%2 == 0 {
+		// Even number of fence markers on one line: any blocks open and close
+		// within the line — skip the line, state unchanged.
+		return true
+	}
+	// Odd count: the block state flips. Skip the boundary line either way.
+	ld.thinkInCodeBlock = !ld.thinkInCodeBlock
+	return true
+}
+
 // ResetThinking clears the per-turn thinking accumulation so each assistant
 // turn is evaluated independently. Called by the AgentManager on turn finalize.
 func (ld *LoopDetector) ResetThinking() {
@@ -415,6 +448,7 @@ func (ld *LoopDetector) ResetThinking() {
 	ld.thinkPending = ""
 	ld.thinkLineCounts = make(map[string]int)
 	ld.thinkMaxRepeat = 0
+	ld.thinkInCodeBlock = false
 }
 
 // indexByte is a small wrapper kept for testability/readability.

@@ -231,3 +231,60 @@ func TestLoopDetector_ThinkingLoop_LatchDemonstratesBug(t *testing.T) {
 		t.Fatalf("expected latched interrupt without reset, got %d", lvl)
 	}
 }
+
+// TestLoopDetector_ThinkingLoop_MultiLineCodeFenceNotAloop is the regression
+// for the false positive in exports goa-export-20260721-142256/142545: the
+// model quotes a code block (a SQL-parser snippet) inside a ``` fence while
+// reasoning iteratively. The code lines repeat several times across the turn
+// (the model re-quotes its own edit), but that is quoted artifact content,
+// not model repetition — the detector must track the fence across lines and
+// skip everything inside it, so the agent is NOT killed.
+func TestLoopDetector_ThinkingLoop_MultiLineCodeFenceNotAloop(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig()) // interrupt at 6
+
+	codeLine1 := `        if p.cur.Type == TokenKeyword && (p.cur.Value == "PRIMARY" || p.cur.Value == "UNIQUE" ||`
+	codeLine2 := `            p.cur.Value == "CHECK" || p.cur.Value == "FOREIGN" || p.cur.Value == "CONSTRAINT") {`
+	prose := `Let me check what skipTableConstraints looks like and why it does not consume the token.`
+
+	// Reason iteratively: prose, then a fenced code quote, more prose, then the
+	// same fenced quote again — nine total repetitions of the code lines, all
+	// inside fences. Must never trip.
+	for i := 0; i < 5; i++ {
+		block := prose + "\n```go\n" + codeLine1 + "\n" + codeLine2 + "\n```\n"
+		if lvl := ld.RecordThinkingDelta(block); lvl != LoopOK {
+			t.Fatalf("fenced code quote triggered %d at iter %d, want LoopOK (quoted code is not model repetition)", lvl, i)
+		}
+	}
+}
+
+// TestLoopDetector_ThinkingLoop_UnterminatedFenceAcrossDeltas covers the
+// streaming case: a code fence opened in one delta and closed in a later one
+// must still suppress the code lines (fence state tracked across deltas).
+func TestLoopDetector_ThinkingLoop_UnterminatedFenceAcrossDeltas(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	codeLine := `            p.cur.Value == "CHECK" || p.cur.Value == "FOREIGN" || p.cur.Value == "CONSTRAINT") {`
+
+	// Open the fence, then feed the code line several times across deltas
+	// before the fence ever closes — all inside the (still open) block.
+	ld.RecordThinkingDelta("Let me look at the parser code:\n```go\n")
+	for i := 0; i < 8; i++ {
+		if lvl := ld.RecordThinkingDelta(codeLine + "\n"); lvl != LoopOK {
+			t.Fatalf("code line inside open fence triggered %d at iter %d, want LoopOK", lvl, i)
+		}
+	}
+	ld.RecordThinkingDelta("```\nThat is the snippet. Now let me reason about why it fails here.\n")
+}
+
+// TestLoopDetector_ThinkingLoop_ProseRepetitionStillDetected ensures the
+// fence fix does not weaken genuine repetition: the same prose sentence
+// repeated past the interrupt threshold must still kill the turn.
+func TestLoopDetector_ThinkingLoop_ProseRepetitionStillDetected(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	prose := "The constraint keyword is not being consumed by the constraint loop."
+	for i := 0; i < 5; i++ {
+		ld.RecordThinkingDelta(prose + "\n")
+	}
+	if lvl := ld.RecordThinkingDelta(prose + "\n"); lvl != LoopInterrupt {
+		t.Fatalf("genuine prose repetition: got %d, want LoopInterrupt", lvl)
+	}
+}

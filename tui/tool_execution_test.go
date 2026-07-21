@@ -802,3 +802,26 @@ func TestUpdateContentProgress(t *testing.T) {
 		t.Errorf("missing content must be ignored, got %d", tc.outputBytes)
 	}
 }
+
+// TestToolExecution_RunningIconIsYellowDotNotSpinner is the regression for
+// "the spinner should not be used for the tool on-going marker — keep the
+// yellow dot": a running tool must show a static amber dot, never an
+// animated spinner frame.
+func TestToolExecution_RunningIconIsYellowDotNotSpinner(t *testing.T) {
+	tc := NewToolExecutionComponent("bash", `{"command":"ls"}`)
+	tc.SetStatus(ToolRunning)
+
+	icon, color := tc.statusIcon()
+	if icon != "●" {
+		t.Errorf("running icon = %q, want the yellow dot %q", icon, "●")
+	}
+	if color != TheTheme.ColorHex("tool_running") {
+		t.Errorf("running icon color = %q, want tool_running %q", color, TheTheme.ColorHex("tool_running"))
+	}
+	// The icon must not be any spinner frame.
+	for _, frame := range []string{"⬡", "⬢", "⬣", "⟳"} {
+		if icon == frame {
+			t.Errorf("running icon must not be spinner frame %q", frame)
+		}
+	}
+}
