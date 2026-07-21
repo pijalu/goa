@@ -227,11 +227,12 @@ func writeUsageSection(b *strings.Builder, st usageStore, dim usage.Dimension, r
 		total += r.Total()
 	}
 	fmt.Fprintf(b, "### %s%s\n\n", title, scopedTag(req))
-	b.WriteString("| Name | Turns | Input | Output | Total | Share |\n")
-	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| Name | Turns | Input | Output | Total | Cache R/W | Share |\n")
+	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, r := range rows {
-		fmt.Fprintf(b, "| %s | %d | %s | %s | %s | %d%% |\n",
+		fmt.Fprintf(b, "| %s | %d | %s | %s | %s | %s/%s | %d%% |\n",
 			r.Key, r.Turns, humanTokens(r.PromptN), humanTokens(r.PredictedN), humanTokens(r.Total()),
+			humanTokens(r.CacheRead), humanTokens(r.CacheWrite),
 			sharePct(r.Total(), total))
 	}
 	b.WriteString("\n")

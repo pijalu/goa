@@ -190,32 +190,66 @@ func showSystemPrompt(w core.OutputWriter, sp core.SystemPromptProvider, args []
 }
 
 // StatsCommand shows token usage and performance statistics.
-type StatsCommand struct{}
+type StatsCommand struct {
+	// OpenStore/ProjectDir are optional test hooks forwarded to the underlying
+	// UsageCommand for the global and :project views (nil = production store).
+	OpenStore  func() (usageStore, error)
+	ProjectDir string
+}
 
 func (c *StatsCommand) Name() string      { return "stats" }
 func (c *StatsCommand) Aliases() []string { return []string{} }
 func (c *StatsCommand) ShortHelp() string {
-	return "Show usage statistics (global by default, :session for current session)"
+	return "Show usage statistics (:project by default, :session for current session)"
 }
 func (c *StatsCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
+// CompleteArgs offers the /stats subcommands so "/stats:" and "/stats <tab>"
+// propose session/project drill-downs (bugs.md: /stats missing from
+// completion proposal).
+func (c *StatsCommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCompletion {
+	candidates := []core.ArgCompletion{
+		{Value: "session", Description: "current session per-turn detail"},
+		{Value: "project", Description: "project-level totals (provider, model, cache)"},
+	}
+	var out []core.ArgCompletion
+	for _, cand := range candidates {
+		if prefix == "" || strings.HasPrefix(cand.Value, prefix) {
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+// usageView builds the UsageCommand backing the global and :project views,
+// forwarding the optional test hooks.
+func (c *StatsCommand) usageView() *UsageCommand {
+	return &UsageCommand{OpenStore: c.OpenStore, ProjectDir: c.ProjectDir}
+}
+
 // Run routes /stats: default (no args) shows the global per-project usage
-// summary from the persistent usage store (like /usage); ":session" (or a
-// turn number) shows the current session's per-turn detail. This realizes the
-// "Full usage statistics" feature: global insights by default, session
-// drill-down on demand.
+// summary from the persistent usage store (like /usage); ":project" scopes
+// that breakdown to the current project (total usage, provider, model, cache
+// read/write); ":session" (or a turn number) shows the current session's
+// per-turn detail. This realizes the "Full usage statistics" feature: global
+// insights by default, project/session drill-down on demand.
 func (c *StatsCommand) Run(ctx core.Context, args []string) error {
 	if len(args) > 0 && (args[0] == "session" || args[0] == ":session") {
 		return showStats(ctx, ctx, args[1:])
+	}
+	if len(args) > 0 && (args[0] == "project" || args[0] == ":project") {
+		// Project-level view: usage store scoped to this project, broken down
+		// by provider and model, including cache read/write totals.
+		return c.usageView().Run(ctx, []string{"here"})
 	}
 	if len(args) > 0 && isNumeric(args[0]) {
 		// /stats <n> drills into turn #n of the current session.
 		return showStats(ctx, ctx, args)
 	}
 	// Default: global usage summary across projects/providers/models.
-	return (&UsageCommand{}).Run(ctx, args)
+	return c.usageView().Run(ctx, args)
 }
 
 func isNumeric(s string) bool {

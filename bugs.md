@@ -34,6 +34,41 @@ If new items are added, restart the process.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
 # Open TODO
+## /stats completion + /stats:project + cache tracking
+
+**Reported 2026-07-21.** Three related gaps in the `/stats` command:
+
+1. **`/stats` and `/stats:session` missing from completion proposal** — typing
+   `/stats` or `/stats:` in the input offers no completion. Root cause:
+   `StatsCommand` (core/commands/transparency.go) does not implement
+   `core.ArgCompleter` (`CompleteArgs`), so the arg completer
+   (internal/app/tui.go buildArgCompleter) returns nil for `/stats:` and
+   `/stats <tab>`. `/stats` itself is registered so should appear in the base
+   command list; verify with a completer test.
+2. **`/stats:project` unsupported** — add a `:project` subcommand (+
+   completion) showing project-level stats: total usage, provider, model.
+   Data source: the persistent usage store already aggregated by
+   `/stats` default → `UsageCommand` (project/provider/model breakdown).
+   `/stats:project` should render the current project's totals (input/output
+   tokens, cache read/write, per-provider and per-model rows).
+3. **All `/stats` should also track cache use** — per-turn detail already
+   prints `Cache: R=… W=…` when non-zero; ensure the session summary and the
+   new `/stats:project` view also surface cache read/write totals (global
+   `UsageCommand` already aggregates CacheRead/CacheWrite — reuse).
+
+### Fix plan
+1. Implement `StatsCommand.CompleteArgs` returning `session`, `project` (and
+   keep numeric turn drill-down untracked). Verify `/stats` base completion
+   with a CommandCompleter test.
+2. Add `:project` branch in `StatsCommand.Run` rendering project-level totals
+   (provider + model rows + cache columns) from the usage store.
+3. Ensure session summary (`writeSummaryStats`) prints cache totals.
+4. Tests: completer proposes `/stats`, `/stats:session`, `/stats:project`;
+   `/stats:project` output includes provider/model rows and cache figures;
+   session summary includes cache line when cache was used.
+5. Validate: go vet, staticcheck, gocognit -over 15, gocyclo -over 12,
+   go test -count=1 -race -cover (each separately).
+
 ## edit replace_lines silently deletes lines when model sends new_string instead of new_content
 
 **Export:** `/Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260721-082715.zip` · **Session:** `1784574228_n4qzkao8` · **Provider/Model:** `opencode-go` / `deepseek-v4-flash`

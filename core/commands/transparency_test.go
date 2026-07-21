@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal/usage"
 )
 
 func TestShowExchange_EmptyHistory(t *testing.T) {
@@ -256,5 +257,82 @@ func TestIsNumeric(t *testing.T) {
 		if got := isNumeric(tc.in); got != tc.want {
 			t.Errorf("isNumeric(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestStatsCommand_CompleteArgsProposesSubcommands is the regression for
+// "/stats and /stats:session should be part of completion proposal":
+// StatsCommand must implement ArgCompleter so "/stats:" and "/stats <tab>"
+// propose the session/project drill-downs.
+func TestStatsCommand_CompleteArgsProposesSubcommands(t *testing.T) {
+	cmd := &StatsCommand{}
+	all := cmd.CompleteArgs(core.Context{}, "")
+	var got []string
+	for _, c := range all {
+		got = append(got, c.Value)
+	}
+	for _, want := range []string{"session", "project"} {
+		found := false
+		for _, v := range got {
+			if v == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("CompleteArgs(\"\") missing %q, got %v", want, got)
+		}
+	}
+	// Prefix filtering: "ses" must narrow to session only.
+	filtered := cmd.CompleteArgs(core.Context{}, "ses")
+	if len(filtered) != 1 || filtered[0].Value != "session" {
+		t.Errorf("CompleteArgs(\"ses\") = %v, want [session]", filtered)
+	}
+}
+
+// TestStatsCommand_ProjectShowsProviderModelCache is the regression for
+// "/stats should support /stats:project": the :project view scopes the usage
+// breakdown to the current project and includes provider + model rows and
+// cache read/write figures.
+func TestStatsCommand_ProjectShowsProviderModelCache(t *testing.T) {
+	var buf strings.Builder
+	store := &fakeUsageStore{
+		sum: usage.Stat{Turns: 4, PromptN: 500, PredictedN: 200, CacheRead: 3000, CacheWrite: 400},
+		stats: map[string][]usage.Stat{
+			dimKey(usage.ByProject, "/a"):  {{Key: "/a", Turns: 4, PromptN: 500, PredictedN: 200, CacheRead: 3000, CacheWrite: 400}},
+			dimKey(usage.ByProvider, "/a"): {{Key: "zai", Turns: 4, PromptN: 500, PredictedN: 200, CacheRead: 3000, CacheWrite: 400}},
+			dimKey(usage.ByModel, "/a"):    {{Key: "glm-5-2", Turns: 4, PromptN: 500, PredictedN: 200, CacheRead: 3000, CacheWrite: 400}},
+		},
+	}
+	cmd := &StatsCommand{OpenStore: func() (usageStore, error) { return store, nil }, ProjectDir: "/a"}
+	if err := cmd.Run(newUsageCtx(&buf, "/a"), []string{":project"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"Usage for /a", "By provider", "By model", "zai", "glm-5-2", "Cache"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/stats:project missing %q:\n%s", want, out)
+		}
+	}
+	// Cache totals in the project header: 3000 read / 400 write.
+	if !strings.Contains(out, "3.0K read / 400 write") {
+		t.Errorf("/stats:project header missing cache totals:\n%s", out)
+	}
+}
+
+// TestStatsCommand_SessionSummaryShowsCache verifies the session summary
+// surfaces cache read/write totals when any turn used the cache (part of
+// "all /stats should also track cache use").
+func TestStatsCommand_SessionSummaryShowsCache(t *testing.T) {
+	w := newWriter()
+	rec := &fakeSessionRecorder{
+		history: []core.TurnRecord{
+			{Number: 1, TokensUsed: 100, TokenUsage: core.TurnTokenUsage{PromptN: 80, PredictedN: 20, CacheRead: 5000, CacheWrite: 600}},
+		},
+	}
+	if err := showStats(w, rec, nil); err != nil {
+		t.Fatalf("showStats: %v", err)
+	}
+	if !strings.Contains(w.Text(), "Cache R: 5000  W: 600") {
+		t.Errorf("session summary missing cache totals:\n%s", w.Text())
 	}
 }
