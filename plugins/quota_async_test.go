@@ -21,9 +21,12 @@ func TestQuota_BareQuotaColdCacheReturnsImmediately(t *testing.T) {
 	env.setActiveProvider("zai")
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
 	env.load(t)
+	// load() drains the load-time prime (warm cache); force the cold-start
+	// state the scenario needs by clearing the cache + fetch timestamps.
+	env.evalJS(t, `_cache = {}; _lastFetch = {};`)
 
-	// NOTE: the harness's load does not run the background scheduler ticks, so
-	// the cache is genuinely cold here (mirrors "just typed /quota at startup").
+	// A bare /quota on a cold cache must acknowledge processing immediately
+	// and fetch off the command path.
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "Fetching quotas") {
 		t.Fatalf("cold /quota must acknowledge processing immediately, got: %q", out)

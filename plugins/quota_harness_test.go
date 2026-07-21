@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // quotaTestEnv loads the real provider-quota plugin from the source tree with
@@ -57,6 +58,8 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 
 // setActiveProvider sets the active provider id in the mocked goa.config().
 func (e *quotaTestEnv) setActiveProvider(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.config["activeProvider"] = id
 }
 
@@ -69,7 +72,32 @@ func (e *quotaTestEnv) respond(substr string, status int, body string) {
 
 // setProvider configures a provider in the mocked goa.config().providers.
 func (e *quotaTestEnv) setProvider(configID string, p map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.config["providers"].(map[string]any)[configID] = p
+}
+
+// configSnapshot returns a deep copy of the mocked config. goa.config() hands
+// the map to goja, which wraps it (objectGoMapSimple) and reads it from
+// scheduler timer goroutines off the test's lock; returning a fresh copy per
+// call keeps those reads race-free against setProvider/setActiveProvider
+// mutations.
+func (e *quotaTestEnv) configSnapshot() map[string]any {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := map[string]any{}
+	for k, v := range e.config {
+		if k == "providers" {
+			providers := map[string]any{}
+			for pid, p := range v.(map[string]any) {
+				providers[pid] = p
+			}
+			out[k] = providers
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // context builds the PluginContext routing goa.* through the mocks.
@@ -88,8 +116,10 @@ func (e *quotaTestEnv) context() PluginContext {
 		Config: snapshot,
 		// Mirror the production wiring: goa.config() re-reads live state via
 		// ConfigFunc, so tests that mutate e.config after load (provider
-		// switch) exercise the same path the app uses.
-		ConfigFunc: func() map[string]any { return e.config },
+		// switch) exercise the same path the app uses. A deep-copied snapshot
+		// is returned each call so goja's map reads (from scheduler timer
+		// goroutines) never race test-side mutations.
+		ConfigFunc: func() map[string]any { return e.configSnapshot() },
 		Logger:     LoggerAPI{noop, noop, noop, noop},
 		RegisterCommand: func(name string, aliases []string, shortHelp, longHelp string, run func([]string) (string, error)) error {
 			e.commands[name] = run
@@ -184,17 +214,53 @@ func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 	if err != nil {
 		t.Fatalf("LoadFrom provider-quota: %v", err)
 	}
-	// The plugin primes its cache via setTimeout at load; in tests that timer
-	// would fire HTTP from a goroutine racing the global httpDo swap of the
-	// NEXT test. Cancel all load-time timers: rendering tests warm the cache
-	// synchronously via warmCache, and async tests drive their own timers.
-	e.scheduler.Stop()
-	// Also stop timers at test end so no scheduler goroutine outlives the
-	// mock HTTP hook (a late fire would otherwise hit the real network once
-	// t.Cleanup restores the production hook).
-	t.Cleanup(e.scheduler.Stop)
 	e.bridge = bridge
+	// The plugin primes its cache via a 0-delay setTimeout at load. Drain that
+	// prime deterministically — once a cache entry is observable under the VM
+	// lock, the prime callback has finished (invokeSafe holds the lock for the
+	// whole callback) — then cancel the long-lived 60s interval so no timer
+	// goroutine outlives the mock HTTP hook.
+	e.drainPrime(t)
+	e.scheduler.Stop()
+	t.Cleanup(e.scheduler.Stop)
 	return bridge
+}
+
+// drainPrime waits until the plugin's load-time cache prime has completed
+// (cache non-empty under the VM lock) or the deadline passes.
+func (e *quotaTestEnv) drainPrime(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.evalJSBool(t, `Object.keys(_cache).length > 0`) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("quota cache prime did not complete within 5s")
+}
+
+// evalJSBool evaluates a JS expression inside the plugin VM under the global
+// VM lock and returns its boolean value.
+func (e *quotaTestEnv) evalJSBool(t *testing.T, expr string) bool {
+	t.Helper()
+	unlock := lockVM()
+	defer unlock()
+	v, err := e.bridge.vm.RunString(expr)
+	if err != nil {
+		t.Fatalf("eval %q: %v", expr, err)
+	}
+	return v.ToBoolean()
+}
+
+// evalJS runs a JS statement inside the plugin VM under the global VM lock.
+func (e *quotaTestEnv) evalJS(t *testing.T, stmt string) {
+	t.Helper()
+	unlock := lockVM()
+	defer unlock()
+	if _, err := e.bridge.vm.RunString(stmt); err != nil {
+		t.Fatalf("eval %q: %v", stmt, err)
+	}
 }
 
 // callCommand runs a registered plugin command and returns its output.
