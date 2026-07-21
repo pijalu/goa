@@ -483,9 +483,6 @@ function renderFull(force) {
 		}
 		appendProviderRows(rows, id);
 	}
-	appendLocalRow(rows);
-	// bugs.md "Quota": when the active provider has no quota API, say so
-	// rather than silently showing only the local/inferred row.
 	appendUnsupportedNote(out);
 	if (rows.length === 0) {
 		out.push("(no provider quota APIs configured)");
@@ -587,19 +584,11 @@ function windowStatus(lim) {
 	return "plenty of room";
 }
 
-// appendLocalRow appends the local/inferred fallback row.
-function appendLocalRow(rows) {
-	var entry = _cache[_fallbackId];
-	var used = 0;
-	if (entry && entry.limits && entry.limits.length > 0) {
-		used = entry.limits[0].used;
-	}
-	rows.push("| Local (inferred) | Session tokens | " + format.tokens(used) + " | — | — | — |");
-}
-
 // appendUnsupportedNote adds a "quota not supported" note to the /quota output
 // when the active provider resolved to the local fallback (i.e. it has no
-// quota API), so the user understands why no real quota window is shown.
+// quota API). The local/inferred row itself was dropped from the table
+// (bugs.md: redundant with the Session Usage table above), so the note just
+// explains the absence of a quota window for the active provider.
 function appendUnsupportedNote(out) {
 	var active = (goa.config() && goa.config().activeProvider) || "";
 	if (active === "") {
@@ -607,7 +596,7 @@ function appendUnsupportedNote(out) {
 	}
 	if (activeFetcherId() === _fallbackId) {
 		out.push("");
-		out.push("_Quota tracking is not supported for provider `" + active + "` — showing local session tokens._");
+		out.push("_Quota tracking is not supported for provider `" + active + "`._");
 	}
 }
 
