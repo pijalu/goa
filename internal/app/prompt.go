@@ -352,14 +352,14 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 		subs.tuiEngine.RequestRender()
 		return
 	}
-	// Local servers (LM Studio, llama.cpp) report the model's max context
-	// length before the model is loaded, but the real loaded context length
-	// may be much smaller. Refresh once at session start so budgets and
-	// compression limits are based on the actual available context.
-	if nCtx := subs.providerMgr.RefreshLocalContextWindow(); nCtx > 0 {
-		mdl.ContextWindow = nCtx
-		subs.ContextWindow = nCtx
-	}
+	// NOTE: no synchronous RefreshLocalContextWindow here — that performs up
+	// to 3 HTTP probes (5s timeout each) against the local server and would
+	// block startup before the first frame (bugs.md Start-up: no blocking
+	// HTTP/API on the startup path). The real loaded context length is
+	// re-detected asynchronously after the first response delta via
+	// AgentManager.maybeRefreshContextWindow, which updates the agent and
+	// emits EventContextStats for the footer. Until then the registry/config
+	// context window is the documented fallback.
 	streamOpts := subs.providerMgr.BuildStreamOptions()
 
 	systemPrompt := buildSystemPrompt(subs)
