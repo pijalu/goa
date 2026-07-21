@@ -249,3 +249,55 @@ This narrows the leads considerably:
   2. **Fetcher registration dropped** — if `require("./fetchers/zai.js")` failed at load in the deployed bundle, `_fetchers["zai"]` would be absent (plugin would still work for the rest). The Go-side `plugins_quota_test.go` asserts zai presence in the providers map, but nothing asserts the *fetcher registry* contents at runtime.
   3. **Test gap:** every zai harness test sets `provider: "zai"` in the config map; the user's entry has *no* `provider:` field (id-only match). Add a harness case `setProvider("zai", {"id": "zai", "apiKey": "k", "endpoint": …})` (no `provider` key) to prove id-direct matching is not the failure.
 - **Next step:** reproduce with the exact config shape above + active `kimi-code`, dump `_fetchers`/`_cache` via `/quota:json`, and check `[plugin]` logs for the zai fetch.
+
+---
+
+# Ideas implemented 2026-07-21 (from ideas.md)
+
+All three items implemented, tested, and validated with the guideline #6
+gates; full-repo -race suite green (2 consecutive runs, 0 failures).
+
+- Hexagon spinner as default — IMPLEMENTED (307ccbb): hexagon frames ⬡⬢⬣⬢ at
+  400ms added to spinners.json; spinner.Default() prefers hexagon (arc still
+  available by name); status test updated to the new default.
+- Title bar startup sequence — IMPLEMENTED (307ccbb): titleController (single
+  title writer) shows boot brand g⬡a from TUI creation; explicit startup-done
+  hook fires when BOTH async plugin load AND background history load complete
+  (decided 2026-07-21), with the 5s timer as fallback only; transition
+  g⬡a → g⬡ → ⬡ plays at 1s/frame, then settles on the contextual title.
+- Title bar animated while working — IMPLEMENTED (307ccbb): status spinner
+  spin-state drives the controller (working → spinner frames + context
+  suffix, idle → static title); configurable via tui.animated_title (default
+  true), frames from tui.spinner (default hexagon).
+
+## Archived items (all closed)
+## Spinner: hexagon spinner as default
+
+**Source:** ideas.md (2026-07-21). Use the hexagon spinner (looping, slow) as the default spinner:
+```
+⬡⬢⬣⬢
+```
+
+### Fix plan
+1. Add a `hexagon` definition to `internal/spinner/spinners.json`: frames `["⬡","⬢","⬣","⬢"]`, slow interval (~400ms).
+2. Change `spinner.Default()` to prefer `hexagon` (fall back to `arc`, then any).
+3. Tests: frames/interval exact-match (mirror `TestRequestedSpinners`); `Default()` returns hexagon.
+
+## Title bar: startup sequence
+
+**Source:** ideas.md (2026-07-21). Set the terminal title as early as possible to `g⬡a`; when the startup sequence is done — explicit hook after async plugin/history load completes (decided 2026-07-21), with a 5s fallback timer — transition to the final title `⬡` via a slow animation (1s frame rate): `g⬡a → g⬡ → ⬡`.
+
+### Fix plan
+1. `internal/app/tui.go`: `engine.SetTitle("g⬡a")` before/around `engine.Start()` (interactive TUI only — skip headless/tests).
+2. Add an explicit startup-done hook fired after async plugin + history load completes; on fire (or 5s fallback, whichever first), animate `g⬡a → g⬡ → ⬡` at 1s/frame, then hand the title over to the animated-title controller.
+3. Tests: fake terminal captures SetTitle sequence; startup-done hook fires exactly once; fallback timer fires when hook never called.
+
+## Title bar: animated while working
+
+**Source:** ideas.md (2026-07-21). Animate the terminal title with the spinner animation while goa is working; configurable (default on), spinner from `tui.spinner` config (default hexagon).
+
+### Fix plan
+1. Title animator owned by the app layer (single writer; startup sequence hands off to it).
+2. Hook agent state transitions (working → animate with configured spinner frames at its interval; idle → static `⬡`).
+3. Config: `tui.animated_title` (default true) — reuses `tui.spinner` for the frame set.
+4. Tests: working→idle transitions drive SetTitle with spinner frames then static title; config off disables animation.
