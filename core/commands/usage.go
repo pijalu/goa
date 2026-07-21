@@ -208,9 +208,18 @@ func writeUsageGlobal(b *strings.Builder, st usageStore, req usageRequest) {
 		b.WriteString("No usage recorded for this range.\n\n")
 		return
 	}
-	fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write\n\n",
-		sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
-		humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite))
+	// Cache-write is hidden when zero: OpenAI-style/local providers never
+	// report cache writes (only Anthropic does), so a permanent "0 write"
+	// is noise, not signal (bugs.md "Stats: cache write is always 0").
+	if sum.CacheWrite > 0 {
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write\n\n",
+			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
+			humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite))
+	} else {
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read\n\n",
+			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
+			humanTokens(sum.CacheRead))
+	}
 }
 
 func writeUsageSection(b *strings.Builder, st usageStore, dim usage.Dimension, req usageRequest, title string) {
@@ -230,9 +239,15 @@ func writeUsageSection(b *strings.Builder, st usageStore, dim usage.Dimension, r
 	b.WriteString("| Name | Turns | Input | Output | Total | Cache R/W | Share |\n")
 	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, r := range rows {
-		fmt.Fprintf(b, "| %s | %d | %s | %s | %s | %s/%s | %d%% |\n",
+		// Cache R/W column: read-only when the provider never reports cache
+		// writes (always-0 write is noise — bugs.md cache-write item).
+		cacheCell := humanTokens(r.CacheRead)
+		if r.CacheWrite > 0 {
+			cacheCell += "/" + humanTokens(r.CacheWrite)
+		}
+		fmt.Fprintf(b, "| %s | %d | %s | %s | %s | %s | %d%% |\n",
 			r.Key, r.Turns, humanTokens(r.PromptN), humanTokens(r.PredictedN), humanTokens(r.Total()),
-			humanTokens(r.CacheRead), humanTokens(r.CacheWrite),
+			cacheCell,
 			sharePct(r.Total(), total))
 	}
 	b.WriteString("\n")

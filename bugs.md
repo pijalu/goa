@@ -128,3 +128,6 @@ The /session picker list is wrong on three axes:
 - Ordering: most recent session must be on TOP and be the first/default selection (today it isn't).
 - Filtering: the list must not contain sessions without any actual model turn (empty/no-turn sessions pollute the picker).
 - Timestamps: each entry must show the date/time — date only when the session is NOT from today (today → time only); time format hh:mm; append seconds (:ss) ONLY when needed to disambiguate duplicate hh:mm entries.
+
+## Stats: cache write is always 0
+The cache-write figure in stats (/stats and/or the footer) is always 0. Review whether this is correct (provider never reports cache-write tokens) or a bug (we fail to parse/plumb it). If it is legitimately always 0, hide/remove the field when 0 instead of showing a permanent zero.

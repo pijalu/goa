@@ -42,6 +42,54 @@ func newUsageCtx(buf *strings.Builder, project string) core.Context {
 	return core.Context{OutputBuffer: buf, ProjectDir: project}
 }
 
+// TestUsageCommand_CacheWriteHiddenWhenZero covers bugs.md "Stats: cache
+// write is always 0": OpenAI-style/local providers never report cache writes
+// (only Anthropic does), so the summary line and the Cache R/W column must
+// drop the write half when it is 0 — and keep it when real writes exist.
+func TestUsageCommand_CacheWriteHiddenWhenZero(t *testing.T) {
+	t.Run("hidden when zero", func(t *testing.T) {
+		var buf strings.Builder
+		store := &fakeUsageStore{
+			sum: usage.Stat{Turns: 2, PromptN: 100, PredictedN: 50, CacheRead: 4000, CacheWrite: 0},
+			stats: map[string][]usage.Stat{
+				dimKey(usage.ByModel, ""): {{Key: "local-model", Turns: 2, PromptN: 100, PredictedN: 50, CacheRead: 4000, CacheWrite: 0}},
+			},
+		}
+		cmd := &UsageCommand{OpenStore: func() (usageStore, error) { return store, nil }}
+		if err := cmd.Run(newUsageCtx(&buf, "/a"), nil); err != nil { // global view: summary + sections
+			t.Fatalf("Run: %v", err)
+		}
+		out := buf.String()
+		if strings.Contains(out, "write") {
+			t.Fatalf("cache write must be hidden when 0:\n%s", out)
+		}
+		if !strings.Contains(out, "Cache: 4.0K read") {
+			t.Fatalf("summary must keep the read half:\n%s", out)
+		}
+	})
+
+	t.Run("shown when non-zero", func(t *testing.T) {
+		var buf strings.Builder
+		store := &fakeUsageStore{
+			sum: usage.Stat{Turns: 2, PromptN: 100, PredictedN: 50, CacheRead: 4000, CacheWrite: 1500},
+			stats: map[string][]usage.Stat{
+				dimKey(usage.ByModel, ""): {{Key: "claude", Turns: 2, PromptN: 100, PredictedN: 50, CacheRead: 4000, CacheWrite: 1500}},
+			},
+		}
+		cmd := &UsageCommand{OpenStore: func() (usageStore, error) { return store, nil }}
+		if err := cmd.Run(newUsageCtx(&buf, "/a"), nil); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "Cache: 4.0K read / 1.5K write") {
+			t.Fatalf("summary must show read/write when writes exist:\n%s", out)
+		}
+		if !strings.Contains(out, "4.0K/1.5K") {
+			t.Fatalf("table cell must show read/write when writes exist:\n%s", out)
+		}
+	})
+}
+
 func TestUsageCommand_GlobalShowsAllSections(t *testing.T) {
 	var buf strings.Builder
 	store := &fakeUsageStore{
