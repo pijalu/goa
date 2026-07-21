@@ -372,9 +372,10 @@ func TestStatusMsg_Render_DefaultSpinner(t *testing.T) {
 		t.Errorf("status line missing text: %q", stripped)
 	}
 
-	// Default spinner should render an animated frame, not a static diamond.
-	if !strings.Contains(stripped, "◜") && !strings.Contains(stripped, "◠") {
-		t.Errorf("status line missing default spinner frame: %q", stripped)
+	// Default spinner (hexagon) should render an animated frame, not a static
+	// diamond.
+	if !strings.Contains(stripped, "⬡") {
+		t.Errorf("status line missing default (hexagon) spinner frame: %q", stripped)
 	}
 }
 

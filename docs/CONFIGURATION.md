@@ -250,7 +250,8 @@ tools:
 tui:
   theme: dark                        # dark | light | custom
   layout: default                    # default | wide | minimal | debug
-  spinner: arc                       # arc, dots, line, star, orbit, quadrant, flare, none
+  spinner: hexagon                   # hexagon (default), arc, dots, line, star, orbit, quadrant, flare, none
+  animated_title: true               # Animate the terminal title with the spinner while working (default: true)
   show_timestamps: false             # Show timestamps in the chat viewport
   transparency:
     show_thinking: true              # Show reasoning/thinking blocks

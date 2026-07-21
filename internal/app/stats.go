@@ -283,7 +283,7 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 		if a.subs.projectDir != "" {
 			cwdBase = filepath.Base(a.subs.projectDir)
 		}
-		a.subs.tuiEngine.SetTitle(titleBrand + " - " + cwdBase)
+		a.setBaseTitle(titleBrand + " - " + cwdBase)
 	}
 
 	if tc := a.toolTracker().OnResult(ev); tc != nil {

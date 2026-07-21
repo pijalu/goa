@@ -69,6 +69,14 @@ type App struct {
 	// pluginLoadOnce guards the async load so it runs at most once.
 	pluginLoadOnce sync.Once
 
+	// historyLoadDone signals completion of the background input-history scan
+	// (nil when history loading is disabled). Used by the title controller's
+	// startup-done hook.
+	historyLoadDone chan struct{}
+	// titleCtl is the single writer for the terminal window title (boot brand,
+	// startup transition, working animation). Nil outside the interactive TUI.
+	titleCtl *titleController
+
 	// Compression counters for the footer.
 	microCompacts int
 	compacts      int
@@ -164,7 +172,13 @@ func (a *App) Run() bool {
 
 	done := a.setupEventHandlers(engine, chat, inp)
 	engine.RunLoops() // launch the commandLoop (sole state owner) + renderLoop
+	// Startup-done hook: fires the title transition when the async loads
+	// (plugins + history) complete, or at the 5s fallback — whichever first.
+	a.startTitleStartupHook()
 	<-done
+	if a.titleCtl != nil {
+		a.titleCtl.stop()
+	}
 	if subs.dreamScheduler != nil {
 		subs.dreamScheduler.writeSchedulerState()
 		subs.dreamScheduler.Stop()

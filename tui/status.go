@@ -71,6 +71,10 @@ type StatusMsg struct {
 	done          chan struct{}
 	sessionEnded  bool
 	onFrameChange func()
+	// onSpinStateChange, when set, is invoked with the spinning state whenever
+	// it flips (Show starts, Clear stops). The app layer uses it to drive the
+	// animated window title (bugs.md "Animated title bar while working").
+	onSpinStateChange func(spinning bool)
 }
 
 // NewStatusMsg creates a StatusMsg component.
@@ -99,6 +103,17 @@ func (s *StatusMsg) SetTUI(t *TUI) { s.tui = t }
 // it to invalidate dependent components that display the same frame.
 func (s *StatusMsg) SetOnFrameChange(fn func()) { s.onFrameChange = fn }
 
+// SetOnSpinStateChange registers a callback invoked whenever the spinning
+// state flips (true on Show, false on Clear). Runs on the commandLoop.
+func (s *StatusMsg) SetOnSpinStateChange(fn func(bool)) { s.onSpinStateChange = fn }
+
+// notifySpinState invokes the spin-state callback if registered.
+func (s *StatusMsg) notifySpinState() {
+	if s.onSpinStateChange != nil {
+		s.onSpinStateChange(s.spinning)
+	}
+}
+
 // Show sets the status text and starts the spinner animation.
 // If the session has ended, Show() is a no-op so late events cannot restart
 // the spinner after the turn is finished. In-turn Clear() calls do NOT block
@@ -122,6 +137,7 @@ func (s *StatusMsg) Show(text string) {
 	if !s.spinning {
 		s.spinning = true
 		s.frameIdx = 0
+		s.notifySpinState()
 		// Only launch the animation goroutine when the commandLoop is running.
 		// In the single-goroutine test mode (loops not running), TUI.Apply runs
 		// the callback inline, so a background animation would race with the test
@@ -153,6 +169,7 @@ func (s *StatusMsg) Clear() {
 			close(s.done)
 			s.done = nil
 		}
+		s.notifySpinState()
 	}
 	spinnerFrameMu.Lock()
 	currentSpinnerFrame = ""

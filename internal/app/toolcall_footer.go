@@ -46,7 +46,7 @@ func (a *App) setBashTitle(toolName, toolInput string) {
 		if len(cmd) > 60 {
 			cmd = cmd[:57] + "..."
 		}
-		a.subs.tuiEngine.SetTitle(titleBrand + " - $ " + cmd)
+		a.setBaseTitle(titleBrand + " - $ " + cmd)
 	}
 }
 

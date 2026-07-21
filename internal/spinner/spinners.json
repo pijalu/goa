@@ -1,4 +1,13 @@
 {
+  "hexagon": {
+    "interval": 400,
+    "frames": [
+      "⬡",
+      "⬢",
+      "⬣",
+      "⬢"
+    ]
+  },
   "arc": {
     "interval": 100,
     "frames": [

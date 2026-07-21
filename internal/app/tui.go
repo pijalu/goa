@@ -82,6 +82,11 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 			a.subs.logger.Log(agentic.Error, "failed to enable render trace %s: %v", rt, err)
 		}
 	}
+
+	// Title controller: single writer for the window title (boot brand,
+	// startup transition, working animation — see initTitleController).
+	a.initTitleController(engine)
+
 	chat := tui.NewChatViewport()
 	if cfg := a.subs.cfg; cfg != nil {
 		chat.SetToolsConfig(
@@ -227,7 +232,13 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 		})
 	}
 
-	engine.SetTitle(titleBrand + " - " + filepath.Base(subs.projectDir))
+	// Route the contextual title through the controller (single title writer);
+	// the boot brand keeps priority until the startup transition plays.
+	if a.titleCtl != nil {
+		a.titleCtl.setBase(titleBrand + " - " + filepath.Base(subs.projectDir))
+	} else {
+		engine.SetTitle(titleBrand + " - " + filepath.Base(subs.projectDir))
+	}
 
 	subs.chat = chat
 	subs.footer = footer
@@ -236,6 +247,14 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 	subs.agentContent = agentContent
 	subs.agentTabBar = agentTabBar
 	subs.bgPanel = bgPanel
+
+	// Drive the animated title from the status spinner: working → animate,
+	// idle → static contextual title (bugs.md "Animated title bar").
+	if a.titleCtl != nil && statusBar != nil {
+		statusBar.SetOnSpinStateChange(func(spinning bool) {
+			a.titleCtl.setWorking(spinning)
+		})
+	}
 
 	footer.SetData(a.initialFooterData())
 	tui.SetToolProjectDir(subs.projectDir)
@@ -400,22 +419,53 @@ func initFontStyles(cfg *config.Config) {
 	})
 }
 
+// initTitleController creates and starts the single window-title writer. It
+// shows the boot brand "g⬡a" immediately (bugs.md "Title bar startup
+// sequence"); the startup-done hook (fired after async plugin/history load,
+// or the 5s fallback) plays the transition, then the controller animates the
+// title with the spinner while the agent works ("Animated title bar").
+func (a *App) initTitleController(engine *tui.TUI) {
+	animatedTitle := true
+	if a.subs.cfg != nil {
+		animatedTitle = a.subs.cfg.TUI.AnimatedTitleEnabled()
+	}
+	a.titleCtl = newTitleController(engine.SetTitle, spinnerDefFor(a.subs.cfg), animatedTitle)
+	a.titleCtl.run()
+}
+
+// spinnerDefFor resolves the spinner definition for the title/status
+// animation from config: empty = default (hexagon), "none" = no animation,
+// a name = that spinner (falling back to the default when unknown).
+func spinnerDefFor(cfg *config.Config) spinner.Definition {
+	if cfg == nil {
+		_, def := spinner.Default()
+		return def
+	}
+	name := cfg.TUI.Spinner
+	if name == "none" {
+		return spinner.Definition{}
+	}
+	if name == "" {
+		_, def := spinner.Default()
+		return def
+	}
+	if def, ok := spinner.Get(name); ok {
+		return def
+	}
+	_, def := spinner.Default()
+	return def
+}
+
 // initSpinner sets the active spinner from config. An empty or unset spinner
-// name uses the default "arc" spinner; "none" explicitly disables animation.
+// name uses the default spinner (hexagon); "none" explicitly disables
+// animation.
 func initSpinner(cfg *config.Config) {
 	name := cfg.TUI.Spinner
 	if name == "none" {
 		tui.SetSpinner(spinner.Definition{})
 		return
 	}
-	if name == "" {
-		_, def := spinner.Default()
-		tui.SetSpinner(def)
-		return
-	}
-	if def, ok := spinner.Get(name); ok {
-		tui.SetSpinner(def)
-	}
+	tui.SetSpinner(spinnerDefFor(cfg))
 }
 
 // startBackgroundHistoryLoad scans all session input history files in the
@@ -435,7 +485,9 @@ func (a *App) startBackgroundHistoryLoad(inp *tui.Editor, engine *tui.TUI) {
 	if maxLoaded <= 0 {
 		return // disabled
 	}
+	a.historyLoadDone = make(chan struct{})
 	go func() {
+		defer close(a.historyLoadDone)
 		history := subs.sessionStore.LoadAllInputHistory(maxLoaded, "")
 		if len(history) == 0 {
 			return

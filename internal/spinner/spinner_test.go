@@ -60,3 +60,38 @@ func TestNamesIncludesRequested(t *testing.T) {
 		}
 	}
 }
+
+// TestHexagonSpinner covers bugs.md "Hexagon spinner as default": the hexagon
+// animation must exist with the exact frames ⬡⬢⬣⬢ at a slow interval, and
+// must be the default spinner.
+func TestHexagonSpinner(t *testing.T) {
+	want := []string{"⬡", "⬢", "⬣", "⬢"}
+	d, ok := Get("hexagon")
+	if !ok {
+		t.Fatal("spinner \"hexagon\" not registered")
+	}
+	if len(d.Frames) != len(want) {
+		t.Fatalf("hexagon frames = %v, want %v", d.Frames, want)
+	}
+	for i := range want {
+		if d.Frames[i] != want[i] {
+			t.Errorf("hexagon frame[%d] = %q, want %q", i, d.Frames[i], want[i])
+		}
+	}
+	// Slow loop: well above the 80ms default of fast spinners.
+	if d.IntervalMS() < 300 {
+		t.Errorf("hexagon interval = %dms, want >= 300ms (slow)", d.IntervalMS())
+	}
+}
+
+// TestHexagonIsDefault verifies Default() prefers the hexagon spinner, with
+// arc still available by name.
+func TestHexagonIsDefault(t *testing.T) {
+	name, _ := Default()
+	if name != "hexagon" {
+		t.Errorf("Default() = %q, want \"hexagon\"", name)
+	}
+	if _, ok := Get("arc"); !ok {
+		t.Error("arc spinner must remain available by name")
+	}
+}
