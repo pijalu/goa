@@ -19,7 +19,7 @@ func TestQuota_BareQuotaColdCacheReturnsImmediately(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("zai")
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096}]}}`)
 	env.load(t)
 	// load() drains the load-time prime (warm cache); force the cold-start
 	// state the scenario needs by clearing the cache + fetch timestamps.
@@ -56,7 +56,7 @@ func TestQuota_BareQuotaWarmCacheRendersInstantly(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("zai")
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096}]}}`)
 	env.load(t)
 
 	// Warm the cache via an explicit forced refresh (synchronous).

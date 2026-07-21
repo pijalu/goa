@@ -18,12 +18,77 @@ var desc = {
 			"/api/monitor/usage/quota/limit";
 	},
 	headers: hq.bearerHeaders,
-	map: hq.windowedUsageMapper({
-		session: { label: "Session (5h)", periodMs: 5 * 3600000 },
-		weekly: { label: "Weekly", periodMs: 7 * 86400000 },
-		web_search: { label: "Web searches", periodMs: 30 * 86400000 }
-	})
+	map: zaiMap
 };
+
+// zaiMap parses the real z.ai monitor response:
+//   { "data": { "level": "pro", "limits": [
+//       { "type": "TIME_LIMIT",   "percentage": 0, "nextResetTime": ms, ... },
+//       { "type": "TOKENS_LIMIT", "percentage": 1, "nextResetTime": ms, "unit": u, "number": n },
+//       ... ] } }
+// Each limits[] entry is a quota window carrying its own percentage (0-100)
+// and nextResetTime. The generic windowedUsageMapper cannot be used here: it
+// expects a keyed {session, weekly} object, which this API does NOT return —
+// mapping with it produced zero limits and the Z.ai row vanished from /quota
+// (bugs.md: z.ai not showing quota).
+//
+// unit encodes the window period (3 = hours, 6 = days); number is the count,
+// so periodMs = number*unit_ms. Labels are derived from the window length so
+// the UI shows "Session (5h)" / "Weekly" style rows. usage is synthesized as
+// percentage/100*limit with limit normalized to 100 so the bar/pct renderers
+// work unchanged.
+function zaiMap(body) {
+	var data = (body && body.data) || body || {};
+	var raw = data.limits;
+	if (!raw || !raw.length) {
+		return { plan: data.level || null, limits: [] };
+	}
+	var limits = [];
+	for (var i = 0; i < raw.length; i++) {
+		var w = raw[i];
+		var pct = hq.num(w.percentage);
+		limits.push({
+			label: windowLabel(w),
+			used: pct,          // already a 0-100 percentage
+			limit: 100,         // normalized so used/limit = pct/100
+			resetsAt: w.nextResetTime || null,
+			periodMs: windowPeriodMs(w)
+		});
+	}
+	return { plan: data.level || null, limits: limits };
+}
+
+// windowPeriodMs derives the window length in ms from the z.ai unit/number
+// pair (unit 3 = hours, 6 = days; number = count of that unit).
+function windowPeriodMs(w) {
+	var n = hq.num(w.number) || 1;
+	if (w.unit === 3) {
+		return n * 3600000;
+	}
+	if (w.unit === 6) {
+		return n * 86400000;
+	}
+	return 0;
+}
+
+// windowLabel names a window from its period so it renders like the other
+// providers ("Session (5h)", "Weekly", or a day/hour count fallback).
+function windowLabel(w) {
+	var ms = windowPeriodMs(w);
+	if (ms === 5*3600000) {
+		return "Session (5h)";
+	}
+	if (ms === 7*86400000) {
+		return "Weekly";
+	}
+	if (w.unit === 6) {
+		return hq.num(w.number) + "d window";
+	}
+	if (w.unit === 3) {
+		return hq.num(w.number) + "h window";
+	}
+	return w.type === "TIME_LIMIT" ? "Time window" : "Token window";
+}
 
 // originOf reduces a URL to scheme://host[:port], dropping any path. Values
 // without a scheme (shouldn't happen) are returned with trailing slashes and

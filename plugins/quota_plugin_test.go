@@ -60,9 +60,11 @@ func TestQuota_FullBreakdownWithProviders(t *testing.T) {
 	}`)
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{
 		"data": {
-			"plan": "Free",
-			"session": {"used": 38, "limit": 100, "reset_at": "2099-01-01T02:15:00Z"},
-			"web_search": {"used": 3, "limit": 100, "reset_at": "2099-01-14T00:00:00Z"}
+			"level": "Free",
+			"limits": [
+				{"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 38, "nextResetTime": 1784656400096},
+				{"type": "TIME_LIMIT", "unit": 6, "number": 30, "percentage": 3, "nextResetTime": 1787122604987}
+			]
 		}
 	}`)
 
@@ -329,7 +331,7 @@ func TestQuota_ProviderSwitchUpdatesSegment(t *testing.T) {
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
 	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100}}}`)
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":38,"nextResetTime":1784656400096}]}}`)
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	// anthropic active at startup → 42.
@@ -553,7 +555,7 @@ func TestQuota_SegmentMultiProviderShowsActiveOnly(t *testing.T) {
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
 	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100}}}`)
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":38,"nextResetTime":1784656400096}]}}`)
 	// anthropic is active (harness default) → only anthropic's quota shows.
 	env.load(t)
 	env.callCommand("quota", "refresh")

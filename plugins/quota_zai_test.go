@@ -20,7 +20,7 @@ func TestQuota_ZaiCodingAliasResolvesZaiFetcher(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai-coding", map[string]any{"provider": "zai-coding", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("zai-coding")
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096}]}}`)
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := env.renderSegment()
@@ -51,7 +51,7 @@ func TestQuota_ZaiEndpointWithPathStillHitsMonitorHost(t *testing.T) {
 			if strings.Contains(fmt.Sprint(tc.cfg["endpoint"]), "bigmodel") {
 				host = "open.bigmodel.cn"
 			}
-			env.respond(host+"/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
+			env.respond(host+"/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":38,"nextResetTime":1784656400096}]}}`)
 			env.load(t)
 			env.callCommand("quota", "refresh")
 			seg := env.renderSegment()
@@ -70,7 +70,7 @@ func TestQuota_SegmentTracksActiveProviderOnly(t *testing.T) {
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
 	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100}}}`)
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":38,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":38,"nextResetTime":1784656400096}]}}`)
 	env.setActiveProvider("z.ai")
 	env.load(t)
 	env.callCommand("quota", "refresh")
@@ -96,7 +96,7 @@ func TestQuota_ZaiAppearsInFullQuotaOutput(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("zai")
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096}]}}`)
 	env.load(t)
 	env.warmCache(t)
 	out := env.callCommand("quota")
@@ -135,7 +135,7 @@ func TestQuota_ZaiIdOnlyConfigAppearsInFullQuotaOutput(t *testing.T) {
 	// Exact user config shape from bugs.md: id only, no `provider:` key.
 	env.setProvider("zai", map[string]any{"id": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("kimi-code")
-	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096}]}}`)
 	env.load(t)
 	env.warmCache(t)
 	out := env.callCommand("quota")
@@ -144,5 +144,40 @@ func TestQuota_ZaiIdOnlyConfigAppearsInFullQuotaOutput(t *testing.T) {
 	}
 	if !strings.Contains(out, "41") {
 		t.Fatalf("/quota output must contain the z.ai usage figure 41, got:\n%s", out)
+	}
+}
+
+// TestQuota_ZaiRealMonitorResponseShape is the regression for "z.ai not
+// showing quota (fix didn't work)": the live z.ai monitor API returns
+// data.limits[] as an ARRAY of typed windows (TIME_LIMIT / TOKENS_LIMIT with
+// percentage + nextResetTime), NOT the keyed {session, weekly} object the
+// generic mapper expected — which produced zero limits and made the Z.ai row
+// vanish. The zai fetcher must parse the real array shape into quota rows.
+func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
+	env.setActiveProvider("zai")
+	// Exact shape returned by https://api.z.ai/api/monitor/usage/quota/limit.
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"code":200,"data":{"level":"pro","limits":[
+		{"type":"TIME_LIMIT","unit":5,"number":1,"usage":1000,"currentValue":0,"remaining":1000,"percentage":0,"nextResetTime":1787122604987},
+		{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096},
+		{"type":"TOKENS_LIMIT","unit":6,"number":7,"percentage":38,"nextResetTime":1784876204993}
+	]},"success":true}`)
+	env.load(t)
+	env.warmCache(t)
+	out := env.callCommand("quota")
+	if !strings.Contains(out, "Z.ai") {
+		t.Fatalf("Z.ai row missing for the real monitor response shape:\n%s", out)
+	}
+	if !strings.Contains(out, "41%") {
+		t.Fatalf("z.ai session window (41%%) missing:\n%s", out)
+	}
+	if !strings.Contains(out, "38%") {
+		t.Fatalf("z.ai weekly window (38%%) missing:\n%s", out)
+	}
+	// Footer segment must show the active provider's quota, not vanish.
+	seg := env.renderSegment()
+	if seg == "" {
+		t.Fatalf("z.ai footer segment must render for the active provider, got empty")
 	}
 }
