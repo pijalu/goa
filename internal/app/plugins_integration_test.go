@@ -196,7 +196,10 @@ func TestStartAsyncPluginLoad_NoPluginsFlagSkips(t *testing.T) {
 }
 
 // TestPluginCommandExecutesThroughRouter runs the registered /quota command
-// via the command router to confirm end-to-end output flows.
+// via the command router to confirm end-to-end output flows. With a cold
+// cache the bare command must acknowledge processing immediately (never
+// blocking the input line on provider HTTP) and emit the table async; the
+// explicit /quota:refresh subcommand stays the synchronous render path.
 func TestPluginCommandExecutesThroughRouter(t *testing.T) {
 	s := newPluginTestSubsystems(t)
 	loadEnabledPlugins(s)
@@ -206,6 +209,8 @@ func TestPluginCommandExecutesThroughRouter(t *testing.T) {
 		t.Fatal("quota not resolved")
 	}
 	ctx := core.Context{Config: s.cfg, ProjectDir: s.projectDir}
+
+	// Bare /quota on a cold cache: immediate processing acknowledgment.
 	var buf strings.Builder
 	ctx.OutputBuffer = &buf
 	if err := cmd.Run(ctx, []string{}); err != nil {
@@ -215,7 +220,17 @@ func TestPluginCommandExecutesThroughRouter(t *testing.T) {
 	if out == "" {
 		t.Fatal("quota produced no output")
 	}
-	if !strings.Contains(out, "Session Usage") || !strings.Contains(out, "Provider Quotas") {
-		t.Fatalf("quota output incomplete:\n%s", out)
+	if !strings.Contains(out, "Fetching quotas") {
+		t.Fatalf("cold bare /quota must acknowledge processing immediately:\n%s", out)
+	}
+
+	// Explicit /quota:refresh is the synchronous path and confirms the router
+	// round-trips subcommand args end-to-end.
+	buf.Reset()
+	if err := cmd.Run(ctx, []string{"refresh"}); err != nil {
+		t.Fatalf("quota refresh run: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Quota refreshed") {
+		t.Fatalf("/quota:refresh output unexpected:\n%s", buf.String())
 	}
 }
