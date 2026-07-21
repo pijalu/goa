@@ -131,3 +131,6 @@ The /session picker list is wrong on three axes:
 
 ## Stats: cache write is always 0
 The cache-write figure in stats (/stats and/or the footer) is always 0. Review whether this is correct (provider never reports cache-write tokens) or a bug (we fail to parse/plumb it). If it is legitimately always 0, hide/remove the field when 0 instead of showing a permanent zero.
+
+## Tool call loop detector: false positives
+Again a tool call loop detected incorrectly — evidence: /Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260721-233247.zip. Review the cause and find a detection strategy that catches real runaway loops but limits false positives. Characterization of a TRUE loop: it goes endlessly and repeats the same couple of tool calls over and over (same tool + same arguments in a tight cycle). Legitimate work often repeats similar calls (e.g. go test runs with different grep filters, re-reading a file after an edit) and must NOT trip the detector.

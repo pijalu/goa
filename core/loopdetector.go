@@ -38,9 +38,19 @@ type LoopDetector struct {
 	mu sync.Mutex
 
 	// Tool call tracking — drives RecordToolCall loop detection.
-	turnToolCalls          map[string]int // key: toolName+hash(input) → count
-	loopWarningThreshold   int            // same tool call count before warning
-	loopInterruptThreshold int            // same tool call count before interrupt
+	// Consecutive-streak model (bugs.md "Tool call loop detector: false
+	// positives"): a true runaway loop repeats the same call(s) back-to-back
+	// endlessly, while legitimate work REUSES an identical call across a long
+	// session with other work in between (edit → `go build ./...` → edit →
+	// rebuild — the exact session that was killed by the old lifetime-count
+	// model: 11 identical builds over dozens of turns tripped the interrupt
+	// at 10). So the detector tracks, per distinct call, the CURRENT streak:
+	// any different call resets every streak. Only an unbroken run of
+	// identical calls can reach the thresholds.
+	toolStreaks           map[string]int // key: toolName+hash(input) → current consecutive streak
+	lastToolKey           string          // key of the most recent call ("" = none)
+	loopWarningThreshold   int            // same tool call streak before warning
+	loopInterruptThreshold int            // same tool call streak before interrupt
 
 	// Thinking-loop tracking — drives RecordThinkingDelta loop detection.
 	// Complete lines (terminated by '\n') are hashed and counted; only lines
@@ -127,7 +137,7 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		cfg.ThinkingLoopInterrupt = 6
 	}
 	return &LoopDetector{
-		turnToolCalls:           make(map[string]int),
+		toolStreaks:             make(map[string]int),
 		errorHistory:            make([]bool, loopErrorHistorySize),
 		loopWarningThreshold:    cfg.LoopWarning,
 		loopInterruptThreshold:  cfg.LoopInterrupt,
@@ -143,6 +153,11 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 // Returns a warning level: LoopOK (normal), LoopWarning, or LoopInterrupt.
 // Returns LoopOK immediately when tool-loop detection is disabled (either by
 // config or by session-level temp override).
+//
+// The count is a CONSECUTIVE streak: when the incoming call differs from the
+// previous one, all streaks reset — a real loop never alternates, while
+// legitimate long sessions reuse identical commands with other work in
+// between (see the struct comment for the false-positive incident).
 func (ld *LoopDetector) RecordToolCall(name, input string) LoopWarningLevel {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
@@ -152,9 +167,18 @@ func (ld *LoopDetector) RecordToolCall(name, input string) LoopWarningLevel {
 	}
 
 	key := name + ":" + hashInput(input)
-	ld.turnToolCalls[key]++
+	if key != ld.lastToolKey {
+		// A different call broke the run: every streak starts over. With
+		// exactly one live streak at a time, an alternating A-B-A-B cycle
+		// keeps each streak at 1 — detectable only with pair tracking, a
+		// deliberate trade-off documented on the struct (back-to-back
+		// repetition is the observed runaway signature).
+		ld.toolStreaks = make(map[string]int)
+		ld.lastToolKey = key
+	}
+	ld.toolStreaks[key]++
 
-	count := ld.turnToolCalls[key]
+	count := ld.toolStreaks[key]
 	switch {
 	case count >= ld.loopInterruptThreshold:
 		return LoopInterrupt
@@ -486,7 +510,8 @@ func (ld *LoopDetector) Reset() {
 	ld.mu.Lock()
 	defer ld.mu.Unlock()
 
-	ld.turnToolCalls = make(map[string]int)
+	ld.toolStreaks = make(map[string]int)
+	ld.lastToolKey = ""
 	ld.errorHistory = make([]bool, len(ld.errorHistory))
 	ld.errorIdx = 0
 	ld.thinkPending = ""

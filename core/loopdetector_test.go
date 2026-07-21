@@ -71,6 +71,43 @@ func TestLoopDetectorReset(t *testing.T) {
 	}
 }
 
+// TestLoopDetector_LegitRebuildCycleDoesNotTrip replays the false-positive
+// incident from bugs.md ("Tool call loop detector"): a long frigolite
+// session ran the byte-identical `go build ./...` command 11 times across
+// dozens of turns (edit → build → edit → build …) and the lifetime-count
+// detector interrupted the agent at the 10th. Legitimate reuse of an
+// identical command with other work in between must never trip detection.
+func TestLoopDetector_LegitRebuildCycleDoesNotTrip(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	build := `{"command": "cd /Users/muaddib/dev/frigolite && go build ./... 2>&1", "timeout": 30}`
+
+	// 11 identical builds — MORE than the old interrupt threshold — each
+	// separated by different tool calls (the real session's pattern).
+	for i := 0; i < 11; i++ {
+		if level := ld.RecordToolCall("edit", fmt.Sprintf(`{"path":"f%d.go","old_string":"a","new_string":"b"}`, i)); level != LoopOK {
+			t.Fatalf("edit %d: got %d, want LoopOK", i, level)
+		}
+		if level := ld.RecordToolCall("bash", build); level != LoopOK {
+			t.Fatalf("build %d: got %d, want LoopOK (streak broken by the edit)", i, level)
+		}
+	}
+}
+
+// TestLoopDetector_TrueRunawayStillInterrupts proves the streak model keeps
+// catching the real signature: the same call repeated back-to-back with
+// nothing else in between.
+func TestLoopDetector_TrueRunawayStillInterrupts(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	call := `{"command": "cat output.txt"}`
+
+	for i := 0; i < 9; i++ {
+		ld.RecordToolCall("bash", call)
+	}
+	if level := ld.RecordToolCall("bash", call); level != LoopInterrupt {
+		t.Fatalf("10th identical back-to-back call: got %d, want LoopInterrupt", level)
+	}
+}
+
 // longLine is a representative reasoning paragraph (well over minThinkLineLen)
 // mimicking the failure captured in the bug report: the assistant re-emits the
 // same block of reasoning many times during a single streaming turn.
