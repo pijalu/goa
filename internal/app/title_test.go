@@ -124,11 +124,13 @@ func TestTitleController_StartupDoneOnce(t *testing.T) {
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), true)
 	defer tc.stop()
+	tc.setBase("⬡ - proj")
 	done := make(chan struct{})
 	go func() { tc.startupDone(); close(done) }()
 	<-done
-	// Drain the writer so the transition's final write has landed.
-	sink.waitLast("⬡", 2*time.Second)
+	// Wait for the transition to fully complete (final base write landed) so
+	// the count is stable — the latest-wins writer is async.
+	sink.waitLast("⬡ - proj", 2*time.Second)
 	before := len(sink.titles)
 	tc.startupDone() // must be a no-op
 	tc.startupDone()
@@ -182,7 +184,11 @@ func TestTitleController_AnimatedOffStaysStatic(t *testing.T) {
 
 	tc.setWorking(true)
 	tc.tick()
-	if got := sink.last(); got != "⬡ - proj" {
+	// With animated=false the title stays the static base; the transition's
+	// final base write is async, so poll for it rather than read once (the
+	// latest-wins channel can reorder/drop the intermediate g⬡ frame under
+	// load).
+	if got := sink.waitLast("⬡ - proj", 2*time.Second); got != "⬡ - proj" {
 		t.Errorf("animated-off working title = %q, want static base %q", got, "⬡ - proj")
 	}
 }
