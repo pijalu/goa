@@ -14,9 +14,7 @@ func runEngineJS(t *testing.T, env *quotaTestEnv, expr string) string {
 	t.Helper()
 	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
 	bridge.installRequire(quotaPluginDir)
-	orig := httpDo
-	httpDo = env.mockDo()
-	defer func() { httpDo = orig }()
+	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))

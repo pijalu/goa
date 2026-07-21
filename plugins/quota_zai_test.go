@@ -98,6 +98,7 @@ func TestQuota_ZaiAppearsInFullQuotaOutput(t *testing.T) {
 	env.setActiveProvider("zai")
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "Z.ai") {
 		t.Fatalf("/quota output must contain the Z.ai provider row, got:\n%s", out)
@@ -115,11 +116,33 @@ func TestQuota_ZaiKeylessShowsNoAPIKeyRow(t *testing.T) {
 	env.setProvider("zai", map[string]any{"provider": "zai", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("zai")
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "Z.ai") {
 		t.Fatalf("/quota output must contain the Z.ai provider row even when keyless, got:\n%s", out)
 	}
 	if !strings.Contains(out, "no API key") {
 		t.Fatalf("/quota output must explain the missing key, got:\n%s", out)
+	}
+}
+
+// TestQuota_ZaiIdOnlyConfigAppearsInFullQuotaOutput is the regression for the
+// 2026-07-21 re-report: the user's real config entry has `id: zai`, an
+// endpoint and an api_key but NO `provider:` identity field (unlike sibling
+// entries). The z.ai row must still appear in /quota output.
+func TestQuota_ZaiIdOnlyConfigAppearsInFullQuotaOutput(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// Exact user config shape from bugs.md: id only, no `provider:` key.
+	env.setProvider("zai", map[string]any{"id": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
+	env.setActiveProvider("kimi-code")
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"session":{"used":41,"limit":100}}}`)
+	env.load(t)
+	env.warmCache(t)
+	out := env.callCommand("quota")
+	if !strings.Contains(out, "Z.ai") {
+		t.Fatalf("/quota output must contain the Z.ai provider row for an id-only config, got:\n%s", out)
+	}
+	if !strings.Contains(out, "41") {
+		t.Fatalf("/quota output must contain the z.ai usage figure 41, got:\n%s", out)
 	}
 }

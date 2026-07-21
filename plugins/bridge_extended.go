@@ -7,6 +7,7 @@ package plugins
 import (
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/dop251/goja"
@@ -63,16 +64,38 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 	httpObj := b.vm.NewObject()
 	httpObj.Set("fetch", func(call goja.FunctionCall) goja.Value {
 		req := b.buildHTTPRequest(call)
-		resp := httpDo(httpB, req)
+		resp := httpDo()(httpB, req)
 		return b.vm.ToValue(httpResponseToMap(resp))
 	})
 	goaObj.Set("http", httpObj)
 }
 
-// httpDo performs an HTTP request. It's a variable so tests can substitute a
-// mock without network access; production code assigns the real Do.
-var httpDo = func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
-	return b.Do(req)
+// httpDoFunc performs an HTTP request. Tests substitute a mock via setHTTPDo
+// to avoid network access; production uses the real Do.
+type httpDoFunc func(b *HTTPBridge, req HTTPRequest) HTTPResponse
+
+// httpDoStore holds the active httpDoFunc. It is accessed atomically because
+// plugin scheduler timers (setTimeout/setInterval) invoke goa.http.fetch from
+// their own goroutines — an unsynchronized package variable read raced the
+// test-side swap (race detected at this call site once quota priming moved to
+// a timer).
+var httpDoStore atomic.Value // stores httpDoFunc
+
+// httpDo returns the currently installed HTTP hook.
+func httpDo() httpDoFunc {
+	if v := httpDoStore.Load(); v != nil {
+		return v.(httpDoFunc)
+	}
+	return func(b *HTTPBridge, req HTTPRequest) HTTPResponse { return b.Do(req) }
+}
+
+// setHTTPDo installs fn as the HTTP hook and returns a restore function.
+// Tests call the restore (typically via t.Cleanup or defer) to put back the
+// previous hook.
+func setHTTPDo(fn httpDoFunc) (restore func()) {
+	prev := httpDo()
+	httpDoStore.Store(fn)
+	return func() { httpDoStore.Store(prev) }
 }
 
 // buildHTTPRequest parses goa.http.fetch arguments.

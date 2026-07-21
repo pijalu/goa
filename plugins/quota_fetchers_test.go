@@ -115,9 +115,7 @@ func TestFetcherAnthropic_ParsesWindows(t *testing.T) {
 	}`)
 	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
 	bridge.installRequire(quotaPluginDir)
-	orig := httpDo
-	httpDo = env.mockDo()
-	defer func() { httpDo = orig }()
+	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))
@@ -167,9 +165,7 @@ func TestOAuth_RefreshWithinSkew(t *testing.T) {
 
 	bridge := NewJSBridge(PluginDef{ID: "q"}, env.context())
 	bridge.installRequire(quotaPluginDir)
-	orig := httpDo
-	httpDo = env.mockDo()
-	defer func() { httpDo = orig }()
+	defer setHTTPDo(env.mockDo())()
 	unlock := lockVM()
 	defer unlock()
 	bridge.vm.Set("__require", bridge.vm.Get("require"))

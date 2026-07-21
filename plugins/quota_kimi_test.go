@@ -52,9 +52,7 @@ func TestFetcherKimi_ParsesRealAPIShape(t *testing.T) {
 			 "detail": {"limit": "100", "used": "4", "remaining": "96", "resetTime": "2099-07-19T09:41:33Z"}}
 		]
 	}`)
-	orig := httpDo
-	httpDo = env.mockDo()
-	defer func() { httpDo = orig }()
+	defer setHTTPDo(env.mockDo())()
 
 	got := callKimiFetch(t, `{ config: { apiKey: "sk-kimi-x", endpoint: "https://api.kimi.com/coding/v1" }, session: {} }`)
 	if !strings.Contains(got, "plan:Advanced") {
@@ -82,9 +80,7 @@ func TestFetcherKimi_NoAPIKey(t *testing.T) {
 func TestFetcherKimi_AuthFailed(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.respond("api.kimi.com", 401, `{"error":"unauthorized"}`)
-	orig := httpDo
-	httpDo = env.mockDo()
-	defer func() { httpDo = orig }()
+	defer setHTTPDo(env.mockDo())()
 
 	got := callKimiFetch(t, `{ config: { apiKey: "bad", endpoint: "https://api.kimi.com/coding/v1" }, session: {} }`)
 	if got != "error:auth_required" {
@@ -103,9 +99,7 @@ func TestFetcherKimi_MonthlyWindow(t *testing.T) {
 			 "detail": {"limit": "1000", "used": "800", "resetTime": "2099-08-01T00:00:00Z"}}
 		]
 	}`)
-	orig := httpDo
-	httpDo = env.mockDo()
-	defer func() { httpDo = orig }()
+	defer setHTTPDo(env.mockDo())()
 
 	got := callKimiFetch(t, `{ config: { apiKey: "k", endpoint: "https://api.kimi.com/coding/v1" }, session: {} }`)
 	if !strings.Contains(got, "Monthly (30d)=800/1000") {

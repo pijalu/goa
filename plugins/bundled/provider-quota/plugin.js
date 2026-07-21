@@ -158,6 +158,33 @@ function refreshAllDue(force) {
 	}
 }
 
+// hasUsableCache reports whether the cache holds at least one provider entry
+// (any state — data, auth_required, no_api_key counts as known; only a
+// completely absent entry is unknown). Used by /quota to decide between an
+// instant render and the async cold-start path.
+function hasUsableCache() {
+	for (var id in _fetchers) {
+		if (_cache[id]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// cacheAuthRequiredStates caches the auth_required state for OAuth providers
+// without a token. Cheap and HTTP-free (the fetcher short-circuits when the
+// token is absent), so it runs synchronously even on the non-forced render
+// path — preserving the /quota auth-required rows without re-introducing
+// network blocking on a bare /quota.
+function cacheAuthRequiredStates() {
+	for (var id in _fetchers) {
+		var fetcher = _fetchers[id];
+		if (fetcher.auth && fetcher.auth.type === "oauth" && !oauth.hasToken(id) && !_cache[id]) {
+			refreshDue(id, true);
+		}
+	}
+}
+
 // --- Status segment (cache read only) -------------------------------------
 
 // activeFetcherId resolves which provider the status segment tracks: the
@@ -379,7 +406,16 @@ function quotaCommand(args) {
 	var arg = args.length > 1 ? args[1] : "";
 	switch (sub) {
 		case "":
-			return renderFull();
+			// Bare /quota must never freeze the input line on provider HTTP
+			// calls (bugs.md "Quota command unresponsive"). Warm cache →
+			// instant render. Cold cache (plugin just loaded, scheduler tick
+			// hasn't landed yet) → acknowledge immediately and fetch on a
+			// timer goroutine, emitting the table via goa.output when done.
+			if (!hasUsableCache()) {
+				scheduleAsyncQuotaRender();
+				return "Fetching quotas… results will appear when ready (usually a few seconds).";
+			}
+			return renderFull(false);
 		case "refresh":
 			refreshAllDue(true);
 			goa.ui.refreshSegment("quota");
@@ -396,17 +432,43 @@ function quotaCommand(args) {
 			// /quota:<provider> → force-refresh just that provider and show it.
 			if (_fetchers[sub]) {
 				refreshDue(sub, true);
-				return renderFull();
+				return renderFull(false);
 			}
 			return "Unknown /quota subcommand: " + sub +
 				"\nUsage: /quota[:refresh|:json|:auth-status|:login:<provider>|:logout:<provider>|:<provider>]";
 	}
 }
 
+// scheduleAsyncQuotaRender fetches all providers on a scheduler timer
+// goroutine (off the command path) and emits the rendered table into the chat
+// viewport on completion. Coalesced: repeated cold /quota invocations while a
+// fetch is in flight do not stack timers.
+var _asyncQuotaPending = false;
+function scheduleAsyncQuotaRender() {
+	if (_asyncQuotaPending) {
+		return;
+	}
+	_asyncQuotaPending = true;
+	goa.setTimeout(function() {
+		_asyncQuotaPending = false;
+		refreshAllDue(true);
+		goa.ui.refreshSegment("quota");
+		goa.output(renderFull(false));
+	}, 0);
+}
+
 // renderFull builds the full /quota breakdown as markdown: headings plus
 // tables, rendered richly by goa's markdown pipeline (no console codes here).
-function renderFull() {
-	refreshAllDue(true);
+// When force is true every provider is re-fetched synchronously first
+// (explicit /quota:refresh); when false it renders from the cache only —
+// fetching is the scheduler's job, so a bare /quota never blocks the input
+// line on slow provider HTTP calls (bugs.md "Quota command unresponsive").
+function renderFull(force) {
+	if (force) {
+		refreshAllDue(true);
+	} else {
+		cacheAuthRequiredStates();
+	}
 	var out = [];
 	out.push("## Session Usage (current)");
 	out.push("");
@@ -678,5 +740,12 @@ goa.setInterval(function() {
 	goa.ui.refreshSegment("quota");
 }, 60000);
 
-// Prime the cache so the first segment render has data.
-refreshAllDue(false);
+// Prime the cache so the first segment render has data. Runs on a timer
+// goroutine, NOT synchronously at load: provider HTTP calls must never block
+// plugin startup (a slow/hanging endpoint would freeze the whole app boot
+// and delay the first /quota behind the load path — bugs.md "Quota command
+// unresponsive").
+goa.setTimeout(function() {
+	refreshAllDue(false);
+	goa.ui.refreshSegment("quota");
+}, 0);

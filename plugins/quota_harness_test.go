@@ -24,6 +24,7 @@ type quotaTestEnv struct {
 	segments   *UIBridge
 	hotkeys    *HotkeyBridge
 	storage    *StorageBridge
+	scheduler  *Scheduler
 	config     map[string]any
 	bridge     *JSBridge // set by load, used to inject test stubs
 }
@@ -46,6 +47,7 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 		segments: NewUIBridge(),
 		hotkeys:  NewHotkeyBridge(),
 		storage:  st,
+		scheduler: NewScheduler(),
 		config: map[string]any{
 			"providers":      map[string]any{},
 			"activeProvider": "anthropic",
@@ -96,7 +98,7 @@ func (e *quotaTestEnv) context() PluginContext {
 		Extended: &ExtendContext{
 			HTTP:      NewHTTPBridge(),
 			Storage:   e.storage,
-			Scheduler: NewScheduler(),
+			Scheduler: e.scheduler,
 			Browser: &BrowserBridge{open: func(u string) error {
 				e.mu.Lock()
 				e.browserURLs = append(e.browserURLs, u)
@@ -166,8 +168,7 @@ func registerStubOAuth(t *testing.T, e *quotaTestEnv) {
 // load installs the mock httpDo, loads the plugin from disk, and restores.
 func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 	t.Helper()
-	orig := httpDo
-	httpDo = func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
+	restore := setHTTPDo(func(b *HTTPBridge, req HTTPRequest) HTTPResponse {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		for _, r := range e.responders {
@@ -176,13 +177,22 @@ func (e *quotaTestEnv) load(t *testing.T) *JSBridge {
 			}
 		}
 		return HTTPResponse{Status: 404, Body: `{"error":"no mock for ` + req.URL + `"}`, Headers: map[string]string{}}
-	}
-	t.Cleanup(func() { httpDo = orig })
+	})
+	t.Cleanup(restore)
 
 	bridge, err := LoadFrom(quotaPluginDir, e.context())
 	if err != nil {
 		t.Fatalf("LoadFrom provider-quota: %v", err)
 	}
+	// The plugin primes its cache via setTimeout at load; in tests that timer
+	// would fire HTTP from a goroutine racing the global httpDo swap of the
+	// NEXT test. Cancel all load-time timers: rendering tests warm the cache
+	// synchronously via warmCache, and async tests drive their own timers.
+	e.scheduler.Stop()
+	// Also stop timers at test end so no scheduler goroutine outlives the
+	// mock HTTP hook (a late fire would otherwise hit the real network once
+	// t.Cleanup restores the production hook).
+	t.Cleanup(e.scheduler.Stop)
 	e.bridge = bridge
 	return bridge
 }
@@ -274,4 +284,15 @@ func mustReadSource(rel string) string {
 		panic("read " + rel + ": " + err.Error())
 	}
 	return string(data)
+}
+
+// warmCache forces a synchronous quota refresh so tests that assert on the
+// rendered table start from a warm cache. The plugin primes its cache
+// asynchronously at load (timers), so tests must opt into determinism via an
+// explicit /quota:refresh — which stays synchronous by design.
+func (e *quotaTestEnv) warmCache(t *testing.T) {
+	t.Helper()
+	if out := e.callCommand("quota", "refresh"); out != "Quota refreshed." {
+		t.Fatalf("warmCache: unexpected refresh output: %q", out)
+	}
 }

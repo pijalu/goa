@@ -67,6 +67,7 @@ func TestQuota_FullBreakdownWithProviders(t *testing.T) {
 	}`)
 
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 
 	for _, want := range []string{"Session Usage", "Anthropic", "Pro", "Z.ai", "Free", "Local"} {
@@ -259,6 +260,7 @@ func TestQuota_AuthRequiredShownInBreakdown(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	// No token stored → the OAuth fetcher returns auth_required.
 	env.load(t)
+	env.warmCache(t)
 	registerStubOAuth(t, env)
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "auth required") || !strings.Contains(out, stubOAuthName) {
@@ -271,6 +273,7 @@ func TestQuota_HTTPErrorSurfaced(t *testing.T) {
 	env.setProvider("z.ai", map[string]any{"provider": "zai", "apiKey": "k"})
 	env.respond("api.z.ai", 500, `{"error":"boom"}`)
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "error") {
 		t.Fatalf("expected error surfaced for z.ai:\n%s", out)
@@ -351,6 +354,7 @@ func TestQuota_UnsupportedProviderStatesNotSupported(t *testing.T) {
 	env.setProvider("local", map[string]any{"provider": "local"})
 	env.setActiveProvider("local")
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "not supported") {
 		t.Fatalf("/quota should state quota is not supported for the active provider:\n%s", out)
@@ -468,6 +472,7 @@ func TestQuota_BudgetSummaryPlentyOfRoom(t *testing.T) {
 	// Well within budget: low usage, far from reset.
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":10,"limit":100,"reset_at":"2099-01-01T01:48:00Z"}}}`)
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	if !strings.Contains(out, "plenty of room") {
 		t.Fatalf("/quota should explain the budget status:\n%s", out)
@@ -482,6 +487,7 @@ func TestQuota_TableMergesUsageAndPct(t *testing.T) {
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100,"reset_at":"2099-01-01T01:48:00Z"}}}`)
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	// Merged form: a bar followed by "42%".
 	if !strings.Contains(out, "42%") {
@@ -504,6 +510,7 @@ func TestQuota_TableHasAtResetAndStatus(t *testing.T) {
 	env.setProvider("anthropic", map[string]any{"provider": "anthropic", "apiKey": "sk"})
 	env.respond("api.anthropic.com/v1/usage", 200, `{"usage":{"session":{"used":42,"limit":100,"reset_at":"2099-01-01T01:48:00Z"}}}`)
 	env.load(t)
+	env.warmCache(t)
 	out := env.callCommand("quota")
 	for _, want := range []string{"At reset", "Status"} {
 		if !strings.Contains(out, want) {

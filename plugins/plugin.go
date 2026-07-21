@@ -357,7 +357,14 @@ func (b *JSBridge) RunFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("read plugin %s: %w", path, err)
 	}
+	// Hold the VM lock across script execution: a plugin may start a 0-delay
+	// setTimeout during load (e.g. the quota plugin priming its cache), and
+	// that timer fires on a scheduler goroutine that takes lockVM. Running the
+	// script lock-free lets the timer interleave with load on the same goja
+	// runtime — a data race (scheduler fireOnce vs RunString).
 	b.installRequire(filepath.Dir(path))
+	unlock := lockVM()
+	defer unlock()
 	_, err = b.vm.RunString(string(data))
 	if err != nil {
 		return fmt.Errorf("execute plugin %s: %w", path, err)
