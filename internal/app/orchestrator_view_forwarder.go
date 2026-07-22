@@ -5,9 +5,12 @@
 package app
 
 import (
+	"fmt"
+
 	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 
 	"github.com/pijalu/goa/core/orchestrator"
+	"github.com/pijalu/goa/internal/agentic"
 )
 
 // orchEventSource is the runtime surface the view forwarder depends on. It is
@@ -92,6 +95,7 @@ func (a *App) drainOrchView(done <-chan struct{}, src orchEventSource) {
 // viewport (conversation streaming) or the persistent stats panel (lifecycle,
 // stats, steering). It must be called on the command loop.
 func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
+	a.persistOrchViewEvent(ne)
 	switch ne.Kind {
 	case orchpanel.EvAgentThinking:
 		a.handleAgentThinking(ne.AgentID, ne.Text, true)
@@ -112,6 +116,74 @@ func (a *App) handleOrchViewEvent(ne orchpanel.AgentViewEvent) {
 	default:
 		a.applyToView(ne)
 	}
+}
+
+// persistOrchViewEvent writes sub-agent work to the session store so a saved
+// session holds the FULL orchestration run — not just the bare /orchestrate
+// command line (bugs.md item K: "orchestrate must log more — all sub agents
+// work must exist in the session").
+//
+// Sub-agent turns are persisted as SYSTEM content tagged with the agent id,
+// NOT as assistant turns: on restore, EventsToHistory folds assistant/tool
+// events into the MAIN agent's conversation history, and sub-agent output is
+// not the main agent's own words — injecting it there would poison the
+// restored model context. System content is skipped by EventsToHistory (no
+// history pollution) yet still replays into the chat transcript via
+// ReplayAgentEvent, so a restored session shows every sub-agent's work.
+//
+// Session-store writes are local JSONL appends, not prompt bytes, so this is
+// cache-hit-first neutral (guideline #9).
+func (a *App) persistOrchViewEvent(ne orchpanel.AgentViewEvent) {
+	store := a.subs.sessionStore
+	if store == nil {
+		return
+	}
+	tag := ne.Role
+	if tag == "" {
+		tag = ne.AgentID
+	}
+	write := func(text string) {
+		if text == "" {
+			return
+		}
+		store.WriteEvent(agentic.OutputEvent{
+			Type: agentic.EventContent,
+			Role: agentic.System,
+			Text: fmt.Sprintf("[%s] %s", tag, text),
+		})
+	}
+	switch ne.Kind {
+	case orchpanel.EvAgentMessage:
+		write(ne.Text)
+	case orchpanel.EvAgentThinking:
+		write("(thinking) " + ne.Text)
+	case orchpanel.EvAgentToolCall:
+		if !ne.IsDelta {
+			write(fmt.Sprintf("tool %s %s", ne.Tool, ne.ToolInput))
+		}
+	case orchpanel.EvAgentToolResult:
+		write(fmt.Sprintf("tool result (%s): %s", ne.Tool, truncateOrchLog(ne.Text)))
+	case orchpanel.EvAgentStarted:
+		write(fmt.Sprintf("— agent started (model=%s provider=%s) —", ne.Model, ne.Provider))
+	case orchpanel.EvAgentFinished:
+		write(fmt.Sprintf("— agent finished (%s) —", ne.Status))
+	case orchpanel.EvSourceStarted:
+		write(fmt.Sprintf("— run started: %s —", ne.Meta["objective"]))
+	case orchpanel.EvSourceFinished:
+		write(fmt.Sprintf("— run finished (%s) —", ne.Status))
+	case orchpanel.EvAskUser:
+		write("[orchestrator asks] " + ne.Question)
+	}
+}
+
+// truncateOrchLog caps a persisted tool-result body so a huge result does not
+// bloat the session file; the full text remains in the live view.
+func truncateOrchLog(s string) string {
+	const max = 4000
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + fmt.Sprintf("… (%d bytes elided)", len(s)-max)
 }
 
 // displayOrchestratorQuestion surfaces the orchestrator's ask_user question in
