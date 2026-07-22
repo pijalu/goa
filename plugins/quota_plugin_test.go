@@ -72,10 +72,16 @@ func TestQuota_FullBreakdownWithProviders(t *testing.T) {
 	env.warmCache(t)
 	out := env.callCommand("quota")
 
-	for _, want := range []string{"Session Usage", "Anthropic", "Pro", "Z.ai", "Free", "Local"} {
+	for _, want := range []string{"Session Usage", "Anthropic", "Pro", "Z.ai", "Free"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("/quota output missing %q:\n%s", want, out)
 		}
+	}
+	// The "Local (inferred)" row was dropped by fd1534a (duplicated the
+	// Session Usage table); the local fallback fetcher still powers the
+	// footer segment. Assert it is gone so the row cannot silently return.
+	if strings.Contains(out, "Local (inferred)") {
+		t.Errorf("/quota output should not contain the removed 'Local (inferred)' row:\n%s", out)
 	}
 	// Progress bars + percentages present.
 	if !strings.Contains(out, "%") {

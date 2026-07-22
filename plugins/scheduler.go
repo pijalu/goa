@@ -104,18 +104,31 @@ func (s *Scheduler) start(cb func(), period time.Duration, oneshot bool) int {
 }
 
 // fireOnce waits for the period then invokes one callback, self-clearing.
+// If the callback is deferred (a synchronous execution is active), it
+// re-fires after a short back-off so a one-shot prime (e.g. the quota
+// cache warm) is delayed, never dropped.
 func (s *Scheduler) fireOnce(t *pluginTimer, cb func()) {
-	timer := time.NewTimer(t.period)
-	defer timer.Stop()
-	select {
-	case <-t.stop:
-		return
-	case <-timer.C:
-		invokeSafe(cb)
+	delay := t.period
+	for {
+		timer := time.NewTimer(delay)
+		select {
+		case <-t.stop:
+			timer.Stop()
+			return
+		case <-timer.C:
+			deferred := false
+			invokeSafeWithReschedule(cb, func() { deferred = true })
+			if !deferred {
+				return
+			}
+			delay = 50 * time.Millisecond
+		}
 	}
 }
 
-// loop ticks until stopped, invoking the callback each period.
+// loop ticks until stopped, invoking the callback each period. A deferred
+// tick is simply skipped — the next tick retries — so intervals need no
+// back-off.
 func (s *Scheduler) loop(t *pluginTimer, cb func()) {
 	ticker := time.NewTicker(t.period)
 	defer ticker.Stop()
@@ -131,10 +144,33 @@ func (s *Scheduler) loop(t *pluginTimer, cb func()) {
 
 // invokeSafe runs a timer callback under the global VM lock with panic
 // containment so a misbehaving plugin cannot crash the timer goroutine.
+//
+// Timer work is best-effort (cache priming, periodic refresh). If a
+// synchronous command/tool execution is mid-flight — including parked on a
+// goa.http.fetch hop that released vmMu via runOutsideVMLock — the timer
+// DEFERS instead of entering the runtime: two goja frames must never overlap
+// (bugs.md item E, the flaky TestPluginCommandExecutesThroughRouter). The
+// callback re-fires on the next timer tick (intervals) or after a short
+// back-off (one-shots), so no cache update is lost — only delayed.
 func invokeSafe(cb func()) {
+	invokeSafeWithReschedule(cb, nil)
+}
+
+// invokeSafeWithReschedule runs cb under the VM lock, deferring to
+// reschedule when a synchronous execution is active. reschedule (may be nil)
+// re-arms the callback for a deferred attempt.
+func invokeSafeWithReschedule(cb func(), reschedule func()) {
 	if cb == nil {
 		return
 	}
+	if vmBusy() {
+		if reschedule != nil {
+			reschedule()
+		}
+		return
+	}
+	leave := enterVM()
+	defer leave()
 	unlock := lockVM()
 	defer unlock()
 	defer func() { _ = recover() }()

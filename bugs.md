@@ -36,6 +36,13 @@ Copyright (C) 2026 Pierre Poissinger
 *At the end of the session*: the list should be empty and this file should only contain the guidelines for bug reporting.
 If new items are added, restart the process.
 
+## STOP CONDITION (binding — an agent working this file must not stop early)
+An agent working this file may ONLY stop when ALL of the following hold:
+1. This file contains NO open items (every item is ✅/closed or moved to the archive).
+2. Every item is tested and working (regression test green; filmstrip-validated where it is a UI behavior per guideline #5).
+3. Any issue/problem discovered during the work has been ADDED to this file AND solved — nothing is deferred out-of-band.
+A turn that ends with open items, an untested fix, or an unrecorded newly-found issue is a FAILED turn: continue working; do not summarize-and-stop.
+
 ## Workflow for bugs
 1. Reproduce the failure before editing — ideally a command or script that triggers it on demand.
 2. State the observed failure exactly (command + output).
@@ -112,6 +119,35 @@ ESC goal-drive part is CLOSED (see above). Remaining: (1) orchestrator/swarm run
 
 ## ⏳ E. Flaky pre-existing test: TestPluginCommandExecutesThroughRouter (-race)
 Fails ~2/5 runs under `-race` on clean HEAD `7963f80` — NOT caused by this session's changes (verified by stash/retest on clean tree). Output shows `/quota:refresh` returning `undefined` instead of `Quota refreshed.`. Suspected: the plugin's `goa.setTimeout(...,0)` quota prime racing the synchronous `:refresh` path — the command executes while the VM is mid-prime. Investigate the `wrapRegisterCommand` result handoff (`plugins/plugin.go:137,194`) and the prime/command interleaving under the VM lock (now released across HTTP by `426e623`, which may have widened the race window — re-check).
+
+## ⏳ H. Mascot redraw REGRESSION — still happening (user report 2026-07-22)
+The DECAWM fix (`53d0a02`/`e5073d6`) did NOT fully cure it: the mascot re-appeared mid-session **during a tool call, at the end of the session**. Evidence:
+- Session export: `/Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260722-180656.zip`
+- Real terminal log: `/Users/muaddib/dev/term.log`
+**Plan:** (1) extract `session/events.jsonl` from the export and replay it through the session-replay filmstrip harness (`TestSessionReplay_MascotNeverRedrawn` pattern) to see whether the header layer re-emits; (2) correlate the wall-clock moment in `term.log` (grep the mascot art bytes) with the in-flight tool-call event; (3) next suspect per handover remains the `terminal.Size()` ioctl transient (H2) — a 0×0 or shrunk intermediate size would re-place the header; enable `logging.render_trace` on the capture if the replay is clean. The fact that it lands **during a tool call at end of session** points at a widget-height change forcing a full redraw while DECAWM state or scroll margin is momentarily wrong.
+
+## ⏳ I. Scrollback first line duplicated / off-by-one (user report 2026-07-22)
+The 1st line of history/scroll is often a DUPLICATED line; the issue disappears during work/redraw. Example transcript:
+```
+ ✓ search func .*SelectOption\( in *.go under ~/dev/goa (non-recursive) max:10
+ ✓ search func .*SelectOption\( in *.go under ~/dev/goa (non-recursive) max:10
+ search func .*SelectOption\\( (2 matches)
+```
+The completed tool widget's header line (`✓ search ...`) is emitted TWICE at the top of the scroll region, then the live body follows. Smells like the same pending-wrap/scroll-margin off-by-one family as H: when a widget transitions running→done, its first line is painted once in-place and once more on the next scroll. **Plan:** reproduce in the filmstrip harness by driving tool_call→tool_result with a viewport exactly full (widget top line == scroll-region top), assert no duplicated line in `Filmstrip.Render()`; then fix the row-index bookkeeping at the scroll boundary.
+
+## ⏳ J. Search tool display: garbled query line (user report 2026-07-22)
+The search tool widget shows an odd reconstructed query line:
+```
+ ✓ search func .*SelectOption\( in *.go under ~/dev/goa (non-recursive) max:10
+ search func .*SelectOption\\( (2 matches)
+```
+The second line renders the pattern as `func .*SelectOption\\(` — a DOUBLE backslash that was not in the request (single `\(`). Likely the renderer re-escapes the already-escaped pattern when building the summary line (JSON-unescape then regex-escape round trip). **Plan:** localize the search tool renderer (`tools/*_renderer.go` for the search tool), find where the `(2 matches)` summary line is built, stop the double-escaping; regression test asserting the summary shows the pattern byte-identical to the tool input.
+
+## ⏳ K. Orchestrate MUST persist all sub-agent work into the session (user report 2026-07-22)
+Two gaps: (1) orchestrate logs too little — all sub-agent work must exist in the session events; (2) resuming an orchestrate restores "more than the orchestrator command" (restored transcript does not match what the run actually did — likely replays stale/unrelated events because the run's events were never scoped to the resumed session). **Plan:** (1) trace what `OrchestrateCommand` writes to the session store (`recordCommandInSessionStore` only writes the bare `/orchestrate...` user line — sub-agent turns are NOT persisted); wire the orchestrator runtime's event stream into `sessionStore.WriteEvent` per sub-agent turn (respecting cache-hit-first: session-store writes are local, not prompt bytes); (2) on resume, restore exactly the events of the persisted run, no more; regression test: run a fanout orchestrate in the integration harness, assert the session file contains every sub-agent turn, then restore and diff transcripts.
+
+## ⏳ L. Pre-existing broken test: TestQuota_FullBreakdownWithProviders expects removed "Local" row
+Found while fixing item E. Fails on clean HEAD `f054fcf` (verified via stash/retest): `quota_plugin_test.go:77: /quota output missing "Local"`. Root cause: commit `fd1534a` intentionally dropped the "Local (inferred)" row from `/quota` output, but this test was never updated. NOT caused by the item-E VM-lock change. **Plan:** update the test expectation to match the post-`fd1534a` output (local section shows session usage stats, not a "Local" quota row); confirm the assertion still guards the local fallback rendering.
 
 ## ⏳ G. Final gates + archive (do last)
 1. Run the full-repo gate per guideline #6, EACH separately: `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`, `gocyclo -over 12 .`, `go test -count=1 -race -cover ./...`. Expect item E's flaky test to be the only -race failure — fix it first (item E), then this gate should be green.

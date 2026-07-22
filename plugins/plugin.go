@@ -91,11 +91,39 @@ type JSBridge struct {
 // reentrant, so holding it across a blocking call freezes the whole VM.
 var vmMu sync.Mutex
 
+// vmActive counts in-flight JS executions (re-entrant across the HTTP hop:
+// runOutsideVMLock does NOT decrement it). Scheduler timers use tryEnterVM
+// to detect that a synchronous command/tool is mid-execution and defer their
+// best-effort work instead of interleaving a second goja frame — the race
+// that made TestPluginCommandExecutesThroughRouter flaky (bugs.md item E).
+var vmActive int
+var vmActiveMu sync.Mutex
+
 // lockVM acquires the global JS execution lock. All VM interactions must go
 // through this so no two goroutines ever touch a runtime concurrently.
 func lockVM() func() {
 	vmMu.Lock()
 	return vmMu.Unlock
+}
+
+// enterVM marks a JS execution as active for the whole logical call (it is
+// NOT released by runOutsideVMLock). Returns the leave func.
+func enterVM() func() {
+	vmActiveMu.Lock()
+	vmActive++
+	vmActiveMu.Unlock()
+	return func() {
+		vmActiveMu.Lock()
+		vmActive--
+		vmActiveMu.Unlock()
+	}
+}
+
+// vmBusy reports whether any JS execution is currently active.
+func vmBusy() bool {
+	vmActiveMu.Lock()
+	defer vmActiveMu.Unlock()
+	return vmActive > 0
 }
 
 // NewJSBridge creates a new JS bridge for the given plugin definition.
@@ -171,6 +199,8 @@ func (b *JSBridge) buildToolWrapper(executeFn interface{}) (func(map[string]any)
 	switch fn := executeFn.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(params map[string]any) (interface{}, error) {
+			leave := enterVM()
+			defer leave()
 			unlock := lockVM()
 			defer unlock()
 			jsParams := b.vm.NewObject()
@@ -241,6 +271,8 @@ func (b *JSBridge) buildCommandWrapper(runFn interface{}) (func([]string) (strin
 	switch fn := runFn.(type) {
 	case func(goja.FunctionCall) goja.Value:
 		return func(args []string) (string, error) {
+			leave := enterVM()
+			defer leave()
 			unlock := lockVM()
 			defer unlock()
 			jsArgs := b.vm.NewArray()
