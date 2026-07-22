@@ -169,6 +169,12 @@ func (a *App) handleEscape() {
 	subs := a.subs
 	if subs.agentMgr != nil {
 		subs.agentMgr.Interrupt()
+		// ESC is a hard stop (bugs.md "ESC remainder: steering drain"): any
+		// user input queued as steering mid-turn must not dispatch as a
+		// follow-up turn after the interrupt.
+		if sq := subs.agentMgr.SteeringQueue(); sq != nil {
+			sq.Flush()
+		}
 	}
 	// ESC is a HARD STOP for all activities (bugs.md): without this, an
 	// active goal's drive loop — started on context.Background() by the
@@ -176,6 +182,18 @@ func (a *App) handleEscape() {
 	// the next continuation turn.
 	if subs.goalDriver != nil {
 		subs.goalDriver.Stop()
+	}
+	// Orchestrator/swarm runs (bugs.md "ESC remainder: orchestrator/swarm"):
+	// their contexts are detached from the main agent turn, so Interrupt()
+	// alone does not reach them. Cancel the foreground orchestrator's run
+	// context and any durable multi-agent runtime registered as active.
+	if subs.foregroundOrch != nil {
+		subs.foregroundOrch.Cancel()
+	}
+	if subs.orchActive != nil {
+		if rt := subs.orchActive.Get(); rt != nil {
+			rt.Cancel()
+		}
 	}
 	if subs.ptyMgr != nil {
 		subs.ptyMgr.Cleanup()
