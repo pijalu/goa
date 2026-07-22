@@ -40,6 +40,19 @@ type ProcessTerminal struct {
 	running  bool
 	done     chan struct{}
 
+	// lastGoodSize caches the most recent plausible terminal size. The
+	// TIOCGWINSZ ioctl can transiently fail (or return a degenerate size) on
+	// a real terminal — e.g. during a SIGWINCH race or an emulator resize
+	// burst — and Size() would otherwise fall back to 80x24 for a single
+	// frame. That one-frame blip makes the compositor take its
+	// resize/full-repaint path and repaint the header (the bugs.md "Mascot
+	// redraw" regression: the logo flashing mid-session during a tool call).
+	// A transient misread is indistinguishable from a real resize at the
+	// compositor, so Size() filters it at the source.
+	lastGoodW int
+	lastGoodH int
+	sizeMu    sync.Mutex
+
 	// Persistent input buffer — accumulates partial sequences across reads
 	stdinBuffer *StdinBuffer
 
@@ -491,10 +504,38 @@ func (t *ProcessTerminal) Write(p []byte) (n int, err error) { return os.Stdout.
 func (t *ProcessTerminal) WriteString(s string) { os.Stdout.WriteString(s) }
 
 // Size returns terminal dimensions.
+//
+// Transient-filtered (bugs.md "Mascot redraw"): a failed or degenerate
+// TIOCGWINSZ read does NOT fall back to the 80x24 default once a plausible
+// size is known — that single-frame 80x24 blip was the source of the
+// mid-session header repaint. Instead the last known-good size is returned
+// until a real, plausible size is read again. Genuine resizes still pass
+// through immediately (they read as valid, non-degenerate sizes).
 func (t *ProcessTerminal) Size() (width, height int) {
 	w, h, err := term.GetSize(t.fd)
-	if err != nil {
-		return 80, 24
+	return t.filteredSize(w, h, err != nil)
+}
+
+// filteredSize applies the transient filter to a raw ioctl result. It is the
+// testable decision point: GetSize itself cannot be mocked (fixed fd), but
+// the accept/cache/fallback logic can. readErr reports the ioctl failed.
+func (t *ProcessTerminal) filteredSize(w, h int, readErr bool) (int, int) {
+	t.sizeMu.Lock()
+	defer t.sizeMu.Unlock()
+
+	// A valid, non-degenerate read: cache and return it. Degenerate means
+	// below the minimum the UI can lay out in (the compositor itself clamps
+	// height<10 to 24) — a real terminal is never 0-2 rows mid-session.
+	if !readErr && w >= 10 && h >= 3 {
+		t.lastGoodW = w
+		t.lastGoodH = h
+		return w, h
+	}
+
+	// Transient failure or degenerate read: return the last known-good size
+	// if we have one, else the historical default.
+	if t.lastGoodW > 0 && t.lastGoodH > 0 {
+		return t.lastGoodW, t.lastGoodH
 	}
 	if w < 10 {
 		w = 80
