@@ -495,7 +495,7 @@ func (c *Compositor) Render(scene *Scene) {
 	case first:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
 		// emits any off-screen rows into scrollback then draws the window.
-		c.drawWindow(canvas, scene.Cursor, width, height, false)
+		c.drawWindow(canvas, scene.Cursor, width, height)
 	case widthChanged:
 		// Width change: the terminal's scrollback still holds rows laid out at
 		// the OLD width (line wrap differs), so it no longer matches the new
@@ -504,9 +504,9 @@ func (c *Compositor) Render(scene *Scene) {
 		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
 	case resized || hasOverlay:
 		// Height-only resize or overlay: drawWindow emits scrolled-off rows
-		// then repaints the visible window (clearing the screen, preserving
-		// scrollback — content width is unchanged so scrollback stays valid).
-		c.drawWindow(canvas, scene.Cursor, width, height, true)
+		// then repaints the visible window in place (no screen wipe — the
+		// per-row repaint already replaces every row; see drawWindow).
+		c.drawWindow(canvas, scene.Cursor, width, height)
 	default:
 		c.renderDiff(canvas, scene.Cursor, width, height)
 	}
@@ -547,13 +547,20 @@ func (c *Compositor) appendOverflow(buf *strings.Builder, canvas []string, width
 	c.scrollTop = target
 }
 
-// drawWindow redraws the whole visible window top-down with absolute CUP in one
-// synchronized frame. It first emits any newly scrolled-off rows into
-// scrollback (via appendOverflow), then repaints the window. When clearScreen
-// is set it wipes the visible screen (\x1b[2J) after the scroll emission —
-// used on resize/overlay frames to drop stale rows — but never touches
-// scrollback (no \x1b[3J).
-func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int, clearScreen bool) {
+// drawWindow redraws the whole visible window top-down with absolute CUP in
+// one synchronized frame. It first emits any newly scrolled-off rows into
+// scrollback (via appendOverflow), then repaints every visible row (CUP +
+// \x1b[2K + content). It never wipes the screen first: the repaint loop
+// already clears and rewrites EVERY row of the window, so a preceding
+// full-screen wipe (\x1b[2J, removed 2026-07-21) was redundant — and
+// harmful: on real terminals it visibly blanks the screen before the
+// rewrite lands (even inside CSI 2026 on several emulators), which produced
+// the black flash / mascot-flicker seen on overlay frames during tool calls
+// (bugs.md "Mascot/logo redraw", HIGH). In-place row replacement — the same
+// strategy renderDiff uses — is flicker-free and leaves no stale content:
+// every row is overwritten, and a shorter canvas shifts the window bottom up
+// rather than leaving residue.
+func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int) {
 	c.setTracePath("full")
 	c.fullRedrawCount++
 	vt := max(0, len(canvas)-height)
@@ -561,9 +568,6 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
 	c.appendOverflow(&buf, canvas, width, height)
-	if clearScreen {
-		buf.WriteString("\x1b[2J\x1b[H")
-	}
 	for i := vt; i < len(canvas); i++ {
 		screenRow := i - vt + 1
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))

@@ -428,8 +428,11 @@ func TestCompositor_HeightOnlyResizePreservesScrollback(t *testing.T) {
 	if strings.Contains(resize, "\x1b[3J") {
 		t.Errorf("height-only resize wiped scrollback (emitted \\x1b[3J): %q", resize)
 	}
-	if !strings.Contains(resize, "\x1b[2J") {
-		t.Errorf("height-only resize did not clear the screen (missing \\x1b[2J)")
+	// Height-only resize repaints the visible window IN PLACE — a screen
+	// wipe (\x1b[2J) would blank the frame before the rewrite lands, which
+	// is the black-flash/mascot-blink of bugs.md "Mascot/logo redraw".
+	if strings.Contains(resize, "\x1b[2J") {
+		t.Errorf("height-only resize blanked the visible screen (\\x1b[2J) — repaint must be in-place: %q", resize)
 	}
 	// Repaint only the new viewport height (16), not all 30 transcript lines.
 	if crlf := strings.Count(resize, "\r\n"); crlf >= 30 {
