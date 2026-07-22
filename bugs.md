@@ -47,12 +47,14 @@ If new items are added, restart the process.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
 # TODO
-## Start-up
+## ~~Start-up~~ ✅ CLOSED (confirmed by user 2026-07-22)
 Regression: At startup, Goa inputline is not responsive for couple seconds - likely related to load up items - run a details review of startup sequence.
 
 The inputline should not be impacted by the startup sequence / plugin loading / ...
 
 **Hard requirement:** there must not be *any* HTTP/API calls blocking the startup path — every network call (provider probe, context-window refresh, quota prime, update check, model list, ...) must be fully async, with results applied when they land. goa *MUST* feel fast: first frame + responsive inputline come before any I/O.
+
+**FIXED in two parts:** (1) `341f5ad` removed the synchronous RefreshLocalContextWindow HTTP probe (up to 15s block) from startAgentSession — redundant with the async post-first-delta refresh; (2) `426e623` released the goja VM lock across blocking goa.http.fetch — the actual delay the user felt, which matched the quota status segment appearing (the quota prime held vmMu across synchronous HTTP, starving the command loop). User confirmed OK 2026-07-22.
 
 ## Goal
 Regression: currently a goal execution does not show any status line details:
@@ -119,8 +121,12 @@ Recent regression — repro correlation: occurs with tool calls and after a term
 
 Additional detail (user, 21 jul): occurs after a tab switch DURING tool calls. The mascot should be much higher in the scrollback history — it seems the redraw does not draw the active view in the correct ORDER (stale/mis-ordered rows rather than a simple re-emit). This issue existed before but did not surface until the recent fixes (21 jul) — or something else changed that made it more obvious. Check interplay with the session-3 tool-widget elapsed/start-time fixes and any render-order change landed that day (git log around 2026-07-21 touching tui/ and tools/*_renderer.go).
 
-## Terminal title animation does not work
+Refined (user, 21 jul, HIGH PRIORITY): NOT related to the tab switch — correlated with any full-screen redraw: the mascot reappears while the REST OF THE SCREEN IS BLACK, i.e. a full repaint paints the header rows but fails to paint the remaining rows (blank viewport below). This is the old "closed" mascot issue resurfacing — something changed today (21 jul) that re-armed it. The blinking is extremely annoying. Treat as HIGH: find what changed today (git log tui/ internal/app/ tools/ since 2026-07-20), and why a full redraw emits mascot rows but black rows for the live viewport (compose/placeLayer skipping base layers? wrong viewport top on the repaint frame? cleared buffer without re-place?).
+
+## ~~Terminal title animation does not work~~ ✅ CLOSED (user 2026-07-22)
 The terminal window title animation (hexagon-black startup transition + working animation, see `internal/app/title.go` titleController) does not play. May be related to the startup delay (animation frames starved while the main goroutine is blocked on startup I/O — see Start-up item).
+
+**CLOSED per user 2026-07-22.** Likely resolved by the Start-up fixes: the title controller's writer goroutine + startup-done hook were starved by the same blocking I/O (startup HTTP probe, quota-prime VM-lock hold) that froze the input line; with those removed the transition plays.
 
 ## Session: slow commands need an "executing xyz..." placeholder
 Session feels slow — every command must immediately show an "executing xyz..." placeholder so the user knows something is happening, then replace it with the result when done. Applies to all /commands (e.g. /session, /quota, /config, ...): no silent gap between submit and first visible feedback.
