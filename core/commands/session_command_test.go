@@ -21,7 +21,7 @@ func newSessionCmdCtx(store core.SessionStoreAPI) (core.Context, *strings.Builde
 
 func TestSessionCommand_Run_DefaultsToRestore(t *testing.T) {
 	cmd := &SessionCommand{}
-	store := newSessionStore([]core.SessionInfo{{Name: "s1", EventCount: 3}})
+	store := newSessionStore([]core.SessionInfo{{Name: "s1", EventCount: 3, HasModelTurn: true}})
 	ctx, buf := newSessionCmdCtx(store)
 
 	// Default calls showSessionPicker; with no SelectOptionFunc it cancels

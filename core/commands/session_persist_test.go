@@ -203,7 +203,7 @@ func TestShowSessionPicker_DeleteCancel(t *testing.T) {
 	w := newWriter()
 	es := &fakeEventSink{}
 	sel := newSelector("", false) // ok=false → cancelled
-	store := newSessionStore([]core.SessionInfo{{Name: "my-session", EventCount: 5}})
+	store := newSessionStore([]core.SessionInfo{{Name: "my-session", EventCount: 5, HasModelTurn: true}})
 
 	err := showSessionPicker(w, es, sel, store, nil, true, 0)
 	if err != nil {
@@ -215,19 +215,39 @@ func TestShowSessionPicker_DeleteCancel(t *testing.T) {
 }
 
 func TestBuildSessionItems(t *testing.T) {
+	today := time.Now()
+	yesterday := today.AddDate(0, 0, -1)
 	sessions := []core.SessionInfo{
-		{Name: "s1", EventCount: 10, TokenTotal: 500},
-		{Name: "s2", EventCount: 3, TokenTotal: 0},
-		{Name: "s3", EventCount: 5, TokenTotal: 200, FirstMessage: "summarize current project"},
-		{Name: "s4", EventCount: 1, TokenTotal: 0, FirstMessage: "Read the first 500 lines of go.mod for me and summarize what you find"},
+		{Name: "s1", EventCount: 10, TokenTotal: 500, Date: today, HasModelTurn: true},
+		{Name: "s2", EventCount: 3, TokenTotal: 0, Date: yesterday, HasModelTurn: true},
+		{Name: "s3", EventCount: 5, TokenTotal: 200, FirstMessage: "summarize current project", Date: today, HasModelTurn: true},
+		{Name: "s4", EventCount: 1, TokenTotal: 0, FirstMessage: "Read the first 500 lines of go.mod for me and summarize what you find", Date: yesterday, HasModelTurn: true},
 	}
 
 	items := buildSessionItems(sessions)
 	if len(items) != 4 {
 		t.Fatalf("expected 4 items, got %d", len(items))
 	}
-	if items[0].Value != "s1" || items[0].Label != "s1" {
-		t.Errorf("unexpected item: %+v", items[0])
+	// Order is preserved (newest-first as given), not re-sorted alphabetically.
+	if items[0].Value != "s1" || items[1].Value != "s2" || items[2].Value != "s3" || items[3].Value != "s4" {
+		t.Fatalf("store order not preserved: %+v", items)
+	}
+	// Today's session label carries an hh:mm time prefix; the value stays the raw name.
+	if items[0].Value != "s1" {
+		t.Errorf("value must stay the raw session name, got %q", items[0].Value)
+	}
+	if !strings.HasSuffix(items[0].Label, "  s1") {
+		t.Errorf("label must be '<timestamp>  <name>', got %q", items[0].Label)
+	}
+	if !strings.Contains(items[0].Label, today.Format("15:04")) {
+		t.Errorf("today's session must show hh:mm, got %q", items[0].Label)
+	}
+	// A non-today session shows the date instead of a time.
+	if !strings.Contains(items[1].Label, yesterday.Format("2006-01-02")) {
+		t.Errorf("non-today session must show the date, got %q", items[1].Label)
+	}
+	if !items[0].PreserveOrder {
+		t.Errorf("items must opt out of alphabetical sorting, got %+v", items[0])
 	}
 	if !strings.Contains(items[0].Description, "500 tokens") {
 		t.Errorf("expected token count in desc, got: %s", items[0].Description)
@@ -245,6 +265,37 @@ func TestBuildSessionItems(t *testing.T) {
 	// s4 has a long first message that should be truncated.
 	if strings.Contains(items[3].Description, "what you find") {
 		t.Errorf("expected truncated message, got: %s", items[3].Description)
+	}
+}
+
+// TestBuildSessionItems_DuplicateMinuteGetsSeconds pins the timestamp
+// disambiguation rule: two sessions in the same hh:mm minute get :ss labels.
+func TestBuildSessionItems_DuplicateMinuteGetsSeconds(t *testing.T) {
+	now := time.Now()
+	base := time.Date(now.Year(), now.Month(), now.Day(), 14, 30, 10, 0, time.Local)
+	sessions := []core.SessionInfo{
+		{Name: "a", EventCount: 1, Date: base, HasModelTurn: true},
+		{Name: "b", EventCount: 1, Date: base.Add(20 * time.Second), HasModelTurn: true},
+	}
+	items := buildSessionItems(sessions)
+	if !strings.Contains(items[0].Label, "14:30:10") {
+		t.Errorf("duplicate hh:mm must append :ss, got %q", items[0].Label)
+	}
+	if !strings.Contains(items[1].Label, "14:30:30") {
+		t.Errorf("duplicate hh:mm must append :ss, got %q", items[1].Label)
+	}
+}
+
+// TestFilterSessionsWithModelTurn pins the picker filter: sessions without an
+// assistant reply are hidden from the picker (bugs.md item B).
+func TestFilterSessionsWithModelTurn(t *testing.T) {
+	sessions := []core.SessionInfo{
+		{Name: "with-turn", HasModelTurn: true},
+		{Name: "user-only", HasModelTurn: false},
+	}
+	kept := filterSessionsWithModelTurn(sessions)
+	if len(kept) != 1 || kept[0].Name != "with-turn" {
+		t.Fatalf("expected only with-turn kept, got %+v", kept)
 	}
 }
 

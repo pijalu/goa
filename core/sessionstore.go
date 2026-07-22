@@ -27,6 +27,10 @@ type SessionInfo struct {
 	EventCount   int       `json:"event_count"`
 	TokenTotal   int       `json:"token_total"`
 	FirstMessage string    `json:"first_message,omitempty"`
+	// HasModelTurn reports whether the session holds at least one assistant
+	// text reply. The /session picker hides sessions without a model turn;
+	// export/dream flows still see them via ListSessions.
+	HasModelTurn bool `json:"has_model_turn"`
 }
 
 // ErrEmptySession is returned by SaveCurrent when there is no conversation to
@@ -343,7 +347,7 @@ func (s *SessionStore) ListSessions() ([]SessionInfo, error) {
 		name := strings.TrimSuffix(entry.Name(), ".jsonl")
 
 		// Count events by reading the file
-		count, tokens, firstMsg, hasConversation := s.scanSessionFile(filepath.Join(sessionDir, entry.Name()))
+		count, tokens, firstMsg, hasConversation, hasModelTurn := s.scanSessionFile(filepath.Join(sessionDir, entry.Name()))
 		if !hasConversation {
 			// Empty session: no user/assistant conversation content (e.g.
 			// only system or stats events, or a session abandoned before the
@@ -358,6 +362,7 @@ func (s *SessionStore) ListSessions() ([]SessionInfo, error) {
 			EventCount:   count,
 			TokenTotal:   tokens,
 			FirstMessage: firstMsg,
+			HasModelTurn: hasModelTurn,
 		})
 	}
 
@@ -456,43 +461,64 @@ func (s *SessionStore) ImportSession(name, sourcePath string) error {
 	return nil
 }
 
-func (s *SessionStore) scanSessionFile(path string) (count, tokens int, firstMsg string, hasConversation bool) {
+// sessionScan accumulates listing metadata while scanning a session file.
+type sessionScan struct {
+	count          int
+	tokens         int
+	firstMsg       string
+	hasConversation bool
+	hasModelTurn   bool
+}
+
+// absorb folds one JSONL line into the scan: event count, token totals, the
+// first user message, and the conversation/model-turn markers.
+func (sc *sessionScan) absorb(line string) {
+	var event agentic.OutputEvent
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return
+	}
+	if event.Timings != nil {
+		sc.tokens += event.Timings.PromptN + event.Timings.PredictedN
+	}
+	if event.ContextStats != nil {
+		sc.tokens = event.ContextStats.EstimatedTokens
+	}
+	// Conversation content: any real user or assistant text. Sessions
+	// holding only system/stats/progress events are "empty" for listing
+	// purposes — restoring them would show a blank transcript.
+	isContent := event.Type == agentic.EventContent && event.Text != ""
+	if isContent && (event.Role == agentic.User || event.Role == agentic.Assistant) {
+		sc.hasConversation = true
+	}
+	// Model-turn marker: at least one assistant text reply. The session
+	// picker hides sessions without one (bugs.md "must not list sessions
+	// without an actual model turn") while the store still lists them for
+	// export/dream flows.
+	if isContent && event.Role == agentic.Assistant {
+		sc.hasModelTurn = true
+	}
+	// Capture the first user message text.
+	if sc.firstMsg == "" && event.Type == agentic.EventContent && event.Role == agentic.User && event.Text != "" {
+		sc.firstMsg = event.Text
+	}
+}
+
+func (s *SessionStore) scanSessionFile(path string) (count, tokens int, firstMsg string, hasConversation bool, hasModelTurn bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, 0, "", false
+		return 0, 0, "", false, false
 	}
 
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	var sc sessionScan
+	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		count++
-
-		var event agentic.OutputEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if event.Timings != nil {
-			tokens += event.Timings.PromptN + event.Timings.PredictedN
-		}
-		if event.ContextStats != nil {
-			tokens = event.ContextStats.EstimatedTokens
-		}
-		// Conversation content: any real user or assistant text. Sessions
-		// holding only system/stats/progress events are "empty" for listing
-		// purposes — restoring them would show a blank transcript.
-		if event.Type == agentic.EventContent && event.Text != "" &&
-			(event.Role == agentic.User || event.Role == agentic.Assistant) {
-			hasConversation = true
-		}
-		// Capture the first user message text.
-		if firstMsg == "" && event.Type == agentic.EventContent && event.Role == "user" && event.Text != "" {
-			firstMsg = event.Text
-		}
+		sc.count++
+		sc.absorb(line)
 	}
-	return
+	return sc.count, sc.tokens, sc.firstMsg, sc.hasConversation, sc.hasModelTurn
 }
 
 // randomID generates a short cryptographically random string for session IDs.

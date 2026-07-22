@@ -163,6 +163,61 @@ func TestSessionListSessions_FiltersEmptySessions(t *testing.T) {
 	}
 }
 
+// TestSessionListSessions_HasModelTurn verifies the model-turn marker: a
+// session with a user message but no assistant reply is still listed (the
+// store keeps it for export/dream flows) but reports HasModelTurn=false, so
+// the /session picker can hide it (bugs.md "Session command: must not list
+// sessions without an actual model turn").
+func TestSessionListSessions_HasModelTurn(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+
+	// User-only session (model call failed / abandoned before first reply).
+	ss.StartSession()
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close user-only session: %v", err)
+	}
+
+	// Full turn: user + assistant.
+	ss.StartSession()
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, Text: "hello"})
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close full-turn session: %v", err)
+	}
+
+	sessions, err := ss.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected both sessions listed at store level, got %d", len(sessions))
+	}
+	var userOnly, fullTurn *bool
+	for _, s := range sessions {
+		if s.EventCount == 1 {
+			v := s.HasModelTurn
+			userOnly = &v
+		}
+		if s.EventCount == 2 {
+			v := s.HasModelTurn
+			fullTurn = &v
+		}
+	}
+	if userOnly == nil || fullTurn == nil {
+		t.Fatalf("could not identify sessions: %+v", sessions)
+	}
+	if *userOnly {
+		t.Errorf("user-only session must report HasModelTurn=false")
+	}
+	if !*fullTurn {
+		t.Errorf("full-turn session must report HasModelTurn=true")
+	}
+}
+
 // TestSessionListSessions_NewestFirst verifies restore listings are ordered
 // from most recent to oldest, with a deterministic tiebreak.
 func TestSessionListSessions_NewestFirst(t *testing.T) {

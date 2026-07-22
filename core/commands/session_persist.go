@@ -280,6 +280,7 @@ func showSessionPicker(
 		writeFmt(w, "Error listing sessions: %v\n", err)
 		return nil
 	}
+	sessions = filterSessionsWithModelTurn(sessions)
 	if len(sessions) == 0 {
 		writeStr(w, "No saved sessions found.\n")
 		return nil
@@ -304,10 +305,35 @@ func showSessionPicker(
 }
 
 
+// filterSessionsWithModelTurn keeps only sessions holding an actual model
+// turn (bugs.md "Session command: must not list sessions without an actual
+// model turn"). Command-only sessions (e.g. /orchestrate) still appear in
+// /session:list and export; restoring one would show a one-sided transcript
+// with no model work.
+func filterSessionsWithModelTurn(sessions []core.SessionInfo) []core.SessionInfo {
+	kept := sessions[:0]
+	for _, s := range sessions {
+		if s.HasModelTurn {
+			kept = append(kept, s)
+		}
+	}
+	return kept
+}
+
 // buildSessionItems converts session records into selector items.
 // Pure data transformation — no Context dependency.
+//
+// The picker keeps the store's newest-first order (PreserveOrder) so the
+// most recent session is on top and preselected (the selector defaults its
+// cursor to item 0 when currentValue matches nothing). Each label is
+// prefixed with a timestamp (bugs.md "Session command: list ordering,
+// filtering, timestamps"):
+//   - today          → "15:04"      (time only)
+//   - other days     → "2006-01-02" (date only)
+//   - duplicate hh:mm within the list → "15:04:05" (seconds disambiguate)
 func buildSessionItems(sessions []core.SessionInfo) []tui.SelectorItem {
 	items := make([]tui.SelectorItem, 0, len(sessions))
+	needSeconds := duplicateMinuteLabels(sessions)
 	for _, s := range sessions {
 		desc := fmt.Sprintf("%d events", s.EventCount)
 		if s.TokenTotal > 0 {
@@ -322,12 +348,42 @@ func buildSessionItems(sessions []core.SessionInfo) []tui.SelectorItem {
 			}
 		}
 		items = append(items, tui.SelectorItem{
-			Value:       s.Name,
-			Label:       s.Name,
-			Description: desc,
+			Value:         s.Name,
+			Label:         sessionTimestampLabel(s.Date, needSeconds) + "  " + s.Name,
+			Description:   desc,
+			PreserveOrder: true,
 		})
 	}
 	return items
+}
+
+// duplicateMinuteLabels reports whether any two sessions share the same
+// hh:mm wall-clock minute, in which case labels need :ss to disambiguate.
+func duplicateMinuteLabels(sessions []core.SessionInfo) bool {
+	seen := make(map[string]struct{}, len(sessions))
+	for _, s := range sessions {
+		key := s.Date.Local().Format("2006-01-02 15:04")
+		if _, dup := seen[key]; dup {
+			return true
+		}
+		seen[key] = struct{}{}
+	}
+	return false
+}
+
+// sessionTimestampLabel formats a session date for the picker: time only for
+// today's sessions, date only otherwise; seconds are appended when the list
+// contains two sessions in the same minute.
+func sessionTimestampLabel(d time.Time, needSeconds bool) string {
+	local := d.Local()
+	now := time.Now().Local()
+	if local.Year() == now.Year() && local.YearDay() == now.YearDay() {
+		if needSeconds {
+			return local.Format("15:04:05")
+		}
+		return local.Format("15:04")
+	}
+	return local.Format("2006-01-02")
 }
 
 // truncateFirstMessage shortens a user message for display in the session picker.

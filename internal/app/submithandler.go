@@ -499,12 +499,33 @@ func (a *App) handleSlashCommand(input string) {
 	// that consists only of commands (e.g. /orchestrate) is not empty on reload.
 	a.recordCommandInSessionStore(result, input)
 
+	// Immediate feedback for slow commands (bugs.md "Session: slow commands
+	// need an executing placeholder"): show the spinner line before the
+	// synchronous Run so there is no silent gap between submit and output.
+	showPlaceholder := a.beginCommandPlaceholder(result, trimmed)
+	if showPlaceholder {
+		// Panic guard: a panicking command must not leave the spinner stuck.
+		defer subs.statusMsg.Clear()
+	}
+
 	ctx := coreContextForCommand(subs, a)
 	output, err := subs.cmdRouter.Execute(ctx, result)
+
+	if showPlaceholder {
+		subs.statusMsg.Clear()
+	}
 	if err != nil {
 		output = fmt.Sprintf("Error: %v", err)
 	}
 
+	a.postCommandBookkeeping(result, trimmed)
+	a.echoCommandResult(result, input, output)
+}
+
+// postCommandBookkeeping applies post-execution side effects: pending input
+// history (e.g. after /session:restore) and command-usage stats.
+func (a *App) postCommandBookkeeping(result *core.RouteResult, trimmed string) {
+	subs := a.subs
 	// After command execution (e.g. /session:restore), apply any pending
 	// input history to the editor.
 	if subs.agentMgr != nil {
@@ -523,7 +544,13 @@ func (a *App) handleSlashCommand(input string) {
 			inp.UpdateCommandFreqs(subs.commandStats.All())
 		}
 	}
+}
 
+// echoCommandResult renders the command's output into the chat viewport.
+// Internal commands (e.g. /config) and commands that opened an interactive
+// main-input prompt (e.g. /goal) handle their own feedback and are not echoed.
+func (a *App) echoCommandResult(result *core.RouteResult, input, output string) {
+	subs := a.subs
 	// Internal commands are not echoed into the chat viewport and never
 	// forwarded to the LLM. They are purely in-process (e.g., /config opens
 	// the wizard). The command itself is responsible for user feedback via
@@ -548,9 +575,25 @@ func (a *App) handleSlashCommand(input string) {
 	}
 }
 
+// beginCommandPlaceholder shows an "executing /cmd ..." status line before a
+// command's synchronous Run so there is no silent gap between submit and
+// first feedback. It returns true when the placeholder was shown and the
+// caller must Clear it after Execute. Doc-suffix lookups (/cmd:?, /cmd:??)
+// and not-found parses are instant; only actual execution gets the
+// placeholder.
+func (a *App) beginCommandPlaceholder(result *core.RouteResult, trimmed string) bool {
+	subs := a.subs
+	if result.Command == nil || result.DocLevel != core.DocSuffixNone || subs.statusMsg == nil {
+		return false
+	}
+	subs.statusMsg.Reset()
+	subs.statusMsg.Show(fmt.Sprintf("executing %s ...", trimmed))
+	subs.tuiEngine.RequestRender()
+	return true
+}
+
 // recordCommandInSessionStore writes a synthetic user content event for
 // non-internal slash commands so sessions that consist only of commands (e.g.
-// /orchestrate) are still reloadable and not silently empty.
 func (a *App) recordCommandInSessionStore(result *core.RouteResult, input string) {
 	if result == nil || result.Command == nil || core.IsInternal(result.Command) {
 		return

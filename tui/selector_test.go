@@ -52,6 +52,59 @@ func TestNewSelector_SortsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestNewSelector_PreserveOrder pins the opt-out from alphabetical sorting
+// (bugs.md "Session command: list ordering"): when every item sets
+// PreserveOrder, the caller's order is kept and the cursor starts on item 0
+// — the newest-first session list stays newest-on-top and preselected.
+func TestNewSelector_PreserveOrder(t *testing.T) {
+	items := []SelectorItem{
+		{Value: "new", Label: "15:04  newest", PreserveOrder: true},
+		{Value: "mid", Label: "14:00  middle", PreserveOrder: true},
+		{Value: "old", Label: "09:12  oldest", PreserveOrder: true},
+	}
+	result := make(chan string, 1)
+	s := NewSelector("Test", items, "", result)
+
+	want := []string{"new", "mid", "old"}
+	for i, w := range want {
+		if s.items[i].Value != w {
+			t.Fatalf("order not preserved: items[%d].Value=%q, want %q (all=%v)", i, s.items[i].Value, w, s.items)
+		}
+	}
+	if s.selected != 0 {
+		t.Errorf("cursor must default to item 0 when currentValue matches nothing, got %d", s.selected)
+	}
+}
+
+// TestNewSelector_PreserveOrderMixedFallsBackToSort: a single item without
+// PreserveOrder opts the whole list back into alphabetical sorting, so no
+// caller can accidentally freeze a half-ordered list.
+func TestNewSelector_PreserveOrderMixedFallsBackToSort(t *testing.T) {
+	items := []SelectorItem{
+		{Value: "z", Label: "zebra", PreserveOrder: true},
+		{Value: "a", Label: "alpha"}, // not set → whole list sorts
+	}
+	result := make(chan string, 1)
+	s := NewSelector("Test", items, "", result)
+	if s.items[0].Label != "alpha" {
+		t.Fatalf("mixed list must sort alphabetically, got %v", s.items)
+	}
+}
+
+// TestSelector_SetItemsPreserveOrder: the async-loading path (SetItems)
+// follows the same ordering rule as the constructor.
+func TestSelector_SetItemsPreserveOrder(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{{Value: "x", Label: "x"}}, "", result)
+	s.SetItems([]SelectorItem{
+		{Value: "b", Label: "02 second", PreserveOrder: true},
+		{Value: "a", Label: "01 first", PreserveOrder: true},
+	})
+	if s.items[0].Value != "b" || s.items[1].Value != "a" {
+		t.Fatalf("SetItems must honor PreserveOrder, got %v", s.items)
+	}
+}
+
 func TestNewSelector_StartsOnCurrentValue(t *testing.T) {
 	items := []SelectorItem{
 		{Value: "z", Label: "Zebra"},

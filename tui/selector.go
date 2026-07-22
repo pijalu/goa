@@ -22,6 +22,10 @@ type SelectorItem struct {
 	Color             string        // optional: hex color for the label (empty = default)
 	AnimationFrames   []string      // optional: animation frames (e.g., spinner preview)
 	AnimationInterval time.Duration // time between animation frames
+	// PreserveOrder opts out of the default alphabetical Label sort: the
+	// caller's item order is kept as-is. Use for chronologically ordered
+	// lists (e.g. the /session picker) where sorting would destroy meaning.
+	PreserveOrder bool
 }
 
 // Selector is a Component that shows a searchable list of options.
@@ -63,16 +67,14 @@ type Selector struct {
 	focused       bool
 }
 
-// NewSelector creates a Selector. Items are sorted alphabetically by Label.
+// NewSelector creates a Selector. Items are sorted alphabetically by Label
+// unless every item sets PreserveOrder, in which case the caller's order is
+// kept (used for chronological lists such as the /session picker).
 // currentValue is the currently active option (shown with a ✓ marker).
 // The result channel receives the selected value when the user confirms,
 // or "" if cancelled.
 func NewSelector(title string, items []SelectorItem, currentValue string, result chan string) *Selector {
-	sorted := make([]SelectorItem, len(items))
-	copy(sorted, items)
-	sort.Slice(sorted, func(i, j int) bool {
-		return strings.ToLower(sorted[i].Label) < strings.ToLower(sorted[j].Label)
-	})
+	sorted := sortSelectorItems(items)
 
 	s := &Selector{
 		title:        title,
@@ -85,19 +87,45 @@ func NewSelector(title string, items []SelectorItem, currentValue string, result
 	return s
 }
 
+// sortSelectorItems returns the items in display order: alphabetical by
+// Label by default, or the caller's original order when every item opts out
+// via PreserveOrder.
+func sortSelectorItems(items []SelectorItem) []SelectorItem {
+	out := make([]SelectorItem, len(items))
+	copy(out, items)
+	if preserveSelectorOrder(out) {
+		return out
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Label) < strings.ToLower(out[j].Label)
+	})
+	return out
+}
+
+// preserveSelectorOrder reports whether the caller's order should be kept:
+// true only when the list is non-empty and every item sets PreserveOrder.
+func preserveSelectorOrder(items []SelectorItem) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		if !it.PreserveOrder {
+			return false
+		}
+	}
+	return true
+}
+
 // SetDone sets the callback that restores the editor when selection ends.
 func (s *Selector) SetDone(fn func()) { s.done = fn }
 
 // SetTUI stores the TUI reference for triggering re-renders on animation.
 func (s *Selector) SetTUI(t *TUI) { s.tui = t }
 
-// SetItems replaces the options and resets filter, preserving sorting.
+// SetItems replaces the options and resets filter, preserving the same
+// ordering rules as NewSelector (alphabetical unless PreserveOrder is set).
 func (s *Selector) SetItems(items []SelectorItem) {
-	sorted := make([]SelectorItem, len(items))
-	copy(sorted, items)
-	sort.Slice(sorted, func(i, j int) bool {
-		return strings.ToLower(sorted[i].Label) < strings.ToLower(sorted[j].Label)
-	})
+	sorted := sortSelectorItems(items)
 	s.items = sorted
 	s.filtered = sorted
 	s.selected = findItemIndex(sorted, s.currentValue)

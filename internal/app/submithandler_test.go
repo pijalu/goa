@@ -32,6 +32,59 @@ func (c *testInternalCommand2) LongHelp() string  { return "internal command" }
 func (c *testInternalCommand2) Run(ctx core.Context, args []string) error { return nil }
 func (c *testInternalCommand2) IsInternal() bool                            { return true }
 
+// testPlaceholderCommand observes the status placeholder while Run executes.
+type testPlaceholderCommand struct {
+	status       *tui.StatusMsg
+	visibleInRun bool
+	textInRun    string
+}
+
+func (c *testPlaceholderCommand) Name() string      { return "slowcmd" }
+func (c *testPlaceholderCommand) Aliases() []string { return nil }
+func (c *testPlaceholderCommand) ShortHelp() string { return "slow command" }
+func (c *testPlaceholderCommand) LongHelp() string  { return "slow command" }
+func (c *testPlaceholderCommand) Run(ctx core.Context, args []string) error {
+	c.visibleInRun = c.status.IsVisible()
+	c.textInRun = c.status.Text()
+	return nil
+}
+
+// TestHandleSlashCommand_ShowsExecutingPlaceholder is the regression test for
+// bugs.md "Session: slow commands need an executing placeholder": the status
+// line must show "executing /cmd ..." while the command runs and be cleared
+// once the result is delivered.
+func TestHandleSlashCommand_ShowsExecutingPlaceholder(t *testing.T) {
+	registry := core.NewCommandRegistry()
+	status := tui.NewStatusMsg()
+	cmd := &testPlaceholderCommand{status: status}
+	if err := registry.Register(cmd); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &App{
+		subs: &subsystems{
+			cfg:       &config.Config{},
+			chat:      tui.NewChatViewport(),
+			cmdRouter: core.NewCommandRouter(registry, core.NewDocEngine(registry)),
+			footer:    tui.NewFooter(),
+			statusMsg: status,
+			tuiEngine: tui.NewTUI(&testTerminal{w: 80, h: 24}),
+		},
+	}
+
+	a.handleSlashCommand("/slowcmd")
+
+	if !cmd.visibleInRun {
+		t.Fatal("expected status placeholder to be visible while the command runs")
+	}
+	if cmd.textInRun != "executing /slowcmd ..." {
+		t.Fatalf("unexpected placeholder text: %q", cmd.textInRun)
+	}
+	if status.IsVisible() {
+		t.Fatalf("expected placeholder cleared after execution, still shows %q", status.Text())
+	}
+}
+
 func TestHandleSlashCommand_RecordsNonInternalCommandInSessionStore(t *testing.T) {
 	dir := t.TempDir()
 	store := core.NewSessionStore(dir)
