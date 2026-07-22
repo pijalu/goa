@@ -477,28 +477,43 @@ func (sc *sessionScan) absorb(line string) {
 	if err := json.Unmarshal([]byte(line), &event); err != nil {
 		return
 	}
+	sc.absorbTokens(&event)
+	sc.absorbRoles(&event)
+}
+
+// absorbTokens folds an event's token accounting into the scan.
+func (sc *sessionScan) absorbTokens(event *agentic.OutputEvent) {
 	if event.Timings != nil {
 		sc.tokens += event.Timings.PromptN + event.Timings.PredictedN
 	}
 	if event.ContextStats != nil {
 		sc.tokens = event.ContextStats.EstimatedTokens
 	}
+}
+
+// absorbRoles folds an event's conversation markers into the scan: the
+// hasConversation flag (any user/assistant text), the hasModelTurn flag (at
+// least one assistant reply), and the first user message text.
+func (sc *sessionScan) absorbRoles(event *agentic.OutputEvent) {
+	isContent := event.Type == agentic.EventContent && event.Text != ""
+	if !isContent {
+		return
+	}
 	// Conversation content: any real user or assistant text. Sessions
 	// holding only system/stats/progress events are "empty" for listing
 	// purposes — restoring them would show a blank transcript.
-	isContent := event.Type == agentic.EventContent && event.Text != ""
-	if isContent && (event.Role == agentic.User || event.Role == agentic.Assistant) {
+	if event.Role == agentic.User || event.Role == agentic.Assistant {
 		sc.hasConversation = true
 	}
 	// Model-turn marker: at least one assistant text reply. The session
 	// picker hides sessions without one (bugs.md "must not list sessions
 	// without an actual model turn") while the store still lists them for
 	// export/dream flows.
-	if isContent && event.Role == agentic.Assistant {
+	if event.Role == agentic.Assistant {
 		sc.hasModelTurn = true
 	}
 	// Capture the first user message text.
-	if sc.firstMsg == "" && event.Type == agentic.EventContent && event.Role == agentic.User && event.Text != "" {
+	if sc.firstMsg == "" && event.Role == agentic.User {
 		sc.firstMsg = event.Text
 	}
 }

@@ -138,42 +138,48 @@ func (a *App) persistOrchViewEvent(ne orchpanel.AgentViewEvent) {
 	if store == nil {
 		return
 	}
+	text := orchLogText(ne)
+	if text == "" {
+		return
+	}
 	tag := ne.Role
 	if tag == "" {
 		tag = ne.AgentID
 	}
-	write := func(text string) {
-		if text == "" {
-			return
-		}
-		store.WriteEvent(agentic.OutputEvent{
-			Type: agentic.EventContent,
-			Role: agentic.System,
-			Text: fmt.Sprintf("[%s] %s", tag, text),
-		})
-	}
+	store.WriteEvent(agentic.OutputEvent{
+		Type: agentic.EventContent,
+		Role: agentic.System,
+		Text: fmt.Sprintf("[%s] %s", tag, text),
+	})
+}
+
+// orchLogText maps a sub-agent view event to the line persisted in the
+// session store (empty string = nothing to persist for this event kind).
+func orchLogText(ne orchpanel.AgentViewEvent) string {
 	switch ne.Kind {
 	case orchpanel.EvAgentMessage:
-		write(ne.Text)
+		return ne.Text
 	case orchpanel.EvAgentThinking:
-		write("(thinking) " + ne.Text)
+		return "(thinking) " + ne.Text
 	case orchpanel.EvAgentToolCall:
-		if !ne.IsDelta {
-			write(fmt.Sprintf("tool %s %s", ne.Tool, ne.ToolInput))
+		if ne.IsDelta {
+			return ""
 		}
+		return fmt.Sprintf("tool %s %s", ne.Tool, ne.ToolInput)
 	case orchpanel.EvAgentToolResult:
-		write(fmt.Sprintf("tool result (%s): %s", ne.Tool, truncateOrchLog(ne.Text)))
+		return fmt.Sprintf("tool result (%s): %s", ne.Tool, truncateOrchLog(ne.Text))
 	case orchpanel.EvAgentStarted:
-		write(fmt.Sprintf("— agent started (model=%s provider=%s) —", ne.Model, ne.Provider))
+		return fmt.Sprintf("— agent started (model=%s provider=%s) —", ne.Model, ne.Provider)
 	case orchpanel.EvAgentFinished:
-		write(fmt.Sprintf("— agent finished (%s) —", ne.Status))
+		return fmt.Sprintf("— agent finished (%s) —", ne.Status)
 	case orchpanel.EvSourceStarted:
-		write(fmt.Sprintf("— run started: %s —", ne.Meta["objective"]))
+		return fmt.Sprintf("— run started: %s —", ne.Meta["objective"])
 	case orchpanel.EvSourceFinished:
-		write(fmt.Sprintf("— run finished (%s) —", ne.Status))
+		return fmt.Sprintf("— run finished (%s) —", ne.Status)
 	case orchpanel.EvAskUser:
-		write("[orchestrator asks] " + ne.Question)
+		return "[orchestrator asks] " + ne.Question
 	}
+	return ""
 }
 
 // truncateOrchLog caps a persisted tool-result body so a huge result does not
