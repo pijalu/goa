@@ -84,6 +84,16 @@ func (t *ProcessTerminal) Start(onInput func(string), onResize func()) {
 		// Enable Windows VT input (no-op on other platforms)
 		enableWindowsVTInput()
 
+		// Disable auto-wrap (DECAWM) for the session. The compositor positions
+		// every row by absolute CUP and truncates content to the terminal width,
+		// so auto-wrap provides nothing — and it is actively harmful: a row
+		// exactly `width` columns fills the last column and leaves the terminal
+		// in a pending-wrap state, so the next line-feed or write wraps onto an
+		// extra row and every subsequent compositor row index is off by one
+		// (the scrollback line-duplication in bugs.md). Stop() re-enables it
+		// (\x1b[?7h) so the parent shell wraps normally.
+		os.Stdout.WriteString("\x1b[?7l")
+
 		// Enable bracketed paste mode
 		os.Stdout.WriteString("\x1b[?2004h")
 
