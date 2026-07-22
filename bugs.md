@@ -46,103 +46,73 @@ If new items are added, restart the process.
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
-# TODO
-## ~~Start-up~~ ✅ CLOSED (confirmed by user 2026-07-22)
-Regression: At startup, Goa inputline is not responsive for couple seconds - likely related to load up items - run a details review of startup sequence.
+---
 
-The inputline should not be impacted by the startup sequence / plugin loading / ...
+# HANDOVER STATE (2026-07-22) — read this first
 
-**Hard requirement:** there must not be *any* HTTP/API calls blocking the startup path — every network call (provider probe, context-window refresh, quota prime, update check, model list, ...) must be fully async, with results applied when they land. goa *MUST* feel fast: first frame + responsive inputline come before any I/O.
+**Branch:** main, 13 session commits on top of `7963f80` (7 unpushed vs origin). Working tree clean.
+**Suite status:** `go test ./tui ./internal/app` green EXCEPT `TestPluginCommandExecutesThroughRouter` — a PRE-EXISTING flaky test under `-race` (fails 2/5 runs on clean HEAD `7963f80`, unrelated to this session's changes; see OPEN item F below).
+**Guideline #6 gates** (run separately, not chained): `go vet`, `staticcheck`, `gocognit -over 15`, `gocyclo -over 12` are all clean on every committed fix. The full-repo `go test -count=1 -race ./...` gate has NOT been run yet (see OPEN item G).
 
-**FIXED in two parts:** (1) `341f5ad` removed the synchronous RefreshLocalContextWindow HTTP probe (up to 15s block) from startAgentSession — redundant with the async post-first-delta refresh; (2) `426e623` released the goja VM lock across blocking goa.http.fetch — the actual delay the user felt, which matched the quota status segment appearing (the quota prime held vmMu across synchronous HTTP, starving the command loop). User confirmed OK 2026-07-22.
+## Status legend
+- ✅ CLOSED — fixed, committed, user-confirmed or proven by test.
+- 🔧 FIXED — fixed & committed with regression test; awaiting user live validation (real terminal).
+- ⏳ OPEN — not yet fixed; localization notes below so the next agent does not re-derive them.
 
-## Goal
-Regression: currently a goal execution does not show any status line details:
-```
-Let me start by understanding the current state of the project - what tests exist, what's failing, and what features are implemented.
+---
 
+# CLOSED / FIXED items
 
-● $ cd /Users/muaddib/dev/frigolite && go test ./... 2>&1 | tail -100 (timeout 120s)
-elapsed 12.8s
+## ✅ ~~Start-up~~ CLOSED (user-confirmed 2026-07-22)
+Inputline unresponsive ~2s at startup. Two root causes, both committed:
+- `341f5ad` — removed synchronous `RefreshLocalContextWindow` HTTP probe (up to 15s block) from `startAgentSession`; redundant with the async post-first-delta refresh (`maybeRefreshContextWindow`).
+- `426e623` — released the goja VM lock (`runOutsideVMLock`) across blocking `goa.http.fetch`; the actual felt delay, which matched the quota status segment appearing (quota prime held `vmMu` across synchronous HTTP, starving the command loop). Regression test: `TestJS_HTTPFetchReleasesVMLock`.
 
+## ✅ ~~Goal status line~~ CLOSED (proven by test, commit `53b5767`)
+Original report: goal execution shows no footer details (progress/context/cache). VERIFIED ALREADY CORRECT in current code — discriminating test `TestGoalTurn_TokenStatsUpdateFooter` (`internal/app/goal_footer_stats_test.go`) proves a goal-driven turn's `EventTokenStats`/`EventContextStats` reach `handleTokenStats` and update the footer (`↑12.0K ↓800 CH25.0% 39.7%/32.8K`). Chain: `agentManagerRunner.Run` → agent emits stats events (independent of `SendUserInput`) → `forwardEvent` → bus → `handleAgentOutputEvent` → `handleTokenStats` → footer. The frozen footer in the original screenshot was from an older build.
 
-● $ cd /Users/muaddib/dev/frigolite && go test -count=1 -v ./... 2>&1 | grep -E '^(=== RUN|--- FAIL|--- PASS|ok |FAIL)' |... (timeout 120s)
-elapsed 12.8s
+## ✅ ~~Multi-tool calling and timeout~~ CLOSED (commit `3759d5a`)
+Root cause: `Tracker.finalize()` marked a widget `Running` when its ARGS completed; for a multi-call batch all args complete at batch end, so all startTimes stamped the same instant → every widget showed the same `elapsed 37.2s`. Fix: `finalize` no longer pre-marks Running; the first progress event (emitted when a call's `Execute` actually starts, `executeToolWithResult`) transitions it, restarting that call's own clock. `findRunningNoID` widened to match id-less progress to Pending args-complete widgets. Regression test: `TestTracker_BatchElapsedStartsAtOwnExecution`.
 
+## ✅ ~~ESC: hard stop for ALL ongoing activities~~ — PARTIAL: goal-drive part CLOSED (`d60124e`), remainder ⏳ OPEN (see OPEN item D)
+**Closed part:** the /goal command started the driver on `context.Background()` (`core/commands/goal.go`), so ESC → `Interrupt()` killed the current turn but the loop immediately launched the next continuation — an active goal was unkillable by ESC. Fix: `GoalDriver.Drive` derives a cancellable loop ctx + checks `ctx.Err()` before each continuation; new `GoalDriver.Stop()`; `App.handleEscape` calls `goalDriver.Stop()` alongside `agentMgr.Interrupt()`. The interrupted turn maps to "Paused after interruption" (existing `mapDriverError`), so the goal stays resumable via `/goal:continue`. Regression test: `TestGoalDriver_StopEndsDrive` (race-clean).
 
-● $ cd /Users/muaddib/dev/frigolite && go test -count=1 -v ./... 2>&1 | grep -E 'FAIL' | head -100 (timeout 120s)
-elapsed 12.8s
+## 🔧 ~~Mascot/logo redraw~~ FIXED (commits `53d0a02`, `e5073d6`) — awaiting user live validation
+Symptom: mascot redrawn mid-session, rest of screen black; scrollback duplicated / off-by-one line. Two symptoms, ONE root cause.
+**Root cause:** goa ran with terminal auto-wrap (DECAWM) ENABLED. The compositor positions every row by absolute CUP and truncates to exactly terminal width; a row filling the last column leaves the terminal in pending-wrap state, so the next line-feed/write wraps onto an extra row and every subsequent row index shifts by one. On a scroll this duplicates/mis-orders lines including the header. Only manifests on a REAL terminal (pending-wrap); the fakeTerminal/screenEmulator don't model it, which is why many in-harness probes (single-layer, chrome-confined DECSTBM, tool-widget churn, batch vs incremental — all clean) initially missed it.
+**Fix:** `53d0a02` emits `\x1b[?7l` (DECAWM off) at session start after `SetRaw`; `Stop()` re-enables `\x1b[?7h` for the parent shell. Regression guard: `TestCompositor_NoFullWidthRowDuringScroll`. Complementary: `e5073d6` removed the redundant `\x1b[2J` blanking wipe on full redraws (in-place row replacement instead), plus `TestSessionReplay_MascotNeverRedrawn` (91,595-event real-session filmstrip replay, validated).
+**Next:** user must confirm on a real terminal that the mascot no longer blinks and scrollback is clean. If it persists, next suspect is the `terminal.Size()` ioctl transient (H2) — enable render trace (`logging.render_trace`) to capture a frame.
+**Rejected approaches (do not retry):** (1) compositor vt-retention via a `vtMax` high-water mark — broke 9 scrollback tests because `compose(c.vt)` skips rows above placeStart leaving `""` in canvas, so prevLines stored blanks; (2) app-level header-drop — corrupted the diff baseline (canvas shrank by headerHeight without telling the compositor, misaligning `prevLines`/`vt`/`scrollTop` → whole-frame duplication). Both reverted to `e5073d6`.
 
-⬣ Tool calling
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-⟐ [warm.viper] create a detailled plan to implement *all* missing features to allow all test to pass - be complete then execute the plan - size of the
-task should not matter, only matter the completion
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+## ✅ ~~Terminal title animation~~ CLOSED (user-confirmed 2026-07-22)
+Did not play. Resolved by the Start-up fixes: the title controller's writer goroutine + startup-done hook were starved by the same blocking I/O (startup HTTP probe, quota-prime VM-lock hold) that froze the input line.
 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-~/dev/frigolite (✱ main)                                                                                                             coding-posture │ YOLO
-0.8%/1.0M (auto)                                                                                                    (opencode-go) deepseek-v4-flash • high
-```
+## ✅ ~~Stats: cache write is always 0~~ CLOSED (commit `933a2c3`)
+Verdict: NOT a parse bug — the plumbing is complete (Anthropic `cache_creation_input_tokens` → stats → usage DB → cost). OpenAI-style/local providers never report cache writes (the OpenAI parser reads `prompt_tokens_details.cache_write_tokens`, which those servers don't emit), so 0 is legitimate. Per instruction, the display now HIDES cache-write when 0: `/usage` summary shows `Cache: X read` and the Cache R/W column shows read-only; full `X read / Y write` form kept when writes exist. Regression test: `TestUsageCommand_CacheWriteHiddenWhenZero`.
 
-Status line update are critical to allow the user to see the progress of the goal execution / the size of the context / the cache.
+## ✅ ~~Tool call loop detector: false positives~~ CLOSED (commit `64fbc62`)
+Root cause (proven from `goa-export-20260721-233247.zip`): `RecordToolCall` keyed on exact name+sha256(input) and accumulated counts for the WHOLE session (`Reset()` has no production callers); a long session ran identical `go build ./...` 11× across dozens of turns (edit→build→edit) and the detector killed the agent at the 10th. A true loop repeats calls BACK-TO-BACK; legitimate work reuses identical commands with other work in between. Fix: consecutive-streak model — any different call resets every streak; only an unbroken run of identical calls reaches warn(7)/interrupt(10). Trade-off (documented): an alternating A-B-A-B cycle keeps each streak at 1 and stays undetected. Regression tests: `TestLoopDetector_LegitRebuildCycleDoesNotTrip` (the incident replay), `TestLoopDetector_TrueRunawayStillInterrupts`.
 
-## Multi-tool calling and timeout:
-Multiple tool calls does not seems to respect timeout - check 3rd tool call
-```
+---
 
- ● $ cd /Users/muaddib/dev/frigolite && go test ./... 2>&1 | tail -100 (timeout 60s)
- elapsed 37.2s
+# OPEN items (for the next agent — localization included)
 
+## ⏳ A. Session: slow commands need an "executing xyz..." placeholder
+Every /command must immediately show an "executing xyz..." placeholder, replaced by the result. No silent gap between submit and first feedback.
+**Localization:** command dispatch runs through `core/commands` router (`CommandRegistry.Resolve` → `cmd.Run`). The placeholder should hook the dispatch point before `cmd.Run` executes (status message or chat system line), cleared on completion. Bare `/quota` already follows this contract (acknowledges async fetch immediately — see `plugins/bundled/provider-quota/plugin.js` `scheduleAsyncQuotaRender`). Test: command-context harness asserting the placeholder precedes output; filmstrip-validate per guideline #5.
 
- ● $ cd /Users/muaddib/dev/frigolite && go test ./... -v 2>&1 | grep -E '(FAIL|--- FAIL|PASS|ok)' | tail -80 (timeout 60s)
- elapsed 37.2s
+## ⏳ B. Session command: list ordering, filtering, timestamps
+The /session picker list is wrong on three axes: (1) most recent on TOP + first/default selection; (2) must not list sessions without an actual model turn; (3) show date/time — date only if not today (today → time only), hh:mm, append :ss only to disambiguate duplicate hh:mm entries.
+**Localization:** `core/commands/session_persist.go` `buildSessionItems` (line ~309) builds picker items from `store.ListSessions()`. `core/sessionstore.go` `ListSessions` (line ~322) ALREADY filters no-conversation sessions (`hasConversation` check, ~347) and sorts newest-first (~367), with tests (`TestSessionListSessions_FiltersEmptySessions`, `_NewestFirst`). So: (1) ordering — verify `buildSessionItems` preserves store order and `SelectOption` defaults cursor to item 0 (the picker may not default to first); (2) "actual model turn" — `hasConversation` may count a user msg with no assistant reply as conversation; tighten to require an assistant/model turn; (3) timestamps — `SessionInfo.Date` (file ModTime) exists but is NOT formatted into the picker item Label/Description; add format pass in `buildSessionItems` (needs all dates first to detect duplicate hh:mm for the :ss rule).
 
+## ⏳ C. ESC remainder: orchestrator/swarm + steering drain
+ESC goal-drive part is CLOSED (see above). Remaining: (1) orchestrator/swarm runs — verify their contexts are reachable from the ESC-triggered cancellation root (`handleEscape` → `agentMgr.Interrupt()`); sub-agent/orchestrator contexts may be detached; (2) steering/queued continuations — `handleEscape` does not drain the steering queue (`core/agentmanager.go` `steering`), so queued user input submitted mid-turn still dispatches after the interrupt. Test: uiScenario ESC during an orchestrator run + during queued steering, assert all stop and prompt returns.
 
- ● $ cd /Users/muaddib/dev/frigolite && find . -name "*_test.go" | sort (timeout 10s)
- elapsed 37.2s
-```
+## ⏳ D. (merged into C — the ESC goal-drive part that IS done is recorded in CLOSED above)
 
-## ESC: hard stop for ALL ongoing activities (global)
-ESC is a hard stop — globally, in every mode, with no exceptions. This is currently not the case.
+## ⏳ E. Flaky pre-existing test: TestPluginCommandExecutesThroughRouter (-race)
+Fails ~2/5 runs under `-race` on clean HEAD `7963f80` — NOT caused by this session's changes (verified by stash/retest on clean tree). Output shows `/quota:refresh` returning `undefined` instead of `Quota refreshed.`. Suspected: the plugin's `goa.setTimeout(...,0)` quota prime racing the synchronous `:refresh` path — the command executes while the VM is mid-prime. Investigate the `wrapRegisterCommand` result handoff (`plugins/plugin.go:137,194`) and the prime/command interleaving under the VM lock (now released across HTTP by `426e623`, which may have widened the race window — re-check).
 
-Pressing ESC must immediately stop, in normal chat, goal mode, orchestrator/swarm runs, and any other mode:
-- every ongoing tool call (bash/pty/exec — including multiple concurrent tool calls from a single turn, sub-agent runs, background exec started by the turn),
-- the in-flight provider stream,
-- the goal driver loop (no further continuation turns launched),
-- orchestrator/swarm runs and any queued continuations/steering,
-
-returning control to the input line at once. Today ESC interrupts the agent turn (agentMgr.Interrupt) + pty cleanup + bg stop, but ongoing tool calls from the current batch and other concurrent activities keep running to completion, and the goal driver launches the next turn.
-
-## Mascot/logo redraw:
-The mascot/logo is sometimes redrawn mid-session — run a review of the TUI render path to identify what triggers these redraws. The header/mascot should render once and stay stable; any re-emit of those rows points to a differential-rendering invalidation bug.
-
-Recent regression — repro correlation: occurs with tool calls and after a terminal tab switch (macOS). Tab switch fires no SIGWINCH; suspect transient wrong values from the per-frame `terminal.Size()` re-query (renderNow) triggering the width-change scrollback-reset path, and/or tool-widget height shrink→regrow re-entering the scroll paths.
-
-Additional detail (user, 21 jul): occurs after a tab switch DURING tool calls. The mascot should be much higher in the scrollback history — it seems the redraw does not draw the active view in the correct ORDER (stale/mis-ordered rows rather than a simple re-emit). This issue existed before but did not surface until the recent fixes (21 jul) — or something else changed that made it more obvious. Check interplay with the session-3 tool-widget elapsed/start-time fixes and any render-order change landed that day (git log around 2026-07-21 touching tui/ and tools/*_renderer.go).
-
-Refined (user, 21 jul, HIGH PRIORITY): NOT related to the tab switch — correlated with any full-screen redraw: the mascot reappears while the REST OF THE SCREEN IS BLACK, i.e. a full repaint paints the header rows but fails to paint the remaining rows (blank viewport below). This is the old "closed" mascot issue resurfacing — something changed today (21 jul) that re-armed it. The blinking is extremely annoying. Treat as HIGH: find what changed today (git log tui/ internal/app/ tools/ since 2026-07-20), and why a full redraw emits mascot rows but black rows for the live viewport (compose/placeLayer skipping base layers? wrong viewport top on the repaint frame? cleared buffer without re-place?).
-
-**ROOT CAUSE FOUND (2026-07-22) — auto-wrap (DECAWM) off-by-one.** Goa ran with terminal auto-wrap ENABLED. The compositor positions every row by absolute CUP and truncates content to exactly the terminal width; a row filling the last column leaves the terminal in a pending-wrap state, so the next line-feed/write wraps onto an extra row and every subsequent compositor row index shifts by one. On a scroll this duplicates/mis-orders whole lines — including the header/mascot rows — which is the observed "mascot redrawn + rest of screen black" AND the "scrollback duplicated / off by one line" (two symptoms, one cause). It only manifests on a real terminal (pending-wrap); the fakeTerminal/screenEmulator don't model it, so no in-harness repro caught it.
-
-**FIX (`53d0a02`):** emit `\x1b[?7l` (DECAWM off) at session start after SetRaw; Stop() already re-enables `\x1b[?7h` for the parent shell. Auto-wrap provided nothing (every row is CUP-positioned and truncated), so disabling it removes the whole off-by-one class. Regression guard: TestCompositor_NoFullWidthRowDuringScroll (defense-in-depth for terminals ignoring DECAWM-off). Related earlier partial fix: `e5073d6` removed the redundant `\x1b[2J` blanking wipe on full redraws. **Awaiting user validation on a real terminal.**
-
-## ~~Terminal title animation does not work~~ ✅ CLOSED (user 2026-07-22)
-The terminal window title animation (hexagon-black startup transition + working animation, see `internal/app/title.go` titleController) does not play. May be related to the startup delay (animation frames starved while the main goroutine is blocked on startup I/O — see Start-up item).
-
-**CLOSED per user 2026-07-22.** Likely resolved by the Start-up fixes: the title controller's writer goroutine + startup-done hook were starved by the same blocking I/O (startup HTTP probe, quota-prime VM-lock hold) that froze the input line; with those removed the transition plays.
-
-## Session: slow commands need an "executing xyz..." placeholder
-Session feels slow — every command must immediately show an "executing xyz..." placeholder so the user knows something is happening, then replace it with the result when done. Applies to all /commands (e.g. /session, /quota, /config, ...): no silent gap between submit and first visible feedback.
-
-## Session command: list ordering, filtering, and timestamps
-The /session picker list is wrong on three axes:
-- Ordering: most recent session must be on TOP and be the first/default selection (today it isn't).
-- Filtering: the list must not contain sessions without any actual model turn (empty/no-turn sessions pollute the picker).
-- Timestamps: each entry must show the date/time — date only when the session is NOT from today (today → time only); time format hh:mm; append seconds (:ss) ONLY when needed to disambiguate duplicate hh:mm entries.
-
-## Stats: cache write is always 0
-The cache-write figure in stats (/stats and/or the footer) is always 0. Review whether this is correct (provider never reports cache-write tokens) or a bug (we fail to parse/plumb it). If it is legitimately always 0, hide/remove the field when 0 instead of showing a permanent zero.
-
-## Tool call loop detector: false positives
-Again a tool call loop detected incorrectly — evidence: /Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260721-233247.zip. Review the cause and find a detection strategy that catches real runaway loops but limits false positives. Characterization of a TRUE loop: it goes endlessly and repeats the same couple of tool calls over and over (same tool + same arguments in a tight cycle). Legitimate work often repeats similar calls (e.g. go test runs with different grep filters, re-reading a file after an edit) and must NOT trip the detector.
+## ⏳ G. Final gates + archive (do last)
+1. Run the full-repo gate per guideline #6, EACH separately: `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`, `gocyclo -over 12 .`, `go test -count=1 -race -cover ./...`. Expect item E's flaky test to be the only -race failure — fix it first (item E), then this gate should be green.
+2. Move the bug list to `docs/archive/bugs.<fixdate>.md` and reset this file to guidelines-only (per workflow step 8 + the "end of session" note).
