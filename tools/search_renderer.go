@@ -7,6 +7,7 @@ package tools
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/pijalu/goa/internal/ansi"
@@ -82,13 +83,23 @@ func (r *SearchRenderer) RenderResult(output string, ctx tuirender.RenderContext
 }
 
 // findPatternInHeader extracts the search pattern from a [search: ...] header.
+// The tool emits the pattern Go-quoted (%q), so the extracted token is passed
+// through strconv.Unquote to restore the original bytes — otherwise a pattern
+// containing a backslash (e.g. a regex escape like `SelectOption\(`) renders
+// with a doubled backslash (bugs.md item J).
 func findPatternInHeader(header string) string {
-	patternRe := regexp.MustCompile(`\[search:\s*"?([^"]+)"?\]`)
+	patternRe := regexp.MustCompile(`\[search:\s*("(?:[^"\\]|\\.)*"|[^]\s]+)\s*\]`)
 	m := patternRe.FindStringSubmatch(header)
-	if len(m) > 1 {
-		return m[1]
+	if len(m) < 2 {
+		return ""
 	}
-	return ""
+	tok := m[1]
+	if strings.HasPrefix(tok, `"`) {
+		if unq, err := strconv.Unquote(tok); err == nil {
+			return unq
+		}
+	}
+	return tok
 }
 
 // parseSearchResult parses the search result and returns a formatted summary

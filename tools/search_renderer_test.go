@@ -139,6 +139,26 @@ main.go:10: // TODO: add tests`,
 	}
 }
 
+// TestSearchRenderer_ResultPatternNotDoubleEscaped is the bugs.md item J
+// regression: the search tool emits its header pattern Go-quoted (%q), so a
+// regex pattern containing a backslash escape (e.g. `SelectOption\(`) must
+// render byte-identical in the summary — not with a doubled backslash.
+func TestSearchRenderer_ResultPatternNotDoubleEscaped(t *testing.T) {
+	r := NewSearchRenderer()
+	// Exactly what tools/search.go produces for pattern `func .*SelectOption\(`.
+	output := "[search: \"func .*SelectOption\\\\(\"] — 2 matches across 2 files\n" +
+		"core/context.go:435: func (c Context) SelectOption\n" +
+		"core/commands/x.go:159: func (f *fake) SelectOption"
+	result := r.RenderResult(output, tuirender.RenderContext{})
+	plain := ansi.Strip(result)
+	if !strings.Contains(plain, `func .*SelectOption\(`) {
+		t.Errorf("pattern must render byte-identical (single backslash), got:\n%s", plain)
+	}
+	if strings.Contains(plain, `SelectOption\\(`) {
+		t.Errorf("pattern rendered with doubled backslash (item J):\n%s", plain)
+	}
+}
+
 func TestSearchRenderer_PreviewLines(t *testing.T) {
 	r := NewSearchRenderer()
 	if r.PreviewLines() != 20 {
