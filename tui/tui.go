@@ -583,6 +583,17 @@ func (t *TUI) RequestRender() {
 	}
 }
 
+// ClearTranscript resets the compositor for a deliberate transcript reset
+// (/new, session switch): it wipes the screen and terminal scrollback and
+// zeroes the scrollback watermark so the next frame renders the fresh canvas
+// as a first frame. Call this when the conversation is intentionally cleared;
+// transient mid-stream collapses are handled internally by the watermark clamp
+// and must NOT call this.
+func (t *TUI) ClearTranscript() {
+	t.compositor.Clear()
+	t.RequestRender()
+}
+
 // listenResize reacts to terminal size changes by requesting a re-render.
 // The platform-specific signal source lives in resize_unix.go / resize_windows.go
 // (SIGWINCH is unavailable on Windows, where size changes are polled instead).

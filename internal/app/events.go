@@ -257,6 +257,13 @@ func (a *App) handleNewSession() bool {
 	if a.subs.agentMgr != nil {
 		a.subs.agentMgr.StopSession()
 	}
+	// Deliberate transcript reset: wipe the screen + terminal scrollback and
+	// reset the compositor watermark so the fresh canvas renders as a first
+	// frame. Without this the old scrollback watermark either flashes the old
+	// header or pins the window on blanks (see Compositor.Clear).
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.ClearTranscript()
+	}
 	startAgentSession(a.subs, a.subs.chat)
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()

@@ -275,6 +275,16 @@ func (cv *ChatViewport) Render(width int) []string {
 	}
 	cv.lastRenderGen = cv.generation
 	cv.rebuildFrame(width)
+	// rebuildFrame's tool-widget patch (updateEntryInCache) invalidates the
+	// frame cache (sets renderCache.lines = nil) when a running tool widget's
+	// rendered height changes. Returning bottomAlign(nil) here would render
+	// the whole transcript as blank lines for this one frame — collapsing
+	// TotalHeight() and pulling the off-screen header back onto the visible
+	// screen (the mascot flash during a running bash tool). Rebuild now so the
+	// returned frame is always consistent.
+	if cv.renderCache.lines == nil {
+		cv.fullRebuild(width)
+	}
 	return cv.bottomAlign(cv.renderCache.lines)
 }
 
@@ -530,12 +540,31 @@ func (cv *ChatViewport) appendEntry(e *MessageEntry, width, offset int) int {
 
 // updateLastEntry re-renders the last entry and replaces its block in the
 // frame cache. This is the fast path for streaming appends and updates.
+//
+// It trusts e.lineOffset to locate the entry's block: the cache is truncated
+// to [0, lineOffset) and the freshly rendered lines appended. That trust is
+// only valid when lineOffset still points at the end of the preceding
+// content. If it is stale — larger than the live cache, because entries above
+// were removed or shrank without a full rebuild (e.g. a thinking block
+// finalized into fewer lines via a separate update path) — truncating to it
+// would either panic (slice out of range) or silently drop the tail of the
+// transcript for one frame, collapsing TotalHeight() and pulling the
+// scrollback watermark's off-screen header back onto the visible screen (the
+// mascot-redraw bug). Guard the offset and fall back to a full rebuild when it
+// does not line up with the cache.
 func (cv *ChatViewport) updateLastEntry(width int) {
 	idx := len(cv.entries) - 1
 	e := &cv.entries[idx]
-	newLines := e.View.Render(width)
 
 	start := e.lineOffset
+	if start < 0 || start > len(cv.renderCache.lines) {
+		// Stale offset: the incremental assumption is violated. Rebuild the
+		// whole frame so every entry's offset is recomputed from truth.
+		cv.fullRebuild(width)
+		return
+	}
+
+	newLines := e.View.Render(width)
 	cv.renderCache.lines = cv.renderCache.lines[:start]
 	cv.renderCache.lines = append(cv.renderCache.lines, newLines...)
 

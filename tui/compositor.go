@@ -323,6 +323,9 @@ type Compositor struct {
 	// scrollTop is the scrollback watermark described above.
 	scrollTop int
 	// vt is the previous frame's viewport top (first visible canvas row).
+	// It is clamped to scrollTop by windowTop: the window never starts above
+	// the watermark, so a row already emitted into terminal scrollback is
+	// never repainted onto the visible screen.
 	vt int
 	// cursorRow is the canvas row the hardware cursor was left on.
 	cursorRow         int
@@ -431,6 +434,28 @@ func (c *Compositor) Buffer() []string {
 // InitialClear wipes the terminal before the first frame.
 func (c *Compositor) InitialClear() {
 	c.terminal.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[3J\x1b[?2026l"))
+}
+
+// Clear resets the compositor for a deliberate content reset (e.g. /new, a
+// session switch): it wipes the screen AND terminal scrollback and zeroes the
+// scrollback watermark, so the next Render treats the new (typically short)
+// canvas as a fresh first frame rather than a transient collapse.
+//
+// This is distinct from the steady-state watermark clamp (windowTop): a clamp
+// handles a *transient* mid-transcript shrink by anchoring the window at
+// scrollTop, whereas Clear handles an *intentional* reset where the old
+// transcript is gone for good and its scrollback must not linger. Without an
+// explicit Clear, a new session on a scrolled terminal would either flash the
+// old header (the pre-fix bug) or sit on a blank window anchored at a stale
+// watermark (the clamp) — both wrong.
+func (c *Compositor) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.terminal.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[3J\x1b[?2026l"))
+	c.scrollTop = 0
+	c.vt = 0
+	c.prevLines = nil
+	c.regionBot = 0
 }
 
 // Restore is called on shutdown: end synchronized output, reset SGR, move the
@@ -563,7 +588,7 @@ func (c *Compositor) appendOverflow(buf *strings.Builder, canvas []string, width
 func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int) {
 	c.setTracePath("full")
 	c.fullRedrawCount++
-	vt := max(0, len(canvas)-height)
+	vt := c.windowTop(len(canvas), height)
 
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
@@ -639,7 +664,12 @@ func (c *Compositor) reemitScrollback(buf *strings.Builder, canvas []string, vt,
 // repaint only the changed rows of the visible window.
 func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, height int) {
 	c.setTracePath("diff")
-	vt := max(0, len(canvas)-height)
+	// The window top is clamped to the scrollback watermark: when the canvas
+	// transiently shrinks below scrollTop (e.g. a thinking block finalized
+	// into a shorter entry for one frame), the window stays anchored at the
+	// rows the terminal actually shows instead of following vt below the
+	// watermark and repainting already-scrolled rows (the mascot flash).
+	vt := c.windowTop(len(canvas), height)
 	target := c.scrollTarget(vt, len(canvas))
 
 	var buf strings.Builder
@@ -654,6 +684,31 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 	c.vt = vt
 	c.cursorRow = max(0, len(canvas)-1)
 	c.hardwareCursorRow = max(0, len(canvas)-1)
+}
+
+// windowTop computes the viewport top for a canvas of canvasLen rows on a
+// terminal of `height` rows, clamped to the scrollback watermark. The window
+// must never start above scrollTop: rows [0, scrollTop) have already been
+// emitted into terminal scrollback exactly once and cannot be "unscrolled",
+// so repainting them onto the visible window would duplicate them on screen
+// (the mascot/logo flash when a tall transcript transiently collapsed for one
+// frame — the canvas shrank so len(canvas)-height fell below the watermark).
+//
+// When the canvas is tall the result is the natural len(canvas)-height. When
+// the canvas shrank so the natural top would dip below the watermark, the
+// window stays anchored at scrollTop: rows [scrollTop, canvasLen) render at
+// the top of the window and the rows below them are blank (the content
+// genuinely shrank; blank space below is truthful) until the canvas regrows.
+//
+// A deliberate transcript reset (/new, session switch) must call Clear first
+// to zero the watermark; otherwise a from-scratch canvas would be anchored at
+// a stale watermark instead of rendering fully.
+func (c *Compositor) windowTop(canvasLen, height int) int {
+	vt := max(0, canvasLen-height)
+	if vt < c.scrollTop {
+		vt = c.scrollTop
+	}
+	return vt
 }
 
 // scrollTarget computes the new scrollback watermark: the viewport top clamped
@@ -690,17 +745,24 @@ func (c *Compositor) advanceScrollback(buf *strings.Builder, canvas []string, ta
 
 // repaintWindow redraws the visible window with absolute CUP, skipping rows
 // whose bytes are unchanged since the previous frame.
+//
+// The window spans screen rows [1, height] starting at canvas row vt. When the
+// canvas is shorter than vt+height (it transiently shrank below the scrollback
+// watermark), canvas indices past the end render as blank rows — clearing the
+// stale rows the taller previous frame left on the lower screen, without
+// repainting the already-scrolled rows above vt.
 func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, width, height int) {
-	for i := vt; i < len(canvas); i++ {
-		screenRow := i - vt + 1
-		if screenRow < 1 || screenRow > height {
-			continue
+	for screenRow := 1; screenRow <= height; screenRow++ {
+		i := vt + screenRow - 1
+		line := ""
+		if i >= 0 && i < len(canvas) {
+			line = canvas[i]
 		}
 		if c.unchangedRow(canvas, i, vt) {
 			continue
 		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
-		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		buf.WriteString(truncateToWidth(line, width, ""))
 		c.traceWroteRow(screenRow)
 	}
 }
@@ -870,6 +932,7 @@ func (c *Compositor) resetScrollRegion(buf *strings.Builder) {
 // top vt) has the same bytes as the row the terminal currently shows there.
 // The previous frame's row that was shown at this screen position was
 // prevLines[i] adjusted by the viewport-top delta between frames.
+// An out-of-range i (canvas shrank below the window) is treated as a blank row.
 func (c *Compositor) unchangedRow(canvas []string, i, vt int) bool {
 	if c.prevLines == nil {
 		return false
@@ -880,7 +943,11 @@ func (c *Compositor) unchangedRow(canvas []string, i, vt int) bool {
 	if prevIdx < 0 || prevIdx >= len(c.prevLines) {
 		return false
 	}
-	return c.prevLines[prevIdx] == canvas[i]
+	cur := ""
+	if i >= 0 && i < len(canvas) {
+		cur = canvas[i]
+	}
+	return c.prevLines[prevIdx] == cur
 }
 
 // appendCursorSeq writes the hardware-cursor positioning into the SAME
