@@ -159,6 +159,56 @@ func TestSendMessageTool_ExecuteInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestSendMessageTool_UnknownRecipientListsAgents(t *testing.T) {
+	bus := NewAgentBus()
+	bus.Register("alice")
+	bus.Register("bob")
+	bus.Register("carol")
+
+	tool := &SendMessageTool{Bus: bus, FromName: "alice"}
+	_, err := tool.Execute(`{"to":"coordinator","content":"done"}`)
+	if err == nil {
+		t.Fatal("expected error for unknown recipient")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `"coordinator" not found on bus`) {
+		t.Errorf("expected original not-found error preserved, got: %s", msg)
+	}
+	// Available recipients (excluding the sender) must be listed so the model
+	// can pick a valid target instead of retrying a hallucinated name.
+	if !strings.Contains(msg, "bob") || !strings.Contains(msg, "carol") {
+		t.Errorf("expected error to list available agents bob and carol, got: %s", msg)
+	}
+	if strings.Contains(msg, "Available agents you can message: alice") {
+		t.Errorf("sender must not be listed as a recipient, got: %s", msg)
+	}
+}
+
+func TestSendMessageTool_UnknownRecipientNoOtherAgents(t *testing.T) {
+	bus := NewAgentBus()
+	bus.Register("main") // only the sender is on the bus (single-agent mode)
+
+	tool := &SendMessageTool{Bus: bus, FromName: "main"}
+	_, err := tool.Execute(`{"to":"coordinator","content":"done"}`)
+	if err == nil {
+		t.Fatal("expected error for unknown recipient")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `"coordinator" not found on bus`) {
+		t.Errorf("expected original not-found error preserved, got: %s", msg)
+	}
+	if !strings.Contains(msg, "no other agents") {
+		t.Errorf("expected single-agent guidance, got: %s", msg)
+	}
+	// Point the model at the right tools instead of send_message.
+	if !strings.Contains(msg, "ask_user_question") {
+		t.Errorf("expected ask_user_question hint, got: %s", msg)
+	}
+	if !strings.Contains(msg, "UpdateGoal") {
+		t.Errorf("expected UpdateGoal hint, got: %s", msg)
+	}
+}
+
 func TestReceiveMessageTool_ReceivesMessage(t *testing.T) {
 	bus := NewAgentBus()
 	inbox, _ := bus.Register("alice")

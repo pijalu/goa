@@ -7,6 +7,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,6 +27,24 @@ func (a *fakeAgent) Run(ctx context.Context, prompt string) error {
 		return errors.New("provider rate limit")
 	}
 	return nil
+}
+
+func TestContinuationPrompt_HowToEndGuidance(t *testing.T) {
+	// The continuation prompt must tell the model exactly how a goal stops:
+	// an actual UpdateGoal tool call — not prose, a bash echo, or send_message.
+	// Regression: a model announced "the goal is complete" in text and tried
+	// send_message to a nonexistent coordinator, never calling UpdateGoal, so
+	// the driver kept launching continuation turns.
+	for _, want := range []string{
+		"HOW TO END A GOAL",
+		"UpdateGoal TOOL",
+		"does NOT end it",
+		"send_message",
+	} {
+		if !strings.Contains(ContinuationPrompt, want) {
+			t.Errorf("ContinuationPrompt missing how-to-end guidance %q", want)
+		}
+	}
 }
 
 type fakeAgentThatCompletes struct {

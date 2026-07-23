@@ -42,7 +42,14 @@ func BuildStaticGoalReminder(snapshot GoalSnapshot) string {
 	b.WriteString("prevents progress, or the objective cannot be completed as stated, call UpdateGoal with \n")
 	b.WriteString("`blocked`. Otherwise keep working — after your turn ends you will be prompted to continue. \n")
 	b.WriteString("Call UpdateGoal as soon as the goal is genuinely done or cannot proceed; don't keep going \n")
-	b.WriteString("once there is nothing left to do.")
+	b.WriteString("once there is nothing left to do.\n")
+	b.WriteString("\n")
+	b.WriteString("HOW TO END A GOAL: a goal only stops when you make an actual UpdateGoal TOOL CALL with \n")
+	b.WriteString("status `complete` or `blocked`. Writing \"the goal is complete\" (or similar) in your reply \n")
+	b.WriteString("text does NOT end it — the driver will start another continuation turn. Do not announce \n")
+	b.WriteString("completion in prose, do not echo a summary with the bash tool, and do not send the result \n")
+	b.WriteString("to another agent with send_message; none of those change the goal state. When the work is \n")
+	b.WriteString("truly done, invoke the UpdateGoal tool in that same turn and let its result speak for itself.")
 	return b.String()
 }
 

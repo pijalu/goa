@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -176,10 +177,39 @@ func (t *SendMessageTool) ExecuteContext(ctx context.Context, input string) (str
 	}
 
 	if err := t.Bus.Send(ctx, msg); err != nil {
-		return "", err
+		return "", t.sendError(err)
 	}
 
 	return fmt.Sprintf("Message sent to %s", req.To), nil
+}
+
+// sendError wraps a bus Send failure with actionable guidance. Models
+// frequently hallucinate recipient names (e.g. "coordinator") or reach for
+// send_message when no other agent exists, so the error lists the agents that
+// are actually addressable and points at the right tool for talking to the
+// user. Without this the model retries the same bad recipient or gives up.
+func (t *SendMessageTool) sendError(err error) error {
+	others := t.otherAgents()
+	if len(others) == 0 {
+		return fmt.Errorf("%w\nThere are no other agents on the bus — you are the only agent (%q) running. "+
+			"Do not use send_message. To ask the user something use the ask_user_question tool; "+
+			"to finish or report a goal's status call the UpdateGoal tool (plain text does not stop a goal).", err, t.FromName)
+	}
+	return fmt.Errorf("%w\nAvailable agents you can message: %s (you are %q). "+
+		"If you meant to ask the user something, use the ask_user_question tool instead.",
+		err, strings.Join(others, ", "), t.FromName)
+}
+
+// otherAgents returns the names of registered agents excluding the sender.
+func (t *SendMessageTool) otherAgents() []string {
+	names := t.Bus.AgentNames()
+	others := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != t.FromName {
+			others = append(others, n)
+		}
+	}
+	return others
 }
 
 // ReceiveMessageTool implements Tool, allowing an agent to explicitly poll

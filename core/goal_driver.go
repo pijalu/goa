@@ -26,7 +26,15 @@ after only producing a plan, summary, first pass, or partial result.
 If an external condition or required user input prevents progress, or the objective
 cannot be completed as stated, call UpdateGoal("blocked"). Otherwise keep going —
 use the existing conversation context and your tools, and do not ask the user for
-input unless a real blocker prevents progress.`
+input unless a real blocker prevents progress.
+
+HOW TO END A GOAL: the goal only stops when you make an actual UpdateGoal TOOL
+CALL with status "complete" or "blocked". Writing "the goal is complete" (or
+similar) in your reply text does NOT end it — the driver will start another
+continuation turn. Do not announce completion in prose, do not echo a summary
+with the bash tool, and do not send the result to another agent with
+send_message; none of those change the goal state. When the work is truly done,
+invoke the UpdateGoal tool in that same turn and let its result speak for itself.`
 
 // Pause reasons used when the driver parks a goal after an error.
 const (

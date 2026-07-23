@@ -41,6 +41,25 @@ func TestBuildActiveGoalReminder(t *testing.T) {
 	}
 }
 
+func TestBuildStaticGoalReminder_HowToEndGuidance(t *testing.T) {
+	snap := GoalSnapshot{Objective: "fix tests", Status: GoalActive}
+	reminder := BuildStaticGoalReminder(snap)
+	// The reminder must make unmistakably clear that only an UpdateGoal tool
+	// call ends the goal — prose ("the goal is complete"), a bash echo, or a
+	// send_message do not. Regression: models announced completion in text and
+	// never called UpdateGoal, so the driver kept burning continuation turns.
+	for _, want := range []string{
+		"HOW TO END A GOAL",
+		"UpdateGoal TOOL CALL",
+		"does NOT end it",
+		"send_message",
+	} {
+		if !strings.Contains(reminder, want) {
+			t.Errorf("reminder missing how-to-end guidance %q", want)
+		}
+	}
+}
+
 func TestStaticGoalReminder_StableAcrossTurns(t *testing.T) {
 	base := GoalSnapshot{
 		Objective:           "fix tests",
