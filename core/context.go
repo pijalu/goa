@@ -415,6 +415,9 @@ type ModeController interface {
 type SessionRecorder interface {
 	TurnHistory() []TurnRecord
 	LastTurn() *TurnRecord
+	// CurrentTurn returns a snapshot of the in-progress turn, or nil if no
+	// turn is active. Used by /stats:session to show live stats.
+	CurrentTurn() *TurnRecord
 }
 
 // Writef writes formatted output to the command's output buffer, or falls
@@ -640,6 +643,14 @@ func (c Context) LastTurn() *TurnRecord {
 		return nil
 	}
 	return c.AgentManager.LastTurn()
+}
+
+// CurrentTurn returns a snapshot of the in-progress turn via AgentManager.
+func (c Context) CurrentTurn() *TurnRecord {
+	if c.AgentManager == nil {
+		return nil
+	}
+	return c.AgentManager.CurrentTurn()
 }
 
 // SystemPrompt returns the assembled system prompt for the current session

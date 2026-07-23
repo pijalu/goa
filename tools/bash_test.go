@@ -117,6 +117,29 @@ func TestBashTool_Execute_WithWorkdir_UsesCorrectDir(t *testing.T) {
 	}
 }
 
+func TestBashTool_Execute_DefaultWorkdir_UsesProjectDir(t *testing.T) {
+	dir := t.TempDir()
+	tool := &BashTool{ProjectDir: dir}
+	result, err := tool.Execute(`{"command": "pwd"}`)
+	if err != nil {
+		t.Fatalf("Execute should succeed: %v", err)
+	}
+	if !strings.Contains(result, dir) {
+		t.Errorf("Expected pwd output to contain %q, got: %q", dir, result)
+	}
+}
+
+func TestBashTool_Execute_ExplicitWorkdir_OverridesProjectDir(t *testing.T) {
+	tool := &BashTool{ProjectDir: "/nonexistent"}
+	result, err := tool.Execute(`{"command": "pwd", "workdir": "/tmp"}`)
+	if err != nil {
+		t.Fatalf("Execute with workdir should succeed: %v", err)
+	}
+	if !strings.Contains(result, "/tmp") {
+		t.Errorf("Expected pwd output to contain /tmp, got: %q", result)
+	}
+}
+
 func TestBashTool_Execute_MultipleLines_ReturnsAllOutput(t *testing.T) {
 	tool := &BashTool{}
 	result, err := tool.Execute(`{"command": "echo line1 && echo line2 && echo line3"}`)

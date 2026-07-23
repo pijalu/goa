@@ -189,6 +189,67 @@ func TestShowStats_Empty(t *testing.T) {
 	}
 }
 
+func TestShowStats_InProgressTurn(t *testing.T) {
+	w := newWriter()
+	rec := &fakeSessionRecorder{
+		currentTurn: &core.TurnRecord{
+			Number:     1,
+			TokensUsed: 150,
+			TokenUsage: core.TurnTokenUsage{PromptN: 120, PredictedN: 30, SpeedTokPerSec: 25.5},
+			Timing:     core.TurnTiming{Total: 3.2},
+			ToolCalls:  []core.TurnToolCall{{Name: "bash", Input: `{"command":"ls"}`, CallID: "c1"}},
+		},
+	}
+
+	err := showStats(w, rec, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := w.Text()
+	if !strings.Contains(text, "Session stats (turn in progress)") {
+		t.Errorf("expected in-progress header, got: %s", text)
+	}
+	if !strings.Contains(text, "Turn #1 (in progress)") {
+		t.Errorf("expected in-progress turn label, got: %s", text)
+	}
+	if !strings.Contains(text, "Tokens: 150 (in=120 out=30)") {
+		t.Errorf("expected token counts, got: %s", text)
+	}
+	if !strings.Contains(text, "Tools:  1 calls") {
+		t.Errorf("expected tool call count, got: %s", text)
+	}
+}
+
+func TestShowStats_InProgressTurnWithHistory(t *testing.T) {
+	w := newWriter()
+	rec := &fakeSessionRecorder{
+		history: []core.TurnRecord{
+			{Number: 1, TokensUsed: 100, Timing: core.TurnTiming{Total: 1.5}},
+		},
+		currentTurn: &core.TurnRecord{
+			Number:     2,
+			TokensUsed: 50,
+			TokenUsage: core.TurnTokenUsage{PromptN: 40, PredictedN: 10},
+			Timing:     core.TurnTiming{Total: 0.8},
+		},
+	}
+
+	err := showStats(w, rec, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := w.Text()
+	if !strings.Contains(text, "Token statistics per turn") {
+		t.Errorf("expected normal header, got: %s", text)
+	}
+	if !strings.Contains(text, "Turn #2 (in progress)") {
+		t.Errorf("expected in-progress turn #2, got: %s", text)
+	}
+	if !strings.Contains(text, "Total: 100 tokens across 1 turns") {
+		t.Errorf("expected total from history only, got: %s", text)
+	}
+}
+
 func TestShowStats_WithTurns(t *testing.T) {
 	w := newWriter()
 	rec := &fakeSessionRecorder{

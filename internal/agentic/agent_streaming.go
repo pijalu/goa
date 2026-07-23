@@ -1031,19 +1031,70 @@ func streamLoopRepeatsNeeded(window int) int {
 }
 
 // streamHasRepeatedSuffix reports whether text ends with the same window-sized
-// substring repeated repeatsNeeded times consecutively.
+// substring repeated repeatsNeeded times consecutively. Comparison tolerates a
+// small number of differing bytes per block (see streamFuzzyBlockEqual): a
+// model stuck in a repetition loop rarely regenerates byte-identical copies —
+// line breaks and punctuation vary between iterations (e.g. a missing blank
+// line between two copies shifts every following window by one byte, which
+// defeats an exact match and let a 4x repeated paragraph stream to
+// completion, looking like screen corruption in the TUI).
 func streamHasRepeatedSuffix(text string, window, repeatsNeeded int) bool {
 	if len(text) < window*repeatsNeeded {
 		return false
 	}
 	suffix := text[len(text)-window:]
+	budget := streamRepeatMismatchBudget(window)
 	for r := 1; r < repeatsNeeded; r++ {
 		block := text[len(text)-window*(r+1) : len(text)-window*r]
-		if block != suffix {
+		if !streamFuzzyBlockEqual(suffix, block, budget) {
 			return false
 		}
 	}
 	return true
+}
+
+// streamRepeatMismatchBudget returns how many bytes may differ between two
+// window-sized blocks while still counting as a repetition: one eighth of the
+// window, so a looped sentence with re-wrapped or re-punctuated copies still
+// matches. Small windows get budget 0 (exact match) so the helper's behaviour
+// on tiny repeats is unchanged.
+func streamRepeatMismatchBudget(window int) int {
+	return window / 8
+}
+
+// streamFuzzyBlockEqual compares equal-length blocks a and b, allowing up to
+// budget mismatching positions. After a mismatch it tries to resync by
+// skipping one byte on either side (at most two skips per pair), so a single
+// inserted or dropped byte — a missing/extra separator between two looped
+// copies — does not misalign the whole comparison. Genuinely different blocks
+// exceed the budget quickly and fail fast.
+func streamFuzzyBlockEqual(a, b string, budget int) bool {
+	mismatches, skips, i, j := 0, 0, 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i] == b[j] {
+			i++
+			j++
+			continue
+		}
+		mismatches++
+		if mismatches > budget {
+			return false
+		}
+		switch {
+		case skips < 2 && i+1 < len(a) && a[i+1] == b[j]:
+			i++
+			skips++
+		case skips < 2 && j+1 < len(b) && b[j+1] == a[i]:
+			j++
+			skips++
+		default:
+			i++
+			j++
+		}
+	}
+	// Bytes left unpaired on either side count as mismatches.
+	mismatches += (len(a) - i) + (len(b) - j)
+	return mismatches <= budget
 }
 
 // emitBudgetToolSkipped emits the TUI events (tool call + tool result) for a

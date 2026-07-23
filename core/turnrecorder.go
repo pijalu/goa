@@ -152,6 +152,7 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent) TurnRecord {
 	tr.turnToolResultsAccum = nil
 	tr.turnTokenUsage = TurnTokenUsage{}
 	tr.turnUserInput = ""
+	tr.turnStartTime = time.Time{} // mark no active turn
 	tr.mu.Unlock()
 	return record
 }
@@ -174,6 +175,29 @@ func (tr *TurnRecorder) LastTurn() *TurnRecord {
 	}
 	record := tr.turnHistory[len(tr.turnHistory)-1]
 	return &record
+}
+
+// CurrentTurn returns a snapshot of the in-progress turn, or nil if no turn
+// is active. The returned record has Number set to len(history)+1 and Timing
+// computed from the turn start time.
+func (tr *TurnRecorder) CurrentTurn() *TurnRecord {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if tr.turnStartTime.IsZero() {
+		return nil
+	}
+	tokensUsed := tr.turnTokenUsage.PromptN + tr.turnTokenUsage.PredictedN
+	return &TurnRecord{
+		Number:             len(tr.turnHistory) + 1,
+		TokensUsed:         tokensUsed,
+		TokenUsage:         tr.turnTokenUsage,
+		Timing:             TurnTiming{Total: time.Since(tr.turnStartTime).Seconds()},
+		ToolCalls:          append([]TurnToolCall(nil), tr.turnToolCallsAccum...),
+		ToolResults:        append([]TurnToolResult(nil), tr.turnToolResultsAccum...),
+		UserInput:          tr.turnUserInput,
+		Thinking:           splitNonEmpty(tr.turnThinking.String()),
+		AssistantResponses: splitNonEmpty(tr.turnResponses.String()),
+	}
 }
 
 // splitNonEmpty splits s into non-empty lines/paragraphs.

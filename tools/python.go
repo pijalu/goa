@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-python/gpython/compile"
-	"github.com/go-python/gpython/py"
-	_ "github.com/go-python/gpython/stdlib"
+	"github.com/pijalu/gpython/compile"
+	"github.com/pijalu/gpython/py"
+	_ "github.com/pijalu/gpython/stdlib"
 
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/ansi"
@@ -63,7 +63,7 @@ type pythonInput struct {
 func (t *PythonTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "python",
-		Description: "Execute Python code in an embedded gpython interpreter. Standard file API via os (os.walk/os.stat/os.path) is jail-confined to the project; os.system/os._exit are disabled.",
+		Description: "Execute Python code in an embedded gpython interpreter (Python 3.4 subset — no f-string nesting, limited stdlib, no real bytes type). For anything beyond trivial scripts, prefer bash python3 -c \"...\". Standard file API via os (os.walk/os.stat/os.path) is jail-confined to the project; os.system/os._exit are disabled.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -308,6 +308,16 @@ func parseFStringExpr(code string, i int) (string, string, int, bool) {
 		return "", "", 0, false
 	}
 	expr := code[exprStart:i]
+	// Conversion suffix: !r → repr(expr), !s → str(expr). The embedded
+	// interpreter does not implement conversions, so rewrite them as calls.
+	if idx := strings.LastIndex(expr, "!"); idx >= 0 && idx+1 < len(expr) {
+		switch expr[idx+1] {
+		case 'r':
+			expr = "repr(" + expr[:idx] + ")"
+		case 's':
+			expr = "str(" + expr[:idx] + ")"
+		}
+	}
 	var spec string
 	if colon := strings.Index(expr, ":"); colon >= 0 {
 		spec = expr[colon+1:]

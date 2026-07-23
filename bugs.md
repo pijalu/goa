@@ -54,5 +54,3 @@ A turn that ends with open items, an untested fix, or an unrecorded newly-found 
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
 ---
-
-(No open items. Resolved lists are archived in `docs/archive/` — most recently `docs/archive/bugs.20260722.md`.)

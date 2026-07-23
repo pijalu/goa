@@ -169,8 +169,12 @@ func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.
 	timeoutS := normalizeBashTimeout(p.Timeout)
 
 	cmd := newBashCommand(p.Command)
+	// Default workdir to ProjectDir when not explicitly set. This eliminates
+	// the need for the model to prefix every command with "cd /project && ".
 	if p.Workdir != "" {
 		cmd.Dir = p.Workdir
+	} else if t.ProjectDir != "" {
+		cmd.Dir = t.ProjectDir
 	}
 	// Apply the caller-provided env on top of the current environment so the
 	// advertised `env` parameter actually reaches the child process. Masking of

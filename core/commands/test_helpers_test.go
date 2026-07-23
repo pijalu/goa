@@ -46,7 +46,8 @@ func (f *fakeOutputWriter) Lines() []string { return f.lines }
 
 // fakeSessionRecorder implements core.SessionRecorder for testing.
 type fakeSessionRecorder struct {
-	history []core.TurnRecord
+	history     []core.TurnRecord
+	currentTurn *core.TurnRecord // non-nil simulates an in-progress turn
 }
 
 func (f *fakeSessionRecorder) TurnHistory() []core.TurnRecord { return f.history }
@@ -56,6 +57,7 @@ func (f *fakeSessionRecorder) LastTurn() *core.TurnRecord {
 	}
 	return &f.history[len(f.history)-1]
 }
+func (f *fakeSessionRecorder) CurrentTurn() *core.TurnRecord { return f.currentTurn }
 
 // fakeSystemPromptProvider implements core.SystemPromptProvider for testing.
 type fakeSystemPromptProvider struct {

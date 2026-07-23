@@ -776,6 +776,12 @@ func (am *AgentManager) LastTurn() *TurnRecord {
 	return am.turnRecorder.LastTurn()
 }
 
+// CurrentTurn returns a snapshot of the in-progress turn, or nil if no turn
+// is active.
+func (am *AgentManager) CurrentTurn() *TurnRecord {
+	return am.turnRecorder.CurrentTurn()
+}
+
 // EmitEvent sends a chat flash message.
 func (am *AgentManager) EmitEvent(text string) {
 	am.emitFlash(text)

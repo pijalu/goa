@@ -96,3 +96,75 @@ func TestTurnRecorder_ResetTurnClearsAccumulators(t *testing.T) {
 		t.Errorf("expected accumulators cleared, got %d tool calls", len(record.ToolCalls))
 	}
 }
+
+func TestTurnRecorder_CurrentTurn_NoTurn(t *testing.T) {
+	tr := NewTurnRecorder()
+	if got := tr.CurrentTurn(); got != nil {
+		t.Errorf("expected nil CurrentTurn with no active turn, got %+v", got)
+	}
+}
+
+func TestTurnRecorder_CurrentTurn_InProgress(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.RecordUserInput("hello")
+	tr.RecordToolCall("bash", `{"command":"ls"}`, "c1")
+	tr.RecordToolResult("c1", "bash", "file.txt")
+	tr.RecordTokenStats(100, 50, 0, 0, 20.0, 0, 0, 0)
+
+	cur := tr.CurrentTurn()
+	if cur == nil {
+		t.Fatal("expected non-nil CurrentTurn")
+	}
+	if cur.Number != 1 {
+		t.Errorf("turn number = %d, want 1", cur.Number)
+	}
+	if cur.UserInput != "hello" {
+		t.Errorf("user input = %q, want hello", cur.UserInput)
+	}
+	if cur.TokensUsed != 150 {
+		t.Errorf("tokens used = %d, want 150", cur.TokensUsed)
+	}
+	if len(cur.ToolCalls) != 1 {
+		t.Errorf("tool calls = %d, want 1", len(cur.ToolCalls))
+	}
+	if len(cur.ToolResults) != 1 {
+		t.Errorf("tool results = %d, want 1", len(cur.ToolResults))
+	}
+	if cur.Timing.Total <= 0 {
+		t.Errorf("expected positive elapsed time, got %f", cur.Timing.Total)
+	}
+}
+
+func TestTurnRecorder_CurrentTurn_AfterFinalize(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.RecordUserInput("hello")
+	tr.FinalizeTurn(nil)
+
+	// After finalize, CurrentTurn should return nil (no active turn).
+	if got := tr.CurrentTurn(); got != nil {
+		t.Errorf("expected nil CurrentTurn after FinalizeTurn, got %+v", got)
+	}
+}
+
+func TestTurnRecorder_CurrentTurn_AfterReset(t *testing.T) {
+	tr := NewTurnRecorder()
+	tr.ResetTurn(time.Now())
+	tr.RecordUserInput("hello")
+	tr.FinalizeTurn(nil)
+
+	// Start a new turn — CurrentTurn should reflect it.
+	tr.ResetTurn(time.Now())
+	tr.RecordUserInput("world")
+	cur := tr.CurrentTurn()
+	if cur == nil {
+		t.Fatal("expected non-nil CurrentTurn after ResetTurn")
+	}
+	if cur.Number != 2 {
+		t.Errorf("turn number = %d, want 2", cur.Number)
+	}
+	if cur.UserInput != "world" {
+		t.Errorf("user input = %q, want world", cur.UserInput)
+	}
+}

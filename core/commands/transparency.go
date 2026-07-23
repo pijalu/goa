@@ -268,13 +268,23 @@ func isNumeric(s string) bool {
 // Depends on OutputWriter + SessionRecorder.
 func showStats(w core.OutputWriter, rec core.SessionRecorder, args []string) error {
 	history := rec.TurnHistory()
-	if len(history) == 0 {
+	current := rec.CurrentTurn()
+
+	if len(history) == 0 && current == nil {
 		writeStr(w, "No turn history available. Send a message first.\n")
 		return nil
 	}
 
 	if len(args) > 0 {
 		return showTurnDetail(w, rec, args[0])
+	}
+
+	if len(history) == 0 {
+		// First turn still in progress — show live stats.
+		writeStr(w, "Session stats (turn in progress):\n")
+		writeStr(w, strings.Repeat("-", 60)+"\n")
+		writeCurrentTurnStats(w, current)
+		return nil
 	}
 
 	var totals core.TurnTokenUsage
@@ -286,9 +296,35 @@ func showStats(w core.OutputWriter, rec core.SessionRecorder, args []string) err
 		totalTokens += t.TokensUsed
 		writeTurnStats(w, t)
 	}
+	if current != nil {
+		writeCurrentTurnStats(w, current)
+	}
 	writeStr(w, strings.Repeat("-", 60)+"\n")
 	writeSummaryStats(w, rec, totalTokens, totals, history)
 	return nil
+}
+
+// writeCurrentTurnStats renders the in-progress turn snapshot.
+func writeCurrentTurnStats(w core.OutputWriter, t *core.TurnRecord) {
+	usage := t.TokenUsage
+	writeFmt(w, "  Turn #%d (in progress):\n", t.Number)
+	writeFmt(w, "    Tokens: %d (in=%d out=%d)\n", t.TokensUsed, usage.PromptN, usage.PredictedN)
+	if usage.CacheRead > 0 || usage.CacheWrite > 0 {
+		writeFmt(w, "    Cache:  R=%d W=%d\n", usage.CacheRead, usage.CacheWrite)
+	}
+	if usage.SpeedTokPerSec > 0 {
+		writeFmt(w, "    Speed:  %.1f tok/s\n", usage.SpeedTokPerSec)
+	}
+	if usage.CostUSD > 0 {
+		writeFmt(w, "    Cost:   $%.4f\n", usage.CostUSD)
+	}
+	if usage.ContextMax > 0 {
+		pct := float64(usage.ContextEstimate) / float64(usage.ContextMax) * 100
+		writeFmt(w, "    Ctx:    %d/%d (%.1f%%)\n", usage.ContextEstimate, usage.ContextMax, pct)
+	}
+	writeFmt(w, "    Time:   %.2fs\n", t.Timing.Total)
+	writeFmt(w, "    Tools:  %d calls\n", len(t.ToolCalls))
+	writeStr(w, "\n")
 }
 
 func writeTurnStats(w core.OutputWriter, t core.TurnRecord) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-python/gpython/py"
+	"github.com/pijalu/gpython/py"
 )
 
 // This file implements a curated, jail-aware replacement for the embedded
