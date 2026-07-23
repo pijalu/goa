@@ -944,13 +944,23 @@ func (a *Agent) resetStreamRoundState() {
 func (a *Agent) checkStreamLoop(text string) {
 	// Normalize: strip punctuation, symbols, box-drawing chars, collapse spaces
 	clean := streamLoopNormalize(text)
+	if window, repeats, ok := streamLoopScan(clean); ok {
+		a.streamLoopDetected = true
+		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte suffix repeated %d times", window, repeats)
+	}
+}
 
+// streamLoopScan is the detection core of checkStreamLoop: it scans the
+// normalized buffer for a repeated suffix loop and reports the window and
+// repeat count when one is found. Kept separate from the Agent method so the
+// exact production scan can be exercised directly by tests.
+func streamLoopScan(clean string) (window, repeats int, ok bool) {
 	minWindow, maxWindow := streamLoopWindowRange(clean)
 	if minWindow == 0 {
-		return
+		return 0, 0, false
 	}
 
-	for window := minWindow; window <= maxWindow; window++ {
+	for window = minWindow; window <= maxWindow; window++ {
 		repeatsNeeded := streamLoopRepeatsNeeded(window)
 		if streamHasRepeatedSuffix(clean, window, repeatsNeeded) {
 			// Verify the repeated pattern is more than a single word.
@@ -958,11 +968,10 @@ func (a *Agent) checkStreamLoop(text string) {
 			if !streamHasMultipleUniqueWords(suffix) {
 				continue
 			}
-			a.streamLoopDetected = true
-			a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte suffix repeated %d times", window, repeatsNeeded)
-			return
+			return window, repeatsNeeded, true
 		}
 	}
+	return 0, 0, false
 }
 
 // streamLoopNormalize strips everything except letters, digits, and spaces,

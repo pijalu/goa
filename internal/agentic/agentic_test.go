@@ -377,6 +377,33 @@ func TestStreamLoop_NonIdenticalCopies(t *testing.T) {
 	if detectedAt > 2 {
 		t.Errorf("loop detected too late: fired at chunk %d, want by chunk 2 (third copy)", detectedAt)
 	}
+
+	// Stronger: feed the same stream in small token-sized fragments (as the
+	// real SSE stream delivered them — "The", " project", " builds", …) and
+	// verify detection still fires before the model moves on to new content.
+	full := strings.Join(copies, "")
+	buf.Reset()
+	detectedAt = -1
+	const fragSize = 9 // ~2 tokens, matching the provider's observed chunking
+	for pos := 0; pos < len(full); pos += fragSize {
+		end := pos + fragSize
+		if end > len(full) {
+			end = len(full)
+		}
+		buf.WriteString(full[pos:end])
+		if streamLoopWouldDetect(buf.String()) {
+			detectedAt = pos
+			break
+		}
+	}
+	if detectedAt < 0 {
+		t.Fatal("loop not detected with token-sized deltas")
+	}
+	// Detection must happen before the fourth copy finishes streaming.
+	fourthCopyEnd := len(copies[0]) + len(copies[1]) + len(copies[2]) + len(copies[3])
+	if detectedAt >= fourthCopyEnd {
+		t.Errorf("detected at byte %d, want before the fourth copy completes (%d)", detectedAt, fourthCopyEnd)
+	}
 }
 
 // TestStreamLoop_NoFalsePositiveOnSimilarSentences guards the fuzzy matcher
