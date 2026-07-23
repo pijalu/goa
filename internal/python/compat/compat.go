@@ -8,7 +8,7 @@ package compat
 import (
 	"reflect"
 
-	"github.com/go-python/gpython/py"
+	"github.com/pijalu/gpython/py"
 )
 
 // AsString converts a py.Object to a Go string. It accepts py.String and py.Bytes.

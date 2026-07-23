@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/go-python/gpython/py"
+	"github.com/pijalu/gpython/py"
 
 	"github.com/pijalu/goa/internal/python/compat"
 )

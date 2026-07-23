@@ -615,18 +615,29 @@ func osGetpid(_ pyFileScope, _ py.Tuple, _ py.StringDict) (py.Object, error) {
 	return py.Int(os.Getpid()), nil
 }
 
-const osBuiltinOpenDoc = `open(file, mode='r') -> file
+const osBuiltinOpenDoc = `open(file, mode='r', encoding=None) -> file
 
 Open a file, jail-confined to the project root. Supports the common modes
-('r', 'w', 'a', optionally with 'b' or '+'). Returns a file object supporting
-read(), write(), close(), and the with-statement.`
+('r', 'w', 'a', optionally with 'b' or '+') and an optional encoding
+(utf-8 only — the interpreter's native string encoding). Returns a file
+object supporting read(), write(), close(), iteration, and the
+with-statement.`
 
 func osBuiltinOpen(scope pyFileScope, args py.Tuple, kwargs py.StringDict) (py.Object, error) {
 	var filename py.Object
 	var mode py.Object = py.String("r")
-	if err := py.ParseTupleAndKeywords(args, kwargs, "s|s:open",
-		[]string{"file", "mode"}, &filename, &mode); err != nil {
+	var encoding py.Object = py.None
+	if err := py.ParseTupleAndKeywords(args, kwargs, "s|sz:open",
+		[]string{"file", "mode", "encoding"}, &filename, &mode, &encoding); err != nil {
 		return nil, err
+	}
+	if encoding != py.None {
+		enc := string(encoding.(py.String))
+		switch enc {
+		case "utf-8", "utf8", "UTF-8", "UTF8", "utf_8":
+		default:
+			return nil, py.ExceptionNewf(py.NotImplementedError, "encoding %q not implemented (only utf-8)", enc)
+		}
 	}
 	abs, err := scope.resolve(string(filename.(py.String)))
 	if err != nil {

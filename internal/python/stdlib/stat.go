@@ -5,7 +5,7 @@
 package stdlib
 
 import (
-	"github.com/go-python/gpython/py"
+	"github.com/pijalu/gpython/py"
 )
 
 func init() {

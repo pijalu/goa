@@ -7,7 +7,7 @@ package compat
 import (
 	"testing"
 
-	"github.com/go-python/gpython/py"
+	"github.com/pijalu/gpython/py"
 )
 
 func TestAsString(t *testing.T) {

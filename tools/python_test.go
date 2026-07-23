@@ -348,3 +348,66 @@ func TestPythonTool_Execute_SanitizesControlBytes(t *testing.T) {
 		t.Errorf("expected literal escape text, got: %q", out)
 	}
 }
+
+// TestPythonTool_ForkFixes verifies the pijalu/gpython fork patches fix the
+// four failure classes observed in Goa session logs (bytes subscription,
+// file iteration, tuple ordering, open encoding kwarg). Each case replays a
+// functionally equivalent script through the jail-enabled PythonTool.
+func TestPythonTool_ForkFixes(t *testing.T) {
+	dir := t.TempDir()
+
+	// 1. 'bytes' object is not subscriptable — open(rb).read() slicing/indexing
+	tool := &PythonTool{ProjectDir: dir, Jail: true}
+	out, err := tool.Execute(`{"code": "f = open('data.bin', 'wb')\nf.write(b'hello world payload')\nf.close()\nsrc = open('data.bin', 'rb').read()\nprint(src[:5])\nprint(src[0])\nprint(len(src))\ncount = 0\nfor b in src:\n    if b == 111:\n        count += 1\nprint(count)"}`)
+	if err != nil {
+		t.Fatalf("bytes subscript case failed: %v", err)
+	}
+	for _, want := range []string{"b'hello", "104", "19", "3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bytes case missing %q, got:\n%s", want, out)
+		}
+	}
+
+	// 2. 'file' object is not iterable — for line in f
+	out, err = tool.Execute(`{"code": "f = open('data.bin', 'w')\nf.write('line one\\nline two\\nline three\\n')\nf.close()\nlines = []\nwith open('data.bin') as f:\n    for line in f:\n        lines.append(line.strip())\nprint(lines)\nprint(len(lines))"}`)
+	if err != nil {
+		t.Fatalf("file iteration case failed: %v", err)
+	}
+	if !strings.Contains(out, "line one") || !strings.Contains(out, "3") {
+		t.Errorf("file iteration case output wrong:\n%s", out)
+	}
+
+	// 3. unsupported operand for <: 'tuple' and 'tuple' — sorted/sort on tuples
+	out, err = tool.Execute(`{"code": "pairs = [(2, 'b'), (1, 'z'), (1, 'a'), (0, 5)]\npairs.sort()\nprint(pairs)\nprint((1, 2) < (1, 3))\nprint((3,) > (2, 9))"}`)
+	if err != nil {
+		t.Fatalf("tuple ordering case failed: %v", err)
+	}
+	if !strings.Contains(out, "[(0, 5), (1, 'a'), (1, 'z'), (2, 'b')]") {
+		t.Errorf("tuple sort output wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "True") {
+		t.Errorf("tuple comparison output wrong:\n%s", out)
+	}
+
+	// 4. open() encoding kwarg — open(path, encoding='utf-8')
+	out, err = tool.Execute(`{"code": "with open('data.bin', encoding='utf-8') as f:\n    content = f.read()\nprint('line one' in content)"}`)
+	if err != nil {
+		t.Fatalf("encoding kwarg case failed: %v", err)
+	}
+	if !strings.Contains(out, "True") {
+		t.Errorf("encoding case output wrong:\n%s", out)
+	}
+}
+
+// TestPythonTool_FStringConversion verifies the f-string !r/!s conversion
+// shim rewrites them to repr()/str() calls the embedded parser accepts.
+func TestPythonTool_FStringConversion(t *testing.T) {
+	tool := &PythonTool{}
+	out, err := tool.Execute(`{"code": "x = {'a': 1}\nprint(f\"{x!r}\")\nprint(f\"{42!s}\")\nprint(f\"plain {x['a']}\")"}`)
+	if err != nil {
+		t.Fatalf("conversion case failed: %v", err)
+	}
+	if !strings.Contains(out, "{'a': 1}") || !strings.Contains(out, "42") || !strings.Contains(out, "plain 1") {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+}

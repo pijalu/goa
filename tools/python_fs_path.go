@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-python/gpython/py"
+	"github.com/pijalu/gpython/py"
 )
 
 // This file implements the jail-aware os.path submodule that accompanies the

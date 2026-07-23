@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-python/gpython/compile"
-	"github.com/go-python/gpython/py"
-	_ "github.com/go-python/gpython/stdlib"
+	"github.com/pijalu/gpython/compile"
+	"github.com/pijalu/gpython/py"
+	_ "github.com/pijalu/gpython/stdlib"
 
 	// Register our stdlib modules
 	_ "github.com/pijalu/goa/internal/python/stdlib"
