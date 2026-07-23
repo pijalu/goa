@@ -687,25 +687,32 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 }
 
 // windowTop computes the viewport top for a canvas of canvasLen rows on a
-// terminal of `height` rows, clamped to the scrollback watermark. The window
-// must never start above scrollTop: rows [0, scrollTop) have already been
-// emitted into terminal scrollback exactly once and cannot be "unscrolled",
-// so repainting them onto the visible window would duplicate them on screen
-// (the mascot/logo flash when a tall transcript transiently collapsed for one
-// frame — the canvas shrank so len(canvas)-height fell below the watermark).
+// terminal of `height` rows, reconciling the natural bottom anchor with the
+// scrollback watermark.
 //
-// When the canvas is tall the result is the natural len(canvas)-height. When
-// the canvas shrank so the natural top would dip below the watermark, the
-// window stays anchored at scrollTop: rows [scrollTop, canvasLen) render at
-// the top of the window and the rows below them are blank (the content
-// genuinely shrank; blank space below is truthful) until the canvas regrows.
+// Two regimes:
+//
+//   - Canvas still taller than the terminal (canvasLen > height): the natural
+//     anchor len(canvas)-height is used even when it dips a few rows below
+//     scrollTop. A small mid-transcript shrink then repaints a handful of
+//     already-scrolled rows just above the viewport — imperceptible, since
+//     they read as ordinary scroll-back — and, crucially, keeps the window
+//     full. Clamping to scrollTop here would leave an orphaned blank row at
+//     the bottom of the screen (the "screen shrank one line" regression).
+//
+//   - Canvas fits on screen (canvasLen <= height): the whole canvas is
+//     visible, so rows [0, scrollTop) would visibly pop back onto the screen —
+//     the mascot/logo flash when a tall transcript collapsed to fit for one
+//     frame. Clamp the window top to scrollTop so already-scrolled rows are
+//     never repainted; the top of the window shows blanks until the canvas
+//     regrows.
 //
 // A deliberate transcript reset (/new, session switch) must call Clear first
 // to zero the watermark; otherwise a from-scratch canvas would be anchored at
 // a stale watermark instead of rendering fully.
 func (c *Compositor) windowTop(canvasLen, height int) int {
 	vt := max(0, canvasLen-height)
-	if vt < c.scrollTop {
+	if canvasLen <= height && vt < c.scrollTop {
 		vt = c.scrollTop
 	}
 	return vt
