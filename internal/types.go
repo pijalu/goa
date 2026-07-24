@@ -89,8 +89,11 @@ const (
 
 // ConfirmRequest carries a tool confirmation request to the TUI modal.
 type ConfirmRequest struct {
-	ToolName     string
-	ToolInput    string
+	ToolName  string
+	ToolInput string
+	// ResponseChan delivers the user's decision; the first value sent wins.
+	// Consumers must only SEND on this channel — receiving from it races the
+	// controller's router and can lose the response.
 	ResponseChan chan ConfirmResponse
 }
 

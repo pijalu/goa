@@ -33,12 +33,15 @@ type ExecutionController struct {
 	pending   *pendingConfirm
 
 	// consumer receives confirmation requests when set. If nil,
-	// RequestConfirm falls back to ConfirmYes.
+	// RequestConfirm falls back to the ConfirmNo safe default.
 	consumer ConfirmConsumer
 }
 
-// ConfirmConsumer receives a confirmation request and must send a response
-// back via the provided ResponseChan. Returning an error cancels the request.
+// ConfirmConsumer receives a confirmation request and reports the user's
+// decision by sending exactly one value on req.ResponseChan. The first
+// response wins; returning without a response, or returning an error, is
+// treated as the ConfirmNo safe default. The consumer must not receive from
+// req.ResponseChan: the controller is its only reader.
 type ConfirmConsumer func(ctx context.Context, req internal.ConfirmRequest) error
 
 // pendingConfirm tracks a request and a cancellation function so the
@@ -232,7 +235,40 @@ func (ec *ExecutionController) RequestConfirm(toolName, input string) internal.C
 	return ec.waitForConsumerResponse(toolName, input)
 }
 
+// confirmSlot holds the outcome of a single confirmation request. The first
+// value resolved wins; later resolutions are discarded. This makes the result
+// immune to duplicate or racy sends: previously a "safety net" send could
+// land in the response channel after the real response had been consumed by
+// the wrong party, flipping a ConfirmYes into a ConfirmNo.
+type confirmSlot struct {
+	mu  sync.Mutex
+	ch  chan internal.ConfirmResponse // buffered (cap 1); closed on resolve
+	set bool
+}
+
+func newConfirmSlot() *confirmSlot {
+	return &confirmSlot{ch: make(chan internal.ConfirmResponse, 1)}
+}
+
+// resolve records resp as the outcome unless an outcome was already recorded.
+func (s *confirmSlot) resolve(resp internal.ConfirmResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.set {
+		return
+	}
+	s.set = true
+	s.ch <- resp
+	close(s.ch)
+}
+
+// outcome returns a channel that yields the recorded response once resolved.
+func (s *confirmSlot) outcome() <-chan internal.ConfirmResponse {
+	return s.ch
+}
+
 func (ec *ExecutionController) waitForConsumerResponse(toolName, input string) internal.ConfirmResponse {
+	slot := newConfirmSlot()
 	req := internal.ConfirmRequest{
 		ToolName:     toolName,
 		ToolInput:    input,
@@ -260,36 +296,54 @@ func (ec *ExecutionController) waitForConsumerResponse(toolName, input string) i
 		cancel()
 	}()
 
+	// The router is the sole reader of ResponseChan: it routes the first
+	// response into the slot and applies the ConfirmNo safe default when the
+	// consumer finishes without responding or the request is cancelled.
+	// Because it is the only reader, no handshake or scheduling is needed —
+	// the response can never be consumed by anyone else.
 	consumerDone := make(chan struct{})
+	go forwardConfirmResponses(req.ResponseChan, slot, consumerDone, ctx.Done())
 	go func() {
 		defer close(consumerDone)
 		_ = consumer(ctx, req)
-		// Ensure a response is always sent. If the consumer already sent one,
-		// this non-blocking send is a no-op because the buffer is size 1.
-		select {
-		case req.ResponseChan <- internal.ConfirmNo:
-		case <-ctx.Done():
-		}
 	}()
 
-	return readConfirmResponse(req.ResponseChan, ctx.Done(), consumerDone)
+	return readConfirmResponse(slot, ctx.Done())
 }
 
-func readConfirmResponse(respCh <-chan internal.ConfirmResponse, ctxDone, consumerDone <-chan struct{}) internal.ConfirmResponse {
+// forwardConfirmResponses routes the first response sent on respCh into the
+// slot. If the consumer finishes without a routed response, it drains a
+// response the consumer may have sent just before returning; otherwise it
+// applies the ConfirmNo safe default. Every exit path resolves the slot, so
+// readConfirmResponse can never block indefinitely.
+func forwardConfirmResponses(respCh <-chan internal.ConfirmResponse, slot *confirmSlot, consumerDone, ctxDone <-chan struct{}) {
 	select {
 	case resp := <-respCh:
+		slot.resolve(resp)
+	case <-consumerDone:
+		// A response sent just before the consumer returned is already
+		// buffered: closing consumerDone happens-after it in program order,
+		// so this single non-blocking drain observes it reliably.
+		select {
+		case resp := <-respCh:
+			slot.resolve(resp)
+		default:
+			slot.resolve(internal.ConfirmNo)
+		}
+	case <-ctxDone:
+		slot.resolve(internal.ConfirmNo)
+	}
+}
+
+// readConfirmResponse waits for the slot to be resolved or the request to be
+// cancelled. forwardConfirmResponses guarantees the slot is resolved on every
+// path, so the slot case always wins once an outcome exists.
+func readConfirmResponse(slot *confirmSlot, ctxDone <-chan struct{}) internal.ConfirmResponse {
+	select {
+	case resp := <-slot.outcome():
 		return resp
 	case <-ctxDone:
 		return internal.ConfirmNo
-	case <-consumerDone:
-		// Consumer finished without producing a response. The goroutine above
-		// will have injected ConfirmNo, but read it defensively.
-		select {
-		case resp := <-respCh:
-			return resp
-		default:
-			return internal.ConfirmNo
-		}
 	}
 }
 

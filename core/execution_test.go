@@ -146,12 +146,11 @@ func TestExecutionRequestConfirm_ConsumerReceivesRequest(t *testing.T) {
 	received := make(chan internal.ConfirmRequest, 1)
 	ec.SetConfirmConsumer(func(ctx context.Context, req internal.ConfirmRequest) error {
 		received <- req
-		select {
-		case resp := <-req.ResponseChan:
-			// Echo response back through ResponseChan; the producer reads it.
-			_ = resp
-		case <-ctx.Done():
-		}
+		// Hold the request open until the controller cancels the context,
+		// which happens once RequestConfirm has consumed the response.
+		// Consumers must not receive from req.ResponseChan: the controller
+		// is its only reader.
+		<-ctx.Done()
 		return nil
 	})
 
@@ -198,6 +197,83 @@ func TestExecutionRequestConfirm_ConsumerErrorReturnsNo(t *testing.T) {
 	resp := ec.RequestConfirm("read", `{"path":"x"}`)
 	if resp != internal.ConfirmNo {
 		t.Errorf("RequestConfirm = %d, want ConfirmNo", resp)
+	}
+}
+
+// TestExecutionRequestConfirm_RouterSoleReaderStress is a regression test for
+// the flaky ConfirmYes->ConfirmNo failure: the old "safety net" send could
+// inject ConfirmNo after the real response was consumed by the wrong party.
+// With the router as the sole reader of ResponseChan and a write-once slot,
+// the controller must always return the user's ConfirmYes.
+func TestExecutionRequestConfirm_RouterSoleReaderStress(t *testing.T) {
+	const iterations = 2000
+	for i := 0; i < iterations; i++ {
+		ec := newEC(internal.ExecutionConfirm)
+
+		received := make(chan internal.ConfirmRequest, 1)
+		ec.SetConfirmConsumer(func(ctx context.Context, req internal.ConfirmRequest) error {
+			received <- req
+			// Wait for the controller to consume the response; never read
+			// req.ResponseChan (the controller is its only reader).
+			<-ctx.Done()
+			return nil
+		})
+
+		respCh := make(chan internal.ConfirmResponse, 1)
+		go func() {
+			respCh <- ec.RequestConfirm("read", `{"path":"x"}`)
+		}()
+
+		select {
+		case req := <-received:
+			req.ResponseChan <- internal.ConfirmYes
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: consumer did not receive request", i)
+		}
+
+		select {
+		case resp := <-respCh:
+			if resp != internal.ConfirmYes {
+				t.Fatalf("iteration %d: RequestConfirm = %d, want ConfirmYes", i, resp)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: RequestConfirm did not return", i)
+		}
+	}
+}
+
+// TestExecutionRequestConfirm_ResponseSentBeforeConsumerReturn verifies that
+// a response sent by the consumer just before it returns is not lost to the
+// safe default, regardless of goroutine scheduling.
+func TestExecutionRequestConfirm_ResponseSentBeforeConsumerReturn(t *testing.T) {
+	const iterations = 500
+	for i := 0; i < iterations; i++ {
+		ec := newEC(internal.ExecutionConfirm)
+		ec.SetConfirmConsumer(func(_ context.Context, req internal.ConfirmRequest) error {
+			req.ResponseChan <- internal.ConfirmYes
+			return nil
+		})
+
+		if resp := ec.RequestConfirm("read", `{"path":"x"}`); resp != internal.ConfirmYes {
+			t.Fatalf("iteration %d: RequestConfirm = %d, want ConfirmYes", i, resp)
+		}
+	}
+}
+
+// TestConfirmSlot_FirstWriteWins verifies the write-once semantics of the
+// confirmation outcome slot.
+func TestConfirmSlot_FirstWriteWins(t *testing.T) {
+	slot := newConfirmSlot()
+	slot.resolve(internal.ConfirmYes)
+	slot.resolve(internal.ConfirmNo) // must be ignored
+
+	select {
+	case resp := <-slot.outcome():
+		if resp != internal.ConfirmYes {
+			t.Errorf("slot outcome = %d, want ConfirmYes", resp)
+		}
+	default:
+		t.Fatal("slot not resolved after first resolve")
 	}
 }
 
