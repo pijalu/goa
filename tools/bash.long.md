@@ -6,10 +6,16 @@ Copyright (C) 2026 Pierre Poissinger
 
 Execute shell commands locally.
 
+Working directory:
+  Commands run with the working directory set to the project root by default.
+  Do NOT prepend `cd <project root> &&` — it is redundant. Only pass the
+  `workdir` parameter (or `cd`) when a command must run in a different
+  directory.
+
 Parameters:
   command   (required) Shell command to execute
   timeout   (optional) Timeout in seconds (default: %ds, max: %ds)
-  workdir   (optional) Working directory
+  workdir   (optional) Working directory (default: project root)
   env       (optional) Environment variables (sensitive values masked in output)
 
 Security:

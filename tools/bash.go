@@ -77,9 +77,13 @@ func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 
 // Schema returns the tool schema for bash.
 func (t *BashTool) Schema() agentic.ToolSchema {
-	description := "Run a shell command."
+	// The working-directory statement lives in the top-level description because
+	// that is the text the model actually reads; without it the model prepends a
+	// redundant "cd <project root> && " to every command (bugs.md).
+	const cwdNote = " The working directory is the project root by default — do not prepend `cd <project root>` unless a different directory is required."
+	description := "Run a shell command." + cwdNote
 	if t.EnableComplexity {
-		description = "Run a shell command. Complex scripts may be rejected — use simple commands."
+		description = "Run a shell command. Complex scripts may be rejected — use simple commands." + cwdNote
 	}
 	return agentic.ToolSchema{
 		Name:        "bash",

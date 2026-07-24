@@ -84,6 +84,13 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "claude-opus-5", Name: "Claude Opus 5", Api: provider.Api("anthropic-messages"), Provider: provider.Provider("anthropic"),
+		BaseURL:   "https://api.anthropic.com",
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000050000, Output: 0.0000250000, CacheRead: 0.0000005000, CacheWrite: 0.0000062500},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5 (latest)", Api: provider.Api("anthropic-messages"), Provider: provider.Provider("anthropic"),
 		BaseURL:   "https://api.anthropic.com",
 		Reasoning: true, ContextWindow: 1000000, MaxTokens: 64000, InputTypes: []string{"text", "image"},
@@ -140,16 +147,16 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "deep-research-max-preview-04-2026", Name: "Deep Research Max Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		ID: "deep-research-max-preview-04-2026", Name: "Deep Research Max Preview (Apr-21-2026)", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000120000, CacheRead: 0.0000002000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "deep-research-preview-04-2026", Name: "Gemini Deep Research Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		ID: "deep-research-preview-04-2026", Name: "Deep Research Preview (Apr-21-2026)", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000120000, CacheRead: 0.0000002000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
@@ -168,9 +175,9 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "gemini-2.5-computer-use-preview-10-2025", Name: "Gemini 2.5 Computer Use Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		ID: "gemini-2.5-computer-use-preview-10-2025", Name: "Gemini 2.5 Computer Use Preview 10-2025", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: true, ContextWindow: 128000, MaxTokens: 64000, InputTypes: []string{"text", "image"},
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
@@ -219,7 +226,7 @@ func loadGeneratedModels() {
 	addModel(provider.Model{
 		ID: "gemini-3.1-flash-lite-image", Name: "Nano Banana 2 Lite", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: true, ContextWindow: 65536, MaxTokens: 4096, InputTypes: []string{"text", "image"},
+		Reasoning: true, ContextWindow: 65536, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000002500, Output: 0.0000300000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
@@ -637,13 +644,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "gpt-5-codex", Name: "GPT-5-Codex", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000001250, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "gpt-5-mini", Name: "GPT-5 Mini", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
@@ -672,34 +672,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "gpt-5.1-chat-latest", Name: "GPT-5.1 Chat", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 128000, MaxTokens: 16384, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000001250, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "gpt-5.1-codex", Name: "GPT-5.1 Codex", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000001250, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "gpt-5.1-codex-max", Name: "GPT-5.1 Codex Max", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000001250, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "gpt-5.1-codex-mini", Name: "GPT-5.1 Codex mini", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000002500, Output: 0.0000020000, CacheRead: 0.0000000250, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "gpt-5.2", Name: "GPT-5.2", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
@@ -710,13 +682,6 @@ func loadGeneratedModels() {
 		ID: "gpt-5.2-chat-latest", Name: "GPT-5.2 Chat", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 128000, MaxTokens: 16384, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000017500, Output: 0.0000140000, CacheRead: 0.0000001750, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "gpt-5.2-codex", Name: "GPT-5.2 Codex", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000017500, Output: 0.0000140000, CacheRead: 0.0000001750, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
@@ -847,13 +812,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "o3-deep-research", Name: "o3-deep-research", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 200000, MaxTokens: 100000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000100000, Output: 0.0000400000, CacheRead: 0.0000025000, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "o3-mini", Name: "o3-mini", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 200000, MaxTokens: 100000, InputTypes: []string{"text"},
@@ -872,13 +830,6 @@ func loadGeneratedModels() {
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 200000, MaxTokens: 100000, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000011000, Output: 0.0000044000, CacheRead: 0.0000002750, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "o4-mini-deep-research", Name: "o4-mini-deep-research", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
-		BaseURL:   "https://api.openai.com/v1",
-		Reasoning: true, ContextWindow: 200000, MaxTokens: 100000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000080000, CacheRead: 0.0000005000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{

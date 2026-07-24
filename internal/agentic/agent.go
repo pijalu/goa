@@ -180,6 +180,15 @@ type Agent struct {
 	// result message; empty or missing means the call was executed normally.
 	budgetToolCalls map[string]string
 
+	// bashReuse detects when the model re-runs the same expensive upstream
+	// command (e.g. `go test ...`) within a single state epoch while only
+	// changing the trailing filter — a wasteful pattern (bugs.md). It resets
+	// whenever the state epoch advances (a mutating tool succeeded), so
+	// re-running a test after an edit is never flagged. Keyed off bash calls
+	// as they are buffered; the flagged call IDs live in bashNearDup.
+	bashReuse   *bashReuseTracker
+	bashNearDup map[string]bool
+
 	// lastCallKey and consecutiveCount track consecutive identical tool calls
 	// (same name + same arguments) across the current turn. When a different
 	// call appears (different name or args), consecutiveCount resets to 1.
@@ -526,6 +535,8 @@ func NewAgent(cfg Config) *Agent {
 		reg:           NewToolRegistry(cfg.Tools),
 		Output:        make(chan Message, 10),
 		turnToolCalls: make(map[string]int),
+		bashReuse:     newBashReuseTracker(),
+		bashNearDup:   make(map[string]bool),
 		// Negative means "not initialized yet"; undoLastAssistantMessage falls
 		// back to the last user message in that case (e.g. direct test calls).
 		turnStartHistoryLen: -1,

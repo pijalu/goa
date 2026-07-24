@@ -120,6 +120,15 @@ func looksLikePath(s string) string {
 	if s == "" {
 		return ""
 	}
+	// Strip shell redirect prefixes so the redirect TARGET is path-checked:
+	// ">/tmp/x", ">>/tmp/x", "2>/tmp/x", "&>/tmp/x", "</etc/y". Without this a
+	// redirect with no space before the target (`>/tmp/x`) produces a token
+	// that starts with '>' and is never treated as a path — a jail escape
+	// (bugs.md: SOLO allowed writes to /tmp via attached redirects).
+	s = stripRedirectPrefix(s)
+	if s == "" {
+		return ""
+	}
 	if s == "." || s == ".." {
 		return s
 	}
@@ -136,6 +145,34 @@ func looksLikePath(s string) string {
 		return s
 	}
 	return ""
+}
+
+// stripRedirectPrefix removes leading shell redirect operators from a token,
+// returning the path that follows. It handles ">", ">>", "<", "<<", and
+// fd-qualified forms like "2>", "2>>", "&>". Returns "" when the token is a
+// bare redirect operator with no target (nothing to path-check).
+func stripRedirectPrefix(s string) string {
+	i := 0
+	// Optional leading file-descriptor digits (e.g. "2>").
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	// Optional '&' (as in "&>").
+	if i < len(s) && s[i] == '&' {
+		i++
+	}
+	// One or two redirect chars.
+	if i < len(s) && (s[i] == '>' || s[i] == '<') {
+		i++
+		if i < len(s) && s[i] == s[i-1] {
+			i++
+		}
+		// Only treat as a redirect when we consumed at least one '>'/'<';
+		// leading digits alone (e.g. "2fast") are not redirects.
+		return s[i:]
+	}
+	// No redirect operator found — return the original token unchanged.
+	return s
 }
 
 // isPathLike reports whether s looks like a filesystem path token.

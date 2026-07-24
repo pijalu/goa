@@ -461,6 +461,78 @@ func TestGoalCommand_CreateGoal_StartsDriver(t *testing.T) {
 	}
 }
 
+// fakeAgentSignalsRun records each Run invocation on a buffered channel so a
+// test can tell a continuation turn happened without driving the goal to
+// completion (which would clear it).
+type fakeAgentSignalsRun struct {
+	ran chan struct{}
+}
+
+func (a *fakeAgentSignalsRun) Run(ctx context.Context, prompt string) error {
+	select {
+	case a.ran <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// Regression for bugs.md: /goal:resume must re-activate a paused goal AND
+// schedule a continuation turn with no user message. Previously resume only
+// flipped state to active; the goal sat idle until the user typed something.
+func TestGoalCommand_Resume_StartsDriver(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore("")
+	ran := make(chan struct{}, 4)
+	driver := &core.GoalDriver{Mode: mode, Agent: &fakeAgentSignalsRun{ran: ran}}
+	switcher := &testAutonomySwitcher{level: internal.AutonomyYolo}
+	cmd := &GoalCommand{Mode: mode, Queue: queue, Driver: driver, AutonomySwitcher: switcher}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"fix tests"}); err != nil {
+		t.Fatal(err)
+	}
+	// Drain the continuation turn triggered by goal creation.
+	waitForRun(t, ran, "creation continuation")
+
+	if err := cmd.Run(ctx, []string{"pause"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal.Status != goal.GoalPaused {
+		t.Fatalf("status after pause = %q", mode.GetGoal().Goal.Status)
+	}
+	// The pause may race a queued continuation; give any in-flight turn a
+	// moment, then drain so the resume assertion is not polluted.
+	drainRuns(ran)
+
+	if err := cmd.Run(ctx, []string{"resume"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal.Status != goal.GoalActive {
+		t.Fatalf("status after resume = %q", mode.GetGoal().Goal.Status)
+	}
+	// The whole point: resume alone must schedule a new continuation turn.
+	waitForRun(t, ran, "resume continuation")
+}
+
+func waitForRun(t *testing.T, ran chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("driver did not run %s without a user message", what)
+	}
+}
+
+func drainRuns(ran chan struct{}) {
+	for {
+		select {
+		case <-ran:
+		case <-time.After(50 * time.Millisecond):
+			return
+		}
+	}
+}
+
 func TestGoalCommand_Meta(t *testing.T) {
 	cmd := &GoalCommand{}
 	if cmd.Name() != "goal" {

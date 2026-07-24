@@ -31,6 +31,12 @@ func TestManager_StartAndList(t *testing.T) {
 	if len(mgr.List()) != 1 {
 		t.Errorf("expected 1 task, got %d", len(mgr.List()))
 	}
+	// Wait for the process to exit so its drain/persist goroutines finish
+	// writing under t.TempDir() before the test's RemoveAll cleanup runs;
+	// otherwise cleanup races the async writers ("directory not empty").
+	if !waitStatus(mgr, task.ID, 5*time.Second) {
+		t.Fatalf("task %s did not exit", task.ID)
+	}
 }
 
 func TestManager_Persistence(t *testing.T) {

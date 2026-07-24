@@ -216,6 +216,13 @@ func (c *GoalCommand) resume(ctx core.Context) error {
 		return err
 	}
 	writeStr(ctx, "Goal resumed.\n")
+	// Resume must actually restart autonomous execution, not just flip state:
+	// schedule the continuation turn the same way goal creation does, so the
+	// goal proceeds without requiring a user message. Start is a no-op when a
+	// drive loop is already running.
+	if c.Driver != nil {
+		c.Driver.Start(context.Background())
+	}
 	return nil
 }
 

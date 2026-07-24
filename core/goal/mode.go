@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -25,7 +26,16 @@ type EventPublisher interface {
 }
 
 // GoalMode is the single durable owner of the current goal.
+//
+// Concurrency: state is read by command goroutines (status/pause/resume) and
+// mutated by the background GoalDriver goroutine (IncrementTurn,
+// RecordTokenUsage, PauseActiveGoal, …). mu guards every access to m.state
+// (and the namePool reference). Exported lifecycle methods take the lock for
+// their whole body; the unexported helpers they call (persistState, toSnapshot,
+// applyStatus, …) assume the lock is already held and never re-acquire it, so
+// there is no re-entrant deadlock.
 type GoalMode struct {
+	mu         sync.RWMutex
 	state      *goalStage
 	store      EventStore
 	telemetry  Telemetry
@@ -169,6 +179,8 @@ func (m *GoalMode) NormalizeAfterReplay() {
 
 // CreateGoal creates a new active goal.
 func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	objective := strings.TrimSpace(input.Objective)
 	if objective == "" {
 		return GoalSnapshot{}, errors.New("goal objective cannot be empty")
@@ -225,6 +237,8 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 
 // PauseGoal pauses an active goal.
 func (m *GoalMode) PauseGoal(input GoalReasonInput, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state, err := m.requireState()
 	if err != nil {
 		return GoalSnapshot{}, err
@@ -249,6 +263,8 @@ func (m *GoalMode) PauseGoal(input GoalReasonInput, actor GoalActor) (GoalSnapsh
 
 // PauseActiveGoal parks an active goal without throwing if it already stopped.
 func (m *GoalMode) PauseActiveGoal(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -268,6 +284,8 @@ func (m *GoalMode) PauseActiveGoal(input GoalReasonInput, actor GoalActor) (*Goa
 
 // ResumeGoal resumes a paused or blocked goal.
 func (m *GoalMode) ResumeGoal(input GoalReasonInput, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state, err := m.requireState()
 	if err != nil {
 		return GoalSnapshot{}, err
@@ -292,6 +310,13 @@ func (m *GoalMode) ResumeGoal(input GoalReasonInput, actor GoalActor) (GoalSnaps
 
 // CancelGoal discards the current goal entirely.
 func (m *GoalMode) CancelGoal(actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cancelGoalLocked(actor)
+}
+
+// cancelGoalLocked discards the current goal; caller must hold m.mu.
+func (m *GoalMode) cancelGoalLocked(actor GoalActor) (GoalSnapshot, error) {
 	state, err := m.requireState()
 	if err != nil {
 		return GoalSnapshot{}, err
@@ -307,6 +332,8 @@ func (m *GoalMode) CancelGoal(actor GoalActor) (GoalSnapshot, error) {
 // CancelGoalByID discards the current goal only if its ID matches the given
 // ID. It returns an error if there is no active goal or if the IDs differ.
 func (m *GoalMode) CancelGoalByID(goalID string, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state, err := m.requireState()
 	if err != nil {
 		return GoalSnapshot{}, err
@@ -314,11 +341,13 @@ func (m *GoalMode) CancelGoalByID(goalID string, actor GoalActor) (GoalSnapshot,
 	if state.goalID != goalID {
 		return GoalSnapshot{}, fmt.Errorf("active goal ID mismatch")
 	}
-	return m.CancelGoal(actor)
+	return m.cancelGoalLocked(actor)
 }
 
 // MarkBlocked marks the goal blocked.
 func (m *GoalMode) MarkBlocked(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -338,6 +367,8 @@ func (m *GoalMode) MarkBlocked(input GoalReasonInput, actor GoalActor) (*GoalSna
 
 // MarkComplete announces completion and clears the record.
 func (m *GoalMode) MarkComplete(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -366,6 +397,8 @@ func (m *GoalMode) PauseOnInterrupt(reason string) (*GoalSnapshot, error) {
 // not been updated for at least retentionDays. A retentionDays value of 0 or
 // negative means "keep forever".
 func (m *GoalMode) CleanupExpired(retentionDays int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if retentionDays <= 0 {
 		return nil
 	}
@@ -382,6 +415,8 @@ func (m *GoalMode) CleanupExpired(retentionDays int) error {
 
 // GetGoal returns the current goal snapshot.
 func (m *GoalMode) GetGoal() GoalToolResult {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.state == nil {
 		return GoalToolResult{Goal: nil}
 	}
@@ -391,6 +426,8 @@ func (m *GoalMode) GetGoal() GoalToolResult {
 
 // GetActiveGoal returns the snapshot only when status is active.
 func (m *GoalMode) GetActiveGoal() *GoalSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if m.state == nil || m.state.status != GoalActive {
 		return nil
 	}
@@ -400,6 +437,8 @@ func (m *GoalMode) GetActiveGoal() *GoalSnapshot {
 
 // RecordTokenUsage accrues token count while active.
 func (m *GoalMode) RecordTokenUsage(delta int) (*GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -420,6 +459,8 @@ func (m *GoalMode) RecordTokenUsage(delta int) (*GoalSnapshot, error) {
 
 // IncrementTurn increments the continuation turn counter while active.
 func (m *GoalMode) IncrementTurn() (*GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -440,6 +481,8 @@ func (m *GoalMode) IncrementTurn() (*GoalSnapshot, error) {
 
 // SetBudgetLimits updates budget limits (merged, not replaced).
 func (m *GoalMode) SetBudgetLimits(limits GoalBudgetLimits, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	state, err := m.requireState()
 	if err != nil {
 		return GoalSnapshot{}, err

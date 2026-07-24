@@ -133,6 +133,16 @@ func (a *Agent) shouldBufferToolCall(tc provider.ContentBlock) bool {
 	a.mu.Lock()
 	a.bufferedToolCallCount++
 	windowCount, consecutiveCount, windowExceeded, consecutiveExceeded := a.recordToolCallInBudgetWindow(callKey)
+	// Near-duplicate bash guard (bugs.md): flag re-runs of the same expensive
+	// upstream command with only the trailing filter changed, within one state
+	// epoch. This only MARKS the call — the hint is appended to its result in
+	// resolveToolResultContent; execution is never blocked.
+	if tc.ToolName == "bash" && a.bashReuse != nil {
+		upstream := bashUpstreamKey(bashCommandFromArgs(tc.ToolArguments))
+		if a.bashReuse.recordUpstream(upstream, a.stateEpoch) {
+			a.bashNearDup[tc.ToolCallID] = true
+		}
+	}
 	a.mu.Unlock()
 
 	if a.checkTotalRepeatGuardrail(tc, callKey) {

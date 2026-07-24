@@ -29,6 +29,24 @@ func TestBashTool_Schema_ReturnsValidSchema(t *testing.T) {
 	}
 }
 
+// Regression for bugs.md: the tool's top-level Description (the text the model
+// actually reads) must state that the working directory defaults to the
+// project root, so the model stops prepending a redundant "cd <root> && ".
+func TestBashTool_Schema_DescriptionStatesDefaultWorkdir(t *testing.T) {
+	tool := &BashTool{}
+	schema := tool.Schema()
+	desc := strings.ToLower(schema.Description)
+	if !strings.Contains(desc, "working directory") {
+		t.Errorf("description should mention the working directory, got: %q", schema.Description)
+	}
+	if !strings.Contains(desc, "project root") {
+		t.Errorf("description should state the default working directory is the project root, got: %q", schema.Description)
+	}
+	if !strings.Contains(desc, "cd") {
+		t.Errorf("description should tell the model not to prepend a redundant cd, got: %q", schema.Description)
+	}
+}
+
 func TestBashTool_IsRetryable_ReturnsFalse(t *testing.T) {
 	tool := &BashTool{}
 	if tool.IsRetryable(nil) {

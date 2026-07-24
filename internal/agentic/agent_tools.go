@@ -132,10 +132,29 @@ func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[stri
 		return fmt.Sprintf("Error: %v", r.Err)
 	}
 	output := r.Output
+	// Near-duplicate bash re-run (same upstream, only the filter changed, no
+	// intervening mutation): append a non-blocking hint teaching the cheaper
+	// save-once-refilter pattern. The result itself is untouched.
+	if tc.ToolName == "bash" && a.popBashNearDup(tc.ToolCallID) {
+		output += nearDuplicateHint
+	}
 	if limit := a.toolResultSizeLimit(); limit > 0 && len(output) > limit {
 		return truncateToolResult(output, limit)
 	}
 	return output
+}
+
+// popBashNearDup reports (and clears) whether the given call was flagged as a
+// near-duplicate bash re-run. Lock-safe: the flag map is written under a.mu in
+// shouldBufferToolCall while results are resolved without it.
+func (a *Agent) popBashNearDup(callID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.bashNearDup[callID] {
+		delete(a.bashNearDup, callID)
+		return true
+	}
+	return false
 }
 
 // truncateToolResult caps a tool result to roughly limit bytes while preserving

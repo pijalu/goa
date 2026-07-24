@@ -202,9 +202,22 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 				return nil, false
 			}
 			return subs.goaTool, true
+		case "goal":
+			return makeGoalToolRuntime(subs)
 		}
 		return nil, false
 	}
+}
+
+// makeGoalToolRuntime builds the goal tool for the /tools:goal:on runtime
+// path. /tools:goal:on has already flipped cfg.Tools.Enabled.Goal to true
+// before invoking the factory, so reading it here yields the same
+// createAllowed gate used at startup (flag on OR a goal active).
+func makeGoalToolRuntime(subs *subsystems) (agentic.Tool, bool) {
+	if subs.goalManager == nil {
+		return nil, false
+	}
+	return newGoalTool(subs.goalManager, subs.cfg.Tools.Enabled.Goal), true
 }
 
 func makeBGExecTool(subs *subsystems) agentic.Tool {
