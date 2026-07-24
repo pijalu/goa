@@ -210,7 +210,7 @@ type Agent struct {
 	errStreakNudged bool
 
 	// stopBatchAfterThis is set when a tool result requests that the current
-	// tool batch end after this result (e.g. UpdateGoal setting a non-active
+	// tool batch end after this result (e.g. the goal tool setting a non-active
 	// status). It causes completeStreamTurn to report no further tool calls
 	// even if the model issued some, ending the turn after the results are
 	// appended to history.

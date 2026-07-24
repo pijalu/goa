@@ -157,10 +157,13 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 	return true
 }
 
-// handleEditSteering moves pending steering text back into the input line
-// for editing (Alt+E). The steering queue is emptied until the user
-// resubmits; the pending bubble and footer indicator are cleared.
-func (a *App) handleEditSteering(engine *tui.TUI, chat *tui.ChatViewport) {
+// restoreSteeringToInput drains the main-agent steering queue back into the
+// input line and clears the steering-pending bubble, so the user can edit /
+// resend / discard text they typed mid-turn. It is a no-op when there is no
+// agent, an empty queue, or no input editor. The restored text is NOT sent.
+// Shared by Alt+E (handleEditSteering) and ESC (handleEscape) so the two paths
+// cannot diverge (bugs.md S1).
+func (a *App) restoreSteeringToInput(chat *tui.ChatViewport) {
 	subs := a.subs
 	if subs.agentMgr == nil {
 		return
@@ -174,7 +177,16 @@ func (a *App) handleEditSteering(engine *tui.TUI, chat *tui.ChatViewport) {
 	if inp := subs.getInput(); inp != nil {
 		inp.SetText(text)
 	}
-	chat.ClearSteeringPending()
+	if chat != nil {
+		chat.ClearSteeringPending()
+	}
+}
+
+// handleEditSteering moves pending steering text back into the input line
+// for editing (Alt+E). The steering queue is emptied until the user
+// resubmits; the pending bubble and footer indicator are cleared.
+func (a *App) handleEditSteering(engine *tui.TUI, chat *tui.ChatViewport) {
+	a.restoreSteeringToInput(chat)
 	engine.RequestRender()
 }
 

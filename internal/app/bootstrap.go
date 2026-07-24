@@ -586,7 +586,11 @@ func defaultInt(val, defaultVal int) int {
 	return val
 }
 
-// newLSPManager starts a gopls-based LSP manager for Go projects.
+// newLSPManager starts a gopls-based LSP manager for Go projects. It returns
+// nil only when the project is not a Go project (no go.mod). When gopls fails
+// to start it still returns the manager — which records the failure via
+// StartError() — so the startup banner can surface it (bugs.md L1) and the
+// file tools' nil-safe guards simply see "not started".
 func newLSPManager(projectDir string) *lsp.Manager {
 	goModPath := filepath.Join(projectDir, "go.mod")
 	if _, err := os.Stat(goModPath); err != nil {
@@ -597,7 +601,6 @@ func newLSPManager(projectDir string) *lsp.Manager {
 	defer cancel()
 	if err := mgr.Start(ctx); err != nil {
 		log.Printf("Warning: failed to start LSP manager: %v", err)
-		return nil
 	}
 	return mgr
 }

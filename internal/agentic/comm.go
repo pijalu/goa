@@ -193,7 +193,7 @@ func (t *SendMessageTool) sendError(err error) error {
 	if len(others) == 0 {
 		return fmt.Errorf("%w\nThere are no other agents on the bus — you are the only agent (%q) running. "+
 			"Do not use send_message. To ask the user something use the ask_user_question tool; "+
-			"to finish or report a goal's status call the UpdateGoal tool (plain text does not stop a goal).", err, t.FromName)
+			"to finish or report a goal's status call the goal tool with action \"update\" (plain text does not stop a goal).", err, t.FromName)
 	}
 	return fmt.Errorf("%w\nAvailable agents you can message: %s (you are %q). "+
 		"If you meant to ask the user something, use the ask_user_question tool instead.",

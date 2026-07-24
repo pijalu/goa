@@ -222,9 +222,10 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	swarmState := swarm.NewState()
 	taskBus := tasks.NewBus(tasks.NopStore{}, agentBundle.eventBus)
 	goalManager, goalDriver := initGoalSystem(projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState)
-	if cfg.Tools.Enabled.Goal || opts.Goal {
-		registerGoalTools(subs.toolRegistry, goalManager)
-	}
+	// Goal tools are always registered (stable tool array, bugs.md S2). The
+	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
+	// `create` is allowed when the flag is on OR a goal is already active.
+	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal)
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
@@ -556,11 +557,16 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 	return agent.Run(ctx, input)
 }
 
-func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager) {
+func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool) {
 	reminderFn := func(text string) {
 		// Reminders are injected by the agent loop via GoalStateProvider.
 	}
-	for _, t := range tools.NewGoalTools(manager.Mode, reminderFn) {
+	// Autonomous `create` is allowed when the feature flag is on, or whenever a
+	// goal is already active (bugs.md S2: all goal actions work during a goal).
+	createAllowed := func() bool {
+		return createFlagOn || manager.Mode.GetActiveGoal() != nil
+	}
+	for _, t := range tools.NewGoalTools(manager.Mode, reminderFn, createAllowed) {
 		toolRegistry.Register(t)
 	}
 }

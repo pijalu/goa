@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -25,36 +24,7 @@ import (
 // resolution can redirect writes to the wrong file, causing irreversible
 // data loss. Unlike edit/read which handle existing files, write's
 // destructive nature requires exact path fidelity.
-// formatLSPDiagnostics renders diagnostics as a compact, model-readable block
-// appended to tool output. Returns "" when there is nothing to report.
-func formatLSPDiagnostics(path string, diags []lsp.Diagnostic) string {
-	if len(diags) == 0 {
-		return ""
-	}
-	name := filepath.Base(path)
-	var b strings.Builder
-	b.WriteString("\nDiagnostics (gopls):\n")
-	for _, d := range diags {
-		fmt.Fprintf(&b, "  %s:%d:%d: %s: %s\n", name, d.Range.Start.Line+1, d.Range.Start.Character+1, lspSeverityName(d.Severity), d.Message)
-	}
-	return b.String()
-}
-
-// lspSeverityName maps an LSP severity integer to a short label.
-func lspSeverityName(sev int) string {
-	switch sev {
-	case 1:
-		return "error"
-	case 2:
-		return "warning"
-	case 3:
-		return "info"
-	case 4:
-		return "hint"
-	default:
-		return fmt.Sprintf("sev%d", sev)
-	}
-}
+// (LSP diagnostics formatting/collection lives in tools/lsp_diagnostics.go.)
 
 // LSPDiagnostic is the subset of an LSP diagnostic surfaced to tool output.
 // Severity follows LSP: 1=Error, 2=Warning, 3=Info, 4=Hint. Line/Col are 0-indexed.
@@ -166,9 +136,8 @@ func (t *WriteFileTool) lspDiagnostics(ctx context.Context, resolvedPath, conten
 	} else {
 		_ = t.LSPManager.DidChange(ctx, resolvedPath, content)
 	}
-	// Diagnostics are published asynchronously; give gopls a moment to settle.
-	time.Sleep(150 * time.Millisecond)
-	diags := t.LSPManager.DiagnosticsFor(ctx, resolvedPath)
+	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
+	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
 	return formatLSPDiagnostics(resolvedPath, diags)
 }
 

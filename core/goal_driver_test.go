@@ -31,13 +31,14 @@ func (a *fakeAgent) Run(ctx context.Context, prompt string) error {
 
 func TestContinuationPrompt_HowToEndGuidance(t *testing.T) {
 	// The continuation prompt must tell the model exactly how a goal stops:
-	// an actual UpdateGoal tool call — not prose, a bash echo, or send_message.
-	// Regression: a model announced "the goal is complete" in text and tried
-	// send_message to a nonexistent coordinator, never calling UpdateGoal, so
-	// the driver kept launching continuation turns.
+	// an actual goal tool call with action "update" — not prose, a bash echo,
+	// or send_message. Regression: a model announced "the goal is complete" in
+	// text and tried send_message to a nonexistent coordinator, never calling
+	// the goal tool, so the driver kept launching continuation turns.
 	for _, want := range []string{
 		"HOW TO END A GOAL",
-		"UpdateGoal TOOL",
+		"goal TOOL",
+		`action "update"`,
 		"does NOT end it",
 		"send_message",
 	} {

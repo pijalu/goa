@@ -276,6 +276,22 @@ func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 	} else {
 		chat.AddSystemMessage("⟡ No skills loaded")
 	}
+
+	// LSP (gopls) availability — surface start failures instead of staying
+	// silent so the user knows Go diagnostics are unavailable (bugs.md L1).
+	showLSPBanner(subs, chat)
+}
+
+// showLSPBanner reports gopls availability. It only speaks when LSP was
+// expected (a Go project) but failed to start; a running LSP is the quiet
+// default and needs no banner.
+func showLSPBanner(subs *subsystems, chat *tui.ChatViewport) {
+	if subs.lspMgr == nil {
+		return
+	}
+	if err := subs.lspMgr.StartError(); err != nil {
+		chat.AddSystemMessage(fmt.Sprintf("⟡ LSP (gopls) unavailable: %v — Go diagnostics on write/edit are disabled", err))
+	}
 }
 
 func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skills.SkillSummary) {

@@ -41,6 +41,22 @@ func TestManager_StartFactoryError(t *testing.T) {
 	}
 }
 
+// TestManager_StartErrorSurfaced verifies a start failure is recorded for
+// later surfacing (bugs.md L1) and cleared on a subsequent successful start.
+func TestManager_StartErrorSurfaced(t *testing.T) {
+	mgr := NewManager(t.TempDir())
+	mgr.serverFactory = func(ctx context.Context) (*Server, error) { return nil, fmt.Errorf("boom") }
+	if err := mgr.Start(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+	if mgr.StartError() == nil {
+		t.Fatal("StartError must record the failure for surfacing")
+	}
+	if mgr.Started() {
+		t.Error("manager must not report started after a failed start")
+	}
+}
+
 func TestManager_NotStarted(t *testing.T) {
 	mgr := NewManager(t.TempDir())
 	if err := mgr.OpenDocument(context.Background(), "main.go", "package main"); err == nil {

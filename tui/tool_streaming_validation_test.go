@@ -38,10 +38,7 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"webfetch", map[string]any{"url": "https://example.com"}, map[string]any{"url": "https://example.com"}, "<html></html>", nil},
 		{"search", map[string]any{"pattern": "foo", "path": "."}, map[string]any{"pattern": "foo"}, "a.go:1:foo", nil},
 		{"smartsearch", map[string]any{"query": "foo", "path": "."}, map[string]any{"query": "foo"}, "a.go:1:foo", nil},
-		{"CreateGoal", map[string]any{"objective": "Refactor parser"}, map[string]any{"objective": "Refactor parser"}, `{"goal":{"objective":"Refactor parser","status":"active","turnsUsed":0,"tokensUsed":0,"wallClockMs":0}}`, nil},
-		{"UpdateGoal", map[string]any{"status": "complete"}, map[string]any{"status": "complete"}, "", nil},
-		{"GetGoal", map[string]any{}, map[string]any{}, `{"goal":{"objective":"Refactor parser","status":"active","turnsUsed":0,"tokensUsed":0,"wallClockMs":0}}`, nil},
-		{"SetGoalBudget", map[string]any{"value": 10, "unit": "turns"}, map[string]any{"value": 10, "unit": "turns"}, "", nil},
+		{"goal", map[string]any{"action": "update", "status": "complete"}, map[string]any{"action": "update"}, `{"goal":{"objective":"Refactor parser","status":"complete","turnsUsed":3,"tokensUsed":1200,"wallClockMs":4000}}`, nil},
 		{"agent", map[string]any{"description": "Review code", "subagent_type": "reviewer"}, map[string]any{"description": "Review code"}, "Done\n", nil},
 		{"agent_swarm", map[string]any{"task": "Fix bugs", "items": []string{"a", "b"}}, map[string]any{"task": "Fix bugs"}, "Done\n", nil},
 		{"plan", map[string]any{"action": "get"}, map[string]any{"action": "get"}, "# Plan: test\n\n**Objective:** test\n", nil},
@@ -94,8 +91,7 @@ func TestToolStreaming_RegistryIsComplete(t *testing.T) {
 	}
 	cases := []string{
 		"read", "write", "edit", "bash", "python", "verify", "terminal",
-		"webfetch", "search", "smartsearch", "CreateGoal", "UpdateGoal",
-		"GetGoal", "SetGoalBudget", "agent", "agent_swarm",
+		"webfetch", "search", "smartsearch", "goal", "agent", "agent_swarm",
 		"plan", "task_outcome",
 	}
 	for _, name := range cases {

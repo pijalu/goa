@@ -17,24 +17,24 @@ const ContinuationPrompt = `Continue working toward the active goal.
 Keep the self-audit brief. Do not explore unrelated interpretations once the
 goal can be decided. If the objective is simple, already answered, impossible,
 unsafe, or contradictory, do not run another goal turn. Explain briefly if useful,
-then call UpdateGoal with "complete" or "blocked" in the same turn. Otherwise,
+then call the goal tool with action "update", status "complete" or "blocked" in the same turn. Otherwise,
 weigh the objective and any completion criteria against the work done so far.
 Goal mode is iterative: do one coherent slice of work, then reassess.
-Call UpdateGoal("complete") only when all required work is done, any stated
+Call goal with action "update", status "complete" only when all required work is done, any stated
 validation has passed, and there is no useful next action. Do not mark complete
 after only producing a plan, summary, first pass, or partial result.
 If an external condition or required user input prevents progress, or the objective
-cannot be completed as stated, call UpdateGoal("blocked"). Otherwise keep going —
+cannot be completed as stated, call goal with action "update", status "blocked". Otherwise keep going —
 use the existing conversation context and your tools, and do not ask the user for
 input unless a real blocker prevents progress.
 
-HOW TO END A GOAL: the goal only stops when you make an actual UpdateGoal TOOL
-CALL with status "complete" or "blocked". Writing "the goal is complete" (or
+HOW TO END A GOAL: the goal only stops when you make an actual goal TOOL
+CALL with action "update", status "complete" or "blocked". Writing "the goal is complete" (or
 similar) in your reply text does NOT end it — the driver will start another
 continuation turn. Do not announce completion in prose, do not echo a summary
 with the bash tool, and do not send the result to another agent with
 send_message; none of those change the goal state. When the work is truly done,
-invoke the UpdateGoal tool in that same turn and let its result speak for itself.`
+invoke the goal tool with action "update" in that same turn and let its result speak for itself.`
 
 // Pause reasons used when the driver parks a goal after an error.
 const (

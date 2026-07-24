@@ -20,6 +20,10 @@ type Manager struct {
 	rootURI    string
 	started    bool
 	versions   map[string]int
+	// startErr records the most recent Start failure so callers can surface
+	// it (bugs.md L1: LSP start failures were previously silent). Nil when the
+	// last Start succeeded or Start has not been called.
+	startErr error
 	// serverFactory creates the underlying LSP server. Defaults to Start.
 	serverFactory func(ctx context.Context) (*Server, error)
 }
@@ -46,7 +50,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	server, err := m.serverFactory(ctx)
 	if err != nil {
-		return fmt.Errorf("lsp manager: start gopls: %w", err)
+		return m.recordStartErr(fmt.Errorf("lsp manager: start gopls: %w", err))
 	}
 	m.server = server
 	client := server.Client()
@@ -59,14 +63,37 @@ func (m *Manager) Start(ctx context.Context) error {
 		Trace:     "off",
 	}); err != nil {
 		_ = server.Close(ctx)
-		return fmt.Errorf("lsp manager: initialize: %w", err)
+		return m.recordStartErr(fmt.Errorf("lsp manager: initialize: %w", err))
 	}
 	if err := client.Initialized(InitializedParams{}); err != nil {
 		_ = server.Close(ctx)
-		return fmt.Errorf("lsp manager: initialized: %w", err)
+		return m.recordStartErr(fmt.Errorf("lsp manager: initialized: %w", err))
 	}
+	m.mu.Lock()
 	m.started = true
+	m.startErr = nil
+	m.mu.Unlock()
 	return nil
+}
+
+// recordStartErr stores err as the start error and returns it.
+func (m *Manager) recordStartErr(err error) error {
+	m.mu.Lock()
+	m.startErr = err
+	m.mu.Unlock()
+	return err
+}
+
+// StartError returns the most recent Start failure, or nil when the manager
+// started successfully (or Start has not been called). Used to surface LSP
+// availability to the user instead of failing silently (bugs.md L1).
+func (m *Manager) StartError() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.startErr
 }
 
 // OpenDocument notifies gopls that a document has been opened. The per-file
@@ -124,6 +151,13 @@ func (m *Manager) DiagnosticsFor(ctx context.Context, path string) []Diagnostic 
 // HasErrors reports whether any tracked file has an error-level diagnostic.
 func (m *Manager) HasErrors() bool {
 	return m.diags.HasErrors()
+}
+
+// Started reports whether the manager successfully started the language server.
+// It is nil-safe: a nil *Manager (bootstrap returns a typed-nil when gopls is
+// unavailable) reports false.
+func (m *Manager) Started() bool {
+	return m != nil && m.started && m.server != nil
 }
 
 // Close shuts down the language server.

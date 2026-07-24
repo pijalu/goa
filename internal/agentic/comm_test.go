@@ -204,8 +204,8 @@ func TestSendMessageTool_UnknownRecipientNoOtherAgents(t *testing.T) {
 	if !strings.Contains(msg, "ask_user_question") {
 		t.Errorf("expected ask_user_question hint, got: %s", msg)
 	}
-	if !strings.Contains(msg, "UpdateGoal") {
-		t.Errorf("expected UpdateGoal hint, got: %s", msg)
+	if !strings.Contains(msg, `goal tool`) {
+		t.Errorf("expected goal-tool hint, got: %s", msg)
 	}
 }
 

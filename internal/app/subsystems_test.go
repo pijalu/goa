@@ -69,16 +69,20 @@ func goalToolsEnabled(cfg *config.Config, opts RuntimeOptions) bool {
 	return cfg.Tools.Enabled.Goal || opts.Goal
 }
 
-// TestRegisterGoalTools_Directly verifies the helper registers the expected
-// goal-related tools.
+// TestRegisterGoalTools_Directly verifies the helper registers the single
+// unified goal tool (bugs.md S2: one `goal` tool, always registered).
 func TestRegisterGoalTools_Directly(t *testing.T) {
 	dir := t.TempDir()
 	gm := core.NewGoalManager(dir)
 	reg := tools.NewToolRegistry()
-	registerGoalTools(reg, gm)
-	for _, name := range []string{"CreateGoal", "UpdateGoal", "GetGoal"} {
-		if _, ok := reg.Get(name); !ok {
-			t.Errorf("expected %q tool to be registered", name)
+	registerGoalTools(reg, gm, false)
+	if _, ok := reg.Get("goal"); !ok {
+		t.Errorf("expected the unified \"goal\" tool to be registered")
+	}
+	// The four legacy per-action tools must no longer be registered.
+	for _, name := range []string{"CreateGoal", "UpdateGoal", "GetGoal", "SetGoalBudget"} {
+		if _, ok := reg.Get(name); ok {
+			t.Errorf("legacy tool %q must not be registered after consolidation", name)
 		}
 	}
 }

@@ -169,12 +169,11 @@ func (a *App) handleEscape() {
 	subs := a.subs
 	if subs.agentMgr != nil {
 		subs.agentMgr.Interrupt()
-		// ESC is a hard stop (bugs.md "ESC remainder: steering drain"): any
-		// user input queued as steering mid-turn must not dispatch as a
-		// follow-up turn after the interrupt.
-		if sq := subs.agentMgr.SteeringQueue(); sq != nil {
-			sq.Flush()
-		}
+		// ESC is a hard stop (bugs.md S1): input queued as steering mid-turn
+		// must not dispatch as a follow-up turn after the interrupt — but it is
+		// the user's typed text, so restore it into the input line (and clear
+		// the pending bubble) instead of discarding it. Never auto-sends.
+		a.restoreSteeringToInput(subs.chat)
 	}
 	// ESC is a HARD STOP for all activities (bugs.md): without this, an
 	// active goal's drive loop — started on context.Background() by the

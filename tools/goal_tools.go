@@ -10,13 +10,13 @@ import (
 	goaltools "github.com/pijalu/goa/tools/goal"
 )
 
-// NewGoalTools creates the agent-facing goal tools bound to the given GoalMode.
-// The reminder callback is used by UpdateGoal to inject completion/block summaries.
-func NewGoalTools(mode *goal.GoalMode, reminderFn func(string)) []agentic.Tool {
+// NewGoalTools creates the single agent-facing goal tool bound to the given
+// GoalMode. The reminder callback injects completion/block summaries after a
+// terminal update. createAllowed gates autonomous goal creation at execution
+// time (bugs.md S2): it is consulted only for the `create` action and callers
+// typically allow create when the feature flag is on OR a goal is active.
+func NewGoalTools(mode *goal.GoalMode, reminderFn func(string), createAllowed func() bool) []agentic.Tool {
 	return []agentic.Tool{
-		&goaltools.CreateGoalTool{Mode: mode},
-		&goaltools.UpdateGoalTool{Mode: mode, ReminderFn: reminderFn},
-		&goaltools.GetGoalTool{Mode: mode},
-		&goaltools.SetGoalBudgetTool{Mode: mode},
+		&goaltools.GoalTool{Mode: mode, ReminderFn: reminderFn, CreateAllowed: createAllowed},
 	}
 }

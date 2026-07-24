@@ -73,6 +73,50 @@ func TestHandleEditSteering_NoPendingIsNoOp(t *testing.T) {
 	}
 }
 
+// TestHandleEscape_RestoresSteeringToInput covers bugs.md S1: on ESC with
+// queued steering, the queued text is moved into the input line (not
+// discarded), the steering queue is emptied, and the pending bubble clears.
+func TestHandleEscape_RestoresSteeringToInput(t *testing.T) {
+	app, subs := testAppWithAgent(t)
+	subs.agentMgr.SetSteeringQueue(core.NewSteeringQueue())
+	subs.inputEditor = tui.NewEditor()
+	chat := tui.NewChatViewport()
+	subs.chat = chat
+
+	sq := subs.agentMgr.SteeringQueue()
+	sq.Append("hold on, also check the tests")
+	chat.AddSteeringPending("hold on, also check the tests")
+
+	app.handleEscape()
+
+	if got := subs.inputEditor.Text(); got != "hold on, also check the tests" {
+		t.Errorf("editor text = %q, want the queued steering restored", got)
+	}
+	if sq.Len() != 0 {
+		t.Errorf("steering queue should be flushed, got %d pending", sq.Len())
+	}
+	if chat.HasSteeringPending() {
+		t.Error("steering bubble should be cleared after ESC restore")
+	}
+}
+
+// TestHandleEscape_EmptyQueueKeepsDraft ensures ESC with no queued steering
+// does not clobber an in-progress draft (regression for S1).
+func TestHandleEscape_EmptyQueueKeepsDraft(t *testing.T) {
+	app, subs := testAppWithAgent(t)
+	subs.agentMgr.SetSteeringQueue(core.NewSteeringQueue())
+	subs.inputEditor = tui.NewEditor()
+	subs.inputEditor.SetText("my half-typed prompt")
+	chat := tui.NewChatViewport()
+	subs.chat = chat
+
+	app.handleEscape()
+
+	if got := subs.inputEditor.Text(); got != "my half-typed prompt" {
+		t.Errorf("editor text = %q, want unchanged draft", got)
+	}
+}
+
 func testAppWithAgent(t *testing.T) (*App, *subsystems) {
 	t.Helper()
 	app := &App{}

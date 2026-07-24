@@ -11,9 +11,9 @@ import (
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
-func TestCreateGoalRenderer(t *testing.T) {
-	r := CreateGoalRenderer{}
-	call := r.RenderCall(map[string]any{"objective": "Fix tests"}, tuirender.RenderContext{})
+func TestGoalRenderer_Create(t *testing.T) {
+	r := GoalRenderer{}
+	call := r.RenderCall(map[string]any{"action": "create", "objective": "Fix tests"}, tuirender.RenderContext{})
 	if !strings.Contains(call, "Started goal") {
 		t.Errorf("call = %q", call)
 	}
@@ -26,8 +26,8 @@ func TestCreateGoalRenderer(t *testing.T) {
 	}
 }
 
-func TestUpdateGoalRenderer(t *testing.T) {
-	r := UpdateGoalRenderer{}
+func TestGoalRenderer_Update(t *testing.T) {
+	r := GoalRenderer{}
 	for status, want := range map[string]string{
 		"complete": "complete",
 		"blocked":  "blocked",
@@ -35,19 +35,16 @@ func TestUpdateGoalRenderer(t *testing.T) {
 		"active":   "Resumed",
 		"unknown":  "Updated",
 	} {
-		call := r.RenderCall(map[string]any{"status": status}, tuirender.RenderContext{})
+		call := r.RenderCall(map[string]any{"action": "update", "status": status}, tuirender.RenderContext{})
 		if !strings.Contains(call, want) {
 			t.Errorf("status %s call = %q", status, call)
 		}
 	}
-	if r.RenderResult("", tuirender.RenderContext{}) != "" || r.PreviewLines() != 0 || !r.HideResultWhenCollapsed() {
-		t.Error("unexpected renderer meta")
-	}
 }
 
-func TestGetGoalRenderer(t *testing.T) {
-	r := GetGoalRenderer{}
-	if !strings.Contains(r.RenderCall(nil, tuirender.RenderContext{}), "Checked goal") {
+func TestGoalRenderer_Get(t *testing.T) {
+	r := GoalRenderer{}
+	if !strings.Contains(r.RenderCall(map[string]any{"action": "get"}, tuirender.RenderContext{}), "Checked goal") {
 		t.Error("unexpected call")
 	}
 	res := r.RenderResult(`{"goal":null}`, tuirender.RenderContext{})
@@ -56,9 +53,9 @@ func TestGetGoalRenderer(t *testing.T) {
 	}
 }
 
-func TestSetGoalBudgetRenderer(t *testing.T) {
-	r := SetGoalBudgetRenderer{}
-	call := r.RenderCall(map[string]any{"value": 5.0, "unit": "turns"}, tuirender.RenderContext{})
+func TestGoalRenderer_SetBudget(t *testing.T) {
+	r := GoalRenderer{}
+	call := r.RenderCall(map[string]any{"action": "set_budget", "value": 5.0, "unit": "turns"}, tuirender.RenderContext{})
 	if !strings.Contains(call, "Set goal budget") || !strings.Contains(call, "turns") {
 		t.Errorf("call = %q", call)
 	}

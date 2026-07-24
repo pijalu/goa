@@ -16,6 +16,6 @@ func goalToolErr(tool, typ string, err error) *internal.ToolError {
 		Tool:     tool,
 		Type:     typ,
 		Detail:   err.Error(),
-		HintText: "Check the goal tool input and the current goal state (use GetGoal).",
+		HintText: "Check the goal tool input and the current goal state (use goal with action \"get\").",
 	}
 }

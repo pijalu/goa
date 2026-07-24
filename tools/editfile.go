@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -327,9 +326,8 @@ func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) strin
 		return ""
 	}
 	_ = t.LSPManager.DidChange(ctx, resolvedPath, string(content))
-	// Diagnostics are published asynchronously; give gopls a moment to settle.
-	time.Sleep(150 * time.Millisecond)
-	diags := t.LSPManager.DiagnosticsFor(ctx, resolvedPath)
+	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
+	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
 	return formatLSPDiagnostics(resolvedPath, diags)
 }
 
