@@ -62,6 +62,7 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 	pending := tui.NewStatusMsg()
 	statusBar := tui.NewStatusMsg()
 	goal := goaltui.NewBubble()
+	steering := tui.NewSteeringChrome()
 	inp := tui.NewEditor()
 	footer := tui.NewFooter()
 
@@ -70,6 +71,7 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 	engine.AddChild(pending)
 	engine.AddChild(statusBar)
 	engine.AddChild(goal)
+	engine.AddChild(steering)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
 	engine.SetFocus(inp)
@@ -88,6 +90,7 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 	subs.statusMsg = statusBar
 	subs.footer = footer
 	subs.goalBubble = goal
+	subs.steeringChrome = steering
 
 	app := New(subs)
 	return &uiScenario{

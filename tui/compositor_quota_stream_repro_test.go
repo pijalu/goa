@@ -39,152 +39,148 @@ func TestCompositor_QuotaDuringStream_NoDuplicatedRows(t *testing.T) {
 	}
 }
 
+// quotaScenario drives the /quota-during-stream scenario through a real
+// engine and asserts scrollback integrity via the faithful terminal emulator.
+type quotaScenario struct {
+	t         *testing.T
+	engine    *TUI
+	term      *fakeTerminal
+	chat      *ChatViewport
+	steering  *SteeringChrome
+	streaming bool
+	history   []string
+	stream    []string
+}
+
 func runQuotaStreamScenario(t *testing.T, streaming, steering bool) {
+	s := newQuotaScenario(t, streaming)
+	defer s.engine.Stop()
+
+	s.fillHistory(25)
+	s.streamChunks(6)
+	if steering {
+		s.steering.Add("hold on, check quota first")
+		s.engine.RenderNow()
+	}
+	s.appendQuotaTable()
+	s.streamChunks(8)
+	if steering {
+		s.steering.Clear()
+	}
+	s.engine.RenderNow()
+
+	s.assertScrollbackIntegrity()
+}
+
+func newQuotaScenario(t *testing.T, streaming bool) *quotaScenario {
+	t.Helper()
 	const w, h = 80, 20
 	term := &fakeTerminal{w: w, h: h}
 	engine := NewTUI(term)
-	header := NewHeader("goa", "test")
 	chat := NewChatViewport()
 	status := NewStatusMsg()
-	steeringChrome := NewSteeringChrome()
+	steering := NewSteeringChrome()
 	inp := NewEditor()
-	footer := NewFooter()
-
-	engine.AddChild(header)
-	engine.AddChild(chat)
-	engine.AddChild(status)
-	engine.AddChild(steeringChrome)
-	engine.AddChild(inp)
-	engine.AddChild(footer)
+	for _, c := range []Component{NewHeader("goa", "test"), chat, status, steering, inp, NewFooter()} {
+		engine.AddChild(c)
+	}
 	engine.SetFocus(inp)
 	status.SetTUI(engine)
 	inp.SetTUI(engine)
-
 	if err := engine.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer engine.Stop()
+	return &quotaScenario{t: t, engine: engine, term: term, chat: chat, steering: steering, streaming: streaming}
+}
 
-	// Pre-fill history so the viewport is already bottom-anchored and rows
-	// are flowing into scrollback (the state a real session is in).
-	var history []string
-	for i := 0; i < 25; i++ {
-		s := fmt.Sprintf("history row %02d", i)
-		history = append(history, s)
-		chat.AddSystemMessage(s)
+// markerN is the reflow-stable token used to locate stream chunk N in the
+// emulator output; the assistant markdown view may re-wrap a long line, but a
+// short "chunkNN" token never splits across rows.
+func markerN(n int) string { return fmt.Sprintf("chunk%02d", n) }
+
+// fillHistory pre-fills the transcript so the viewport is bottom-anchored and
+// rows are flowing into scrollback (the state a real session is in).
+func (s *quotaScenario) fillHistory(n int) {
+	for i := 0; i < n; i++ {
+		row := fmt.Sprintf("history row %02d", i)
+		s.history = append(s.history, row)
+		s.chat.AddSystemMessage(row)
 	}
-	engine.RenderNow()
+	s.engine.RenderNow()
+}
 
-	// Begin a streaming assistant block that grows across several frames,
-	// pushing the viewport up as it goes (the "Thinking…" block in flight).
-	// Each stream chunk is its own hard canvas row (ordered markdown list) so
-	// rows are individually identifiable in the emulator output. When
-	// streaming=false the same lines are appended as separate static entries.
-	chat.AddAssistantMessage("")
-	var streamLines []string
-	// markerN is the reflow-stable token used to locate chunk N in the
-	// emulator output. The assistant markdown view may re-wrap a long line,
-	// but a short "chunkNN" token never splits across rows.
-	markerN := func(n int) string { return fmt.Sprintf("chunk%02d", n) }
-	streamStep := func() {
-		streamLines = append(streamLines, fmt.Sprintf("%d. %s", len(streamLines)+1, markerN(len(streamLines))))
-		if streaming {
-			chat.UpdateLastMessage(strings.Join(streamLines, "\n"), ConsoleAssistantMessage)
+// streamChunks grows the streaming assistant block by n chunks (each its own
+// hard canvas row). When streaming=false the same lines are appended as
+// separate static entries instead.
+func (s *quotaScenario) streamChunks(n int) {
+	if s.streaming && len(s.stream) == 0 {
+		// Open the streaming block on the first chunk so UpdateLastMessage has
+		// an assistant entry to grow.
+		s.chat.AddAssistantMessage("")
+	}
+	for i := 0; i < n; i++ {
+		s.stream = append(s.stream, fmt.Sprintf("%d. %s", len(s.stream)+1, markerN(len(s.stream))))
+		if s.streaming {
+			s.chat.UpdateLastMessage(strings.Join(s.stream, "\n"), ConsoleAssistantMessage)
 		} else {
-			chat.AddSystemMessage(streamLines[len(streamLines)-1])
+			s.chat.AddSystemMessage(s.stream[len(s.stream)-1])
 		}
-		engine.RenderNow()
+		s.engine.RenderNow()
 	}
-	for i := 0; i < 6; i++ {
-		streamStep()
-	}
+}
 
-	// The user queues a steering message mid-turn (ESC steering): the pending
-	// bubble shows "(alt+e to edit)" as pinned bottom chrome — NOT a transcript
-	// entry — so the transcript stays append-only and the scrollback watermark
-	// is never perturbed by the stream + quota appends below.
-	if steering {
-		steeringChrome.Add("hold on, check quota first")
-		engine.RenderNow()
-	}
-
-	// Mid-stream: /quota returns a tall bordered table. echoCommandResult
-	// appends it as system messages while the stream block is still active —
-	// and each Append re-orders the pending steering bubble below it.
-	chat.AddSystemMessage("> /quota")
-	var quota []string
-	quota = append(quota, "┌─ Quota ────────────────────────────┐")
+// appendQuotaTable appends a tall bordered /quota table as system messages
+// while the stream block is still active.
+func (s *quotaScenario) appendQuotaTable() {
+	s.chat.AddSystemMessage("> /quota")
+	quota := []string{"┌─ Quota ────────────────────────────┐"}
 	for i := 0; i < 12; i++ {
 		quota = append(quota, fmt.Sprintf("│ provider-%02d  72%% left          │", i))
 	}
 	quota = append(quota, "└────────────────────────────────────┘")
-	chat.AddSystemMessage(strings.Join(quota, "\n"))
-	engine.RenderNow()
+	s.chat.AddSystemMessage(strings.Join(quota, "\n"))
+	s.engine.RenderNow()
+}
 
-	// The stream resumes and grows past the viewport bottom.
-	for i := 0; i < 8; i++ {
-		streamStep()
-	}
-	// Turn ends: the stream block finalizes and the steering bubble is consumed.
-	if steering {
-		steeringChrome.Clear()
-	}
-	engine.RenderNow()
-
-	// Replay every byte the compositor emitted through the faithful emulator.
-	emu := NewTermEmulator(h, w)
-	resetSeen := false
-	for _, wr := range term.Writes() {
-		if strings.Contains(wr, "\x1b[3J") {
-			resetSeen = true
-		}
+// assertScrollbackIntegrity replays every emitted byte through the faithful
+// emulator and asserts no transcript row is lost and none is duplicated within
+// scrollback.
+func (s *quotaScenario) assertScrollbackIntegrity() {
+	emu := NewTermEmulator(s.term.h, s.term.w)
+	for _, wr := range s.term.Writes() {
 		emu.Process(wr)
 	}
-	visible := make([]string, h)
-	for r := 0; r < h; r++ {
+	visible := make([]string, s.term.h)
+	for r := 0; r < s.term.h; r++ {
 		visible[r] = emu.Visible(r)
 	}
 	scrollback := emu.Scrollback()
-	all := append(append([]string{}, scrollback...), visible...)
-	joined := "\n" + strings.Join(all, "\n") + "\n"
+	joined := "\n" + strings.Join(append(append([]string{}, scrollback...), visible...), "\n") + "\n"
 	sbJoined := "\n" + strings.Join(scrollback, "\n") + "\n"
+	dump := "\n--- screen ---\n" + strings.Join(visible, "\n") + "\n--- scrollback tail ---\n" + tailLines(scrollback, 12)
 
-	dump := func() string {
-		return "\n--- screen ---\n" + strings.Join(visible, "\n") + "\n--- scrollback tail ---\n" + tailLines(scrollback, 12)
-	}
-	// A row must never be LOST (it has to be recoverable from scrollback or
-	// the screen) and never DUPLICATED WITHIN SCROLLBACK (the corruption:
-	// already-scrolled rows re-emitted). Note: a row MAY legitimately appear
-	// in BOTH scrollback and the visible screen across a chrome SHRINK — rows
-	// scrolled into scrollback while the bubble was up are revealed back on
-	// screen when the window grows on clear. That cross-boundary overlap is
-	// correct, so the assertions are (a) present somewhere, (b) not duplicated
-	// inside scrollback.
-	assertNoScrollbackDup := func(marker string) {
+	// A row must never be LOST (recoverable from scrollback or screen) and
+	// never DUPLICATED WITHIN SCROLLBACK (the corruption: an already-scrolled
+	// row re-emitted). A row MAY legitimately appear in BOTH scrollback and
+	// screen across a chrome SHRINK — rows scrolled into scrollback while the
+	// bubble was up are revealed on screen when the window grows on clear; that
+	// cross-boundary overlap is correct, so only within-scrollback duplication
+	// and outright loss are asserted.
+	assertRow := func(marker string) {
+		if !strings.Contains(joined, marker) {
+			s.t.Errorf("row %q LOST (absent from scrollback+screen)%s", marker, dump)
+		}
 		if n := strings.Count(sbJoined, marker); n > 1 {
-			t.Errorf("row %q duplicated WITHIN scrollback (%d times) — watermark re-emitted it%s", marker, n, dump())
+			s.t.Errorf("row %q duplicated WITHIN scrollback (%d times) — watermark re-emitted it%s", marker, n, dump)
 		}
 	}
-	assertPresent := func(marker string) {
-		if n := strings.Count(joined, marker); n < 1 {
-			t.Errorf("row %q LOST (absent from scrollback+screen)%s", marker, dump())
-		}
+	for _, row := range s.history {
+		assertRow(row)
 	}
-
-	_ = resetSeen // the fix must not require a scrollback reset; presence is
-	// asserted the same way whether or not one fired.
-	for _, s := range history {
-		assertPresent(s)
-		assertNoScrollbackDup(s)
+	for i := range s.stream {
+		assertRow(markerN(i))
 	}
-	for i := range streamLines {
-		assertPresent(markerN(i))
-		assertNoScrollbackDup(markerN(i))
-	}
-	// The quota header survives the system-message box reflow; the corruption
-	// re-emitted it into scrollback, so it must not be duplicated there.
-	assertPresent("┌─ Quota")
-	assertNoScrollbackDup("┌─ Quota")
+	assertRow("┌─ Quota")
 }
 
 // tailLines returns the last n lines of s (or all of s when shorter).

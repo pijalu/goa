@@ -67,16 +67,22 @@ type Scene struct {
 }
 
 // compose builds the virtual-buffer canvas from the Scene's base layers, each
-// placed at its Rect. Only the region that is currently visible or was visible
-// in the previous frame is actually written, so large off-screen histories do
-// not burn CPU per frame, while large scrolls still have the gap lines needed
-// to populate the terminal scrollback. Returns the canvas and whether any
-// overlay layer is present.
+// placed at its Rect, and reports whether any overlay layer is present.
+//
+// cullFloor is the canvas row below which content may be left unwritten for
+// efficiency: rows below it are already in the terminal's scrollback and are
+// not read this frame. The steady-state scroll emission reads rows at/above
+// the scrollback watermark (scrollTop), so that watermark is the correct cull
+// boundary — rows below it are provably already scrolled, while culling at or
+// above it would drop rows the emission still needs and re-emit them as blanks
+// (the lost-content corruption). Pass 0 to materialize the full canvas, which
+// reset frames (width or bottom-chrome height change) require because they
+// re-emit the entire off-screen transcript.
 //
 // This is the single place that decides pixel placement of base content.
 // Overlays are composited separately (viewport-relative) by the caller's
 // render path, never here.
-func (s *Scene) compose(prevViewportTop int) (canvas []string, hasOverlay bool) {
+func (s *Scene) compose(cullFloor int) (canvas []string, hasOverlay bool) {
 	height := baseCanvasHeight(s.Layers)
 	if height == 0 {
 		height = 1
@@ -88,14 +94,19 @@ func (s *Scene) compose(prevViewportTop int) (canvas []string, hasOverlay bool) 
 	if visibleEnd <= viewportStart {
 		visibleEnd = viewportStart + 1
 	}
-	placeStart := viewportStart
-	if prevViewportTop >= 0 && prevViewportTop < viewportStart {
-		placeStart = prevViewportTop
+	placeStart := cullFloor
+	if placeStart < 0 {
+		placeStart = 0
+	}
+	// Never cull the visible window itself: even if the floor is ahead of the
+	// viewport top (a transient watermark overshoot), the window must be
+	// materialized so it can be repainted.
+	if placeStart > viewportStart {
+		placeStart = viewportStart
 	}
 	// On a WIDTH change the compositor wipes the terminal scrollback (\x1b[3J)
 	// and re-emits the whole off-screen transcript from this canvas, so every
-	// row must be materialized — the steady-state optimization (skip rows above
-	// placeStart) would re-emit them as blanks, erasing visible history.
+	// row must be materialized regardless of the floor.
 	if s.WidthChanged {
 		placeStart = 0
 	}
@@ -501,44 +512,94 @@ func (c *Compositor) Render(scene *Scene) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.chromeH = scene.ChromeHeight
-	if c.chromeH < 0 {
-		c.chromeH = 0
-	}
-	resized := (c.prevW != 0 && c.prevW != width) || (c.prevH != 0 && c.prevH != height)
-	widthChanged := c.prevW != 0 && c.prevW != width
-	first := c.prevLines == nil
-	// Tell compose whether this is a width-change frame BEFORE building the
-	// canvas: a width change triggers the scrollback-reset path, which needs
-	// the full off-screen transcript materialized.
-	scene.WidthChanged = widthChanged
-	canvas, hasOverlay := scene.compose(c.vt)
+	kind := c.classifyFrame(scene, width, height)
+	canvas, _ := scene.compose(kind.cullFloor(c.scrollTop))
 	c.beginTrace(scene, canvas, width, height)
 	defer c.emitTrace()
 
-	switch {
-	case first:
+	switch kind {
+	case frameFirst:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
 		// emits any off-screen rows into scrollback then draws the window.
 		c.drawWindow(canvas, scene.Cursor, width, height)
-	case widthChanged:
-		// Width change: the terminal's scrollback still holds rows laid out at
-		// the OLD width (line wrap differs), so it no longer matches the new
-		// layout. Reset scrollback and re-emit every off-screen row at the new
-		// width so history reads correctly, then repaint the window.
+	case frameGeometryReset:
+		// Width change or bottom-chrome height change: the terminal's
+		// scrollback no longer corresponds to the canvas layout (wrap reflowed,
+		// or the transcript region shifted), so the incremental diff cannot map
+		// it. Reset scrollback and re-emit every off-screen row at the current
+		// geometry, then repaint the window.
 		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
-	case resized || hasOverlay:
+	case frameFullRepaint:
 		// Height-only resize or overlay: drawWindow emits scrolled-off rows
 		// then repaints the visible window in place (no screen wipe — the
 		// per-row repaint already replaces every row; see drawWindow).
 		c.drawWindow(canvas, scene.Cursor, width, height)
-	default:
+	default: // frameDiff
 		c.renderDiff(canvas, scene.Cursor, width, height)
 	}
 
 	c.prevLines = copySlice(canvas)
 	c.prevW = width
 	c.prevH = height
+}
+
+// frameKind classifies a frame so Render dispatches on a single value. The
+// geometry (terminal size and bottom-chrome height) determines whether the
+// terminal's scrollback still maps to the canvas: a geometry change requires
+// a scrollback reset, anything else uses the incremental diff.
+type frameKind int
+
+const (
+	frameDiff          frameKind = iota // steady state: incremental diff
+	frameFirst                          // very first frame
+	frameGeometryReset                  // width or bottom-chrome height changed
+	frameFullRepaint                    // height-only resize or overlay present
+)
+
+// classifyFrame computes the frame kind and updates c.chromeH and
+// scene.WidthChanged as a side effect (both describe the current geometry).
+func (c *Compositor) classifyFrame(scene *Scene, width, height int) frameKind {
+	// A bottom-chrome height change (a steering/goal bubble or the bg panel
+	// appearing or clearing) shifts the transcript region, so — like a width
+	// change — it invalidates the scrollback↔canvas correspondence.
+	prevChromeH := c.chromeH
+	c.chromeH = max(scene.ChromeHeight, 0)
+	chromeChanged := c.prevLines != nil && c.chromeH != prevChromeH
+
+	widthChanged := c.prevW != 0 && c.prevW != width
+	heightChanged := c.prevH != 0 && c.prevH != height
+	scene.WidthChanged = widthChanged
+
+	switch {
+	case c.prevLines == nil:
+		return frameFirst
+	case widthChanged || chromeChanged:
+		return frameGeometryReset
+	case (widthChanged || heightChanged) || c.hasOverlay(scene):
+		return frameFullRepaint
+	default:
+		return frameDiff
+	}
+}
+
+// cullFloor returns the canvas row below which content may be left unwritten:
+// a geometry reset re-emits the whole transcript (full canvas, 0); steady
+// frames may cull rows already in scrollback (the watermark).
+func (k frameKind) cullFloor(scrollTop int) int {
+	if k == frameGeometryReset {
+		return 0
+	}
+	return scrollTop
+}
+
+// hasOverlay reports whether the scene carries any overlay layer.
+func (c *Compositor) hasOverlay(scene *Scene) bool {
+	for _, l := range scene.Layers {
+		if l.Kind == LayerOverlay {
+			return true
+		}
+	}
+	return false
 }
 
 // emitOverflow emits into scrollback every transcript row that has scrolled
