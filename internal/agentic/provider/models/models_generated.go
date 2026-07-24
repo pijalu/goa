@@ -140,6 +140,20 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "deep-research-max-preview-04-2026", Name: "Deep Research Max Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000120000, CacheRead: 0.0000002000, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "deep-research-preview-04-2026", Name: "Gemini Deep Research Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000120000, CacheRead: 0.0000002000, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "gemini-2.0-flash", Name: "Gemini 2.0 Flash", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: false, ContextWindow: 1048576, MaxTokens: 8192, InputTypes: []string{"text", "image"},
@@ -151,6 +165,13 @@ func loadGeneratedModels() {
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: false, ContextWindow: 1048576, MaxTokens: 8192, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000000750, Output: 0.0000003000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "gemini-2.5-computer-use-preview-10-2025", Name: "Gemini 2.5 Computer Use Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 128000, MaxTokens: 64000, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -196,10 +217,24 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "gemini-3.1-flash-lite-image", Name: "Nano Banana 2 Lite", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 65536, MaxTokens: 4096, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000002500, Output: 0.0000300000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "gemini-3.1-flash-lite-preview", Name: "Gemini 3.1 Flash Lite Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000002500, Output: 0.0000015000, CacheRead: 0.0000000250, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "gemini-3.1-flash-live-preview", Name: "Gemini 3.1 Flash Live Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000007500, Output: 0.0000045000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -249,6 +284,13 @@ func loadGeneratedModels() {
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000002500, Output: 0.0000015000, CacheRead: 0.0000000250, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "gemini-robotics-er-1.6-preview", Name: "Gemini Robotics-ER 1.6 Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
+		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
+		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000010000, Output: 0.0000050000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
