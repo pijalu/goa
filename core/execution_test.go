@@ -260,6 +260,33 @@ func TestExecutionRequestConfirm_ResponseSentBeforeConsumerReturn(t *testing.T) 
 	}
 }
 
+// TestExecutionRequestConfirm_HeadlessConsumerPattern mirrors the production
+// headless consumer (internal/app/headless.go runConfirmationReader): it sends
+// exactly one response on ResponseChan, then blocks on ctx like a modal would.
+// The controller must route that response to RequestConfirm. Stress-tested to
+// catch any regression in the send-only contract.
+func TestExecutionRequestConfirm_HeadlessConsumerPattern(t *testing.T) {
+	const iterations = 2000
+	for i := 0; i < iterations; i++ {
+		ec := newEC(internal.ExecutionConfirm)
+		ec.SetConfirmConsumer(func(ctx context.Context, req internal.ConfirmRequest) error {
+			// Send the response (send-only), then hold like a real modal
+			// until the controller cancels ctx on completion.
+			select {
+			case req.ResponseChan <- internal.ConfirmYes:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			<-ctx.Done()
+			return nil
+		})
+
+		if resp := ec.RequestConfirm("read", `{"path":"x"}`); resp != internal.ConfirmYes {
+			t.Fatalf("iteration %d: RequestConfirm = %d, want ConfirmYes", i, resp)
+		}
+	}
+}
+
 // TestConfirmSlot_FirstWriteWins verifies the write-once semantics of the
 // confirmation outcome slot.
 func TestConfirmSlot_FirstWriteWins(t *testing.T) {
