@@ -54,3 +54,54 @@ A turn that ends with open items, an untested fix, or an unrecorded newly-found 
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
 ---
+
+## Open Items
+
+### BUG: `/goal:resume` does not restart a paused goal — user must send a message
+
+**Observed:** Running `/goal:resume` on a paused goal does not resume execution.
+The goal stays paused until the user manually sends another message; only then
+does the goal continue. `/goal:resume` should itself re-activate the goal and
+kick off the next turn without requiring a manual nudge.
+
+**Expected:** `/goal:resume` transitions the goal from paused to active and
+immediately schedules continuation (the GoalDriver continuation turn), with no
+user message required.
+
+**Investigate:** the `/goal:resume` command handler (core/commands, goal
+command) — whether it only flips goal state to active/resumed but fails to
+trigger the GoalDriver / agent continuation that a normal user message would.
+Confirm the resume path calls the same "schedule continuation" entry point used
+when a user message arrives while a goal is active.
+
+**Test approach:** unit/integration test that pauses a goal, invokes
+`/goal:resume`, and asserts the goal becomes active AND a continuation turn is
+scheduled without any user message. Validate the resume path emits the same
+agentic events as a user-driven continuation.
+
+---
+
+### BUG: `/quota` request during streaming corrupts the TUI (duplicated/garbled frames)
+
+**Observed:** Issuing `/quota` while a streaming block (e.g. "Thinking…") is
+being written corrupts the display: the input box and trailing border lines
+(`└───…───┘`) are repainted many times over, interleaved with the streaming
+output, leaving a long run of duplicated box fragments and broken layout. See
+the captured frame in the report: dozens of repeated
+`└────…────┘` separators and a duplicated `(alt+e to edit)` input box.
+
+**Expected:** `/quota` output renders cleanly even while a stream is in
+flight — the streaming viewport, the quota modal/section, the footer, and the
+input box must each repaint exactly once, in the correct z-order, with no
+duplicated or orphaned border fragments.
+
+**Investigate:** how `/quota` renders its table relative to the live stream —
+whether it writes directly to the screen outside the TUI engine's differential
+renderer / CSI-2026 synced-output region, bypassing the frame compositor and
+racing the in-progress stream repaint. Check the TUI render path (tui/) for
+the quota renderer and the streaming/stream-state wiring: a non-engine write
+during a stream would produce exactly these duplicated frames.
+
+**Test approach:** filmstrip validation (guideline #5) driving a `/quota`
+request while a stream is active; assert the final composed frame contains
+exactly one quota table, one input box, and no repeated border runs.
