@@ -105,11 +105,12 @@ type subsystems struct {
 	runWizard       bool // set when /setup command requests wizard
 
 	// TUI components (set after InitSubsystems)
-	chat       *tui.ChatViewport
-	goalBubble *goaltui.Bubble
-	footer     *tui.Footer
-	tuiEngine  *tui.TUI
-	bgPanel    *bgpanel.Panel
+	chat          *tui.ChatViewport
+	goalBubble    *goaltui.Bubble
+	steeringChrome *tui.SteeringChrome
+	footer        *tui.Footer
+	tuiEngine     *tui.TUI
+	bgPanel       *bgpanel.Panel
 
 	// Logger for structured stats output
 	logger    *agentic.Logger
@@ -558,6 +559,13 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 }
 
 func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool) {
+	toolRegistry.Register(newGoalTool(manager, createFlagOn))
+}
+
+// newGoalTool builds the single agent-facing goal tool bound to the manager's
+// GoalMode. Extracted so both the startup registration path and the runtime
+// /tools:goal:on factory (makeToolFactory) construct it identically.
+func newGoalTool(manager *core.GoalManager, createFlagOn bool) agentic.Tool {
 	reminderFn := func(text string) {
 		// Reminders are injected by the agent loop via GoalStateProvider.
 	}
@@ -566,9 +574,7 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 	createAllowed := func() bool {
 		return createFlagOn || manager.Mode.GetActiveGoal() != nil
 	}
-	for _, t := range tools.NewGoalTools(manager.Mode, reminderFn, createAllowed) {
-		toolRegistry.Register(t)
-	}
+	return tools.NewGoalTools(manager.Mode, reminderFn, createAllowed)[0]
 }
 
 func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry, pluginsEnabled bool) skillCommandBundle {

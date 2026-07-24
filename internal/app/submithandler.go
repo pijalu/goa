@@ -128,7 +128,9 @@ func (a *App) maybeSteerOrchestrator(engine *tui.TUI, chat *tui.ChatViewport, te
 	if id := subs.agentView.ActiveAgentID(); id != "" {
 		target = id
 	}
-	chat.AddSteeringPending(text)
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Add(text)
+	}
 	ctx := coreContextForCommand(subs, a)
 	cmd := &commands.OrchestrateCommand{
 		Builder:  subs.orchAdapter,
@@ -152,7 +154,9 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 	if sq := subs.agentMgr.SteeringQueue(); sq != nil {
 		sq.Append(text)
 	}
-	chat.AddSteeringPending(text)
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Add(text)
+	}
 	engine.RequestRender()
 	return true
 }
@@ -177,8 +181,8 @@ func (a *App) restoreSteeringToInput(chat *tui.ChatViewport) {
 	if inp := subs.getInput(); inp != nil {
 		inp.SetText(text)
 	}
-	if chat != nil {
-		chat.ClearSteeringPending()
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Clear()
 	}
 }
 
@@ -199,7 +203,9 @@ func (a *App) maybeSteerWorkflow(engine *tui.TUI, chat *tui.ChatViewport, text s
 	if progress.Status != "running" && progress.Status != "gate" {
 		return false
 	}
-	chat.AddSteeringPending(text)
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Add(text)
+	}
 	subs.foregroundOrch.InjectSteering(text)
 	engine.RequestRender()
 	return true

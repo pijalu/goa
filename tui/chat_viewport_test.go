@@ -253,26 +253,53 @@ func TestChatViewport_InvalidateRunningToolWidgets(t *testing.T) {
 	}
 }
 
-func TestChatViewport_SteeringPending_StaysAtBottom(t *testing.T) {
-	cv := NewChatViewport()
-	cv.AddUserMessage("hello")
-	cv.AddSteeringPending("fix this")
-	if cv.pendingSteering < 0 {
-		t.Fatal("expected pending steering entry")
+func TestSteeringChrome_AddClearLifecycle(t *testing.T) {
+	sc := NewSteeringChrome()
+	if sc.HasPending() {
+		t.Fatal("fresh chrome must have no pending steering")
 	}
-	cv.AddAssistantMessage("working...")
-	if cv.pendingSteering < 0 {
-		t.Fatal("pending steering index should remain after adding message")
+	if got := sc.Render(80); got != nil {
+		t.Fatalf("chrome with no pending steering must render zero rows, got %v", got)
 	}
-	if cv.entries[cv.pendingSteering].Data.Type != ConsoleSteeringPending {
-		t.Errorf("last entry should be steering pending, got %d", cv.entries[cv.pendingSteering].Data.Type)
+	sc.Add("fix this")
+	if !sc.HasPending() {
+		t.Fatal("expected pending steering after Add")
 	}
-	if cv.entries[cv.pendingSteering].Data.Text != "fix this" {
-		t.Errorf("pending text wrong: %q", cv.entries[cv.pendingSteering].Data.Text)
+	lines := sc.Render(80)
+	if !renderContains(lines, "fix this") {
+		t.Errorf("chrome must render the queued text, got:\n%s", strings.Join(lines, "\n"))
 	}
-	cv.ClearSteeringPending()
-	if cv.pendingSteering >= 0 {
+	sc.Clear()
+	if sc.HasPending() {
 		t.Error("pending steering should be cleared")
+	}
+	if got := sc.Render(80); got != nil {
+		t.Fatalf("cleared chrome must render zero rows, got %v", got)
+	}
+}
+
+// TestSteeringChrome_NotInTranscript is the core invariant of the redesign:
+// adding steering must NOT touch the ChatViewport transcript — the transcript
+// stays strictly append-only, which is what keeps the compositor's scrollback
+// watermark consistent (the /quota-mid-stream duplication bug).
+func TestSteeringChrome_NotInTranscript(t *testing.T) {
+	cv := NewChatViewport()
+	sc := NewSteeringChrome()
+	cv.AddUserMessage("hello")
+	entriesBefore := len(cv.entries)
+
+	sc.Add("fix this")
+	cv.AddAssistantMessage("working...")
+
+	if len(cv.entries) != entriesBefore+1 {
+		t.Errorf("transcript gained %d entries from steering Add; want only the assistant message",
+			len(cv.entries)-entriesBefore)
+	}
+	// The only new transcript entry is the assistant message — no steering.
+	for _, e := range cv.entries {
+		if e.Data.Type != ConsoleUserMessage && e.Data.Type != ConsoleAssistantMessage {
+			t.Errorf("unexpected transcript entry type %d (steering leaked into transcript)", e.Data.Type)
+		}
 	}
 }
 
@@ -409,81 +436,20 @@ func TestSteeringPending_Render_MessageCountStat(t *testing.T) {
 	}
 }
 
-// TestChatViewport_AddSteeringPending_MergesIntoSingleBubble: a second
-// steering submission must merge into the existing bubble (one entry, two
-// queued messages) instead of replacing it and hiding the first message.
-func TestChatViewport_AddSteeringPending_MergesIntoSingleBubble(t *testing.T) {
-	cv := NewChatViewport()
-	cv.AddSteeringPending("first steering")
-	cv.AddSteeringPending("second steering")
+// TestSteeringChrome_AddMergesIntoSingleBubble: a second steering submission
+// must merge into the existing bubble (one bubble, two queued messages shown
+// with a count stat) instead of replacing it and hiding the first message.
+func TestSteeringChrome_AddMergesIntoSingleBubble(t *testing.T) {
+	sc := NewSteeringChrome()
+	sc.Add("first steering")
+	sc.Add("second steering")
 
-	if cv.pendingSteering < 0 {
-		t.Fatal("expected pending steering entry")
+	out := ansi.Strip(strings.Join(sc.Render(60), "\n"))
+	if !strings.Contains(out, "(2 messages)") {
+		t.Errorf("merged bubble must show a '(2 messages)' stat, got:\n%s", out)
 	}
-	e := cv.entries[cv.pendingSteering]
-	if e.Data.Type != ConsoleSteeringPending {
-		t.Fatalf("pending entry type = %d, want ConsoleSteeringPending", e.Data.Type)
-	}
-	sv, ok := e.View.(*steeringPending)
-	if !ok {
-		t.Fatalf("pending view type = %T, want *steeringPending", e.View)
-	}
-	msgs := sv.Messages()
-	if len(msgs) != 2 || msgs[0] != "first steering" || msgs[1] != "second steering" {
-		t.Errorf("merged messages = %v, want [first steering, second steering]", msgs)
-	}
-	if e.Data.Text != "first steering\n\nsecond steering" {
-		t.Errorf("entry data text = %q, want merged content", e.Data.Text)
-	}
-	// Only ONE steering entry may exist in the conversation.
-	count := 0
-	for _, entry := range cv.entries {
-		if entry.Data.Type == ConsoleSteeringPending {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("steering entries = %d, want exactly 1 (merged bubble)", count)
-	}
-}
-
-// TestChatViewport_Append_PendingSteeringReappendInvalidatesCache is the
-// screen-corruption regression: when a new message arrives while the
-// steering bubble is pending, Append removes and re-appends the bubble. The
-// re-appended entry must be fully invalidated — a stale lineOffset made
-// updateLastEntry patch the frame cache at the OLD position, leaving ghost
-// content on screen until the next resize forced a full rebuild.
-func TestChatViewport_Append_PendingSteeringReappendInvalidatesCache(t *testing.T) {
-	cv := NewChatViewport()
-	cv.AddUserMessage("hello")
-	cv.AddSteeringPending("fix this")
-
-	// Render so every entry has a populated cache (this is when stale
-	// lineOffset values do damage).
-	cv.Render(80)
-
-	cv.AddAssistantMessage("working...")
-	if cv.pendingSteering < 0 {
-		t.Fatal("pending steering index should remain after adding message")
-	}
-	e := cv.entries[cv.pendingSteering]
-	if !e.dirty || e.renderedLines != nil || e.renderedWidth != 0 {
-		t.Errorf("re-appended pending entry must be re-rendered, got dirty=%v lines=%v w=%d",
-			e.dirty, e.renderedLines, e.renderedWidth)
-	}
-
-	// The frame cache must render the bubble at the true bottom position.
-	lines := cv.Render(80)
-	if len(lines) == 0 {
-		t.Fatal("expected rendered lines")
-	}
-	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "working...") || !strings.Contains(joined, "fix this") {
-		t.Errorf("frame must contain both the new message and the bubble, got:\n%s", joined)
-	}
-	// The bubble's top border must come AFTER the assistant message.
-	if strings.Index(joined, "working...") > strings.Index(joined, "fix this") {
-		t.Errorf("bubble must render below the new message, got:\n%s", joined)
+	if !strings.Contains(out, "first steering") {
+		t.Errorf("merged bubble must keep the first message as the preview, got:\n%s", out)
 	}
 }
 

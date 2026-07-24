@@ -41,7 +41,9 @@ func TestHandleEditSteering_RecallsPendingIntoEditor(t *testing.T) {
 	sq := subs.agentMgr.SteeringQueue()
 	sq.Append("first steering")
 	sq.Append("second steering")
-	chat.AddSteeringPending("first steering")
+	sc := tui.NewSteeringChrome()
+	sc.Add("first steering")
+	subs.steeringChrome = sc
 
 	app.handleEditSteering(engine, chat)
 
@@ -51,7 +53,7 @@ func TestHandleEditSteering_RecallsPendingIntoEditor(t *testing.T) {
 	if sq.Len() != 0 {
 		t.Errorf("steering queue should be flushed, got %d pending", sq.Len())
 	}
-	if chat.HasSteeringPending() {
+	if sc.HasPending() {
 		t.Error("steering bubble should be cleared after edit recall")
 	}
 }
@@ -85,7 +87,9 @@ func TestHandleEscape_RestoresSteeringToInput(t *testing.T) {
 
 	sq := subs.agentMgr.SteeringQueue()
 	sq.Append("hold on, also check the tests")
-	chat.AddSteeringPending("hold on, also check the tests")
+	sc := tui.NewSteeringChrome()
+	sc.Add("hold on, also check the tests")
+	subs.steeringChrome = sc
 
 	app.handleEscape()
 
@@ -95,7 +99,7 @@ func TestHandleEscape_RestoresSteeringToInput(t *testing.T) {
 	if sq.Len() != 0 {
 		t.Errorf("steering queue should be flushed, got %d pending", sq.Len())
 	}
-	if chat.HasSteeringPending() {
+	if sc.HasPending() {
 		t.Error("steering bubble should be cleared after ESC restore")
 	}
 }

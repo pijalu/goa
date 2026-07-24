@@ -289,7 +289,9 @@ func (a *App) handleSteeringInputControl(si *event.SteeringInput) bool {
 		return true
 	}
 	a.subs.foregroundOrch.InjectSteering(si.Text)
-	a.subs.chat.AddSteeringPending(si.Text)
+	if a.subs.steeringChrome != nil {
+		a.subs.steeringChrome.Add(si.Text)
+	}
 	return true
 }
 
@@ -395,9 +397,15 @@ func (a *App) handleSteeringInjected(injected *event.SteeringInput) {
 		return
 	}
 	subs := a.subs
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Clear()
+	}
+	// The consumed steering lands in the transcript as a user message — as if
+	// the user had typed and sent it — per the steering-bubble redesign: the
+	// pending bubble is bottom chrome (never in scrollback); only the sent
+	// text becomes durable history.
 	if subs.chat != nil {
-		subs.chat.ClearSteeringPending()
-		subs.chat.AddSystemMessage(fmt.Sprintf("[steering injected] %s", injected.Text))
+		subs.chat.AddUserMessage(injected.Text)
 	}
 	if subs.tuiEngine != nil {
 		subs.tuiEngine.RequestRender()

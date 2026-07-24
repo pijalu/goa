@@ -66,11 +66,6 @@ type ChatViewport struct {
 	// Set on the command loop via SetSuppressed.
 	suppressed bool
 
-	// pendingSteering is the index of the ConsoleSteeringPending entry, or -1
-	// if none is present. It is kept so new messages are inserted above the
-	// pending bubble instead of pushing it up.
-	pendingSteering int
-
 	// renderCache holds the concatenated output of the last Render call.
 	renderCache struct {
 		width int
@@ -158,7 +153,7 @@ func (cv *ChatViewport) TotalHeight() int {
 
 // NewChatViewport creates a ChatViewport backed by a fresh Conversation.
 func NewChatViewport() *ChatViewport {
-	return &ChatViewport{Conversation: NewConversation(), pendingSteering: -1}
+	return &ChatViewport{Conversation: NewConversation()}
 }
 
 // SetToolsConfig applies the configured tool display policy: the default
@@ -339,7 +334,6 @@ func (cv *ChatViewport) Invalidate() {
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
 	cv.generation++
-	cv.pendingSteering = -1
 	for i := range cv.entries {
 		cv.entries[i].View.Invalidate()
 		cv.entries[i].renderedWidth = 0
@@ -356,7 +350,6 @@ func (cv *ChatViewport) HandleInput(string) {}
 // Clear removes all entries and invalidates the render cache.
 func (cv *ChatViewport) Clear() {
 	cv.Conversation.Clear()
-	cv.pendingSteering = -1
 	cv.renderCache.width = 0
 	cv.renderCache.lines = nil
 	cv.generation++
@@ -365,28 +358,12 @@ func (cv *ChatViewport) Clear() {
 // ── Generic Model delegates (composable primitives) ──
 
 // Append adds an entry to the conversation and marks the new entry dirty.
-// If a steering-pending entry is present, the new entry is inserted directly
-// above it so the pending bubble stays at the bottom until it is consumed.
+// The transcript is strictly append-only: once an entry is appended it is
+// never re-ordered or re-appended, which is what keeps the compositor's
+// scrollback watermark consistent (exactly-once emission). Transient UI such
+// as the pending steering bubble is rendered as bottom chrome (SteeringChrome),
+// not as a transcript entry, so it never perturbs this invariant.
 func (cv *ChatViewport) Append(e MessageEntry) int {
-	if cv.pendingSteering >= 0 && e.Data.Type != ConsoleSteeringPending {
-		pending := cv.entries[cv.pendingSteering]
-		cv.pendingSteering = -1
-		cv.RemoveLast([]ConsoleItemType{ConsoleSteeringPending})
-		id := cv.Append(e)
-		// The re-appended entry moves to a new position: its cached rendered
-		// lines and lineOffset are stale. Invalidating them forces a re-render
-		// at the correct offset — otherwise updateLastEntry patches the frame
-		// cache at the OLD offset and corrupts the screen until a resize.
-		pending.dirty = true
-		pending.renderedWidth = 0
-		pending.renderedLines = nil
-		pending.lineOffset = 0
-		cv.Append(pending)
-		return id
-	}
-	if e.Data.Type == ConsoleSteeringPending {
-		cv.pendingSteering = len(cv.entries)
-	}
 	e.dirty = true
 	e.renderedWidth = 0
 	e.renderedLines = nil
@@ -422,52 +399,12 @@ func (cv *ChatViewport) UpdateLast(types []ConsoleItemType, fn func(*MessageEntr
 // frame cache so the next Render rebuilds it.
 func (cv *ChatViewport) RemoveLast(types []ConsoleItemType) (MessageEntry, bool) {
 	if e, ok := cv.Conversation.RemoveLast(types); ok {
-		if e.Data.Type == ConsoleSteeringPending {
-			cv.pendingSteering = -1
-		} else if cv.pendingSteering >= len(cv.entries) {
-			cv.pendingSteering = -1
-		}
 		cv.renderCache.width = 0
 		cv.renderCache.lines = nil
 		cv.generation++
 		return e, true
 	}
 	return MessageEntry{}, false
-}
-
-// AddSteeringPending adds a steering message to the pending bubble that stays
-// at the bottom of the chat until ClearSteeringPending is called. When a
-// bubble is already present, the new message is merged into it: the bubble
-// keeps a single entry whose content is the queue of messages (displayed
-// merged, with a "(N messages)" stat) so the user sees every queued steering
-// message, not just the last one.
-func (cv *ChatViewport) AddSteeringPending(text string) {
-	if cv.pendingSteering >= 0 && cv.pendingSteering < len(cv.entries) {
-		if e := &cv.entries[cv.pendingSteering]; e.Data.Type == ConsoleSteeringPending {
-			if sv, ok := e.View.(*steeringPending); ok {
-				sv.SetMessages(append(sv.Messages(), text))
-				e.Data.Text = strings.Join(sv.Messages(), "\n\n")
-				e.dirty = true
-				cv.generation++
-				return
-			}
-		}
-	}
-	cv.ClearSteeringPending()
-	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleSteeringPending, Text: text}, View: newSteeringPending(text)})
-}
-
-// ClearSteeringPending removes the pending steering bubble, if any.
-func (cv *ChatViewport) ClearSteeringPending() {
-	if cv.pendingSteering < 0 {
-		return
-	}
-	cv.RemoveLast([]ConsoleItemType{ConsoleSteeringPending})
-}
-
-// HasSteeringPending reports whether a pending steering bubble is present.
-func (cv *ChatViewport) HasSteeringPending() bool {
-	return cv.pendingSteering >= 0
 }
 
 // resetRenderCaches invalidates every entry's cache and clears the frame cache.
@@ -978,7 +915,7 @@ func (cv *ChatViewport) buildMessageComponent(msg *ChatMessage) Component {
 			agent = msg.Meta["agent"]
 		}
 		return newAgentMessage(msg.Content, agent)
-	case ConsoleCompanionMessage, ConsoleCompanionThinkingBlock, ConsoleSteeringPending, ConsoleThinkingBlock:
+	case ConsoleCompanionMessage, ConsoleCompanionThinkingBlock, ConsoleThinkingBlock:
 		return cv.buildSpecialMessageComponent(msg)
 	default:
 		return NewText(msg.Content, 0, 0)
@@ -991,8 +928,6 @@ func (cv *ChatViewport) buildSpecialMessageComponent(msg *ChatMessage) Component
 		return newCollapsibleComponent("companion", msg.Content)
 	case ConsoleCompanionThinkingBlock:
 		return newCompanionThinkingBlock(msg.Content)
-	case ConsoleSteeringPending:
-		return newSteeringPending(msg.Content)
 	case ConsoleThinkingBlock:
 		return newThinkingBlock(msg.Content)
 	}

@@ -32,11 +32,12 @@ const titleBrand = "⬡"
 func (a *App) buildTUI() (*tui.TUI, *tui.ChatViewport, *tui.Editor) {
 	subs := a.subs
 
-	engine, chat, agentContent, agentTabBar, statusBar, goalBubble, inp, statusFooter, bgPanel := a.createTUIComponents()
+	engine, chat, agentContent, agentTabBar, statusBar, goalBubble, steeringChrome, inp, statusFooter, bgPanel := a.createTUIComponents()
 	subs.goalBubble = goalBubble
+	subs.steeringChrome = steeringChrome
 	a.configureKeyLogging(engine)
 	a.attachInputHandlers(inp, engine)
-	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, statusBar, goalBubble, bgPanel, inp, statusFooter)
+	a.assembleEngine(engine, headerFrom(subs.projectDir), chat, agentContent, agentTabBar, statusBar, goalBubble, steeringChrome, bgPanel, inp, statusFooter)
 	a.configureInputEditor(inp, engine)
 	a.startBackgroundHistoryLoad(inp, engine)
 	a.applyThinkingLevelToUI(mainThinkingLevel(subs))
@@ -55,7 +56,7 @@ func headerFrom(projectDir string) *tui.Header {
 	return h
 }
 
-func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
+func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.SteeringChrome, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
 	projectDir := a.subs.projectDir
 	var ft tui.Terminal = tui.NewProcessTerminal()
 	logPath := a.subs.cfg.Logging.TerminalLog
@@ -100,11 +101,12 @@ func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.Age
 	statusBar := tui.NewStatusMsg()
 	inp := tui.NewEditor()
 	goalBubble := goaltui.NewBubble()
+	steeringChrome := tui.NewSteeringChrome()
 	statusFooter := tui.NewFooter()
 	statusFooter.SetData(tui.FooterData{Workdir: projectDir})
 	statusFooter.RefreshGit()
 	bgPanel := bgpanel.NewPanel(nil)
-	return engine, chat, agentContent, agentTabBar, statusBar, goalBubble, inp, statusFooter, bgPanel
+	return engine, chat, agentContent, agentTabBar, statusBar, goalBubble, steeringChrome, inp, statusFooter, bgPanel
 }
 
 func (a *App) configureKeyLogging(engine *tui.TUI) {
@@ -217,13 +219,14 @@ func (a *App) stopBackgroundProcesses() {
 	}
 }
 
-func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
+func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, steeringChrome *tui.SteeringChrome, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
 	_ = agentContent
 	_ = agentTabBar
 	engine.AddChild(header)
 	engine.AddChild(chat)
 	engine.AddChild(statusBar)
 	engine.AddChild(goalBubble)
+	engine.AddChild(steeringChrome)
 	engine.AddChild(bgPanel)
 	engine.AddChild(inp)
 	engine.AddChild(footer)
