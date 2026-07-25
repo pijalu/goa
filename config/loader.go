@@ -913,19 +913,19 @@ func (cl *CascadeLoader) SaveProjectField(path []string, value any) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("read project config: %w", err)
 		}
-		// If the file doesn't exist, there's nothing to update.
-		return nil
-	}
-	if err := yaml.Unmarshal(data, &root); err != nil {
+		// Create a minimal document so the field is written (matches SaveHomeField).
+		root.Kind = yaml.DocumentNode
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
+	} else if err := yaml.Unmarshal(data, &root); err != nil {
 		return fmt.Errorf("unmarshal project config: %w", err)
 	}
 	if len(root.Content) == 0 {
-		return nil
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
 	}
 
 	doc := root.Content[0]
 	if doc.Kind != yaml.MappingNode {
-		return nil
+		doc.Kind = yaml.MappingNode
 	}
 
 	if err := setYamlNode(doc, path, value); err != nil {

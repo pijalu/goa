@@ -782,7 +782,10 @@ func (m *configMenu) saveToolToggle(toolName string, enabled bool) {
 		return
 	}
 	path, value := toolSaveKeyValue(toolName, enabled)
-	if err := m.ctx.ConfigSaver.SaveHomeField(path, value); err != nil {
+	// Persist to the PROJECT config (see toggleTool in docs.go): the cascade
+	// resolves conflicts in favour of the project layer, so writing the toggle
+	// to home would be silently overridden by any project-level pin.
+	if err := m.ctx.ConfigSaver.SaveProjectField(path, value); err != nil {
 		m.flash("Failed to save config: " + err.Error())
 	}
 }

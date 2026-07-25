@@ -392,7 +392,13 @@ func toggleTool(ctx core.Context, name, onOff string) error {
 
 	if ctx.ConfigSaver != nil {
 		path, value := toolSaveKeyValue(name, enabled)
-		if err := ctx.ConfigSaver.SaveHomeField(path, value); err != nil {
+		// Persist to the PROJECT config, not home: the cascade resolves
+		// conflicts in favour of the project layer, so a tool flag written only
+		// to the home config is silently overridden by any project-level pin
+		// (e.g. a stale goal:false). Writing the toggle to the project config
+		// makes the user's explicit change take effect, matching how /mode and
+		// /autonomy persist. (SaveProjectField creates the file when missing.)
+		if err := ctx.ConfigSaver.SaveProjectField(path, value); err != nil {
 			ctx.Writef("Failed to save config: %v\n", err)
 			return nil
 		}
