@@ -359,6 +359,13 @@ type Compositor struct {
 	// emitting scrollback rows never moves the pinned chrome below the region.
 	regionBot int
 
+	// lastScrollCount is the number of rows the current frame's scroll advance
+	// (emitSteadyScroll) wrote at the bottom of the transcript region. It is set
+	// immediately before repaintWindow runs and consumed only by it, then reset
+	// to 0 for the next frame. repaintWindow skips those already-written bottom
+	// rows so a scrolling frame never emits a row twice.
+	lastScrollCount int
+
 	// tracer, when non-nil, records one JSONL frame per Render for offline
 	// diagnosis of byte-level rendering bugs. curTrace is the in-progress
 	// record for the current Render, owned by the lock holder; nil when
@@ -654,6 +661,9 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
 	c.appendOverflow(&buf, canvas, width, height)
+	// drawWindow repaints every row (first frame / full repaint), so the scroll
+	// advance did not pre-write any bottom rows for repaintWindow to skip.
+	c.lastScrollCount = 0
 	for i := vt; i < len(canvas); i++ {
 		screenRow := i - vt + 1
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
@@ -691,8 +701,32 @@ func (c *Compositor) drawWindowResetScrollback(canvas []string, cursor *CursorPo
 	c.scrollTop = 0
 	c.vt = 0
 	c.reemitScrollback(&buf, canvas, vt, width, height)
-	for i := vt; i < len(canvas); i++ {
+	// Repaint the visible window. The transcript occupies only the top
+	// height-chromeH rows (the chrome band is pinned below), so the window is
+	// windowH rows tall, not height. Repainting canvas[vt:] (height rows) would
+	// overflow chromeH rows into the chrome zone and duplicate content — the
+	// reset-path duplicate-row bug. Stop the transcript repaint at windowH,
+	// then draw the chrome band in its own rows below.
+	windowH := height - c.chromeH
+	if windowH < 1 {
+		windowH = 1
+	}
+	transcriptEnd := vt + windowH
+	if transcriptEnd > len(canvas)-c.chromeH {
+		transcriptEnd = len(canvas) - c.chromeH
+	}
+	for i := vt; i < transcriptEnd; i++ {
 		screenRow := i - vt + 1
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		c.traceWroteRow(screenRow)
+	}
+	// Draw the pinned chrome band in the rows below the transcript region.
+	for i := transcriptEnd; i < len(canvas); i++ {
+		screenRow := windowH + (i - transcriptEnd) + 1
+		if screenRow > height {
+			break
+		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
 		buf.WriteString(truncateToWidth(canvas[i], width, ""))
 		c.traceWroteRow(screenRow)
@@ -736,10 +770,14 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
 	c.advanceScrollback(&buf, canvas, target, width, height)
+	// The scroll just revealed (target - c.vt) rows at the bottom of the window;
+	// repaintWindow must not redraw them.
+	c.lastScrollCount = max(0, target-c.vt)
 	c.repaintWindow(&buf, canvas, vt, width, height)
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
 	buf.WriteString("\x1b[?2026l")
 	c.terminal.Write([]byte(buf.String()))
+	c.lastScrollCount = 0
 
 	c.scrollTop = target
 	c.vt = vt
@@ -820,11 +858,21 @@ func (c *Compositor) advanceScrollback(buf *strings.Builder, canvas []string, ta
 // stale rows the taller previous frame left on the lower screen, without
 // repainting the already-scrolled rows above vt.
 func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, width, height int) {
+	// Skip the row(s) the scroll just wrote at the bottom of the window: on a
+	// scrolling frame the bottom scrollCount rows were already emitted by
+	// emitSteadyScroll (pushing the old top rows into scrollback). Redrawing
+	// them here would write the same content twice in one frame — once pushed
+	// into scrollback and once on screen — the transient duplicate-row bug seen
+	// at conversation start (and amplified when a chrome reset follows).
+	skipFrom := len(canvas) - c.lastScrollCount
 	for screenRow := 1; screenRow <= height; screenRow++ {
 		i := vt + screenRow - 1
 		line := ""
 		if i >= 0 && i < len(canvas) {
 			line = canvas[i]
+		}
+		if c.lastScrollCount > 0 && i >= skipFrom && i < len(canvas) {
+			continue
 		}
 		if c.unchangedRow(canvas, i, vt) {
 			continue
