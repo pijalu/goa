@@ -153,10 +153,8 @@ func (c *MCPCommand) add(ctx core.Context, args []string) error {
 		ctx.Config.MCP = map[string]config.MCPServerConfig{}
 	}
 	ctx.Config.MCP[spec.name] = spec.cfg
-	if ctx.ConfigSaver != nil {
-		if err := ctx.ConfigSaver.SaveProjectFieldValue([]string{"mcp", spec.name}, spec.cfg); err != nil {
-			return fmt.Errorf("server added in memory but failed to persist: %w", err)
-		}
+	if err := saveMCPFieldValue(ctx, spec.global, []string{"mcp", spec.name}, spec.cfg); err != nil {
+		return fmt.Errorf("server added in memory but failed to persist: %w", err)
 	}
 	ctx.Writef("Added MCP server %q; connecting...\n", spec.name)
 	if err := c.connectServer(ctx, spec.name, spec.cfg); err != nil {
@@ -169,8 +167,9 @@ func (c *MCPCommand) add(ctx core.Context, args []string) error {
 
 // mcpAddSpec is the parsed result of /mcp:add.
 type mcpAddSpec struct {
-	name string
-	cfg  config.MCPServerConfig
+	name   string
+	cfg    config.MCPServerConfig
+	global bool
 }
 
 // mcpAddArgs holds the raw parsed arguments from /mcp:add.
@@ -179,6 +178,7 @@ type mcpAddArgs struct {
 	cmd     []string
 	env     map[string]string
 	headers map[string]string
+	global  bool
 }
 
 // parseMCPAdd parses: <name> (--url <u> [--header K=V]... | -- <cmd...> [--env K=V]...).
@@ -203,6 +203,8 @@ func parseMCPAddFlags(args []string) (mcpAddArgs, error) {
 		switch {
 		case a == "--":
 			seenDashDash = true
+		case a == "--global" || a == "-g":
+			p.global = true
 		case a == "--url":
 			return p, fmt.Errorf("--url requires a value; use --url=<url>")
 		case strings.HasPrefix(a, "--url="):
@@ -226,7 +228,7 @@ func parseMCPAddFlags(args []string) (mcpAddArgs, error) {
 
 // buildMCPAddSpec validates parsed args and constructs the final spec.
 func buildMCPAddSpec(name string, p mcpAddArgs) (mcpAddSpec, error) {
-	spec := mcpAddSpec{name: name}
+	spec := mcpAddSpec{name: name, global: p.global}
 	if (p.url == "") == (len(p.cmd) == 0) {
 		return spec, fmt.Errorf("provide either --url <url> or a command after -- (not both, not neither)")
 	}
@@ -256,14 +258,13 @@ func putKV(m map[string]string, kv string) error {
 
 // remove deletes a server from config and disconnects it.
 func (c *MCPCommand) remove(ctx core.Context, args []string) error {
+	args, global := stripGlobalFlag(args)
 	name, err := requireServerName(ctx, args)
 	if err != nil {
 		return err
 	}
-	if ctx.ConfigSaver != nil {
-		if err := ctx.ConfigSaver.DeleteProjectField([]string{"mcp", name}); err != nil {
-			return fmt.Errorf("failed to persist removal: %w", err)
-		}
+	if err := deleteMCPField(ctx, global, []string{"mcp", name}); err != nil {
+		return fmt.Errorf("failed to persist removal: %w", err)
 	}
 	delete(ctx.Config.MCP, name)
 	if ctx.MCP != nil {
@@ -276,6 +277,7 @@ func (c *MCPCommand) remove(ctx core.Context, args []string) error {
 
 // setEnabled flips a server's enabled flag in config and connects/disconnects.
 func (c *MCPCommand) setEnabled(ctx core.Context, args []string, enabled bool) error {
+	args, global := stripGlobalFlag(args)
 	name, err := requireServerName(ctx, args)
 	if err != nil {
 		return err
@@ -283,10 +285,8 @@ func (c *MCPCommand) setEnabled(ctx core.Context, args []string, enabled bool) e
 	srv := ctx.Config.MCP[name]
 	srv.Enabled = &enabled
 	ctx.Config.MCP[name] = srv
-	if ctx.ConfigSaver != nil {
-		if err := ctx.ConfigSaver.SaveProjectFieldValue([]string{"mcp", name, "enabled"}, enabled); err != nil {
-			return fmt.Errorf("failed to persist: %w", err)
-		}
+	if err := saveMCPFieldValue(ctx, global, []string{"mcp", name, "enabled"}, enabled); err != nil {
+		return fmt.Errorf("failed to persist: %w", err)
 	}
 	if enabled {
 		if err := c.connectServer(ctx, name, srv); err != nil {
@@ -341,6 +341,42 @@ func (c *MCPCommand) debug(ctx core.Context, args []string) error {
 	st := mgr.Status()[name]
 	ctx.Writef("✓ connected: %d tools registered\n", st.Tools)
 	return nil
+}
+
+// stripGlobalFlag removes a leading/trailing --global or -g from args.
+func stripGlobalFlag(args []string) (rest []string, global bool) {
+	for _, a := range args {
+		if a == "--global" || a == "-g" {
+			global = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return rest, global
+}
+
+// saveMCPFieldValue persists a value at path to the home (global) or project
+// config layer. Nil saver is a no-op.
+func saveMCPFieldValue(ctx core.Context, global bool, path []string, value any) error {
+	if ctx.ConfigSaver == nil {
+		return nil
+	}
+	if global {
+		return ctx.ConfigSaver.SaveHomeFieldValue(path, value)
+	}
+	return ctx.ConfigSaver.SaveProjectFieldValue(path, value)
+}
+
+// deleteMCPField removes the key at path from the home (global) or project
+// config layer. Nil saver is a no-op.
+func deleteMCPField(ctx core.Context, global bool, path []string) error {
+	if ctx.ConfigSaver == nil {
+		return nil
+	}
+	if global {
+		return ctx.ConfigSaver.DeleteHomeField(path)
+	}
+	return ctx.ConfigSaver.DeleteProjectField(path)
 }
 
 // requireServerName validates args and that the server is configured.

@@ -57,8 +57,15 @@ type ConfigSaver interface {
 	// at the given path in .goa/config.yaml, preserving other settings.
 	SaveProjectFieldValue(path []string, value any) error
 
+	// SaveHomeFieldValue writes an arbitrary value (including maps and slices)
+	// at the given path in ~/.goa/config.yaml, preserving other settings.
+	SaveHomeFieldValue(path []string, value any) error
+
 	// DeleteProjectField removes the key at the given path from .goa/config.yaml.
 	DeleteProjectField(path []string) error
+
+	// DeleteHomeField removes the key at the given path from ~/.goa/config.yaml.
+	DeleteHomeField(path []string) error
 
 	// Reload re-reads config from all cascade layers and returns the result.
 	Reload() (*Config, error)
@@ -970,12 +977,43 @@ func (cl *CascadeLoader) DeleteProjectField(path []string) error {
 	})
 }
 
+// SaveHomeFieldValue writes an arbitrary value (including maps and slices) at
+// the given path in ~/.goa/config.yaml, preserving other settings.
+func (cl *CascadeLoader) SaveHomeFieldValue(path []string, value any) error {
+	return cl.editHomeConfig(func(doc *yaml.Node) error {
+		return setYamlNodeValue(doc, path, value)
+	})
+}
+
+// DeleteHomeField removes the key at the given path from ~/.goa/config.yaml.
+// It is a no-op when the key (or file) does not exist.
+func (cl *CascadeLoader) DeleteHomeField(path []string) error {
+	if len(path) == 0 {
+		return fmt.Errorf("empty field path")
+	}
+	return cl.editHomeConfig(func(doc *yaml.Node) error {
+		deleteYamlNode(doc, path)
+		return nil
+	})
+}
+
+// editHomeConfig applies edit to ~/.goa/config.yaml (see editConfigFile).
+func (cl *CascadeLoader) editHomeConfig(edit func(doc *yaml.Node) error) error {
+	return cl.editConfigFile(filepath.Join(cl.homeDir, ".goa"), "home", edit)
+}
+
 // editProjectConfig loads the project config (creating a minimal document when
 // missing), applies edit to the root mapping, and writes it back.
 func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) error {
-	configDir := filepath.Join(cl.projectDir, ".goa")
+	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "project", edit)
+}
+
+// editConfigFile loads the config.yaml under configDir (creating a minimal
+// document when missing), applies edit to the root mapping, and writes it
+// back. The label ("home"/"project") scopes error messages.
+func (cl *CascadeLoader) editConfigFile(configDir, label string, edit func(doc *yaml.Node) error) error {
 	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("create project config dir: %w", err)
+		return fmt.Errorf("create %s config dir: %w", label, err)
 	}
 	pathYaml := filepath.Join(configDir, "config.yaml")
 
@@ -983,12 +1021,12 @@ func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) erro
 	data, err := os.ReadFile(pathYaml)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return fmt.Errorf("read project config: %w", err)
+			return fmt.Errorf("read %s config: %w", label, err)
 		}
 		root.Kind = yaml.DocumentNode
 		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
 	} else if err := yaml.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("unmarshal project config: %w", err)
+		return fmt.Errorf("unmarshal %s config: %w", label, err)
 	}
 	if len(root.Content) == 0 {
 		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
@@ -1002,10 +1040,10 @@ func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) erro
 	}
 	out, err := yaml.Marshal(&root)
 	if err != nil {
-		return fmt.Errorf("marshal project config: %w", err)
+		return fmt.Errorf("marshal %s config: %w", label, err)
 	}
 	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
-		return fmt.Errorf("write project config: %w", err)
+		return fmt.Errorf("write %s config: %w", label, err)
 	}
 	return nil
 }

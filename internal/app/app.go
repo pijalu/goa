@@ -297,6 +297,12 @@ func Main() {
 	defer handleShutdown()
 	log.SetOutput(io.Discard)
 
+	// `goa mcp ...` is handled before flag parsing: it is a plain CLI
+	// subcommand (no TUI, no headless agent) for managing MCP servers.
+	if runMCPCLI(os.Args[1:]) {
+		return
+	}
+
 	for {
 		relaunch := runApp()
 		if !relaunch {

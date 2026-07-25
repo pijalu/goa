@@ -188,6 +188,7 @@ func (m *configMenu) showRoot() error {
 		{Value: "multi_agent", Label: "Multi-agent", Description: multiAgentLabel(cfg, m.ctx.ForegroundOrchestrator)},
 		{Value: "orchestrator", Label: "Orchestrator", Description: orchestratorLabel(cfg)},
 		{Value: "tools", Label: "Tools", Description: toolsEnabledLabel(cfg)},
+		{Value: "mcp", Label: "MCP servers", Description: mcpServersLabel(cfg)},
 		{Value: "sandbox", Label: "Sandbox", Description: sandboxLabel(cfg)},
 		{Value: "loop_detection", Label: "Loop detection", Description: loopDetectionLabel(cfg)},
 		{Value: "skills", Label: "Skills", Description: skillsLabel(cfg)},
@@ -227,6 +228,7 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"multi_agent":     (*configMenu).openMultiAgent,
 		"orchestrator":    (*configMenu).openOrchestrator,
 		"tools":           (*configMenu).openTools,
+		"mcp":             (*configMenu).openMCP,
 		"sandbox":         (*configMenu).openSandbox,
 		"loop_detection":  (*configMenu).openLoopDetection,
 		"skills":          (*configMenu).openSkills,
@@ -244,6 +246,7 @@ func (m *configMenu) openSpinner()       { m.open(m.settingSpinner) }
 func (m *configMenu) openThinkingLevel() { m.open(m.settingThinkingLevel) }
 func (m *configMenu) openMultiAgent()    { m.open(m.settingMultiAgent) }
 func (m *configMenu) openTools()         { m.open(m.settingTools) }
+func (m *configMenu) openMCP()           { m.open(m.settingMCP) }
 func (m *configMenu) openLoopDetection() { m.open(m.settingLoopDetection) }
 func (m *configMenu) openSkills()        { m.open(m.settingSkills) }
 

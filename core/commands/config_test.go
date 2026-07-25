@@ -33,7 +33,11 @@ func (f *fakeConfigSaver) SaveProjectField(path []string, value any) error  { re
 func (f *fakeConfigSaver) SaveProjectFieldValue(path []string, value any) error {
 	return nil
 }
+func (f *fakeConfigSaver) SaveHomeFieldValue(path []string, value any) error {
+	return nil
+}
 func (f *fakeConfigSaver) DeleteProjectField(path []string) error { return nil }
+func (f *fakeConfigSaver) DeleteHomeField(path []string) error     { return nil }
 func (f *fakeConfigSaver) Reload() (*config.Config, error)          { return f.savedCfg, nil }
 
 func TestDoAddProvider_New(t *testing.T) {
