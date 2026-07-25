@@ -178,3 +178,31 @@ func TestGoalQueueStore_ReorderEmptyMapping(t *testing.T) {
 		t.Errorf("goals = %d", len(goals))
 	}
 }
+
+// TestGoalQueueStore_FreshContext verifies a queued goal carries its per-goal
+// clean-context flag through Append/persist/Read (bugs.md: goal queue +
+// per-goal clean-context flag).
+func TestGoalQueueStore_FreshContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "q.json")
+	store := NewGoalQueueStore(path)
+	if _, err := store.AppendWithOptions("default goal", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendWithOptions("clean goal", true); err != nil {
+		t.Fatal(err)
+	}
+	// Re-read from disk to prove persistence.
+	read, err := NewGoalQueueStore(path).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 2 {
+		t.Fatalf("read = %d goals, want 2", len(read))
+	}
+	if read[0].FreshContext {
+		t.Error("goal[0] FreshContext = true, want false (default)")
+	}
+	if !read[1].FreshContext {
+		t.Error("goal[1] FreshContext = false, want true")
+	}
+}

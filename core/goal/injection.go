@@ -76,6 +76,10 @@ func BuildDynamicGoalProgress(snapshot GoalSnapshot) string {
 		b.WriteString(strings.Join(budgets, "; "))
 		b.WriteString(".\n")
 	}
+	if todo := todoSummaryLine(snapshot.Todos); todo != "" {
+		b.WriteString(todo)
+		b.WriteString("\nWork the next pending todo item; mark items done with the goal todo action as you complete them.\n")
+	}
 	b.WriteString(BudgetBandGuidance(snapshot))
 	return b.String()
 }

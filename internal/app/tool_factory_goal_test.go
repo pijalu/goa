@@ -5,6 +5,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/config"
@@ -51,5 +52,56 @@ func TestMakeToolFactory_Goal_ToolIsFunctional(t *testing.T) {
 	// on a nil Mode.
 	if _, err := tool.Execute(`{"action":"get"}`); err != nil {
 		t.Errorf("goal tool get failed (Mode not wired?): %v", err)
+	}
+}
+
+// Regression for bugs.md: "/tools:goal:on reports success but the goal tool
+// still errors — ✗ ◆ Started goal Phase 1...". A successful create through the
+// runtime-built tool must return a nil error so the renderer draws ✓, not ✗.
+func TestMakeToolFactory_Goal_CreateIsNotErrorFlagged(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Tools.Enabled.SetEnabled("goal", true)
+	gm := core.NewGoalManager(t.TempDir())
+	subs := &subsystems{cfg: cfg, goalManager: gm}
+
+	factory := makeToolFactory(subs)
+	tool, ok := factory("goal")
+	if !ok || tool == nil {
+		t.Fatalf("factory did not build goal tool: ok=%v tool=%v", ok, tool)
+	}
+	out, err := tool.Execute(`{"action":"create","objective":"Phase 1: do the thing"}`)
+	if err != nil {
+		t.Fatalf("goal create returned a non-nil error (renders ✗ on a success body): %v", err)
+	}
+	if !strings.Contains(out, "goal") {
+		t.Errorf("create output missing goal payload: %q", out)
+	}
+}
+
+// TestNewGoalTool_QueueWired verifies both the startup and runtime construction
+// paths wire the durable goal queue into the tool, so the model can manage
+// goals as a todo-like list (create appends by default; list/cancel/reorder).
+func TestNewGoalTool_QueueWired(t *testing.T) {
+	gm := core.NewGoalManager(t.TempDir())
+	tool := newGoalTool(gm, true)
+	// Behavioural check: create two goals — the second must queue, which
+	// requires the queue to be wired into the tool.
+	if _, err := tool.Execute(`{"action":"create","objective":"first"}`); err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	out, err := tool.Execute(`{"action":"create","objective":"second"}`)
+	if err != nil {
+		t.Fatalf("create second should append to queue (queue must be wired), got: %v", err)
+	}
+	if !strings.Contains(out, `"queued":1`) {
+		t.Errorf("expected second goal queued (queue wired), got %q", out)
+	}
+	// list reflects active + queued.
+	listOut, err := tool.Execute(`{"action":"list"}`)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(listOut, "first") || !strings.Contains(listOut, "second") {
+		t.Errorf("list output missing goals: %q", listOut)
 	}
 }

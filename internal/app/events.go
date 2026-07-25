@@ -939,7 +939,8 @@ func (a *App) promoteNextQueuedGoal() {
 		return
 	}
 	if _, err := a.subs.goalManager.Mode.CreateGoal(goal.CreateGoalInput{
-		Objective: removed.Objective,
+		Objective:    removed.Objective,
+		FreshContext: removed.FreshContext,
 	}, goal.GoalActorUser); err != nil {
 		_, _ = a.subs.goalManager.Queue.Restore(*removed)
 		return

@@ -97,6 +97,13 @@ func (s *GoalQueueStore) writeLocked(goals []goal.UpcomingGoal) error {
 
 // Append adds a new goal to the end of the queue.
 func (s *GoalQueueStore) Append(objective string) ([]goal.UpcomingGoal, error) {
+	return s.AppendWithOptions(objective, false)
+}
+
+// AppendWithOptions enqueues a goal, carrying its per-goal fresh-context flag
+// so a queued goal can be set to run on a clean context when promoted
+// (bugs.md: goal queue + per-goal clean-context flag).
+func (s *GoalQueueStore) AppendWithOptions(objective string, freshContext bool) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -107,11 +114,12 @@ func (s *GoalQueueStore) Append(objective string) ([]goal.UpcomingGoal, error) {
 	name := internal.FriendlyNameUnique(s.namesLocked(goals))
 	now := time.Now()
 	goals = append(goals, goal.UpcomingGoal{
-		ID:        generateQueueID(),
-		Name:      name,
-		Objective: strings.TrimSpace(objective),
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:           generateQueueID(),
+		Name:         name,
+		Objective:    strings.TrimSpace(objective),
+		FreshContext: freshContext,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	})
 	if err := s.writeLocked(goals); err != nil {
 		return nil, err

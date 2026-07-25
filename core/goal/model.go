@@ -58,6 +58,8 @@ type GoalSnapshot struct {
 	ManagedBy           string           `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
 	Objective           string           `json:"objective"`
 	CompletionCriterion *string          `json:"completionCriterion,omitempty"`
+	FreshContext        bool             `json:"freshContext,omitempty"`
+	Todos               []GoalTodoItem   `json:"todos,omitempty"`
 	Status              GoalStatus       `json:"status"`
 	TurnsUsed           int              `json:"turnsUsed"`
 	TokensUsed          int              `json:"tokensUsed"`
@@ -73,12 +75,13 @@ type GoalToolResult struct {
 
 // UpcomingGoal is a queued goal waiting to become active.
 type UpcomingGoal struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
-	ManagedBy string    `json:"managedBy,omitempty"`
-	Objective string    `json:"objective"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
+	ManagedBy    string    `json:"managedBy,omitempty"`
+	Objective    string    `json:"objective"`
+	FreshContext bool      `json:"freshContext,omitempty"` // run on a clean context when promoted
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // GoalChangeKind describes the kind of change for UI rendering.
@@ -112,6 +115,11 @@ type CreateGoalInput struct {
 	ManagedBy           string // empty for normal goals; "orchestrator" for ephemeral orchestrator goals
 	CompletionCriterion *string
 	Replace             bool
+	// FreshContext, when true, runs this goal's continuation turns on a new
+	// agent with a clean context (objective + handoff only) instead of reusing
+	// the current conversation. History is preserved in the durable transcript;
+	// it is simply not sent to the new agent. Default false = reuse current.
+	FreshContext bool
 }
 
 // GoalReasonInput carries an optional reason string for lifecycle changes.
@@ -126,6 +134,8 @@ type goalStage struct {
 	managedBy           string
 	objective           string
 	completionCriterion *string
+	freshContext        bool
+	todos               []GoalTodoItem
 	status              GoalStatus
 	turnsUsed           int
 	tokensUsed          int
@@ -157,10 +167,12 @@ type GoalEventRecord struct {
 	ManagedBy           *string `json:"managedBy,omitempty"`
 	Objective           *string `json:"objective,omitempty"`
 	CompletionCriterion *string `json:"completionCriterion,omitempty"`
+	FreshContext        *bool   `json:"freshContext,omitempty"`
 
 	// goal.update fields (patches)
 	Status       *string           `json:"status,omitempty"`
 	Reason       *string           `json:"reason,omitempty"`
+	Todos        []GoalTodoItem    `json:"todos,omitempty"`
 	Actor        *string           `json:"actor,omitempty"`
 	TurnsUsed    *int              `json:"turnsUsed,omitempty"`
 	TokensUsed   *int              `json:"tokensUsed,omitempty"`

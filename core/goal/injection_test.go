@@ -305,3 +305,23 @@ func TestFormatBudgetLines(t *testing.T) {
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+// TestDynamicProgress_SurfacesTodos verifies the per-turn goal reminder
+// surfaces the managed todo list so the model works the next item (bugs.md:
+// framework-managed todo list for goals).
+func TestDynamicProgress_SurfacesTodos(t *testing.T) {
+	snap := GoalSnapshot{
+		Objective: "multi",
+		Status:    GoalActive,
+		Todos: []GoalTodoItem{
+			{ID: "t1", Title: "write code", Status: TodoDone},
+			{ID: "t2", Title: "run tests", Status: TodoPending},
+		},
+	}
+	got := BuildDynamicGoalProgress(snap)
+	if !strings.Contains(got, "1/2 done") || !strings.Contains(got, "run tests") {
+		t.Errorf("progress missing todo surface: %q", got)
+	}
+	if !strings.Contains(got, "next pending todo") {
+		t.Errorf("progress missing todo guidance: %q", got)
+	}
+}

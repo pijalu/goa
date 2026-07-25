@@ -196,6 +196,43 @@ func TestReplayCompletion(t *testing.T) {
 	}
 }
 
+// TestCreateGoal_FreshContext verifies the per-goal clean-context flag is
+// captured on create, exposed on the snapshot, persisted to the event log, and
+// restored on replay (bugs.md: per-goal clean-context flag).
+func TestCreateGoal_FreshContext(t *testing.T) {
+	st := &testStore{}
+	mode := NewGoalMode(st, nil, nil, nil)
+	snap, err := mode.CreateGoal(CreateGoalInput{Objective: "self-contained task", FreshContext: true}, GoalActorModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.FreshContext {
+		t.Error("snapshot.FreshContext = false, want true")
+	}
+	// Default (flag unset) is false: reuse the current agent.
+	snap2, err := mode.CreateGoal(CreateGoalInput{Objective: "normal", Replace: true}, GoalActorUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap2.FreshContext {
+		t.Error("default FreshContext = true, want false (reuse current agent)")
+	}
+
+	// Replay round-trip preserves the flag.
+	st2 := &testStore{}
+	m1 := NewGoalMode(st2, nil, nil, nil)
+	if _, err := m1.CreateGoal(CreateGoalInput{Objective: "fresh", FreshContext: true}, GoalActorModel); err != nil {
+		t.Fatal(err)
+	}
+	m2 := NewGoalMode(st2, nil, nil, nil)
+	if err := m2.Replay(); err != nil {
+		t.Fatal(err)
+	}
+	if g := m2.GetGoal().Goal; g == nil || !g.FreshContext {
+		t.Errorf("after replay FreshContext = %v, want true", g)
+	}
+}
+
 func TestReplayPausedGoal(t *testing.T) {
 	st := &testStore{}
 	mode := NewGoalMode(st, nil, nil, nil)

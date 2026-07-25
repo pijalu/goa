@@ -234,3 +234,65 @@ func TestMapDriverError(t *testing.T) {
 		}
 	}
 }
+// fakeFreshAgent records whether turns were routed via RunFresh (fresh context)
+// or the ordinary Run path, and how many began a fresh context.
+type fakeFreshAgent struct {
+	mode        *goal.GoalMode
+	freshRuns   int
+	normalRuns  int
+	beginCount  int
+	sawBeginSeq []bool
+}
+
+func (a *fakeFreshAgent) Run(ctx context.Context, prompt string) error {
+	a.normalRuns++
+	_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	return nil
+}
+
+func (a *fakeFreshAgent) RunFresh(ctx context.Context, prompt string, begin bool) error {
+	a.freshRuns++
+	a.sawBeginSeq = append(a.sawBeginSeq, begin)
+	if begin {
+		a.beginCount++
+	}
+	_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	return nil
+}
+
+// TestGoalDriver_FreshContextRouting verifies a goal with the clean-context
+// flag is routed through FreshAgentRunner.RunFresh (begin=true on the first
+// turn) while a default goal uses the ordinary Run path (bugs.md: per-goal
+// clean-context flag).
+func TestGoalDriver_FreshContextRouting(t *testing.T) {
+	// Fresh-context goal routes through RunFresh with begin=true.
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "self-contained", FreshContext: true}, goal.GoalActorModel); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &fakeFreshAgent{mode: mode}
+	driver := &GoalDriver{Agent: fresh, Mode: mode}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.freshRuns != 1 || fresh.normalRuns != 0 {
+		t.Errorf("fresh goal: freshRuns=%d normalRuns=%d, want 1/0", fresh.freshRuns, fresh.normalRuns)
+	}
+	if fresh.beginCount != 1 || len(fresh.sawBeginSeq) != 1 || !fresh.sawBeginSeq[0] {
+		t.Errorf("begin sequence = %v (count %d), want single begin=true", fresh.sawBeginSeq, fresh.beginCount)
+	}
+
+	// Default goal (flag unset) uses the ordinary Run path, never RunFresh.
+	mode2 := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode2.CreateGoal(goal.CreateGoalInput{Objective: "normal"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	def := &fakeFreshAgent{mode: mode2}
+	driver2 := &GoalDriver{Agent: def, Mode: mode2}
+	if err := driver2.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if def.normalRuns != 1 || def.freshRuns != 0 {
+		t.Errorf("default goal: normalRuns=%d freshRuns=%d, want 1/0", def.normalRuns, def.freshRuns)
+	}
+}

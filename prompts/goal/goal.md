@@ -4,16 +4,25 @@ SPDX-License-Identifier: GPL-3.0-or-later
 Copyright (C) 2026 Pierre Poissinger
 -->
 
-Manage the current goal: create one, update its lifecycle status, read it, or set a hard
-budget. A goal is a durable objective the runtime pursues autonomously across turns.
+Manage goals as a todo-like list: one active goal the runtime pursues autonomously across
+turns, plus a queue of upcoming goals that start automatically when the active one ends.
+Add goals freely — you rarely replace.
 
 Choose the operation with the `action` field:
 
-- `create` — start a new goal. Requires `objective`. Optional: `completionCriterion`,
-  `replace` (replace an existing goal instead of failing). Only create a goal when the user
-  explicitly asks you to work autonomously toward an outcome, or a host goal-intake prompt
-  asks you to. Do NOT create goals for greetings, ordinary questions, or vague requests that
-  lack a verifiable end state; ask for the missing completion criterion first.
+- `create` — add a goal. By default this ADDS to the list: if no goal is active the new goal
+  starts active; if one is already active the new goal is QUEUED (never an implicit replace).
+  Pass `objective` for one goal or `objectives` (array) to add several at once — the first
+  starts active if none is active, the rest queue. Optional: `completionCriterion`,
+  `freshContext` (run this goal on a clean context), and `replace: true` to instead discard
+  the current goal and start this one (single objective only — use sparingly, only when you
+  truly mean to abandon the active goal). Only create a goal when the user explicitly asks
+  you to work autonomously toward an outcome, or a host goal-intake prompt asks you to. Do
+  NOT create goals for greetings, ordinary questions, or vague requests that lack a
+  verifiable end state; ask for the missing completion criterion first.
+- `list` — show the active goal and the queued goals (id, name, objective, status).
+- `cancel` — remove a queued goal. Requires `goalId` (the queued goal's ID or friendly name).
+- `reorder` — move a queued goal. Requires `goalId` and `direction` (`up` | `down`).
 - `update` — set the goal's lifecycle status (this is how you resume, end, or yield a goal).
   Requires `status`, one of:
   - `active` — resume a paused or blocked goal when the user explicitly asks you to work on it.
@@ -32,6 +41,11 @@ Choose the operation with the `action` field:
   "finish within 30 minutes"); do not invent limits. Convert compound times to one unit
   ("2 hours and 3 minutes" → `value: 123, unit: "minutes"`). If the requested budget is not
   reasonable, do not set it; tell the user.
+- `add_todo` — add a task to the goal's managed todo list. Requires `todoTitle`. For a
+  multi-step goal, decompose it into ordered todo items up front so the goal self-tracks;
+  the list is surfaced back to you each turn.
+- `update_todo` — set a todo item's status. Requires `todoId` and `todoStatus`
+  (`pending` | `in_progress` | `done`). Mark items done as you complete them.
 
 If a goal is active and you do not call `update`, the goal keeps running: after your turn ends
 you will be prompted to continue.

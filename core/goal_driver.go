@@ -52,12 +52,30 @@ type AgentRunner interface {
 	Run(ctx context.Context, input string) error
 }
 
+// FreshAgentRunner is an optional extension of AgentRunner. When the active
+// goal carries the fresh-context flag (bugs.md: per-goal clean-context), the
+// driver routes its continuation turns through RunFresh so they execute on a
+// clean context (objective + handoff only) instead of the full conversation.
+// History is preserved by the implementation and restored when the goal ends.
+type FreshAgentRunner interface {
+	AgentRunner
+	// RunFresh runs one turn on a clean context. begin is true on the first
+	// continuation turn of a fresh-context goal (the implementation should
+	// snapshot/reset context and surface a visible boundary); it is false on
+	// subsequent turns of the same fresh-context goal.
+	RunFresh(ctx context.Context, input string, begin bool) error
+}
+
 // GoalDriver runs continuation turns while a goal is active.
 type GoalDriver struct {
 	Agent   AgentRunner
 	Mode    *goal.GoalMode
 	mu      sync.Mutex
 	driving bool
+	// freshBegun tracks whether the current fresh-context goal has already
+	// emitted its begin (context-reset) turn, so only the first continuation
+	// passes begin=true. Reset whenever the active goal changes or clears.
+	freshBegunFor string
 	// stop cancels the current drive loop's context. Set by Drive while a
 	// loop is active; called by Stop (ESC hard stop — bugs.md "ESC: hard
 	// stop for ALL ongoing activities"). Nil when no loop is running.
@@ -112,7 +130,7 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 
 		d.Mode.IncrementTurn()
 
-		err := d.Agent.Run(ctx, ContinuationPrompt)
+		err := d.runTurn(ctx, active)
 		if err != nil {
 			reason := mapDriverError(err)
 			d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime)
@@ -129,6 +147,25 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// runTurn executes one continuation turn for the active goal. A goal carrying
+// the fresh-context flag is routed through FreshAgentRunner.RunFresh (when the
+// configured runner supports it) so its turns execute on a clean context; the
+// first such turn passes begin=true so the runner can reset context and render
+// a visible boundary. Default goals (and runners without fresh support) use
+// the ordinary Run path against the current conversation.
+func (d *GoalDriver) runTurn(ctx context.Context, active *goal.GoalSnapshot) error {
+	if active.FreshContext {
+		if fr, ok := d.Agent.(FreshAgentRunner); ok {
+			begin := d.freshBegunFor != active.GoalID
+			d.freshBegunFor = active.GoalID
+			return fr.RunFresh(ctx, ContinuationPrompt, begin)
+		}
+	}
+	// Any non-fresh turn (or a different goal) resets the begin tracker.
+	d.freshBegunFor = ""
+	return d.Agent.Run(ctx, ContinuationPrompt)
 }
 
 // Start begins autonomous driving in a background goroutine if an agent and an

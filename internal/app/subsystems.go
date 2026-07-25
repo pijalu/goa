@@ -44,6 +44,7 @@ import (
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
+	goaltools "github.com/pijalu/goa/tools/goal"
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
 	bgpanel "github.com/pijalu/goa/tui/background"
@@ -558,6 +559,27 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 	return agent.Run(ctx, input)
 }
 
+// RunFresh implements core.FreshAgentRunner for goals carrying the
+// clean-context flag. On the first continuation turn (begin=true) it clears the
+// agent's live context to a clean one (system prompt only) and renders a
+// visible boundary marker so the user can follow where the prior context ended
+// and the fresh goal context began. Subsequent turns (begin=false) reuse the
+// already-clean context. The prior conversation is preserved in the durable
+// transcript (session event log); it is intentionally not restored into the
+// live context mid-session, matching "new agent / clean context" semantics —
+// the goal carries only its objective forward.
+func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin bool) error {
+	agent := r.agentMgr.CurrentAgent()
+	if agent == nil {
+		return fmt.Errorf("no active agent session")
+	}
+	if begin {
+		agent.SetHistory(nil) // system prompt is re-prepended by SetHistory
+		r.agentMgr.InjectSystemMessage("⟡ Context reset: this goal is running on a clean context. The prior conversation is preserved in the transcript but is not sent to the agent for this goal.")
+	}
+	return agent.Run(ctx, input)
+}
+
 func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool) {
 	toolRegistry.Register(newGoalTool(manager, createFlagOn))
 }
@@ -574,7 +596,14 @@ func newGoalTool(manager *core.GoalManager, createFlagOn bool) agentic.Tool {
 	createAllowed := func() bool {
 		return createFlagOn || manager.Mode.GetActiveGoal() != nil
 	}
-	return tools.NewGoalTools(manager.Mode, reminderFn, createAllowed)[0]
+	tool := tools.NewGoalTools(manager.Mode, reminderFn, createAllowed)[0]
+	// Wire the durable goal queue so the tool manages goals as a todo-like
+	// list: create appends by default when a goal is active, and list/cancel/
+	// reorder operate over the active goal + the queue.
+	if gt, ok := tool.(*goaltools.GoalTool); ok {
+		gt.Queue = manager.Queue
+	}
+	return tool
 }
 
 func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr *provider.ProviderManager, toolRegistry *tools.ToolRegistry, goalManager *core.GoalManager, goalDriver *core.GoalDriver, agentMgr *core.AgentManager, trustMgr *trust.Manager, telemetryEnabled bool, swarmState *swarm.State, registry *core.CommandRegistry, pluginsEnabled bool) skillCommandBundle {

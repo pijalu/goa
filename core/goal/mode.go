@@ -116,6 +116,9 @@ func (m *GoalMode) RestoreCreate(record GoalEventRecord) {
 	if record.CompletionCriterion != nil {
 		state.completionCriterion = normalizeCompletionCriterion(record.CompletionCriterion)
 	}
+	if record.FreshContext != nil {
+		state.freshContext = *record.FreshContext
+	}
 	m.state = &state
 }
 
@@ -146,6 +149,9 @@ func (m *GoalMode) RestoreUpdate(record GoalEventRecord) {
 	}
 	if record.BudgetLimits != nil {
 		state.budgetLimits = *record.BudgetLimits
+	}
+	if record.Todos != nil {
+		state.todos = append([]GoalTodoItem(nil), record.Todos...)
 	}
 }
 
@@ -209,6 +215,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		managedBy:           input.ManagedBy,
 		objective:           objective,
 		completionCriterion: completionCriterion,
+		freshContext:        input.FreshContext,
 		status:              GoalActive,
 		turnsUsed:           0,
 		tokensUsed:          0,
@@ -227,6 +234,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		ManagedBy:           &state.managedBy,
 		Objective:           &state.objective,
 		CompletionCriterion: state.completionCriterion,
+		FreshContext:        &state.freshContext,
 	})
 	m.telemetry.Track(TelemetryGoalCreated, map[string]any{
 		"actor":   string(actor),
@@ -411,6 +419,59 @@ func (m *GoalMode) CleanupExpired(retentionDays int) error {
 		m.clearInternal(GoalActorRuntime, emitOption{Emit: true, Track: true})
 	}
 	return nil
+}
+
+// AddGoalTodo appends a task to the current goal's managed todo list and
+// persists it. The list is surfaced to the model each turn so a multi-step
+// goal self-tracks. Returns the created item.
+func (m *GoalMode) AddGoalTodo(title string, actor GoalActor) (GoalTodoItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.requireState()
+	if err != nil {
+		return GoalTodoItem{}, err
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return GoalTodoItem{}, errors.New("todo title cannot be empty")
+	}
+	item := GoalTodoItem{ID: nextTodoID(state.todos), Title: title, Status: TodoPending}
+	state.todos = append(state.todos, item)
+	m.persistTodosLocked(state, actor)
+	return item, nil
+}
+
+// UpdateGoalTodo sets the status of an existing todo item (pending |
+// in_progress | done) and persists the list.
+func (m *GoalMode) UpdateGoalTodo(id, status string, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.requireState()
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	normalized := normalizeTodoStatus(status)
+	for i := range state.todos {
+		if state.todos[i].ID == id {
+			state.todos[i].Status = normalized
+			m.persistTodosLocked(state, actor)
+			return m.toSnapshot(state), nil
+		}
+	}
+	return GoalSnapshot{}, fmt.Errorf("todo %q not found", id)
+}
+
+// persistTodosLocked records the todo list to the event log and publishes a
+// silent state update. Caller must hold the lock.
+func (m *GoalMode) persistTodosLocked(state *goalStage, actor GoalActor) {
+	m.persistState(state, persistOptions{Silent: true})
+	a := string(actor)
+	m.appendGoalUpdateRecord(GoalEventRecord{
+		Type:      GoalEventUpdate,
+		Timestamp: time.Now(),
+		Todos:     append([]GoalTodoItem(nil), state.todos...),
+		Actor:     &a,
+	})
 }
 
 // GetGoal returns the current goal snapshot.
@@ -602,6 +663,8 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 		ManagedBy:           state.managedBy,
 		Objective:           state.objective,
 		CompletionCriterion: state.completionCriterion,
+		FreshContext:        state.freshContext,
+		Todos:               append([]GoalTodoItem(nil), state.todos...),
 		Status:              state.status,
 		TurnsUsed:           state.turnsUsed,
 		TokensUsed:          state.tokensUsed,
