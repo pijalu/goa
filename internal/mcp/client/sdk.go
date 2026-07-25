@@ -86,6 +86,19 @@ func (c *sdkClient) Close() error {
 	return c.session.Close()
 }
 
+// Instructions implements Client, returning the server's usage instructions
+// captured during the handshake (empty when none were provided).
+func (c *sdkClient) Instructions() string {
+	if c.session == nil {
+		return ""
+	}
+	res := c.session.InitializeResult()
+	if res == nil {
+		return ""
+	}
+	return res.Instructions
+}
+
 // schemaToMap converts the SDK's InputSchema (any, typically a JSON Schema
 // object) into the map[string]any the agentic layer expects.
 func schemaToMap(s any) map[string]any {

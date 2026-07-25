@@ -81,11 +81,46 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, selfDoc)
 	}
 
+	// 7. MCP server instructions — how to use each connected MCP server's
+	// tools (from the server handshake), mirroring OpenCode's
+	// <mcp_instructions> block.
+	if mcpSection := buildMCPInstructionsSection(subs); mcpSection != "" {
+		parts = append(parts, mcpSection)
+	}
+
 	prompt := strings.Join(parts, "\n\n")
 	if budget > 0 && len(prompt) > budget {
 		prompt = applySystemPromptBudget(parts, budget)
 	}
 	return prompt
+}
+
+// buildMCPInstructionsSection renders connected MCP servers' usage
+// instructions as an <mcp_instructions> block (OpenCode parity), so the model
+// knows how each server's tools are meant to be used. Returns "" when no MCP
+// servers are configured or none provided instructions.
+func buildMCPInstructionsSection(subs *subsystems) string {
+	if subs.mcpManager == nil {
+		return ""
+	}
+	instructions := subs.mcpManager.Instructions()
+	if len(instructions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<mcp_instructions>")
+	for _, item := range instructions {
+		b.WriteString("\n  <server name=\"")
+		b.WriteString(item.Name)
+		b.WriteString("\">")
+		for _, line := range strings.Split(item.Instructions, "\n") {
+			b.WriteString("\n    ")
+			b.WriteString(line)
+		}
+		b.WriteString("\n  </server>")
+	}
+	b.WriteString("\n</mcp_instructions>")
+	return b.String()
 }
 
 // modelContextWindow returns the effective context window for the active model.

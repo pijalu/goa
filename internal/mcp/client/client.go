@@ -21,6 +21,9 @@ type Client interface {
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	// CallTool invokes a tool with the given arguments.
 	CallTool(ctx context.Context, name string, args map[string]any) (string, error)
+	// Instructions returns the server's usage instructions from the handshake
+	// (empty when the server provides none).
+	Instructions() string
 	// Close shuts down the client.
 	Close() error
 }

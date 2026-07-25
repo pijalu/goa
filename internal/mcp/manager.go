@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/pijalu/goa/internal"
@@ -86,6 +87,32 @@ func newClient(cfg ServerConfig) client.Client {
 	}
 	return client.NewStdioClient(cfg.Command, cfg.Args,
 		client.StdioOptions{Cwd: cfg.Cwd, Env: cfg.Env})
+}
+
+// ServerInstructions pairs a server's name with its handshake instructions.
+type ServerInstructions struct {
+	Name         string
+	Instructions string
+}
+
+// Instructions returns the usage instructions of every connected server that
+// provided them, sorted by server name (OpenCode mcp.instructions parity). The
+// caller injects these into the system prompt so the model knows how to use
+// each server's tools.
+func (m *Manager) Instructions() []ServerInstructions {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []ServerInstructions
+	for name, c := range m.clients {
+		if m.status[name].State != StateConnected {
+			continue
+		}
+		if instr := c.Instructions(); instr != "" {
+			out = append(out, ServerInstructions{Name: name, Instructions: instr})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // SetClientFactory overrides the client factory (useful for tests).
@@ -203,7 +230,7 @@ func (m *Manager) registerTools(server string, toolsInfo []client.ToolInfo) {
 			server: server,
 			name:   info.Name,
 			desc:   info.Description,
-			schema: info.InputSchema,
+			schema: normalizeSchema(info.InputSchema),
 			mgr:    m,
 		})
 	}
@@ -211,7 +238,7 @@ func (m *Manager) registerTools(server string, toolsInfo []client.ToolInfo) {
 }
 
 func toolPrefix(server string) string {
-	return fmt.Sprintf("mcp__%s__", server)
+	return "mcp__" + sanitize(server) + "__"
 }
 
 // mcpTool adapts one MCP tool to the agentic.Tool interface. It implements
@@ -253,5 +280,5 @@ func (t *mcpTool) ExecuteContext(ctx context.Context, input string) (string, err
 }
 
 func toolName(server, name string) string {
-	return fmt.Sprintf("mcp__%s__%s", server, name)
+	return "mcp__" + sanitize(server) + "__" + sanitize(name)
 }

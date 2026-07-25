@@ -15,6 +15,7 @@ import (
 type mockClient struct {
 	tools []client.ToolInfo
 	call  string
+	instr string
 }
 
 func (m *mockClient) Initialize(ctx context.Context) error { return nil }
@@ -26,6 +27,9 @@ func (m *mockClient) CallTool(ctx context.Context, name string, args map[string]
 	return "ok", nil
 }
 func (m *mockClient) Close() error { return nil }
+func (m *mockClient) Instructions() string {
+	return m.instr
+}
 
 func TestManagerConnectAndCall(t *testing.T) {
 	reg := tools.NewToolRegistry()
@@ -52,6 +56,27 @@ func TestManagerConnectAndCall(t *testing.T) {
 	}
 	if res != "ok" {
 		t.Errorf("res = %q", res)
+	}
+}
+
+func TestManagerInstructions(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	mgr := NewManager(reg)
+	mgr.SetClientFactory(func(cfg ServerConfig) (client.Client, error) {
+		if cfg.Name == "with-instr" {
+			return &mockClient{instr: "Use these tools carefully."}, nil
+		}
+		return &mockClient{instr: ""}, nil
+	})
+	_ = mgr.Connect(context.Background(), ServerConfig{Name: "with-instr", Command: "x"})
+	_ = mgr.Connect(context.Background(), ServerConfig{Name: "no-instr", Command: "y"})
+
+	got := mgr.Instructions()
+	if len(got) != 1 {
+		t.Fatalf("Instructions() = %v, want 1 entry", got)
+	}
+	if got[0].Name != "with-instr" || got[0].Instructions != "Use these tools carefully." {
+		t.Errorf("Instructions() = %+v", got[0])
 	}
 }
 
