@@ -30,6 +30,7 @@ import (
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/hooks"
 	"github.com/pijalu/goa/internal/lsp"
+	"github.com/pijalu/goa/internal/mcp"
 	"github.com/pijalu/goa/internal/role"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/telemetry"
@@ -169,6 +170,9 @@ type subsystems struct {
 
 	// lspMgr runs gopls for Go diagnostics; closed on shutdown to avoid leaks.
 	lspMgr *lsp.Manager
+	// mcpManager owns MCP server connections and their registered tools;
+	// closed on shutdown. Nil when no MCP servers are configured.
+	mcpManager *mcp.Manager
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
@@ -294,7 +298,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	}
 
 	toolRegistry := tools.NewToolRegistry()
-	lspMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
+	lspMgr, mcpMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
 	if cfg.Tools.Enabled.PTYExec {
 		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
 	}
@@ -310,6 +314,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 		lifecycleRegistry: plugins.NewLifecycleRegistry(),
 		bgMgr:             bgMgr,
 		lspMgr:            lspMgr,
+		mcpManager:        mcpMgr,
 	}
 }
 
@@ -324,6 +329,7 @@ type baseSubsystems struct {
 	lifecycleRegistry *plugins.LifecycleRegistry
 	bgMgr             *background.Manager
 	lspMgr            *lsp.Manager
+	mcpManager        *mcp.Manager
 }
 
 func createBackgroundManager(projectDir string) *background.Manager {
@@ -1043,6 +1049,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		registry:          registry,
 		bgMgr:             base.bgMgr,
 		lspMgr:            base.lspMgr,
+		mcpManager:        base.mcpManager,
 	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })

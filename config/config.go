@@ -62,6 +62,10 @@ type Config struct {
 	Plan               PlanConfig               `yaml:"plan,omitempty"`
 	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
 	Permissions        []perms.Rule             `yaml:"permissions,omitempty"`
+	// MCP holds Model Context Protocol server definitions keyed by server name.
+	// Goa acts as an MCP client: each enabled server's tools are exposed to the
+	// agent under the "mcp__<server>__<tool>" namespace.
+	MCP map[string]MCPServerConfig `yaml:"mcp,omitempty"`
 	// Aliases maps short user-defined names to command invocations.
 	// The value is the full command name (with colon args if needed).
 	// Example: n: "session:new" makes /n equivalent to /session:new.
@@ -233,6 +237,62 @@ type CompletionConfig struct {
 	MinUsageThreshold int `yaml:"min_usage_threshold" json:"min_usage_threshold"` // min count for "Most Used" (0 = disable)
 	MaxMostUsed       int `yaml:"max_most_used" json:"max_most_used"`             // max items in "Most Used" tier
 }
+
+// MCP server type identifiers.
+const (
+	// MCPTypeLocal is a stdio MCP server spawned as a local child process.
+	MCPTypeLocal = "local"
+	// MCPTypeRemote is an HTTP/SSE MCP server reached over the network.
+	MCPTypeRemote = "remote"
+)
+
+// MCPServerConfig describes how Goa (as an MCP client) connects to one MCP
+// server. Exactly one of Command (local) or URL (remote) applies, discriminated
+// by Type. ${VAR} and ${VAR:-default} in Environment/Headers are expanded by
+// the config loader.
+type MCPServerConfig struct {
+	// Type selects the transport: "local" (stdio child process) or "remote" (HTTP/SSE).
+	Type string `yaml:"type" json:"type"`
+	// Command is the argv for a local server; Command[0] is the executable.
+	Command []string `yaml:"command,omitempty" json:"command,omitempty"`
+	// Cwd is the working directory for a local server. Relative paths resolve
+	// from the project directory. Empty uses the project directory.
+	Cwd string `yaml:"cwd,omitempty" json:"cwd,omitempty"`
+	// Environment is merged over the process environment for a local server.
+	Environment map[string]string `yaml:"environment,omitempty" json:"environment,omitempty"`
+	// URL is the endpoint of a remote server.
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+	// Headers are sent with every request to a remote server.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	// Enabled toggles the server at startup. nil means enabled (tri-state).
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Timeout bounds each MCP request (e.g. "30s"). Empty uses the default.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// OAuth configures OAuth authentication for a remote server. Nil uses
+	// auto-discovery when the server requires it.
+	OAuth *MCPOAuthConfig `yaml:"oauth,omitempty" json:"oauth,omitempty"`
+}
+
+// MCPOAuthConfig configures OAuth for a remote MCP server.
+type MCPOAuthConfig struct {
+	// ClientID is a pre-registered OAuth client ID. Empty triggers dynamic
+	// client registration (RFC 7591).
+	ClientID string `yaml:"clientId,omitempty" json:"clientId,omitempty"`
+	// ClientSecret is the OAuth client secret, if the authorization server requires one.
+	ClientSecret string `yaml:"clientSecret,omitempty" json:"clientSecret,omitempty"`
+	// Scope is the OAuth scope to request.
+	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
+	// CallbackPort is the local OAuth callback listener port (default 19876).
+	CallbackPort int `yaml:"callbackPort,omitempty" json:"callbackPort,omitempty"`
+	// RedirectURI overrides the OAuth redirect URI (default http://127.0.0.1:<port>/mcp/oauth/callback).
+	RedirectURI string `yaml:"redirectUri,omitempty" json:"redirectUri,omitempty"`
+	// Disabled turns off OAuth auto-detection for this server.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+}
+
+// IsEnabled reports whether the server should connect at startup. A nil
+// Enabled pointer means enabled (the default).
+func (m MCPServerConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
 
 // MultiAgentConfig controls multi-agent collaboration settings.
 type MultiAgentConfig struct {

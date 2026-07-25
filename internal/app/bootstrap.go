@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -19,6 +20,7 @@ import (
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/background"
+	"github.com/pijalu/goa/internal/mcp"
 	"github.com/pijalu/goa/internal/netutil"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/secrets"
@@ -453,8 +455,9 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 }
 
 // registerTools registers the built-in filesystem and execution tools.
-// Optional tools are skipped when disabled in configuration.
-func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager) *lsp.Manager {
+// Optional tools are skipped when disabled in configuration. It also connects
+// configured MCP servers and returns their manager (nil when none configured).
+func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager) (*lsp.Manager, *mcp.Manager) {
 	gitStager := tools.NewGitStager(projectDir)
 
 	// Shared change tracker for edit/write → smartsearch index refresh.
@@ -514,7 +517,82 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	})
 
 	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker)
-	return lspMgr
+	mcpMgr := registerMCPServers(reg, projectDir, cfg)
+	return lspMgr, mcpMgr
+}
+
+// registerMCPServers connects every enabled MCP server from config and
+// registers its tools under the "mcp__<server>__*" namespace. It never fails
+// startup: per-server connect errors are logged and recorded in the manager's
+// status. Connections are established concurrently so a slow/hung server does
+// not block the others. Returns nil when no MCP servers are configured.
+func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) *mcp.Manager {
+	if len(cfg.MCP) == 0 {
+		return nil
+	}
+	mgr := mcp.NewManager(reg)
+	var wg sync.WaitGroup
+	for name, srv := range cfg.MCP {
+		if !srv.IsEnabled() {
+			continue
+		}
+		sc := mcpServerConfig(name, projectDir, srv)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), sc.EffectiveTimeout())
+			defer cancel()
+			if err := mgr.Connect(ctx, sc); err != nil {
+				log.Printf("mcp: %v\n", err)
+			}
+		}()
+	}
+	wg.Wait()
+	return mgr
+}
+
+// mcpServerConfig converts a config.MCPServerConfig into the runtime
+// mcp.ServerConfig, resolving the working directory and timeout.
+func mcpServerConfig(name, projectDir string, srv config.MCPServerConfig) mcp.ServerConfig {
+	sc := mcp.ServerConfig{
+		Name:    name,
+		Type:    srv.Type,
+		URL:     srv.URL,
+		Headers: srv.Headers,
+		Env:     srv.Environment,
+		Timeout: mcpTimeout(srv.Timeout),
+	}
+	if len(srv.Command) > 0 {
+		sc.Command = srv.Command[0]
+		sc.Args = srv.Command[1:]
+	}
+	sc.Cwd = resolveMCPCwd(projectDir, srv.Cwd)
+	return sc
+}
+
+// resolveMCPCwd resolves a server's working directory. Empty uses the project
+// directory; relative paths resolve from it; absolute paths pass through.
+func resolveMCPCwd(projectDir, cwd string) string {
+	if cwd == "" {
+		return projectDir
+	}
+	if filepath.IsAbs(cwd) {
+		return cwd
+	}
+	return filepath.Join(projectDir, cwd)
+}
+
+// mcpTimeout parses a duration string, returning 0 (use default) when empty or
+// invalid. Validation already rejects bad values, so this is defensive.
+func mcpTimeout(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // registerOptionalTools registers tools that are gated by configuration flags.

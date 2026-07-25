@@ -217,6 +217,10 @@ func (a *App) stopBackgroundProcesses() {
 		_ = a.subs.lspMgr.Close(ctx)
 		cancel()
 	}
+	// Shut down MCP server connections so child processes/remote clients do not leak.
+	if a.subs.mcpManager != nil {
+		a.subs.mcpManager.Close()
+	}
 }
 
 func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, steeringChrome *tui.SteeringChrome, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {

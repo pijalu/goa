@@ -29,6 +29,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergePermissions(other)
 	c.mergeOrchestrator(other)
 	c.mergePlan(other)
+	c.mergeMCP(other)
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.
@@ -274,6 +275,21 @@ func (c *Config) mergeSkills(other *Config) {
 	c.Skills.Embedded = other.Skills.Embedded
 	if other.Skills.ExecutionMode != "" {
 		c.Skills.ExecutionMode = other.Skills.ExecutionMode
+	}
+}
+
+// mergeMCP merges MCP server definitions. Servers are keyed by name; a server
+// present in other replaces the same-named server wholesale (last-write-wins),
+// matching the per-name semantics users expect from cascade overrides.
+func (c *Config) mergeMCP(other *Config) {
+	if len(other.MCP) == 0 {
+		return
+	}
+	if c.MCP == nil {
+		c.MCP = make(map[string]MCPServerConfig, len(other.MCP))
+	}
+	for name, srv := range other.MCP {
+		c.MCP[name] = srv
 	}
 }
 

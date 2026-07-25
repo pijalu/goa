@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -23,6 +24,7 @@ func (c *Config) Validate() error {
 	c.validateOrchestrator(&ve)
 	c.validateGoals(&ve)
 	c.validatePlan(&ve)
+	c.validateMCP(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
@@ -44,6 +46,51 @@ func (c *Config) validateWorktree(ve *internal.ValidationError) {
 		return
 	default:
 		ve.Add(fmt.Sprintf("execution.worktree_mode: must be 'always' or 'multi_agent' (got %q)", c.Execution.WorktreeMode))
+	}
+}
+
+// validateMCP validates every configured MCP server entry.
+func (c *Config) validateMCP(ve *internal.ValidationError) {
+	for name, srv := range c.MCP {
+		validateMCPServer(ve, name, srv)
+	}
+}
+
+// validateMCPServer validates one MCP server definition.
+func validateMCPServer(ve *internal.ValidationError, name string, srv MCPServerConfig) {
+	prefix := "mcp." + name
+	switch srv.Type {
+	case MCPTypeLocal:
+		if len(srv.Command) == 0 || srv.Command[0] == "" {
+			ve.Add(prefix + ": local server requires a non-empty command")
+		}
+	case MCPTypeRemote:
+		validateMCPServerURL(ve, prefix, srv.URL)
+	default:
+		ve.Add(fmt.Sprintf("%s: type must be %q or %q (got %q)", prefix, MCPTypeLocal, MCPTypeRemote, srv.Type))
+	}
+	validateMCPServerTimeout(ve, prefix, srv.Timeout)
+}
+
+// validateMCPServerURL ensures a remote MCP server has a valid absolute URL.
+func validateMCPServerURL(ve *internal.ValidationError, prefix, rawURL string) {
+	if rawURL == "" {
+		ve.Add(prefix + ": remote server requires a url")
+		return
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		ve.Add(fmt.Sprintf("%s: invalid url %q", prefix, rawURL))
+	}
+}
+
+// validateMCPServerTimeout ensures an MCP server timeout parses as a duration.
+func validateMCPServerTimeout(ve *internal.ValidationError, prefix, timeout string) {
+	if timeout == "" {
+		return
+	}
+	if _, err := time.ParseDuration(timeout); err != nil {
+		ve.Add(fmt.Sprintf("%s: invalid timeout %q: %v", prefix, timeout, err))
 	}
 }
 

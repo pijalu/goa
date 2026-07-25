@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -54,10 +55,57 @@ type StdioClient struct {
 	closed atomic.Bool
 }
 
+// StdioOptions configures a stdio MCP server child process.
+type StdioOptions struct {
+	// Cwd is the child working directory. Empty uses the current directory.
+	Cwd string
+	// Env is merged over the process environment. Nil inherits the environment.
+	Env map[string]string
+}
+
 // NewStdioClient creates a stdio MCP client from a command and arguments.
-func NewStdioClient(command string, args []string) *StdioClient {
+// Variadic options are optional; pass at most one StdioOptions.
+func NewStdioClient(command string, args []string, opts ...StdioOptions) *StdioClient {
 	cmd := exec.Command(command, args...)
+	if len(opts) > 0 {
+		o := opts[0]
+		if o.Cwd != "" {
+			cmd.Dir = o.Cwd
+		}
+		if o.Env != nil {
+			cmd.Env = mergeEnv(o.Env)
+		}
+	}
 	return &StdioClient{cmd: cmd, pending: make(map[int]chan rpcResponse)}
+}
+
+// mergeEnv returns os.Environ() overridden by the given key/value pairs.
+func mergeEnv(over map[string]string) []string {
+	base := os.Environ()
+	idx := make(map[string]int, len(base))
+	for i, kv := range base {
+		if eq := indexByte(kv, '='); eq >= 0 {
+			idx[kv[:eq]] = i
+		}
+	}
+	for k, v := range over {
+		entry := k + "=" + v
+		if i, ok := idx[k]; ok {
+			base[i] = entry
+		} else {
+			base = append(base, entry)
+		}
+	}
+	return base
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
 }
 
 // SetNotificationHandler registers a handler invoked for server notifications.
