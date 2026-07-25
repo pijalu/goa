@@ -697,8 +697,27 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 	if err := os.MkdirAll(projectConfigDir, 0755); err != nil {
 		return fmt.Errorf("create project config dir: %w", err)
 	}
+	path := filepath.Join(projectConfigDir, "config.yaml")
 
-	saveCfg := cfg.DeepCopy()
+	// Field-scoped save: this entry point is used by /mode and /autonomy to
+	// persist the active major mode and per-mode autonomy. Start from the
+	// on-disk config (when present) and overlay ONLY those mode fields, so
+	// unrelated settings keep their persisted values. Previously this marshaled
+	// the entire in-memory config, so a stale in-memory Tools.Enabled (e.g.
+	// goal toggled earlier in the session) was written back over the on-disk
+	// value — silently reverting the user's tool toggles on the next session.
+	merged := cfg.DeepCopy()
+	if data, err := os.ReadFile(path); err == nil {
+		onDisk := &Config{}
+		if uerr := yaml.Unmarshal(data, onDisk); uerr == nil {
+			merged = onDisk
+			merged.Mode = cfg.Mode
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read project config: %w", err)
+	}
+
+	saveCfg := merged.DeepCopy()
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
 
@@ -707,7 +726,6 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	path := filepath.Join(projectConfigDir, "config.yaml")
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("write project config: %w", err)
 	}
