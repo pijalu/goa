@@ -134,6 +134,14 @@ type Agent struct {
 	// When set, emitTurnStats uses these real token counts instead of estimates.
 	providerUsage *provider.Usage
 
+	// steeringSource, when set, is polled between stream rounds (after a round's
+	// tool results are appended, before the next runStreamRound) so mid-turn
+	// steering is woven into the CURRENT turn instead of delivered as a late,
+	// separate turn (bugs.md steering-lateness; pi parity). Drained messages are
+	// appended as user messages at the current history tail — a strict
+	// prefix-extension of the prior request (guideline #9 cache-safe).
+	steeringSource SteeringSource
+
 	// genStartTime is the wall-clock time the current stream started (window
 	// opens in consumeStream). Used to compute output tok/s as a fallback when
 	// the provider (LM Studio, llama.cpp, Ollama) omits timing fields.
@@ -632,6 +640,48 @@ func (a *Agent) Tools() []Tool {
 	out := make([]Tool, len(a.cfg.Tools))
 	copy(out, a.cfg.Tools)
 	return out
+}
+
+// SteeringSource supplies mid-turn steering messages typed by the user while
+// the agent is running. It mirrors pi's getSteeringMessages hook. Drain must
+// atomically return and remove all currently-pending messages.
+type SteeringSource interface {
+	Drain() []string
+}
+
+// SetSteeringSource wires the queue the agent polls between stream rounds for
+// mid-turn steering. Pass nil to disable (tests / single-shot runners).
+func (a *Agent) SetSteeringSource(s SteeringSource) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steeringSource = s
+}
+
+// drainSteeringIntoHistory appends any pending steering messages to history as
+// user messages at the current tail. Called between stream rounds: after the
+// previous round's assistant/tool messages are appended and before the next
+// runStreamRound, so the very next provider request already contains the
+// steering. Because the messages are only ever appended at the tail, request
+// N+1 stays a strict prefix-extension of request N (guideline #9).
+func (a *Agent) drainSteeringIntoHistory() {
+	a.mu.Lock()
+	src := a.steeringSource
+	a.mu.Unlock()
+	if src == nil {
+		return
+	}
+	pending := src.Drain()
+	for _, text := range pending {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		msg := Message{Type: Content, Role: User, Content: text}
+		a.mu.Lock()
+		a.history = append(a.history, msg)
+		a.mu.Unlock()
+		a.emitMessage(msg)
+	}
 }
 
 // InjectSystemMessage appends a system message to the conversation history.

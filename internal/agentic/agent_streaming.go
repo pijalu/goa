@@ -36,6 +36,12 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 		if done {
 			return nil
 		}
+		// Weave mid-turn steering into THIS turn before the next round (pi
+		// parity): the previous round's assistant+tool messages are appended,
+		// so draining steering now appends a user message at the tail and the
+		// very next runStreamRound already sees it. Cache-safe (guideline #9):
+		// strictly append-only, never a history rewrite.
+		a.drainSteeringIntoHistory()
 	}
 }
 

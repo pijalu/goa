@@ -201,6 +201,12 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 
 	am.systemPrompt = finalPrompt
 	agent.AddObserver(am)
+	// Wire mid-turn steering (bugs.md steering-lateness; pi parity): the agent
+	// polls this queue between stream rounds and weaves steering into the
+	// current turn instead of delivering it as a late, separate turn.
+	if am.steering != nil {
+		agent.SetSteeringSource(steeringSourceAdapter{am.steering})
+	}
 
 	am.wireMainAgent(agent)
 
@@ -279,6 +285,13 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 	return nil
 }
 
+// steeringSourceAdapter adapts *SteeringQueue (Flush) to the agentic
+// SteeringSource interface (Drain) so the agent can poll for mid-turn steering
+// between stream rounds.
+type steeringSourceAdapter struct{ q *SteeringQueue }
+
+func (a steeringSourceAdapter) Drain() []string { return a.q.Flush() }
+
 func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelFunc, gen int, runner agentRunner, input string, images []string) {
 	defer am.recoverTurnPanic()
 	defer func() {
@@ -316,8 +329,12 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	}
 	am.executeRunner(ctx, runner, input, images)
 
-	// After the runner finishes, flush any steering input submitted while the
-	// turn was running and queue it as the next user turn.
+	// After the runner finishes, flush any steering still pending and queue it
+	// as the next user turn. Mid-turn steering is normally already woven into
+	// the turn by the agent's between-round drain (SetSteeringSource); only
+	// leftovers remain — steering typed during the final no-tool round (which
+	// has no subsequent round to drain into), or during a turn that errored or
+	// was interrupted before draining.
 	am.mu.Lock()
 	pending := am.steering.Flush()
 	if len(pending) > 0 {
