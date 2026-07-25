@@ -237,6 +237,34 @@ func TestHandleStreamContent_LiveUserMessageIgnored(t *testing.T) {
 	}
 }
 
+// TestHandleStreamContent_SteeringDrainedClearsBubble is the regression test
+// for the stale-steering-bubble bug: when the agent drains the mid-turn
+// steering queue (weaving the text into the conversation), the app must clear
+// the pending steering bubble and render the consumed text as a user message.
+// Before the fix the bubble stayed up because only the turn-end leftover path
+// (handleSteeringInjected) cleared it.
+func TestHandleStreamContent_SteeringDrainedClearsBubble(t *testing.T) {
+	app := New(testSubsystems())
+	sc := tui.NewSteeringChrome()
+	sc.Add("also fix the tests")
+	app.subs.steeringChrome = sc
+
+	ev := &agentic.OutputEvent{
+		Type:     agentic.EventContent,
+		Role:     agentic.User,
+		Text:     "also fix the tests",
+		Metadata: map[string]string{"steering_drained": "true"},
+	}
+	app.handleStreamContent(ev)
+
+	if sc.HasPending() {
+		t.Error("steering bubble should be cleared once the queue is drained")
+	}
+	if !containsRendered(app.subs.chat, "also fix the tests") {
+		t.Error("drained steering text should render as a user message")
+	}
+}
+
 func TestHandleStreamContent_SystemNotificationRendersBubble(t *testing.T) {
 	app := New(testSubsystems())
 	ev := &agentic.OutputEvent{

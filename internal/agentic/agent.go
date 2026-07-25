@@ -676,7 +676,7 @@ func (a *Agent) drainSteeringIntoHistory() {
 		if text == "" {
 			continue
 		}
-		msg := Message{Type: Content, Role: User, Content: text}
+		msg := Message{Type: Content, Role: User, Content: text, Metadata: map[string]string{metaSteeringDrained: "true"}}
 		a.mu.Lock()
 		a.history = append(a.history, msg)
 		a.mu.Unlock()
@@ -701,6 +701,14 @@ func (a *Agent) InjectSystemMessage(content string) {
 // The tag lives in Message.Metadata, which migrateMessage does not forward, so
 // the model never sees the tag itself (only the message content, during its turn).
 const metaEphemeral = "ephemeral"
+
+// metaSteeringDrained marks a user message that was woven into the turn from
+// the mid-turn steering queue (drainSteeringIntoHistory). The TUI uses it to
+// clear the pending steering bubble and render the consumed text in its place,
+// since the bubble would otherwise linger after the queue has been drained.
+// Like metaEphemeral, the tag lives in Message.Metadata and is never sent to
+// the model (migrateMessage drops Metadata).
+const metaSteeringDrained = "steering_drained"
 
 // InjectEphemeralSystemMessage appends a system message that is relevant only
 // for the current turn. It is sent to the model now but stripped from history

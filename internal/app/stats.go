@@ -160,13 +160,7 @@ func (a *App) handleProgressEvent(ev *agentic.OutputEvent) {
 
 func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 	if ev.Role == agentic.User || ev.Role == agentic.System {
-		if ev.Role == agentic.User && ev.Text != "" && isReplay(ev) {
-			a.subs.chat.AddUserMessage(ev.Text)
-		}
-		if ev.Role == agentic.System && ev.Text != "" && isSystemNotification(ev) {
-			a.endCurrentStream()
-			a.subs.chat.AddSystemMessage(ev.Text)
-		}
+		a.handleUserOrSystemContent(ev)
 		return
 	}
 	if ev.State == agentic.StateThinking {
@@ -176,6 +170,38 @@ func (a *App) handleStreamContent(ev *agentic.OutputEvent) {
 	if ev.Text != "" {
 		a.handleAssistantContent(ev)
 	}
+}
+
+// handleUserOrSystemContent renders user/system-role stream events. Live user
+// content is suppressed (the submit handler already rendered it) except for
+// replayed history and mid-turn drained steering, both of which must appear.
+func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
+	if ev.Role == agentic.User && ev.Text != "" {
+		if isSteeringDrained(ev) {
+			// Mid-turn steering was drained from the queue and woven into the
+			// conversation: clear the pending bubble and show the consumed text
+			// as a user message (the bubble's whole point was "this will send").
+			if a.subs.steeringChrome != nil {
+				a.subs.steeringChrome.Clear()
+			}
+			a.subs.chat.AddUserMessage(ev.Text)
+		} else if isReplay(ev) {
+			a.subs.chat.AddUserMessage(ev.Text)
+		}
+		return
+	}
+	if ev.Role == agentic.System && ev.Text != "" && isSystemNotification(ev) {
+		a.endCurrentStream()
+		a.subs.chat.AddSystemMessage(ev.Text)
+	}
+}
+
+// isSteeringDrained reports whether ev is a user message the agent wove into
+// the turn from the mid-turn steering queue. The pending steering bubble must
+// be cleared when this arrives — the queue is now empty, so there is nothing
+// left "to send", and leaving the bubble up would show stale steering.
+func isSteeringDrained(ev *agentic.OutputEvent) bool {
+	return ev.Metadata != nil && ev.Metadata["steering_drained"] == "true"
 }
 
 // isSystemNotification reports whether ev is a UI-only system message (e.g.
