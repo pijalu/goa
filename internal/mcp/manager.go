@@ -40,12 +40,13 @@ type ServerStatus struct {
 
 // Manager manages MCP server connections and exposes their tools.
 type Manager struct {
-	mu      sync.RWMutex
-	clients map[string]client.Client
-	status  map[string]ServerStatus
-	reg     *tools.ToolRegistry
-	factory ClientFactory
-	logger  *agentic.Logger
+	mu         sync.RWMutex
+	clients    map[string]client.Client
+	status     map[string]ServerStatus
+	reg        *tools.ToolRegistry
+	factory    ClientFactory
+	logger     *agentic.Logger
+	projectDir string
 }
 
 // ClientFactory creates a client for a server config.
@@ -122,6 +123,14 @@ func (m *Manager) SetClientFactory(f ClientFactory) {
 	m.factory = f
 }
 
+// SetProjectDir sets the project root directory, advertised to MCP servers
+// as a filesystem root (file:// URI) so servers can scope file access.
+func (m *Manager) SetProjectDir(dir string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.projectDir = dir
+}
+
 // Connect starts a server connection and registers its tools.
 func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 	m.mu.Lock()
@@ -133,6 +142,8 @@ func (m *Manager) Connect(ctx context.Context, cfg ServerConfig) error {
 		m.setStatus(cfg.Name, ServerStatus{State: StateFailed, Err: err.Error()})
 		return fmt.Errorf("connect to %q: %w", cfg.Name, err)
 	}
+
+	m.wireLifecycle(c, cfg.Name)
 
 	toolsInfo, err := c.ListTools(ctx)
 	if err != nil {
@@ -217,6 +228,81 @@ func (m *Manager) setStatus(name string, s ServerStatus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.status[name] = s
+}
+
+// wireLifecycle configures optional lifecycle handlers on a client before
+// it connects. This must be called before the client is used (the SDK
+// captures handlers at connect time).
+func (m *Manager) wireLifecycle(c client.Client, serverName string) {
+	nh, ok := c.(client.NotificationHandler)
+	if !ok {
+		return
+	}
+	m.mu.RLock()
+	projectDir := m.projectDir
+	m.mu.RUnlock()
+	if projectDir != "" {
+		nh.AddRoot("file://" + projectDir)
+	}
+	nh.SetToolListChangedHandler(func(ctx context.Context) {
+		m.refreshTools(ctx, serverName)
+	})
+	nh.SetLoggingHandler(func(ctx context.Context, level, logger, message string) {
+		m.logServerMessage(serverName, level, logger, message)
+	})
+}
+
+// refreshTools re-lists tools from a connected server and swaps the
+// registered group. Called when the server sends notifications/tools/list_changed.
+func (m *Manager) refreshTools(ctx context.Context, serverName string) {
+	m.mu.RLock()
+	c, ok := m.clients[serverName]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+	toolsInfo, err := c.ListTools(ctx)
+	if err != nil {
+		m.logf(agentic.Warn, "mcp: %s: tool list refresh failed: %v", serverName, err)
+		return
+	}
+	// Unregister old group, register new.
+	if m.reg != nil {
+		m.reg.UnregisterGroup(toolPrefix(serverName))
+	}
+	m.registerTools(serverName, toolsInfo)
+	m.setStatus(serverName, ServerStatus{State: StateConnected, Tools: len(toolsInfo)})
+	m.logf(agentic.Info, "mcp: %s: refreshed %d tools after list_changed", serverName, len(toolsInfo))
+}
+
+// logServerMessage forwards an MCP server log notification to the agentic logger.
+func (m *Manager) logServerMessage(server, level, logger, message string) {
+	lv := agentic.Info
+	switch level {
+	case "debug":
+		lv = agentic.Debug
+	case "info", "notice":
+		lv = agentic.Info
+	case "warning":
+		lv = agentic.Warn
+	case "error", "critical", "alert", "emergency":
+		lv = agentic.Error
+	}
+	if logger != "" {
+		m.logf(lv, "mcp: %s: [%s] %s", server, logger, message)
+	} else {
+		m.logf(lv, "mcp: %s: %s", server, message)
+	}
+}
+
+// logf logs a message if a logger is configured.
+func (m *Manager) logf(lv agentic.Level, format string, args ...interface{}) {
+	m.mu.RLock()
+	l := m.logger
+	m.mu.RUnlock()
+	if l != nil {
+		l.Log(lv, fmt.Sprintf(format, args...))
+	}
 }
 
 func (m *Manager) registerTools(server string, toolsInfo []client.ToolInfo) {

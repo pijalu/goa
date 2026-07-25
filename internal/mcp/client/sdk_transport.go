@@ -39,6 +39,7 @@ type HTTPOptions struct {
 // the official go-sdk's CommandTransport.
 func NewStdioClient(command string, args []string, opts ...StdioOptions) Client {
 	cmd := exec.Command(command, args...)
+	setProcGroup(cmd)
 	if len(opts) > 0 {
 		o := opts[0]
 		if o.Cwd != "" {
@@ -48,7 +49,10 @@ func NewStdioClient(command string, args []string, opts ...StdioOptions) Client 
 			cmd.Env = mergeEnv(o.Env)
 		}
 	}
-	return &sdkTransportClient{transport: &sdk.CommandTransport{Command: cmd}}
+	return &sdkTransportClient{
+		transport: &sdk.CommandTransport{Command: cmd},
+		cmd:       cmd,
+	}
 }
 
 // NewHTTPClient creates a client for a remote MCP server. It uses the
@@ -94,6 +98,8 @@ type sdkTransportClient struct {
 
 	// stdio: fixed transport.
 	transport sdk.Transport
+	// cmd is the child process for stdio transports (nil for remote).
+	cmd *exec.Cmd
 
 	// remote: endpoint + http client for transport construction.
 	url        string
@@ -120,6 +126,17 @@ func (c *sdkTransportClient) connectRemote(ctx context.Context) error {
 		return fmt.Errorf("mcp remote connect (streamable and sse) failed: %w", err)
 	}
 	return nil
+}
+
+// Close shuts down the client. For stdio transports it also kills any
+// remaining descendant processes (the SDK's Close only terminates the
+// direct child; grandchildren spawned by the server would be orphaned).
+func (c *sdkTransportClient) Close() error {
+	err := c.sdkClient.Close()
+	if c.cmd != nil && c.cmd.Process != nil {
+		killProcessTree(c.cmd.Process.Pid)
+	}
+	return err
 }
 
 // mergeEnv returns os.Environ() overridden by the given key/value pairs.

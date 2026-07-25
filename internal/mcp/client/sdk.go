@@ -19,6 +19,11 @@ import (
 type sdkClient struct {
 	client  *sdk.Client
 	session *sdk.ClientSession
+
+	// Lifecycle handlers — set before connect() to take effect.
+	toolListChangedFn func(ctx context.Context)
+	loggingFn         func(ctx context.Context, level, logger, message string)
+	roots             []string
 }
 
 // clientInfo identifies Goa to MCP servers during the handshake.
@@ -26,7 +31,27 @@ var clientInfo = &sdk.Implementation{Name: "goa", Version: "0.1"}
 
 // connect establishes the session over the given transport.
 func (c *sdkClient) connect(ctx context.Context, t sdk.Transport) error {
-	c.client = sdk.NewClient(clientInfo, nil)
+	opts := &sdk.ClientOptions{}
+	if c.toolListChangedFn != nil {
+		fn := c.toolListChangedFn
+		opts.ToolListChangedHandler = func(ctx context.Context, _ *sdk.ToolListChangedRequest) {
+			fn(ctx)
+		}
+	}
+	if c.loggingFn != nil {
+		fn := c.loggingFn
+		opts.LoggingMessageHandler = func(ctx context.Context, req *sdk.LoggingMessageRequest) {
+			msg := ""
+			if s, ok := req.Params.Data.(string); ok {
+				msg = s
+			}
+			fn(ctx, string(req.Params.Level), req.Params.Logger, msg)
+		}
+	}
+	c.client = sdk.NewClient(clientInfo, opts)
+	for _, uri := range c.roots {
+		c.client.AddRoots(&sdk.Root{URI: uri})
+	}
 	session, err := c.client.Connect(ctx, t, nil)
 	if err != nil {
 		return err
@@ -140,3 +165,21 @@ func resultText(res *sdk.CallToolResult) string {
 	}
 	return ""
 }
+
+// SetToolListChangedHandler implements NotificationHandler.
+func (c *sdkClient) SetToolListChangedHandler(fn func(ctx context.Context)) {
+	c.toolListChangedFn = fn
+}
+
+// SetLoggingHandler implements NotificationHandler.
+func (c *sdkClient) SetLoggingHandler(fn func(ctx context.Context, level, logger, message string)) {
+	c.loggingFn = fn
+}
+
+// AddRoot implements NotificationHandler.
+func (c *sdkClient) AddRoot(uri string) {
+	c.roots = append(c.roots, uri)
+}
+
+// Compile-time assertion that sdkClient implements NotificationHandler.
+var _ NotificationHandler = (*sdkClient)(nil)

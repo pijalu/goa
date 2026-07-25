@@ -529,6 +529,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 // commands can add and connect servers at runtime.
 func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) *mcp.Manager {
 	mgr := mcp.NewManager(reg)
+	mgr.SetProjectDir(projectDir)
 	if len(cfg.MCP) == 0 {
 		return mgr
 	}

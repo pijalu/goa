@@ -27,3 +27,18 @@ type Client interface {
 	// Close shuts down the client.
 	Close() error
 }
+
+// NotificationHandler is an optional extension a Client can implement to
+// receive server-initiated lifecycle events.
+type NotificationHandler interface {
+	// SetToolListChangedHandler registers a callback invoked when the server
+	// sends notifications/tools/list_changed. The client should re-list tools
+	// and swap the registered group.
+	SetToolListChangedHandler(fn func(ctx context.Context))
+	// SetLoggingHandler registers a callback invoked when the server sends a
+	// log notification (notifications/message).
+	SetLoggingHandler(fn func(ctx context.Context, level, logger, message string))
+	// AddRoot advertises a filesystem root to the server. The SDK auto-answers
+	// roots/list requests with the registered roots.
+	AddRoot(uri string)
+}
