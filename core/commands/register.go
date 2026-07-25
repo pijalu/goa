@@ -60,6 +60,8 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		&StopCommand{},
 		&RetryCommand{},
 		&UndoCommand{},
+		// mcp
+		&MCPCommand{},
 		// memory
 		&MemoryCommand{},
 		// meta

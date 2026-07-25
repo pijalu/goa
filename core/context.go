@@ -15,6 +15,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/internal/mcp"
 	"github.com/pijalu/goa/memory"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/provider"
@@ -211,6 +212,10 @@ type Context struct {
 
 	// GoalManager manages coding goals.
 	GoalManager *GoalManager
+
+	// MCP is the MCP client manager (nil when no MCP servers are configured).
+	// Commands use it to list/connect/disconnect MCP servers.
+	MCP *mcp.Manager
 
 	// CronManager manages scheduled agent tasks.
 	CronManager *CronManager

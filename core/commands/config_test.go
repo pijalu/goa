@@ -28,9 +28,13 @@ func (f *fakeConfigSaver) Save(cfg *config.Config) error {
 func (f *fakeConfigSaver) SaveProjectConfig(cfg *config.Config) error             { return f.Save(cfg) }
 func (f *fakeConfigSaver) SaveHomeProvidersAndModels(cfg *config.Config) error    { return f.Save(cfg) }
 func (f *fakeConfigSaver) SaveProjectProvidersAndModels(cfg *config.Config) error { return f.Save(cfg) }
-func (f *fakeConfigSaver) SaveHomeField(path []string, value any) error           { return nil }
-func (f *fakeConfigSaver) SaveProjectField(path []string, value any) error        { return nil }
-func (f *fakeConfigSaver) Reload() (*config.Config, error)                        { return f.savedCfg, nil }
+func (f *fakeConfigSaver) SaveHomeField(path []string, value any) error     { return nil }
+func (f *fakeConfigSaver) SaveProjectField(path []string, value any) error  { return nil }
+func (f *fakeConfigSaver) SaveProjectFieldValue(path []string, value any) error {
+	return nil
+}
+func (f *fakeConfigSaver) DeleteProjectField(path []string) error { return nil }
+func (f *fakeConfigSaver) Reload() (*config.Config, error)          { return f.savedCfg, nil }
 
 func TestDoAddProvider_New(t *testing.T) {
 	cfg := &config.Config{Providers: []config.ProviderConfig{}}

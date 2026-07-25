@@ -525,18 +525,19 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 // registers its tools under the "mcp__<server>__*" namespace. It never fails
 // startup: per-server connect errors are logged and recorded in the manager's
 // status. Connections are established concurrently so a slow/hung server does
-// not block the others. Returns nil when no MCP servers are configured.
+// not block the others. The manager is always returned (never nil) so /mcp
+// commands can add and connect servers at runtime.
 func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) *mcp.Manager {
-	if len(cfg.MCP) == 0 {
-		return nil
-	}
 	mgr := mcp.NewManager(reg)
+	if len(cfg.MCP) == 0 {
+		return mgr
+	}
 	var wg sync.WaitGroup
 	for name, srv := range cfg.MCP {
 		if !srv.IsEnabled() {
 			continue
 		}
-		sc := mcpServerConfig(name, projectDir, srv)
+		sc := mcp.FromConfig(name, projectDir, srv)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -551,49 +552,6 @@ func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.
 	return mgr
 }
 
-// mcpServerConfig converts a config.MCPServerConfig into the runtime
-// mcp.ServerConfig, resolving the working directory and timeout.
-func mcpServerConfig(name, projectDir string, srv config.MCPServerConfig) mcp.ServerConfig {
-	sc := mcp.ServerConfig{
-		Name:    name,
-		Type:    srv.Type,
-		URL:     srv.URL,
-		Headers: srv.Headers,
-		Env:     srv.Environment,
-		Timeout: mcpTimeout(srv.Timeout),
-	}
-	if len(srv.Command) > 0 {
-		sc.Command = srv.Command[0]
-		sc.Args = srv.Command[1:]
-	}
-	sc.Cwd = resolveMCPCwd(projectDir, srv.Cwd)
-	return sc
-}
-
-// resolveMCPCwd resolves a server's working directory. Empty uses the project
-// directory; relative paths resolve from it; absolute paths pass through.
-func resolveMCPCwd(projectDir, cwd string) string {
-	if cwd == "" {
-		return projectDir
-	}
-	if filepath.IsAbs(cwd) {
-		return cwd
-	}
-	return filepath.Join(projectDir, cwd)
-}
-
-// mcpTimeout parses a duration string, returning 0 (use default) when empty or
-// invalid. Validation already rejects bad values, so this is defensive.
-func mcpTimeout(s string) time.Duration {
-	if s == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0
-	}
-	return d
-}
 
 // registerOptionalTools registers tools that are gated by configuration flags.
 func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker) {

@@ -53,6 +53,13 @@ type ConfigSaver interface {
 	// of nested YAML keys. Missing intermediate maps are created automatically.
 	SaveProjectField(path []string, value any) error
 
+	// SaveProjectFieldValue writes an arbitrary value (including maps and slices)
+	// at the given path in .goa/config.yaml, preserving other settings.
+	SaveProjectFieldValue(path []string, value any) error
+
+	// DeleteProjectField removes the key at the given path from .goa/config.yaml.
+	DeleteProjectField(path []string) error
+
 	// Reload re-reads config from all cascade layers and returns the result.
 	Reload() (*Config, error)
 }
@@ -942,6 +949,90 @@ func (cl *CascadeLoader) SaveProjectField(path []string, value any) error {
 	return nil
 }
 
+// SaveProjectFieldValue writes an arbitrary value (including maps and slices)
+// at the given path in the project .goa/config.yaml, preserving other
+// settings. Use for whole sub-configs such as an MCP server definition.
+func (cl *CascadeLoader) SaveProjectFieldValue(path []string, value any) error {
+	return cl.editProjectConfig(func(doc *yaml.Node) error {
+		return setYamlNodeValue(doc, path, value)
+	})
+}
+
+// DeleteProjectField removes the key at the given path from the project
+// .goa/config.yaml. It is a no-op when the key (or file) does not exist.
+func (cl *CascadeLoader) DeleteProjectField(path []string) error {
+	if len(path) == 0 {
+		return fmt.Errorf("empty field path")
+	}
+	return cl.editProjectConfig(func(doc *yaml.Node) error {
+		deleteYamlNode(doc, path)
+		return nil
+	})
+}
+
+// editProjectConfig loads the project config (creating a minimal document when
+// missing), applies edit to the root mapping, and writes it back.
+func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) error {
+	configDir := filepath.Join(cl.projectDir, ".goa")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("create project config dir: %w", err)
+	}
+	pathYaml := filepath.Join(configDir, "config.yaml")
+
+	var root yaml.Node
+	data, err := os.ReadFile(pathYaml)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read project config: %w", err)
+		}
+		root.Kind = yaml.DocumentNode
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
+	} else if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("unmarshal project config: %w", err)
+	}
+	if len(root.Content) == 0 {
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.MappingNode})
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		doc.Kind = yaml.MappingNode
+	}
+	if err := edit(doc); err != nil {
+		return err
+	}
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return fmt.Errorf("marshal project config: %w", err)
+	}
+	if err := os.WriteFile(pathYaml, out, 0644); err != nil {
+		return fmt.Errorf("write project config: %w", err)
+	}
+	return nil
+}
+
+// deleteYamlNode removes the key at path from a mapping tree, pruning empty
+// parent maps. Missing keys are ignored.
+func deleteYamlNode(node *yaml.Node, path []string) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	key := path[0]
+	for i := 0; i < len(node.Content); i += 2 {
+		if node.Content[i].Value != key {
+			continue
+		}
+		if len(path) == 1 {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return
+		}
+		deleteYamlNode(node.Content[i+1], path[1:])
+		if len(node.Content[i+1].Content) == 0 {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+		}
+		return
+	}
+}
+
 // setYamlNode walks a YAML mapping tree and sets the scalar at the given path.
 func setYamlNode(node *yaml.Node, path []string, value interface{}) error {
 	if node.Kind != yaml.MappingNode {
@@ -969,4 +1060,63 @@ func setYamlNode(node *yaml.Node, path []string, value interface{}) error {
 		child.Kind = yaml.MappingNode
 	}
 	return setYamlNode(child, path[1:], value)
+}
+
+// setYamlNodeValue walks a YAML mapping tree and replaces the node at the
+// given path with an encoding of value (which may be a map, slice, or scalar).
+// Unlike setYamlNode (scalar-only), it marshals value into a YAML node, so
+// whole sub-configs (e.g. an MCP server definition) can be written. Missing
+// intermediate maps are created automatically.
+func setYamlNodeValue(node *yaml.Node, path []string, value any) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("expected mapping node at %q", strings.Join(path, "."))
+	}
+	key := path[0]
+	var childIdx = -1
+	for i := 0; i < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			childIdx = i + 1
+			break
+		}
+	}
+	if len(path) == 1 {
+		encoded, err := valueToYAMLNode(value)
+		if err != nil {
+			return err
+		}
+		if childIdx >= 0 {
+			node.Content[childIdx] = encoded
+		} else {
+			node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, encoded)
+		}
+		return nil
+	}
+	var child *yaml.Node
+	if childIdx >= 0 {
+		child = node.Content[childIdx]
+		if child.Kind != yaml.MappingNode {
+			child.Kind = yaml.MappingNode
+			child.Content = nil
+		}
+	} else {
+		child = &yaml.Node{Kind: yaml.MappingNode}
+		node.Content = append(node.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, child)
+	}
+	return setYamlNodeValue(child, path[1:], value)
+}
+
+// valueToYAMLNode marshals an arbitrary value into a YAML node.
+func valueToYAMLNode(value any) (*yaml.Node, error) {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal value: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("reparse value: %w", err)
+	}
+	if len(doc.Content) == 0 {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: ""}, nil
+	}
+	return doc.Content[0], nil
 }
