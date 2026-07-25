@@ -85,6 +85,14 @@ m = re.search(r"\d+", "order 42")
 print(json.dumps({"order_id": int(m.group())}))
 ```
 
+### Unsupported modules
+
+Modules not listed above — for example `struct`, `socket`, `subprocess`,
+`threading`, or `asyncio` — are **not available** in the embedded interpreter.
+Importing one returns an error naming the module and directing you to the
+`bash` tool: use `bash` with `python3` for any stdlib module beyond the
+supported subset.
+
 ### Intentionally absent
 
 For safety, the curated module **does not expose** `os.system`, `os._exit`,

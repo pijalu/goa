@@ -354,12 +354,38 @@ func (t *PythonTool) truncateOutput(output string) string {
 // traceback when available.
 func formatPythonError(err error) string {
 	if exc, ok := err.(py.ExceptionInfo); ok {
-		return exceptionInfoString(exc)
+		return clarifyModuleError(exceptionInfoString(exc))
 	}
 	if exc, ok := err.(*py.ExceptionInfo); ok && exc != nil {
-		return exceptionInfoString(*exc)
+		return clarifyModuleError(exceptionInfoString(*exc))
 	}
-	return err.Error()
+	return clarifyModuleError(err.Error())
+}
+
+// pythonSupportedModules lists the stdlib modules available in the embedded
+// gpython interpreter. Keep in sync with the tool Description.
+const pythonSupportedModules = "os/re/json/collections/base64/hashlib/datetime/itertools/urllib/random/math/string/glob"
+
+// clarifyModuleError rewrites gpython's cryptic unresolved-module failure
+// (reported as a FileNotFoundError: 'Failed to resolve "mod"') into an
+// actionable message that names the unsupported module and points the caller at
+// bash python3, which has the full stdlib. Other errors pass through unchanged.
+func clarifyModuleError(msg string) string {
+	const marker = `Failed to resolve "`
+	idx := strings.Index(msg, marker)
+	if idx < 0 {
+		return msg
+	}
+	rest := msg[idx+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return msg
+	}
+	module := rest[:end]
+	return fmt.Sprintf(
+		"Module %q is not available in the embedded python interpreter (supported: %s). "+
+			"Use the bash tool with python3 for stdlib modules beyond this subset.",
+		module, pythonSupportedModules)
 }
 
 func exceptionInfoString(exc py.ExceptionInfo) string {

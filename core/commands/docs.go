@@ -444,6 +444,29 @@ func restartHint(enabled bool) string {
 	return "The tool is no longer available to the model."
 }
 
+// toolSummaryLine returns a clean single-line summary of a tool description
+// for list display. Embedded doc files may begin with an SPDX license header
+// inside an HTML comment (<!-- ... -->); that leading comment block is stripped
+// and the first non-empty content line returned, so a tool whose description is
+// loaded from a Markdown file shows a real summary like every other tool.
+func toolSummaryLine(desc string) string {
+	s := strings.TrimSpace(desc)
+	// Strip a single leading HTML comment block (e.g. an SPDX header).
+	if strings.HasPrefix(s, "<!--") {
+		if end := strings.Index(s, "-->"); end >= 0 {
+			s = strings.TrimSpace(s[end+len("-->"):])
+		}
+	}
+	// Return the first non-empty line so multi-paragraph docs collapse to a
+	// one-line summary.
+	for _, line := range strings.Split(s, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return s
+}
+
 func showToolDetail(out core.OutputWriter, reg core.ToolRegistry, name string) error {
 	if reg == nil {
 		writeStr(out, "Tool registry not available.\n")
@@ -557,7 +580,7 @@ func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
 	tools := reg.All()
 	for _, t := range tools {
 		schema := t.Schema()
-		desc := schema.Description
+		desc := toolSummaryLine(schema.Description)
 		if len(desc) > 60 {
 			desc = desc[:57] + "..."
 		}

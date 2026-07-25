@@ -16,6 +16,29 @@ import (
 	"github.com/pijalu/goa/tools"
 )
 
+// TestToolSummaryLine_StripsSPDXHeader is a regression test for the bug where
+// /tools listed the goal tool's raw SPDX license header instead of a summary.
+func TestToolSummaryLine_StripsSPDXHeader(t *testing.T) {
+	withHeader := "<!--\nSPDX-License-Identifier: GPL-3.0-or-later\n\nCopyright (C) 2026 Pierre Poissinger\n-->\n\nManage the current goal: create one.\n\nMore detail follows."
+	got := toolSummaryLine(withHeader)
+	if strings.Contains(got, "SPDX") || strings.Contains(got, "<!--") || strings.Contains(got, "Copyright") {
+		t.Fatalf("summary leaked license header: %q", got)
+	}
+	if !strings.HasPrefix(got, "Manage the current goal") {
+		t.Fatalf("summary should start with the real description, got %q", got)
+	}
+
+	// Plain single-line descriptions are unchanged.
+	if got := toolSummaryLine("Run a shell command."); got != "Run a shell command." {
+		t.Fatalf("plain description changed: %q", got)
+	}
+
+	// Multi-paragraph docs collapse to the first content line.
+	if got := toolSummaryLine("First line.\n\nSecond paragraph."); got != "First line." {
+		t.Fatalf("expected first line only, got %q", got)
+	}
+}
+
 func TestToolsDocCommand_ToggleCompletionStateAware(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tools.Enabled.WebFetch = true

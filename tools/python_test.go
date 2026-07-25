@@ -411,3 +411,33 @@ func TestPythonTool_FStringConversion(t *testing.T) {
 		t.Errorf("unexpected output:\n%s", out)
 	}
 }
+
+// Regression for bugs.md: importing an unsupported stdlib module (e.g. struct)
+// produced a cryptic FileNotFoundError: 'Failed to resolve "struct"'. The tool
+// must now return an actionable message naming the module and pointing to
+// bash python3.
+func TestPythonTool_UnsupportedModule_ClearError(t *testing.T) {
+	tool := &PythonTool{TimeoutSeconds: 5, ProjectDir: t.TempDir()}
+	for _, mod := range []string{"struct", "socket", "subprocess"} {
+		_, err := tool.Execute(fmt.Sprintf(`{"code":"import %s"}`, mod))
+		if err == nil {
+			t.Errorf("import %s unexpectedly succeeded", mod)
+			continue
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "Failed to resolve") || strings.Contains(msg, "FileNotFoundError") {
+			t.Errorf("import %s: cryptic error not clarified: %s", mod, msg)
+		}
+		if !strings.Contains(msg, fmt.Sprintf("%q", mod)) || !strings.Contains(msg, "python3") {
+			t.Errorf("import %s: expected module-naming actionable error, got: %s", mod, msg)
+		}
+	}
+}
+
+// clarifyModuleError must leave non-module errors untouched.
+func TestClarifyModuleError_Passthrough(t *testing.T) {
+	plain := "ZeroDivisionError: division by zero"
+	if got := clarifyModuleError(plain); got != plain {
+		t.Errorf("non-module error rewritten: %q", got)
+	}
+}

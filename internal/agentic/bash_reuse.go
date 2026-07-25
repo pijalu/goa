@@ -86,4 +86,4 @@ func (t *bashReuseTracker) recordUpstream(upstream string, epoch int) bool {
 // re-ran an expensive upstream command with only the filter changed. It teaches
 // the cheaper save-once-refilter pattern for subsequent calls without blocking
 // the current (legitimately needed) result.
-const nearDuplicateHint = "\n\n[goa-system] Efficiency note: you re-ran the same base command with only the trailing filter changed. That re-executes the expensive upstream each time. Cheaper pattern: run it once and save the output (e.g. `cmd > /tmp/out.txt 2>&1`), then grep/count the saved file for each pattern (`grep -c X /tmp/out.txt`)."
+const nearDuplicateHint = "\n\n[goa-system] Efficiency note (informational only — keep working): this result is valid; use it and continue the task. For any FURTHER counts of the same data, you can re-filter the output you already have (or save it once with `cmd > /tmp/out.txt 2>&1` and `grep -c X /tmp/out.txt`) instead of re-running the expensive upstream."
