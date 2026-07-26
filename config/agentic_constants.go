@@ -29,6 +29,7 @@ const (
 	AgenticProviderZaiApi     = "zai-api"
 	AgenticProviderOpenCode   = "opencode"
 	AgenticProviderOpenCodeGo = "opencode-go"
+	AgenticProviderPoolside   = "poolside"
 	AgenticProviderCustom     = "custom"
 )
 
@@ -120,6 +121,7 @@ func ValidAgenticProviders() []string {
 		AgenticProviderZaiApi,
 		AgenticProviderOpenCode,
 		AgenticProviderOpenCodeGo,
+		AgenticProviderPoolside,
 		AgenticProviderCustom,
 	}
 }

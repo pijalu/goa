@@ -11,8 +11,8 @@ import (
 // TestPresetProviders_ContainsAllPresets verifies PresetProviders returns the expected set.
 func TestPresetProviders_ContainsAllPresets(t *testing.T) {
 	presets := PresetProviders()
-	if len(presets) < 9 {
-		t.Fatalf("PresetProviders() returned %d presets, want >= 9", len(presets))
+	if len(presets) < 10 {
+		t.Fatalf("PresetProviders() returned %d presets, want >= 10", len(presets))
 	}
 
 	// Check each preset has non-empty required fields
@@ -56,6 +56,7 @@ func presetExpectations() []presetExpectation {
 		{"kimi-code", "Kimi Code", "kimi-for-coding", true},
 		{"zai", "Z.ai Coding", "glm-5.2", true},
 		{"zai-api", "Z.ai", "glm-5.2", true},
+		{"poolside", "Poolside", "poolside-default", true},
 	}
 }
 
@@ -138,7 +139,7 @@ func TestPresetProviders_StableOrder(t *testing.T) {
 	expected := []string{
 		"openai", "lmstudio", "ollama", "openrouter",
 		"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
-		"zai", "zai-api",
+		"zai", "zai-api", "poolside",
 	}
 	if len(presets) != len(expected) {
 		t.Fatalf("PresetProviders() = %d presets, want %d", len(presets), len(expected))

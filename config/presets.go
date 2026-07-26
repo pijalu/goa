@@ -158,6 +158,19 @@ func PresetProviders() []ProviderPreset {
 			Provider:     AgenticProviderZaiApi,
 			API:          AgenticAPIOpenAICompletions,
 		},
+		{
+			ID:           "poolside",
+			Name:         "Poolside",
+			Endpoint:     "https://inference.poolside.ai/v1",
+			DefaultModel: "poolside-default",
+			NeedsAPIKey:  true,
+			Provider:     AgenticProviderPoolside,
+			API:          AgenticAPIOpenAICompletions,
+			Extra: map[string]any{
+				"reasoning_key":               "reasoning_content",
+				"normalize_null_descriptions": true,
+			},
+		},
 	}
 }
 

@@ -271,6 +271,7 @@ func TestInferProviderIdentity_Presets(t *testing.T) {
 		{"openrouter", "openrouter", agenticprovider.ProviderOpenRouter, agenticprovider.ApiOpenAICompletions},
 		{"zai coding preset", "zai", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
 		{"zai api preset", "zai-api", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
+		{"poolside preset", "poolside", agenticprovider.ProviderPoolside, agenticprovider.ApiOpenAICompletions},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -347,6 +348,18 @@ func TestInferProviderIdentity_ZaiEndpoints(t *testing.T) {
 	}
 }
 
+// TestInferProviderIdentity_PoolsideEndpoint verifies the endpoint heuristic
+// maps the poolside inference URL to the correct provider identity.
+func TestInferProviderIdentity_PoolsideEndpoint(t *testing.T) {
+	prov, api := inferProviderIdentity(config.ProviderConfig{ID: "custom", Endpoint: "https://inference.poolside.ai/v1"})
+	if prov != agenticprovider.ProviderPoolside {
+		t.Errorf("Provider = %q, want %q", prov, agenticprovider.ProviderPoolside)
+	}
+	if api != agenticprovider.ApiOpenAICompletions {
+		t.Errorf("API = %q, want openai-completions", api)
+	}
+}
+
 // TestStripKnownProviderPrefix_Zai verifies zai-prefixed model IDs resolve to
 // their bare registry IDs (e.g. "zai/glm-5.2" → "glm-5.2").
 func TestStripKnownProviderPrefix_Zai(t *testing.T) {
@@ -360,6 +373,20 @@ func TestStripKnownProviderPrefix_Zai(t *testing.T) {
 		if got := stripKnownProviderPrefix(tt.in); got != tt.want {
 			t.Errorf("stripKnownProviderPrefix(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// TestInferProviderModelTraits_Poolside verifies poolside models get
+// Reasoning=true so the thinking body is sent and thinking blocks display.
+func TestInferProviderModelTraits_Poolside(t *testing.T) {
+	mdl := agenticprovider.Model{
+		ID:       "poolside-default",
+		Provider: agenticprovider.ProviderPoolside,
+		BaseURL:  "https://inference.poolside.ai/v1/chat/completions",
+	}
+	inferProviderModelTraits(&mdl)
+	if !mdl.Reasoning {
+		t.Error("Reasoning = false, want true for poolside")
 	}
 }
 

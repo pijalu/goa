@@ -124,6 +124,31 @@ func TestDetectOpenAICompat_ZaiVariants(t *testing.T) {
 	}
 }
 
+func TestDetectOpenAICompat_Poolside(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider Provider
+		baseURL  string
+	}{
+		{"by provider name", ProviderPoolside, "https://inference.poolside.ai/v1"},
+		{"by URL", "custom", "https://inference.poolside.ai/v1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			compat := DetectOpenAICompat(Model{Provider: tc.provider, BaseURL: tc.baseURL})
+			if *compat.ThinkingFormat != "openai" {
+				t.Errorf("ThinkingFormat = %q, want openai", *compat.ThinkingFormat)
+			}
+			if *compat.SupportsStore {
+				t.Error("SupportsStore = true, want false for poolside (non-standard)")
+			}
+			if *compat.SupportsDeveloperRole {
+				t.Error("SupportsDeveloperRole = true, want false for poolside (non-standard)")
+			}
+		})
+	}
+}
+
 func TestDetectOpenAICompat_CustomDefaults(t *testing.T) {
 	// Unknown provider should get OpenAI defaults (no detection overrides)
 	compat := DetectOpenAICompat(Model{Provider: ProviderCustom, BaseURL: "https://custom.example.com"})

@@ -420,6 +420,7 @@ var knownProviderPrefixes = []string{
 	string(agenticprovider.ProviderKimiCode),
 	string(agenticprovider.ProviderZai),
 	string(agenticprovider.ProviderZaiApi),
+	string(agenticprovider.ProviderPoolside),
 	string(agenticprovider.ProviderCustom),
 }
 
@@ -552,6 +553,13 @@ func inferProviderModelTraits(mdl *agenticprovider.Model) {
 	case "deepseek":
 		mdl.Reasoning = true
 		mdl.ThinkingFormat = agenticprovider.ThinkingFormatChunkedReasoning
+	case "openai":
+		// Poolside and other OpenAI-compatible providers that return
+		// reasoning_content in streaming responses. Enable reasoning so the
+		// thinking body is sent and thinking blocks are displayed.
+		if mdl.Provider == agenticprovider.ProviderPoolside {
+			mdl.Reasoning = true
+		}
 	}
 }
 
@@ -616,6 +624,7 @@ var endpointHeuristics = []struct {
 	{"api.z.ai", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
 	{"open.bigmodel.cn/api/coding", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
 	{"open.bigmodel.cn", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
+	{"inference.poolside.ai", agenticprovider.ProviderPoolside, agenticprovider.ApiOpenAICompletions},
 }
 
 func matchProviderEndpoint(endpoint string) (agenticprovider.Provider, agenticprovider.Api) {

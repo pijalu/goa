@@ -59,6 +59,7 @@ const (
 	ProviderZaiApi     = schema.ProviderZaiApi
 	ProviderOpenCode   = schema.ProviderOpenCode
 	ProviderOpenCodeGo = schema.ProviderOpenCodeGo
+	ProviderPoolside   = schema.ProviderPoolside
 	ProviderCustom     = schema.ProviderCustom
 
 	TransportSSE       = schema.TransportSSE

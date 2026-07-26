@@ -26,6 +26,7 @@ type providerFingerprint struct {
 	isOpenCode     bool
 	isLMStudio     bool
 	isOllama       bool
+	isPoolside     bool
 }
 
 func fingerprintProvider(providerName Provider, baseURL string) providerFingerprint {
@@ -48,6 +49,7 @@ func fingerprintProvider(providerName Provider, baseURL string) providerFingerpr
 		isOpenCode:     matchesProviderOrURL(p, url, "opencode", "opencode.ai"),
 		isLMStudio:     matchesProviderOrURL(p, url, "lm-studio", "lmstudio", "localhost:1234"),
 		isOllama:       matchesProviderOrURL(p, url, "ollama", "localhost:11434"),
+		isPoolside:     matchesProviderOrURL(p, url, "poolside", "inference.poolside.ai"),
 	}
 }
 
@@ -117,7 +119,8 @@ func (fp providerFingerprint) needsToolResultAsUser(modelID string) bool {
 func (fp providerFingerprint) isNonStandard() bool {
 	return fp.isNvidia || fp.isCerebras || fp.isGrok || fp.isTogether ||
 		fp.isChutes || fp.isDeepSeek || fp.isZai || fp.isMoonshot ||
-		fp.isOpenCode || fp.isCloudflareWA || fp.isCloudflareAG || fp.isAntLing
+		fp.isOpenCode || fp.isCloudflareWA || fp.isCloudflareAG || fp.isAntLing ||
+		fp.isPoolside
 }
 
 func (fp providerFingerprint) useMaxTokens() bool {

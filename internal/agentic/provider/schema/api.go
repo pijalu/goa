@@ -47,6 +47,7 @@ const (
 	ProviderZaiApi     Provider = "zai-api"
 	ProviderOpenCode   Provider = "opencode"
 	ProviderOpenCodeGo Provider = "opencode-go"
+	ProviderPoolside   Provider = "poolside"
 	ProviderCustom     Provider = "custom"
 )
 
