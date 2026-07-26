@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 func TestMarker_Paused(t *testing.T) {
@@ -29,8 +30,10 @@ func TestMarker_Paused(t *testing.T) {
 	if !strings.Contains(lines[0], "paused") {
 		t.Errorf("marker should contain paused: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], "break") {
-		t.Error("marker should show reason")
+	// Reason renders on a detail line below the headline; check all lines.
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "break") {
+		t.Errorf("marker should show reason somewhere in: %q", joined)
 	}
 }
 
@@ -67,4 +70,58 @@ func TestMarker_HandleInput(t *testing.T) {
 	m := NewMarker(nil)
 	m.HandleInput("x")
 	m.Invalidate()
+}
+
+// TestMarker_BlockedShowsFullReasonAndExpectation is the regression for
+// "goal block does not show any details": a long reason and expectation must
+// be rendered in full (wrapped across lines), never truncated to fit one
+// headline line.
+func TestMarker_BlockedShowsFullReasonAndExpectation(t *testing.T) {
+	status := goal.GoalBlocked
+	actor := goal.GoalActorModel
+	reason := "P1B parser/engine fixes complete (Steps 2-4 done, WINDOW clause fixed, CTE+VALUES supported); remaining 70 failures require P1-level ALTER TABLE work — column-level constraint name preservation, circular view detection, trigger validation during RENAME"
+	expectation := "user decision: implement ALTER TABLE constraint preservation or descope P1 to parser-only"
+	m := NewMarker(&goal.GoalChange{
+		Kind:        goal.GoalChangeLifecycle,
+		Status:      &status,
+		Actor:       &actor,
+		Reason:      &reason,
+		Expectation: &expectation,
+	})
+
+	lines := m.Render(80)
+	if len(lines) < 3 {
+		t.Fatalf("expected headline + reason + expectation lines, got %d: %v", len(lines), lines)
+	}
+	// Strip ANSI, join, and collapse whitespace: wrapping inserts line breaks
+	// and indent inside the text, so we compare word sequences, not raw bytes.
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(ansi.Strip(l))
+		b.WriteByte(' ')
+	}
+	full := collapseWS(b.String())
+	if !strings.Contains(full, collapseWS(reason)) {
+		t.Errorf("reason words lost in wrapping.\n want: %q\n got: %q", reason, full)
+	}
+	if !strings.Contains(full, collapseWS(expectation)) {
+		t.Errorf("expectation words lost in wrapping.\n want: %q\n got: %q", expectation, full)
+	}
+}
+
+// collapseWS reduces every run of whitespace to a single space so a wrapped
+// string can be compared to its unwrapped source by word sequence.
+func collapseWS(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// TestMarker_NoReasonStaysSingleLine ensures a marker with no reason or
+// expectation still renders as a compact single line.
+func TestMarker_NoReasonStaysSingleLine(t *testing.T) {
+	status := goal.GoalActive
+	actor := goal.GoalActorModel
+	m := NewMarker(&goal.GoalChange{Status: &status, Actor: &actor})
+	if got := m.Render(80); len(got) != 1 {
+		t.Errorf("expected 1 line for reason-less marker, got %d: %v", len(got), got)
+	}
 }

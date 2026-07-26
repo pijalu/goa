@@ -40,3 +40,12 @@ All items below were fixed, tested, and validated this session.
 - Consumers rewired: `presets.go`, `env_keys.go`, `compat_detect.go`, `manager.go`, `agentic_constants.go`, `modelsdev.go`.
 - Behavior preserved: all `TestDetectOpenAICompat_*` (incl. URL-only nvidia/ant-ling/cerebras fallback), `TestPresetProviders_*`, catalog tests (`NoDuplicateIDs`, `LookupProviderDef`, `MatchProviderByNameOrURL_Poolside/ZaiPrecedence`) green. `isNonStandard` gocyclo brought under budget via `anyTrue`.
 - Verified: full provider+config tree race+cover green; vet/staticcheck/gocognit/gocyclo clean.
+
+---
+
+### B1. Goal block truncates reason/expectation — user can't see why goal blocked ✅
+- **Observed**: `◦ Goal blocked by the agent (ctrl+o: P1B parser/engine fixes complete (Steps 2-4 done, WINDOW clause fixed, CTE+VALUES` — reason/expectation cut off mid-sentence; the "ctrl+o" hint implied expansion that didn't exist.
+- **Root cause** (`tui/goal/markers.go`): `Render` returned ONE line; `headline()` inlined reason+expectation, and `padToWidth` byte-sliced the raw string (`return s[:width]`), truncating text mid-word and mid-ANSI-escape. `HandleInput` was a no-op, so the ctrl+o hint was a lie.
+- **Fix**: headline = status+actor only; reason & expectation now render as separate `ansi.Wrap`-wrapped, indented detail lines. No truncation; removed the false ctrl+o affordance.
+- **Regression tests**: `TestMarker_BlockedShowsFullReasonAndExpectation` (full long reason+expectation survive wrapping), `TestMarker_NoReasonStaysSingleLine`, updated `TestMarker_Paused`. Filmstrip-validated render @ width 80 (guideline #5).
+- **Verified**: `go test ./tui/goal/` green, race+cover 94.9%, vet/staticcheck/gocognit/gocyclo clean.

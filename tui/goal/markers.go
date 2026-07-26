@@ -21,12 +21,44 @@ func NewMarker(change *goal.GoalChange) *MarkerComponent {
 	return &MarkerComponent{change: change}
 }
 
-// Render returns the marker line.
+// Render returns the marker lines: a compact headline (status + actor), then
+// the reason and expectation each word-wrapped onto their own indented lines
+// so a long explanation is never truncated to fit one line.
 func (m *MarkerComponent) Render(width int) []string {
 	if m.change == nil {
 		return nil
 	}
-	return []string{padToWidth(m.headline(), width)}
+	lines := []string{padToWidth(m.headline(), width)}
+	lines = append(lines, m.detailLines(width)...)
+	return lines
+}
+
+// detailLines renders the change's reason and expectation as indented,
+// word-wrapped lines. A marker with neither yields no extra lines.
+func (m *MarkerComponent) detailLines(width int) []string {
+	var out []string
+	if m.change.Reason != nil && *m.change.Reason != "" {
+		out = append(out, wrapDetail(*m.change.Reason, width)...)
+	}
+	if m.change.Expectation != nil && *m.change.Expectation != "" {
+		out = append(out, wrapDetail("needs: "+*m.change.Expectation, width)...)
+	}
+	return out
+}
+
+// wrapDetail wraps one detail string to width, indenting continuation so the
+// block reads as belonging to the headline above. Detail text is dimmed.
+func wrapDetail(text string, width int) []string {
+	const indent = "  "
+	inner := width - len(indent)
+	if inner < 1 {
+		inner = 1
+	}
+	var out []string
+	for _, wl := range ansi.Wrap(text, inner) {
+		out = append(out, indent+ansi.Faint+wl+ansi.Reset)
+	}
+	return out
 }
 
 // HandleInput is a no-op.
@@ -54,12 +86,6 @@ func (m *MarkerComponent) headline() string {
 	line := fmt.Sprintf("◦ Goal %s", status)
 	if actor != "" {
 		line += " " + actor
-	}
-	if m.change.Reason != nil && *m.change.Reason != "" {
-		line += fmt.Sprintf("            (ctrl+o: %s)", *m.change.Reason)
-	}
-	if m.change.Expectation != nil && *m.change.Expectation != "" {
-		line += fmt.Sprintf(" — needs: %s", *m.change.Expectation)
 	}
 	return m.color() + ansi.Bold + line + ansi.BoldReset + ansi.Reset
 }
