@@ -652,7 +652,6 @@ creation the model can declare whether the goal runs with a CLEAN/NEW context
 ---
 
 ### ✅ IMPLEMENTED — FEATURE/TODO: Framework-managed todo list for goals (goal→todo decomposition + auto check-off)
-
 **What shipped:** a goal-owned, durable, framework-managed todo list.
 
 1. **Model & storage** — `GoalTodoItem` (core/goal/todo.go) with pending /

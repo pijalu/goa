@@ -242,6 +242,7 @@ type scalarFlags struct {
 	maxToolRepeatConsecutive   *int
 	maxToolCalls               *int
 	maxStreamRounds            *int
+	maxConsecutiveToolRounds   *int
 	toolCallLimitResetWindow   *int
 	reasoning                  *bool
 	showThinking               *bool
@@ -287,6 +288,7 @@ func defineScalarFlags() scalarFlags {
 		maxToolRepeatConsecutive: flag.Int("max-tool-repeat-consecutive", 0, "Override max consecutive identical tool calls"),
 		maxToolCalls:             flag.Int("max-tool-calls", 0, "Override max duplicate tool calls within the rolling window"),
 		maxStreamRounds:          flag.Int("max-stream-rounds", 0, "Override max LLM stream rounds per turn (0 = unlimited)"),
+		maxConsecutiveToolRounds: flag.Int("max-consecutive-tool-rounds", 0, "Override max consecutive tool-only rounds before forced-answer nudge (0 = disabled, default 15)"),
 		toolCallLimitResetWindow: flag.Int("tool-call-limit-reset-window", 0, "Override tool-call duplicate rolling-window size"),
 		reasoning:                flag.Bool("reasoning", false, "Enable model reasoning"),
 		showThinking:             flag.Bool("show-thinking", false, "Show main-agent thinking blocks"),
@@ -387,6 +389,9 @@ func (s scalarFlags) collectInto(flags map[string]string) {
 	}
 	if *s.maxStreamRounds != 0 {
 		flags["max_stream_rounds"] = strconv.Itoa(*s.maxStreamRounds)
+	}
+	if *s.maxConsecutiveToolRounds != 0 {
+		flags["max_consecutive_tool_rounds"] = strconv.Itoa(*s.maxConsecutiveToolRounds)
 	}
 	if *s.toolCallLimitResetWindow != 0 {
 		flags["tool_call_limit_reset_window"] = strconv.Itoa(*s.toolCallLimitResetWindow)

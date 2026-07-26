@@ -47,6 +47,12 @@ execution:
   # Number of recent tool calls inspected for the duplicate-window limit above.
   # A call outside this window is no longer counted as a duplicate.
   tool_call_limit_reset_window: 10
+  # Maximum number of consecutive LLM rounds that end with tool calls and
+  # no visible text or thinking before a forced-answer nudge is injected.
+  # Thinking-heavy models (DeepSeek, Qwen, Claude with extended thinking)
+  # may need a higher value or 0 (disabled) to avoid mid-task interruption.
+  # 0 = disabled, default: 15.
+  max_consecutive_tool_rounds: 15
   # Local models (LM Studio, Ollama, etc.) sometimes emit tool calls as XML
   # markup inside content or reasoning streams instead of native tool_calls.
   # Auto-heal extracts and executes these malformed calls so the turn keeps

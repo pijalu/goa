@@ -103,14 +103,16 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 
 // trackToolCallingRound updates the consecutive tool-calling round streak
 // after a round that ended with tool calls. A round that streamed visible
-// text (contentBuf non-empty) is NOT a silent tool round — the user saw an
-// answer fragment — so it resets the streak instead of incrementing it.
-// Only tool-call-only rounds count toward the forced-answer hint.
+// text (contentBuf non-empty) OR thinking tokens (thinkingBuf non-empty) is
+// NOT a silent tool round — the model was actively reasoning — so it resets
+// the streak instead of incrementing it. Only tool-call-only rounds with no
+// reasoning or visible output count toward the forced-answer hint.
 func (a *Agent) trackToolCallingRound() {
 	a.mu.Lock()
 	hadContent := a.contentBuf.Len() > 0
+	hadThinking := a.thinkingBuf.Len() > 0
 	a.mu.Unlock()
-	if hadContent {
+	if hadContent || hadThinking {
 		a.mu.Lock()
 		a.consecutiveToolRounds = 0
 		a.mu.Unlock()
