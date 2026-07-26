@@ -515,6 +515,7 @@ func (cl *CascadeLoader) applyExecutionCLIOverrides(cfg *Config) {
 	cl.applyIntCLIOverride("max_tool_repeat_consecutive", &cfg.Execution.MaxToolRepeatConsecutive)
 	cl.applyIntCLIOverride("max_tool_calls", &cfg.Execution.MaxToolCalls)
 	cl.applyIntCLIOverride("max_stream_rounds", &cfg.Execution.MaxStreamRounds)
+	cl.applyIntCLIOverride("max_consecutive_tool_rounds", &cfg.Execution.MaxConsecutiveToolRounds)
 	cl.applyIntCLIOverride("tool_call_limit_reset_window", &cfg.Execution.ToolCallLimitResetWindow)
 	cl.applyCompressionCLIOverride(cfg)
 }

@@ -716,9 +716,12 @@ const metaSteeringDrained = "steering_drained"
 // turns. Use for transient nudges (e.g. the recovery hint); use
 // InjectSystemMessage for durable runtime notices (tool changes).
 //
-// The message is deliberately NOT emitted to observers: it is an internal
-// control nudge for the model, and rendering it would confuse the user (the
-// model also tends to parrot it as a user-facing "budget" status).
+// The message is deliberately NOT emitted to observers as a content event:
+// it is an internal control nudge for the model, and rendering it as a
+// message bubble would confuse the user (the model also tends to parrot it
+// as a user-facing "budget" status). However, host control notes (prefixed
+// with "[goa-system]") DO emit an EventProgress so the user sees a visible
+// notification that a guardrail fired.
 func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	msg := Message{
 		Type:     Content,
@@ -729,6 +732,17 @@ func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	a.mu.Lock()
 	a.history = append(a.history, msg)
 	a.mu.Unlock()
+
+	// Emit a visible progress event for host control notes so the user is
+	// not left wondering why the model stopped or changed behavior. The
+	// event is transient (not part of conversation history) and shows in
+	// the TUI status area.
+	if strings.HasPrefix(content, "[goa-system]") {
+		a.emitEvent(OutputEvent{
+			Type: EventProgress,
+			Text: "System guardrail: model told to wrap up or adjust behavior.",
+		})
+	}
 }
 
 // stripEphemeralSystemMessages removes ephemeral system messages from history.

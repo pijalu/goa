@@ -111,6 +111,7 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"execution.max_tool_repeat_total", "integer"},
 		{"execution.max_tool_repeat_consecutive", "integer"},
 		{"execution.max_tool_repeat", "integer"},
+		{"execution.max_consecutive_tool_rounds", "integer (0 = disabled, default 15)"},
 		{"tui.theme", "dark | light"},
 		{"tui.spinner", "spinner name or none"},
 		{"tui.transparency.show_thinking", "true | false"},

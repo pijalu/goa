@@ -34,7 +34,7 @@ Copyright (C) 2026 Pierre Poissinger
    byte-prefix of request N+1, and by watching CH% climb in real sessions.
 
  *At the end of the session*: the list should be empty and this file should only contain the guidelines for bug reporting.
-If new items are added, restart the process.
+ If new items are added, restart the process.
 
 ## STOP CONDITION (binding — an agent working this file must not stop early)
 An agent working this file may ONLY stop when ALL of the following hold:
@@ -53,9 +53,8 @@ A turn that ends with open items, an untested fix, or an unrecorded newly-found 
 7. Run the code-quality checks from guideline #6 separately and confirm the fix does not introduce new violations.
 8. Move the bug list to `docs/archive/bugs.<fixdate>.md` when all items are closed.
 
-
 ---
 
 ## Open Items
 
-*(none — all items closed and archived to `docs/archive/bugs.20260725.md` on 2026-07-25)*
+*(none — all items fixed and archived to `docs/archive/bugs.2026-07-26.md`)*

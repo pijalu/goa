@@ -156,6 +156,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		MaxToolRepeatConsecutive: cfg.Execution.MaxToolRepeatConsecutive,
 		MaxToolCalls:             cfg.Execution.MaxToolCalls,
 		MaxStreamRounds:          cfg.Execution.MaxStreamRounds,
+		MaxConsecutiveToolRounds: cfg.Execution.MaxConsecutiveToolRounds,
 		DisableToolBudget:        am.disableToolBudget || cfg.Execution.DisableToolBudget,
 		ToolCallLimitResetWindow: cfg.Execution.ToolCallLimitResetWindow,
 		AutoHealToolCalls:        cfg.Execution.AutoHealToolCalls,

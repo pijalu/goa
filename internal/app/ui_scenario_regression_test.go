@@ -245,6 +245,54 @@ func TestUIScenario_FilmstripIsANSIFreeForAgentIntrospection(t *testing.T) {
 	}
 }
 
+// TestUIScenario_GuardrailNotificationVisible verifies that when a
+// forced-answer nudge fires (host control note injected), the user sees a
+// visible notification in the TUI status area — not just a silent model-side
+// nudge. This is the TUI-layer counterpart to the agent-layer test
+// TestInjectEphemeralSystemMessage_EmitsProgressEvent.
+func TestUIScenario_GuardrailNotificationVisible(t *testing.T) {
+	sc := newUIScenario(t, 100, 24)
+
+	// Simulate the guardrail progress event that InjectEphemeralSystemMessage
+	// emits when a [goa-system] control note is injected.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, State: agentic.StateThinking, Text: "Let me search for more files."})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall, ToolName: "search", ToolInput: `{"pattern":"*.go"}`, ToolCallID: "call_1"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult, ToolName: "search", ToolCallID: "call_1", Text: "found 5 files"})
+
+	// The guardrail fires: a progress event appears in the status area.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventProgress, Text: "System guardrail: model told to wrap up or adjust behavior."})
+
+	// Verify the guardrail text is visible in the status area.
+	statusAfterGuardrail := sc.statusText()
+	if !strings.Contains(statusAfterGuardrail, "guardrail") {
+		t.Errorf("expected guardrail text in status area, got %q", statusAfterGuardrail)
+	}
+
+	// Verify the filmstrip records the progress step with the guardrail text.
+	film := sc.filmstrip()
+	trace := film.StatusTrace()
+	found := false
+	for _, s := range trace {
+		if strings.Contains(s, "guardrail") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'guardrail' in status trace, got %v", trace)
+	}
+
+	// Verify no EventContent was emitted for the control note (it should NOT
+	// appear as a chat bubble).
+	for _, f := range film.Frames() {
+		visible := strings.Join(f.Frame.Visible, "\n")
+		if strings.Contains(visible, "[goa-system]") {
+			t.Errorf("control note leaked into chat viewport: %s", visible)
+		}
+	}
+}
+
 // Compile-time assertion that the harness exposes the tui.Filmstrip type so
 // external tooling can depend on it.
 var _ *tui.Filmstrip = (*tui.Filmstrip)(nil)

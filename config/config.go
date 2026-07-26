@@ -93,6 +93,7 @@ type ExecutionConfig struct {
 	DisableToolBudget        bool                   `yaml:"disable_tool_budget"`
 	ToolCallLimitResetWindow int                    `yaml:"tool_call_limit_reset_window"`
 	MaxStreamRounds          int                    `yaml:"max_stream_rounds"`
+	MaxConsecutiveToolRounds int                    `yaml:"max_consecutive_tool_rounds"`
 	AutoHealToolCalls        bool                   `yaml:"auto_heal_tool_calls"`
 	ThinkingStallWarnSeconds int                    `yaml:"thinking_stall_warn_seconds"`
 	ThinkingStallStopSeconds int                    `yaml:"thinking_stall_stop_seconds"`

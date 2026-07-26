@@ -401,6 +401,72 @@ func TestCascadeEnvNested(t *testing.T) {
 	}
 }
 
+// TestCascadeEnvNested_MaxConsecutiveToolRounds verifies the env var for
+// the max_consecutive_tool_rounds key loads correctly.
+func TestCascadeEnvNested_MaxConsecutiveToolRounds(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	t.Setenv("HOME", homeDir)
+	t.Setenv("GOA_EXECUTION_MAX_CONSECUTIVE_TOOL_ROUNDS", "30")
+
+	loader := NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Execution.MaxConsecutiveToolRounds != 30 {
+		t.Errorf("MaxConsecutiveToolRounds = %d, want 30", cfg.Execution.MaxConsecutiveToolRounds)
+	}
+}
+
+// TestCascadeCLIOverride_MaxConsecutiveToolRounds verifies the CLI flag
+// override for max_consecutive_tool_rounds.
+func TestCascadeCLIOverride_MaxConsecutiveToolRounds(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	t.Setenv("HOME", homeDir)
+
+	cliFlags := map[string]string{
+		"max_consecutive_tool_rounds": "25",
+	}
+
+	loader := NewCascadeLoader(projectDir, "", cliFlags)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Execution.MaxConsecutiveToolRounds != 25 {
+		t.Errorf("MaxConsecutiveToolRounds = %d, want 25", cfg.Execution.MaxConsecutiveToolRounds)
+	}
+}
+
+// TestCascadeYAML_MaxConsecutiveToolRounds verifies the YAML config key
+// loads correctly.
+func TestCascadeYAML_MaxConsecutiveToolRounds(t *testing.T) {
+	homeDir, projectDir, cleanup := setupTestConfig(t)
+	defer cleanup()
+
+	t.Setenv("HOME", homeDir)
+
+	writeConfig(t, filepath.Join(projectDir, ".goa", "config.yaml"), `execution:
+  max_consecutive_tool_rounds: 20
+`)
+
+	loader := NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Execution.MaxConsecutiveToolRounds != 20 {
+		t.Errorf("MaxConsecutiveToolRounds = %d, want 20", cfg.Execution.MaxConsecutiveToolRounds)
+	}
+}
+
 // TestFirstRunDetection verifies first-run detection.
 func TestFirstRunDetection(t *testing.T) {
 	homeDir, projectDir, cleanup := setupTestConfig(t)
