@@ -4,6 +4,8 @@
 
 package config
 
+import "github.com/pijalu/goa/internal/agentic/provider/schema"
+
 // Agentic provider identifiers. These mirror the constants in
 // github.com/pijalu/goa/internal/agentic/provider so Goa's config and wizard can refer
 // to them without importing the provider package everywhere.
@@ -97,33 +99,15 @@ const (
 	AgenticSkillModeInline   = "inline"
 )
 
-// ValidAgenticProviders returns the set of provider identifiers supported by agentic.
+// ValidAgenticProviders returns the set of provider identifiers supported by
+// agentic. Derived from the provider catalog (single source of truth).
 func ValidAgenticProviders() []string {
-	return []string{
-		AgenticProviderOpenAI,
-		AgenticProviderAnthropic,
-		AgenticProviderGoogle,
-		AgenticProviderMistral,
-		AgenticProviderAWS,
-		AgenticProviderAzure,
-		AgenticProviderGitHub,
-		AgenticProviderTogether,
-		AgenticProviderFireworks,
-		AgenticProviderGroq,
-		AgenticProviderPerplexity,
-		AgenticProviderDeepSeek,
-		AgenticProviderOpenRouter,
-		AgenticProviderLMStudio,
-		AgenticProviderOllama,
-		AgenticProviderKimi,
-		AgenticProviderKimiCode,
-		AgenticProviderZai,
-		AgenticProviderZaiApi,
-		AgenticProviderOpenCode,
-		AgenticProviderOpenCodeGo,
-		AgenticProviderPoolside,
-		AgenticProviderCustom,
+	cat := schema.ProviderCatalog()
+	out := make([]string, 0, len(cat))
+	for _, d := range cat {
+		out = append(out, string(d.Provider))
 	}
+	return out
 }
 
 // ValidAgenticAPIs returns the set of API identifiers supported by agentic.

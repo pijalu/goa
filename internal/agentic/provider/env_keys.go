@@ -7,6 +7,8 @@ package provider
 import (
 	"os"
 	"strings"
+
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 // GetEnvAPIKey returns the API key for the given provider by checking
@@ -25,33 +27,31 @@ func GetEnvAPIKey(provider Provider) string {
 }
 
 // providerEnvVars maps known providers to their env var names (priority order).
-var providerEnvVars = map[Provider][]string{
-	ProviderAnthropic:  {"ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"},
-	ProviderOpenAI:     {"OPENAI_API_KEY"},
-	ProviderGoogle:     {"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"},
-	ProviderMistral:    {"MISTRAL_API_KEY"},
-	ProviderAWS:        {"AWS_ACCESS_KEY_ID"},
-	ProviderAzure:      {"AZURE_OPENAI_API_KEY", "AZURE_API_KEY"},
-	ProviderGitHub:     {"COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"},
-	ProviderTogether:   {"TOGETHER_API_KEY"},
-	ProviderFireworks:  {"FIREWORKS_API_KEY"},
-	ProviderGroq:       {"GROQ_API_KEY"},
-	ProviderPerplexity: {"PERPLEXITY_API_KEY"},
-	ProviderDeepSeek:   {"DEEPSEEK_API_KEY"},
-	ProviderOpenRouter: {"OPENROUTER_API_KEY"},
-	ProviderOpenCode:   {"OPENCODE_API_KEY"},
-	ProviderOpenCodeGo: {"OPENCODE_API_KEY"},
-	ProviderKimi:       {"MOONSHOT_API_KEY", "KIMI_API_KEY"},
-	ProviderKimiCode:   {"KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"},
-	ProviderZai:        {"ZAI_API_KEY"},
-	ProviderZaiApi:     {"ZAI_API_KEY"},
-	ProviderPoolside:   {"POOLSIDE_API_KEY"},
+// Derived from the catalog (schema.ProviderCatalog); providers without a
+// catalog entry fall back to {PROVIDER_UPPER}_API_KEY in envVarsForProvider.
+var providerEnvVars = buildProviderEnvVars()
+
+func buildProviderEnvVars() map[Provider][]string {
+	m := make(map[Provider][]string, len(schema.ProviderCatalog()))
+	for _, d := range schema.ProviderCatalog() {
+		if len(d.EnvKeys) > 0 {
+			m[d.Provider] = d.EnvKeys
+		}
+	}
+	return m
 }
 
-// localProviders need no API key.
-var localProviders = map[Provider]bool{
-	ProviderLMStudio: true,
-	ProviderOllama:   true,
+// localProviders need no API key. Derived from catalog Local flag.
+var localProviders = buildLocalProviders()
+
+func buildLocalProviders() map[Provider]bool {
+	m := make(map[Provider]bool)
+	for _, d := range schema.ProviderCatalog() {
+		if d.Compat.Local {
+			m[d.Provider] = true
+		}
+	}
+	return m
 }
 
 // envVarsForProvider returns the environment variable names to check for a

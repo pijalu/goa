@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 	_ "github.com/pijalu/goa/internal/agentic/provider/openai"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/auth"
 )
 
@@ -360,8 +362,8 @@ func setModelBaseURL(mdl *agenticprovider.Model, endpoint string, api agenticpro
 // applyModelConfigCapabilities applies model-level overrides from config onto
 // a registry model without replacing its built-in capabilities.
 func applyModelConfigCapabilities(mdl *agenticprovider.Model, mCfg config.ModelConfig, api agenticprovider.Api) {
-	if mCfg.Reasoning {
-		mdl.Reasoning = true
+	if mCfg.Reasoning != nil {
+		mdl.Reasoning = *mCfg.Reasoning
 	}
 	if budgets := effectiveThinkingBudgets(mCfg); len(budgets) > 0 {
 		mdl.ThinkingBudgets = budgets
@@ -400,28 +402,18 @@ func applyProviderExtra(mdl *agenticprovider.Model, pCfg config.ProviderConfig) 
 // ID. When a model name like "google/gemma-4-e4b" is not found in the
 // registry, stripping the known provider prefix lets us match the bare model ID
 // (e.g., "gemma-4-e4b") and still use the active provider's endpoint.
-var knownProviderPrefixes = []string{
-	string(agenticprovider.ProviderOpenAI),
-	string(agenticprovider.ProviderAnthropic),
-	string(agenticprovider.ProviderGoogle),
-	string(agenticprovider.ProviderMistral),
-	string(agenticprovider.ProviderAWS),
-	string(agenticprovider.ProviderAzure),
-	string(agenticprovider.ProviderGitHub),
-	string(agenticprovider.ProviderTogether),
-	string(agenticprovider.ProviderFireworks),
-	string(agenticprovider.ProviderGroq),
-	string(agenticprovider.ProviderPerplexity),
-	string(agenticprovider.ProviderDeepSeek),
-	string(agenticprovider.ProviderOpenRouter),
-	string(agenticprovider.ProviderLMStudio),
-	string(agenticprovider.ProviderOllama),
-	string(agenticprovider.ProviderKimi),
-	string(agenticprovider.ProviderKimiCode),
-	string(agenticprovider.ProviderZai),
-	string(agenticprovider.ProviderZaiApi),
-	string(agenticprovider.ProviderPoolside),
-	string(agenticprovider.ProviderCustom),
+// Derived from the provider catalog (single source of truth).
+var knownProviderPrefixes = buildKnownProviderPrefixes()
+
+func buildKnownProviderPrefixes() []string {
+	cat := schema.ProviderCatalog()
+	out := make([]string, 0, len(cat))
+	for _, d := range cat {
+		if d.Provider != "" {
+			out = append(out, string(d.Provider))
+		}
+	}
+	return out
 }
 
 // stripKnownProviderPrefix returns the part of name after a leading known
@@ -519,7 +511,12 @@ func applyModelConfigToFallback(mdl *agenticprovider.Model, mCfg config.ModelCon
 	if mCfg.ContextWindow > 0 {
 		mdl.ContextWindow = mCfg.ContextWindow
 	}
-	if mCfg.Reasoning {
+	// Reasoning defaults to enabled when omitted: most models emit thinking
+	// blocks when asked, so an unset config should not suppress them. An
+	// explicit `reasoning: false` still disables.
+	if mCfg.Reasoning != nil {
+		mdl.Reasoning = *mCfg.Reasoning
+	} else {
 		mdl.Reasoning = true
 	}
 	if mCfg.ThinkingLevel != "" {
@@ -607,24 +604,40 @@ func uniformThinkingBudgets(budget int) agenticprovider.ThinkingBudgets {
 
 // parseCompatJSON unmarshals a provider compat JSON blob into the concrete
 // compat type for the given API. Unknown APIs return the raw string.
-var endpointHeuristics = []struct {
+//
+// endpointHeuristics maps endpoint URL substrings to provider identity, used
+// when a provider config has no explicit Provider field. Derived from the
+// provider catalog URLPatterns (single source of truth); catalog order
+// defines precedence so substring-superset endpoints (z.ai coding ⊃ z.ai
+// general, kimi coding ⊃ moonshot) resolve to the more-specific identity.
+var endpointHeuristics = buildEndpointHeuristics()
+
+type endpointHeuristic struct {
 	pattern  string
 	provider agenticprovider.Provider
 	api      agenticprovider.Api
-}{
-	{"localhost:1234", agenticprovider.ProviderLMStudio, agenticprovider.ApiOpenAICompletions},
-	{"127.0.0.1:1234", agenticprovider.ProviderLMStudio, agenticprovider.ApiOpenAICompletions},
-	{"localhost:11434", agenticprovider.ProviderOllama, agenticprovider.ApiOpenAICompletions},
-	{"127.0.0.1:11434", agenticprovider.ProviderOllama, agenticprovider.ApiOpenAICompletions},
-	{"api.moonshot.cn", agenticprovider.ProviderKimi, agenticprovider.ApiOpenAICompletions},
-	{"api.moonshot.ai", agenticprovider.ProviderKimi, agenticprovider.ApiOpenAICompletions},
-	{"api.kimi.com/coding", agenticprovider.ProviderKimiCode, agenticprovider.ApiOpenAICompletions},
-	// Coding endpoint first: it is a substring-superset of the general one.
-	{"api.z.ai/api/coding", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
-	{"api.z.ai", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
-	{"open.bigmodel.cn/api/coding", agenticprovider.ProviderZai, agenticprovider.ApiOpenAICompletions},
-	{"open.bigmodel.cn", agenticprovider.ProviderZaiApi, agenticprovider.ApiOpenAICompletions},
-	{"inference.poolside.ai", agenticprovider.ProviderPoolside, agenticprovider.ApiOpenAICompletions},
+}
+
+func buildEndpointHeuristics() []endpointHeuristic {
+	var out []endpointHeuristic
+	for _, d := range schema.ProviderCatalog() {
+		api := d.API
+		if api == "" {
+			api = agenticprovider.ApiOpenAICompletions
+		}
+		for _, pat := range d.URLPatterns {
+			out = append(out, endpointHeuristic{pattern: pat, provider: d.Provider, api: api})
+		}
+	}
+	// Most-specific pattern first: a longer URL pattern is always a more
+	// precise identity (e.g. "api.z.ai/api/coding" ⊃ "api.z.ai",
+	// "opencode.ai/zen/go" ⊃ "opencode.ai"). Sorting by descending length
+	// makes precedence independent of catalog declaration order. Stable sort
+	// keeps catalog order among equal-length patterns.
+	sort.SliceStable(out, func(i, j int) bool {
+		return len(out[i].pattern) > len(out[j].pattern)
+	})
+	return out
 }
 
 func matchProviderEndpoint(endpoint string) (agenticprovider.Provider, agenticprovider.Api) {

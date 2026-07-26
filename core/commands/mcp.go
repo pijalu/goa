@@ -34,6 +34,7 @@ var mcpSubcommands = []struct {
 	desc  string
 }{
 	{"list", "List MCP servers and their status"},
+	{"wizard", "Interactive wizard to add/edit/delete MCP servers"},
 	{"add", "Add an MCP server (url or command) and connect it"},
 	{"remove", "Remove an MCP server"},
 	{"enable", "Enable and connect an MCP server"},
@@ -80,6 +81,9 @@ func (c *MCPCommand) Run(ctx core.Context, args []string) error {
 	switch sub {
 	case "list", "ls":
 		return c.list(ctx)
+	case "wizard", "wiz", "edit":
+		runMCPWizard(ctx)
+		return nil
 	case "add":
 		return c.add(ctx, rest)
 	case "remove", "rm":
@@ -93,7 +97,7 @@ func (c *MCPCommand) Run(ctx core.Context, args []string) error {
 	case "debug":
 		return c.debug(ctx, rest)
 	default:
-		return fmt.Errorf("unknown /mcp subcommand %q (use list, add, remove, enable, disable, reconnect, debug)", sub)
+		return fmt.Errorf("unknown /mcp subcommand %q (use list, wizard, add, remove, enable, disable, reconnect, debug)", sub)
 	}
 }
 
@@ -253,6 +257,29 @@ func putKV(m map[string]string, kv string) error {
 		return fmt.Errorf("invalid KEY=VALUE: %q", kv)
 	}
 	m[kv[:i]] = kv[i+1:]
+	return nil
+}
+
+// upsertMCPServer persists srv under name and connects it, reusing the exact
+// /mcp:add code path (upsert → persist → connect → refresh agent tools). The
+// interactive wizard calls this so its save behavior is byte-identical to
+// /mcp:add for an existing or new name.
+func upsertMCPServer(ctx core.Context, name string, cfg config.MCPServerConfig) error {
+	if ctx.Config.MCP == nil {
+		ctx.Config.MCP = map[string]config.MCPServerConfig{}
+	}
+	ctx.Config.MCP[name] = cfg
+	if err := saveMCPFieldValue(ctx, false, []string{"mcp", name}, cfg); err != nil {
+		return fmt.Errorf("server saved in memory but failed to persist: %w", err)
+	}
+	// Connect only when the manager is available and the server is enabled;
+	// a disabled server is persisted but left disconnected (matches /mcp:add
+	// of an enabled server; /mcp:disable handles the disabled case).
+	if cfg.IsEnabled() {
+		if err := (&MCPCommand{}).connectServer(ctx, name, cfg); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

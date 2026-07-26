@@ -4,7 +4,11 @@
 
 package provider
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
+)
 
 // ---------------------------------------------------------------------------
 // Provider fingerprint helpers
@@ -27,13 +31,18 @@ type providerFingerprint struct {
 	isLMStudio     bool
 	isOllama       bool
 	isPoolside     bool
+	// def is the matched catalog entry (nil when nothing matched). Compat
+	// behavior below prefers catalog data; the bools above remain for the
+	// handful of non-catalog providers (cloudflare, nvidia, ant-ling, grok,
+	// cerebras, chutes) that are matched by URL only.
+	def *schema.ProviderDef
 }
 
 func fingerprintProvider(providerName Provider, baseURL string) providerFingerprint {
 	url := strings.ToLower(baseURL)
 	p := strings.ToLower(string(providerName))
 
-	return providerFingerprint{
+	fp := providerFingerprint{
 		isZai:          matchesProviderOrURL(p, url, "zai", "zai-api", "zai-coding", "zai-coding-cn", "zai-coding-plan", "api.z.ai", "open.bigmodel.cn"),
 		isTogether:     matchesProviderOrURL(p, url, "together", "api.together.ai", "api.together.xyz"),
 		isMoonshot:     matchesProviderOrURL(p, url, "moonshotai", "moonshotai-cn", "api.moonshot."),
@@ -51,6 +60,8 @@ func fingerprintProvider(providerName Provider, baseURL string) providerFingerpr
 		isOllama:       matchesProviderOrURL(p, url, "ollama", "localhost:11434"),
 		isPoolside:     matchesProviderOrURL(p, url, "poolside", "inference.poolside.ai"),
 	}
+	fp.def = schema.MatchProviderByNameOrURL(schema.Provider(providerName), baseURL)
+	return fp
 }
 
 // matchesProviderOrURL returns true if providerName matches any of the given
@@ -74,7 +85,7 @@ func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 	fp := fingerprintProvider(model.Provider, model.BaseURL)
 
 	cacheControlFormat := ""
-	if fp.isOpenRouter || fp.isLMStudio || fp.isOllama {
+	if fp.isOpenRouter || fp.isLMStudio || fp.isOllama || (fp.def != nil && fp.def.Compat.AnthropicCacheControl) {
 		cacheControlFormat = "anthropic"
 	}
 
@@ -95,7 +106,7 @@ func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 		RequiresReasoningContentOnAssistantMessages: boolPtr(fp.isDeepSeek),
 		ThinkingFormat:                              strPtr(fp.detectThinkingFormat()),
 		ZaiToolStream:                               boolPtr(false),
-		SupportsStrictMode:                          boolPtr(!fp.isMoonshot && !fp.isTogether && !fp.isCloudflareAG && !fp.isNvidia),
+		SupportsStrictMode:                          boolPtr(fp.supportsStrictMode()),
 		CacheControlFormat:                          strPtr(cacheControlFormat),
 		SendSessionAffinityHeaders:                  boolPtr(false),
 		SupportsLongCacheRetention:                  boolPtr(fp.supportsCacheRetention()),
@@ -110,6 +121,9 @@ func (fp providerFingerprint) needsToolResultAsUser(modelID string) bool {
 	}
 	// Local servers often host Gemma/Qwen-style models that also prefer
 	// tool results formatted as user messages.
+	if fp.def != nil && fp.def.Compat.ToolResultAsUser {
+		return true
+	}
 	if fp.isLMStudio || fp.isOllama {
 		return true
 	}
@@ -117,17 +131,40 @@ func (fp providerFingerprint) needsToolResultAsUser(modelID string) bool {
 }
 
 func (fp providerFingerprint) isNonStandard() bool {
-	return fp.isNvidia || fp.isCerebras || fp.isGrok || fp.isTogether ||
-		fp.isChutes || fp.isDeepSeek || fp.isZai || fp.isMoonshot ||
-		fp.isOpenCode || fp.isCloudflareWA || fp.isCloudflareAG || fp.isAntLing ||
-		fp.isPoolside
+	if fp.def != nil && fp.def.Compat.NonStandard {
+		return true
+	}
+	// URL-only providers without a catalog entry (cloudflare, nvidia, ...).
+	return anyTrue(
+		fp.isNvidia, fp.isCerebras, fp.isGrok, fp.isTogether, fp.isChutes,
+		fp.isDeepSeek, fp.isZai, fp.isMoonshot, fp.isOpenCode,
+		fp.isCloudflareWA, fp.isCloudflareAG, fp.isAntLing, fp.isPoolside,
+	)
+}
+
+// anyTrue reports whether any of the given flags is set. Keeps the compat
+// decision functions within their complexity budget as the catalog grows.
+func anyTrue(flags ...bool) bool {
+	for _, f := range flags {
+		if f {
+			return true
+		}
+	}
+	return false
 }
 
 func (fp providerFingerprint) useMaxTokens() bool {
+	if fp.def != nil && fp.def.Compat.UseMaxTokens {
+		return true
+	}
 	return fp.isChutes || fp.isMoonshot || fp.isCloudflareAG || fp.isTogether || fp.isNvidia || fp.isAntLing
 }
 
 func (fp providerFingerprint) detectThinkingFormat() string {
+	// Catalog is authoritative: an explicit template ThinkingFormat wins.
+	if fp.def != nil && fp.def.Compat.ThinkingFormat != "" {
+		return fp.def.Compat.ThinkingFormat
+	}
 	switch {
 	case fp.isDeepSeek:
 		return "deepseek"
@@ -154,12 +191,25 @@ func (fp providerFingerprint) supportsDeveloperRole() bool {
 }
 
 func (fp providerFingerprint) supportsReasoningEffort() bool {
+	if fp.def != nil && fp.def.Compat.NoReasoningEffort {
+		return false
+	}
 	return !fp.isGrok && !fp.isZai && !fp.isMoonshot && !fp.isTogether &&
 		!fp.isCloudflareAG && !fp.isNvidia && !fp.isAntLing
 }
 
 func (fp providerFingerprint) supportsCacheRetention() bool {
+	if fp.def != nil && fp.def.Compat.NoCacheRetention {
+		return false
+	}
 	return !fp.isTogether && !fp.isCloudflareWA && !fp.isCloudflareAG && !fp.isNvidia && !fp.isAntLing
+}
+
+func (fp providerFingerprint) supportsStrictMode() bool {
+	if fp.def != nil && fp.def.Compat.NoStrictMode {
+		return false
+	}
+	return !fp.isMoonshot && !fp.isTogether && !fp.isCloudflareAG && !fp.isNvidia
 }
 
 // ResolveOpenAICompat merges explicit model compat flags with auto-detected

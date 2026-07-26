@@ -1,0 +1,361 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Copyright (C) 2026 Pierre Poissinger
+
+package schema
+
+// catalog.go — single source of truth for known LLM providers.
+//
+// Every provider Goa knows about is declared ONCE here as a ProviderDef.
+// All other provider-specific behavior is derived from this table:
+//   - setup-wizard / config presets        (config/presets.go)
+//   - API-key env-var lookup               (internal/agentic/provider/env_keys.go)
+//   - URL fingerprinting / compat detect   (internal/agentic/provider/compat_detect.go)
+//   - endpoint → identity heuristics       (provider/manager.go)
+//   - valid-provider validation            (config/agentic_constants.go)
+//   - models.dev catalog mapping           (internal/agentic/provider/models/modelsdev.go)
+//
+// Adding a provider = adding one ProviderDef entry. No other code changes.
+//
+// The Compat field carries the wire-level quirks as DATA (not code), so a new
+// OpenAI-compatible provider with unusual behavior is a template entry, not a
+// fingerprint branch.
+
+// ProviderCompat describes the wire-level behavior of a provider as data.
+// The zero value is a fully standard OpenAI-compatible provider.
+type ProviderCompat struct {
+	// ThinkingFormat selects how thinking is requested/parsed. Empty means the
+	// provider's thinking body is derived from its ID (see detectThinkingFormat).
+	ThinkingFormat string
+	// NonStandard marks providers that don't support the OpenAI "store" field
+	// or the newer "developer" role (use "system" instead).
+	NonStandard bool
+	// UseMaxTokens sends "max_tokens" instead of "max_completion_tokens".
+	UseMaxTokens bool
+	// NoReasoningEffort disables sending reasoning_effort.
+	NoReasoningEffort bool
+	// NoCacheRetention disables long cache retention support.
+	NoCacheRetention bool
+	// NoStrictMode disables OpenAI strict tool-schema mode.
+	NoStrictMode bool
+	// AnthropicCacheControl uses anthropic-style cache_control breakpoints.
+	AnthropicCacheControl bool
+	// RequiresReasoningContentOnAssistantMessages keeps reasoning_content on
+	// assistant messages (DeepSeek-style multi-turn).
+	RequiresReasoningContentOnAssistantMessages bool
+	// ToolResultAsUser sends tool results as user messages (local/Gemma/Qwen).
+	ToolResultAsUser bool
+	// Local marks providers that need no API key (LM Studio, Ollama).
+	Local bool
+}
+
+// ProviderDef is the declarative template for one known provider.
+type ProviderDef struct {
+	// ID is the config/wizard identifier (e.g. "openrouter", "poolside").
+	ID string
+	// Name is the human-readable display name (e.g. "OpenRouter").
+	Name string
+	// Provider is the agentic identity (== ID for most providers).
+	Provider Provider
+	// API is the wire protocol this provider speaks by default.
+	API Api
+	// BaseURL is the default endpoint (OpenAI-compatible base URL).
+	BaseURL string
+	// DefaultModel is the suggested model for the wizard preset.
+	DefaultModel string
+	// EnvKeys are the API-key environment variables, priority order.
+	EnvKeys []string
+	// ModelsDevKey is the models.dev catalog key ("" = not on models.dev).
+	ModelsDevKey string
+	// URLPatterns are lowercase substrings used to fingerprint this provider
+	// from a base URL (endpoint heuristics + compat detect). The Provider ID
+	// itself is always matched implicitly.
+	URLPatterns []string
+	// Compat carries the wire-level quirks.
+	Compat ProviderCompat
+	// Extra holds per-provider request overrides forwarded at stream time.
+	Extra map[string]any
+}
+
+// NeedsAPIKey reports whether this provider requires an API key.
+func (d ProviderDef) NeedsAPIKey() bool { return !d.Compat.Local }
+
+// providerCatalog is the ordered list of known providers. Order matters for
+// the setup wizard (preset numbering) and for endpoint-heuristic precedence
+// (more-specific URL patterns must precede their substring supersets).
+var providerCatalog = []ProviderDef{
+	{
+		ID: "openai", Name: "OpenAI", Provider: ProviderOpenAI,
+		API: ApiOpenAIResponses, BaseURL: "https://api.openai.com/v1",
+		DefaultModel: "gpt-4o", EnvKeys: []string{"OPENAI_API_KEY"}, ModelsDevKey: "openai",
+		URLPatterns: []string{"api.openai.com"},
+	},
+	{
+		ID: "lmstudio", Name: "LM Studio", Provider: ProviderLMStudio,
+		API: ApiOpenAICompletions, BaseURL: "http://localhost:1234/v1",
+		DefaultModel: "local-model",
+		URLPatterns:  []string{"localhost:1234", "127.0.0.1:1234"},
+		Compat:       ProviderCompat{Local: true, AnthropicCacheControl: true, NonStandard: true, ToolResultAsUser: true},
+	},
+	{
+		ID: "ollama", Name: "Ollama", Provider: ProviderOllama,
+		API: ApiOpenAICompletions, BaseURL: "http://localhost:11434/v1",
+		DefaultModel: "qwen/qwen3.5-9b",
+		URLPatterns:  []string{"localhost:11434", "127.0.0.1:11434"},
+		Compat:       ProviderCompat{Local: true, AnthropicCacheControl: true, NonStandard: true, ToolResultAsUser: true},
+	},
+	{
+		ID: "openrouter", Name: "OpenRouter", Provider: ProviderOpenRouter,
+		API: ApiOpenAICompletions, BaseURL: "https://openrouter.ai/api/v1",
+		DefaultModel: "openrouter/free", EnvKeys: []string{"OPENROUTER_API_KEY"},
+		URLPatterns: []string{"openrouter.ai"},
+		Compat:      ProviderCompat{ThinkingFormat: "openrouter", AnthropicCacheControl: true},
+	},
+	{
+		ID: "opencode", Name: "OpenCode Zen", Provider: ProviderOpenCode,
+		API: ApiOpenAICompletions, BaseURL: "https://opencode.ai/zen/v1",
+		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"OPENCODE_API_KEY"},
+		URLPatterns: []string{"opencode.ai"},
+		Compat:      ProviderCompat{NonStandard: true},
+	},
+	{
+		ID: "opencode-go", Name: "OpenCode Go", Provider: ProviderOpenCodeGo,
+		API: ApiOpenAICompletions, BaseURL: "https://opencode.ai/zen/go/v1",
+		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"OPENCODE_API_KEY"},
+		URLPatterns: []string{"opencode.ai/zen/go"},
+		Compat:      ProviderCompat{NonStandard: true},
+		Extra: map[string]any{
+			"reasoning_key":               "reasoning_content",
+			"thinking_extra_body":         true,
+			"normalize_null_descriptions": true,
+			"tool_call_id_max_length":     64,
+		},
+	},
+	{
+		ID: "deepseek", Name: "DeepSeek", Provider: ProviderDeepSeek,
+		API: ApiOpenAICompletions, BaseURL: "https://api.deepseek.com",
+		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"DEEPSEEK_API_KEY"}, ModelsDevKey: "deepseek",
+		URLPatterns: []string{"deepseek.com"},
+		Compat: ProviderCompat{
+			ThinkingFormat: "deepseek", NonStandard: true,
+			RequiresReasoningContentOnAssistantMessages: true,
+		},
+	},
+	{
+		ID: "kimi", Name: "Moonshot", Provider: ProviderKimi,
+		API: ApiOpenAICompletions, BaseURL: "https://api.moonshot.cn/v1",
+		DefaultModel: "kimi-k2.6", EnvKeys: []string{"MOONSHOT_API_KEY", "KIMI_API_KEY"},
+		URLPatterns: []string{"api.moonshot.", "moonshotai", "moonshotai-cn"},
+		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true},
+		Extra: map[string]any{
+			"reasoning_key":               "reasoning_content",
+			"thinking_extra_body":         true,
+			"normalize_null_descriptions": true,
+			"tool_call_id_max_length":     64,
+		},
+	},
+	{
+		ID: "kimi-code", Name: "Kimi Code", Provider: ProviderKimiCode,
+		API: ApiOpenAICompletions, BaseURL: "https://api.kimi.com/coding/v1",
+		DefaultModel: "kimi-for-coding", EnvKeys: []string{"KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"},
+		URLPatterns: []string{"api.kimi.com/coding"},
+		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true},
+		Extra: map[string]any{
+			"reasoning_key":               "reasoning_content",
+			"thinking_extra_body":         true,
+			"normalize_null_descriptions": true,
+			"tool_call_id_max_length":     64,
+		},
+	},
+	{
+		// Z.ai GLM Coding Plan — subscription/quota endpoint. The coding URL is a
+		// substring-superset of the general one, so it must precede zai-api.
+		ID: "zai", Name: "Z.ai Coding", Provider: ProviderZai,
+		API: ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/coding/paas/v4",
+		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai-coding-plan",
+		URLPatterns: []string{"api.z.ai/api/coding", "open.bigmodel.cn/api/coding", "zai-coding", "zai-coding-cn", "zai-coding-plan"},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+	},
+	{
+		ID: "zai-api", Name: "Z.ai", Provider: ProviderZaiApi,
+		API: ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/paas/v4",
+		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai",
+		URLPatterns: []string{"api.z.ai", "open.bigmodel.cn"},
+		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+	},
+	{
+		ID: "poolside", Name: "Poolside", Provider: ProviderPoolside,
+		API: ApiOpenAICompletions, BaseURL: "https://inference.poolside.ai/v1",
+		DefaultModel: "poolside-default", EnvKeys: []string{"POOLSIDE_API_KEY"},
+		URLPatterns: []string{"inference.poolside.ai"},
+		Compat:      ProviderCompat{NonStandard: true},
+		Extra: map[string]any{
+			"reasoning_key":               "reasoning_content",
+			"normalize_null_descriptions": true,
+		},
+	},
+	// --- providers known to agentic but without a wizard preset ---
+	{
+		ID: "anthropic", Name: "Anthropic", Provider: ProviderAnthropic,
+		API: ApiAnthropicMessages, BaseURL: "https://api.anthropic.com",
+		EnvKeys: []string{"ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"}, ModelsDevKey: "anthropic",
+		URLPatterns: []string{"api.anthropic.com"},
+	},
+	{
+		ID: "google", Name: "Google", Provider: ProviderGoogle,
+		API: ApiGoogleGenerativeAI, BaseURL: "https://generativelanguage.googleapis.com/v1beta",
+		EnvKeys: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"}, ModelsDevKey: "google",
+		URLPatterns: []string{"generativelanguage.googleapis.com"},
+	},
+	{
+		ID: "mistral", Name: "Mistral", Provider: ProviderMistral,
+		API: ApiMistralConversations, BaseURL: "https://api.mistral.ai",
+		EnvKeys: []string{"MISTRAL_API_KEY"}, ModelsDevKey: "mistral",
+		URLPatterns: []string{"api.mistral.ai"},
+	},
+	{
+		ID: "groq", Name: "Groq", Provider: ProviderGroq,
+		API: ApiOpenAICompletions, BaseURL: "https://api.groq.com/openai/v1",
+		EnvKeys: []string{"GROQ_API_KEY"}, ModelsDevKey: "groq",
+		URLPatterns: []string{"api.groq.com"},
+	},
+	{
+		ID: "xai", Name: "xAI", Provider: Provider("xai"),
+		API: ApiOpenAICompletions, BaseURL: "https://api.x.ai/v1",
+		EnvKeys: []string{"XAI_API_KEY"}, ModelsDevKey: "xai",
+		URLPatterns: []string{"api.x.ai"},
+		Compat:      ProviderCompat{NonStandard: true, NoReasoningEffort: true},
+	},
+	{
+		ID: "together", Name: "Together", Provider: ProviderTogether,
+		API: ApiOpenAICompletions, BaseURL: "https://api.together.xyz/v1",
+		EnvKeys: []string{"TOGETHER_API_KEY"},
+		URLPatterns: []string{"api.together.ai", "api.together.xyz"},
+		Compat:      ProviderCompat{ThinkingFormat: "together", NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoCacheRetention: true, NoStrictMode: true},
+	},
+	{
+		ID: "fireworks", Name: "Fireworks", Provider: ProviderFireworks,
+		API: ApiOpenAICompletions, BaseURL: "https://api.fireworks.ai/inference/v1",
+		EnvKeys: []string{"FIREWORKS_API_KEY"},
+		URLPatterns: []string{"fireworks.ai"},
+	},
+	{
+		ID: "perplexity", Name: "Perplexity", Provider: ProviderPerplexity,
+		API: ApiOpenAICompletions, BaseURL: "https://api.perplexity.ai",
+		EnvKeys: []string{"PERPLEXITY_API_KEY"},
+		URLPatterns: []string{"api.perplexity.ai"},
+	},
+	{
+		ID: "github", Name: "GitHub Copilot", Provider: ProviderGitHub,
+		API: ApiOpenAICompletions, BaseURL: "https://api.githubcopilot.com",
+		EnvKeys: []string{"COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"},
+		URLPatterns: []string{"githubcopilot.com"},
+	},
+	{
+		ID: "aws", Name: "AWS Bedrock", Provider: ProviderAWS,
+		API: ApiBedrockConverse, EnvKeys: []string{"AWS_ACCESS_KEY_ID"},
+	},
+	{
+		ID: "azure", Name: "Azure OpenAI", Provider: ProviderAzure,
+		API: ApiAzureOpenAIResponses, EnvKeys: []string{"AZURE_OPENAI_API_KEY", "AZURE_API_KEY"},
+	},
+	{
+		ID: "custom", Name: "Custom", Provider: ProviderCustom,
+		API: ApiOpenAICompletions,
+	},
+}
+
+// catalogIndex maps provider identity → def for O(1) lookup.
+var catalogIndex = buildCatalogIndex()
+
+func buildCatalogIndex() map[Provider]*ProviderDef {
+	idx := make(map[Provider]*ProviderDef, len(providerCatalog))
+	for i := range providerCatalog {
+		d := &providerCatalog[i]
+		idx[d.Provider] = d
+	}
+	return idx
+}
+
+// ProviderCatalog returns the ordered list of known provider definitions.
+func ProviderCatalog() []ProviderDef { return providerCatalog }
+
+// LookupProviderDef returns the definition for a provider identity, or nil.
+func LookupProviderDef(p Provider) *ProviderDef { return catalogIndex[p] }
+
+// LookupProviderDefByID returns the definition for a config/wizard ID, or nil.
+func LookupProviderDefByID(id string) *ProviderDef {
+	for i := range providerCatalog {
+		if providerCatalog[i].ID == id {
+			return &providerCatalog[i]
+		}
+	}
+	return nil
+}
+
+// MatchProviderByURL returns the catalog entry whose URLPattern best matches
+// the given base URL, or nil. The longest matching pattern wins so a
+// substring-superset endpoint (z.ai coding ⊃ z.ai general) resolves to the
+// more-specific identity regardless of catalog declaration order.
+func MatchProviderByURL(baseURL string) *ProviderDef {
+	url := lowerASCII(baseURL)
+	var best *ProviderDef
+	bestLen := -1
+	for i := range providerCatalog {
+		d := &providerCatalog[i]
+		for _, pat := range d.URLPatterns {
+			if len(pat) > bestLen && containsSubstr(url, pat) {
+				best = d
+				bestLen = len(pat)
+			}
+		}
+	}
+	return best
+}
+
+// MatchProviderByNameOrURL returns the catalog entry matching providerName
+// (exact) or baseURL (substring), or nil. A "custom"/empty provider name does
+// not short-circuit URL matching — generic identities defer to the URL.
+// Mirrors the legacy matchesProviderOrURL semantics (name OR url may match).
+func MatchProviderByNameOrURL(providerName Provider, baseURL string) *ProviderDef {
+	p := lowerASCII(string(providerName))
+	url := lowerASCII(baseURL)
+	// Exact provider-name match wins, except for the generic "custom" identity
+	// which carries no fingerprint information and must defer to the URL.
+	if p != "" && p != string(ProviderCustom) {
+		if d := LookupProviderDef(providerName); d != nil {
+			return d
+		}
+	}
+	// URL substring match across the catalog (declaration order = precedence).
+	if d := MatchProviderByURL(url); d != nil {
+		return d
+	}
+	// Fall back to the generic name match (e.g. custom) if nothing else hit.
+	if p != "" {
+		return LookupProviderDef(providerName)
+	}
+	return nil
+}
+
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 32
+		}
+	}
+	return string(b)
+}
+
+func containsSubstr(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

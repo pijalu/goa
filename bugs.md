@@ -57,4 +57,4 @@ A turn that ends with open items, an untested fix, or an unrecorded newly-found 
 
 ## Open Items
 
-*(none — all items fixed and archived to `docs/archive/bugs.2026-07-26.md`)*
+*(none — all items fixed and archived to `docs/archive/bugs.2026-07-26-poolside-mcp.md`)*

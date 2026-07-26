@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 // modelsdev.go — runtime models.dev catalog with on-disk cache.
@@ -56,16 +57,36 @@ type modelsDevProviderMapping struct {
 // two are kept in sync manually: adding a provider there means adding it
 // here (same identities), so the runtime catalog matches the build-time
 // embedded catalog.
-var modelsDevProviderMappings = map[string]modelsDevProviderMapping{
-	"openai":          {Provider: provider.ProviderOpenAI, API: provider.ApiOpenAIResponses, BaseURL: "https://api.openai.com/v1"},
-	"anthropic":       {Provider: provider.ProviderAnthropic, API: provider.ApiAnthropicMessages, BaseURL: "https://api.anthropic.com"},
-	"google":          {Provider: provider.ProviderGoogle, API: provider.ApiGoogleGenerativeAI, BaseURL: "https://generativelanguage.googleapis.com/v1beta"},
-	"deepseek":        {Provider: provider.ProviderDeepSeek, API: provider.ApiOpenAICompletions, BaseURL: "https://api.deepseek.com"},
-	"groq":            {Provider: provider.ProviderGroq, API: provider.ApiOpenAICompletions, BaseURL: "https://api.groq.com/openai/v1"},
-	"mistral":         {Provider: provider.ProviderMistral, API: provider.ApiMistralConversations, BaseURL: "https://api.mistral.ai"},
-	"xai":             {Provider: "xai", API: provider.ApiOpenAICompletions, BaseURL: "https://api.x.ai/v1"},
-	"zai":             {Provider: provider.ProviderZaiApi, API: provider.ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/paas/v4"},
-	"zai-coding-plan": {Provider: provider.ProviderZai, API: provider.ApiOpenAICompletions, BaseURL: "https://api.z.ai/api/coding/paas/v4"},
+//
+// Derived from the provider catalog: any catalog entry with a ModelsDevKey
+// produces a mapping from that key to its identity and base URL. Catalog
+// entries override the API to the models.dev wire protocol where the
+// catalog's default differs (models.dev lists each provider's primary API).
+var modelsDevProviderMappings = buildModelsDevMappings()
+
+// modelsDevAPIOverrides records the API each provider speaks on models.dev
+// when it differs from the catalog's chat-completions preset default. The
+// models.dev catalog tracks the provider's canonical API surface.
+var modelsDevAPIOverrides = map[string]provider.Api{
+	"openai":    provider.ApiOpenAIResponses,
+	"anthropic": provider.ApiAnthropicMessages,
+	"google":    provider.ApiGoogleGenerativeAI,
+	"mistral":   provider.ApiMistralConversations,
+}
+
+func buildModelsDevMappings() map[string]modelsDevProviderMapping {
+	out := make(map[string]modelsDevProviderMapping)
+	for _, d := range schema.ProviderCatalog() {
+		if d.ModelsDevKey == "" {
+			continue
+		}
+		api := d.API
+		if override, ok := modelsDevAPIOverrides[d.ModelsDevKey]; ok {
+			api = override
+		}
+		out[d.ModelsDevKey] = modelsDevProviderMapping{Provider: d.Provider, API: api, BaseURL: d.BaseURL}
+	}
+	return out
 }
 
 // modelsDevModel mirrors the models.dev per-model JSON shape.

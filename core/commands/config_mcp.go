@@ -14,16 +14,32 @@ import (
 
 // settingMCP is the /config → MCP servers sub-menu. It mirrors the Tools
 // sub-menu: every installed MCP server is listed with its on/off state and
-// selecting one toggles it (persisted, with live connect/disconnect).
+// selecting one toggles it (persisted, with live connect/disconnect). A
+// trailing "manage" entry opens the shared add/edit/delete wizard — the same
+// wizard /mcp:wizard launches — so both entry points have identical UX.
 func (m *configMenu) settingMCP() {
 	m.current = m.settingMCP
 	items := buildMCPItems(m.ctx.Config)
-	if len(items) == 0 {
-		m.flash("No MCP servers configured — install one with /mcp:add or `goa mcp add`")
+	items = append(items, tui.SelectorItem{
+		Value:       "__wizard__",
+		Label:       "＋ Add / edit / delete servers",
+		Description: "open the MCP wizard",
+	})
+	m.ctx.SelectOption("MCP servers:", items, "", m.mcpSelectHandler)
+}
+
+// mcpSelectHandler routes the /config MCP menu selection: the wizard entry
+// opens the shared add/edit/delete wizard; any server entry toggles it.
+func (m *configMenu) mcpSelectHandler(selected string, ok bool) {
+	if !ok {
 		m.back()
 		return
 	}
-	m.ctx.SelectOption("Toggle MCP servers:", items, "", m.mcpToggleHandler)
+	if selected == "__wizard__" {
+		runMCPWizardOnMenu(m)
+		return
+	}
+	m.mcpToggleHandler(selected, ok)
 }
 
 // buildMCPItems lists installed MCP servers with their enabled state, plus a

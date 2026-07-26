@@ -728,7 +728,7 @@ func assertModel(t *testing.T, cfg Config) {
 		t.Fatalf("Models = %d, want 1", len(cfg.Models))
 	}
 	m := cfg.Models[0]
-	if !m.Reasoning {
+	if m.Reasoning == nil || !*m.Reasoning {
 		t.Error("Model.Reasoning should be true")
 	}
 	if m.ThinkingLevel != AgenticThinkingMedium {

@@ -46,7 +46,7 @@ func (w *wizardComponent) saveConfig() {
 				Model:         w.companion.modelName,
 				Temperature:   parseTemp(w.companion.modelTemp),
 				MaxTokens:     parseIntDefault(w.companion.modelMaxTokens, 0),
-				Reasoning:     w.companion.modelReasoning,
+				Reasoning:     &w.companion.modelReasoning,
 				ThinkingLevel: w.companion.modelThinkingLevel,
 			})
 		}
@@ -94,7 +94,7 @@ func (w *wizardComponent) applyProviderConfig() {
 	}
 
 	// Apply model advanced options.
-	w.config.Models[0].Reasoning = w.main.modelReasoning
+	w.config.Models[0].Reasoning = &w.main.modelReasoning
 	if w.main.modelThinkingLevel != "" && w.main.modelThinkingLevel != "off" {
 		w.config.Models[0].ThinkingLevel = w.main.modelThinkingLevel
 	}

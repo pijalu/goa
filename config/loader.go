@@ -481,8 +481,9 @@ func (cl *CascadeLoader) applyModelScalars(m *ModelConfig) {
 			m.MaxTokens = v
 		}
 	}
-	if reasoning, ok := cl.cliOverrides["reasoning"]; ok && reasoning == "true" {
-		m.Reasoning = true
+	if reasoning, ok := cl.cliOverrides["reasoning"]; ok && reasoning != "" {
+		v := reasoning == "true"
+		m.Reasoning = &v
 	}
 	if level, ok := cl.cliOverrides["thinking_level"]; ok && level != "" {
 		m.ThinkingLevel = level

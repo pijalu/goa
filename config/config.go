@@ -180,7 +180,10 @@ type ModelConfig struct {
 	Provider string `yaml:"provider_name,omitempty"`
 
 	// Reasoning enables thinking/reasoning if the model supports it.
-	Reasoning bool `yaml:"reasoning,omitempty"`
+	// Tri-state: nil (default) = enabled, true = explicitly enabled,
+	// false = explicitly disabled. When omitted, models are assumed to
+	// support reasoning — most models will emit thinking blocks when asked.
+	Reasoning *bool `yaml:"reasoning,omitempty"`
 
 	// ThinkingLevel selects the reasoning level: off, minimal, low, medium, high, xhigh.
 	ThinkingLevel string `yaml:"thinking_level,omitempty"`

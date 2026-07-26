@@ -390,6 +390,51 @@ func TestInferProviderModelTraits_Poolside(t *testing.T) {
 	}
 }
 
+// TestApplyModelConfigToFallback_ReasoningDefault verifies the tri-state
+// reasoning semantics: omitted (nil) defaults to enabled, explicit false
+// disables, explicit true enables.
+func TestApplyModelConfigToFallback_ReasoningDefault(t *testing.T) {
+	falseVal := false
+	trueVal := true
+	cases := []struct {
+		name      string
+		reasoning *bool
+		want      bool
+	}{
+		{"omitted defaults to enabled", nil, true},
+		{"explicit false disables", &falseVal, false},
+		{"explicit true enables", &trueVal, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mdl := agenticprovider.Model{ID: "m", Provider: agenticprovider.ProviderCustom, BaseURL: "https://x.example/v1"}
+			applyModelConfigToFallback(&mdl, config.ModelConfig{ID: "m", Model: "m", Reasoning: tc.reasoning}, agenticprovider.ApiOpenAICompletions)
+			if mdl.Reasoning != tc.want {
+				t.Errorf("Reasoning = %v, want %v", mdl.Reasoning, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyModelConfigCapabilities_ReasoningOverride verifies an explicit
+// reasoning:false in model config overrides a registry model's built-in
+// reasoning=true, while omitted leaves the registry value untouched.
+func TestApplyModelConfigCapabilities_ReasoningOverride(t *testing.T) {
+	falseVal := false
+	// Registry model starts with reasoning capability.
+	mdl := agenticprovider.Model{ID: "m", Reasoning: true}
+	applyModelConfigCapabilities(&mdl, config.ModelConfig{ID: "m", Model: "m", Reasoning: &falseVal}, agenticprovider.ApiOpenAICompletions)
+	if mdl.Reasoning {
+		t.Error("Reasoning = true, want false after explicit reasoning:false override")
+	}
+
+	mdl2 := agenticprovider.Model{ID: "m", Reasoning: false}
+	applyModelConfigCapabilities(&mdl2, config.ModelConfig{ID: "m", Model: "m"}, agenticprovider.ApiOpenAICompletions)
+	if mdl2.Reasoning {
+		t.Error("Reasoning = true, want registry false preserved when reasoning omitted")
+	}
+}
+
 func TestResolveActiveModel_ProviderIdentity(t *testing.T) {
 	cfg := &config.Config{
 		ActiveProvider: "lmstudio",
@@ -642,7 +687,7 @@ func TestResolveActiveModel_ThinkingLevelMap(t *testing.T) {
 				ID:         "custom-model",
 				ProviderID: "lmstudio",
 				Model:      "custom-model",
-				Reasoning:  true,
+				Reasoning:  agenticprovider.BoolPtr(true),
 				ThinkingLevelMap: map[string]int{
 					"low":    4096,
 					"medium": 8192,
@@ -679,7 +724,7 @@ func TestResolveActiveModel_DefaultThinkingLevelMap(t *testing.T) {
 				ID:         "custom-model",
 				ProviderID: "lmstudio",
 				Model:      "custom-model",
-				Reasoning:  true,
+				Reasoning:  agenticprovider.BoolPtr(true),
 			},
 		},
 	}
@@ -706,7 +751,7 @@ func TestResolveActiveModel_ReasoningAndCompat(t *testing.T) {
 				ID:             "custom-model",
 				ProviderID:     "lmstudio",
 				Model:          "custom-model",
-				Reasoning:      true,
+				Reasoning:      agenticprovider.BoolPtr(true),
 				ThinkingLevel:  "medium",
 				ThinkingBudget: 512,
 				Compat:         `{"toolResultAsUser":true}`,

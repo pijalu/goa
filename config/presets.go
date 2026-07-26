@@ -6,8 +6,13 @@
 //
 // Preset providers ship with Goa so users can select them from the setup
 // wizard or reference them in config files without remembering exact
-// endpoints. Users can always add custom providers via endpoint.
+// endpoints. The preset list is derived from the single source of truth —
+// the provider catalog in internal/agentic/provider/schema — so adding a
+// provider to the catalog automatically surfaces it here. Users can always
+// add custom providers via endpoint.
 package config
+
+import "github.com/pijalu/goa/internal/agentic/provider/schema"
 
 // ProviderPreset defines a known provider preset with default settings.
 type ProviderPreset struct {
@@ -29,148 +34,55 @@ type ProviderPreset struct {
 	Extra map[string]any
 }
 
-// PresetProviders returns the list of known provider presets.
-// These cover the most common OpenAI-compatible LLM providers:
-// local-first (LM Studio, Ollama) and cloud (OpenAI, OpenRouter,
-// DeepSeek, Moonshot, Kimi Code, Z.ai, Opencode). Users can add additional
+// presetIDs is the ordered set of catalog IDs exposed as wizard presets.
+// Order matters: it numbers the wizard options and is pinned by
+// TestPresetProviders_StableOrder. Only catalog entries listed here become
+// presets; the rest are agentic-only identities (anthropic, google, ...).
+var presetIDs = []string{
+	"openai", "lmstudio", "ollama", "openrouter",
+	"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
+	"zai", "zai-api", "poolside",
+}
+
+// PresetProviders returns the list of known provider presets, derived from
+// the provider catalog. These cover the most common OpenAI-compatible LLM
+// providers: local-first (LM Studio, Ollama) and cloud (OpenAI, OpenRouter,
+// DeepSeek, Moonshot, Kimi Code, Z.ai, Poolside). Users can add additional
 // providers via the "Custom" wizard option or by editing their config.
+//
+// NOTE: the wizard preset uses the OpenAI-completions base URL even for
+// providers whose catalog default API differs (e.g. OpenAI's responses API),
+// because the wizard's default flow streams via chat completions.
 func PresetProviders() []ProviderPreset {
-	return []ProviderPreset{
-		{
-			ID:           "openai",
-			Name:         "OpenAI",
-			Endpoint:     "https://api.openai.com/v1",
-			DefaultModel: "gpt-4o",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderOpenAI,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "lmstudio",
-			Name:         "LM Studio",
-			Endpoint:     "http://localhost:1234/v1",
-			DefaultModel: "local-model",
-			NeedsAPIKey:  false,
-			Provider:     AgenticProviderLMStudio,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "ollama",
-			Name:         "Ollama",
-			Endpoint:     "http://localhost:11434/v1",
-			DefaultModel: "qwen/qwen3.5-9b",
-			NeedsAPIKey:  false,
-			Provider:     AgenticProviderOllama,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "openrouter",
-			Name:         "OpenRouter",
-			Endpoint:     "https://openrouter.ai/api/v1",
-			DefaultModel: "openrouter/free",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderOpenRouter,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "opencode",
-			Name:         "OpenCode Zen",
-			Endpoint:     "https://opencode.ai/zen/v1",
-			DefaultModel: "deepseek-v4-flash",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderOpenCode,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "opencode-go",
-			Name:         "OpenCode Go",
-			Endpoint:     "https://opencode.ai/zen/go/v1",
-			DefaultModel: "deepseek-v4-flash",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderOpenCodeGo,
-			API:          AgenticAPIOpenAICompletions,
-			Extra: map[string]any{
-				"reasoning_key":               "reasoning_content",
-				"thinking_extra_body":         true,
-				"normalize_null_descriptions": true,
-				"tool_call_id_max_length":     64,
-			},
-		},
-		{
-			ID:           "deepseek",
-			Name:         "DeepSeek",
-			Endpoint:     "https://api.deepseek.com",
-			DefaultModel: "deepseek-v4-flash",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderDeepSeek,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "kimi",
-			Name:         "Moonshot",
-			Endpoint:     "https://api.moonshot.cn/v1",
-			DefaultModel: "kimi-k2.6",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderKimi,
-			API:          AgenticAPIOpenAICompletions,
-			Extra: map[string]any{
-				"reasoning_key":               "reasoning_content",
-				"thinking_extra_body":         true,
-				"normalize_null_descriptions": true,
-				"tool_call_id_max_length":     64,
-			},
-		},
-		{
-			ID:           "kimi-code",
-			Name:         "Kimi Code",
-			Endpoint:     "https://api.kimi.com/coding/v1",
-			DefaultModel: "kimi-for-coding",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderKimiCode,
-			API:          AgenticAPIOpenAICompletions,
-			Extra: map[string]any{
-				"reasoning_key":               "reasoning_content",
-				"thinking_extra_body":         true,
-				"normalize_null_descriptions": true,
-				"tool_call_id_max_length":     64,
-			},
-		},
-		{
-			// Z.ai GLM Coding Plan — subscription/quota endpoint (same surface
-			// pi exposes as its default "zai" provider). Costs are zero:
-			// usage is plan-quota, not per-token billing. See the zai quota
-			// fetcher (plugins/bundled/provider-quota/fetchers/zai.js).
-			ID:           "zai",
-			Name:         "Z.ai Coding",
-			Endpoint:     "https://api.z.ai/api/coding/paas/v4",
-			DefaultModel: "glm-5.2",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderZai,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			// Z.ai general API — pay-per-token endpoint (models.dev "zai").
-			ID:           "zai-api",
-			Name:         "Z.ai",
-			Endpoint:     "https://api.z.ai/api/paas/v4",
-			DefaultModel: "glm-5.2",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderZaiApi,
-			API:          AgenticAPIOpenAICompletions,
-		},
-		{
-			ID:           "poolside",
-			Name:         "Poolside",
-			Endpoint:     "https://inference.poolside.ai/v1",
-			DefaultModel: "poolside-default",
-			NeedsAPIKey:  true,
-			Provider:     AgenticProviderPoolside,
-			API:          AgenticAPIOpenAICompletions,
-			Extra: map[string]any{
-				"reasoning_key":               "reasoning_content",
-				"normalize_null_descriptions": true,
-			},
-		},
+	out := make([]ProviderPreset, 0, len(presetIDs))
+	for _, id := range presetIDs {
+		d := schema.LookupProviderDefByID(id)
+		if d == nil {
+			continue
+		}
+		out = append(out, presetFromDef(d))
+	}
+	return out
+}
+
+// presetFromDef converts a catalog definition into a wizard preset. The
+// preset endpoint is always the OpenAI-completions base URL and the preset
+// API is openai-completions, regardless of the catalog's default API: the
+// setup wizard configures providers for the chat-completions flow.
+func presetFromDef(d *schema.ProviderDef) ProviderPreset {
+	api := d.API
+	if api != schema.ApiOpenAICompletions {
+		api = schema.ApiOpenAICompletions
+	}
+	return ProviderPreset{
+		ID:           d.ID,
+		Name:         d.Name,
+		Endpoint:     d.BaseURL,
+		DefaultModel: d.DefaultModel,
+		NeedsAPIKey:  d.NeedsAPIKey(),
+		Provider:     string(d.Provider),
+		API:          string(api),
+		Extra:        d.Extra,
 	}
 }
 

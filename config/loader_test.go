@@ -246,7 +246,7 @@ func assertCLIModelOverrides(t *testing.T, cfg *Config) {
 	if m.MaxTokens != 2048 {
 		t.Errorf("Model max_tokens = %d, want 2048", m.MaxTokens)
 	}
-	if !m.Reasoning {
+	if m.Reasoning == nil || !*m.Reasoning {
 		t.Error("Model reasoning should be enabled")
 	}
 	if m.ThinkingLevel != "medium" {
