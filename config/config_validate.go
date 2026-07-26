@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -322,6 +323,24 @@ func (c *Config) validateGoals(ve *internal.ValidationError) {
 	gr := c.Goals.Retention
 	if gr.Days < 0 {
 		ve.Add(fmt.Sprintf("goals.retention.days: must be >= 0 (got %d)", gr.Days))
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Goals.DoneGate)) {
+	case "", "verify", "evidence", "off":
+	default:
+		ve.Add(fmt.Sprintf("goals.done_gate: must be verify, evidence, or off (got %q)", c.Goals.DoneGate))
+	}
+	if n := c.Goals.MaxVerifyFailures; n < -1 {
+		ve.Add(fmt.Sprintf("goals.max_verify_failures: must be >= -1 (got %d)", n))
+	}
+	if n := c.Goals.StallTurns; n < -1 {
+		ve.Add(fmt.Sprintf("goals.stall_turns: must be >= -1 (got %d)", n))
+	}
+	if n := c.Goals.DefaultTurnBudget; n < -1 {
+		ve.Add(fmt.Sprintf("goals.default_turn_budget: must be >= -1 (got %d)", n))
+	}
+	judge := strings.ToLower(strings.TrimSpace(c.Goals.Judge))
+	if judge != "" && judge != "off" && judge != "same" && !strings.HasPrefix(judge, "model:") {
+		ve.Add(fmt.Sprintf("goals.judge: must be off, same, or model:<id> (got %q)", c.Goals.Judge))
 	}
 }
 

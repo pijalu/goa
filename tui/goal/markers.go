@@ -58,6 +58,9 @@ func (m *MarkerComponent) headline() string {
 	if m.change.Reason != nil && *m.change.Reason != "" {
 		line += fmt.Sprintf("            (ctrl+o: %s)", *m.change.Reason)
 	}
+	if m.change.Expectation != nil && *m.change.Expectation != "" {
+		line += fmt.Sprintf(" — needs: %s", *m.change.Expectation)
+	}
 	return m.color() + ansi.Bold + line + ansi.BoldReset + ansi.Reset
 }
 

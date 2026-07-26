@@ -7,6 +7,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/pijalu/goa/core/goal"
@@ -22,11 +23,20 @@ weigh the objective and any completion criteria against the work done so far.
 Goal mode is iterative: do one coherent slice of work, then reassess.
 Call goal with action "update", status "complete" only when all required work is done, any stated
 validation has passed, and there is no useful next action. Do not mark complete
-after only producing a plan, summary, first pass, or partial result.
+after only producing a plan, summary, first pass, or partial result. When a completion
+criterion is recorded, the first "complete" call is intercepted by a verification
+challenge: audit the criterion, then call "complete" again with "reason" citing the
+concrete evidence. When a verify command is recorded, it executes after your confirmed
+completion and a non-zero exit rejects it — keep it passing as you work. Turns with no
+measurable progress (todo transitions or workspace changes) are counted by a stall
+watchdog: continued stalling auto-blocks the goal for user direction, so make every
+turn produce visible progress or end the goal explicitly.
 If an external condition or required user input prevents progress, or the objective
-cannot be completed as stated, call goal with action "update", status "blocked". Otherwise keep going —
-use the existing conversation context and your tools, and do not ask the user for
-input unless a real blocker prevents progress.
+cannot be completed as stated, call goal with action "update", status "blocked" with BOTH
+"reason" (the concrete blocker) and "expectation" (exactly what input or change unblocks
+it). Do not pause just to ask whether to continue — that defeats goal mode. Otherwise
+keep going: use the existing conversation context and your tools, and do not ask the
+user for input unless a real blocker prevents progress.
 
 HOW TO END A GOAL: the goal only stops when you make an actual goal TOOL
 CALL with action "update", status "complete" or "blocked". Writing "the goal is complete" (or
@@ -80,7 +90,27 @@ type GoalDriver struct {
 	// loop is active; called by Stop (ESC hard stop — bugs.md "ESC: hard
 	// stop for ALL ongoing activities"). Nil when no loop is running.
 	stop context.CancelFunc
+
+	// Stall watchdog (goals.stall_turns): after each turn of an unmanaged
+	// goal, Probe fingerprints progress; when the fingerprint stops changing
+	// for StallTurns consecutive turns the model is challenged via Remind,
+	// and after stallChallengeLimit unanswered challenges the goal is
+	// auto-blocked for user direction. All three fields nil/0 = disabled.
+	Probe      func() string
+	Remind     func(string)
+	StallTurns int
+	// stallGoalID/lastFP/stale/stallChallenges are watchdog state. They are
+	// only touched from the single Drive loop, so no extra locking is
+	// needed beyond Drive's own exclusivity guard.
+	stallGoalID     string
+	lastFP          string
+	stale           int
+	stallChallenges int
 }
+
+// stallChallengeLimit is the number of unanswered stall challenges after
+// which the watchdog auto-blocks the goal instead of challenging again.
+const stallChallengeLimit = 2
 
 // Drive executes continuation turns while the goal is active. Only one Drive
 // loop runs at a time; concurrent calls return immediately.
@@ -146,7 +176,40 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 			d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
 			return nil
 		}
+		d.checkStall(current)
 	}
+}
+
+// checkStall runs the stall watchdog after a completed turn. It only guards
+// unmanaged goals (orchestrator-owned goals have their own supervision).
+// Caller: the single Drive loop, after the post-turn budget check.
+func (d *GoalDriver) checkStall(current *goal.GoalSnapshot) {
+	if d.Probe == nil || d.Remind == nil || d.StallTurns <= 0 || current.ManagedBy != "" {
+		return
+	}
+	fp := d.Probe()
+	if current.GoalID != d.stallGoalID {
+		d.stallGoalID, d.lastFP, d.stale, d.stallChallenges = current.GoalID, fp, 0, 0
+		return
+	}
+	if fp != d.lastFP {
+		d.lastFP, d.stale, d.stallChallenges = fp, 0, 0
+		return
+	}
+	d.stale++
+	if d.stale < d.StallTurns {
+		return
+	}
+	d.stale = 0
+	d.stallChallenges++
+	d.Mode.TrackStall(d.stallChallenges)
+	if d.stallChallenges >= stallChallengeLimit {
+		reason := "no measurable progress"
+		expectation := "user direction on how to proceed"
+		_, _ = d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason, Expectation: &expectation}, goal.GoalActorSystem)
+		return
+	}
+	d.Remind(fmt.Sprintf("No measurable progress in %d turns (no todo transitions, no workspace changes). Make measurable progress now, revise the todo list to match reality, or call goal with action \"update\", status \"blocked\" with reason+expectation. Further stalled turns will auto-block the goal for user review.", d.StallTurns))
 }
 
 // runTurn executes one continuation turn for the active goal. A goal carrying

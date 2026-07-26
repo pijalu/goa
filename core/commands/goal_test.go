@@ -850,3 +850,103 @@ func TestGoalCommand_ReplaceInteractive_NoActiveGoal(t *testing.T) {
 		t.Fatal("expected error when no active goal")
 	}
 }
+
+// TestGoalCommand_Log exercises /goal:log: the durable event records render
+// with time, type, actor, status, and reason — most recent last.
+func TestGoalCommand_Log(t *testing.T) {
+	store := goal.NewFileEventStore(filepath.Join(t.TempDir(), "goal-events.jsonl"))
+	mode := goal.NewGoalMode(store, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	reason := "paused by user"
+	if _, err := mode.PauseGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Run(ctx, []string{"log"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+	for _, want := range []string{"goal.create", "goal.update", "status=paused", "reason=paused by user"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestGoalCommand_Log_Empty(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+	if err := cmd.Run(ctx, []string{"log"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ctx.OutputBuffer.String(), "No goal events recorded.") {
+		t.Errorf("unexpected output: %q", ctx.OutputBuffer.String())
+	}
+}
+
+// TestGoalCommand_Verify exercises /goal:verify: the recorded verify command
+// runs on demand and prints PASS/FAIL; without a verifier or command it
+// errors cleanly.
+func TestGoalCommand_Verify(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.SetVerifier(&fakeCommandVerifier{output: "all green\n", ok: true}, true)
+	verifyCmd := "true"
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests", VerifyCommand: &verifyCmd}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"verify"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+	if !strings.Contains(out, "all green") || !strings.Contains(out, "PASS") {
+		t.Errorf("unexpected verify output: %q", out)
+	}
+}
+
+func TestGoalCommand_Verify_Fail(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.SetVerifier(&fakeCommandVerifier{output: "boom\n", ok: false}, true)
+	verifyCmd := "false"
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests", VerifyCommand: &verifyCmd}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"verify"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ctx.OutputBuffer.String(), "FAIL") {
+		t.Errorf("expected FAIL in output: %q", ctx.OutputBuffer.String())
+	}
+}
+
+func TestGoalCommand_Verify_NoCommand(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+	if err := cmd.Run(ctx, []string{"verify"}); err == nil {
+		t.Fatal("expected error when no verify command recorded")
+	}
+}
+
+type fakeCommandVerifier struct {
+	output string
+	ok     bool
+}
+
+func (v *fakeCommandVerifier) Verify(_ context.Context, _ string) (string, bool) {
+	return v.output, v.ok
+}

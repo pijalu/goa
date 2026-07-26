@@ -62,6 +62,8 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 	"resume":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.resume(ctx) },
 	"cancel":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancel(ctx) },
 	"manage":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showQueueManager(ctx) },
+	"log":      func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showEventLog(ctx) },
+	"verify":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.runVerify(ctx) },
 	"next-add": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error { return c.queueNext(ctx, p.objective) },
 	"next-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error {
 		return c.promptCreateInteractive(ctx, placementLast)
@@ -129,6 +131,8 @@ var goalSubcommandKinds = map[string]struct {
 	"resume":  {mode: subNone, kind: "resume"},
 	"cancel":  {mode: subNone, kind: "cancel"},
 	"manage":  {mode: subNone, kind: "manage"},
+	"log":     {mode: subNone, kind: "log"},
+	"verify":  {mode: subNone, kind: "verify"},
 	"new":     {mode: subOptional, kind: "create", bareKind: "create-interactive"},
 	"next":    {mode: subOptional, kind: "next-add", bareKind: "next-interactive"},
 	"replace": {mode: subOptional, kind: "replace", bareKind: "replace-interactive"},
@@ -238,6 +242,82 @@ func (c *GoalCommand) cancel(ctx core.Context) error {
 		return err
 	}
 	writeStr(ctx, "Goal cancelled.\n")
+	return nil
+}
+
+// goalLogLimit caps how many event-log records /goal:log renders.
+const goalLogLimit = 20
+
+// showEventLog implements /goal:log: render the recent goal event records
+// (time, type, actor, status, reason, expectation) from the durable log.
+func (c *GoalCommand) showEventLog(ctx core.Context) error {
+	records, err := c.Mode.EventLog()
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		writeStr(ctx, "No goal events recorded.\n")
+		return nil
+	}
+	if len(records) > goalLogLimit {
+		writeFmt(ctx, "(showing last %d of %d records)\n", goalLogLimit, len(records))
+		records = records[len(records)-goalLogLimit:]
+	}
+	for _, r := range records {
+		writeStr(ctx, formatGoalEventRecord(r))
+	}
+	return nil
+}
+
+// formatGoalEventRecord renders one event-log record as a single line,
+// appending optional fields only when present.
+func formatGoalEventRecord(r goal.GoalEventRecord) string {
+	var b strings.Builder
+	b.WriteString(r.Timestamp.Format("15:04:05"))
+	b.WriteString("  ")
+	b.WriteString(string(r.Type))
+	if r.Actor != nil {
+		b.WriteString("  actor=")
+		b.WriteString(*r.Actor)
+	}
+	if r.Status != nil {
+		b.WriteString("  status=")
+		b.WriteString(*r.Status)
+	}
+	if r.Name != nil {
+		b.WriteString("  name=")
+		b.WriteString(*r.Name)
+	}
+	if r.Reason != nil {
+		b.WriteString("  reason=")
+		b.WriteString(truncate(*r.Reason, 60))
+	}
+	if r.Expectation != nil {
+		b.WriteString("  expectation=")
+		b.WriteString(truncate(*r.Expectation, 60))
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
+// runVerify implements /goal:verify: execute the current goal's recorded
+// verify command on demand and print its output plus PASS/FAIL.
+func (c *GoalCommand) runVerify(ctx core.Context) error {
+	output, ok, err := c.Mode.RunVerifyCommand(context.Background())
+	if err != nil {
+		return err
+	}
+	if output != "" {
+		writeStr(ctx, output)
+		if !strings.HasSuffix(output, "\n") {
+			writeStr(ctx, "\n")
+		}
+	}
+	if ok {
+		writeStr(ctx, "verify command: PASS\n")
+	} else {
+		writeStr(ctx, "verify command: FAIL\n")
+	}
 	return nil
 }
 
@@ -575,6 +655,8 @@ var goalSubcommands = []struct {
 	{"manage", "open the queued-goals manager"},
 	{"reorder", "reorder queue with letter mapping"},
 	{"status", "show current goal status"},
+	{"log", "show recent goal event records"},
+	{"verify", "run the recorded verify command now"},
 	{"pause", "pause the active goal"},
 	{"resume", "resume a paused goal"},
 	{"cancel", "discard the current goal"},

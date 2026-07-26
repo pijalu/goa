@@ -179,16 +179,51 @@ func TestGoalQueueStore_ReorderEmptyMapping(t *testing.T) {
 	}
 }
 
+// TestGoalQueueStore_CompletionCriterion verifies a queued goal keeps its
+// done-condition through Append/persist/Read so promotion can restore it.
+func TestGoalQueueStore_CompletionCriterion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "q.json")
+	store := NewGoalQueueStore(path)
+	criterion := "go test ./... passes"
+	verifyCmd := "go test ./..."
+	blank := "   "
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "with criterion", CompletionCriterion: &criterion, VerifyCommand: &verifyCmd}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "blank criterion", CompletionCriterion: &blank, VerifyCommand: &blank}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := NewGoalQueueStore(path).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 2 {
+		t.Fatalf("read = %d goals, want 2", len(read))
+	}
+	if read[0].CompletionCriterion == nil || *read[0].CompletionCriterion != criterion {
+		t.Errorf("goal[0] criterion = %v, want %q", read[0].CompletionCriterion, criterion)
+	}
+	if read[0].VerifyCommand == nil || *read[0].VerifyCommand != verifyCmd {
+		t.Errorf("goal[0] verify command = %v, want %q", read[0].VerifyCommand, verifyCmd)
+	}
+	if read[1].CompletionCriterion != nil {
+		t.Errorf("blank criterion must normalize to nil, got %q", *read[1].CompletionCriterion)
+	}
+	if read[1].VerifyCommand != nil {
+		t.Errorf("blank verify command must normalize to nil, got %q", *read[1].VerifyCommand)
+	}
+}
+
 // TestGoalQueueStore_FreshContext verifies a queued goal carries its per-goal
 // clean-context flag through Append/persist/Read (bugs.md: goal queue +
 // per-goal clean-context flag).
 func TestGoalQueueStore_FreshContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "q.json")
 	store := NewGoalQueueStore(path)
-	if _, err := store.AppendWithOptions("default goal", false); err != nil {
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "default goal"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendWithOptions("clean goal", true); err != nil {
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "clean goal", FreshContext: true}); err != nil {
 		t.Fatal(err)
 	}
 	// Re-read from disk to prove persistence.

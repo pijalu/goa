@@ -5,8 +5,10 @@
 package goal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -17,8 +19,7 @@ import (
 // dispatcher so the tool array stays small and stable for prompt caching
 // (bugs.md S2): one fixed schema instead of four.
 type GoalTool struct {
-	Mode       *goal.GoalMode
-	ReminderFn func(string)
+	Mode *goal.GoalMode
 	// CreateAllowed reports whether autonomous goal creation is permitted. It
 	// gates only the `create` action and only when NO goal is currently active
 	// (bugs.md S2: all goal actions are allowed while a goal is running).
@@ -35,7 +36,7 @@ type GoalTool struct {
 // satisfied by *core.GoalQueueStore.
 type GoalQueue interface {
 	Read() ([]goal.UpcomingGoal, error)
-	AppendWithOptions(objective string, freshContext bool) ([]goal.UpcomingGoal, error)
+	AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
 	Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error)
 	Move(id, direction string) ([]goal.UpcomingGoal, error)
 }
@@ -47,11 +48,16 @@ type goalArgs struct {
 	Objective           string   `json:"objective,omitempty"`
 	Objectives          []string `json:"objectives,omitempty"`
 	CompletionCriterion *string  `json:"completionCriterion,omitempty"`
+	VerifyCommand       string   `json:"verifyCommand,omitempty"`
 	Replace             bool     `json:"replace,omitempty"`
 	FreshContext        bool     `json:"freshContext,omitempty"`
 	Status              string   `json:"status,omitempty"`
-	Value               *float64 `json:"value,omitempty"`
-	Unit                string   `json:"unit,omitempty"`
+	// Terminal-answer contract (update): reason justifies the transition;
+	// expectation states what unblocks a blocked goal.
+	Reason      string `json:"reason,omitempty"`
+	Expectation string `json:"expectation,omitempty"`
+	Value       *float64 `json:"value,omitempty"`
+	Unit        string   `json:"unit,omitempty"`
 	// Goal list management (todo-like): target a goal by id/name and reorder.
 	GoalID    string `json:"goalId,omitempty"`
 	Direction string `json:"direction,omitempty"`
@@ -97,6 +103,10 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 					"type":        "string",
 					"description": "create: how to verify the goal is complete.",
 				},
+				"verifyCommand": map[string]any{
+					"type":        "string",
+					"description": "create: optional machine-checkable done-condition (e.g. \"go test ./...\"). The done-gate executes it when you confirm completion: exit 0 closes the goal, non-zero keeps it active with the output. Prefer it over prose criteria whenever a command can check the work.",
+				},
 				"replace": map[string]any{
 					"type":        "boolean",
 					"description": "create: replace an existing goal instead of failing.",
@@ -109,6 +119,14 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 					"type":        "string",
 					"enum":        []string{"active", "complete", "paused", "blocked"},
 					"description": "update: the lifecycle status to set.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "update: justification for the transition. REQUIRED for `paused` (why the goal must yield) and `blocked` (the concrete blocker). For `complete`, carries the verification evidence and is required when the done-gate asks for it.",
+				},
+				"expectation": map[string]any{
+					"type":        "string",
+					"description": "update: REQUIRED for `blocked` — exactly what input or change from the user/environment will unblock the goal.",
 				},
 				"value": map[string]any{
 					"type":        "number",
@@ -245,7 +263,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 			activated = snap
 			continue
 		}
-		if err := t.enqueue(obj, args.FreshContext); err != nil {
+		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), args.FreshContext); err != nil {
 			return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)
 		}
 		queued++
@@ -259,6 +277,7 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 	snapshot, err := t.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:           objective,
 		CompletionCriterion: args.CompletionCriterion,
+		VerifyCommand:       optionalText(args.VerifyCommand),
 		Replace:             replace,
 		FreshContext:        args.FreshContext,
 	}, goal.GoalActorModel)
@@ -270,11 +289,17 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 }
 
 // enqueue appends a goal to the durable queue. It requires a wired queue.
-func (t *GoalTool) enqueue(objective string, freshContext bool) error {
+// The shared criterion and verify command apply to every objective in the call.
+func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *string, freshContext bool) error {
 	if t.Queue == nil {
 		return fmt.Errorf("a goal is already active and no goal queue is available; use replace to start a new one")
 	}
-	_, err := t.Queue.AppendWithOptions(objective, freshContext)
+	_, err := t.Queue.AppendGoal(goal.UpcomingGoalInput{
+		Objective:           objective,
+		CompletionCriterion: criterion,
+		VerifyCommand:       verifyCommand,
+		FreshContext:        freshContext,
+	})
 	return err
 }
 
@@ -371,7 +396,7 @@ func (t *GoalTool) handleUpdate(args goalArgs) (agentic.ToolResult, error) {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
 			fmt.Errorf("action \"update\" requires \"status\" (active|complete|paused|blocked)"))
 	}
-	handlers := map[string]func() (agentic.ToolResult, error){
+	handlers := map[string]func(goalArgs) (agentic.ToolResult, error){
 		"active":   t.updateActive,
 		"paused":   t.updatePaused,
 		"blocked":  t.updateBlocked,
@@ -382,47 +407,105 @@ func (t *GoalTool) handleUpdate(args goalArgs) (agentic.ToolResult, error) {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_status",
 			fmt.Errorf("invalid goal status %q: must be active, complete, paused, or blocked", args.Status))
 	}
-	res, err := handler()
+	res, err := handler(args)
 	if err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "update_failed", err)
 	}
 	return res, nil
 }
 
-func (t *GoalTool) updateActive() (agentic.ToolResult, error) {
-	if _, err := t.Mode.ResumeGoal(goal.GoalReasonInput{}, goal.GoalActorModel); err != nil {
+func (t *GoalTool) updateActive(args goalArgs) (agentic.ToolResult, error) {
+	if _, err := t.Mode.ResumeGoal(goal.GoalReasonInput{Reason: optionalReason(args)}, goal.GoalActorModel); err != nil {
 		return agentic.ToolResult{}, err
 	}
 	return agentic.ToolResult{Output: "Goal resumed."}, nil
 }
 
-func (t *GoalTool) updatePaused() (agentic.ToolResult, error) {
-	if _, err := t.Mode.PauseGoal(goal.GoalReasonInput{}, goal.GoalActorModel); err != nil {
+// updatePaused parks the goal. A justification is mandatory: pausing stops
+// all autonomous work until the user resumes, so an unexplained pause forces
+// the user to say "please continue" — exactly what goal mode exists to avoid.
+func (t *GoalTool) updatePaused(args goalArgs) (agentic.ToolResult, error) {
+	reason := strings.TrimSpace(args.Reason)
+	if reason == "" {
+		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
+			fmt.Errorf("status \"paused\" requires \"reason\" justifying why the goal must yield. If you can still make progress, keep working instead; if an external blocker prevents progress, use status \"blocked\" with \"reason\" and \"expectation\""))
+	}
+	input := goal.GoalReasonInput{Reason: &reason, Expectation: optionalExpectation(args)}
+	if _, err := t.Mode.PauseGoal(input, goal.GoalActorModel); err != nil {
 		return agentic.ToolResult{}, err
 	}
-	return agentic.ToolResult{Output: "Goal paused.", StopTurn: true}, nil
+	return agentic.ToolResult{Output: "Goal paused: " + reason, StopTurn: true}, nil
 }
 
-func (t *GoalTool) updateBlocked() (agentic.ToolResult, error) {
-	blocked, err := t.Mode.MarkBlocked(goal.GoalReasonInput{}, goal.GoalActorModel)
+// updateBlocked stops the goal on an external blocker. Both the concrete
+// blocker (reason) and the unblock condition (expectation) are mandatory so
+// the user knows exactly what to provide, and the next turn can auto-resume
+// once it arrives.
+func (t *GoalTool) updateBlocked(args goalArgs) (agentic.ToolResult, error) {
+	reason := strings.TrimSpace(args.Reason)
+	expectation := strings.TrimSpace(args.Expectation)
+	if reason == "" || expectation == "" {
+		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
+			fmt.Errorf("status \"blocked\" requires \"reason\" (the concrete blocker) AND \"expectation\" (exactly what input or change unblocks the goal)"))
+	}
+	input := goal.GoalReasonInput{Reason: &reason, Expectation: &expectation}
+	blocked, err := t.Mode.MarkBlocked(input, goal.GoalActorModel)
 	if err != nil {
 		return agentic.ToolResult{}, err
 	}
-	if blocked != nil && t.ReminderFn != nil {
-		t.ReminderFn(goal.BuildBlockedReasonPrompt(*blocked))
+	if blocked == nil {
+		return agentic.ToolResult{Output: "No active goal to block."}, nil
 	}
-	return agentic.ToolResult{Output: "Goal marked blocked.", StopTurn: true}, nil
+	return agentic.ToolResult{
+		Output:   fmt.Sprintf("Goal marked blocked: %s. Waiting for: %s. Tell the user what you need; when their reply supplies it or asks to continue, resume with goal action \"update\", status \"active\".", reason, expectation),
+		StopTurn: true,
+	}, nil
 }
 
-func (t *GoalTool) updateComplete() (agentic.ToolResult, error) {
-	completed, err := t.Mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+// updateComplete closes the goal through the done-gate (goals.done_gate),
+// machine verification (verify command), and judge. In verify mode with a
+// recorded completion criterion, the first request is intercepted: the goal
+// stays active and the tool returns the verification challenge WITHOUT
+// stopping the turn, so the model audits the criterion and re-calls complete
+// with the evidence in `reason`. A confirmed request then runs the recorded
+// verify command (exit 0 required) and judge; a failure keeps the goal
+// active with the failure detail, escalating to blocked at the configured
+// streak cap. Without a criterion (or gate off), completion is immediate.
+func (t *GoalTool) updateComplete(args goalArgs) (agentic.ToolResult, error) {
+	input := goal.GoalReasonInput{Reason: optionalReason(args)}
+	result, err := t.Mode.RequestComplete(context.Background(), input, goal.GoalActorModel)
 	if err != nil {
 		return agentic.ToolResult{}, err
 	}
-	if completed != nil && t.ReminderFn != nil {
-		t.ReminderFn(goal.BuildCompletionSummary(*completed))
+	switch result.Outcome {
+	case goal.CompleteChallenged:
+		return agentic.ToolResult{Output: goal.BuildVerificationChallenge(*result.Snapshot)}, nil
+	case goal.CompleteVerifyFailed:
+		return agentic.ToolResult{Output: goal.BuildVerifyFailureMessage(result), StopTurn: result.Failure != nil && result.Failure.Escalated}, nil
+	case goal.CompleteClosed:
+		return agentic.ToolResult{Output: "Goal marked complete.", StopTurn: true}, nil
+	default:
+		return agentic.ToolResult{Output: "No active goal to complete."}, nil
 	}
-	return agentic.ToolResult{Output: "Goal marked complete.", StopTurn: true}, nil
+}
+
+// optionalReason maps the raw reason arg to a trimmed *string (nil when blank).
+func optionalReason(args goalArgs) *string {
+	return optionalText(args.Reason)
+}
+
+// optionalText maps a raw string to a trimmed *string (nil when blank).
+func optionalText(s string) *string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+// optionalExpectation maps the raw expectation arg to a trimmed *string (nil when blank).
+func optionalExpectation(args goalArgs) *string {
+	return optionalText(args.Expectation)
 }
 
 func (t *GoalTool) handleGet() (agentic.ToolResult, error) {

@@ -203,12 +203,14 @@ func (q *fakeQueue) Read() ([]goal.UpcomingGoal, error) {
 	return append([]goal.UpcomingGoal(nil), q.goals...), nil
 }
 
-func (q *fakeQueue) AppendWithOptions(objective string, freshContext bool) ([]goal.UpcomingGoal, error) {
+func (q *fakeQueue) AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
 	q.n++
 	q.goals = append(q.goals, goal.UpcomingGoal{
-		ID:           fmt.Sprintf("q%d", q.n),
-		Objective:    objective,
-		FreshContext: freshContext,
+		ID:                  fmt.Sprintf("q%d", q.n),
+		Objective:           input.Objective,
+		CompletionCriterion: input.CompletionCriterion,
+		VerifyCommand:       input.VerifyCommand,
+		FreshContext:        input.FreshContext,
 	})
 	return q.Read()
 }

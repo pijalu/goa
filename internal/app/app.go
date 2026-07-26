@@ -97,6 +97,13 @@ type App struct {
 	// reviewOverlayRestore field is needed.
 	pendingInput *inputRequest
 
+	// goalCompletionHandoff stashes the terminal reason (completion evidence)
+	// of the goal that just completed so the next auto-promoted queued goal
+	// inherits it as its Handoff note. Written by handleGoalUpdate on a
+	// completion change, consumed (and cleared) by promoteNextQueuedGoal.
+	// Both run on the single event-forwarder goroutine.
+	goalCompletionHandoff *string
+
 	approvalStateFields
 }
 

@@ -58,14 +58,24 @@ type GoalSnapshot struct {
 	ManagedBy           string           `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
 	Objective           string           `json:"objective"`
 	CompletionCriterion *string          `json:"completionCriterion,omitempty"`
-	FreshContext        bool             `json:"freshContext,omitempty"`
-	Todos               []GoalTodoItem   `json:"todos,omitempty"`
+	// VerifyCommand is an optional machine-checkable done-condition: when
+	// set, the done-gate executes it (exit 0 = verified) after the model
+	// confirms completion, instead of trusting the evidence prose alone.
+	VerifyCommand *string          `json:"verifyCommand,omitempty"`
+	FreshContext  bool             `json:"freshContext,omitempty"`
+	// Handoff carries a note from a predecessor goal (its completion
+	// evidence) into this goal's reminder. Nil for stand-alone goals.
+	Handoff *string          `json:"handoff,omitempty"`
+	Todos   []GoalTodoItem   `json:"todos,omitempty"`
 	Status              GoalStatus       `json:"status"`
 	TurnsUsed           int              `json:"turnsUsed"`
 	TokensUsed          int              `json:"tokensUsed"`
 	WallClockMs         int64            `json:"wallClockMs"`
 	Budget              GoalBudgetReport `json:"budget"`
 	TerminalReason      *string          `json:"terminalReason,omitempty"`
+	// TerminalExpectation records what a blocked goal needs in order to
+	// resume (model-provided). Nil for active/completed goals.
+	TerminalExpectation *string `json:"terminalExpectation,omitempty"`
 }
 
 // GoalToolResult is the wrapper returned by read operations.
@@ -75,13 +85,24 @@ type GoalToolResult struct {
 
 // UpcomingGoal is a queued goal waiting to become active.
 type UpcomingGoal struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
-	ManagedBy    string    `json:"managedBy,omitempty"`
-	Objective    string    `json:"objective"`
-	FreshContext bool      `json:"freshContext,omitempty"` // run on a clean context when promoted
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ID                  string    `json:"id"`
+	Name                string    `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
+	ManagedBy           string    `json:"managedBy,omitempty"`
+	Objective           string    `json:"objective"`
+	CompletionCriterion *string   `json:"completionCriterion,omitempty"` // carried into the goal on promotion
+	VerifyCommand       *string   `json:"verifyCommand,omitempty"`       // carried into the goal on promotion
+	FreshContext        bool      `json:"freshContext,omitempty"`        // run on a clean context when promoted
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
+}
+
+// UpcomingGoalInput carries the fields needed to enqueue a goal. Using a
+// struct keeps the append signature stable as per-goal options grow.
+type UpcomingGoalInput struct {
+	Objective           string
+	CompletionCriterion *string
+	VerifyCommand       *string
+	FreshContext        bool
 }
 
 // GoalChangeKind describes the kind of change for UI rendering.
@@ -97,8 +118,11 @@ type GoalChange struct {
 	Kind   GoalChangeKind
 	Status *GoalStatus
 	Reason *string
-	Actor  *GoalActor
-	Stats  *GoalChangeStats
+	// Expectation carries the model-provided unblock condition for blocked
+	// transitions; nil for other lifecycle changes.
+	Expectation *string
+	Actor       *GoalActor
+	Stats       *GoalChangeStats
 }
 
 // GoalChangeStats is a counter snapshot at the moment of change.
@@ -114,17 +138,28 @@ type CreateGoalInput struct {
 	Name                string // optional friendly alias; auto-generated when empty
 	ManagedBy           string // empty for normal goals; "orchestrator" for ephemeral orchestrator goals
 	CompletionCriterion *string
-	Replace             bool
+	// VerifyCommand is an optional machine-checkable done-condition executed
+	// by the done-gate after the model confirms completion (exit 0 = pass).
+	VerifyCommand *string
+	Replace       bool
 	// FreshContext, when true, runs this goal's continuation turns on a new
 	// agent with a clean context (objective + handoff only) instead of reusing
 	// the current conversation. History is preserved in the durable transcript;
 	// it is simply not sent to the new agent. Default false = reuse current.
 	FreshContext bool
+	// Handoff is an optional note from a predecessor goal (typically the
+	// evidence recorded at its completion), shown to the model as untrusted
+	// context in the goal reminder.
+	Handoff *string
 }
 
-// GoalReasonInput carries an optional reason string for lifecycle changes.
+// GoalReasonInput carries the justification for lifecycle changes. Reason is
+// the "why"; Expectation is the "what is needed to unblock" for blocked
+// transitions. The tool layer enforces non-empty values for model-initiated
+// pause/blocked; runtime/user paths may leave them nil.
 type GoalReasonInput struct {
-	Reason *string
+	Reason      *string
+	Expectation *string
 }
 
 // goalStage is the mutable internal state rebuilt from event records.
@@ -134,7 +169,9 @@ type goalStage struct {
 	managedBy           string
 	objective           string
 	completionCriterion *string
+	verifyCommand       *string
 	freshContext        bool
+	handoff             *string
 	todos               []GoalTodoItem
 	status              GoalStatus
 	turnsUsed           int
@@ -143,7 +180,18 @@ type goalStage struct {
 	wallClockResumedAt  *int64
 	budgetLimits        GoalBudgetLimits
 	terminalReason      *string
-	updatedAt           time.Time
+	terminalExpectation *string
+	// pendingVerification is set when the done-gate (verify mode) has issued
+	// its challenge and the goal awaits a confirmed, evidence-backed complete
+	// call. In-memory only: it is not persisted to the event log, so a session
+	// restart mid-verification simply re-challenges the next complete attempt.
+	pendingVerification bool
+	// verifyFailures counts consecutive failed machine verifications
+	// (verifyCommand non-zero or judge FAIL). At maxVerifyFailures the goal
+	// is auto-blocked for user review instead of looping forever. In-memory
+	// only; a session restart resets the streak.
+	verifyFailures int
+	updatedAt      time.Time
 }
 
 // GoalEventType identifies a record in the event-sourced log.
@@ -167,11 +215,14 @@ type GoalEventRecord struct {
 	ManagedBy           *string `json:"managedBy,omitempty"`
 	Objective           *string `json:"objective,omitempty"`
 	CompletionCriterion *string `json:"completionCriterion,omitempty"`
+	VerifyCommand       *string `json:"verifyCommand,omitempty"`
+	Handoff             *string `json:"handoff,omitempty"`
 	FreshContext        *bool   `json:"freshContext,omitempty"`
 
 	// goal.update fields (patches)
 	Status       *string           `json:"status,omitempty"`
 	Reason       *string           `json:"reason,omitempty"`
+	Expectation  *string           `json:"expectation,omitempty"`
 	Todos        []GoalTodoItem    `json:"todos,omitempty"`
 	Actor        *string           `json:"actor,omitempty"`
 	TurnsUsed    *int              `json:"turnsUsed,omitempty"`

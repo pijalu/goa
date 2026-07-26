@@ -213,6 +213,152 @@ func TestGoalDriver_Start(t *testing.T) {
 	}
 }
 
+// stallTestDriver builds a driver wired with the stall watchdog fakes.
+func stallTestDriver(agent AgentRunner, mode *goal.GoalMode, probe *fakeProbe, remind *fakeRemind, turns int) *GoalDriver {
+	return &GoalDriver{Agent: agent, Mode: mode, Probe: probe.Fingerprint, Remind: remind.Record, StallTurns: turns}
+}
+
+// TestGoalDriver_StallWatchdog_ChallengeThenAutoBlock covers the goals.stall_turns
+// watchdog escalation: an unmanaged goal whose progress fingerprint never
+// changes is challenged after StallTurns stale turns, then auto-blocked after
+// the second unanswered challenge.
+func TestGoalDriver_StallWatchdog_ChallengeThenAutoBlock(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "spin"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	probe := &fakeProbe{}
+	remind := &fakeRemind{}
+	// StallTurns=2: turns 1-2 stale → challenge 1; turns 3-4 stale →
+	// challenge 2 → auto-block ends the loop.
+	agent := &fakeAgent{}
+	driver := stallTestDriver(agent, mode, probe, remind, 2)
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if remind.Len() != 1 {
+		t.Fatalf("reminders = %d, want 1 (challenge before block)", remind.Len())
+	}
+	if !strings.Contains(remind.messages[0], "No measurable progress") {
+		t.Errorf("challenge text unexpected: %q", remind.messages[0])
+	}
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalBlocked {
+		t.Fatalf("status = %v, want blocked", g)
+	}
+	if g.TerminalReason == nil || *g.TerminalReason != "no measurable progress" {
+		t.Errorf("terminal reason = %v, want %q", g.TerminalReason, "no measurable progress")
+	}
+	if g.TerminalExpectation == nil || *g.TerminalExpectation != "user direction on how to proceed" {
+		t.Errorf("terminal expectation = %v", g.TerminalExpectation)
+	}
+}
+
+// TestGoalDriver_StallWatchdog_ProgressResetsStreak: a changed fingerprint
+// resets the stale counter, so no challenge fires.
+func TestGoalDriver_StallWatchdog_ProgressResetsStreak(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "work"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	probe := &fakeProbe{}
+	remind := &fakeRemind{}
+	// Fingerprint changes on turn 2 (one stale turn only), so no
+	// challenge ever fires; the goal completes on turn 3.
+	agent := &changingAgent{mode: mode, probe: probe, changeAt: 2, completeAt: 3}
+	driver := stallTestDriver(agent, mode, probe, remind, 2)
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if remind.Len() != 0 {
+		t.Errorf("reminders = %d, want 0 (progress resets the streak)", remind.Len())
+	}
+}
+
+// TestGoalDriver_StallWatchdog_ManagedGoalsSkipped: orchestrator-managed goals
+// have their own supervision and are never stall-watched.
+func TestGoalDriver_StallWatchdog_ManagedGoalsSkipped(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "orch", ManagedBy: "orchestrator"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	probe := &fakeProbe{}
+	remind := &fakeRemind{}
+	agent := &completeAfterAgent{mode: mode, runs: 5}
+	driver := stallTestDriver(agent, mode, probe, remind, 1)
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if remind.Len() != 0 {
+		t.Errorf("reminders = %d, want 0 (orchestrator goals have their own supervision)", remind.Len())
+	}
+}
+
+// TestGoalDriver_StallWatchdog_DisabledWithoutProbe: a nil probe disables the
+// watchdog even when StallTurns is set.
+func TestGoalDriver_StallWatchdog_DisabledWithoutProbe(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "x"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	remind := &fakeRemind{}
+	agent := &completeAfterAgent{mode: mode, runs: 4}
+	driver := &GoalDriver{Agent: agent, Mode: mode, Remind: remind.Record, StallTurns: 1}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if remind.Len() != 0 {
+		t.Errorf("reminders = %d, want 0 (nil probe disables the watchdog)", remind.Len())
+	}
+}
+
+// fakeProbe returns a fixed fingerprint until changed.
+type fakeProbe struct{ fp string }
+
+func (p *fakeProbe) Fingerprint() string { return p.fp }
+
+// fakeRemind records injected stall challenges.
+type fakeRemind struct{ messages []string }
+
+func (r *fakeRemind) Record(text string) { r.messages = append(r.messages, text) }
+func (r *fakeRemind) Len() int           { return len(r.messages) }
+
+// changingAgent changes the probe fingerprint at changeAt and completes the
+// goal at completeAt.
+type changingAgent struct {
+	mode       *goal.GoalMode
+	probe      *fakeProbe
+	runs       int
+	changeAt   int
+	completeAt int
+}
+
+func (a *changingAgent) Run(ctx context.Context, prompt string) error {
+	a.runs++
+	if a.runs == a.changeAt {
+		a.probe.fp = "progress"
+	}
+	if a.runs >= a.completeAt {
+		_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	}
+	return nil
+}
+
+// completeAfterAgent completes the goal after a fixed number of runs.
+type completeAfterAgent struct {
+	mode *goal.GoalMode
+	runs int
+	seen int
+}
+
+func (a *completeAfterAgent) Run(ctx context.Context, prompt string) error {
+	a.seen++
+	if a.seen >= a.runs {
+		_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	}
+	return nil
+}
+
 func TestMapDriverError(t *testing.T) {
 	cases := []struct {
 		err  error

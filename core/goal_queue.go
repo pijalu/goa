@@ -97,13 +97,14 @@ func (s *GoalQueueStore) writeLocked(goals []goal.UpcomingGoal) error {
 
 // Append adds a new goal to the end of the queue.
 func (s *GoalQueueStore) Append(objective string) ([]goal.UpcomingGoal, error) {
-	return s.AppendWithOptions(objective, false)
+	return s.AppendGoal(goal.UpcomingGoalInput{Objective: objective})
 }
 
-// AppendWithOptions enqueues a goal, carrying its per-goal fresh-context flag
-// so a queued goal can be set to run on a clean context when promoted
+// AppendGoal enqueues a goal, carrying its per-goal completion criterion,
+// verify command, and fresh-context flag so a queued goal keeps its full
+// done-condition and can be set to run on a clean context when promoted
 // (bugs.md: goal queue + per-goal clean-context flag).
-func (s *GoalQueueStore) AppendWithOptions(objective string, freshContext bool) ([]goal.UpcomingGoal, error) {
+func (s *GoalQueueStore) AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -114,12 +115,14 @@ func (s *GoalQueueStore) AppendWithOptions(objective string, freshContext bool) 
 	name := internal.FriendlyNameUnique(s.namesLocked(goals))
 	now := time.Now()
 	goals = append(goals, goal.UpcomingGoal{
-		ID:           generateQueueID(),
-		Name:         name,
-		Objective:    strings.TrimSpace(objective),
-		FreshContext: freshContext,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                  generateQueueID(),
+		Name:                name,
+		Objective:           strings.TrimSpace(input.Objective),
+		CompletionCriterion: goal.NormalizeOptionalText(input.CompletionCriterion),
+		VerifyCommand:       goal.NormalizeOptionalText(input.VerifyCommand),
+		FreshContext:        input.FreshContext,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	})
 	if err := s.writeLocked(goals); err != nil {
 		return nil, err
