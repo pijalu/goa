@@ -357,6 +357,29 @@ type GoalsConfig struct {
 	// carry the validation evidence as its reason in a single call; "off"
 	// disables the gate. See docs/GOALS.md.
 	DoneGate string `yaml:"done_gate,omitempty"`
+	// VerifyCommands allows the done-gate to execute a goal's recorded
+	// verify command after the model confirms completion (exit 0 = pass).
+	// Nil = default (enabled); explicit false disables machine verification.
+	VerifyCommands *bool `yaml:"verify_commands,omitempty"`
+	// MaxVerifyFailures caps consecutive machine-verification failures
+	// (verify command non-zero or judge FAIL) before the goal is auto-blocked
+	// for user review. 0 = inherit default; -1 = no cap (not recommended).
+	MaxVerifyFailures int `yaml:"max_verify_failures,omitempty"`
+	// StallTurns is the number of consecutive continuation turns with no
+	// measurable progress (todo transitions or workspace changes) before the
+	// driver challenges the goal. 0 = inherit default; -1 = disable.
+	StallTurns int `yaml:"stall_turns,omitempty"`
+	// DefaultTurnBudget gives every new goal a hard turn ceiling. 0 = inherit
+	// default; -1 = unlimited (goals run until they end or are stopped).
+	DefaultTurnBudget int `yaml:"default_turn_budget,omitempty"`
+	// Judge selects the independent completion auditor: "off" (default),
+	// "same" (the active model), or "model:<id>" (a configured model).
+	Judge string `yaml:"judge,omitempty"`
+}
+
+// VerifyCommandsEnabled reports whether machine verification runs (default true).
+func (g GoalsConfig) VerifyCommandsEnabled() bool {
+	return g.VerifyCommands == nil || *g.VerifyCommands
 }
 
 // GoalsRetentionConfig controls how long terminal normal goals are kept.

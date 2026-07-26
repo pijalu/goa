@@ -29,7 +29,36 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergePermissions(other)
 	c.mergeOrchestrator(other)
 	c.mergePlan(other)
+	c.mergeGoals(other)
 	c.mergeMCP(other)
+}
+
+// mergeGoals merges the goals config section field by field. Scalars copy
+// when set (string != "", int != 0 — a negative explicitly disables a
+// default); VerifyCommands is a tri-state pointer so an explicit false
+// overrides the embedded default true.
+func (c *Config) mergeGoals(other *Config) {
+	if other.Goals.Retention.Days != 0 || other.Goals.Retention.Enabled {
+		c.Goals.Retention = other.Goals.Retention
+	}
+	if other.Goals.DoneGate != "" {
+		c.Goals.DoneGate = other.Goals.DoneGate
+	}
+	if other.Goals.VerifyCommands != nil {
+		c.Goals.VerifyCommands = other.Goals.VerifyCommands
+	}
+	if other.Goals.MaxVerifyFailures != 0 {
+		c.Goals.MaxVerifyFailures = other.Goals.MaxVerifyFailures
+	}
+	if other.Goals.StallTurns != 0 {
+		c.Goals.StallTurns = other.Goals.StallTurns
+	}
+	if other.Goals.DefaultTurnBudget != 0 {
+		c.Goals.DefaultTurnBudget = other.Goals.DefaultTurnBudget
+	}
+	if other.Goals.Judge != "" {
+		c.Goals.Judge = other.Goals.Judge
+	}
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.

@@ -11,6 +11,11 @@ const (
 	TelemetryGoalStatusChanged = "goal_status_changed"
 	TelemetryGoalBudgetSet     = "goal_budget_set"
 	TelemetryGoalCleared       = "goal_cleared"
+	TelemetryGoalChallenged    = "goal_challenged"
+	TelemetryGoalVerifyFailed  = "goal_verify_failed"
+	TelemetryGoalJudgeError    = "goal_judge_error"
+	TelemetryGoalAutoBlocked   = "goal_auto_blocked"
+	TelemetryGoalStallDetected = "goal_stall_detected"
 )
 
 // BudgetTelemetryProperties returns telemetry-safe budget flags.

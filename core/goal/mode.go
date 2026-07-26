@@ -5,6 +5,7 @@
 package goal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -43,6 +44,18 @@ type GoalMode struct {
 	reminderFn ReminderFunc
 	namePool   NamePool
 	doneGate   DoneGateMode
+	// verifier runs recorded verify commands at completion time (nil =
+	// command verification unavailable). verifyCommandsEnabled gates it.
+	verifier              CommandVerifier
+	verifyCommandsEnabled bool
+	// judge independently audits confirmed completions (nil = no judge).
+	judge GoalJudge
+	// maxVerifyFailures caps the consecutive machine-verification failure
+	// streak before the goal is auto-blocked; <= 0 means no cap.
+	maxVerifyFailures int
+	// defaultTurnBudget, when > 0, gives every newly created goal a hard
+	// turn ceiling unless one is set explicitly later.
+	defaultTurnBudget int
 }
 
 // NamePool returns the set of friendly names already in use, so newly created
@@ -61,11 +74,13 @@ func NewGoalMode(store EventStore, publisher EventPublisher, telemetry Telemetry
 		publisher = noopPublisher{}
 	}
 	return &GoalMode{
-		store:      store,
-		publisher:  publisher,
-		telemetry:  telemetry,
-		reminderFn: reminderFn,
-		doneGate:   DefaultDoneGate,
+		store:                 store,
+		publisher:             publisher,
+		telemetry:             telemetry,
+		reminderFn:            reminderFn,
+		doneGate:              DefaultDoneGate,
+		verifyCommandsEnabled: true,
+		maxVerifyFailures:     DefaultMaxVerifyFailures,
 	}
 }
 
@@ -77,6 +92,25 @@ func (m *GoalMode) SetNamePool(pool NamePool) { m.namePool = pool }
 // before the goal may close (see DoneGateMode). It only affects future
 // RequestComplete calls.
 func (m *GoalMode) SetDoneGate(gate DoneGateMode) { m.doneGate = gate }
+
+// SetVerifier wires the command executor used for machine verification of
+// recorded verify commands. enabled=false disables command verification
+// without removing the executor.
+func (m *GoalMode) SetVerifier(v CommandVerifier, enabled bool) {
+	m.verifier = v
+	m.verifyCommandsEnabled = enabled
+}
+
+// SetJudge wires the independent completion judge (nil disables judging).
+func (m *GoalMode) SetJudge(j GoalJudge) { m.judge = j }
+
+// SetMaxVerifyFailures sets the consecutive-failure cap that auto-blocks a
+// goal for user review. Values <= 0 disable escalation.
+func (m *GoalMode) SetMaxVerifyFailures(n int) { m.maxVerifyFailures = n }
+
+// SetDefaultTurnBudget gives newly created goals a hard turn ceiling when
+// n > 0; 0 means no implicit budget.
+func (m *GoalMode) SetDefaultTurnBudget(n int) { m.defaultTurnBudget = n }
 
 // Replay loads all events from the store and rebuilds state.
 func (m *GoalMode) Replay() error {
@@ -122,6 +156,12 @@ func (m *GoalMode) RestoreCreate(record GoalEventRecord) {
 	}
 	if record.CompletionCriterion != nil {
 		state.completionCriterion = normalizeCompletionCriterion(record.CompletionCriterion)
+	}
+	if record.VerifyCommand != nil {
+		state.verifyCommand = NormalizeOptionalText(record.VerifyCommand)
+	}
+	if record.Handoff != nil {
+		state.handoff = NormalizeOptionalText(record.Handoff)
 	}
 	if record.FreshContext != nil {
 		state.freshContext = *record.FreshContext
@@ -212,11 +252,18 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 	}
 
 	completionCriterion := normalizeCompletionCriterion(input.CompletionCriterion)
+	verifyCommand := NormalizeOptionalText(input.VerifyCommand)
+	handoff := NormalizeOptionalText(input.Handoff)
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		name = internal.FriendlyNameUnique(m.queuedGoalNames())
+	}
+	budgetLimits := GoalBudgetLimits{}
+	if m.defaultTurnBudget > 0 {
+		budget := m.defaultTurnBudget
+		budgetLimits.TurnBudget = &budget
 	}
 	state := &goalStage{
 		goalID:              generateGoalID(),
@@ -224,14 +271,16 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		managedBy:           input.ManagedBy,
 		objective:           objective,
 		completionCriterion: completionCriterion,
+		verifyCommand:       verifyCommand,
 		freshContext:        input.FreshContext,
+		handoff:             handoff,
 		status:              GoalActive,
 		turnsUsed:           0,
 		tokensUsed:          0,
 		wallClockMs:         0,
 		wallClockResumedAt:  &nowMs,
 		updatedAt:           now,
-		budgetLimits:        GoalBudgetLimits{},
+		budgetLimits:        budgetLimits,
 	}
 
 	m.persistState(state, persistOptions{})
@@ -243,6 +292,8 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		ManagedBy:           &state.managedBy,
 		Objective:           &state.objective,
 		CompletionCriterion: state.completionCriterion,
+		VerifyCommand:       state.verifyCommand,
+		Handoff:             state.handoff,
 		FreshContext:        &state.freshContext,
 	})
 	m.telemetry.Track(TelemetryGoalCreated, map[string]any{
@@ -370,6 +421,11 @@ func (m *GoalMode) CancelGoalByID(goalID string, actor GoalActor) (GoalSnapshot,
 func (m *GoalMode) MarkBlocked(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.markBlockedLocked(input, actor)
+}
+
+// markBlockedLocked blocks the active goal; caller must hold m.mu.
+func (m *GoalMode) markBlockedLocked(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -497,6 +553,42 @@ func (m *GoalMode) persistTodosLocked(state *goalStage, actor GoalActor) {
 	})
 }
 
+// RunVerifyCommand executes the current goal's recorded verify command on
+// demand (the /goal:verify audit surface). It returns the command output and
+// whether it passed. The execution runs without holding the mode lock.
+func (m *GoalMode) RunVerifyCommand(ctx context.Context) (string, bool, error) {
+	m.mu.RLock()
+	state := m.state
+	verifier := m.verifier
+	enabled := m.verifyCommandsEnabled
+	var command *string
+	if state != nil {
+		command = state.verifyCommand
+	}
+	m.mu.RUnlock()
+
+	if state == nil {
+		return "", false, errors.New("no current goal")
+	}
+	if command == nil {
+		return "", false, errors.New("no verify command recorded for this goal")
+	}
+	if verifier == nil || !enabled {
+		return "", false, errors.New("command verification is disabled")
+	}
+	output, ok := verifier.Verify(ctx, *command)
+	return output, ok, nil
+}
+
+// EventLog returns the raw goal event records from the store (the
+// /goal:log audit surface). Returns nil when no store is wired.
+func (m *GoalMode) EventLog() ([]GoalEventRecord, error) {
+	if m.store == nil {
+		return nil, nil
+	}
+	return m.store.Replay()
+}
+
 // GetGoal returns the current goal snapshot.
 func (m *GoalMode) GetGoal() GoalToolResult {
 	m.mu.RLock()
@@ -606,8 +698,10 @@ func (m *GoalMode) applyStatus(state *goalStage, status GoalStatus) {
 	} else {
 		// Any transition out of active abandons a pending done-gate
 		// verification: a pause/blocked after a challenge must not let the
-		// next complete request skip the challenge.
+		// next complete request skip the challenge. The machine-verification
+		// failure streak resets with it.
 		state.pendingVerification = false
+		state.verifyFailures = 0
 	}
 	state.status = status
 }
@@ -692,7 +786,9 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 		ManagedBy:           state.managedBy,
 		Objective:           state.objective,
 		CompletionCriterion: state.completionCriterion,
+		VerifyCommand:       state.verifyCommand,
 		FreshContext:        state.freshContext,
+		Handoff:             state.handoff,
 		Todos:               append([]GoalTodoItem(nil), state.todos...),
 		Status:              state.status,
 		TurnsUsed:           state.turnsUsed,
@@ -747,6 +843,12 @@ func (m *GoalMode) statsOf(state *goalStage) *GoalChangeStats {
 }
 
 func normalizeCompletionCriterion(value *string) *string {
+	return NormalizeOptionalText(value)
+}
+
+// NormalizeOptionalText trims a free-text pointer field and maps blank to nil
+// so stored JSON omits it.
+func NormalizeOptionalText(value *string) *string {
 	if value == nil {
 		return nil
 	}

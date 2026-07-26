@@ -5,6 +5,7 @@
 package goal
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -35,7 +36,7 @@ type GoalTool struct {
 // satisfied by *core.GoalQueueStore.
 type GoalQueue interface {
 	Read() ([]goal.UpcomingGoal, error)
-	AppendWithOptions(objective string, completionCriterion *string, freshContext bool) ([]goal.UpcomingGoal, error)
+	AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
 	Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error)
 	Move(id, direction string) ([]goal.UpcomingGoal, error)
 }
@@ -47,6 +48,7 @@ type goalArgs struct {
 	Objective           string   `json:"objective,omitempty"`
 	Objectives          []string `json:"objectives,omitempty"`
 	CompletionCriterion *string  `json:"completionCriterion,omitempty"`
+	VerifyCommand       string   `json:"verifyCommand,omitempty"`
 	Replace             bool     `json:"replace,omitempty"`
 	FreshContext        bool     `json:"freshContext,omitempty"`
 	Status              string   `json:"status,omitempty"`
@@ -100,6 +102,10 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				"completionCriterion": map[string]any{
 					"type":        "string",
 					"description": "create: how to verify the goal is complete.",
+				},
+				"verifyCommand": map[string]any{
+					"type":        "string",
+					"description": "create: optional machine-checkable done-condition (e.g. \"go test ./...\"). The done-gate executes it when you confirm completion: exit 0 closes the goal, non-zero keeps it active with the output. Prefer it over prose criteria whenever a command can check the work.",
 				},
 				"replace": map[string]any{
 					"type":        "boolean",
@@ -257,7 +263,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 			activated = snap
 			continue
 		}
-		if err := t.enqueue(obj, args.CompletionCriterion, args.FreshContext); err != nil {
+		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), args.FreshContext); err != nil {
 			return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)
 		}
 		queued++
@@ -271,6 +277,7 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 	snapshot, err := t.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:           objective,
 		CompletionCriterion: args.CompletionCriterion,
+		VerifyCommand:       optionalText(args.VerifyCommand),
 		Replace:             replace,
 		FreshContext:        args.FreshContext,
 	}, goal.GoalActorModel)
@@ -282,12 +289,17 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 }
 
 // enqueue appends a goal to the durable queue. It requires a wired queue.
-// The shared completion criterion applies to every objective in the call.
-func (t *GoalTool) enqueue(objective string, criterion *string, freshContext bool) error {
+// The shared criterion and verify command apply to every objective in the call.
+func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *string, freshContext bool) error {
 	if t.Queue == nil {
 		return fmt.Errorf("a goal is already active and no goal queue is available; use replace to start a new one")
 	}
-	_, err := t.Queue.AppendWithOptions(objective, criterion, freshContext)
+	_, err := t.Queue.AppendGoal(goal.UpcomingGoalInput{
+		Objective:           objective,
+		CompletionCriterion: criterion,
+		VerifyCommand:       verifyCommand,
+		FreshContext:        freshContext,
+	})
 	return err
 }
 
@@ -450,44 +462,50 @@ func (t *GoalTool) updateBlocked(args goalArgs) (agentic.ToolResult, error) {
 	}, nil
 }
 
-// updateComplete closes the goal through the done-gate (goals.done_gate).
-// In verify mode with a recorded completion criterion, the first request is
-// intercepted: the goal stays active and the tool returns the verification
-// challenge WITHOUT stopping the turn, so the model audits the criterion and
-// re-calls complete with the evidence in `reason`. Evidence mode requires
-// `reason` in a single call. Without a criterion (or gate off), completion
-// is immediate.
+// updateComplete closes the goal through the done-gate (goals.done_gate),
+// machine verification (verify command), and judge. In verify mode with a
+// recorded completion criterion, the first request is intercepted: the goal
+// stays active and the tool returns the verification challenge WITHOUT
+// stopping the turn, so the model audits the criterion and re-calls complete
+// with the evidence in `reason`. A confirmed request then runs the recorded
+// verify command (exit 0 required) and judge; a failure keeps the goal
+// active with the failure detail, escalating to blocked at the configured
+// streak cap. Without a criterion (or gate off), completion is immediate.
 func (t *GoalTool) updateComplete(args goalArgs) (agentic.ToolResult, error) {
 	input := goal.GoalReasonInput{Reason: optionalReason(args)}
-	completed, challenged, err := t.Mode.RequestComplete(input, goal.GoalActorModel)
+	result, err := t.Mode.RequestComplete(context.Background(), input, goal.GoalActorModel)
 	if err != nil {
 		return agentic.ToolResult{}, err
 	}
-	if challenged {
-		return agentic.ToolResult{Output: goal.BuildVerificationChallenge(*completed)}, nil
-	}
-	if completed == nil {
+	switch result.Outcome {
+	case goal.CompleteChallenged:
+		return agentic.ToolResult{Output: goal.BuildVerificationChallenge(*result.Snapshot)}, nil
+	case goal.CompleteVerifyFailed:
+		return agentic.ToolResult{Output: goal.BuildVerifyFailureMessage(result), StopTurn: result.Failure != nil && result.Failure.Escalated}, nil
+	case goal.CompleteClosed:
+		return agentic.ToolResult{Output: "Goal marked complete.", StopTurn: true}, nil
+	default:
 		return agentic.ToolResult{Output: "No active goal to complete."}, nil
 	}
-	return agentic.ToolResult{Output: "Goal marked complete.", StopTurn: true}, nil
 }
 
 // optionalReason maps the raw reason arg to a trimmed *string (nil when blank).
 func optionalReason(args goalArgs) *string {
-	reason := strings.TrimSpace(args.Reason)
-	if reason == "" {
+	return optionalText(args.Reason)
+}
+
+// optionalText maps a raw string to a trimmed *string (nil when blank).
+func optionalText(s string) *string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
 		return nil
 	}
-	return &reason
+	return &trimmed
 }
 
 // optionalExpectation maps the raw expectation arg to a trimmed *string (nil when blank).
 func optionalExpectation(args goalArgs) *string {
-	expectation := strings.TrimSpace(args.Expectation)
-	if expectation == "" {
-		return nil
-	}
-	return &expectation
+	return optionalText(args.Expectation)
 }
 
 func (t *GoalTool) handleGet() (agentic.ToolResult, error) {

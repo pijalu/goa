@@ -108,6 +108,12 @@ goals:
   retention:
     enabled: true
     days: 7
+  done_gate: verify
+  verify_commands: true
+  max_verify_failures: 3
+  stall_turns: 5
+  default_turn_budget: 50
+  judge: off
 
 plan:
   retention:
