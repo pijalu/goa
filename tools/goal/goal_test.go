@@ -204,14 +204,27 @@ func (q *fakeQueue) Read() ([]goal.UpcomingGoal, error) {
 }
 
 func (q *fakeQueue) AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
+	return q.insert(input, false)
+}
+
+func (q *fakeQueue) PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
+	return q.insert(input, true)
+}
+
+func (q *fakeQueue) insert(input goal.UpcomingGoalInput, front bool) ([]goal.UpcomingGoal, error) {
 	q.n++
-	q.goals = append(q.goals, goal.UpcomingGoal{
+	item := goal.UpcomingGoal{
 		ID:                  fmt.Sprintf("q%d", q.n),
 		Objective:           input.Objective,
 		CompletionCriterion: input.CompletionCriterion,
 		VerifyCommand:       input.VerifyCommand,
 		FreshContext:        input.FreshContext,
-	})
+	}
+	if front {
+		q.goals = append([]goal.UpcomingGoal{item}, q.goals...)
+	} else {
+		q.goals = append(q.goals, item)
+	}
 	return q.Read()
 }
 

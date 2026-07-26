@@ -1326,3 +1326,29 @@ func TestToolEnabledConfigPythonApplyTo(t *testing.T) {
 		t.Error("ApplyTo should mark python as explicitly set in target")
 	}
 }
+
+// TestGoalsAutoUnblockEnabled verifies the tri-state default: nil = on,
+// explicit false = off, and a higher-layer explicit value overrides the
+// embedded default true in a DeepMerge.
+func TestGoalsAutoUnblockEnabled(t *testing.T) {
+	// Default (nil) is enabled.
+	var def Config
+	if !def.Goals.AutoUnblockEnabled() {
+		t.Error("AutoUnblockEnabled() = false for nil, want default true")
+	}
+	// Explicit false disables.
+	off := false
+	c := Config{Goals: GoalsConfig{AutoUnblock: &off}}
+	if c.Goals.AutoUnblockEnabled() {
+		t.Error("AutoUnblockEnabled() = true for explicit false, want false")
+	}
+	// Explicit false in the override layer wins over default true in base.
+	base := Config{Goals: GoalsConfig{AutoUnblock: boolPtr(true)}}
+	override := Config{Goals: GoalsConfig{AutoUnblock: &off}}
+	base.DeepMerge(&override)
+	if base.Goals.AutoUnblockEnabled() {
+		t.Error("DeepMerge: explicit false override should disable auto_unblock")
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }

@@ -77,6 +77,7 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 	},
 	"replace":             func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error { return c.replace(ctx, p.objective) },
 	"replace-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.promptReplaceInteractive(ctx) },
+	"settings":            func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.openSettings(ctx) },
 }
 
 func (c *GoalCommand) Run(ctx core.Context, args []string) error {
@@ -137,6 +138,7 @@ var goalSubcommandKinds = map[string]struct {
 	"next":    {mode: subOptional, kind: "next-add", bareKind: "next-interactive"},
 	"replace": {mode: subOptional, kind: "replace", bareKind: "replace-interactive"},
 	"reorder": {mode: subRequired, kind: "reorder", errorHint: "usage: /goal:reorder <mapping> (e.g. 1B,2C,3A)"},
+	"settings": {mode: subNone, kind: "settings"},
 }
 
 func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
@@ -319,6 +321,41 @@ func (c *GoalCommand) runVerify(ctx core.Context) error {
 		writeStr(ctx, "verify command: FAIL\n")
 	}
 	return nil
+}
+
+// openSettings implements /goal:settings — a selector mirroring the
+// /config → Goals menu, so both entry points expose the same toggles with the
+// same UX. Currently: auto-unblock on/off.
+func (c *GoalCommand) openSettings(ctx core.Context) error {
+	enabled := ctx.Config.Goals.AutoUnblockEnabled()
+	items := []tui.SelectorItem{
+		{Value: "auto_unblock", Label: "Auto-unblock goals", Description: boolLabel(enabled)},
+	}
+	ctx.SelectOption("Goal settings:", items, "", func(field string, ok bool) {
+		if !ok || field != "auto_unblock" {
+			return
+		}
+		g := &ctx.Config.Goals
+		next := !g.AutoUnblockEnabled()
+		g.AutoUnblock = &next
+		if ctx.ConfigSaver != nil {
+			if err := ctx.ConfigSaver.Save(ctx.Config); err != nil {
+				ctx.Flash("Failed to save config: " + err.Error())
+				return
+			}
+		}
+		ctx.Flash("Auto-unblock goals " + goalOnOffLabel(next))
+	})
+	return nil
+}
+
+// goalOnOffLabel renders an on/off state for flash messages (matches the
+// config menu's toggle feedback).
+func goalOnOffLabel(v bool) string {
+	if v {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func (c *GoalCommand) queueNext(ctx core.Context, objective string) error {
@@ -657,6 +694,7 @@ var goalSubcommands = []struct {
 	{"status", "show current goal status"},
 	{"log", "show recent goal event records"},
 	{"verify", "run the recorded verify command now"},
+	{"settings", "toggle goal settings (auto-unblock)"},
 	{"pause", "pause the active goal"},
 	{"resume", "resume a paused goal"},
 	{"cancel", "discard the current goal"},

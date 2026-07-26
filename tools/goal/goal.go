@@ -24,6 +24,11 @@ type GoalTool struct {
 	// gates only the `create` action and only when NO goal is currently active
 	// (bugs.md S2: all goal actions are allowed while a goal is running).
 	CreateAllowed func() bool
+	// AutoUnblock reports whether a model-blocked goal (with justification)
+	// should auto-spawn an unblocking investigation goal in front of it. Nil =
+	// enabled (the default). When it returns false, a justified block falls
+	// back to plain blocking (goal parked, turn stops).
+	AutoUnblock func() bool
 	// Queue is the durable FIFO of upcoming goals. When set, the tool manages
 	// goals as a todo-like list: `create` APPENDS to the queue by default when
 	// a goal is already active (rather than failing), and the list/cancel/reorder
@@ -37,6 +42,9 @@ type GoalTool struct {
 type GoalQueue interface {
 	Read() ([]goal.UpcomingGoal, error)
 	AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
+	// PrependGoal inserts a goal at the FRONT of the queue (promoted next).
+	// Used by the auto-unblock flow and the model's push-in-front create.
+	PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
 	Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error)
 	Move(id, direction string) ([]goal.UpcomingGoal, error)
 }
@@ -61,6 +69,10 @@ type goalArgs struct {
 	// Goal list management (todo-like): target a goal by id/name and reorder.
 	GoalID    string `json:"goalId,omitempty"`
 	Direction string `json:"direction,omitempty"`
+	// Priority, when "front", inserts a created goal at the FRONT of the queue
+	// (promoted next) instead of appending. Used to push an execution goal
+	// ahead of the goal it unblocks.
+	Priority string `json:"priority,omitempty"`
 	// Todo management (framework-managed todo list for the goal).
 	TodoTitle  string `json:"todoTitle,omitempty"`
 	TodoID     string `json:"todoId,omitempty"`
@@ -98,6 +110,11 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 					"type":        "string",
 					"enum":        []string{"up", "down"},
 					"description": "reorder: move the queued goal up or down one position.",
+				},
+				"priority": map[string]any{
+					"type":        "string",
+					"enum":        []string{"front"},
+					"description": "create: when \"front\", insert the goal at the FRONT of the queue (promoted next) instead of appending. Use to push an execution goal ahead of the goal it unblocks.",
 				},
 				"completionCriterion": map[string]any{
 					"type":        "string",
@@ -263,7 +280,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 			activated = snap
 			continue
 		}
-		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), args.FreshContext); err != nil {
+		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), args.FreshContext, args.Priority == "front"); err != nil {
 			return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)
 		}
 		queued++
@@ -290,16 +307,23 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 
 // enqueue appends a goal to the durable queue. It requires a wired queue.
 // The shared criterion and verify command apply to every objective in the call.
-func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *string, freshContext bool) error {
+// front=true inserts at the FRONT of the queue (promoted next) instead.
+func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *string, freshContext bool, front bool) error {
 	if t.Queue == nil {
 		return fmt.Errorf("a goal is already active and no goal queue is available; use replace to start a new one")
 	}
-	_, err := t.Queue.AppendGoal(goal.UpcomingGoalInput{
+	input := goal.UpcomingGoalInput{
 		Objective:           objective,
 		CompletionCriterion: criterion,
 		VerifyCommand:       verifyCommand,
 		FreshContext:        freshContext,
-	})
+	}
+	var err error
+	if front {
+		_, err = t.Queue.PrependGoal(input)
+	} else {
+		_, err = t.Queue.AppendGoal(input)
+	}
 	return err
 }
 
@@ -456,10 +480,79 @@ func (t *GoalTool) updateBlocked(args goalArgs) (agentic.ToolResult, error) {
 	if blocked == nil {
 		return agentic.ToolResult{Output: "No active goal to block."}, nil
 	}
+
+	// Auto-unblock: when the model supplies a justification (reason +
+	// expectation), the framework enqueues an investigation goal IN FRONT of
+	// the blocked goal, forcing the search for a solution before the user is
+	// asked for guidance. Falls back to plain blocking when no queue is wired.
+	if out, ok := t.enqueueUnblockGoal(*blocked, reason, expectation); ok {
+		return out, nil
+	}
+
 	return agentic.ToolResult{
 		Output:   fmt.Sprintf("Goal marked blocked: %s. Waiting for: %s. Tell the user what you need; when their reply supplies it or asks to continue, resume with goal action \"update\", status \"active\".", reason, expectation),
 		StopTurn: true,
 	}, nil
+}
+
+// enqueueUnblockGoal demotes the just-blocked goal A back onto the front of
+// the queue, then activates an "unblocking" investigation goal U in front of
+// it. U's objective embeds A's blocker and the investigate→execute-or-block
+// contract: find a solution and push an execution goal in front, or — only
+// when no solution exists — block U itself and ask the user for guidance.
+// Returns (result, true) on success; (_, false) when auto-unblock is disabled
+// or no queue is available.
+func (t *GoalTool) enqueueUnblockGoal(blocked goal.GoalSnapshot, reason, expectation string) (agentic.ToolResult, bool) {
+	if t.Queue == nil || (t.AutoUnblock != nil && !t.AutoUnblock()) {
+		return agentic.ToolResult{}, false
+	}
+	// Re-queue A at the FRONT so it resumes right after the unblocking goal
+	// completes. Its block context rides along in the objective so the
+	// eventual resume turn sees why it stopped.
+	requeueObjective := blocked.Objective
+	if requeueObjective == "" {
+		requeueObjective = "(resume blocked goal)"
+	}
+	if _, err := t.Queue.PrependGoal(goal.UpcomingGoalInput{
+		Objective:           requeueObjective,
+		CompletionCriterion: blocked.CompletionCriterion,
+		VerifyCommand:       blocked.VerifyCommand,
+	}); err != nil {
+		return agentic.ToolResult{}, false
+	}
+	// Clear A from active so U can start. Runtime actor: this is a framework
+	// transition, not a user cancellation.
+	if _, err := t.Mode.CancelGoal(goal.GoalActorRuntime); err != nil {
+		return agentic.ToolResult{}, false
+	}
+	// Activate the unblocking investigation goal.
+	uObjective := buildUnblockObjective(requeueObjective, reason, expectation)
+	if _, err := t.Mode.CreateGoal(goal.CreateGoalInput{
+		Objective: uObjective,
+	}, goal.GoalActorRuntime); err != nil {
+		return agentic.ToolResult{}, false
+	}
+	return agentic.ToolResult{
+		Output: fmt.Sprintf("Goal blocked: %s. An unblocking goal was started to investigate solutions before asking you for input.", reason),
+	}, true
+}
+
+// buildUnblockObjective composes the investigation goal's objective. It forces
+// the model to search for a way forward and encodes the two allowed outcomes:
+// (1) solution found → create an execution goal with priority "front" and
+// complete this goal; (2) no solution → block THIS goal with reason +
+// expectation to ask the user for guidance.
+func buildUnblockObjective(blockedObjective, reason, expectation string) string {
+	return fmt.Sprintf(`UNBLOCKING INVESTIGATION — find a solution for a blocked goal.
+
+The goal "%s" was blocked because: %s
+It was waiting for: %s
+
+Your ONLY job is to determine whether this blocker can be solved without user input:
+1. INVESTIGATE the blocker. Read code, run commands, search, experiment — do real work to find a concrete path forward.
+2. If you find a viable solution: create a new EXECUTION goal that implements it, using goal action "create" with priority "front" (so it runs before the blocked goal resumes), then mark THIS investigation goal complete with the solution as evidence.
+3. ONLY if no solution is possible without the user: mark THIS goal blocked with "reason" (why it cannot be solved autonomously) and "expectation" (exactly what you need from the user). Do NOT block prematurely — exhaust autonomous options first.`,
+		blockedObjective, reason, expectation)
 }
 
 // updateComplete closes the goal through the done-gate (goals.done_gate),

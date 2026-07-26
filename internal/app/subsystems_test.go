@@ -75,7 +75,7 @@ func TestRegisterGoalTools_Directly(t *testing.T) {
 	dir := t.TempDir()
 	gm := core.NewGoalManager(dir)
 	reg := tools.NewToolRegistry()
-	registerGoalTools(reg, gm, false)
+	registerGoalTools(reg, gm, false, nil)
 	if _, ok := reg.Get("goal"); !ok {
 		t.Errorf("expected the unified \"goal\" tool to be registered")
 	}

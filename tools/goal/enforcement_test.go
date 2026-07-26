@@ -176,3 +176,180 @@ func TestCreate_BatchForwardsCriterionToQueue(t *testing.T) {
 		}
 	}
 }
+
+// TestBlocked_AutoEnqueuesUnblockingGoal is the F5 regression: a model block
+// WITH justification (queue wired) must NOT simply park the goal — it must
+// demote the blocked goal to the front of the queue and activate an
+// "unblocking" investigation goal in front of it. The blocked goal's
+// criterion and verify command must ride along so it resumes intact.
+func TestBlocked_AutoEnqueuesUnblockingGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	criterion := "go test ./... passes"
+	verify := "go test ./..."
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{
+		Objective:           "implement ALTER TABLE",
+		CompletionCriterion: &criterion,
+		VerifyCommand:       &verify,
+	}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+
+	res, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"70 failures need ALTER TABLE constraint preservation","expectation":"user decision on scope"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The blocked goal must be at the FRONT of the queue, criterion intact.
+	if len(q.goals) != 1 {
+		t.Fatalf("expected blocked goal re-queued at front, queue = %d: %+v", len(q.goals), q.goals)
+	}
+	assertRequeuedGoal(t, q.goals[0], "implement ALTER TABLE", criterion, verify)
+	// The NEW active goal must be the unblocking investigation goal, carrying
+	// the blocker context and the investigate→execute-or-block contract.
+	assertUnblockGoalActive(t, mode)
+	// The tool must report the auto-unblock, not the plain "waiting for user".
+	if !strings.Contains(res.Output, "unblocking goal") {
+		t.Errorf("output must report the auto-unblock flow: %q", res.Output)
+	}
+}
+
+// assertRequeuedGoal verifies the blocked goal was re-queued at the front
+// with its objective, criterion, and verify command intact.
+func assertRequeuedGoal(t *testing.T, g goal.UpcomingGoal, objective, criterion, verify string) {
+	t.Helper()
+	if g.Objective != objective {
+		t.Errorf("re-queued objective = %q, want %q", g.Objective, objective)
+	}
+	if g.CompletionCriterion == nil || *g.CompletionCriterion != criterion {
+		t.Errorf("re-queued goal lost its criterion: %+v", g.CompletionCriterion)
+	}
+	if g.VerifyCommand == nil || *g.VerifyCommand != verify {
+		t.Errorf("re-queued goal lost its verify command: %+v", g.VerifyCommand)
+	}
+}
+
+// assertUnblockGoalActive verifies the active goal is the unblocking
+// investigation goal carrying the blocker context and the
+// investigate→execute-or-block contract.
+func assertUnblockGoalActive(t *testing.T, mode *goal.GoalMode) {
+	t.Helper()
+	active := mode.GetActiveGoal()
+	if active == nil {
+		t.Fatal("expected an active unblocking goal")
+	}
+	for _, want := range []string{"UNBLOCKING INVESTIGATION", "ALTER TABLE", "70 failures", "priority \"front\"", "blocked"} {
+		if !strings.Contains(active.Objective, want) {
+			t.Errorf("unblocking objective missing %q:\n%s", want, active.Objective)
+		}
+	}
+}
+
+// TestBlocked_NoQueueFallsBackToPlainBlock pins the fallback: with no queue
+// wired, a justified block keeps the legacy single-goal behavior (goal stays
+// active-blocked, turn stops).
+func TestBlocked_NoQueueFallsBackToPlainBlock(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "x"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }} // no Queue
+	res, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"need key","expectation":"provide key"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.StopTurn {
+		t.Error("no-queue fallback must stop the turn")
+	}
+	// The blocked goal remains in state (GetActiveGoal returns nil for any
+	// non-active status); GetGoal surfaces it with status blocked.
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalBlocked {
+		t.Fatalf("goal must stay blocked, got %+v", g)
+	}
+}
+
+// TestCreate_PriorityFrontPrepend verifies create with priority "front"
+// inserts the goal at the FRONT of the queue (promoted next), not the back.
+func TestCreate_PriorityFrontPrepend(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "active"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+
+	// Append one normally (goes to back), then one with front priority.
+	if _, err := tool.Execute(`{"action":"create","objective":"background task"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"create","objective":"urgent fix","priority":"front"}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.goals) != 2 {
+		t.Fatalf("queue = %d goals: %+v", len(q.goals), q.goals)
+	}
+	if q.goals[0].Objective != "urgent fix" {
+		t.Errorf("front-priority goal must be first, got order: %q, %q", q.goals[0].Objective, q.goals[1].Objective)
+	}
+	if q.goals[1].Objective != "background task" {
+		t.Errorf("background goal must be second, got: %q", q.goals[1].Objective)
+	}
+}
+
+// TestBlocked_AutoUnblockGateDisabled verifies the configuration gate: when
+// goals.auto_unblock is off, a justified block falls back to plain blocking
+// (goal parked, turn stops, no unblocking goal spawned, queue untouched).
+func TestBlocked_AutoUnblockGateDisabled(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "x"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	q := &fakeQueue{}
+	tool := &GoalTool{
+		Mode:          mode,
+		CreateAllowed: func() bool { return true },
+		Queue:         q,
+		AutoUnblock:   func() bool { return false }, // gate OFF
+	}
+	res, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"need key","expectation":"provide key"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.StopTurn {
+		t.Error("gate-off block must stop the turn (plain block behavior)")
+	}
+	if len(q.goals) != 0 {
+		t.Errorf("gate-off must not enqueue anything, queue = %+v", q.goals)
+	}
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalBlocked {
+		t.Fatalf("goal must stay blocked, got %+v", g)
+	}
+}
+
+// TestBlocked_AutoUnblockGateEnabled verifies the gate default (nil = on)
+// spawns the unblocking goal exactly like an unset gate.
+func TestBlocked_AutoUnblockGateEnabled(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "x"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	q := &fakeQueue{}
+	tool := &GoalTool{
+		Mode:          mode,
+		CreateAllowed: func() bool { return true },
+		Queue:         q,
+		AutoUnblock:   func() bool { return true }, // gate ON
+	}
+	if _, err := tool.ExecuteWithResult(`{"action":"update","status":"blocked","reason":"r","expectation":"e"}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(q.goals) != 1 {
+		t.Fatalf("gate-on must re-queue the blocked goal at front, queue = %+v", q.goals)
+	}
+	if mode.GetActiveGoal() == nil {
+		t.Error("gate-on must activate an unblocking goal")
+	}
+}

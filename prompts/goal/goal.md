@@ -25,7 +25,9 @@ Choose the operation with the `action` field:
   done-condition is machine-checkable (tests, build, lint, health check). Keep it passing
   as you work: after confirmed completion it runs, and a non-zero exit rejects the
   completion with the output tail as evidence. Repeated verification failures auto-block
-  the goal for user review.
+  the goal for user review. Optional: `priority: "front"` — insert the goal at the FRONT of
+  the queue (promoted next) instead of appending. Use it to push an execution goal ahead of
+  the goal it unblocks (see `blocked` below).
 - `list` — show the active goal and the queued goals (id, name, objective, status).
 - `cancel` — remove a queued goal. Requires `goalId` (the queued goal's ID or friendly name).
 - `reorder` — move a queued goal. Requires `goalId` and `direction` (`up` | `down`).

@@ -59,6 +59,11 @@ func (c *Config) mergeGoals(other *Config) {
 	if other.Goals.Judge != "" {
 		c.Goals.Judge = other.Goals.Judge
 	}
+	// AutoUnblock is a tri-state pointer: an explicit false in a higher
+	// cascade layer overrides the embedded default true.
+	if other.Goals.AutoUnblock != nil {
+		c.Goals.AutoUnblock = other.Goals.AutoUnblock
+	}
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.

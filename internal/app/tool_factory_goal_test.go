@@ -83,7 +83,7 @@ func TestMakeToolFactory_Goal_CreateIsNotErrorFlagged(t *testing.T) {
 // goals as a todo-like list (create appends by default; list/cancel/reorder).
 func TestNewGoalTool_QueueWired(t *testing.T) {
 	gm := core.NewGoalManager(t.TempDir())
-	tool := newGoalTool(gm, true)
+	tool := newGoalTool(gm, true, nil)
 	// Behavioural check: create two goals — the second must queue, which
 	// requires the queue to be wired into the tool.
 	if _, err := tool.Execute(`{"action":"create","objective":"first"}`); err != nil {

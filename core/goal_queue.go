@@ -105,6 +105,18 @@ func (s *GoalQueueStore) Append(objective string) ([]goal.UpcomingGoal, error) {
 // done-condition and can be set to run on a clean context when promoted
 // (bugs.md: goal queue + per-goal clean-context flag).
 func (s *GoalQueueStore) AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
+	return s.insertGoal(input, false)
+}
+
+// PrependGoal enqueues a goal at the FRONT of the queue, so it is promoted
+// next. Used by the auto-unblock flow (an investigation goal must run before
+// the blocked goal it unblocks) and by the model's push-in-front create.
+func (s *GoalQueueStore) PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
+	return s.insertGoal(input, true)
+}
+
+// insertGoal is the shared enqueue path; front=true inserts at position 0.
+func (s *GoalQueueStore) insertGoal(input goal.UpcomingGoalInput, front bool) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -114,7 +126,7 @@ func (s *GoalQueueStore) AppendGoal(input goal.UpcomingGoalInput) ([]goal.Upcomi
 	}
 	name := internal.FriendlyNameUnique(s.namesLocked(goals))
 	now := time.Now()
-	goals = append(goals, goal.UpcomingGoal{
+	item := goal.UpcomingGoal{
 		ID:                  generateQueueID(),
 		Name:                name,
 		Objective:           strings.TrimSpace(input.Objective),
@@ -123,7 +135,12 @@ func (s *GoalQueueStore) AppendGoal(input goal.UpcomingGoalInput) ([]goal.Upcomi
 		FreshContext:        input.FreshContext,
 		CreatedAt:           now,
 		UpdatedAt:           now,
-	})
+	}
+	if front {
+		goals = append([]goal.UpcomingGoal{item}, goals...)
+	} else {
+		goals = append(goals, item)
+	}
 	if err := s.writeLocked(goals); err != nil {
 		return nil, err
 	}

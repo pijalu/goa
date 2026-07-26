@@ -120,6 +120,10 @@ goals:
   stall_turns: 5
   default_turn_budget: 50
   judge: off
+  # When a model-blocked goal provides a justification (reason + expectation),
+  # auto-spawn an "unblocking" investigation goal in front of it to search for
+  # solutions before asking the user for guidance. Default on.
+  auto_unblock: true
 
 plan:
   retention:

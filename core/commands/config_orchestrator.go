@@ -412,11 +412,13 @@ func (m *configMenu) promptRetentionDays(enabled *bool, days *int) {
 func (m *configMenu) openGoalsRetention() {
 	m.current = m.openGoalsRetention
 	cfg := m.ctx.Config.Goals.Retention
+	autoUnblock := m.ctx.Config.Goals.AutoUnblockEnabled()
 	items := []tui.SelectorItem{
-		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.Enabled)},
+		{Value: "enabled", Label: "Retention enabled", Description: boolLabel(cfg.Enabled)},
 		{Value: "days", Label: "Retention days", Description: goalsRetentionLabel(cfg)},
+		{Value: "auto_unblock", Label: "Auto-unblock goals", Description: boolLabel(autoUnblock)},
 	}
-	m.ctx.SelectOption("Goals retention:", items, "", func(field string, ok bool) {
+	m.ctx.SelectOption("Goals:", items, "", func(field string, ok bool) {
 		if !ok || field == "" {
 			m.back()
 			return
@@ -428,8 +430,22 @@ func (m *configMenu) openGoalsRetention() {
 			m.openGoalsRetention()
 		case "days":
 			m.promptRetentionDays(&cfg.Enabled, &cfg.Days)
+		case "auto_unblock":
+			m.toggleGoalAutoUnblock()
 		}
 	})
+}
+
+// toggleGoalAutoUnblock flips goals.auto_unblock and persists it. The field
+// is tri-state (*bool); toggling from the default (nil = on) sets an explicit
+// false, and back to true, so the choice survives cascade merges.
+func (m *configMenu) toggleGoalAutoUnblock() {
+	g := &m.ctx.Config.Goals
+	next := !g.AutoUnblockEnabled()
+	g.AutoUnblock = &next
+	m.saveConfig()
+	m.flash("Auto-unblock goals " + toggleNextLabel(!next))
+	m.openGoalsRetention()
 }
 
 func goalsRetentionLabel(r config.GoalsRetentionConfig) string {

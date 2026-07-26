@@ -379,11 +379,22 @@ type GoalsConfig struct {
 	// Judge selects the independent completion auditor: "off" (default),
 	// "same" (the active model), or "model:<id>" (a configured model).
 	Judge string `yaml:"judge,omitempty"`
+	// AutoUnblock controls whether a model-blocked goal (with justification)
+	// automatically spawns an "unblocking" investigation goal in front of it,
+	// forcing a search for solutions before the user is asked for guidance.
+	// Nil = default (enabled); explicit false falls back to plain blocking.
+	AutoUnblock *bool `yaml:"auto_unblock,omitempty"`
 }
 
 // VerifyCommandsEnabled reports whether machine verification runs (default true).
 func (g GoalsConfig) VerifyCommandsEnabled() bool {
 	return g.VerifyCommands == nil || *g.VerifyCommands
+}
+
+// AutoUnblockEnabled reports whether a justified block auto-spawns an
+// unblocking investigation goal (default true).
+func (g GoalsConfig) AutoUnblockEnabled() bool {
+	return g.AutoUnblock == nil || *g.AutoUnblock
 }
 
 // GoalsRetentionConfig controls how long terminal normal goals are kept.

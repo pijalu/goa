@@ -49,3 +49,18 @@ All items below were fixed, tested, and validated this session.
 - **Fix**: headline = status+actor only; reason & expectation now render as separate `ansi.Wrap`-wrapped, indented detail lines. No truncation; removed the false ctrl+o affordance.
 - **Regression tests**: `TestMarker_BlockedShowsFullReasonAndExpectation` (full long reason+expectation survive wrapping), `TestMarker_NoReasonStaysSingleLine`, updated `TestMarker_Paused`. Filmstrip-validated render @ width 80 (guideline #5).
 - **Verified**: `go test ./tui/goal/` green, race+cover 94.9%, vet/staticcheck/gocognit/gocyclo clean.
+
+---
+
+### F5. Auto-unblock goals + push-in-front + config gate ✅
+- **Request**: a goal blocked WITH justification (reason+expectation) should auto-enqueue an "unblocking" investigation goal in front of it, forcing the model to search for solutions before asking the user. Model needs a push-in-front capability. The investigation goal creates an "execution" goal (in front) when a solution is clear, else blocks itself and asks the user. The whole flow gated by a dedicated config, default ON, accessible via /goal and /config.
+- **Chain implemented**: A blocked → A re-queued at FRONT (criterion+verifyCommand preserved) + U(nblocking) activated with the investigate→execute-or-block contract embedded → U finds solution → creates E via `create` `priority:"front"` → E runs → A resumes; U finds none → U blocks → user guidance.
+- **Changes**:
+  - `core/goal_queue.go`: `PrependGoal` (insert at front) via shared `insertGoal`.
+  - `tools/goal/goal.go`: `GoalQueue.PrependGoal` in interface; `create` gains `priority:"front"`; `updateBlocked` auto-enqueues the unblocking goal via `enqueueUnblockGoal` + `buildUnblockObjective`; `AutoUnblock func() bool` gate on the tool.
+  - `config`: `GoalsConfig.AutoUnblock *bool` (tri-state) + `AutoUnblockEnabled()` (nil=on); `default.yaml` `goals.auto_unblock: true`; DeepMerge override for the pointer.
+  - Wiring: `newGoalTool`/`registerGoalTools`/`makeGoalToolRuntime` thread `cfg.Goals.AutoUnblockEnabled`.
+  - UX parity: `/goal:settings` selector AND `/config → Goals → Auto-unblock goals` toggle, both persist via ConfigSaver.
+  - Model docs: `prompts/goal/goal.md` documents `priority:"front"` and the auto-unblock behavior.
+- **Tests**: `TestBlocked_AutoEnqueuesUnblockingGoal` (re-queue at front + criterion preserved + unblocking objective carries contract), `TestBlocked_NoQueueFallsBackToPlainBlock`, `TestBlocked_AutoUnblockGateDisabled/Enabled`, `TestCreate_PriorityFrontPrepend`, `TestGoalsAutoUnblockEnabled` (tri-state + merge). Full repo green.
+- **Verified**: `go test ./...` 0 FAIL; race+cover green (config 56%, commands 54%, tools/goal 78%); vet/staticcheck/gocognit/gocyclo clean on touched files (pre-existing `internal/app` unused + `modelsdev` unused noted, unrelated).

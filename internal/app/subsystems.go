@@ -231,7 +231,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// Goal tools are always registered (stable tool array, bugs.md S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
-	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal)
+	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled)
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
@@ -638,14 +638,16 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 	return agent.Run(ctx, input)
 }
 
-func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool) {
-	toolRegistry.Register(newGoalTool(manager, createFlagOn))
+func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool) {
+	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock))
 }
 
 // newGoalTool builds the single agent-facing goal tool bound to the manager's
 // GoalMode. Extracted so both the startup registration path and the runtime
 // /tools:goal:on factory (makeToolFactory) construct it identically.
-func newGoalTool(manager *core.GoalManager, createFlagOn bool) agentic.Tool {
+// autoUnblock gates the auto-spawning of an unblocking investigation goal when
+// the model blocks a goal with justification (goals.auto_unblock; nil = on).
+func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
 	// goal is already active (bugs.md S2: all goal actions work during a goal).
 	createAllowed := func() bool {
@@ -657,6 +659,7 @@ func newGoalTool(manager *core.GoalManager, createFlagOn bool) agentic.Tool {
 	// reorder operate over the active goal + the queue.
 	if gt, ok := tool.(*goaltools.GoalTool); ok {
 		gt.Queue = manager.Queue
+		gt.AutoUnblock = autoUnblock
 	}
 	return tool
 }
