@@ -589,6 +589,22 @@ func (m *GoalMode) EventLog() ([]GoalEventRecord, error) {
 	return m.store.Replay()
 }
 
+// TrackStall records a stall-watchdog challenge for telemetry. It takes the
+// read lock only to resolve the goal name and never mutates state (the
+// watchdog state itself lives in GoalDriver).
+func (m *GoalMode) TrackStall(challenge int) {
+	m.mu.RLock()
+	name := ""
+	if m.state != nil {
+		name = m.state.name
+	}
+	m.mu.RUnlock()
+	m.telemetry.Track(TelemetryGoalStallDetected, map[string]any{
+		"goal":      name,
+		"challenge": challenge,
+	})
+}
+
 // GetGoal returns the current goal snapshot.
 func (m *GoalMode) GetGoal() GoalToolResult {
 	m.mu.RLock()

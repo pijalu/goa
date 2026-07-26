@@ -20,7 +20,12 @@ Choose the operation with the `action` field:
   goal). Only create a goal when the user explicitly asks you to work autonomously toward an
   outcome, or a host goal-intake prompt asks you to. Do NOT create goals for greetings,
   ordinary questions, or vague requests that lack a verifiable end state; ask for the
-  missing completion criterion first.
+  missing completion criterion first. Optional: `verifyCommand` — a shell command the
+  runtime executes after you confirm completion (exit 0 = pass); set it whenever the
+  done-condition is machine-checkable (tests, build, lint, health check). Keep it passing
+  as you work: after confirmed completion it runs, and a non-zero exit rejects the
+  completion with the output tail as evidence. Repeated verification failures auto-block
+  the goal for user review.
 - `list` — show the active goal and the queued goals (id, name, objective, status).
 - `cancel` — remove a queued goal. Requires `goalId` (the queued goal's ID or friendly name).
 - `reorder` — move a queued goal. Requires `goalId` and `direction` (`up` | `down`).
@@ -32,7 +37,10 @@ Choose the operation with the `action` field:
     ends. ENFORCED: when a completion criterion is recorded, your first `complete` call is
     intercepted by a verification challenge that restates the criterion; self-audit, then
     call `complete` again with `reason` citing the concrete evidence (commands run, outputs
-    observed, tests passing). Without a criterion, completion is immediate.
+    observed, tests passing). Without a criterion, completion is immediate. When a
+    `verifyCommand` is recorded, machine verification runs after your confirmed completion
+    and a failure rejects it (fix the failure, then complete again); an independent judge
+    may also audit your evidence semantically.
   - `blocked` — an external condition or required user input prevents progress, or the
     objective cannot be completed as stated. Requires BOTH `reason` (the concrete blocker)
     and `expectation` (exactly what input or change unblocks it). The goal stops but can be
@@ -58,4 +66,7 @@ Choose the operation with the `action` field:
   (`pending` | `in_progress` | `done`). Mark items done as you complete them.
 
 If a goal is active and you do not call `update`, the goal keeps running: after your turn
-ends you will be prompted to continue.
+ends you will be prompted to continue. A stall watchdog tracks measurable progress (todo
+transitions, workspace changes) across continuation turns: turns with no measurable progress
+trigger a challenge, and continued stalling auto-blocks the goal for user direction. Keep
+each turn producing visible progress — or end the goal explicitly.

@@ -227,7 +227,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// in production, leaving swarm mode and background task tracking no-ops.
 	swarmState := swarm.NewState()
 	taskBus := tasks.NewBus(tasks.NopStore{}, agentBundle.eventBus)
-	goalManager, goalDriver := initGoalSystem(cfg, projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState)
+	goalManager, goalDriver := initGoalSystem(cfg, projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState, subs.providerMgr)
 	// Goal tools are always registered (stable tool array, bugs.md S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
@@ -467,7 +467,38 @@ func (s *autonomySwitcher) SetAutonomy(level internal.AutonomyLevel) error {
 	return nil
 }
 
-func initGoalSystem(cfg *config.Config, projectDir string, eventBus *event.Bus, agentMgr *core.AgentManager, swarmState *swarm.State) (*core.GoalManager, *core.GoalDriver) {
+// configureGoalMode applies the goals.* config keys to the goal mode: done
+// gate, machine verification, escalation bound, default turn budget, and the
+// independent judge. Extracted from initGoalSystem to keep both within the
+// complexity budget.
+func configureGoalMode(cfg *config.Config, projectDir string, manager *core.GoalManager, publisher *goalEventPublisher, providerMgr *provider.ProviderManager) {
+	// Done-gate (goals.done_gate): how strictly model-initiated completion is
+	// checked before the goal may close. Invalid values are rejected by config
+	// validation; fall back to the default defensively.
+	if gate, ok := goal.ParseDoneGate(cfg.Goals.DoneGate); ok {
+		manager.Mode.SetDoneGate(gate)
+	} else {
+		manager.Mode.SetDoneGate(goal.DefaultDoneGate)
+	}
+	// Machine verification (goals.verify_commands): exec the recorded verify
+	// command in the project dir at completion time.
+	manager.Mode.SetVerifier(newExecCommandVerifier(projectDir), cfg.Goals.VerifyCommandsEnabled())
+	// Escalation bound (goals.max_verify_failures): config -1 = no cap maps
+	// to mode 0; negative values are clamped to 0 defensively.
+	manager.Mode.SetMaxVerifyFailures(max(cfg.Goals.MaxVerifyFailures, 0))
+	// Default turn budget (goals.default_turn_budget): -1 = unlimited maps
+	// to mode 0 (no implicit budget).
+	manager.Mode.SetDefaultTurnBudget(max(cfg.Goals.DefaultTurnBudget, 0))
+	// Independent completion judge (goals.judge): off by default; resolution
+	// failure is fail-open (no judge) and reported on the bus.
+	if judge, err := newGoalJudge(cfg.Goals.Judge, providerMgr); err != nil {
+		publisher.PublishSystemMessage("goal judge disabled: " + err.Error())
+	} else if judge != nil {
+		manager.Mode.SetJudge(judge)
+	}
+}
+
+func initGoalSystem(cfg *config.Config, projectDir string, eventBus *event.Bus, agentMgr *core.AgentManager, swarmState *swarm.State, providerMgr *provider.ProviderManager) (*core.GoalManager, *core.GoalDriver) {
 	reminderFn := func(text string) {
 		if agentMgr != nil {
 			_ = agentMgr.InjectSystemMessage(text)
@@ -479,14 +510,7 @@ func initGoalSystem(cfg *config.Config, projectDir string, eventBus *event.Bus, 
 		Telemetry:  nil,
 		ReminderFn: reminderFn,
 	})
-	// Done-gate (goals.done_gate): how strictly model-initiated completion is
-	// checked before the goal may close. Invalid values are rejected by config
-	// validation; fall back to the default defensively.
-	if gate, ok := goal.ParseDoneGate(cfg.Goals.DoneGate); ok {
-		manager.Mode.SetDoneGate(gate)
-	} else {
-		manager.Mode.SetDoneGate(goal.DefaultDoneGate)
-	}
+	configureGoalMode(cfg, projectDir, manager, publisher, providerMgr)
 	// Chain goal + swarm reminders into a single provider so the swarm
 	// enter-reminder is prepended to the system prompt every turn while swarm
 	// mode is active under a manual/task trigger.
@@ -499,6 +523,13 @@ func initGoalSystem(cfg *config.Config, projectDir string, eventBus *event.Bus, 
 	driver := &core.GoalDriver{
 		Mode:  manager.Mode,
 		Agent: &agentManagerRunner{agentMgr: agentMgr},
+	}
+	// Stall watchdog (goals.stall_turns): challenge unmanaged goals whose
+	// progress fingerprint stops changing. -1/0 = disabled.
+	if cfg.Goals.StallTurns > 0 {
+		driver.Probe = newGoalStallProbe(projectDir, manager.Mode)
+		driver.Remind = reminderFn
+		driver.StallTurns = cfg.Goals.StallTurns
 	}
 	// Wire goal token tracking: each token stats event reports cumulative
 	// tokens for the current turn; compute the delta and accrue to goal.
@@ -555,6 +586,19 @@ func (p *goalEventPublisher) Publish(snapshot *goal.GoalSnapshot, change *goal.G
 	}
 	select {
 	case p.bus.Agent <- event.AgentEvent{GoalUpdate: &event.GoalUpdate{Snapshot: snapshot, Change: change}}:
+	default:
+	}
+}
+
+// PublishSystemMessage surfaces a goal-subsystem notice (e.g. a disabled
+// judge) as a transient flash. Best-effort: dropped when the bus is full
+// or nil.
+func (p *goalEventPublisher) PublishSystemMessage(text string) {
+	if p.bus == nil {
+		return
+	}
+	select {
+	case p.bus.Chat <- event.ChatEvent{Flash: &event.Flash{Text: text}}:
 	default:
 	}
 }

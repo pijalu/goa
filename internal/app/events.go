@@ -894,6 +894,9 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 		case goal.GoalChangeCompletion:
 			if update.Snapshot != nil {
 				a.subs.chat.AddComponent(goaltui.NewCompletion(update.Snapshot))
+				// Stash the completion evidence so the next auto-promoted
+				// queued goal inherits it as its Handoff note.
+				a.goalCompletionHandoff = update.Snapshot.TerminalReason
 			}
 		}
 	}
@@ -931,6 +934,7 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 func (a *App) promoteNextQueuedGoal() {
 	queue, err := a.subs.goalManager.Queue.Read()
 	if err != nil || len(queue) == 0 {
+		a.goalCompletionHandoff = nil
 		return
 	}
 	next := queue[0]
@@ -938,11 +942,17 @@ func (a *App) promoteNextQueuedGoal() {
 	if err != nil || removed == nil {
 		return
 	}
+	// Consume the stashed completion handoff (if any) into the promoted
+	// goal; the queue carries criterion + verify command forward itself.
+	handoff := a.goalCompletionHandoff
+	a.goalCompletionHandoff = nil
 	if _, err := a.subs.goalManager.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:           removed.Objective,
 		Name:                removed.Name,
 		CompletionCriterion: removed.CompletionCriterion,
+		VerifyCommand:       removed.VerifyCommand,
 		FreshContext:        removed.FreshContext,
+		Handoff:             handoff,
 	}, goal.GoalActorUser); err != nil {
 		_, _ = a.subs.goalManager.Queue.Restore(*removed)
 		return
