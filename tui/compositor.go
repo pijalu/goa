@@ -858,20 +858,33 @@ func (c *Compositor) advanceScrollback(buf *strings.Builder, canvas []string, ta
 // stale rows the taller previous frame left on the lower screen, without
 // repainting the already-scrolled rows above vt.
 func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, width, height int) {
-	// Skip the row(s) the scroll just wrote at the bottom of the window: on a
-	// scrolling frame the bottom scrollCount rows were already emitted by
-	// emitSteadyScroll (pushing the old top rows into scrollback). Redrawing
-	// them here would write the same content twice in one frame — once pushed
-	// into scrollback and once on screen — the transient duplicate-row bug seen
-	// at conversation start (and amplified when a chrome reset follows).
-	skipFrom := len(canvas) - c.lastScrollCount
+	// Skip the row(s) the scroll just wrote at the bottom of the transcript
+	// region: on a scrolling frame the last scrollCount transcript rows were
+	// already emitted by emitSteadyScroll (pushing the old top rows into
+	// scrollback). Redrawing them here would write the same content twice in
+	// one frame — once pushed into scrollback and once on screen — the
+	// transient duplicate-row bug seen at conversation start (and amplified
+	// when a chrome reset follows).
+	//
+	// The skip window is anchored at the transcript band end (contentEnd), NOT
+	// at the bottom of the whole canvas: emitSteadyScroll writes rows
+	// [writeFrom, writeTo) with writeTo clamped to contentEnd, so the freshly
+	// written rows are the last scrollCount rows BELOW the chrome band.
+	// Anchoring at len(canvas) instead would skip the bottom chrome rows
+	// (editor/footer) — which the scroll never wrote — suppressing their
+	// repaint whenever they change on a scrolling frame (e.g. the editor
+	// clearing on submit while the command echo scrolls the transcript: the
+	// stale command then stays visible until the next non-scrolling frame).
+	contentEnd := len(canvas) - c.chromeH
+	skipFrom := contentEnd - c.lastScrollCount
+	skipTo := contentEnd
 	for screenRow := 1; screenRow <= height; screenRow++ {
 		i := vt + screenRow - 1
 		line := ""
 		if i >= 0 && i < len(canvas) {
 			line = canvas[i]
 		}
-		if c.lastScrollCount > 0 && i >= skipFrom && i < len(canvas) {
+		if c.lastScrollCount > 0 && i >= skipFrom && i < skipTo {
 			continue
 		}
 		if c.unchangedRow(canvas, i, vt) {
