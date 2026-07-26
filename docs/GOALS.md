@@ -46,6 +46,8 @@ Control commands:
 /goal:resume   # resume paused/blocked goal
 /goal:cancel   # discard current goal
 /goal:replace <objective>   # ask confirmation then abandon current goal
+/goal:log      # show recent goal event records
+/goal:verify   # run the recorded verify command now
 ```
 
 ## Terminal-answer contract (enforcement)
@@ -72,14 +74,51 @@ goals:
   done_gate: verify    # verify (default) | evidence | off
 ```
 
-- **`verify` (default)** — when a completion criterion is recorded, the model's first `complete` call is *intercepted*: the goal stays active and the tool returns a **verification challenge** restating the criterion (without stopping the turn). The model self-audits, then calls `complete` again with `reason` citing concrete evidence (commands run, outputs observed, tests passing). The second call closes the goal.
+- **`verify` (default)** — when a completion criterion is recorded, the model's first `complete` call is *intercepted*: the goal stays active and the tool returns a **verification challenge** restating the criterion (without stopping the turn). The model self-audits, then calls `complete` again with `reason` citing concrete evidence (commands run, outputs observed, tests passing). The second call runs machine verification (below) and closes the goal when it passes.
   - If the audit fails, the model simply keeps working — the goal was never closed.
   - Any other transition (pause/blocked/resume) re-arms the challenge.
   - Session restart mid-verification re-arms the challenge (the pending flag is in-memory only).
-- **`evidence`** — single-call variant: `complete` must carry `reason` with the validation evidence. No challenge round-trip.
-- **`off`** — legacy behavior: `complete` closes immediately.
+- **`evidence`** — single-call variant: `complete` must carry `reason` with the validation evidence. No challenge round-trip; machine verification still applies.
+- **`off`** — legacy behavior: `complete` closes immediately (no challenge, no machine verification).
 
 The gate applies only to **model-initiated** completions of goals **with a recorded criterion**. User completions (`/goal` flows), runtime completions (driver, orchestrator binders), and orchestrator-managed goals bypass it.
+
+### Machine verification (`verifyCommand`)
+
+A goal may record a **verify command** — a machine-checkable done-condition supplied at creation (goal tool `create` arg `verifyCommand`, preserved through queueing and promotion). After the model confirms completion (challenge answered, evidence given), the done-gate executes the command through the system shell (`$SHELL`, bash fallback) in the project directory:
+
+- **exit 0** → completion proceeds; **non-zero** → completion is rejected with the output tail (last 10 lines) as the failure detail.
+- Execution is bounded by a **2-minute hard timeout** and the returned output is ANSI-sanitized and capped at 4 KB. The call runs unlocked, so it cannot deadlock goal state — but ESC does not interrupt it (the goal tool has no cancellable context; documented limitation).
+- `goals.verify_commands: false` disables execution globally: the gate then skips the command (judge/streak logic still runs), and `/goal:verify` errors.
+- **Todo consistency:** a gated `complete` is rejected while any goal todo is not `done` — finish the checklist or update it first.
+- **Escalation:** consecutive verification failures increment an in-memory streak; at `goals.max_verify_failures` (default 3) the goal is **auto-blocked** for user review (reason: "verification failed N times consecutively"). `-1` removes the cap (not recommended). Any transition out of `active` or a session restart resets the streak.
+- `/goal:verify` runs the recorded command on demand and prints its output plus PASS/FAIL.
+
+### Independent judge (`goals.judge`)
+
+An optional second, semantic auditor after the verify command (or alone when no command is recorded):
+
+```yaml
+goals:
+  judge: off        # off (default) | same | model:<id>
+```
+
+- `same` audits with the active model; `model:<id>` uses a configured model.
+- The judge is read-only and sees only the objective, the recorded criterion, and the claimed evidence (capped ~8 KB). It must end with `VERDICT: PASS` or `VERDICT: FAIL`; FAIL rejects the completion with the judge's rationale.
+- **Fail-open:** judge errors (model resolution, stream failure, unparseable verdict) never block completion — they emit `goal_judge_error` telemetry only.
+
+### Stall watchdog (`goals.stall_turns`)
+
+The goal driver fingerprints progress after every continuation turn of an **unmanaged** goal: the hash combines the goal's todo list (ID+status) with `git status --porcelain` of the workspace. Outside a git repository the git half degrades to a constant, leaving a todos-only fingerprint.
+
+- An unchanged fingerprint for `goals.stall_turns` (default 5) consecutive turns injects a **stall challenge** ("make measurable progress, revise todos, or block with reason+expectation") and emits `goal_stall_detected`.
+- A changed fingerprint resets the streak and the challenge count; a new goal resets both.
+- After **2 unanswered challenges** the goal is **auto-blocked** (reason "no measurable progress", expectation "user direction on how to proceed").
+- `stall_turns: -1` (or 0) disables the watchdog. Orchestrator-managed goals are never watched (the orchestrator supervises them).
+
+### Default turn budget (`goals.default_turn_budget`)
+
+When > 0 (embedded default 50), every newly created goal gets that hard turn ceiling unless a budget is set explicitly later. `-1` = unlimited.
 
 ## Queued goals
 
@@ -90,7 +129,7 @@ The gate applies only to **model-initiated** completions of goals **with a recor
 /goal:reorder:1B,2C,3A        # reorder by letter mapping
 ```
 
-**Promotion contract:** when the active goal completes, the queue head promotes automatically and preserves its **objective, completion criterion, fresh-context flag, and friendly alias** (traceability). On promote failure the item is restored to the front of the queue. The model's batched `create` applies the call's `completionCriterion` to every objective, including queued ones.
+**Promotion contract:** when the active goal completes, the queue head promotes automatically and preserves its **objective, completion criterion, verify command, fresh-context flag, and friendly alias** (traceability). The promoted goal also inherits the predecessor's completion evidence as a **handoff** note, rendered as an untrusted block in the per-turn goal reminder (rebuilt every turn, so it survives fresh-context resets). On promote failure the item is restored to the front of the queue. The model's batched `create` applies the call's `completionCriterion` to every objective, including queued ones.
 
 ## Budgets
 
@@ -114,10 +153,25 @@ A goal can carry a framework-managed todo list (`add_todo` / `update_todo`). The
 
 ## Persistence & audit
 
-- `goal-events.jsonl` — append-only event log (`goal.create`, `goal.update`, `goal.clear`). Status updates record actor, reason, expectation, and counters.
+- `goal-events.jsonl` — append-only event log (`goal.create`, `goal.update`, `goal.clear`). Status updates record actor, reason, expectation, and counters. `/goal:log` renders the last ~20 records (time, type, actor, status, reason, expectation).
 - `upcoming-goals.json` — the durable queue (versioned, backward compatible).
+- `/goal:verify` — run the active goal's recorded verify command on demand; prints output + PASS/FAIL.
 - On session resume, an `active` goal is demoted to `paused` ("Paused after agent resume") so it never silently runs without the user present.
 - `goals.retention` controls how long terminal records are kept.
+- In-memory by design (reset on session restart): the pending done-gate challenge, the verification-failure streak, and the stall-watchdog streak.
+
+### Configuration reference
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `goals.done_gate` | `verify` | Completion gate: `verify` (challenge round-trip), `evidence` (reason required), `off`. |
+| `goals.verify_commands` | `true` | Execute recorded verify commands at completion. |
+| `goals.max_verify_failures` | `3` | Consecutive verification failures before auto-block. `-1` = no cap. |
+| `goals.stall_turns` | `5` | Stale turns before a stall challenge. `-1`/`0` = disabled. |
+| `goals.default_turn_budget` | `50` | Implicit hard turn ceiling for new goals. `-1` = unlimited. |
+| `goals.judge` | `off` | Independent completion auditor: `off`, `same`, `model:<id>`. |
+
+Telemetry: `goal_challenged`, `goal_verify_failed`, `goal_judge_error`, `goal_auto_blocked`, `goal_stall_detected`.
 
 ## Events in the TUI
 
