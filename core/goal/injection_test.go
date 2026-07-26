@@ -169,6 +169,11 @@ func TestBuildPausedNote(t *testing.T) {
 	if !strings.Contains(s, "currently paused") || !strings.Contains(s, "user paused") {
 		t.Errorf("unexpected paused note: %s", s)
 	}
+	// Proactive-resume guidance: the model must not make the user say
+	// "please continue" twice or use an exact command.
+	if !strings.Contains(s, "Resume proactively") || !strings.Contains(s, "any phrasing") {
+		t.Errorf("paused note missing proactive-resume guidance: %s", s)
+	}
 }
 
 func TestBuildBlockedNote(t *testing.T) {
@@ -180,6 +185,25 @@ func TestBuildBlockedNote(t *testing.T) {
 	s := BuildBlockedNote(snap)
 	if !strings.Contains(s, "currently blocked") || !strings.Contains(s, "missing token") {
 		t.Errorf("unexpected blocked note: %s", s)
+	}
+	if !strings.Contains(s, "Resume proactively") {
+		t.Errorf("blocked note missing proactive-resume guidance: %s", s)
+	}
+}
+
+func TestBuildBlockedNote_RendersExpectation(t *testing.T) {
+	snap := GoalSnapshot{
+		Objective:           "deploy",
+		Status:              GoalBlocked,
+		TerminalReason:      strPtr("missing token"),
+		TerminalExpectation: strPtr("user provides DEPLOY_TOKEN"),
+	}
+	s := BuildBlockedNote(snap)
+	if !strings.Contains(s, "user provides DEPLOY_TOKEN") {
+		t.Errorf("blocked note must render the unblock condition: %s", s)
+	}
+	if !strings.Contains(s, "untrusted_unblock_condition") {
+		t.Errorf("unblock condition must be wrapped as untrusted data: %s", s)
 	}
 }
 

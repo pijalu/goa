@@ -42,6 +42,7 @@ type GoalMode struct {
 	publisher  EventPublisher
 	reminderFn ReminderFunc
 	namePool   NamePool
+	doneGate   DoneGateMode
 }
 
 // NamePool returns the set of friendly names already in use, so newly created
@@ -64,12 +65,18 @@ func NewGoalMode(store EventStore, publisher EventPublisher, telemetry Telemetry
 		publisher:  publisher,
 		telemetry:  telemetry,
 		reminderFn: reminderFn,
+		doneGate:   DefaultDoneGate,
 	}
 }
 
 // SetNamePool wires a source of already-used friendly names (typically the
 // goal queue) so CreateGoal can generate a collision-free alias.
 func (m *GoalMode) SetNamePool(pool NamePool) { m.namePool = pool }
+
+// SetDoneGate configures how strictly model-initiated completion is checked
+// before the goal may close (see DoneGateMode). It only affects future
+// RequestComplete calls.
+func (m *GoalMode) SetDoneGate(gate DoneGateMode) { m.doneGate = gate }
 
 // Replay loads all events from the store and rebuilds state.
 func (m *GoalMode) Replay() error {
@@ -133,8 +140,10 @@ func (m *GoalMode) RestoreUpdate(record GoalEventRecord) {
 		state.wallClockResumedAt = nil
 		if state.status != GoalActive {
 			state.terminalReason = record.Reason
+			state.terminalExpectation = record.Expectation
 		} else {
 			state.terminalReason = nil
+			state.terminalExpectation = nil
 		}
 	}
 	if record.TurnsUsed != nil {
@@ -179,7 +188,7 @@ func (m *GoalMode) NormalizeAfterReplay() {
 		m.applyStatus(state, GoalPaused)
 		state.terminalReason = &reason
 		m.persistState(state, persistOptions{Silent: true})
-		m.appendStatusUpdate(state, GoalActorRuntime, &reason)
+		m.appendStatusUpdate(state, GoalActorRuntime, GoalReasonInput{Reason: &reason})
 	}
 }
 
@@ -259,13 +268,15 @@ func (m *GoalMode) PauseGoal(input GoalReasonInput, actor GoalActor) (GoalSnapsh
 	}
 	m.applyStatus(state, GoalPaused)
 	state.terminalReason = input.Reason
+	state.terminalExpectation = input.Expectation
 	m.persistState(state, persistOptions{Change: &GoalChange{
-		Kind:   GoalChangeLifecycle,
-		Status: ptrStatus(GoalPaused),
-		Reason: input.Reason,
-		Actor:  &actor,
+		Kind:        GoalChangeLifecycle,
+		Status:      ptrStatus(GoalPaused),
+		Reason:      input.Reason,
+		Expectation: input.Expectation,
+		Actor:       &actor,
 	}})
-	m.appendStatusUpdate(state, actor, input.Reason)
+	m.appendStatusUpdate(state, actor, input)
 	return m.toSnapshot(state), nil
 }
 
@@ -279,13 +290,15 @@ func (m *GoalMode) PauseActiveGoal(input GoalReasonInput, actor GoalActor) (*Goa
 	}
 	m.applyStatus(state, GoalPaused)
 	state.terminalReason = input.Reason
+	state.terminalExpectation = input.Expectation
 	m.persistState(state, persistOptions{Change: &GoalChange{
-		Kind:   GoalChangeLifecycle,
-		Status: ptrStatus(GoalPaused),
-		Reason: input.Reason,
-		Actor:  &actor,
+		Kind:        GoalChangeLifecycle,
+		Status:      ptrStatus(GoalPaused),
+		Reason:      input.Reason,
+		Expectation: input.Expectation,
+		Actor:       &actor,
 	}})
-	m.appendStatusUpdate(state, actor, input.Reason)
+	m.appendStatusUpdate(state, actor, input)
 	snap := m.toSnapshot(state)
 	return &snap, nil
 }
@@ -305,6 +318,7 @@ func (m *GoalMode) ResumeGoal(input GoalReasonInput, actor GoalActor) (GoalSnaps
 		return GoalSnapshot{}, fmt.Errorf("cannot resume a goal in status %q", state.status)
 	}
 	state.terminalReason = nil
+	state.terminalExpectation = nil
 	m.applyStatus(state, GoalActive)
 	m.persistState(state, persistOptions{Change: &GoalChange{
 		Kind:   GoalChangeLifecycle,
@@ -312,7 +326,7 @@ func (m *GoalMode) ResumeGoal(input GoalReasonInput, actor GoalActor) (GoalSnaps
 		Reason: input.Reason,
 		Actor:  &actor,
 	}})
-	m.appendStatusUpdate(state, actor, input.Reason)
+	m.appendStatusUpdate(state, actor, input)
 	return m.toSnapshot(state), nil
 }
 
@@ -362,21 +376,30 @@ func (m *GoalMode) MarkBlocked(input GoalReasonInput, actor GoalActor) (*GoalSna
 	}
 	m.applyStatus(state, GoalBlocked)
 	state.terminalReason = input.Reason
+	state.terminalExpectation = input.Expectation
 	m.persistState(state, persistOptions{Change: &GoalChange{
-		Kind:   GoalChangeLifecycle,
-		Status: ptrStatus(GoalBlocked),
-		Reason: input.Reason,
-		Actor:  &actor,
+		Kind:        GoalChangeLifecycle,
+		Status:      ptrStatus(GoalBlocked),
+		Reason:      input.Reason,
+		Expectation: input.Expectation,
+		Actor:       &actor,
 	}})
-	m.appendStatusUpdate(state, actor, input.Reason)
+	m.appendStatusUpdate(state, actor, input)
 	snap := m.toSnapshot(state)
 	return &snap, nil
 }
 
-// MarkComplete announces completion and clears the record.
+// MarkComplete announces completion and clears the record. It performs no
+// done-gate check: callers that want the gate (the model-facing tool) must
+// use RequestComplete instead.
 func (m *GoalMode) MarkComplete(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.markCompleteLocked(input, actor)
+}
+
+// markCompleteLocked completes and clears the active goal; caller holds m.mu.
+func (m *GoalMode) markCompleteLocked(input GoalReasonInput, actor GoalActor) (*GoalSnapshot, error) {
 	state := m.state
 	if state == nil || state.status != GoalActive {
 		return nil, nil
@@ -384,7 +407,7 @@ func (m *GoalMode) MarkComplete(input GoalReasonInput, actor GoalActor) (*GoalSn
 	m.applyStatus(state, GoalDone)
 	state.terminalReason = input.Reason
 	snapshot := m.toSnapshot(state)
-	m.appendStatusUpdate(state, actor, input.Reason)
+	m.appendStatusUpdate(state, actor, input)
 	m.emitGoalUpdated(&snapshot, &GoalChange{
 		Kind:   GoalChangeCompletion,
 		Status: ptrStatus(GoalDone),
@@ -580,6 +603,11 @@ func (m *GoalMode) applyStatus(state *goalStage, status GoalStatus) {
 	}
 	if status == GoalActive {
 		state.wallClockResumedAt = &now
+	} else {
+		// Any transition out of active abandons a pending done-gate
+		// verification: a pause/blocked after a challenge must not let the
+		// next complete request skip the challenge.
+		state.pendingVerification = false
 	}
 	state.status = status
 }
@@ -612,14 +640,15 @@ type emitOption struct {
 	Track bool
 }
 
-func (m *GoalMode) appendStatusUpdate(state *goalStage, actor GoalActor, reason *string) {
+func (m *GoalMode) appendStatusUpdate(state *goalStage, actor GoalActor, input GoalReasonInput) {
 	now := time.Now()
 	wallClock := LiveWallClockMs(*state, now)
 	m.appendGoalUpdateRecord(GoalEventRecord{
 		Type:        GoalEventUpdate,
 		Timestamp:   now,
 		Status:      ptrString(string(state.status)),
-		Reason:      reason,
+		Reason:      input.Reason,
+		Expectation: input.Expectation,
 		Actor:       ptrString(string(actor)),
 		WallClockMs: &wallClock,
 	})
@@ -671,6 +700,7 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 		WallClockMs:         LiveWallClockMs(*state, now),
 		Budget:              ComputeBudgetReport(state.budgetLimits, state.turnsUsed, state.tokensUsed, LiveWallClockMs(*state, now)),
 		TerminalReason:      state.terminalReason,
+		TerminalExpectation: state.terminalExpectation,
 	}
 }
 

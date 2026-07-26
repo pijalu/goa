@@ -227,7 +227,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// in production, leaving swarm mode and background task tracking no-ops.
 	swarmState := swarm.NewState()
 	taskBus := tasks.NewBus(tasks.NopStore{}, agentBundle.eventBus)
-	goalManager, goalDriver := initGoalSystem(projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState)
+	goalManager, goalDriver := initGoalSystem(cfg, projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState)
 	// Goal tools are always registered (stable tool array, bugs.md S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
@@ -467,7 +467,7 @@ func (s *autonomySwitcher) SetAutonomy(level internal.AutonomyLevel) error {
 	return nil
 }
 
-func initGoalSystem(projectDir string, eventBus *event.Bus, agentMgr *core.AgentManager, swarmState *swarm.State) (*core.GoalManager, *core.GoalDriver) {
+func initGoalSystem(cfg *config.Config, projectDir string, eventBus *event.Bus, agentMgr *core.AgentManager, swarmState *swarm.State) (*core.GoalManager, *core.GoalDriver) {
 	reminderFn := func(text string) {
 		if agentMgr != nil {
 			_ = agentMgr.InjectSystemMessage(text)
@@ -479,6 +479,14 @@ func initGoalSystem(projectDir string, eventBus *event.Bus, agentMgr *core.Agent
 		Telemetry:  nil,
 		ReminderFn: reminderFn,
 	})
+	// Done-gate (goals.done_gate): how strictly model-initiated completion is
+	// checked before the goal may close. Invalid values are rejected by config
+	// validation; fall back to the default defensively.
+	if gate, ok := goal.ParseDoneGate(cfg.Goals.DoneGate); ok {
+		manager.Mode.SetDoneGate(gate)
+	} else {
+		manager.Mode.SetDoneGate(goal.DefaultDoneGate)
+	}
 	// Chain goal + swarm reminders into a single provider so the swarm
 	// enter-reminder is prepended to the system prompt every turn while swarm
 	// mode is active under a manual/task trigger.
@@ -594,15 +602,12 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 // GoalMode. Extracted so both the startup registration path and the runtime
 // /tools:goal:on factory (makeToolFactory) construct it identically.
 func newGoalTool(manager *core.GoalManager, createFlagOn bool) agentic.Tool {
-	reminderFn := func(text string) {
-		// Reminders are injected by the agent loop via GoalStateProvider.
-	}
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
 	// goal is already active (bugs.md S2: all goal actions work during a goal).
 	createAllowed := func() bool {
 		return createFlagOn || manager.Mode.GetActiveGoal() != nil
 	}
-	tool := tools.NewGoalTools(manager.Mode, reminderFn, createAllowed)[0]
+	tool := tools.NewGoalTools(manager.Mode, createAllowed)[0]
 	// Wire the durable goal queue so the tool manages goals as a todo-like
 	// list: create appends by default when a goal is active, and list/cancel/
 	// reorder operate over the active goal + the queue.

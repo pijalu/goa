@@ -179,16 +179,44 @@ func TestGoalQueueStore_ReorderEmptyMapping(t *testing.T) {
 	}
 }
 
+// TestGoalQueueStore_CompletionCriterion verifies a queued goal keeps its
+// done-condition through Append/persist/Read so promotion can restore it.
+func TestGoalQueueStore_CompletionCriterion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "q.json")
+	store := NewGoalQueueStore(path)
+	criterion := "go test ./... passes"
+	blank := "   "
+	if _, err := store.AppendWithOptions("with criterion", &criterion, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendWithOptions("blank criterion", &blank, false); err != nil {
+		t.Fatal(err)
+	}
+	read, err := NewGoalQueueStore(path).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 2 {
+		t.Fatalf("read = %d goals, want 2", len(read))
+	}
+	if read[0].CompletionCriterion == nil || *read[0].CompletionCriterion != criterion {
+		t.Errorf("goal[0] criterion = %v, want %q", read[0].CompletionCriterion, criterion)
+	}
+	if read[1].CompletionCriterion != nil {
+		t.Errorf("blank criterion must normalize to nil, got %q", *read[1].CompletionCriterion)
+	}
+}
+
 // TestGoalQueueStore_FreshContext verifies a queued goal carries its per-goal
 // clean-context flag through Append/persist/Read (bugs.md: goal queue +
 // per-goal clean-context flag).
 func TestGoalQueueStore_FreshContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "q.json")
 	store := NewGoalQueueStore(path)
-	if _, err := store.AppendWithOptions("default goal", false); err != nil {
+	if _, err := store.AppendWithOptions("default goal", nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendWithOptions("clean goal", true); err != nil {
+	if _, err := store.AppendWithOptions("clean goal", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	// Re-read from disk to prove persistence.

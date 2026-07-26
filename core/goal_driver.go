@@ -22,11 +22,16 @@ weigh the objective and any completion criteria against the work done so far.
 Goal mode is iterative: do one coherent slice of work, then reassess.
 Call goal with action "update", status "complete" only when all required work is done, any stated
 validation has passed, and there is no useful next action. Do not mark complete
-after only producing a plan, summary, first pass, or partial result.
+after only producing a plan, summary, first pass, or partial result. When a completion
+criterion is recorded, the first "complete" call is intercepted by a verification
+challenge: audit the criterion, then call "complete" again with "reason" citing the
+concrete evidence.
 If an external condition or required user input prevents progress, or the objective
-cannot be completed as stated, call goal with action "update", status "blocked". Otherwise keep going —
-use the existing conversation context and your tools, and do not ask the user for
-input unless a real blocker prevents progress.
+cannot be completed as stated, call goal with action "update", status "blocked" with BOTH
+"reason" (the concrete blocker) and "expectation" (exactly what input or change unblocks
+it). Do not pause just to ask whether to continue — that defeats goal mode. Otherwise
+keep going: use the existing conversation context and your tools, and do not ask the
+user for input unless a real blocker prevents progress.
 
 HOW TO END A GOAL: the goal only stops when you make an actual goal TOOL
 CALL with action "update", status "complete" or "blocked". Writing "the goal is complete" (or

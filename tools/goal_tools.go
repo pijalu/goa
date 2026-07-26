@@ -11,12 +11,14 @@ import (
 )
 
 // NewGoalTools creates the single agent-facing goal tool bound to the given
-// GoalMode. The reminder callback injects completion/block summaries after a
-// terminal update. createAllowed gates autonomous goal creation at execution
-// time (bugs.md S2): it is consulted only for the `create` action and callers
+// GoalMode. createAllowed gates autonomous goal creation at execution time
+// (bugs.md S2): it is consulted only for the `create` action and callers
 // typically allow create when the feature flag is on OR a goal is active.
-func NewGoalTools(mode *goal.GoalMode, reminderFn func(string), createAllowed func() bool) []agentic.Tool {
+// Terminal transitions are self-describing: the tool enforces the
+// terminal-answer contract (reason/expectation) and the done-gate challenge
+// inline in its results, so no post-hoc reminder callback is needed.
+func NewGoalTools(mode *goal.GoalMode, createAllowed func() bool) []agentic.Tool {
 	return []agentic.Tool{
-		&goaltools.GoalTool{Mode: mode, ReminderFn: reminderFn, CreateAllowed: createAllowed},
+		&goaltools.GoalTool{Mode: mode, CreateAllowed: createAllowed},
 	}
 }

@@ -350,6 +350,13 @@ type OrchestratorDefaultsConfig struct {
 // GoalsConfig controls the durable goal subsystem.
 type GoalsConfig struct {
 	Retention GoalsRetentionConfig `yaml:"retention,omitempty"`
+	// DoneGate selects how strictly model-initiated goal completion is
+	// checked before the goal may close: "verify" (default) intercepts the
+	// first complete request with a verification challenge when a completion
+	// criterion is recorded; "evidence" requires the complete request to
+	// carry the validation evidence as its reason in a single call; "off"
+	// disables the gate. See docs/GOALS.md.
+	DoneGate string `yaml:"done_gate,omitempty"`
 }
 
 // GoalsRetentionConfig controls how long terminal normal goals are kept.

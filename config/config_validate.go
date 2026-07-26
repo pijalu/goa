@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pijalu/goa/internal"
@@ -322,6 +323,11 @@ func (c *Config) validateGoals(ve *internal.ValidationError) {
 	gr := c.Goals.Retention
 	if gr.Days < 0 {
 		ve.Add(fmt.Sprintf("goals.retention.days: must be >= 0 (got %d)", gr.Days))
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Goals.DoneGate)) {
+	case "", "verify", "evidence", "off":
+	default:
+		ve.Add(fmt.Sprintf("goals.done_gate: must be verify, evidence, or off (got %q)", c.Goals.DoneGate))
 	}
 }
 

@@ -32,6 +32,23 @@ func TestGoalsConfigValidate(t *testing.T) {
 			},
 			wantSub: "goals.retention.days",
 		},
+		{
+			name: "done_gate verify accepted",
+			cfg:  GoalsConfig{DoneGate: "verify"},
+		},
+		{
+			name: "done_gate evidence accepted",
+			cfg:  GoalsConfig{DoneGate: "evidence"},
+		},
+		{
+			name: "done_gate off accepted",
+			cfg:  GoalsConfig{DoneGate: "off"},
+		},
+		{
+			name:    "done_gate unknown rejected",
+			cfg:     GoalsConfig{DoneGate: "strict"},
+			wantSub: "goals.done_gate",
+		},
 	}
 
 	for _, tc := range cases {
