@@ -1024,3 +1024,67 @@ func TestGoalCommand_ListCompletion(t *testing.T) {
 		t.Errorf("expected 'list' in /goal:li completions, got %v", comps)
 	}
 }
+
+// TestGoalCommand_ManageDeleteHotkey reproduces bugs.md Issue 23: pressing the
+// selector's '-' hotkey in /goal:manage emits "__delete__"+id; the manager must
+// strip the sentinel and delete the goal instead of looking up the mangled id
+// ("queued goal \"__delete__…\" not found").
+func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+
+	goals, err := queue.Append("first queued goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goals, err = queue.Append("second queued goal"); err != nil {
+		t.Fatal(err)
+	}
+	victim := goals[1].ID
+
+	ctx := testContext()
+	ctx.EventBus = event.MakeBus(8, 8, 8, 8)
+	var flashes []string
+	flashDone := make(chan struct{})
+	go func() {
+		defer close(flashDone)
+		for ev := range ctx.EventBus.Chat {
+			if ev.Flash != nil {
+				flashes = append(flashes, ev.Flash.Text)
+			}
+		}
+	}()
+
+	var selections []func(string, bool)
+	ctx.SelectOptionFunc = func(_ string, items []tui.SelectorItem, _ string, cb func(string, bool)) {
+		selections = append(selections, cb)
+		if len(selections) == 1 {
+			cb("__delete__"+victim, true) // simulate the '-' hotkey
+			return
+		}
+		cb("", false) // close the reopened manager
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	remaining, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].Objective != "first queued goal" {
+		t.Fatalf("expected only the first goal to remain, got %+v", remaining)
+	}
+	if len(selections) != 2 {
+		t.Errorf("expected the manager to reopen after delete (2 selector invocations), got %d", len(selections))
+	}
+	close(ctx.EventBus.Chat)
+	<-flashDone
+	for _, f := range flashes {
+		if strings.Contains(f, "not found") {
+			t.Errorf("regression: mangled-id error surfaced: %q", f)
+		}
+	}
+}

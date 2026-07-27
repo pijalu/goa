@@ -1252,3 +1252,27 @@ markdown format.
   `TestGoalCommand_ListEmpty`, `TestGoalCommand_ListCompletion`.
 
 **Status: FIXED.**
+
+---
+
+## Issue 23 — `/goal:manage` delete fails: `"__delete__<id>" not found`
+
+**Symptom (user report):** deleting a queued goal from `/goal:manage` flashes
+`queued goal "__delete__qg-…" not found` and nothing is deleted.
+
+**Root cause:** the shared selector has a **'-' (delete) hotkey** that emits
+`"__delete__"+item.Value` for the highlighted row (`tui/selector.go:185`). The
+`/provider` and `/model` pickers handle that protocol
+(`strings.TrimPrefix(selected, "__delete__")` in `core/commands/provider.go:129`,
+`model.go:132`); `showQueueManager` did NOT — it passed the mangled string to
+`promptQueueAction` → `Queue.Remove("__delete__qg-…")` → not found.
+
+**Fix:** `core/commands/goal.go` `showQueueManager` — handle the sentinel like
+the other pickers: strip `__delete__`, `Queue.Remove(id)`, flash "Goal deleted.",
+and reopen the manager with the updated list.
+
+**Test:** `core/commands/goal_test.go` `TestGoalCommand_ManageDeleteHotkey` —
+seeds two queued goals, simulates the '-' hotkey selection, asserts the goal is
+removed, the manager reopens, and no "not found" flash surfaces. ✔
+
+**Status: FIXED.**

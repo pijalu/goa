@@ -451,6 +451,21 @@ func (c *GoalCommand) showQueueManager(ctx core.Context) error {
 		if !ok || selected == "__done__" {
 			return
 		}
+		// The selector's '-' hotkey emits "__delete__"+id for the highlighted
+		// item (mirrors the /provider and /model pickers): delete the goal
+		// directly instead of treating the sentinel-prefixed string as a goal
+		// id — which previously reached Queue.Remove and failed with
+		// "queued goal \"__delete__…\" not found" (bugs.md Issue 23).
+		if strings.HasPrefix(selected, "__delete__") {
+			id := strings.TrimPrefix(selected, "__delete__")
+			if _, _, err := c.Queue.Remove(id); err != nil {
+				ctx.Flash(err.Error())
+				return
+			}
+			ctx.Flash("Goal deleted.")
+			_ = c.showQueueManager(ctx) // reopen with the updated list
+			return
+		}
 		c.promptQueueAction(ctx, selected)
 	})
 	return nil
