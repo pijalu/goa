@@ -877,7 +877,17 @@ passes the standard CPython `json` API surface.
 **Test:** `python` tool test that runs `json.load` on a temporary JSON file and asserts the
 parsed structure matches the source data.
 
-**Status: OPEN.**
+**Status: FIXED.**
+- `internal/python/stdlib/json.go`: added `load(fp)` (calls `fp.read()` via
+  `py.GetAttrString`+`py.Call`, accepts str or bytes content like CPython) and
+  `dump(obj, fp, indent=None)` (serializes via the shared `dumpsToString` refactor,
+  calls `fp.write()`, returns None). File-oriented helpers duck-type on any object
+  with `read()`/`write()` — real files from the `open` builtin work under the tool's
+  jailed os module unchanged.
+- Tests (`internal/python/stdlib/json_test.go`, all pass): `TestJsonLoad`,
+  `TestJsonDump` (asserts None return + exact file bytes), `TestJsonDumpLoadRoundTrip`,
+  `TestJsonDumpIndent`, `TestJsonLoadNotAFile`/`TestJsonDumpNotAFile` (TypeError
+  paths). Full `internal/python/...` + `tools` suites green.
 
 ---
 

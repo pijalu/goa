@@ -25,6 +25,14 @@ Deserialize a JSON string to a Python object.`),
 			py.MustNewMethod("dumps", jsonDumps, 0, `dumps(obj, indent=None) -> str
 
 Serialize a Python object to a JSON string.`),
+			py.MustNewMethod("load", jsonLoad, 0, `load(fp) -> object
+
+Deserialize JSON read from a file-like object (via its read() method) to a
+Python object.`),
+			py.MustNewMethod("dump", jsonDump, 0, `dump(obj, fp, indent=None)
+
+Serialize a Python object to JSON and write it to a file-like object (via its
+write() method). Returns None.`),
 		},
 	})
 }
@@ -51,14 +59,23 @@ func jsonDumps(self py.Object, args py.Tuple, kwargs py.StringDict) (py.Object, 
 	if err := py.UnpackTuple(args, nil, "dumps", 1, 1, &obj); err != nil {
 		return nil, err
 	}
+	s, err := dumpsToString(obj, kwargs)
+	if err != nil {
+		return nil, err
+	}
+	return py.String(s), nil
+}
 
+// dumpsToString serializes obj to a JSON string, honoring the optional
+// `indent` keyword (shared by dumps and dump).
+func dumpsToString(obj py.Object, kwargs py.StringDict) (string, error) {
 	// Parse optional indent keyword
 	indent := ""
 	if kwargs != nil {
 		if v, ok := kwargs["indent"]; ok && v != py.None {
 			indentStr, err := compat.AsString(v, "dumps")
 			if err != nil {
-				return nil, py.ExceptionNewf(py.TypeError, "dumps() indent must be str or None, not %s", v.Type().Name)
+				return "", py.ExceptionNewf(py.TypeError, "dumps() indent must be str or None, not %s", v.Type().Name)
 			}
 			indent = indentStr
 		}
@@ -67,7 +84,7 @@ func jsonDumps(self py.Object, args py.Tuple, kwargs py.StringDict) (py.Object, 
 	// Convert Python object to Go value
 	goVal, err := compat.PyToGo(obj)
 	if err != nil {
-		return nil, py.ExceptionNewf(py.TypeError, "dumps() failed: %v", err)
+		return "", py.ExceptionNewf(py.TypeError, "dumps() failed: %v", err)
 	}
 
 	// Serialize to JSON
@@ -78,8 +95,56 @@ func jsonDumps(self py.Object, args py.Tuple, kwargs py.StringDict) (py.Object, 
 		b, err = gojson.Marshal(goVal)
 	}
 	if err != nil {
-		return nil, py.ExceptionNewf(py.ValueError, "dumps() failed: %v", err)
+		return "", py.ExceptionNewf(py.ValueError, "dumps() failed: %v", err)
 	}
+	return string(b), nil
+}
 
-	return py.String(b), nil
+func jsonLoad(self py.Object, args py.Tuple) (py.Object, error) {
+	var fp py.Object
+	if err := py.UnpackTuple(args, nil, "load", 1, 1, &fp); err != nil {
+		return nil, err
+	}
+	data, err := readFromFileObject(fp)
+	if err != nil {
+		return nil, err
+	}
+	var v any
+	if err := gojson.Unmarshal([]byte(data), &v); err != nil {
+		return nil, py.ExceptionNewf(py.ValueError, "load() failed: %v", err)
+	}
+	return compat.GoToPy(v)
+}
+
+func jsonDump(self py.Object, args py.Tuple, kwargs py.StringDict) (py.Object, error) {
+	var obj, fp py.Object
+	if err := py.UnpackTuple(args, nil, "dump", 2, 2, &obj, &fp); err != nil {
+		return nil, err
+	}
+	s, err := dumpsToString(obj, kwargs)
+	if err != nil {
+		return nil, err
+	}
+	writeMeth, err := py.GetAttrString(fp, "write")
+	if err != nil {
+		return nil, py.ExceptionNewf(py.TypeError, "dump() argument 2 must have a write() method, not %s", fp.Type().Name)
+	}
+	if _, err := py.Call(writeMeth, py.Tuple{py.String(s)}, nil); err != nil {
+		return nil, err
+	}
+	return py.None, nil
+}
+
+// readFromFileObject calls fp.read() and returns the content as a string
+// (str or bytes results are both accepted, matching CPython's json.load).
+func readFromFileObject(fp py.Object) (string, error) {
+	readMeth, err := py.GetAttrString(fp, "read")
+	if err != nil {
+		return "", py.ExceptionNewf(py.TypeError, "load() argument 1 must have a read() method, not %s", fp.Type().Name)
+	}
+	data, err := py.Call(readMeth, py.Tuple{}, nil)
+	if err != nil {
+		return "", err
+	}
+	return compat.AsString(data, "load")
 }
