@@ -301,6 +301,13 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "accounts/fireworks/models/kimi-k3", Name: "Kimi K3", Api: provider.Api("openai-completions"), Provider: provider.Provider("fireworks"),
+		BaseURL:   "https://api.fireworks.ai/inference/v1/",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000030000, Output: 0.0000150000, CacheRead: 0.0000003000, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "accounts/fireworks/models/minimax-m2p7", Name: "MiniMax-M2.7", Api: provider.Api("openai-completions"), Provider: provider.Provider("fireworks"),
 		BaseURL:   "https://api.fireworks.ai/inference/v1/",
 		Reasoning: true, ContextWindow: 196608, MaxTokens: 196608, InputTypes: []string{"text"},
@@ -347,6 +354,13 @@ func loadGeneratedModels() {
 		BaseURL:   "https://api.fireworks.ai/inference/v1/",
 		Reasoning: true, ContextWindow: 262000, MaxTokens: 262000, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000019000, Output: 0.0000080000, CacheRead: 0.0000003800, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "accounts/fireworks/routers/kimi-k3-fast", Name: "Kimi K3 Fast", Api: provider.Api("openai-completions"), Provider: provider.Provider("fireworks"),
+		BaseURL:   "https://api.fireworks.ai/inference/v1/",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000045000, Output: 0.0000225000, CacheRead: 0.0000004500, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -1558,6 +1572,13 @@ func loadGeneratedModels() {
 		BaseURL:   "https://opencode.ai/zen/v1",
 		Reasoning: true, ContextWindow: 262144, MaxTokens: 262144, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000009500, Output: 0.0000040000, CacheRead: 0.0000001900, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
+		ID: "kimi-k3", Name: "Kimi K3", Api: provider.Api("openai-completions"), Provider: provider.Provider("opencode"),
+		BaseURL:   "https://opencode.ai/zen/v1",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000030000, Output: 0.0000150000, CacheRead: 0.0000003000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
