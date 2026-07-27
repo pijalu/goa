@@ -933,7 +933,25 @@ starting at N>1 and exhaust early).
 (same-turn and cross-turn episodes; flaky provider counting `Stream()` calls; assert
 full budget per episode and attempt-1 restart).
 
-**Status: OPEN.**
+**Status: FIXED.**
+- **Budget-reset regression test** (`TestAgent_RetryBudgetResetsAfterSuccess`): new
+  `scriptedStreamProvider` plays a 7-step script — turn 1: fail → retry succeeds with
+  a tool call (turn continues) → fail → retry 1 fails → retry 2 succeeds (FULL fresh
+  budget used); turn 2: fail → retry 1 succeeds. Asserts 7 `Stream()` calls, three
+  "attempt 1/2" progress messages (one per episode — budget restarted), one
+  "attempt 2/2" (episode 2 reached its full budget), and three "Connection restored"
+  bubbles. Uses a 429 with `RetryAfterMs: 1` so backoff is ~1ms (test runs 0.01s).
+- **Retry TUI visibility (directive):** the full retry lifecycle is now visible in
+  chat history: failure bubble ("… - retrying", pre-existing) → live spinner
+  "Reconnecting (attempt N/M)…" (pre-existing) → NEW durable `Connection restored
+  (attempt N/M) — resuming.` system-notification bubble on success
+  (`retryStream`), and the fatal bubble on exhaustion (pre-existing).
+- Updated `TestAgent_RetriesStreamError_EmitsSystemNotification` to assert the
+  two-bubble lifecycle (retrying + restored).
+- Test-fixture lesson baked in: recovered text must end with terminal punctuation
+  after tool work, or `shouldAutoContinue` (premature-stop guard) auto-continues
+  the turn and consumes extra stream calls.
+- Full `internal/agentic` (incl. `-race`) and `internal/app` suites green.
 
 ---
 

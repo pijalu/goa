@@ -1289,6 +1289,16 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 		toolCallEncountered, streamErr = a.consumeStream(ctx, stream, opts)
 		if streamErr == nil {
 			a.emitEvent(OutputEvent{Type: EventProgress, Text: ""})
+			// Durable confirmation so the retry lifecycle is visible in chat
+			// history — failure bubble (episode start) + spinner attempts
+			// (live) + this restored bubble (success) — not only a transient
+			// spinner line (bugs.md Issue 17).
+			a.emitEvent(OutputEvent{
+				Type:     EventContent,
+				Role:     System,
+				Text:     fmt.Sprintf("Connection restored (attempt %d/%d) — resuming.", retry+1, opts.MaxRetries),
+				Metadata: map[string]string{"category": "system-notification"},
+			})
 			return toolCallEncountered, true
 		}
 		// Clean up after the failed retry so the next attempt (or error path)

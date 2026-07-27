@@ -171,6 +171,61 @@ func registerFlakyStartProvider(failures int, err error, successEvents []provide
 	return p
 }
 
+// scriptedStreamProvider plays back a fixed script of per-call outcomes so
+// tests can exercise multi-episode retry scenarios (fail → recover → fail
+// again) with distinct behavior on each Stream call. Calls beyond the script
+// repeat the last step.
+type scriptedStreamProvider struct {
+	api   provider.Api
+	mu    sync.Mutex
+	steps []scriptedStreamStep
+	calls int
+}
+
+type scriptedStreamStep struct {
+	err    error                            // when non-nil, Stream fails with this
+	events []provider.AssistantMessageEvent // else a successful stream with these
+}
+
+func (p *scriptedStreamProvider) API() provider.Api { return p.api }
+
+func (p *scriptedStreamProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.mu.Lock()
+	i := p.calls
+	p.calls++
+	p.mu.Unlock()
+	if i >= len(p.steps) {
+		i = len(p.steps) - 1
+	}
+	step := p.steps[i]
+	if step.err != nil {
+		return nil, step.err
+	}
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		for _, e := range step.events {
+			result.Push(e)
+		}
+		result.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "done"}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return result, nil
+}
+
+func (p *scriptedStreamProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	base := provider.BuildSimpleOptions(model, opts)
+	return p.Stream(model, ctx, base)
+}
+
+// Calls returns how many times Stream was invoked.
+func (p *scriptedStreamProvider) Calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
 func TestAgent_AddRemoveObserver(t *testing.T) {
 	agent := NewAgent(Config{
 		Model:        testModel("test-observer-api"),
@@ -2270,11 +2325,17 @@ func TestAgent_RetriesStreamError_EmitsSystemNotification(t *testing.T) {
 			notifications = append(notifications, e)
 		}
 	}
-	if len(notifications) != 1 {
-		t.Fatalf("expected 1 system notification, got %d", len(notifications))
+	// The retry lifecycle is fully visible (bugs.md Issue 17): the failure
+	// bubble ("retrying") followed by the durable "Connection restored"
+	// confirmation once a retry succeeds.
+	if len(notifications) != 2 {
+		t.Fatalf("expected 2 system notifications (retrying + restored), got %d", len(notifications))
 	}
 	if !strings.Contains(notifications[0].Text, "retrying") {
-		t.Errorf("expected notification to mention retrying, got %q", notifications[0].Text)
+		t.Errorf("expected first notification to mention retrying, got %q", notifications[0].Text)
+	}
+	if !strings.Contains(notifications[1].Text, "Connection restored") {
+		t.Errorf("expected second notification to confirm reconnection, got %q", notifications[1].Text)
 	}
 }
 
@@ -2440,6 +2501,117 @@ func TestAgent_RetriesInitialStreamError_408(t *testing.T) {
 	}
 	if !containsContent(contents, "Recovered after 408") {
 		t.Errorf("expected content recovered after initial 408 retry, got %q", contents)
+	}
+}
+
+// TestAgent_RetryBudgetResetsAfterSuccess proves bugs.md Issue 17: once a
+// stream failure is recovered by a retry, a LATER failure — in the same turn
+// or the next turn — gets a full fresh retry budget (attempts restart at
+// 1/MaxRetries), and every episode is visible to the user (progress attempts
+// + durable "Connection restored" bubble).
+func TestAgent_RetryBudgetResetsAfterSuccess(t *testing.T) {
+	// Rate-limit error with a 1ms Retry-After so the retry backoff is ~1ms
+	// and the test stays fast.
+	rateLimitErr := (&hooks.ErrorContext{
+		StatusCode:   http.StatusTooManyRequests,
+		Body:         `{"error":{"message":"slow down","type":"rate_limit"}}`,
+		IsRateLimit:  true,
+		IsRetryable:  true,
+		RetryAfterMs: 1,
+	}).ToError()
+
+	toolCallEvents := []provider.AssistantMessageEvent{
+		{Type: provider.EventToolCallEnd, ToolCall: &provider.ContentBlock{
+			Type: provider.ContentBlockToolCall, ToolName: "echo", ToolArguments: `{"text":"hi"}`,
+		}},
+	}
+	// NOTE: the recovered text must end with terminal punctuation — after real
+	// tool work the premature-stop guard (shouldAutoContinue) treats an
+	// unpunctuated answer as truncated and auto-continues the turn.
+	textEvents := []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered."},
+	}
+
+	p := &scriptedStreamProvider{
+		api: provider.Api(fmt.Sprintf("test-scripted-%d", testProviderCounter.Add(1))),
+		steps: []scriptedStreamStep{
+			{err: rateLimitErr},      // turn 1, episode 1: initial failure
+			{events: toolCallEvents}, //   episode 1: retry 1 succeeds → tool round continues the turn
+			{err: rateLimitErr},      // turn 1, episode 2: initial failure
+			{err: rateLimitErr},      //   episode 2: retry 1 ALSO fails
+			{events: textEvents},     //   episode 2: retry 2 succeeds — FULL fresh budget was available
+			{err: rateLimitErr},      // turn 2, episode 3: initial failure
+			{events: textEvents},     //   episode 3: retry 1 succeeds
+		},
+	}
+	provider.RegisterApiProvider(p)
+
+	echoTool := mockTool{
+		name: "echo",
+		schema: ToolSchema{
+			Name:        "echo",
+			Description: "echoes input",
+			Schema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"text": map[string]string{"type": "string"}},
+			},
+		},
+	}
+	agent := NewAgent(Config{
+		Model: provider.Model{
+			ID:         "retry-budget-test",
+			Api:        p.API(),
+			Provider:   provider.ProviderCustom,
+			InputTypes: []string{"text"},
+		},
+		SystemPrompt:  "test",
+		Logger:        NewLogger(Error),
+		Tools:         []Tool{echoTool},
+		StreamOptions: provider.StreamOptions{MaxRetries: 2},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "first"); err != nil {
+		t.Fatalf("Run first: %v", err)
+	}
+	if err := agent.Run(ctx, "second"); err != nil {
+		t.Fatalf("Run second: %v", err)
+	}
+
+	if got := p.Calls(); got != 7 {
+		t.Fatalf("expected 7 Stream calls across 3 episodes, got %d", got)
+	}
+
+	var attempt1, attempt2, restored int
+	for _, e := range obs.Events() {
+		if e.Type == EventProgress {
+			if strings.Contains(e.Text, "attempt 1/2") {
+				attempt1++
+			}
+			if strings.Contains(e.Text, "attempt 2/2") {
+				attempt2++
+			}
+		}
+		if e.Type == EventContent && e.Role == System && strings.Contains(e.Text, "Connection restored") {
+			restored++
+		}
+	}
+	if attempt1 != 3 {
+		t.Errorf("expected 3 fresh attempt-1 retries (one per episode), got %d — retry budget did not reset", attempt1)
+	}
+	if attempt2 != 1 {
+		t.Errorf("expected episode 2 to reach attempt 2/2 (full fresh budget), got %d", attempt2)
+	}
+	if restored != 3 {
+		t.Errorf("expected 3 'Connection restored' bubbles (one per recovered episode), got %d", restored)
 	}
 }
 
