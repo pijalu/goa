@@ -950,3 +950,77 @@ type fakeCommandVerifier struct {
 func (v *fakeCommandVerifier) Verify(_ context.Context, _ string) (string, bool) {
 	return v.output, v.ok
 }
+
+func TestGoalCommand_List(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	// Active goal via create, then two queued goals in order.
+	if err := cmd.Run(ctx, []string{"fix the newline loss in the converter with a complete multi-line objective that must not be truncated"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Append("second goal: audit provider retry logic"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Append("third goal: add json.load to gpython"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Run(ctx, []string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+
+	if !strings.Contains(out, "## Goals") {
+		t.Errorf("expected markdown header in output:\n%s", out)
+	}
+	// Order: active first, then queue order.
+	i1 := strings.Index(out, "fix the newline loss")
+	i2 := strings.Index(out, "second goal: audit provider retry logic")
+	i3 := strings.Index(out, "third goal: add json.load to gpython")
+	if i1 < 0 || i2 < 0 || i3 < 0 {
+		t.Fatalf("missing objectives in output:\n%s", out)
+	}
+	if !(i1 < i2 && i2 < i3) {
+		t.Errorf("goals out of order (active=%d, second=%d, third=%d):\n%s", i1, i2, i3, out)
+	}
+	for _, want := range []string{"**1. [active]", "**2. [queued]", "**3. [queued]", "status active"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output:\n%s", want, out)
+		}
+	}
+	// Complete (untruncated) objectives: the long active objective must appear
+	// in full — no truncation marker.
+	if strings.Contains(out, "must not be tru...") || !strings.Contains(out, "must not be truncated") {
+		t.Errorf("active objective was truncated:\n%s", out)
+	}
+}
+
+func TestGoalCommand_ListEmpty(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))}
+	ctx := testContext()
+	if err := cmd.Run(ctx, []string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+	if !strings.Contains(out, "No goals.") {
+		t.Errorf("expected empty-state message, got:\n%s", out)
+	}
+}
+
+func TestGoalCommand_ListCompletion(t *testing.T) {
+	cmd := &GoalCommand{}
+	comps := cmd.CompleteArgs(testContext(), "li")
+	found := false
+	for _, c := range comps {
+		if c.Value == "list" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'list' in /goal:li completions, got %v", comps)
+	}
+}

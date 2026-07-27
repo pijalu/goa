@@ -1150,3 +1150,105 @@ Deep byte-level investigation (2026-07-27), every layer cleared:
 color), and share the log around the moment — the byte stream will show whether the
 row was ever written without bg (compositor/viewport bug) or written correctly
 (terminal interpretation).
+
+---
+
+## Issue 21 — CRITICAL: turn wedged ~6h after a read tool call; ESC required ("read stuck")
+
+**Symptom (export `/Users/muaddib/dev/frigolite/.goa/exports/goa-export-20260727-183757.zip`,
+opencode-go / deepseek-v4-flash, goal active):** at 12:43:33 the model issued
+`read convert_compat_json.py:150-220`. The turn then wedged for ~5.9h — the read
+widget stayed in-flight with the elapsed timer ticking — until ESC at 18:37:41
+(`Interrupt()`). After unwinding, the widget showed `✓ read … Took 21249.6s`
+(≈ the full 12:43→18:37 span — the result reached the TUI only at ESC). The goal
+was "paused by the system / Paused after interruption".
+
+**Established facts (from the export):**
+- The read's `tool_result` WAS eventually recorded (`session/events.jsonl`), along
+  with round-0 completion events (token_stats, context_stats, and a final EMPTY
+  `progress` event — the exact event emitted by `handleStreamFailure`'s
+  retries-exhausted path).
+- `logs/agent.log` goes COMPLETELY SILENT after `12:45:33.478 [WARN] Stream
+  stalled: no events received for 2m0s` — 6h until the Interrupt line. The stall
+  watchdog fired exactly 2m0.000s after the last stream event (un-stopped
+  watchdog ⇒ its consumeStream never returned).
+- `logs/http.jsonl` (logs on headers-received) has NO request after 12:43:33 —
+  request 21 either hung pre-completion or was never sent.
+- TUI/render/command loops stayed alive the whole time (elapsed ticking, user
+  typing in the editor at the end).
+
+**RULED OUT (with proof):**
+- Agent stall recovery — WORKS: repro tests
+  (`internal/agentic/stream_stall_repro_test.go`: silent-stream and
+  silent-after-tool-round) recover via watchdog → retry → bounded turn end.
+- `isContextLengthError` false-positive on the stall error (no pattern matches).
+- `confirmToolIfNeeded` (session was YOLO → no approval wait), LSP (`lsp: false`
+  in user config), worktree sync (2s timeout), scheduler `Collect` lost-wakeup
+  (round-0 stats events prove the completion path ran), logger/stderr blocking
+  (agent logger writes directly to a file), `forwardInternalEvents` blocking
+  (false in interactive mode; only ACP/headless enable it).
+
+**Top remaining hypotheses (discriminating evidence needed):**
+1. Agent goroutine wedged INSIDE `emitEvent`'s synchronous observer chain
+   (`am.OnEvent` → `forwardEvent` → `sessionStore.WriteEvent` s.mu convoy, or a
+   goal-system call that blocks) — this wedges before/around the EventToolResult
+   emission while the AfterFunc watchdog still fires (it is independent). Fits:
+   result applied only at ESC, agent.log silent, watchdog un-stopped.
+2. Goal-driver interaction at goal-creation time (the model had just said
+   "Let me create a goal") blocking a manager/session-store lock the emit chain
+   needs.
+3. A pre-headers HTTP hang for request 21 with no timeout coverage
+   (`clientWithHeaderTimeout(client, req.Timeout)` — req.Timeout is set ONLY
+   when `StreamOptions.Timeout > 0`; a server that accepts and never responds
+   hangs `tr.Do` forever, and NO watchdog covers the pre-headers window — but
+   this does NOT explain the missing recovery logs, so it is at most a
+   secondary gap).
+
+**Gaps to close regardless:**
+- **Pre-headers request timeout**: `StreamOptions.Timeout` default 0 →
+  `clientWithHeaderTimeout(client, 0)` = no bound on connect+headers. Add a sane
+  default (e.g. 60s) so a wedged server cannot hang `provider.Stream` before the
+  event-stall watchdog even exists. Test: transport stub that never sends
+  headers → agent must fail/retry within the bound.
+- **Observability**: the wedged process had no goroutine dump. The new
+  `.goa/crash.log` (Issue 18) covers FATAL errors only. Add a debug hook to dump
+  all goroutines into the export bundle on demand (export time) and/or on the
+  2m stall WARN (throttled), so the next wedge is self-diagnosing.
+
+**Test:** the pre-headers timeout test above; the two stall repro tests already
+guard the post-headers recovery.
+
+**Status: OPEN — root cause between emitEvent observer chain and goal/manager
+locks; needs goroutine dump to close (self-diagnosing hooks added per gaps).**
+
+---
+
+## Issue 22 — Goal bubble display cap + `/goal:list` (feature request)
+
+**Request:** (a) limit the goal bubble to 3 lines, adding an ellipsis when the
+objective is longer; (b) add `/goal:list` to simply list all current goals in
+their order; (c) the complete goal prompt (objective) must be printed, in
+markdown format.
+
+**Fix:**
+- `tui/goal/bubble.go`: `fullText` now caps the expanded bubble body at
+  `maxBubbleLines = 3`; a longer objective is truncated with `...` on the third
+  line (`ellipsize`). Collapsed (Ctrl+G) one-line mode unchanged.
+- `core/commands/goal.go`: new `list` subcommand (`showList`) — prints the
+  active goal first, then every queued goal in execution order, each as a
+  markdown entry (`**N. [active|queued] name**` + optional metadata line + the
+  COMPLETE untruncated objective). Empty state: "No goals." Registered in
+  `goalSubcommandKinds`, `goalDispatch`, and `CompleteArgs` (`/goal:li<tab>`).
+  Output renders via the goa panel's markdown renderer (## header, bold,
+  italic meta).
+- `core/commands/help/goal.long.md`: documents `/goal:list`.
+
+**Tests (all pass):**
+- `tui/goal/bubble_test.go`: `TestBubble_CapsAtThreeLinesWithEllipsis` (long
+  objective → exactly 3 body lines, 3rd ends with `...`, within width),
+  `TestBubble_UnderThreeLinesNoEllipsis`.
+- `core/commands/goal_test.go`: `TestGoalCommand_List` (active + 2 queued →
+  order 1/2/3 with full objectives and markdown markers),
+  `TestGoalCommand_ListEmpty`, `TestGoalCommand_ListCompletion`.
+
+**Status: FIXED.**

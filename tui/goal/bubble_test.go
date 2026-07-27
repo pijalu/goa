@@ -87,3 +87,39 @@ func TestBubble_SeparatorColor(t *testing.T) {
 		t.Errorf("bottom separator %q missing expected color", lines[len(lines)-1])
 	}
 }
+
+func TestBubble_CapsAtThreeLinesWithEllipsis(t *testing.T) {
+	b := NewBubble()
+	// An objective long enough to wrap well beyond 3 lines at width 40.
+	b.SetSnapshot(&goal.GoalSnapshot{
+		Status:    goal.GoalActive,
+		Name:      "big.task",
+		Objective: "refactor the entire renderer pipeline to stream partial frames and repaint only dirty rows while preserving scrollback semantics across resizes",
+	})
+	lines := b.Render(40)
+	// Layout: separator + body + separator → body must be exactly 3 lines.
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines (sep + 3 body + sep), got %d: %v", len(lines), lines)
+	}
+	third := ansi.Strip(lines[3])
+	if !strings.HasSuffix(strings.TrimSpace(third), "...") {
+		t.Errorf("expected third body line to end with ellipsis, got %q", third)
+	}
+	if got := ansi.Width(lines[3]); got > 40 {
+		t.Errorf("third body line exceeds width: %d > 40", got)
+	}
+}
+
+func TestBubble_UnderThreeLinesNoEllipsis(t *testing.T) {
+	b := NewBubble()
+	b.SetSnapshot(&goal.GoalSnapshot{
+		Status:    goal.GoalActive,
+		Objective: "short task",
+	})
+	lines := b.Render(80)
+	for i, l := range lines {
+		if strings.Contains(l, "...") {
+			t.Errorf("line %d unexpectedly contains ellipsis: %q", i, ansi.Strip(l))
+		}
+	}
+}

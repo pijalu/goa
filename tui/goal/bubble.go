@@ -109,6 +109,11 @@ func (b *Bubble) collapsedText(width int) string {
 	return line
 }
 
+// maxBubbleLines caps the expanded bubble body. Longer objectives are
+// truncated with an ellipsis on the last visible line; the full objective is
+// always available via /goal:list.
+const maxBubbleLines = 3
+
 func (b *Bubble) fullText(width int) []string {
 	marker := "⟐ "
 	prefix := ""
@@ -116,5 +121,20 @@ func (b *Bubble) fullText(width int) []string {
 		prefix = "[" + b.snapshot.Name + "] "
 	}
 	text := marker + prefix + b.snapshot.Objective
-	return ansi.Wrap(text, width)
+	lines := ansi.Wrap(text, width)
+	if len(lines) <= maxBubbleLines {
+		return lines
+	}
+	lines = lines[:maxBubbleLines]
+	lines[maxBubbleLines-1] = ellipsize(lines[maxBubbleLines-1], width)
+	return lines
+}
+
+// ellipsize truncates line to fit width and appends "..." so the truncation
+// of a longer objective is visible.
+func ellipsize(line string, width int) string {
+	if width <= 3 {
+		return ansi.Truncate(line, width)
+	}
+	return ansi.Truncate(line, width-3) + "..."
 }

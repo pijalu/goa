@@ -58,6 +58,7 @@ func (c *GoalCommand) LongHelp() string {
 // under the cyclomatic-complexity budget.
 var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error{
 	"status":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showStatus(ctx) },
+	"list":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showList(ctx) },
 	"pause":    func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.pause(ctx) },
 	"resume":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.resume(ctx) },
 	"cancel":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancel(ctx) },
@@ -128,6 +129,7 @@ var goalSubcommandKinds = map[string]struct {
 	errorHint string // non-empty → emit this usage hint when text missing
 }{
 	"status":  {mode: subNone, kind: "status"},
+	"list":    {mode: subNone, kind: "list"},
 	"pause":   {mode: subNone, kind: "pause"},
 	"resume":  {mode: subNone, kind: "resume"},
 	"cancel":  {mode: subNone, kind: "cancel"},
@@ -192,6 +194,56 @@ func (c *GoalCommand) showStatus(ctx core.Context) error {
 	writeFmt(ctx, "Tokens: %s\n", goal.FormatTokens(g.TokensUsed))
 	writeFmt(ctx, "Elapsed: %s\n", goal.FormatElapsed(g.WallClockMs))
 	return nil
+}
+
+// showList implements /goal:list: list the active goal and every queued goal
+// in execution order, printing each goal's COMPLETE objective (no truncation).
+// The output is markdown so it renders formatted in the chat panel — the
+// counterpart to the goal bubble, which caps its display at 3 lines.
+func (c *GoalCommand) showList(ctx core.Context) error {
+	active := c.Mode.GetGoal().Goal
+	queued, err := c.Queue.Read()
+	if err != nil {
+		return err
+	}
+	if active == nil && len(queued) == 0 {
+		writeStr(ctx, "No goals.\n")
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Goals\n\n")
+	order := 1
+	if active != nil {
+		name := active.Name
+		if active.ManagedBy != "" {
+			name += " [" + active.ManagedBy + "]"
+		}
+		meta := fmt.Sprintf("status %s · turns %d · %s tokens · %s",
+			active.Status, active.TurnsUsed, goal.FormatTokens(active.TokensUsed), goal.FormatElapsed(active.WallClockMs))
+		writeGoalListEntry(&sb, order, "active", name, meta, active.Objective)
+		order++
+	}
+	for _, g := range queued {
+		writeGoalListEntry(&sb, order, "queued", g.Name, "", g.Objective)
+		order++
+	}
+	writeStr(ctx, sb.String())
+	return nil
+}
+
+// writeGoalListEntry renders one goal as a markdown list item: a bold header
+// with order number, placement and name, an optional metadata line, then the
+// complete untruncated objective on its own line.
+func writeGoalListEntry(sb *strings.Builder, order int, placement, name, meta, objective string) {
+	if name == "" {
+		name = "(unnamed)"
+	}
+	fmt.Fprintf(sb, "**%d. [%s] %s**\n", order, placement, name)
+	if meta != "" {
+		fmt.Fprintf(sb, "*%s*\n", meta)
+	}
+	fmt.Fprintf(sb, "%s\n\n", objective)
 }
 
 func (c *GoalCommand) pause(ctx core.Context) error {
@@ -692,6 +744,7 @@ var goalSubcommands = []struct {
 	{"manage", "open the queued-goals manager"},
 	{"reorder", "reorder queue with letter mapping"},
 	{"status", "show current goal status"},
+	{"list", "list active + queued goals with full objectives"},
 	{"log", "show recent goal event records"},
 	{"verify", "run the recorded verify command now"},
 	{"settings", "toggle goal settings (auto-unblock)"},
