@@ -301,8 +301,14 @@ func (a *App) startAsyncPluginLoad(engine *tui.TUI) {
 // Main is the top-level entry point used by cmd/goa. It parses CLI flags,
 // loads config, initializes subsystems, and runs the application loop.
 func Main() {
-	defer handleShutdown()
 	log.SetOutput(io.Discard)
+	// Capture runtime fatal errors (which bypass recover()) and log output to
+	// .goa/crash.log. Deferred BEFORE handleShutdown so the shutdown handler
+	// runs first during unwind and can still writeCrashLog to the open file.
+	wd, _ := os.Getwd()
+	crashCleanup := setupCrashLog(wd)
+	defer crashCleanup()
+	defer handleShutdown()
 
 	// `goa mcp ...` is handled before flag parsing: it is a plain CLI
 	// subcommand (no TUI, no headless agent) for managing MCP servers.
@@ -402,7 +408,11 @@ func runUpdateCheck(subs *subsystems, opts RuntimeOptions) {
 
 func handleShutdown() {
 	if r := recover(); r != nil {
-		fmt.Fprintf(os.Stderr, "Panic: %v\n\n%s\n", r, debug.Stack())
+		stack := debug.Stack()
+		// Persist directly to the crash log file: the stderr tee forwards
+		// through a pipe goroutine that os.Exit would not wait for.
+		writeCrashLog(r, stack)
+		fmt.Fprintf(os.Stderr, "Panic: %v\n\n%s\n", r, stack)
 		os.Exit(1)
 	}
 }
