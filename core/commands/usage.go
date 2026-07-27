@@ -106,6 +106,8 @@ func (c *UsageCommand) Run(ctx core.Context, args []string) error {
 		c.writeActivity(&b, st, req)
 	case req.cost:
 		c.writeCost(&b, st, req)
+	case req.verbose:
+		c.writeVerbose(&b, st, req)
 	default:
 		c.writeStats(&b, st, req)
 	}
@@ -122,6 +124,7 @@ type usageRequest struct {
 	dimOnly  bool // show only req.dim's section
 	cost     bool
 	activity bool
+	verbose  bool
 	unknown  string
 }
 
@@ -149,6 +152,8 @@ func parseUsageArgs(args []string, now time.Time, project string) usageRequest {
 			req.cost = true
 		case "activity", "heatmap":
 			req.activity = true
+		case "verbose":
+			req.verbose = true
 		default:
 			req.unknown = a
 		}
@@ -175,6 +180,30 @@ func sectionTitle(dim usage.Dimension) string {
 		return "By model"
 	default:
 		return "By project"
+	}
+}
+
+// writeVerbose renders the /stats:verbose view: for EVERY known project, the
+// per-provider and per-model split (bugs.md Issue 5). It enumerates projects via
+// a global ByProject query, then reuses writeUsageSection scoped to each project
+// so formatting stays consistent with the other usage views.
+func (c *UsageCommand) writeVerbose(b *strings.Builder, st usageStore, req usageRequest) {
+	projects, err := st.Query(usage.ByProject, "", req.since)
+	if err != nil {
+		fmt.Fprintf(b, "usage: %v\n", err)
+		return
+	}
+	fmt.Fprintf(b, "## Verbose usage by project%s\n\n", scopedTag(req))
+	if len(projects) == 0 {
+		b.WriteString("No usage recorded for this range.\n\n")
+		return
+	}
+	for _, p := range projects {
+		scoped := req
+		scoped.project = p.Key
+		fmt.Fprintf(b, "### Project: %s\n\n", p.Key)
+		writeUsageSection(b, st, usage.ByProvider, scoped, "By provider")
+		writeUsageSection(b, st, usage.ByModel, scoped, "By model")
 	}
 }
 

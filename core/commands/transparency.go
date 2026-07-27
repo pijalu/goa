@@ -213,6 +213,7 @@ func (c *StatsCommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCom
 	candidates := []core.ArgCompletion{
 		{Value: "session", Description: "current session per-turn detail"},
 		{Value: "project", Description: "project-level totals (provider, model, cache)"},
+		{Value: "verbose", Description: "all projects, each split by provider and model"},
 	}
 	var out []core.ArgCompletion
 	for _, cand := range candidates {
@@ -243,6 +244,10 @@ func (c *StatsCommand) Run(ctx core.Context, args []string) error {
 		// Project-level view: usage store scoped to this project, broken down
 		// by provider and model, including cache read/write totals.
 		return c.usageView().Run(ctx, []string{"here"})
+	}
+	if len(args) > 0 && (args[0] == "verbose" || args[0] == ":verbose") {
+		// Verbose view: every known project, each split by provider and model.
+		return c.usageView().Run(ctx, []string{"verbose"})
 	}
 	if len(args) > 0 && isNumeric(args[0]) {
 		// /stats <n> drills into turn #n of the current session.

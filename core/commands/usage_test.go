@@ -133,6 +133,64 @@ func TestUsageCommand_ScopeFiltersSections(t *testing.T) {
 	}
 }
 
+// TestStatsCommand_Verbose covers bugs.md Issue 5: /stats:verbose must list every
+// known project and, for each, the per-provider and per-model split.
+func TestStatsCommand_Verbose(t *testing.T) {
+	var buf strings.Builder
+	store := &fakeUsageStore{
+		stats: map[string][]usage.Stat{
+			// Two known projects.
+			dimKey(usage.ByProject, ""): {
+				{Key: "/a", Turns: 2, PromptN: 150, PredictedN: 70},
+				{Key: "/b", Turns: 1, PromptN: 60, PredictedN: 30},
+			},
+			// Per-project provider splits.
+			dimKey(usage.ByProvider, "/a"): {{Key: "kimi", Turns: 2, PromptN: 150, PredictedN: 70}},
+			dimKey(usage.ByProvider, "/b"): {{Key: "openai", Turns: 1, PromptN: 60, PredictedN: 30}},
+			// Per-project model splits.
+			dimKey(usage.ByModel, "/a"):    {{Key: "k2", Turns: 2, PromptN: 150, PredictedN: 70}},
+			dimKey(usage.ByModel, "/b"):    {{Key: "gpt-5", Turns: 1, PromptN: 60, PredictedN: 30}},
+		},
+	}
+	cmd := &StatsCommand{OpenStore: func() (usageStore, error) { return store, nil }, ProjectDir: "/a"}
+	if err := cmd.Run(newUsageCtx(&buf, "/a"), []string{"verbose"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"Verbose usage by project",
+		"Project: /a", "Project: /b",
+		"kimi", "openai", // providers
+		"k2", "gpt-5", // models
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/stats:verbose missing %q:\n%s", want, out)
+		}
+	}
+	// Each project must have both a provider and a model section (2 each).
+	if got := strings.Count(out, "By provider"); got != 2 {
+		t.Errorf("expected 2 per-project provider sections, got %d:\n%s", got, out)
+	}
+	if got := strings.Count(out, "By model"); got != 2 {
+		t.Errorf("expected 2 per-project model sections, got %d:\n%s", got, out)
+	}
+}
+
+// TestStatsCommand_VerboseCompletion ensures verbose is offered as a /stats
+// subcommand so "/stats:v<tab>" completes it.
+func TestStatsCommand_VerboseCompletion(t *testing.T) {
+	cmd := &StatsCommand{}
+	var found bool
+	for _, c := range cmd.CompleteArgs(core.Context{}, "v") {
+		if c.Value == "verbose" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'verbose' in /stats completions for prefix 'v'")
+	}
+}
+
 func TestUsageCommand_HereScopesToProject(t *testing.T) {
 	var buf strings.Builder
 	store := &fakeUsageStore{
