@@ -774,8 +774,9 @@ injector, which is the only component that emits that exact `N/M` shape.)
     /config → Bash toggle, persisted) + smarter edit not-found hint + line-match (M/N)
     diagnostic.
 13. Issue 13 — "15 consecutive tool-calling rounds" nudge FALSE POSITIVE (thinking
-    present, kimi-code k3). 🔎 OPEN — localized to thinkingBuf reset-timing vs
-    thinking-event routing; needs stream-level repro.
+    present, kimi-code k3). ✅ FIXED + tested: turn-level reasoning/message tracking
+    (turnSawContent/turnSawThinking) resets the streak; convergence is message-driven
+    (forced-answer nudge and hard 250-round cap removed).
 
 ---
 
@@ -811,3 +812,245 @@ user bubble with full text), `TestInjectEphemeralSystemMessage_EmitsVisibleBubbl
 **Status: FIXED.**
 14. Issue 14 — guardrail nudges invisible to user (no TUI bubble / not in chat history).
     ✅ FIXED + tested: nudges now emitted as durable system-notification chat bubbles.
+
+---
+
+## Issue 15 — No automatic retry on HTTP 408 from initial stream request
+
+**Symptom:** a local LLM server returns HTTP 408 "request timeout" before the SSE
+stream starts. The TUI shows a friendly connection hint saying *"goa will retry
+automatically"*, but no retry happens and the turn ends with a diagnostic bundle.
+
+**Root cause:** `Agent.runStreamRound` (`internal/agentic/agent_streaming.go`) routes
+`consumeStream` errors through `handleStreamFailure` (which retries with backoff), but an
+error returned directly from `startStreamRound` / `provider.Stream` is returned
+immediately as a terminal failure:
+
+```go
+stream, err := a.startStreamRound(...)
+if err != nil {
+    return false, err   // bypasses retry classification
+}
+```
+
+HTTP 408 and other transient open failures therefore never reach the retry path even
+though the user-visible hint promises they will.
+
+**Fix:** route `startStreamRound` errors through the same `handleStreamFailure` path as
+mid-stream errors. The function already resets per-round state, classifies retryability,
+backs off, and re-opens the stream, so initial-connection failures are handled
+identically.
+
+**Test:** `TestAgent_RetriesInitialStreamError_408` (`internal/agentic/agent_test.go`)
+registers a provider whose `Stream()` returns an HTTP 408 response error once, then
+succeeds. The agent must retry, recover, and emit the successful assistant content.
+
+**Status: FIXED.**
+- `internal/agentic/agent_streaming.go`: `runStreamRound` calls `handleStreamFailure` on
+  `startStreamRound` errors just like `consumeStream` errors.
+- Test `TestAgent_RetriesInitialStreamError_408` passes, proving 408 on the initial
+  request is retried. ✔
+
+---
+
+## Issue 16 — gpython embedded `json` module is missing `load`/`dump` helpers
+
+**Symptom:** using the `python` tool to read a JSON file fails:
+
+```python
+import json
+with open('testdata/altertab3.json') as f:
+    data = json.load(f)
+```
+
+Error: `AttributeError: "'module' has no attribute 'load'"`.
+
+**Root cause:** the embedded gpython interpreter only exposes the JSON module partially;
+`json.loads`/`json.dumps` may be present, but the file-oriented helpers `json.load` and
+`json.dump` are missing. The tool is otherwise unable to parse JSON files directly.
+
+**Fix:** extend the gpython JSON bindings to provide `json.load(fp, ...)` and
+`json.dump(obj, fp, ...)` as thin wrappers over `json.loads`/`json.dumps` that read from
+and write to the supplied file object. Alternatively, expose a complete JSON module that
+passes the standard CPython `json` API surface.
+
+**Test:** `python` tool test that runs `json.load` on a temporary JSON file and asserts the
+parsed structure matches the source data.
+
+**Status: OPEN.**
+
+---
+
+## Issue 17 — Retry budget must reset after a successful retry
+
+**Directive:** "make sure the retry count is reset after a successful retry" — after a
+stream failure is recovered by a retry, a LATER failure (same turn or next turn) must
+get a full fresh retry budget (attempts restart at 1/`MaxRetries`), not keep consuming
+the previous episode's budget.
+
+**Investigation (current state — structurally correct, but UNVERIFIED by test):**
+- Single retry loop: `Agent.retryStream` (`internal/agentic/agent_streaming.go:1268`)
+  — the attempt counter is a LOCAL loop variable
+  (`for retry := 0; retry < opts.MaxRetries; retry++`), so every `handleStreamFailure`
+  invocation starts a fresh budget. No agent field carries a retry count across
+  episodes (verified: `agent.go` only has `overflowRecoveryAttempted`, the deliberate
+  once-per-turn compress+retry guard, reset per turn).
+- No retry loop in the provider protocol/runtime layer: `provider.Stream` returns the
+  error to the agent, and classification (`shouldRetryStreamError` /
+  `hooks.ErrorContext.IsRetryable`) is stateless per error.
+- `opts.MaxRetries` (default 5, `provider/options.go:45`; configurable
+  `provider.max_retries`, `provider/manager.go:879`) is read per episode, never
+  decremented.
+
+**Gap / risk:** the invariant "recovered stream → next failure gets a full budget" has
+NO regression test, and `overflowRecoveryAttempted` shows how easily a retry-adjacent
+counter becomes turn-persistent. A future refactor hoisting the loop counter into
+agent state would silently degrade recovery: after one recovered failure, later
+failures would get fewer/zero retries (TUI would show "Reconnecting (attempt N/5)…"
+starting at N>1 and exhaust early).
+
+**Fix:**
+- Stream-level regression test: provider fails once → agent retries → stream recovers
+  and produces content → provider fails AGAIN in the same turn → assert episode 2
+  restarts at attempt 1 and gets the full `MaxRetries` budget (fail its first
+  `MaxRetries-1` attempts, succeed on the last; assert recovery). Also assert the
+  user-visible progress restarts at "Reconnecting (attempt 1/N)...".
+- Cross-turn case: episode 1 in turn 1, episode 2 in turn 2 → same assertion.
+- Keep `overflowRecoveryAttempted` once-per-turn (documented exception — bounds
+  compression loops; must NOT be reset mid-turn after a successful compress+retry).
+
+**Test:** `internal/agentic/agent_test.go` — `TestAgent_RetryBudgetResetsAfterSuccess`
+(same-turn and cross-turn episodes; flaky provider counting `Stream()` calls; assert
+full budget per episode and attempt-1 restart).
+
+**Status: OPEN.**
+
+---
+
+## Issue 18 — Runtime fatal errors (e.g. `concurrent map writes`) are not captured anywhere
+
+**Symptom (user report, live TUI):** the process died with
+`fatal error: concurrent map writes` mid-session. The Go runtime writes fatal errors
+directly to fd 2 and the TUI's alt-screen rendering mangled the stack trace, so the
+crash is undiagnosable after the fact. `handleShutdown` (`internal/app/app.go:403`)
+only recovers **panics** — a runtime fatal error is NOT recoverable, so nothing
+persisted it.
+
+**Root cause:** no crash-capture infrastructure: `Main` sets `log.SetOutput(io.Discard)`
+and nothing tees stderr to disk. A fatal error's stack exists only on the terminal.
+
+**Fix:** complete the pending `internal/app/crash_log.go` work:
+- `setupCrashLog(projectDir)`: open `.goa/crash.log` (env override `GOA_CRASH_LOG`,
+  else project `.goa/crash.log`, else `~/.goa/crash.log`), route the `log` package
+  there (replacing `io.Discard`), and **tee fd 2** through a pipe
+  (`os.Pipe` + `dup2` + copy goroutine → original stderr AND file) so runtime fatal
+  errors land on disk. Platform split: unix `teeStderr` (real tee), other platforms
+  `noOpCloser` (log+panic only).
+- Wire `setupCrashLog` into `Main()` once (before the `runApp` relaunch loop).
+- `handleShutdown`: on recovered panic, also `writeCrashLog(r, debug.Stack())` directly
+  to the file (flushed even when `os.Exit` follows).
+- TUI renders to stdout (verified `tui/terminal.go`), so teeing stderr is safe.
+
+**Test:** `internal/app/crash_log_test.go` — path resolution (env/project/home),
+`log` output lands in file, `writeCrashLog` persists panic text, `teeStderr` captures
+an `os.Stderr` write into the file while still forwarding to the original fd, cleanup
+restores stderr. Serial test (mutates process fd 2).
+
+**Status: FIXED.**
+- `internal/app/crash_log_unix.go` (`//go:build unix`): `teeStderr` — dup fd 2, pipe,
+  `unix.Dup2`, copy goroutine → original stderr AND file. Pipe write end made blocking
+  (`unix.SetNonblock(false)`) so the runtime's raw write(2) of a large fatal dump is
+  not dropped on EAGAIN. Cleanup restores fd 2, drains, closes.
+- `internal/app/crash_log_other.go` (`//go:build !unix`): `teeStderr` = `noOpCloser`
+  (log + recovered-panic capture only).
+- `internal/app/app.go`: `Main` calls `setupCrashLog(wd)` once (deferred BEFORE
+  `handleShutdown` so the handler recovers while the file is still open);
+  `handleShutdown` writes the panic + stack via `writeCrashLog` before printing.
+- Tests: `TestCrashLogPath`, `TestSetupCrashLog_CapturesLogOutput`, `TestWriteCrashLog`,
+  `TestTeeStderr` (capture + forwarding + restore). ✔ Live smoke: `goa mcp list`
+  through `Main` creates the log with the startup header.
+
+---
+
+## Issue 19 — CRITICAL: `fatal error: concurrent map writes` crash in live TUI session
+
+**Symptom (user report, kimi-code/k3, single-agent coding session):** process aborted
+with `fatal error: concurrent map writes` (goroutine 2174) right after a `read` tool
+call was dispatched, while other tool widgets/search results were on screen. Two
+goroutines wrote the same Go map simultaneously. Stack trace unrecoverable (Issue 18).
+
+**Investigation so far (audit, not yet reproduced):**
+- RULED OUT: `agentStreamRegistry.streams` (`internal/app/agent_streams.go:49`) —
+  mutex-guarded; and the registry is only non-nil during orchestration (this session
+  was single-agent).
+- RULED OUT (claimed-single-goroutine): `tooltracker.Tracker.byID/noID`
+  (`internal/tooltracker/tracker.go:39`) — documented "not safe for concurrent use;
+  the app drives it exclusively from the engine command loop". **Verify the claim**:
+  tool-execution goroutines emit `EventToolProgress` — if any progress/result path
+  reaches the tracker (or chat viewport) WITHOUT passing through the engine loop's
+  serialization, that is the race.
+- SUSPECTS: (a) tool-progress events emitted from tool goroutines reaching
+  tracker/chat maps off-loop; (b) a lazily-initialized renderer registry map
+  (`tui/register_renderers.go`, `tools/*_renderer.go`) written on first concurrent
+  use; (c) parallel tool-call execution goroutines sharing a map in
+  `internal/agentic`; (d) `tui` viewport/component maps touched by both the render
+  loop and an event goroutine.
+
+**Repro / next step:** drive concurrent tool progress + result events through the app
+layer under `-race` (filmstrip-style event sequence with ≥2 in-flight tool calls
+emitting progress), or stress `tooltracker` + chat viewport from two goroutines to
+identify the exact map. The race detector report names the map and both stacks.
+
+**Fix:** serialize the identified shared-map access at the correct layer (engine-loop
+handoff for UI mutations, or a mutex for genuinely concurrent structures). Do NOT
+paper over with `sync.Map` where a single-owner discipline is the design.
+
+**Test:** the `-race` reproduction must go from RED (race detected) to green after the
+fix; keep as a regression test.
+
+**Status: OPEN.**
+
+---
+
+## Issue 20 — Tool widget's LAST line loses its status background when the widget sits directly above the spinner
+
+**Symptom (user report):** when a tool call renders at the END of the console — right
+over the spinner — the **last line** of the widget does not get the correct background
+color (e.g. `tool_success_bg` green after success). Observed with the `read` tool.
+
+**Investigation so far (widget side RULED OUT):**
+- The widget paints every row — header, body, and the blank bottom-pad row — with the
+  status background: `toolBox.build` (`tui/tool_execution.go:158`) ends with a
+  bottom-pad `bgLine("", width)`, and `padToWidthStyled` (`tui/utils.go:111`) returns
+  `bgAnsi + padded + ansi.Reset` (full-width fill, nested-reset re-apply). Empty
+  content still yields a fully bg-colored row. So the missing bg is introduced
+  DOWNSTREAM of the widget: compositor or chat-viewport row handling.
+- Positional clue ("right over the spinner"): the affected row is the widget's last
+  row = the bottom-pad row of bg-colored SPACES, adjacent to the footer/spinner rows.
+
+**Hypotheses (to discriminate by reproduction):**
+1. **Differential repaint skips bg-only changes on blank rows.** If the compositor's
+   row-diff keys on *visible text* (all spaces ⇒ "unchanged"), the bottom-pad row is
+   not repainted when the status change flips only its background (pending→success),
+   leaving the stale/default bg.
+2. **Off-by-one clobber when the spinner/footer row repaints.** The spinner ticks
+   constantly; footer redraw paths (`tui/footer_render.go`, `tui/status.go`,
+   compositor `\x1b[2K` row rewrites at `tui/compositor.go:669/720/730/893/954/990/
+   1015`) may rewrite the adjacent chat row from a stale or unstyled line buffer.
+3. **Erase-without-BCE:** `\x1b[2K` erases to default bg on terminals without
+   back-color-erase; if the row's content rewrite is skipped (hypothesis 1), the
+   erase leaves default bg visible.
+
+**Repro (tui-test filmstrip):** drive a `read` tool call → result (success) as the
+LAST chat entry with the spinner active below; assert the final rendered frame's row
+for the widget's last line carries `tool_success_bg` across the full width. Run the
+same at pending→success transition with a spinner tick between.
+
+**Fix:** depends on the winning hypothesis — (1) include style in the row-diff key for
+blank rows (or never skip bg-carrying rows on style change), (2) fix the footer/chat
+row index arithmetic, (3) rewrite content after every `2K` on bce-less terminals.
+
+**Test:** filmstrip regression asserting full-width status bg on the widget's last row
+when the spinner is active beneath it.
+
+**Status: OPEN.**
