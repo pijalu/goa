@@ -84,7 +84,7 @@ func TestDefaultProfile_SaneBaseline(t *testing.T) {
 	assert.True(t, p.Compat.StreamIncludesUsage)
 	assert.Equal(t, SchemaSanitizerOpenAI, p.ToolCompat.SchemaSanitizer)
 	assert.Equal(t, CacheModeNone, p.CachePolicy.Mode)
-	assert.Equal(t, []int{429, 500, 502, 503, 504}, p.ErrorRules.RetryableStatuses)
+	assert.Equal(t, []int{408, 429, 500, 502, 503, 504}, p.ErrorRules.RetryableStatuses)
 
 	// Match echoes the model so the synthesized profile is attributable.
 	assert.Equal(t, string(ProviderPoolside), p.Match.Provider)

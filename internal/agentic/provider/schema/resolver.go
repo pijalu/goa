@@ -114,7 +114,7 @@ func DefaultProfile(model Model) VariantProfile {
 			ToolCallIDRules: ToolCallIDRules{MaxLength: 40, Alphabet: "[a-zA-Z0-9_-]"},
 			SchemaSanitizer: SchemaSanitizerOpenAI,
 		},
-		ErrorRules: ErrorRules{RetryableStatuses: []int{429, 500, 502, 503, 504}},
+		ErrorRules: ErrorRules{RetryableStatuses: []int{408, 429, 500, 502, 503, 504}},
 	}
 }
 

@@ -850,7 +850,7 @@ func friendlyConnectionHint(raw string) string {
 		strings.Contains(raw, "timeout"),
 		strings.Contains(raw, "Client.Timeout"):
 		return "[connection error] The request timed out — the LLM server is taking too long to respond.\n" +
-			"  • Check that your local LLM server (LM Studio, llama.cpp, etc.) is running\n" +
+			"  • goa will retry automatically, but if this persists check that your local LLM server (LM Studio, llama.cpp, etc.) is running\n" +
 			"  • The model may still be loading — wait and try again\n" +
 			"  • Try a smaller/faster model if this persists"
 	case strings.Contains(raw, "connection refused"),
