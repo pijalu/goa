@@ -52,29 +52,15 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 	stream, streamErr := a.startStreamRound(ctx, round, model, opts, initCtx)
 	if streamErr != nil {
 		// An error opening the stream (e.g. HTTP 408 before any events arrive)
-		// is a transient failure like a mid-stream error. Route it through the
+		// is a transient failure like a mid-stream error: route it through the
 		// same retry path so the user-visible "goa will retry automatically"
 		// hint is actually honored.
-		if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
-			if retErr != nil {
-				return false, retErr
-			}
-			// Retry succeeded and produced no further tool calls: turn is done.
-			return true, nil
-		}
-		return false, nil
+		return a.handleRoundStreamError(ctx, streamErr, model, opts)
 	}
 
 	toolCallEncountered, streamErr := a.consumeStream(ctx, stream, opts)
 	if streamErr != nil {
-		if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
-			if retErr != nil {
-				return false, retErr
-			}
-			// Retry succeeded and produced no further tool calls: turn is done.
-			return true, nil
-		}
-		return false, nil
+		return a.handleRoundStreamError(ctx, streamErr, model, opts)
 	}
 
 	if !toolCallEncountered {
@@ -97,6 +83,22 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 	return false, nil
+}
+
+// handleRoundStreamError routes a stream-open or mid-stream failure through
+// the shared retry classification (handleStreamFailure). It maps the outcome
+// onto runStreamRound semantics: done=true when the retry recovered with no
+// further tool calls, err set when the failure is terminal.
+func (a *Agent) handleRoundStreamError(ctx context.Context, streamErr error, model provider.Model, opts provider.StreamOptions) (done bool, err error) {
+	handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts)
+	if !handled {
+		return false, nil
+	}
+	if retErr != nil {
+		return false, retErr
+	}
+	// Retry succeeded and produced no further tool calls: turn is done.
+	return true, nil
 }
 
 // trackToolCallingRound updates the consecutive tool-calling round streak
