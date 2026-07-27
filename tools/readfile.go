@@ -26,6 +26,11 @@ import (
 type ReadFileTool struct {
 	WorktreeMgr *internal.WorktreeManager
 	Config      ReadFileConfig
+	// LSPManager, when set, is notified (touchFile) after a successful file
+	// read so the language server has the file open and its diagnostics stay
+	// fresh — matching OpenCode's read→lsp.touchFile link. Errors are ignored:
+	// a read must never fail because LSP is unavailable.
+	LSPManager LSPDocumentManager
 }
 
 // Schema returns the tool schema for read.
@@ -120,11 +125,27 @@ func (t *ReadFileTool) Execute(input string) (string, error) {
 		return "", err
 	}
 
+	// touchFile: keep the language server's view of this file fresh on read
+	// (OpenCode read→lsp.touchFile). Best-effort: never fail the read on LSP.
+	t.touchLSP(targetPath, data)
+
 	rendered := t.renderFile(targetPath, data, p)
 	if targetPath != resolvedPath {
 		return fmt.Sprintf("Note: file not found, used closest match: %s\n%s", targetPath, rendered), nil
 	}
 	return rendered, nil
+}
+
+// touchLSP notifies the LSP manager that a file was read, opening/updating the
+// document on its server. Best-effort: errors are swallowed so a read never
+// fails because the language server is unavailable.
+func (t *ReadFileTool) touchLSP(path string, data []byte) {
+	if t.LSPManager == nil {
+		return
+	}
+	// DidChange opens the document when it is not open yet (manager handles
+	// first-open), so a single call covers both fresh and already-open files.
+	_ = t.LSPManager.DidChange(context.Background(), path, string(data))
 }
 
 // parseParams parses and validates the tool input.

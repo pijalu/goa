@@ -1,0 +1,269 @@
+# Embedded LSP language-server registry.
+#
+# Ported from OpenCode's LSP server definitions
+# (packages/opencode/src/lsp/server.ts). Each entry declaratively describes a
+# language server:
+#   id          unique name
+#   extensions  file extensions (with dot) the server handles
+#   markers     project-root marker files (nearest ancestor wins, else session dir)
+#   command     argv to launch the server (resolved on PATH)
+#   language_id LSP language id for didOpen ("" = derive per-extension)
+#   npx         Node package runnable via `npx --yes <pkg>` when the PATH binary
+#               is absent (auto-downloads on first run — no separate install)
+#   install     optional installer for servers npx cannot run (e.g. gopls via
+#               `go install`, jdtls via download). Gated by lsp config.
+#
+# Resolution order per server: PATH binary → npx (if set) → install (if set and
+# enabled) → skip. Additional user/project servers can be layered on via config
+# (lsp.servers) without touching this file.
+
+- id: gopls
+  extensions: [".go"]
+  markers: ["go.work", "go.mod", "go.sum"]
+  command: ["gopls", "-mode=stdio"]
+  language_id: go
+  install:
+    kind: go
+    package: golang.org/x/tools/gopls@latest
+    binary: gopls
+
+- id: typescript
+  extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
+  markers: ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "package.json", "tsconfig.json", "jsconfig.json"]
+  command: ["typescript-language-server", "--stdio"]
+  language_id: "" # per-extension (typescript / typescriptreact / javascript...)
+  npx:
+    package: typescript-language-server
+    args: ["--stdio"]
+
+- id: deno
+  extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"]
+  markers: ["deno.json", "deno.jsonc"]
+  command: ["deno", "lsp"]
+  language_id: "" # per-extension
+
+- id: pyright
+  extensions: [".py", ".pyi"]
+  markers: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"]
+  command: ["pyright-langserver", "--stdio"]
+  language_id: python
+  npx:
+    package: pyright
+    args: ["--stdio"]
+
+- id: ty
+  extensions: [".py", ".pyi"]
+  markers: ["pyproject.toml", "ty.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
+  command: ["ty", "server"]
+  language_id: python
+
+- id: jdtls
+  extensions: [".java"]
+  markers: ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradlew", ".project", ".classpath"]
+  command: ["jdtls"]
+  language_id: java
+  install:
+    kind: download
+    url: "https://www.eclipse.org/downloads/download.php?file=/jdtls/snapshots/jdt-language-server-latest.tar.gz"
+    binary: jdtls
+
+- id: kotlin-ls
+  extensions: [".kt", ".kts"]
+  markers: ["settings.gradle.kts", "settings.gradle", "gradlew", "gradlew.bat", "build.gradle.kts", "build.gradle"]
+  command: ["kotlin-language-server"]
+  language_id: kotlin
+
+- id: rust
+  extensions: [".rs"]
+  markers: ["Cargo.toml", "Cargo.lock"]
+  command: ["rust-analyzer"]
+  language_id: rust
+
+- id: clangd
+  extensions: [".c", ".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx", ".h++"]
+  markers: ["compile_commands.json", "compile_flags.txt", ".clangd"]
+  command: ["clangd"]
+  language_id: "" # per-extension (c / cpp)
+
+- id: ruby-lsp
+  extensions: [".rb", ".rake", ".gemspec", ".ru"]
+  markers: ["Gemfile"]
+  command: ["ruby-lsp"]
+  language_id: ruby
+
+- id: elixir-ls
+  extensions: [".ex", ".exs"]
+  markers: ["mix.exs", "mix.lock"]
+  command: ["elixir-ls"]
+  language_id: elixir
+
+- id: zls
+  extensions: [".zig", ".zon"]
+  markers: ["build.zig"]
+  command: ["zls"]
+  language_id: zig
+
+- id: csharp
+  extensions: [".cs", ".csx"]
+  markers: [".slnx", ".sln", ".csproj", "global.json"]
+  command: ["csharp-ls"]
+  language_id: csharp
+
+- id: fsharp
+  extensions: [".fs", ".fsi", ".fsx", ".fsscript"]
+  markers: [".slnx", ".sln", ".fsproj", "global.json"]
+  command: ["fsautocomplete", "--adaptive-lsp-server-enabled"]
+  language_id: fsharp
+
+- id: sourcekit-lsp
+  extensions: [".swift"]
+  markers: ["Package.swift"]
+  command: ["sourcekit-lsp"]
+  language_id: swift
+
+- id: svelte
+  extensions: [".svelte"]
+  markers: ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json"]
+  command: ["svelteserver", "--stdio"]
+  language_id: svelte
+  npx:
+    package: svelte-language-server
+    args: ["--stdio"]
+
+- id: vue
+  extensions: [".vue"]
+  markers: ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json"]
+  command: ["vue-language-server", "--stdio"]
+  language_id: vue
+  npx:
+    package: "@vue/language-server"
+    args: ["--stdio"]
+
+- id: astro
+  extensions: [".astro"]
+  markers: ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json"]
+  command: ["astro-ls", "--stdio"]
+  language_id: astro
+  npx:
+    package: "@astrojs/language-server"
+    args: ["--stdio"]
+
+- id: biome
+  extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json", ".jsonc", ".vue", ".astro", ".svelte", ".css", ".graphql", ".gql", ".html"]
+  markers: ["biome.json", "biome.jsonc"]
+  command: ["biome", "lsp-proxy"]
+  language_id: "" # per-extension
+  npx:
+    package: "@biomejs/biome"
+    args: ["lsp-proxy"]
+
+- id: yaml-ls
+  extensions: [".yaml", ".yml"]
+  markers: ["package.json"]
+  command: ["yaml-language-server", "--stdio"]
+  language_id: yaml
+  npx:
+    package: yaml-language-server
+    args: ["--stdio"]
+
+- id: lua-ls
+  extensions: [".lua"]
+  markers: [".luarc.json", ".luarc.jsonc", ".luacheckrc", ".stylua.toml", "stylua.toml", "selene.toml"]
+  command: ["lua-language-server"]
+  language_id: lua
+
+- id: intelephense
+  extensions: [".php"]
+  markers: ["composer.json", "composer.lock", ".php-version"]
+  command: ["intelephense", "--stdio"]
+  language_id: php
+  npx:
+    package: intelephense
+    args: ["--stdio"]
+
+- id: prisma
+  extensions: [".prisma"]
+  markers: ["schema.prisma", "prisma"]
+  command: ["prisma-language-server", "--stdio"]
+  language_id: prisma
+  npx:
+    package: "@prisma/language-server"
+    args: ["--stdio"]
+
+- id: dart
+  extensions: [".dart"]
+  markers: ["pubspec.yaml", "analysis_options.yaml"]
+  command: ["dart", "language-server", "--protocol=lsp"]
+  language_id: dart
+
+- id: ocaml-lsp
+  extensions: [".ml", ".mli"]
+  markers: ["dune-project", "dune-workspace", ".merlin", "opam"]
+  command: ["ocamllsp"]
+  language_id: ocaml
+
+- id: bash
+  extensions: [".sh", ".bash", ".zsh", ".ksh"]
+  markers: []
+  command: ["bash-language-server", "start"]
+  language_id: shellscript
+  npx:
+    package: bash-language-server
+    args: ["start"]
+
+- id: terraform
+  extensions: [".tf", ".tfvars"]
+  markers: [".terraform.lock.hcl", "terraform.tfstate"]
+  command: ["terraform-ls", "serve"]
+  language_id: terraform
+
+- id: texlab
+  extensions: [".tex", ".bib"]
+  markers: [".latexmkrc", "latexmkrc", ".texlabroot", "texlabroot"]
+  command: ["texlab"]
+  language_id: "" # per-extension (latex / bibtex)
+
+- id: dockerfile
+  extensions: [".dockerfile"]
+  markers: []
+  command: ["docker-langserver", "--stdio"]
+  language_id: dockerfile
+  npx:
+    package: dockerfile-language-server-nodejs
+    args: ["--stdio"]
+
+- id: gleam
+  extensions: [".gleam"]
+  markers: ["gleam.toml"]
+  command: ["gleam", "lsp"]
+  language_id: gleam
+
+- id: clojure-lsp
+  extensions: [".clj", ".cljs", ".cljc", ".edn"]
+  markers: ["deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn", "build.boot"]
+  command: ["clojure-lsp"]
+  language_id: clojure
+
+- id: nixd
+  extensions: [".nix"]
+  markers: ["flake.nix"]
+  command: ["nixd"]
+  language_id: nix
+
+- id: tinymist
+  extensions: [".typ", ".typc"]
+  markers: ["typst.toml"]
+  command: ["tinymist"]
+  language_id: typst
+
+- id: haskell-language-server
+  extensions: [".hs", ".lhs"]
+  markers: ["stack.yaml", "cabal.project", "hie.yaml"]
+  command: ["haskell-language-server-wrapper", "--lsp"]
+  language_id: haskell
+
+- id: julials
+  extensions: [".jl"]
+  markers: ["Project.toml", "Manifest.toml"]
+  command: ["julia", "--startup-file=no", "--history-file=no", "-e", "using LanguageServer; runserver()"]
+  language_id: julia

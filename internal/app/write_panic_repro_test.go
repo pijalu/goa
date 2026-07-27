@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"testing"
 
+	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/tools"
@@ -45,7 +46,7 @@ func TestWritePanicRepro(t *testing.T) {
 	run("nil_lsp", &tools.WriteFileTool{}, goPayload("/tmp/zz_b.go"))
 
 	// C: live LSP, real content, .go file in the repo.
-	live := newLSPManager(projectDir)
+	live := newLSPManager(projectDir, &config.Config{})
 	t.Logf("newLSPManager: %v (nil=%v)", live, live == nil)
 	wm := internal.NewWorktreeManager(projectDir, internal.WorktreeMode(""))
 	run("live_lsp_go", &tools.WriteFileTool{

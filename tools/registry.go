@@ -133,6 +133,7 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "bg_exec", Description: "Background process execution", Default: false},
 		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
 		{Name: "goal", Description: "Goal tracking", Default: false},
+		{Name: "lsp", Description: "LSP code navigation", Default: true},
 		{Name: "memento", Description: "Persistent memory files", Default: false},
 		{Name: "pty_exec", Description: "Pseudo-terminal sessions", Default: false},
 		{Name: "request_review", Description: "Request companion review", Default: false},

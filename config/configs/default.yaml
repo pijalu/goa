@@ -230,6 +230,7 @@ tools:
     agent: true
     agent_swarm: true
     goa: true
+    lsp: true
   search:
     threads: 4
     max_results: 30

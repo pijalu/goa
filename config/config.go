@@ -66,6 +66,11 @@ type Config struct {
 	// Goa acts as an MCP client: each enabled server's tools are exposed to the
 	// agent under the "mcp__<server>__<tool>" namespace.
 	MCP map[string]MCPServerConfig `yaml:"mcp,omitempty"`
+	// LSP configures language-server integration. Mirrors OpenCode's lsp
+	// config: `lsp: false` disables all servers; `lsp.servers.<id>` overrides or
+	// disables a specific server; `lsp.servers.<id>` may also define a brand-new
+	// custom server with its own command/env/initialization.
+	LSP LSPConfig `yaml:"lsp,omitempty"`
 	// Aliases maps short user-defined names to command invocations.
 	// The value is the full command name (with colon args if needed).
 	// Example: n: "session:new" makes /n equivalent to /session:new.
@@ -298,6 +303,73 @@ type MCPOAuthConfig struct {
 // Enabled pointer means enabled (the default).
 func (m MCPServerConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
 
+// LSPServerConfig mirrors OpenCode's per-server lsp config entry
+// (packages/core/src/config/lsp.ts). A server may be disabled, or customized
+// with its own command/extensions/env/initialization. When ID matches a
+// builtin server the entry overrides that server; otherwise it defines a new
+// custom server.
+type LSPServerConfig struct {
+	// Command is the argv to launch the server (Command[0] is the executable).
+	Command []string `yaml:"command,omitempty" json:"command,omitempty"`
+	// Extensions overrides the file extensions the server handles.
+	Extensions []string `yaml:"extensions,omitempty" json:"extensions,omitempty"`
+	// Disabled removes this server from the active set.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	// Env is merged over the process environment for the server process.
+	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	// Initialization is sent as initializationOptions at initialize.
+	Initialization map[string]any `yaml:"initialization,omitempty" json:"initialization,omitempty"`
+	// Markers overrides the project-root marker files (custom servers).
+	Markers []string `yaml:"markers,omitempty" json:"markers,omitempty"`
+	// LanguageID overrides the LSP language id sent in didOpen.
+	LanguageID string `yaml:"language_id,omitempty" json:"language_id,omitempty"`
+}
+
+// LSPConfig mirrors OpenCode's top-level lsp config. It supports two forms:
+//
+//	lsp: false                      # disable all language servers
+//	lsp:
+//	  disable_download: true        # never auto-install servers
+//	  servers:
+//	    gopls: { disabled: true }   # disable one server
+//	    myserver: { command: [...] } # define/override a server
+//
+// The zero value (no servers, nothing disabled) means "all builtins enabled".
+type LSPConfig struct {
+	// disabledAll is true when the user wrote `lsp: false`. Unexported so the
+	// zero value is "enabled" (OpenCode's default).
+	disabledAll bool
+	// DisableDownload turns off on-demand server installation (OpenCode's
+	// disableLspDownload). When true, only already-installed binaries are used.
+	DisableDownload bool `yaml:"disable_download,omitempty" json:"disable_download,omitempty"`
+	// Servers overrides/disables builtin servers or defines custom ones, keyed
+	// by server id.
+	Servers map[string]LSPServerConfig `yaml:"servers,omitempty" json:"servers,omitempty"`
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler so `lsp: false` disables all
+// servers while a mapping configures them. The default (absent) is enabled.
+func (l *LSPConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var b bool
+		if err := node.Decode(&b); err == nil {
+			l.disabledAll = !b
+			return nil
+		}
+	}
+	type raw LSPConfig
+	var r raw
+	if err := node.Decode(&r); err != nil {
+		return err
+	}
+	*l = LSPConfig(r)
+	return nil
+}
+
+// IsEnabled reports whether LSP integration is active at all (`lsp: false`
+// disables everything). Zero value is enabled.
+func (l LSPConfig) IsEnabled() bool { return !l.disabledAll }
+
 // MultiAgentConfig controls multi-agent collaboration settings.
 type MultiAgentConfig struct {
 	Enabled                bool   `yaml:"enabled"`
@@ -331,16 +403,16 @@ type OrchestratorRetentionConfig struct {
 // OrchestratorRole binds a role to a specific model/provider, tool allowlist,
 // and optional context-window/max-tokens limits for worker agents.
 type OrchestratorRole struct {
-	Model        string   `yaml:"model"`
-	Provider     string   `yaml:"provider,omitempty"`
-	AllowedTools []string `yaml:"allowed_tools,omitempty"`
-	ContextWindow int     `yaml:"context_window,omitempty"` // tokens; 0 = model default
-	MaxTokens    int      `yaml:"max_tokens,omitempty"`     // compression threshold; 0 = default
+	Model         string   `yaml:"model"`
+	Provider      string   `yaml:"provider,omitempty"`
+	AllowedTools  []string `yaml:"allowed_tools,omitempty"`
+	ContextWindow int      `yaml:"context_window,omitempty"` // tokens; 0 = model default
+	MaxTokens     int      `yaml:"max_tokens,omitempty"`     // compression threshold; 0 = default
 }
 
 // OrchestratorPoolConfig bounds the live agent pool.
 type OrchestratorPoolConfig struct {
-	MaxTotalAgents  int            `yaml:"max_total_agents"`
+	MaxTotalAgents    int            `yaml:"max_total_agents"`
 	MaxAgentsPerModel map[string]int `yaml:"max_agents_per_model,omitempty"`
 }
 
@@ -516,6 +588,11 @@ type ToolEnabledConfig struct {
 	// Goa controls the `goa` slash-command tool. Opt-OUT: defaults to true
 	// (set in the embedded default config).
 	Goa bool `yaml:"goa"`
+	// LSP controls the `lsp` code-navigation tool (gopls definition/references/
+	// hover/symbols). Opt-OUT: defaults to true (set in the embedded default
+	// config) so the model gets precise navigation unless the user disables it
+	// or the project has no language server.
+	LSP bool `yaml:"lsp"`
 	// ClarifyDisabled, when true, removes the ask_user_question tool from the
 	// model's toolset. It is an inverted flag: the default (false/unset) leaves
 	// the tool ENABLED by default, matching the requested behavior. All other
@@ -580,6 +657,7 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"agent":            &t.Agent,
 		"agent_swarm":      &t.AgentSwarm,
 		"goa":              &t.Goa,
+		"lsp":              &t.LSP,
 		"clarify_disabled": &t.ClarifyDisabled,
 	}
 	return fields[name]
@@ -692,10 +770,10 @@ type TUIConfig struct {
 	// AnimatedTitle animates the terminal window title with the spinner while
 	// the agent is working. Default false (bugs.md 2026-07-21: keep the static
 	// hexagon title during activities); set to true to opt in.
-	AnimatedTitle *bool                 `yaml:"animated_title,omitempty"`
-	Tools          ToolDisplayConfig     `yaml:"tools"`
-	History        HistoryConfig         `yaml:"history"`
-	FontStyles     FontStylesConfig      `yaml:"font_styles"`
+	AnimatedTitle *bool             `yaml:"animated_title,omitempty"`
+	Tools         ToolDisplayConfig `yaml:"tools"`
+	History       HistoryConfig     `yaml:"history"`
+	FontStyles    FontStylesConfig  `yaml:"font_styles"`
 }
 
 // AnimatedTitleEnabled reports whether the animated title bar is enabled
@@ -840,11 +918,11 @@ type CompressionThresholdsConfig struct {
 // model, keyed by models[].id under context_compression.per_model. Zero
 // fields inherit the global context_compression values.
 type ModelCompressionOverride struct {
-	MaxTokens           int                        `yaml:"max_tokens,omitempty"`
-	ThresholdPercent    int                        `yaml:"threshold_percent,omitempty"` // Deprecated alias for Thresholds.TriggerPercent.
+	MaxTokens           int                         `yaml:"max_tokens,omitempty"`
+	ThresholdPercent    int                         `yaml:"threshold_percent,omitempty"` // Deprecated alias for Thresholds.TriggerPercent.
 	Thresholds          CompressionThresholdsConfig `yaml:"thresholds,omitempty"`
-	Strategy            string                     `yaml:"strategy,omitempty"`
-	PreserveRecentTurns int                        `yaml:"preserve_recent_turns,omitempty"`
+	Strategy            string                      `yaml:"strategy,omitempty"`
+	PreserveRecentTurns int                         `yaml:"preserve_recent_turns,omitempty"`
 }
 
 // MicroCompactionSettings holds micro-specific config overrides.
@@ -1006,11 +1084,11 @@ func DefaultCompressForProvider(p *ProviderConfig) bool {
 
 // LoggingConfig controls log output.
 type LoggingConfig struct {
-	Level        string `yaml:"level"`
-	File         string `yaml:"file"`
-	TraceKeys    bool   `yaml:"trace_keys"`
-	TerminalLog  string `yaml:"terminal_log"`
-	RenderTrace  string `yaml:"render_trace"`
+	Level       string `yaml:"level"`
+	File        string `yaml:"file"`
+	TraceKeys   bool   `yaml:"trace_keys"`
+	TerminalLog string `yaml:"terminal_log"`
+	RenderTrace string `yaml:"render_trace"`
 }
 
 // Validate checks the config for semantic correctness.

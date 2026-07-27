@@ -180,16 +180,18 @@ func loopDetectorFrom(subs *subsystems) *core.LoopDetector {
 // makeToolFactory returns a factory that creates configurable tool instances
 // on demand when the user enables them at runtime via /tools:name:on.
 func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
+	// Simple tools that always construct successfully.
+	simple := map[string]func() agentic.Tool{
+		"bg_exec":  func() agentic.Tool { return makeBGExecTool(subs) },
+		"memento":  func() agentic.Tool { return makeMementoTool(subs) },
+		"python":   func() agentic.Tool { return makePythonTool(subs) },
+		"ssh_bash": func() agentic.Tool { return makeSSHBashTool(subs) },
+	}
 	return func(name string) (agentic.Tool, bool) {
+		if mk, ok := simple[name]; ok {
+			return mk(), true
+		}
 		switch name {
-		case "bg_exec":
-			return makeBGExecTool(subs), true
-		case "memento":
-			return makeMementoTool(subs), true
-		case "python":
-			return makePythonTool(subs), true
-		case "ssh_bash":
-			return makeSSHBashTool(subs), true
 		case "pty_exec":
 			return makePTYExecTool(subs)
 		case "request_review", "delegate_to":
@@ -205,9 +207,27 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 			return subs.goaTool, true
 		case "goal":
 			return makeGoalToolRuntime(subs)
+		case "lsp":
+			return makeLSPToolRuntime(subs)
 		}
 		return nil, false
 	}
+}
+
+// makeLSPToolRuntime builds the lsp tool for the /tools:lsp:on runtime path.
+// The LSP manager is started at bootstrap on Go projects regardless of the tool
+// flag (edit/write tools use it for diagnostics), so enabling the tool at
+// runtime only needs to register it — no restart required. Returns false when
+// the manager is unavailable (non-Go project or gopls failed to start).
+func makeLSPToolRuntime(subs *subsystems) (agentic.Tool, bool) {
+	if subs.lspMgr == nil || !subs.lspMgr.Started() {
+		return nil, false
+	}
+	return &tools.LSPTool{
+		WorktreeMgr: subs.worktreeMgr,
+		ProjectDir:  subs.projectDir,
+		Manager:     subs.lspMgr,
+	}, true
 }
 
 // makeGoalToolRuntime builds the goal tool for the /tools:goal:on runtime

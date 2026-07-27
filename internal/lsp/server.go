@@ -28,6 +28,15 @@ type ServerConfig struct {
 	Args []string
 	// Env overrides the process environment. Empty uses the current environment.
 	Env []string
+	// Stderr, when non-nil, receives the server's stderr (useful for diagnosing
+	// server crashes such as gopls panics). Nil discards it.
+	Stderr io.Writer
+	// RootDir is the working directory for the server process (the LSP project
+	// root). Empty uses the current process working directory.
+	RootDir string
+	// Initialization is sent as initializationOptions at initialize (e.g.
+	// pythonPath for pyright, or per-server overrides from config).
+	Initialization map[string]any
 }
 
 // Start launches the language server and returns an LSP client connected to
@@ -37,6 +46,12 @@ func Start(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
 	if len(cfg.Env) > 0 {
 		cmd.Env = cfg.Env
+	}
+	if cfg.RootDir != "" {
+		cmd.Dir = cfg.RootDir
+	}
+	if cfg.Stderr != nil {
+		cmd.Stderr = cfg.Stderr
 	}
 
 	stdin, err := cmd.StdinPipe()

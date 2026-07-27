@@ -20,11 +20,11 @@ import (
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/background"
+	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/internal/mcp"
 	"github.com/pijalu/goa/internal/netutil"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/secrets"
-	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tools"
 	ask "github.com/pijalu/goa/tools/ask"
@@ -36,7 +36,7 @@ import (
 type RuntimeOptions struct {
 	PromptArg        string
 	PromptFile       string
-	PromptGiven      bool     // true when --prompt was explicitly set (even if empty)
+	PromptGiven      bool // true when --prompt was explicitly set (even if empty)
 	Goal             bool
 	Orchestrate      string // run-id to resume headless via the orchestrator runtime
 	Plain            bool
@@ -236,19 +236,19 @@ func collectStringFlags(flags map[string]string, ptrs map[string]*string) {
 }
 
 type scalarFlags struct {
-	temperature                *float64
-	maxTokens                  *int
-	maxToolRepeatTotal         *int
-	maxToolRepeatConsecutive   *int
-	maxToolCalls               *int
-	maxStreamRounds            *int
-	maxConsecutiveToolRounds   *int
-	toolCallLimitResetWindow   *int
-	reasoning                  *bool
-	showThinking               *bool
-	compression                *bool
-	debug                      *bool
-	debugKeys                  *bool
+	temperature              *float64
+	maxTokens                *int
+	maxToolRepeatTotal       *int
+	maxToolRepeatConsecutive *int
+	maxToolCalls             *int
+	maxStreamRounds          *int
+	maxConsecutiveToolRounds *int
+	toolCallLimitResetWindow *int
+	reasoning                *bool
+	showThinking             *bool
+	compression              *bool
+	debug                    *bool
+	debugKeys                *bool
 }
 
 type runtimeFlagDefs struct {
@@ -469,8 +469,9 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	changeTracker := bm25.NewChangeTracker()
 	notifyChanged := func(path string) { changeTracker.MarkChanged(path) }
 
-	reg.Register(&tools.ReadFileTool{WorktreeMgr: wm, Config: cfg.Tools.ReadFile})
-	lspMgr := newLSPManager(projectDir)
+	lspMgr := newLSPManager(projectDir, cfg)
+
+	reg.Register(&tools.ReadFileTool{WorktreeMgr: wm, Config: cfg.Tools.ReadFile, LSPManager: lspMgr})
 
 	reg.Register(&tools.WriteFileTool{
 		WorktreeMgr:        wm,
@@ -494,6 +495,18 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		MaxResults:  cfg.Tools.Search.MaxResults,
 		ExcludeDirs: cfg.Tools.Search.Exclude,
 	})
+
+	// lsp code navigation (definition/references/hover/symbols). Registered when
+	// the tool is enabled and an LSP manager exists (any language). The manager
+	// spawns servers lazily per file, so the tool degrades gracefully on files
+	// with no available server.
+	if cfg.Tools.Enabled.LSP && lspMgr != nil {
+		reg.Register(&tools.LSPTool{
+			WorktreeMgr: wm,
+			ProjectDir:  projectDir,
+			Manager:     lspMgr,
+		})
+	}
 
 	compression := resolveCompression(cfg)
 	reg.Register(&tools.BashTool{
@@ -558,7 +571,6 @@ func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.
 	return mgr
 }
 
-
 // registerOptionalTools registers tools that are gated by configuration flags.
 func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker) {
 	if cfg.Tools.Enabled.Verify {
@@ -607,9 +619,9 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 
 // resolveCompression returns the effective tool output compression setting.
 // Resolution order:
-//   1. Model-level compress_output override (if set)
-//   2. Global tools.bash.compress_output override (if set)
-//   3. Provider auto-detect — local providers default to enabled, remote off
+//  1. Model-level compress_output override (if set)
+//  2. Global tools.bash.compress_output override (if set)
+//  3. Provider auto-detect — local providers default to enabled, remote off
 func resolveCompression(cfg *config.Config) bool {
 	if m, err := cfg.GetActiveModelConfig(); err == nil && m.CompressOutput != nil {
 		return *m.CompressOutput
@@ -628,23 +640,46 @@ func defaultInt(val, defaultVal int) int {
 	return val
 }
 
-// newLSPManager starts a gopls-based LSP manager for Go projects. It returns
-// nil only when the project is not a Go project (no go.mod). When gopls fails
-// to start it still returns the manager — which records the failure via
-// StartError() — so the startup banner can surface it (bugs.md L1) and the
-// file tools' nil-safe guards simply see "not started".
-func newLSPManager(projectDir string) *lsp.Manager {
-	goModPath := filepath.Join(projectDir, "go.mod")
-	if _, err := os.Stat(goModPath); err != nil {
+// newLSPManager builds a multi-language LSP manager from config. It returns nil
+// only when LSP is disabled entirely (`lsp: false`). Servers are spawned lazily
+// per file, so Start never fails startup; per-server failures are recorded and
+// surfaced via diagnostics absence rather than a hard error. Config overrides
+// (disable/override/custom servers) and disable_download are honored, matching
+// OpenCode's lsp config model.
+func newLSPManager(projectDir string, cfg *config.Config) *lsp.Manager {
+	if cfg != nil && !cfg.LSP.IsEnabled() {
 		return nil
 	}
-	mgr := lsp.NewManager(projectDir)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := mgr.Start(ctx); err != nil {
-		log.Printf("Warning: failed to start LSP manager: %v", err)
+	installAllowed := cfg == nil || !cfg.LSP.DisableDownload
+	specs := lsp.Registry()
+	if cfg != nil && len(cfg.LSP.Servers) > 0 {
+		specs = lsp.MergeRegistry(lspOverrides(cfg.LSP.Servers))
 	}
+	mgr := lsp.NewManager(projectDir,
+		lsp.WithInstall(installAllowed),
+		lsp.WithServers(specs),
+	)
+	// Start only flips the gate (servers spawn lazily); it cannot fail.
+	_ = mgr.Start(context.Background())
 	return mgr
+}
+
+// lspOverrides converts config server entries into the lsp package's override
+// form (avoids a config→lsp import cycle).
+func lspOverrides(servers map[string]config.LSPServerConfig) map[string]lsp.ServerOverride {
+	out := make(map[string]lsp.ServerOverride, len(servers))
+	for id, s := range servers {
+		out[id] = lsp.ServerOverride{
+			Command:        s.Command,
+			Extensions:     s.Extensions,
+			Disabled:       s.Disabled,
+			Env:            s.Env,
+			Initialization: s.Initialization,
+			Markers:        s.Markers,
+			LanguageID:     s.LanguageID,
+		}
+	}
+	return out
 }
 
 // ptrBool dereferences a *bool, returning false when nil.

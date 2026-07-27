@@ -299,10 +299,13 @@ func (c *Client) Exit() error {
 
 // InitializeParams is the request payload for initialize.
 type InitializeParams struct {
-	ProcessID int             `json:"processId"`
-	RootURI   string          `json:"rootUri"`
-	Capabilities any          `json:"capabilities"`
-	Trace     string          `json:"trace,omitempty"`
+	ProcessID    int    `json:"processId"`
+	RootURI      string `json:"rootUri"`
+	Capabilities any    `json:"capabilities"`
+	// InitializationOptions are server-specific settings sent at initialize
+	// (e.g. pythonPath for pyright). Nil/empty is omitted.
+	InitializationOptions map[string]any `json:"initializationOptions,omitempty"`
+	Trace                 string         `json:"trace,omitempty"`
 }
 
 // InitializeResult is the response payload for initialize.
@@ -319,11 +322,11 @@ type ServerInfo struct {
 
 // ServerCapabilities is a subset of LSP server capabilities.
 type ServerCapabilities struct {
-	TextDocumentSync           any `json:"textDocumentSync,omitempty"`
-	DefinitionProvider         bool `json:"definitionProvider,omitempty"`
-	HoverProvider              bool `json:"hoverProvider,omitempty"`
-	DocumentSymbolProvider     bool `json:"documentSymbolProvider,omitempty"`
-	WorkspaceSymbolProvider    bool `json:"workspaceSymbolProvider,omitempty"`
+	TextDocumentSync        any  `json:"textDocumentSync,omitempty"`
+	DefinitionProvider      bool `json:"definitionProvider,omitempty"`
+	HoverProvider           bool `json:"hoverProvider,omitempty"`
+	DocumentSymbolProvider  bool `json:"documentSymbolProvider,omitempty"`
+	WorkspaceSymbolProvider bool `json:"workspaceSymbolProvider,omitempty"`
 }
 
 // InitializedParams is the notification payload for initialized.
@@ -344,8 +347,8 @@ type TextDocumentItem struct {
 
 // DidChangeTextDocumentParams is the notification payload for didChange.
 type DidChangeTextDocumentParams struct {
-	TextDocument   VersionedTextDocumentIdentifier `json:"textDocument"`
-	ContentChanges []TextDocumentContentChangeEvent  `json:"contentChanges"`
+	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
+	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
 }
 
 // VersionedTextDocumentIdentifier identifies a document and version.
@@ -357,4 +360,87 @@ type VersionedTextDocumentIdentifier struct {
 // TextDocumentContentChangeEvent describes a content change.
 type TextDocumentContentChangeEvent struct {
 	Text string `json:"text"`
+}
+
+// TextDocumentPositionParams identifies a position within a document, the
+// common payload for definition/hover/references-style requests.
+type TextDocumentPositionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+// TextDocumentIdentifier identifies a document by URI.
+type TextDocumentIdentifier struct {
+	URI string `json:"uri"`
+}
+
+// Location is an LSP location: a URI plus a range.
+type Location struct {
+	URI   string `json:"uri"`
+	Range Range  `json:"range"`
+}
+
+// ReferenceParams is the payload for textDocument/references.
+type ReferenceParams struct {
+	TextDocumentPositionParams
+	Context ReferenceContext `json:"context"`
+}
+
+// ReferenceContext controls reference lookup (include the declaration?).
+type ReferenceContext struct {
+	IncludeDeclaration bool `json:"includeDeclaration"`
+}
+
+// Hover is the textDocument/hover result. Contents may be a string, a marked
+// string, or markdown markup content; we keep it permissive.
+type Hover struct {
+	Contents any    `json:"contents"`
+	Range    *Range `json:"range,omitempty"`
+}
+
+// DocumentSymbolParams is the payload for textDocument/documentSymbol.
+type DocumentSymbolParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// DocumentSymbol is a symbol in a document (hierarchical; children may nest).
+type DocumentSymbol struct {
+	Name           string           `json:"name"`
+	Detail         string           `json:"detail,omitempty"`
+	Kind           int              `json:"kind"`
+	Range          Range            `json:"range"`
+	SelectionRange Range            `json:"selectionRange"`
+	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
+// Definition sends textDocument/definition and returns the definition
+// locations of the symbol at the given position.
+func (c *Client) Definition(ctx context.Context, params TextDocumentPositionParams) ([]Location, error) {
+	var result []Location
+	err := c.request(ctx, "textDocument/definition", params, &result)
+	return result, err
+}
+
+// References sends textDocument/references and returns all reference locations
+// of the symbol at the given position (declaration included).
+func (c *Client) References(ctx context.Context, params ReferenceParams) ([]Location, error) {
+	var result []Location
+	err := c.request(ctx, "textDocument/references", params, &result)
+	return result, err
+}
+
+// Hover sends textDocument/hover and returns the hover information for the
+// symbol at the given position. A nil *Hover (with nil error) means no info.
+func (c *Client) Hover(ctx context.Context, params TextDocumentPositionParams) (*Hover, error) {
+	var result *Hover
+	err := c.request(ctx, "textDocument/hover", params, &result)
+	return result, err
+}
+
+// DocumentSymbol sends textDocument/documentSymbol and returns the symbols
+// defined in the document.
+func (c *Client) DocumentSymbol(ctx context.Context, params DocumentSymbolParams) ([]DocumentSymbol, error) {
+	var result []DocumentSymbol
+	err := c.request(ctx, "textDocument/documentSymbol", params, &result)
+	return result, err
 }
