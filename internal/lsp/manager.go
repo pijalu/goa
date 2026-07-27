@@ -43,9 +43,15 @@ type Manager struct {
 
 // serverClient is one running language server and the files it has open.
 type serverClient struct {
-	server   *Server
-	spec     *ServerSpec
-	root     string
+	server *Server
+	spec   *ServerSpec
+	root   string
+	// mu guards versions AND orders open/change notifications so the version
+	// number sent on the wire is monotonic per uri. Tool executions
+	// (read/edit/write touchLSP) run in parallel scheduler goroutines, so
+	// several goroutines can notify the same client at once — the unguarded
+	// map caused "fatal error: concurrent map writes" (bugs.md Issue 19).
+	mu       sync.Mutex
 	versions map[string]int // uri → latest didOpen/didChange version
 }
 
@@ -259,23 +265,76 @@ func pythonVenv(root string) string {
 	return ""
 }
 
+// notifyOpen marks uri open at version 1 and sends didOpen. When a concurrent
+// opener already opened uri, it degrades to a full-content didChange instead
+// of a protocol-violating duplicate didOpen. The client mutex is held across
+// the send so wire order matches version order (the JSON-RPC client already
+// serializes writes via its writeMu, so this adds no real contention).
+func (c *serverClient) notifyOpen(uri, languageID, text string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, opened := c.versions[uri]; opened {
+		return c.didChangeLocked(uri, v, text)
+	}
+	c.versions[uri] = 1
+	return c.server.Client().DidOpen(DidOpenTextDocumentParams{
+		TextDocument: TextDocumentItem{
+			URI:        uri,
+			LanguageID: languageID,
+			Version:    1,
+			Text:       text,
+		},
+	})
+}
+
+// notifyChange bumps uri's version and sends didChange, opening the document
+// first when it is not open yet (so a bare DidChange still works).
+func (c *serverClient) notifyChange(uri, languageID, text string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, opened := c.versions[uri]
+	if !opened {
+		c.versions[uri] = 1
+		return c.server.Client().DidOpen(DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        uri,
+				LanguageID: languageID,
+				Version:    1,
+				Text:       text,
+			},
+		})
+	}
+	return c.didChangeLocked(uri, v, text)
+}
+
+// didChangeLocked sends a full-content didChange with the next version.
+// Callers must hold c.mu.
+func (c *serverClient) didChangeLocked(uri string, version int, text string) error {
+	version++
+	c.versions[uri] = version
+	return c.server.Client().DidChange(DidChangeTextDocumentParams{
+		TextDocument: VersionedTextDocumentIdentifier{URI: uri, Version: version},
+		ContentChanges: []TextDocumentContentChangeEvent{
+			{Text: text},
+		},
+	})
+}
+
+// isOpen reports whether uri has been opened on this client's server.
+func (c *serverClient) isOpen(uri string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, opened := c.versions[uri]
+	return opened
+}
+
 // OpenDocument notifies the appropriate server that a document was opened.
-// It is a no-op (nil) when no server handles the file.
 func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
 	c := m.clientFor(ctx, path)
 	if c == nil {
 		return fmt.Errorf("lsp manager: no server for %s", path)
 	}
-	uri := uriFor(path)
-	c.versions[uri] = 1
-	return c.server.Client().DidOpen(DidOpenTextDocumentParams{
-		TextDocument: TextDocumentItem{
-			URI:        uri,
-			LanguageID: c.spec.languageID(path),
-			Version:    1,
-			Text:       text,
-		},
-	})
+	return c.notifyOpen(uriFor(path), c.spec.languageID(path), text)
 }
 
 // DidChange notifies the appropriate server of a content change, opening the
@@ -285,17 +344,7 @@ func (m *Manager) DidChange(ctx context.Context, path, text string) error {
 	if c == nil {
 		return fmt.Errorf("lsp manager: no server for %s", path)
 	}
-	uri := uriFor(path)
-	if _, opened := c.versions[uri]; !opened {
-		return m.OpenDocument(ctx, path, text)
-	}
-	c.versions[uri]++
-	return c.server.Client().DidChange(DidChangeTextDocumentParams{
-		TextDocument: VersionedTextDocumentIdentifier{URI: uri, Version: c.versions[uri]},
-		ContentChanges: []TextDocumentContentChangeEvent{
-			{Text: text},
-		},
-	})
+	return c.notifyChange(uriFor(path), c.spec.languageID(path), text)
 }
 
 // DiagnosticsFor returns the latest diagnostics published for a file path.
@@ -322,7 +371,7 @@ func (m *Manager) ensureOpen(ctx context.Context, path string) (*serverClient, e
 		return nil, fmt.Errorf("lsp manager: no server for %s", path)
 	}
 	uri := uriFor(path)
-	if _, opened := c.versions[uri]; opened {
+	if c.isOpen(uri) {
 		return c, nil
 	}
 	data, err := os.ReadFile(path)

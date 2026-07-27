@@ -1008,7 +1008,35 @@ paper over with `sync.Map` where a single-owner discipline is the design.
 **Test:** the `-race` reproduction must go from RED (race detected) to green after the
 fix; keep as a regression test.
 
-**Status: OPEN.**
+**Status: FIXED — root cause found: the LSP `serverClient.versions` map.**
+
+The ToolScheduler executes independent tool calls in PARALLEL goroutines (serialized
+only on file-access conflicts). Since Issue 7, every `read`/`edit`/`write` tool
+notifies the LSP manager (`touchLSP` → `Manager.DidChange`/`OpenDocument`). Files of
+the same language share one `serverClient`, whose `versions` map
+(`internal/lsp/manager.go`) was accessed with NO mutex (`DidChange`: read/`++`/read;
+`OpenDocument`: write; `ensureOpen`: read) — `Manager.mu` only guards the client
+registry. Two parallel `read` calls on Go files (exactly the crash transcript:
+`tui/goal/tool_renderers.go` + `tui/goal/panel_test.go`, go.mod project → gopls
+active) did `c.versions[uri]++` on the same map → `fatal error: concurrent map
+writes`.
+
+Reproduced RED with `go test -race`: `TestManager_ConcurrentDidChange` fires the
+detector at `manager.go` versions write/read instantly (pre-fix).
+
+**Fix (`internal/lsp/manager.go`):** `serverClient` gains `mu sync.Mutex`; new
+helpers `notifyOpen`/`notifyChange`/`didChangeLocked`/`isOpen` hold it across BOTH
+version bookkeeping AND the RPC send, so wire order matches version order (the
+JSON-RPC client already serializes writes via writeMu — no added contention). A
+concurrent opener of the same uri now degrades to a full-content `didChange` instead
+of a protocol-violating duplicate `didOpen`. `OpenDocument`/`DidChange`/`ensureOpen`
+are thin wrappers. `Diagnostics` (separate type) was already RWMutex-guarded.
+
+**Tests (all pass, `-race`):** `internal/lsp/manager_concurrent_test.go`:
+`TestManager_ConcurrentDidChange` (8 goroutines × 50 ops on one server),
+`TestManager_ConcurrentOpenSameFileSingleDidOpen` (16 racers, exactly 1 didOpen),
+`TestManager_ConcurrentOpenAndChange` (mixed open/change/position requests). Full
+`internal/lsp`, `tools` suites green with `-race`.
 
 ---
 
