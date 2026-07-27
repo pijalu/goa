@@ -77,12 +77,14 @@ func (m *configMenu) settingCompressionStrategy() {
 
 func (m *configMenu) settingCompressionThreshold() {
 	m.current = m.settingCompressionThreshold
-	items := []tui.SelectorItem{
-		{Value: "50", Label: "50%", Description: "early"},
-		{Value: "75", Label: "75%", Description: "balanced"},
-		{Value: "80", Label: "80%", Description: "default"},
-		{Value: "90", Label: "90%", Description: "late"},
-		{Value: "100", Label: "100%", Description: "only at the limit"},
+	// Any percentage in 10% increments, from 10% up to 100%.
+	items := make([]tui.SelectorItem, 0, 10)
+	for pct := 10; pct <= 100; pct += 10 {
+		items = append(items, tui.SelectorItem{
+			Value:       fmt.Sprintf("%d", pct),
+			Label:       fmt.Sprintf("%d%%", pct),
+			Description: triggerPercentDescription(pct),
+		})
 	}
 	current := fmt.Sprintf("%d", compressionTriggerValue(m.ctx.Config))
 	m.ctx.SelectOption("Trigger threshold (% of max tokens):", items, current, func(v string, ok bool) {
@@ -93,6 +95,25 @@ func (m *configMenu) settingCompressionThreshold() {
 		m.applySet("context_compression.thresholds.trigger_percent", v)
 		m.back()
 	})
+}
+
+// triggerPercentDescription annotates notable preset levels; other steps get
+// an empty description.
+func triggerPercentDescription(pct int) string {
+	switch pct {
+	case 10:
+		return "very early"
+	case 50:
+		return "early"
+	case 80:
+		return "default"
+	case 90:
+		return "late"
+	case 100:
+		return "only at the limit"
+	default:
+		return ""
+	}
 }
 
 func (m *configMenu) settingCompressionSoft() {

@@ -267,6 +267,15 @@ func persistConfigValue(ctx core.Context, key string, path []string, value strin
 	if err := ctx.ConfigSaver.SaveHomeField(savePath, scalarValue(value)); err != nil {
 		return fmt.Errorf("set %s = %s (in memory, but failed to persist: %v)", key, value, err)
 	}
+	// Setting the tiered trigger_percent clears the deprecated legacy
+	// threshold_percent alias (see setTriggerPercentClearLegacy); remove the
+	// legacy key from the home config too so it cannot re-shadow the tiered
+	// value after a reload (bugs.md Issue 2).
+	if key == "context_compression.thresholds.trigger_percent" {
+		if err := ctx.ConfigSaver.DeleteHomeField([]string{"context_compression", "threshold_percent"}); err != nil {
+			return fmt.Errorf("set %s = %s (in memory, but failed to clear legacy threshold_percent: %v)", key, value, err)
+		}
+	}
 	if key == "execution.mode" {
 		if err := persistModeDefault(ctx, value); err != nil {
 			return fmt.Errorf("set %s = %s (mode default not persisted: %v)", key, value, err)
@@ -396,7 +405,7 @@ var configSetters = map[string]configSetter{
 	"context_compression.strategy":                   setCompressionStrategy,
 	"context_compression.threshold_percent":          setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
 	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
-	"context_compression.thresholds.trigger_percent": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.TriggerPercent }, 0, 100),
+	"context_compression.thresholds.trigger_percent": setTriggerPercentClearLegacy,
 	"context_compression.thresholds.hard_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
 	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
 	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
@@ -411,6 +420,7 @@ var configSetters = map[string]configSetter{
 	"tools.bash.max_complexity_score":                setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
 	"tools.terminal.sandbox.enabled":                 setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
 	"tools.enabled.goal":                             setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
+	"tools.enabled.lsp":                              setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.LSP }),
 }
 
 func setActiveMajor(cfg *config.Config, value string) error {
@@ -550,6 +560,27 @@ func setCompressionStrategy(cfg *config.Config, value string) error {
 		return nil
 	}
 	return fmt.Errorf("context_compression.strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+}
+
+// setTriggerPercentClearLegacy sets the tiered trigger_percent AND clears the
+// deprecated legacy ThresholdPercent alias. The legacy alias otherwise wins over
+// Thresholds.TriggerPercent both in the menu display (compressionTriggerValue)
+// and at runtime (resolveAgenticThresholds), so a config file still carrying
+// `threshold_percent:` would permanently shadow any edit to the tiered field
+// (bugs.md Issue 2 — trigger threshold changes not reflected). Clearing it on an
+// explicit edit makes the new value take effect while leaving untouched legacy
+// configs (which never run this setter) at their documented behavior.
+func setTriggerPercentClearLegacy(cfg *config.Config, value string) error {
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	if v < 0 || v > 100 {
+		return fmt.Errorf("value must be between 0 and 100 (got %d)", v)
+	}
+	cfg.ContextCompression.Thresholds.TriggerPercent = v
+	cfg.ContextCompression.ThresholdPercent = 0
+	return nil
 }
 
 // setIntRange returns a setter that parses an int and enforces an inclusive

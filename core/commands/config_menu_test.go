@@ -5,6 +5,7 @@
 package commands
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -705,6 +706,45 @@ func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 	}
 }
 
+// TestConfigMenu_CompressionThresholdOptions verifies the trigger threshold menu
+// offers every percentage in 10% increments from 10% to 100% (bugs.md Issue 1),
+// and that selecting a non-preset value like 30 persists it.
+func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:    true,
+			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80},
+		},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("compression", true)
+	sr.onSel("threshold", true)
+	if sr.title != "Trigger threshold (% of max tokens):" {
+		t.Fatalf("title = %q", sr.title)
+	}
+	// Expect 10,20,...,100 in order.
+	if len(sr.options) != 10 {
+		t.Fatalf("expected 10 threshold options (10..100 step 10), got %d", len(sr.options))
+	}
+	for i, opt := range sr.options {
+		want := fmt.Sprintf("%d", (i+1)*10)
+		if opt.Value != want {
+			t.Errorf("option[%d].Value = %q, want %q", i, opt.Value, want)
+		}
+		if opt.Label != want+"%" {
+			t.Errorf("option[%d].Label = %q, want %q", i, opt.Label, want+"%")
+		}
+	}
+	// Selecting a non-preset value (30) must persist it.
+	sr.onSel("30", true)
+	if cfg.ContextCompression.Thresholds.TriggerPercent != 30 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 30", cfg.ContextCompression.Thresholds.TriggerPercent)
+	}
+}
+
 func TestConfigMenu_CompressionSoftChange(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{Enabled: true},
@@ -760,6 +800,66 @@ func TestCompressionTriggerValue_LegacyAliasWins(t *testing.T) {
 	cfg.ContextCompression.ThresholdPercent = 0
 	if got := compressionTriggerValue(cfg); got != 50 {
 		t.Errorf("compressionTriggerValue = %d, want 50 (tiered field)", got)
+	}
+}
+
+// TestSetTriggerPercentClearLegacy verifies that explicitly setting the tiered
+// trigger_percent clears the deprecated legacy alias so the edit actually takes
+// effect (bugs.md Issue 2): without the clear, a config still carrying
+// threshold_percent would keep shadowing the new tiered value on display
+// (compressionTriggerValue) and at runtime (resolveAgenticThresholds).
+func TestSetTriggerPercentClearLegacy(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:          true,
+			ThresholdPercent: 80, // stale legacy alias
+		},
+	}
+	if err := setTriggerPercentClearLegacy(cfg, "50"); err != nil {
+		t.Fatalf("setTriggerPercentClearLegacy: %v", err)
+	}
+	if cfg.ContextCompression.Thresholds.TriggerPercent != 50 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 50", cfg.ContextCompression.Thresholds.TriggerPercent)
+	}
+	if cfg.ContextCompression.ThresholdPercent != 0 {
+		t.Errorf("legacy ThresholdPercent = %d, want 0 (cleared so edit takes effect)", cfg.ContextCompression.ThresholdPercent)
+	}
+	// Display must now reflect the new value, not the stale legacy alias.
+	if got := compressionTriggerValue(cfg); got != 50 {
+		t.Errorf("compressionTriggerValue = %d, want 50 after edit", got)
+	}
+	// Range validation still applies.
+	if err := setTriggerPercentClearLegacy(cfg, "150"); err == nil {
+		t.Errorf("expected range error for 150, got nil")
+	}
+}
+
+// TestConfigMenu_TriggerEditReflectsWithLegacyAlias is the menu-level regression
+// for bugs.md Issue 2: with a stale legacy alias present, choosing a new trigger
+// threshold in the menu must update both the tiered field and the displayed value.
+func TestConfigMenu_TriggerEditReflectsWithLegacyAlias(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:          true,
+			ThresholdPercent: 80, // stale legacy alias that would shadow the edit
+		},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("compression", true)
+	sr.onSel("threshold", true)
+	sr.onSel("50", true)
+
+	if cfg.ContextCompression.Thresholds.TriggerPercent != 50 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 50", cfg.ContextCompression.Thresholds.TriggerPercent)
+	}
+	if cfg.ContextCompression.ThresholdPercent != 0 {
+		t.Errorf("legacy ThresholdPercent = %d, want 0 (cleared)", cfg.ContextCompression.ThresholdPercent)
+	}
+	if got := compressionTriggerValue(cfg); got != 50 {
+		t.Errorf("compressionTriggerValue = %d, want 50 (edit reflected, not shadowed)", got)
 	}
 }
 
