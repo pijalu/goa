@@ -7,6 +7,7 @@ package agentic
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -101,11 +102,69 @@ func (p *flakyTestProvider) StreamSimple(model provider.Model, ctx provider.Cont
 	return p.Stream(model, ctx, base)
 }
 
+// flakyStartProvider simulates a provider whose initial HTTP request fails a
+// configurable number of times before opening a stream. Unlike flakyTestProvider,
+// the error is returned directly from Stream() rather than pushed inside the
+// event stream. This exercises the retry path for connection errors such as
+// HTTP 408 that happen before any SSE events are received.
+type flakyStartProvider struct {
+	api           provider.Api
+	mu            sync.Mutex
+	failures      int
+	err           error
+	successEvents []provider.AssistantMessageEvent
+}
+
+func (p *flakyStartProvider) API() provider.Api { return p.api }
+
+func (p *flakyStartProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.mu.Lock()
+	shouldFail := p.failures > 0
+	if shouldFail {
+		p.failures--
+	}
+	events := p.successEvents
+	p.mu.Unlock()
+
+	if shouldFail {
+		return nil, p.err
+	}
+
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		for _, e := range events {
+			result.Push(e)
+		}
+		result.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "Recovered"}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return result, nil
+}
+
+func (p *flakyStartProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	base := provider.BuildSimpleOptions(model, opts)
+	return p.Stream(model, ctx, base)
+}
+
 func registerFlakyTestProvider(failures int, successEvents []provider.AssistantMessageEvent) *flakyTestProvider {
 	uniqueID := testProviderCounter.Add(1)
 	p := &flakyTestProvider{
 		api:           provider.Api(fmt.Sprintf("test-flaky-%d", uniqueID)),
 		failures:      failures,
+		successEvents: successEvents,
+	}
+	provider.RegisterApiProvider(p)
+	return p
+}
+
+func registerFlakyStartProvider(failures int, err error, successEvents []provider.AssistantMessageEvent) *flakyStartProvider {
+	uniqueID := testProviderCounter.Add(1)
+	p := &flakyStartProvider{
+		api:           provider.Api(fmt.Sprintf("test-flaky-start-%d", uniqueID)),
+		failures:      failures,
+		err:           err,
 		successEvents: successEvents,
 	}
 	provider.RegisterApiProvider(p)
@@ -2332,6 +2391,55 @@ func TestAgent_RetriesStreamError_HonorsMaxRetries(t *testing.T) {
 	}
 	if !containsContent(contents, "Recovered on third retry") {
 		t.Errorf("expected content recovered after configured retries, got %q", contents)
+	}
+}
+
+func TestAgent_RetriesInitialStreamError_408(t *testing.T) {
+	startErr := (&hooks.ErrorContext{
+		StatusCode:  http.StatusRequestTimeout,
+		Body:        `{"error":{"message":"request timeout","type":"request_timeout"}}`,
+		IsRetryable: true,
+	}).ToError()
+	p := registerFlakyStartProvider(1, startErr, []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered after 408"},
+	})
+	agent := NewAgent(Config{
+		Model:         testModel(p.API()),
+		SystemPrompt:  "test",
+		Logger:        NewLogger(Error),
+		StreamOptions: provider.StreamOptions{MaxRetries: 2},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var contents []string
+	var retryNotifications int
+	for _, e := range obs.Events() {
+		if e.Type == EventContent && e.Role == Assistant {
+			contents = append(contents, e.Text)
+		}
+		if e.Type == EventContent && e.Role == System && e.Metadata != nil && e.Metadata["category"] == "system-notification" {
+			if strings.Contains(e.Text, "retrying") {
+				retryNotifications++
+			}
+		}
+	}
+	if retryNotifications == 0 {
+		t.Errorf("expected a retry notification, got none")
+	}
+	if !containsContent(contents, "Recovered after 408") {
+		t.Errorf("expected content recovered after initial 408 retry, got %q", contents)
 	}
 }
 

@@ -49,9 +49,20 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 // progress checks, and stream failures. It returns done=true when the turn
 // should end after this round (no further tool calls to process).
 func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context, maxStreams *int) (done bool, err error) {
-	stream, err := a.startStreamRound(ctx, round, model, opts, initCtx)
-	if err != nil {
-		return false, err
+	stream, streamErr := a.startStreamRound(ctx, round, model, opts, initCtx)
+	if streamErr != nil {
+		// An error opening the stream (e.g. HTTP 408 before any events arrive)
+		// is a transient failure like a mid-stream error. Route it through the
+		// same retry path so the user-visible "goa will retry automatically"
+		// hint is actually honored.
+		if handled, retErr := a.handleStreamFailure(ctx, streamErr, model, opts); handled {
+			if retErr != nil {
+				return false, retErr
+			}
+			// Retry succeeded and produced no further tool calls: turn is done.
+			return true, nil
+		}
+		return false, nil
 	}
 
 	toolCallEncountered, streamErr := a.consumeStream(ctx, stream, opts)
