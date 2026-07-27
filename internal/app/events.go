@@ -5,6 +5,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -958,6 +959,15 @@ func (a *App) promoteNextQueuedGoal() {
 		return
 	}
 	a.subs.chat.AddSystemMessage(fmt.Sprintf("[goal] auto-promoted queued goal: %s", removed.Objective))
+	// The promotion runs on the event-forwarder goroutine, after the clear
+	// event crossed the async bus: the post-turn hook and the previous drive
+	// loop both already observed "no active goal" and stood down. Kick the
+	// driver here — the same way /goal create and /goal:resume do — or the
+	// promoted goal would sit active with 0 turns forever. Start is a no-op
+	// when a drive loop is still running (Drive dedups concurrent loops).
+	if a.subs.goalDriver != nil {
+		a.subs.goalDriver.Start(context.Background())
+	}
 }
 
 // showPanicError displays a rendering panic in the chat and creates an export
