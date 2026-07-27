@@ -1229,11 +1229,16 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// retry in the conversation history, not just a transient status message.
 	// The message is NOT marked transient so the error history survives
 	// successful retries — the user should know intermittent issues occurred.
+	// stream_retry tells the UI to retract the orphaned in-progress assistant
+	// bubble: this retry resets contentBuf and re-streams the answer from the
+	// start, so without a retraction the partial pre-retry bubble and the
+	// re-streamed bubble would both remain, duplicating the text on screen
+	// (bugs.md Issue 4 — streaming repeats that shift on scroll).
 	a.emitEvent(OutputEvent{
 		Type:     EventContent,
 		Role:     System,
 		Text:     formatRetryMessage(streamErr),
-		Metadata: map[string]string{"category": "system-notification"},
+		Metadata: map[string]string{"category": "system-notification", "stream_retry": "true"},
 	})
 
 	toolCallEncountered, retried := a.retryStream(ctx, streamErr, model, opts)

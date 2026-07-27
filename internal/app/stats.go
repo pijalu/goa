@@ -192,8 +192,22 @@ func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
 	}
 	if ev.Role == agentic.System && ev.Text != "" && isSystemNotification(ev) {
 		a.endCurrentStream()
+		// A stream-retry notification means the agent reset its content buffer
+		// and will re-stream the answer from scratch. Retract the orphaned
+		// in-progress assistant bubble so the partial pre-retry text does not
+		// linger next to the re-streamed bubble (bugs.md Issue 4 duplicates).
+		if isStreamRetry(ev) {
+			a.subs.chat.RemoveLastMessageOfType(tui.ConsoleAssistantMessage, tui.ConsoleThinkingBlock)
+		}
 		a.subs.chat.AddSystemMessage(ev.Text)
 	}
+}
+
+// isStreamRetry reports whether ev is the agent's stream-retry notification,
+// which signals that the in-progress assistant stream is being discarded and
+// re-generated from the start.
+func isStreamRetry(ev *agentic.OutputEvent) bool {
+	return ev.Metadata != nil && ev.Metadata["stream_retry"] == "true"
 }
 
 // isSteeringDrained reports whether ev is a user message the agent wove into
