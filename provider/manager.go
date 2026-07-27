@@ -801,7 +801,11 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 		mCfg = config.ModelConfig{}
 	}
 
-	opts := agenticprovider.StreamOptions{MaxRetries: 2}
+	defaultRetries := pm.cfg.Execution.Retries
+	if defaultRetries <= 0 {
+		defaultRetries = 5
+	}
+	opts := agenticprovider.StreamOptions{MaxRetries: defaultRetries}
 	applyProviderStreamOptions(&opts, pCfg, pm.authStore)
 	applyModelStreamOptions(&opts, mCfg)
 	if opts.Timeout <= 0 {

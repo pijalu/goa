@@ -269,7 +269,7 @@ var driverErrorRules = []struct {
 }{
 	{PauseRateLimit, []string{"rate limit"}},
 	{PauseAuthError, []string{"authentication", "auth"}},
-	{PauseRequestError, []string{"400", "invalid_request", "404", "422", "unprocessable"}},
+	{PauseRequestError, []string{"400", "invalid_request", "404", "408", "422", "unprocessable"}},
 	{PauseConnError, []string{"connection"}},
 	{PauseAPIError, []string{"api error"}},
 	{PauseModelConfig, []string{"model config", "not configured"}},

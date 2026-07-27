@@ -234,8 +234,18 @@ func TestResolveActiveModel_ZaiRawModelIDGetsThinking(t *testing.T) {
 func TestBuildStreamOptions_NoProvider(t *testing.T) {
 	pm := NewProviderManager(&config.Config{})
 	opts := pm.BuildStreamOptions()
-	if opts.MaxRetries != 2 {
-		t.Errorf("Default MaxRetries = %d, want 2", opts.MaxRetries)
+	if opts.MaxRetries != 5 {
+		t.Errorf("Default MaxRetries = %d, want 5", opts.MaxRetries)
+	}
+}
+
+// TestBuildStreamOptions_UsesExecutionRetries verifies the global execution.retries
+// setting drives the default when no per-provider max_retries is set.
+func TestBuildStreamOptions_UsesExecutionRetries(t *testing.T) {
+	pm := NewProviderManager(&config.Config{Execution: config.ExecutionConfig{Retries: 7}})
+	opts := pm.BuildStreamOptions()
+	if opts.MaxRetries != 7 {
+		t.Errorf("Default MaxRetries from execution.retries = %d, want 7", opts.MaxRetries)
 	}
 }
 

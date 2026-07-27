@@ -117,7 +117,7 @@ stream.
 Key characteristics:
 - **Connection timeout**: Configurable via provider config `timeout`
 - **Idle timeout**: 60 seconds between data chunks (configurable)
-- **Retries**: Automatic on 429, 5xx, and network errors, up to
+- **Retries**: Automatic on 408, 429, 5xx, and network errors, up to
   `max_retries` with exponential backoff capped at `max_retry_delay`
 - **Signal handling**: The stream is cancelled when `StreamOptions.Signal`
   channel closes (used for Stop() / user cancellation from the TUI)
@@ -259,7 +259,8 @@ auth hook before custom headers, so user headers can override them if needed.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `timeout` | None (per provider) | Total request timeout, including connection + streaming |
-| `max_retries` | 0 | Automatic retries on 429, 5xx, and network errors |
+| `execution.retries` | 5 | Global default max retries for provider stream requests |
+| `max_retries` | (inherits `execution.retries`) | Per-provider override; automatic retries on 408, 429, 5xx, and network errors |
 | `max_retry_delay` | 2s | Cap for exponential backoff between retries |
 
 When the stream's Signal channel fires (user cancellation via TUI `/stop` or

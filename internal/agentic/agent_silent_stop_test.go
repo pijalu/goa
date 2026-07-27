@@ -171,9 +171,10 @@ func TestAgent_EmptyResponseRetried(t *testing.T) {
 func TestAgent_EmptyResponseExhaustsSurfaced(t *testing.T) {
 	p := registerEmptySequenceProvider(100, "") // always empty
 	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "You are helpful",
-		Logger:       NewLogger(Error),
+		Model:         testModel(p.API()),
+		SystemPrompt:  "You are helpful",
+		Logger:        NewLogger(Error),
+		StreamOptions: provider.StreamOptions{MaxRetries: 2},
 	})
 	obs := &mockEventObserver{}
 	agent.AddObserver(obs)

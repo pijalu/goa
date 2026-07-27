@@ -371,6 +371,7 @@ func TestMapDriverError(t *testing.T) {
 		{errors.New("api error 500"), PauseAPIError},
 		{errors.New(`Engine protocol predict request returned 400: {"error":{"code":400,"message":"Unable to generate parser for this template. ... System message must be at the beginning.","type":"invalid_request_error"}}`), PauseRequestError},
 		{errors.New("404 model not found"), PauseRequestError},
+		{errors.New("Error: 408 - request timeout"), PauseRequestError},
 		{errors.New("model not configured"), PauseModelConfig},
 		{errors.New("boom"), PauseRuntimeError},
 	}

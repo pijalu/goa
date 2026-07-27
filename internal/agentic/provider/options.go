@@ -43,7 +43,7 @@ func BuildBaseOptions(model Model, opts StreamOptions) StreamOptions {
 
 	// Default retry settings.
 	if result.MaxRetries == 0 {
-		result.MaxRetries = 2
+		result.MaxRetries = 5
 	}
 	if result.MaxRetryDelay == 0 {
 		result.MaxRetryDelay = 30 * time.Second

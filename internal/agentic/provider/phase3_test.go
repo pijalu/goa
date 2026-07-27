@@ -93,8 +93,8 @@ func TestBuildBaseOptions(t *testing.T) {
 	if opts.Transport != TransportSSE {
 		t.Errorf("expected SSE transport, got %q", opts.Transport)
 	}
-	if opts.MaxRetries != 2 {
-		t.Errorf("expected 2 max retries, got %d", opts.MaxRetries)
+	if opts.MaxRetries != 5 {
+		t.Errorf("expected 5 max retries, got %d", opts.MaxRetries)
 	}
 	if opts.Headers["User-Agent"] != "goa/1.0" {
 		t.Errorf("expected headers from model, got %v", opts.Headers)

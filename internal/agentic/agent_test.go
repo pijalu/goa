@@ -2144,9 +2144,10 @@ func TestAgent_RetriesStreamError(t *testing.T) {
 		{Type: provider.EventTextDelta, Delta: "Recovered"},
 	})
 	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "test",
-		Logger:       NewLogger(Error),
+		Model:         testModel(p.API()),
+		SystemPrompt:  "test",
+		Logger:        NewLogger(Error),
+		StreamOptions: provider.StreamOptions{MaxRetries: 2},
 	})
 
 	obs := &mockEventObserver{}
@@ -2185,9 +2186,10 @@ func TestAgent_RetriesStreamError_EmitsSystemNotification(t *testing.T) {
 		{Type: provider.EventTextDelta, Delta: "Recovered"},
 	})
 	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "test",
-		Logger:       NewLogger(Error),
+		Model:         testModel(p.API()),
+		SystemPrompt:  "test",
+		Logger:        NewLogger(Error),
+		StreamOptions: provider.StreamOptions{MaxRetries: 2},
 	})
 
 	obs := &mockEventObserver{}
@@ -2276,9 +2278,10 @@ func TestAgent_StreamErrorRetriesExhausted(t *testing.T) {
 		{Type: provider.EventTextDelta, Delta: "Never reached"},
 	})
 	agent := NewAgent(Config{
-		Model:        testModel(p.API()),
-		SystemPrompt: "test",
-		Logger:       NewLogger(Error),
+		Model:         testModel(p.API()),
+		SystemPrompt:  "test",
+		Logger:        NewLogger(Error),
+		StreamOptions: provider.StreamOptions{MaxRetries: 2},
 	})
 
 	go func() {
@@ -2294,6 +2297,41 @@ func TestAgent_StreamErrorRetriesExhausted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "LLM connection lost after retries") {
 		t.Errorf("expected retries-exhausted error, got %v", err)
+	}
+}
+
+func TestAgent_RetriesStreamError_HonorsMaxRetries(t *testing.T) {
+	p := registerFlakyTestProvider(2, []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Recovered on third retry"},
+	})
+	agent := NewAgent(Config{
+		Model:         testModel(p.API()),
+		SystemPrompt:  "test",
+		Logger:        NewLogger(Error),
+		StreamOptions: provider.StreamOptions{MaxRetries: 3},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := agent.Run(ctx, "prompt"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var contents []string
+	for _, e := range obs.Events() {
+		if e.Type == EventContent && e.Role == Assistant {
+			contents = append(contents, e.Text)
+		}
+	}
+	if !containsContent(contents, "Recovered on third retry") {
+		t.Errorf("expected content recovered after configured retries, got %q", contents)
 	}
 }
 

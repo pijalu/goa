@@ -1153,6 +1153,11 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	if opts.APIKey == "" && a.cfg.APIKey != "" {
 		opts.APIKey = a.cfg.APIKey
 	}
+	// Apply provider-level defaults (timeout, idle timeout, retries, transport,
+	// cache retention) so the agent always passes a fully-resolved options struct
+	// to provider.Stream. Without this, a Config that leaves StreamOptions zero
+	// would get MaxRetries=0 and the stream retry loop would never run.
+	opts = provider.BuildBaseOptions(model, opts)
 
 	return model, opts, pCtx
 }
@@ -1251,9 +1256,9 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 // through the full backoff window.
 func (a *Agent) retryStream(ctx context.Context, originalErr error, model provider.Model, opts provider.StreamOptions) (toolCallEncountered bool, retried bool) {
 	var streamErr error
-	for retry := 0; retry < 2; retry++ {
-		a.cfg.Logger.Log(Info, "retry attempt %d after stream error", retry+1)
-		a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d/2)...", retry+1)})
+	for retry := 0; retry < opts.MaxRetries; retry++ {
+		a.cfg.Logger.Log(Info, "retry attempt %d/%d after stream error", retry+1, opts.MaxRetries)
+		a.emitEvent(OutputEvent{Type: EventProgress, Text: fmt.Sprintf("Reconnecting (attempt %d/%d)...", retry+1, opts.MaxRetries)})
 
 		// Sleep with context awareness so Ctrl+C isn't ignored during backoff.
 		// retryBackoff honors a server-supplied Retry-After for rate limits and

@@ -40,7 +40,7 @@ providers:
     api_key: ""                      # Optional API key
     default_model: llama-3.2-1b-instruct
     timeout: 60s                     # Request timeout
-    max_retries: 3                   # Max retries on failure
+    max_retries: 5                   # Per-provider max retries (overrides execution.retries)
     max_retry_delay: 2s              # Cap exponential backoff
     transport: sse                   # sse | websocket
     cache_retention: none            # none | short | long
@@ -92,7 +92,7 @@ models:
 # ── Execution ──────────────────────────────────────────────────────
 execution:
   mode: yolo                         # yolo | confirm | review
-  retries: 3                         # Tool retry count
+  retries: 5                         # Default max retries for provider stream requests (per-provider max_retries overrides)
   max_tool_repeat_total: 0          # Max identical tool calls in the entire turn (0 = disabled)
   max_tool_repeat_consecutive: 2    # Max consecutive identical tool calls (soft hint at 2, hard at limit)
   max_tool_calls: 3                 # Max duplicate occurrences of the same call within the rolling window (0 = unlimited)
