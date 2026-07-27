@@ -151,6 +151,8 @@ A goal can carry a framework-managed todo list (`add_todo` / `update_todo`). The
 
 `freshContext: true` runs a goal's continuation turns on a clean context (objective + system prompt only). The prior conversation is preserved in the durable transcript and is visible on reload, but is not sent to the agent for that goal; a visible boundary marker is injected at the switch. The flag survives queueing and promotion.
 
+**Default: ON.** New goals start on a clean context unless opted out — per goal (`freshContext: false` in the goal tool, `/goal:new:reuse <text>` or `/goal:next:reuse <text>` on the command line) or globally via `goals.fresh_context: false` (/config → Goals → "Fresh context for new goals"). `/goal:new:fresh <text>` forces a clean context even when the configured default is `reuse`.
+
 ## Persistence & audit
 
 - `goal-events.jsonl` — append-only event log (`goal.create`, `goal.update`, `goal.clear`). Status updates record actor, reason, expectation, and counters. `/goal:log` renders the last ~20 records (time, type, actor, status, reason, expectation).

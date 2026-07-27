@@ -456,6 +456,13 @@ type GoalsConfig struct {
 	// forcing a search for solutions before the user is asked for guidance.
 	// Nil = default (enabled); explicit false falls back to plain blocking.
 	AutoUnblock *bool `yaml:"auto_unblock,omitempty"`
+	// FreshContext selects the default context mode for newly created goals:
+	// true (default) starts each goal on a clean context (objective + handoff
+	// only); false reuses the current conversation so its context survives
+	// into the goal. The model-facing goal tool and /goal:new follow this
+	// default unless overridden per goal (freshContext arg, /goal:new:fresh,
+	// /goal:new:reuse). Nil = default (true).
+	FreshContext *bool `yaml:"fresh_context,omitempty"`
 }
 
 // VerifyCommandsEnabled reports whether machine verification runs (default true).
@@ -467,6 +474,12 @@ func (g GoalsConfig) VerifyCommandsEnabled() bool {
 // unblocking investigation goal (default true).
 func (g GoalsConfig) AutoUnblockEnabled() bool {
 	return g.AutoUnblock == nil || *g.AutoUnblock
+}
+
+// FreshContextEnabled reports the default context mode for new goals
+// (default true = clean context per goal; explicit false = reuse conversation).
+func (g GoalsConfig) FreshContextEnabled() bool {
+	return g.FreshContext == nil || *g.FreshContext
 }
 
 // GoalsRetentionConfig controls how long terminal normal goals are kept.

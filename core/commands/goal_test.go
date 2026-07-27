@@ -1088,3 +1088,105 @@ func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
 		}
 	}
 }
+
+// TestGoalCommand_ParseContextToken covers /goal:new:fresh|reuse parsing
+// (bugs.md Issue 24): the leading token selects the context mode, and /goal:new
+// without a token defers to the configured default.
+func TestGoalCommand_ParseContextToken(t *testing.T) {
+	cmd := &GoalCommand{}
+	cases := []struct {
+		args        []string
+		kind        string
+		objective   string
+		contextMode string
+	}{
+		{[]string{"new", "fresh fix the bug"}, "create", "fix the bug", "fresh"},
+		{[]string{"new", "fresh"}, "create-interactive", "", "fresh"},
+		{[]string{"new", "reuse investigate"}, "create", "investigate", "reuse"},
+		{[]string{"new", "fix the bug"}, "create", "fix the bug", ""},
+		{[]string{"next", "fresh audit"}, "next-add", "audit", "fresh"},
+		{[]string{"next", "reuse audit"}, "next-add", "audit", "reuse"},
+		{[]string{"next", "audit"}, "next-add", "audit", ""},
+	}
+	for _, tc := range cases {
+		got := cmd.parseArgs(tc.args)
+		if got.kind != tc.kind || got.objective != tc.objective || got.contextMode != tc.contextMode {
+			t.Errorf("parseArgs(%v) = {kind:%q objective:%q contextMode:%q}, want {%q %q %q}",
+				tc.args, got.kind, got.objective, got.contextMode, tc.kind, tc.objective, tc.contextMode)
+		}
+	}
+}
+
+// TestGoalCommand_Create_DefaultFreshOn verifies /goal:new defaults to a clean
+// context when no resolver is set (nil = true).
+func TestGoalCommand_Create_DefaultFreshOn(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	if err := cmd.Run(testContext(), []string{"new", "fix tests"}); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || !g.FreshContext {
+		t.Errorf("expected FreshContext=true by default, got %+v", g)
+	}
+}
+
+// TestGoalCommand_Create_ReuseToken verifies /goal:new:reuse keeps the
+// conversation context even with the fresh default on.
+func TestGoalCommand_Create_ReuseToken(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	if err := cmd.Run(testContext(), []string{"new", "reuse", "fix tests"}); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.FreshContext {
+		t.Errorf("expected FreshContext=false for /goal:new:reuse, got %+v", g)
+	}
+}
+
+// TestGoalCommand_Create_ConfigDefault verifies the configured default is
+// honored and the fresh token overrides it.
+func TestGoalCommand_Create_ConfigDefault(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	cmd.FreshContextDefault = func() bool { return false } // config: reuse
+
+	if err := cmd.Run(testContext(), []string{"new", "first objective"}); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.FreshContext {
+		t.Errorf("expected FreshContext=false from config default, got %+v", g)
+	}
+
+	// The fresh token overrides the config-off default. A goal is already
+	// active, so the first-or-last prompt fires; choose "first" (replace).
+	ctx := testContext()
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		cb("first", true)
+	}
+	if err := cmd.Run(ctx, []string{"new", "fresh", "second objective"}); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || !g.FreshContext {
+		t.Errorf("expected FreshContext=true from the fresh token over config default, got %+v", g)
+	}
+}
+
+// TestGoalCommand_QueueNext_FreshContextStored verifies /goal:next stores the
+// resolved context mode in the queue so it survives promotion.
+func TestGoalCommand_QueueNext_FreshContextStored(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"next", "fresh", "audit retry logic"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || !queued[0].FreshContext {
+		t.Errorf("expected queued goal FreshContext=true, got %+v", queued)
+	}
+}

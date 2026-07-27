@@ -238,7 +238,7 @@ func makeGoalToolRuntime(subs *subsystems) (agentic.Tool, bool) {
 	if subs.goalManager == nil {
 		return nil, false
 	}
-	return newGoalTool(subs.goalManager, subs.cfg.Tools.Enabled.Goal, subs.cfg.Goals.AutoUnblockEnabled), true
+	return newGoalTool(subs.goalManager, subs.cfg.Tools.Enabled.Goal, subs.cfg.Goals.AutoUnblockEnabled, subs.cfg.Goals.FreshContextEnabled), true
 }
 
 func makeBGExecTool(subs *subsystems) agentic.Tool {

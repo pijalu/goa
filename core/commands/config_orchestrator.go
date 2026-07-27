@@ -413,10 +413,12 @@ func (m *configMenu) openGoalsRetention() {
 	m.current = m.openGoalsRetention
 	cfg := m.ctx.Config.Goals.Retention
 	autoUnblock := m.ctx.Config.Goals.AutoUnblockEnabled()
+	freshContext := m.ctx.Config.Goals.FreshContextEnabled()
 	items := []tui.SelectorItem{
 		{Value: "enabled", Label: "Retention enabled", Description: boolLabel(cfg.Enabled)},
 		{Value: "days", Label: "Retention days", Description: goalsRetentionLabel(cfg)},
 		{Value: "auto_unblock", Label: "Auto-unblock goals", Description: boolLabel(autoUnblock)},
+		{Value: "fresh_context", Label: "Fresh context for new goals", Description: boolLabel(freshContext)},
 	}
 	m.ctx.SelectOption("Goals:", items, "", func(field string, ok bool) {
 		if !ok || field == "" {
@@ -432,6 +434,8 @@ func (m *configMenu) openGoalsRetention() {
 			m.promptRetentionDays(&cfg.Enabled, &cfg.Days)
 		case "auto_unblock":
 			m.toggleGoalAutoUnblock()
+		case "fresh_context":
+			m.toggleGoalFreshContext()
 		}
 	})
 }
@@ -445,6 +449,19 @@ func (m *configMenu) toggleGoalAutoUnblock() {
 	g.AutoUnblock = &next
 	m.saveConfig()
 	m.flash("Auto-unblock goals " + toggleNextLabel(!next))
+	m.openGoalsRetention()
+}
+
+// toggleGoalFreshContext flips goals.fresh_context (the default context mode
+// for new goals) and persists it. Tri-state (*bool): nil = default true
+// (clean context per goal); an explicit false makes new goals reuse the
+// current conversation unless overridden per goal.
+func (m *configMenu) toggleGoalFreshContext() {
+	g := &m.ctx.Config.Goals
+	next := !g.FreshContextEnabled()
+	g.FreshContext = &next
+	m.saveConfig()
+	m.flash("Fresh context for new goals " + toggleNextLabel(!next))
 	m.openGoalsRetention()
 }
 

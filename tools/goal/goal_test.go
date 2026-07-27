@@ -357,3 +357,71 @@ func TestGoalTool_ListCancelReorder(t *testing.T) {
 		t.Errorf("after cancel, queue = %+v", read)
 	}
 }
+
+// TestGoalTool_Create_FreshContextDefaultOn verifies the flipped default
+// (bugs.md Issue 24): a create WITHOUT freshContext now yields a clean-context
+// goal (default true); the model must explicitly pass false to keep context.
+func TestGoalTool_Create_FreshContextDefaultOn(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"default context mode"}`); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || !g.FreshContext {
+		t.Errorf("expected FreshContext=true by default, got %+v", g)
+	}
+}
+
+// TestGoalTool_Create_FreshContextExplicitFalse verifies the model can opt out
+// of the clean context per goal.
+func TestGoalTool_Create_FreshContextExplicitFalse(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"keep context","freshContext":false}`); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.FreshContext {
+		t.Errorf("expected FreshContext=false on explicit false, got %+v", g)
+	}
+}
+
+// TestGoalTool_Create_FreshContextResolver verifies the configured default is
+// honored when the arg is omitted, and that the explicit arg wins over it.
+func TestGoalTool_Create_FreshContextResolver(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	tool.FreshContextDefault = func() bool { return false } // config: reuse by default
+
+	if _, err := tool.Execute(`{"action":"create","objective":"config default reuse"}`); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.FreshContext {
+		t.Errorf("expected FreshContext=false from resolver default, got %+v", g)
+	}
+
+	if _, err := tool.Execute(`{"action":"create","objective":"explicit fresh","freshContext":true,"replace":true}`); err != nil {
+		t.Fatal(err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || !g.FreshContext {
+		t.Errorf("expected FreshContext=true from explicit override, got %+v", g)
+	}
+}
+
+// TestGoalTool_Enqueue_FreshContextDefaultOn verifies queued goals also carry
+// the flipped default so it survives promotion.
+func TestGoalTool_Enqueue_FreshContextDefaultOn(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	queue := &fakeQueue{}
+	tool.Queue = queue
+
+	if _, err := tool.Execute(`{"action":"create","objective":"first"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"create","objective":"second"}`); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.goals) != 1 || !queue.goals[0].FreshContext {
+		t.Errorf("expected queued goal to carry FreshContext=true by default, got %+v", queue.goals)
+	}
+}

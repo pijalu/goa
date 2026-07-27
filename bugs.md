@@ -1276,3 +1276,46 @@ seeds two queued goals, simulates the '-' hotkey selection, asserts the goal is
 removed, the manager reopens, and no "not found" flash surfaces. ✔
 
 **Status: FIXED.**
+
+---
+
+## Issue 24 — `freshContext` default ON + `/goal:new:fresh|reuse` + configurable default (feature request)
+
+**Request:** "freshContext should be by default on — the model can define false
+if it wants context to survive" and "add /goal:new:fresh and /goal:new:reuse to
+control context at command line — /goal:new uses the default — the default
+should be configurable via /config".
+
+**Fix (four layers, all wired to one tri-state default):**
+- **Config:** `goals.fresh_context` (`*bool`, nil = default TRUE) +
+  `GoalsConfig.FreshContextEnabled()` + DeepMerge (explicit false wins) +
+  `/config → Goals → "Fresh context for new goals"` toggle
+  (`toggleGoalFreshContext`, same pattern as auto-unblock).
+- **Model-facing goal tool (`tools/goal`):** `freshContext` arg is now
+  tri-state (`*bool`): explicit value wins; when omitted the configured default
+  applies via the new `FreshContextDefault` resolver (wired at both
+  construction sites — startup `registerGoalTools` and the `/tools:goal:on`
+  factory — to `cfg.Goals.FreshContextEnabled`). Schema description updated.
+- **`/goal` command:** `/goal:new:fresh <text>` forces a clean context,
+  `/goal:new:reuse <text>` keeps the conversation (also accepted on
+  `/goal:next:`); `/goal:new` (no token) uses the configured default. The
+  resolved flag threads through create → first-or-last prompt → startGoal →
+  doStartGoal (`CreateGoalInput.FreshContext`) AND into the durable queue
+  (`queueNext` → `AppendGoal`), so it survives promotion. Interactive
+  create/replace flows use the configured default. `FreshContextDefault` wired
+  in `internal/app/subsystems.go`.
+- **Docs:** `goal.long.md` (:fresh/:reuse + context-mode section), `docs/GOALS.md`
+  (default-ON semantics).
+
+**Tests (all pass):**
+- `config`: `TestGoalsFreshContextEnabled` (nil→true, false→false, merge override).
+- `tools/goal`: `TestGoalTool_Create_FreshContextDefaultOn`,
+  `TestGoalTool_Create_FreshContextExplicitFalse`,
+  `TestGoalTool_Create_FreshContextResolver`,
+  `TestGoalTool_Enqueue_FreshContextDefaultOn` (queue carries the flag).
+- `core/commands`: `TestGoalCommand_ParseContextToken` (7 parse cases),
+  `TestGoalCommand_Create_DefaultFreshOn`, `TestGoalCommand_Create_ReuseToken`,
+  `TestGoalCommand_Create_ConfigDefault` (config-off + fresh-token override via
+  replace prompt), `TestGoalCommand_QueueNext_FreshContextStored`.
+
+**Status: FIXED.**

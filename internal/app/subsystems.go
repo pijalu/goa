@@ -231,7 +231,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// Goal tools are always registered (stable tool array, bugs.md S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
-	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled)
+	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled)
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
@@ -643,8 +643,8 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 	return agent.Run(ctx, input)
 }
 
-func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool) {
-	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock))
+func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool) {
+	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock, freshContextDefault))
 }
 
 // newGoalTool builds the single agent-facing goal tool bound to the manager's
@@ -652,7 +652,7 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 // /tools:goal:on factory (makeToolFactory) construct it identically.
 // autoUnblock gates the auto-spawning of an unblocking investigation goal when
 // the model blocks a goal with justification (goals.auto_unblock; nil = on).
-func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool) agentic.Tool {
+func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
 	// goal is already active (bugs.md S2: all goal actions work during a goal).
 	createAllowed := func() bool {
@@ -665,6 +665,7 @@ func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func(
 	if gt, ok := tool.(*goaltools.GoalTool); ok {
 		gt.Queue = manager.Queue
 		gt.AutoUnblock = autoUnblock
+		gt.FreshContextDefault = freshContextDefault
 	}
 	return tool
 }
@@ -683,10 +684,11 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 	skillRegistry := newSkillRegistry(cfg, projectDir, pluginMgr, pluginsEnabled, trustMgr)
 
 	goalCmd := &commands.GoalCommand{
-		Mode:             goalManager.Mode,
-		Queue:            goalManager.Queue,
-		Driver:           goalDriver,
-		AutonomySwitcher: newAutonomySwitcher(agentMgr, cfg, makeJailSetter(toolRegistry)),
+		Mode:                goalManager.Mode,
+		Queue:               goalManager.Queue,
+		Driver:              goalDriver,
+		AutonomySwitcher:    newAutonomySwitcher(agentMgr, cfg, makeJailSetter(toolRegistry)),
+		FreshContextDefault: cfg.Goals.FreshContextEnabled,
 	}
 	// Wire the queue as the goal name pool so newly created active goals pick
 	// a friendly alias that does not collide with queued goals.

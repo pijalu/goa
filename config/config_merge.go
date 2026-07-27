@@ -64,6 +64,10 @@ func (c *Config) mergeGoals(other *Config) {
 	if other.Goals.AutoUnblock != nil {
 		c.Goals.AutoUnblock = other.Goals.AutoUnblock
 	}
+	// FreshContext is the same tri-state pattern (explicit false wins).
+	if other.Goals.FreshContext != nil {
+		c.Goals.FreshContext = other.Goals.FreshContext
+	}
 }
 
 // mergeTopLevelScalars overwrites top-level scalar fields from other when set.

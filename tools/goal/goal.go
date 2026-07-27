@@ -29,6 +29,11 @@ type GoalTool struct {
 	// enabled (the default). When it returns false, a justified block falls
 	// back to plain blocking (goal parked, turn stops).
 	AutoUnblock func() bool
+	// FreshContextDefault reports the configured default context mode for new
+	// goals (goals.fresh_context; default true = clean context). The
+	// per-create `freshContext` arg overrides it; when the arg is omitted
+	// this resolver supplies the default. Nil = default true.
+	FreshContextDefault func() bool
 	// Queue is the durable FIFO of upcoming goals. When set, the tool manages
 	// goals as a todo-like list: `create` APPENDS to the queue by default when
 	// a goal is already active (rather than failing), and the list/cancel/reorder
@@ -58,7 +63,10 @@ type goalArgs struct {
 	CompletionCriterion *string  `json:"completionCriterion,omitempty"`
 	VerifyCommand       string   `json:"verifyCommand,omitempty"`
 	Replace             bool     `json:"replace,omitempty"`
-	FreshContext        bool     `json:"freshContext,omitempty"`
+	// FreshContext is a tri-state per-create override: nil = use the
+	// configured default (goals.fresh_context, default true = clean context);
+	// explicit true/false wins for this goal.
+	FreshContext        *bool    `json:"freshContext,omitempty"`
 	Status              string   `json:"status,omitempty"`
 	// Terminal-answer contract (update): reason justifies the transition;
 	// expectation states what unblocks a blocked goal.
@@ -130,7 +138,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"freshContext": map[string]any{
 					"type":        "boolean",
-					"description": "create: run this goal's continuation turns on a new agent with a clean context (objective + handoff only) instead of reusing the current conversation. History is preserved in the transcript but not sent to the new agent. Default false = reuse current context.",
+					"description": "create: run this goal's continuation turns on a clean context (objective + handoff only) instead of reusing the current conversation. History is preserved in the transcript but not sent to the agent for this goal. Default: the configured goals.fresh_context (default true = clean context). Set false to keep the current conversation context.",
 				},
 				"status": map[string]any{
 					"type":        "string",
@@ -280,12 +288,25 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 			activated = snap
 			continue
 		}
-		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), args.FreshContext, args.Priority == "front"); err != nil {
+		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), t.resolveFreshContext(args), args.Priority == "front"); err != nil {
 			return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)
 		}
 		queued++
 	}
 	return t.createResult(activated, queued)
+}
+
+// resolveFreshContext returns the effective context mode for a create call:
+// the explicit freshContext arg wins; otherwise the configured default
+// (goals.fresh_context via FreshContextDefault; default true = clean context).
+func (t *GoalTool) resolveFreshContext(args goalArgs) bool {
+	if args.FreshContext != nil {
+		return *args.FreshContext
+	}
+	if t.FreshContextDefault != nil {
+		return t.FreshContextDefault()
+	}
+	return true
 }
 
 // createActive starts obj as the active goal. replace mirrors the legacy
@@ -296,7 +317,7 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 		CompletionCriterion: args.CompletionCriterion,
 		VerifyCommand:       optionalText(args.VerifyCommand),
 		Replace:             replace,
-		FreshContext:        args.FreshContext,
+		FreshContext:        t.resolveFreshContext(args),
 	}, goal.GoalActorModel)
 	if err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)

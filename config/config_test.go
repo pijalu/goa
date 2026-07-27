@@ -1351,4 +1351,25 @@ func TestGoalsAutoUnblockEnabled(t *testing.T) {
 	}
 }
 
+// TestGoalsFreshContextEnabled verifies the tri-state fresh-context default
+// (bugs.md Issue 24): nil = on (clean context per goal), explicit false = reuse
+// conversation, and a higher-layer explicit value overrides in a DeepMerge.
+func TestGoalsFreshContextEnabled(t *testing.T) {
+	var def Config
+	if !def.Goals.FreshContextEnabled() {
+		t.Error("FreshContextEnabled() = false for nil, want default true")
+	}
+	off := false
+	c := Config{Goals: GoalsConfig{FreshContext: &off}}
+	if c.Goals.FreshContextEnabled() {
+		t.Error("FreshContextEnabled() = true for explicit false, want false")
+	}
+	base := Config{Goals: GoalsConfig{FreshContext: boolPtr(true)}}
+	override := Config{Goals: GoalsConfig{FreshContext: &off}}
+	base.DeepMerge(&override)
+	if base.Goals.FreshContextEnabled() {
+		t.Error("DeepMerge: explicit false override should disable fresh_context")
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }

@@ -28,6 +28,25 @@ type GoalCommand struct {
 	Queue            *core.GoalQueueStore
 	Driver           *core.GoalDriver
 	AutonomySwitcher AutonomySwitcher
+	// FreshContextDefault reports the configured default context mode for new
+	// goals (goals.fresh_context; default true = clean context).
+	// /goal:new:fresh and /goal:new:reuse override it per command. Nil = true.
+	FreshContextDefault func() bool
+}
+
+// resolveFresh maps the parsed per-command context token ("" | "fresh" |
+// "reuse") onto the configured default (goals.fresh_context, default true).
+func (c *GoalCommand) resolveFresh(contextMode string) bool {
+	switch contextMode {
+	case "fresh":
+		return true
+	case "reuse":
+		return false
+	}
+	if c.FreshContextDefault != nil {
+		return c.FreshContextDefault()
+	}
+	return true
 }
 
 // Name returns the command name.
@@ -65,14 +84,18 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 	"manage":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showQueueManager(ctx) },
 	"log":      func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showEventLog(ctx) },
 	"verify":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.runVerify(ctx) },
-	"next-add": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error { return c.queueNext(ctx, p.objective) },
+	"next-add": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
+		return c.queueNext(ctx, p.objective, c.resolveFresh(p.contextMode))
+	},
 	"next-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error {
 		return c.promptCreateInteractive(ctx, placementLast)
 	},
 	"reorder": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
 		return c.reorderQueue(ctx, p.objective)
 	},
-	"create": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error { return c.create(ctx, p.objective) },
+	"create": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
+		return c.create(ctx, p.objective, c.resolveFresh(p.contextMode))
+	},
 	"create-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error {
 		return c.promptCreateInteractive(ctx, placementAsk)
 	},
@@ -101,6 +124,10 @@ type parsedGoalArgs struct {
 	objective string
 	message   string
 	severity  string
+	// contextMode carries the per-command context token from
+	// /goal:new:fresh|reuse (or /goal:next:fresh|reuse): "" = configured
+	// default, "fresh" = clean context, "reuse" = keep conversation.
+	contextMode string
 }
 
 func (c *GoalCommand) parseArgs(args []string) parsedGoalArgs {
@@ -160,11 +187,35 @@ func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
 		}
 		return parsedGoalArgs{kind: spec.kind, objective: text}
 	default: // subOptional
+		// /goal:new:fresh <text> and /goal:new:reuse <text> (also :next:) carry
+		// a leading context-mode token that overrides the configured default.
+		if cmd == "new" || cmd == "next" {
+			mode, rest := splitGoalContextToken(text)
+			if rest == "" {
+				return parsedGoalArgs{kind: spec.bareKind, contextMode: mode}
+			}
+			return parsedGoalArgs{kind: spec.kind, objective: rest, contextMode: mode}
+		}
 		if text == "" {
 			return parsedGoalArgs{kind: spec.bareKind}
 		}
 		return parsedGoalArgs{kind: spec.kind, objective: text}
 	}
+}
+
+// splitGoalContextToken extracts a leading fresh/reuse context-mode token
+// from the objective text (/goal:new:fresh fix, /goal:next:reuse investigate).
+// Returns ("", text) unchanged when there is no token.
+func splitGoalContextToken(text string) (mode, rest string) {
+	for _, tok := range []string{"fresh", "reuse"} {
+		if text == tok {
+			return tok, ""
+		}
+		if strings.HasPrefix(text, tok+" ") {
+			return tok, strings.TrimSpace(strings.TrimPrefix(text, tok+" "))
+		}
+	}
+	return "", text
 }
 
 // parseObjectiveArg joins args into an objective, returning emptyKind when the
@@ -410,8 +461,14 @@ func goalOnOffLabel(v bool) string {
 	return "disabled"
 }
 
-func (c *GoalCommand) queueNext(ctx core.Context, objective string) error {
-	goals, err := c.Queue.Append(objective)
+// queueNext appends a goal to the durable queue (/goal:next). fresh is the
+// resolved context mode — stored with the goal so its turns run on a clean
+// context (or the surviving conversation) when it is promoted.
+func (c *GoalCommand) queueNext(ctx core.Context, objective string, fresh bool) error {
+	goals, err := c.Queue.AppendGoal(goal.UpcomingGoalInput{
+		Objective:    objective,
+		FreshContext: fresh,
+	})
 	if err != nil {
 		return err
 	}
@@ -526,12 +583,13 @@ const (
 
 // create handles /goal:new:<text> and bare /goal:<text>.
 // When a goal is already active, it asks whether to become first (replace) or
-// last (queue) — the item-4 prompt.
-func (c *GoalCommand) create(ctx core.Context, objective string) error {
+// last (queue) — the item-4 prompt. fresh is the resolved context mode
+// (/goal:new:fresh|reuse or the configured default).
+func (c *GoalCommand) create(ctx core.Context, objective string, fresh bool) error {
 	if c.Mode.GetGoal().Goal != nil {
-		return c.promptFirstOrLast(ctx, objective)
+		return c.promptFirstOrLast(ctx, objective, fresh)
 	}
-	return c.startGoal(ctx, objective, false)
+	return c.startGoal(ctx, objective, false, fresh)
 }
 
 // replace handles /goal:replace:<text>. It asks for confirmation before
@@ -553,7 +611,7 @@ func (c *GoalCommand) replace(ctx core.Context, objective string) error {
 // active (item 4). "First/active" replaces the current goal; "Last" queues it.
 // Per the UX guideline, the active goal's details are shown FIRST so the user
 // can decide what to do with the running goal.
-func (c *GoalCommand) promptFirstOrLast(ctx core.Context, objective string) error {
+func (c *GoalCommand) promptFirstOrLast(ctx core.Context, objective string, fresh bool) error {
 	current := c.Mode.GetGoal().Goal
 	c.describeActiveGoal(ctx, current)
 	activeLabel := "<current goal>"
@@ -571,9 +629,9 @@ func (c *GoalCommand) promptFirstOrLast(ctx core.Context, objective string) erro
 		}
 		switch selected {
 		case "first":
-			_ = c.startGoal(ctx, objective, true)
+			_ = c.startGoal(ctx, objective, true, fresh)
 		case "last":
-			_ = c.queueNext(ctx, objective)
+			_ = c.queueNext(ctx, objective, fresh)
 		}
 	})
 	return nil
@@ -594,7 +652,7 @@ func (c *GoalCommand) promptReplaceConfirm(ctx core.Context, current *goal.GoalS
 		if !ok || selected == "cancel" {
 			return
 		}
-		_ = c.startGoal(ctx, objective, true)
+		_ = c.startGoal(ctx, objective, true, c.resolveFresh(""))
 	})
 }
 
@@ -640,11 +698,11 @@ func (c *GoalCommand) promptCreateInteractive(ctx core.Context, placement goalPl
 		}
 		switch placement {
 		case placementLast:
-			_ = c.queueNext(ctx, objective)
+			_ = c.queueNext(ctx, objective, c.resolveFresh(""))
 		case placementFirst:
-			_ = c.startGoal(ctx, objective, true)
+			_ = c.startGoal(ctx, objective, true, c.resolveFresh(""))
 		default: // placementAsk
-			_ = c.create(ctx, objective)
+			_ = c.create(ctx, objective, c.resolveFresh(""))
 		}
 	})
 	return nil
@@ -670,18 +728,18 @@ func (c *GoalCommand) promptReplaceInteractive(ctx core.Context) error {
 	return nil
 }
 
-func (c *GoalCommand) startGoal(ctx core.Context, objective string, replace bool) error {
+func (c *GoalCommand) startGoal(ctx core.Context, objective string, replace bool, fresh bool) error {
 	if c.AutonomySwitcher != nil {
 		level := c.AutonomySwitcher.Current()
 		if level != internal.AutonomyYolo {
-			c.promptStartPermission(ctx, objective, replace, level)
+			c.promptStartPermission(ctx, objective, replace, level, fresh)
 			return nil
 		}
 	}
-	return c.doStartGoal(ctx, objective, replace)
+	return c.doStartGoal(ctx, objective, replace, fresh)
 }
 
-func (c *GoalCommand) promptStartPermission(ctx core.Context, objective string, replace bool, current internal.AutonomyLevel) {
+func (c *GoalCommand) promptStartPermission(ctx core.Context, objective string, replace bool, current internal.AutonomyLevel, fresh bool) {
 	opts := c.permissionOptions(current)
 	ctx.SelectOption("Start a goal?", opts, "", func(selected string, ok bool) {
 		if !ok {
@@ -698,7 +756,7 @@ func (c *GoalCommand) promptStartPermission(ctx core.Context, objective string, 
 			ctx.Flash("Goal start cancelled.")
 			return
 		}
-		_ = c.doStartGoal(ctx, objective, replace)
+		_ = c.doStartGoal(ctx, objective, replace, fresh)
 	})
 }
 
@@ -718,10 +776,11 @@ func (c *GoalCommand) permissionOptions(current internal.AutonomyLevel) []tui.Se
 	}
 }
 
-func (c *GoalCommand) doStartGoal(ctx core.Context, objective string, replace bool) error {
+func (c *GoalCommand) doStartGoal(ctx core.Context, objective string, replace bool, fresh bool) error {
 	snap, err := c.Mode.CreateGoal(goal.CreateGoalInput{
-		Objective: objective,
-		Replace:   replace,
+		Objective:    objective,
+		Replace:      replace,
+		FreshContext: fresh,
 	}, goal.GoalActorUser)
 	if err != nil {
 		ctx.Flash(err.Error())
