@@ -1850,3 +1850,83 @@ func (r *recordingRunner) Run(ctx context.Context, input string) error {
 func (r *recordingRunner) RunWithImages(ctx context.Context, input string, images []string) error {
 	return r.Run(ctx, input)
 }
+
+// TestAgentManager_StartSession_FreshConversationID covers bugs.md Issue 8: every
+// StartSession must give the agent a FRESH, non-empty StreamOptions.SessionID so
+// provider-side cache (prompt_cache_key / previous_response_id / session-affinity)
+// is cleared between sessions (/new, first start). Two consecutive sessions must not
+// share an id.
+func TestAgentManager_StartSession_FreshConversationID(t *testing.T) {
+	cfg := &config.Config{}
+	dir := t.TempDir()
+	ss := NewSessionStore(dir)
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(cfg, ss, nil, sessionState, tuiEvents, dir)
+
+	mdl := agenticprovider.Model{
+		ID:         "test-model",
+		Api:        agenticprovider.ApiOpenAICompletions,
+		Provider:   agenticprovider.ProviderLMStudio,
+		BaseURL:    "http://localhost:1234/v1/chat/completions",
+		InputTypes: []string{"text"},
+	}
+
+	if _, err := am.StartSession(mdl, agenticprovider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("first StartSession: %v", err)
+	}
+	id1 := am.CurrentAgent().StreamOptions().SessionID
+	if id1 == "" {
+		t.Fatalf("first session: StreamOptions.SessionID is empty (cache key would be unset)")
+	}
+	if err := am.StopSession(); err != nil {
+		t.Fatalf("StopSession: %v", err)
+	}
+
+	if _, err := am.StartSession(mdl, agenticprovider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("second StartSession: %v", err)
+	}
+	id2 := am.CurrentAgent().StreamOptions().SessionID
+	if id2 == "" {
+		t.Fatalf("second session: StreamOptions.SessionID is empty")
+	}
+	if id1 == id2 {
+		t.Fatalf("consecutive sessions reused SessionID %q; provider cache would not be cleared", id1)
+	}
+}
+
+// TestAgentManager_ResetConversationID covers bugs.md Issue 8: rotating the
+// conversation id on a live session (fresh-context goal) must give the active
+// agent a NEW non-empty SessionID distinct from the previous one, so provider
+// cache is not carried into the clean context.
+func TestAgentManager_ResetConversationID(t *testing.T) {
+	cfg := &config.Config{}
+	dir := t.TempDir()
+	ss := NewSessionStore(dir)
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(cfg, ss, nil, sessionState, tuiEvents, dir)
+
+	mdl := agenticprovider.Model{
+		ID:         "test-model",
+		Api:        agenticprovider.ApiOpenAICompletions,
+		Provider:   agenticprovider.ProviderLMStudio,
+		BaseURL:    "http://localhost:1234/v1/chat/completions",
+		InputTypes: []string{"text"},
+	}
+	if _, err := am.StartSession(mdl, agenticprovider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	before := am.CurrentAgent().StreamOptions().SessionID
+
+	newID := am.ResetConversationID()
+	if newID == "" {
+		t.Fatalf("ResetConversationID returned empty id")
+	}
+	if newID == before {
+		t.Fatalf("ResetConversationID reused id %q", newID)
+	}
+	if got := am.CurrentAgent().StreamOptions().SessionID; got != newID {
+		t.Fatalf("agent StreamOptions.SessionID = %q, want rotated %q", got, newID)
+	}
+}

@@ -633,6 +633,11 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 	}
 	if begin {
 		agent.SetHistory(nil) // system prompt is re-prepended by SetHistory
+		// Rotate the conversation id so the clean context also gets a fresh
+		// provider cache key (prompt_cache_key / previous_response_id /
+		// session-affinity) — a clean context pinned to the old SessionID would
+		// keep reading the prior conversation's cache (bugs.md Issue 8).
+		r.agentMgr.ResetConversationID()
 		r.agentMgr.InjectSystemMessage("⟡ Context reset: this goal is running on a clean context. The prior conversation is preserved in the transcript but is not sent to the agent for this goal.")
 	}
 	return agent.Run(ctx, input)

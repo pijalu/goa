@@ -773,6 +773,29 @@ func (am *AgentManager) SetStreamOptions(opts agenticprovider.StreamOptions) {
 	}
 }
 
+// ResetConversationID mints a fresh conversation/session id and applies it to
+// the active agent's StreamOptions for subsequent turns. It returns the new id
+// ("" when no session store or no active agent).
+//
+// Used when a logically-new conversation begins on the SAME agent — notably a
+// fresh-context goal (RunFresh begin=true), which clears the agent's history but
+// would otherwise keep the prior SessionID. SessionID drives the provider cache
+// key (OpenAI prompt_cache_key / previous_response_id, session-affinity
+// headers), so without a reset the "clean" context would still be pinned to the
+// old conversation's cache / response chain (bugs.md Issue 8).
+func (am *AgentManager) ResetConversationID() string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil || am.sessionStore == nil {
+		return ""
+	}
+	newID := am.sessionStore.StartSession()
+	opts := am.activeAgent.StreamOptions()
+	opts.SessionID = newID
+	am.activeAgent.SetStreamOptions(opts)
+	return newID
+}
+
 // ActiveModel returns the active agent's model, or an empty model if none.
 func (am *AgentManager) ActiveModel() agenticprovider.Model {
 	am.mu.Lock()

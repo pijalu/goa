@@ -26,6 +26,24 @@ func setupTestSession(t *testing.T) (dir string, cleanup func()) {
 	return dir, func() { os.RemoveAll(dir) }
 }
 
+// TestSessionStartDistinctIDs covers bugs.md Issue 8: every new session must get a
+// FRESH conversation id so provider-side cache (prompt_cache_key / previous_response_id /
+// session-affinity) is cleared and the new conversation does not inherit stale affinity.
+func TestSessionStartDistinctIDs(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+	id1 := ss.StartSession()
+	id2 := ss.StartSession()
+	if id1 == "" || id2 == "" {
+		t.Fatalf("StartSession returned empty id: %q, %q", id1, id2)
+	}
+	if id1 == id2 {
+		t.Fatalf("consecutive StartSession calls reused id %q; cache would not be cleared", id1)
+	}
+}
+
 // TestSessionStartAndWrite verifies session creation and event writing.
 func TestSessionStartAndWrite(t *testing.T) {
 	dir, cleanup := setupTestSession(t)
