@@ -23,8 +23,10 @@ import (
 type TermEmulator struct {
 	w, h        int
 	screen      [][]string // [row][col] cell text (ANSI-stripped for assertion)
+	screenBg    [][]string // [row][col] cell background SGR ("" = default)
 	scrollback  []string
 	row, col    int
+	curBg       string // current SGR background params (e.g. "48;2;42;50;41")
 	pendingWrap bool // DEC deferred wrap: last cell filled, next char wraps
 	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
 	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
@@ -36,8 +38,10 @@ type TermEmulator struct {
 func NewTermEmulator(h, w int) *TermEmulator {
 	e := &TermEmulator{w: w, h: h, scrollTop: 0, scrollBot: h - 1}
 	e.screen = make([][]string, h)
+	e.screenBg = make([][]string, h)
 	for i := range e.screen {
 		e.screen[i] = make([]string, w)
+		e.screenBg[i] = make([]string, w)
 	}
 	return e
 }
@@ -102,6 +106,7 @@ func (e *TermEmulator) writePrintable(s string, i int) int {
 				ch = visible
 			}
 			e.screen[e.row][e.col] = ch
+			e.screenBg[e.row][e.col] = e.curBg
 		}
 		e.col++
 	}
@@ -127,7 +132,9 @@ func (e *TermEmulator) lineFeed() {
 		}
 		e.scrollback = append(e.scrollback, top.String())
 		copy(e.screen[e.scrollTop:e.scrollBot], e.screen[e.scrollTop+1:e.scrollBot+1])
+		copy(e.screenBg[e.scrollTop:e.scrollBot], e.screenBg[e.scrollTop+1:e.scrollBot+1])
 		e.screen[e.scrollBot] = make([]string, e.w)
+		e.screenBg[e.scrollBot] = make([]string, e.w)
 		return
 	}
 	// Cursor below the region (pinned chrome): plain advance, clamped.
@@ -185,6 +192,8 @@ func (e *TermEmulator) applyCSI(params string, final byte) {
 		e.eraseDisplay(params)
 	case 'K':
 		e.eraseLine(params)
+	case 'm':
+		e.applySGR(params)
 	case 'r':
 		// DECSTBM: set scroll region ("\x1b[top;bot r" 1-indexed; "\x1b[r" =
 		// full screen). Homes the cursor per DEC spec.
@@ -205,12 +214,34 @@ func (e *TermEmulator) applyCSI(params string, final byte) {
 	}
 }
 
+// applySGR tracks the current background color from SGR sequences. Only the
+// background is modeled (0/49 reset, 48;2;r;g;b truecolor, 48;5;n palette);
+// all other attributes are ignored.
+func (e *TermEmulator) applySGR(params string) {
+	codes := strings.Split(params, ";")
+	for i := 0; i < len(codes); i++ {
+		switch codes[i] {
+		case "", "0", "49":
+			e.curBg = ""
+		case "48":
+			if i+1 < len(codes) && codes[i+1] == "2" && i+4 < len(codes) {
+				e.curBg = strings.Join(codes[i:i+5], ";")
+				i += 4
+			} else if i+1 < len(codes) && codes[i+1] == "5" && i+2 < len(codes) {
+				e.curBg = strings.Join(codes[i:i+3], ";")
+				i += 2
+			}
+		}
+	}
+}
+
 func (e *TermEmulator) eraseDisplay(params string) {
 	switch params {
 	case "2", "3":
 		for r := range e.screen {
 			for c := range e.screen[r] {
 				e.screen[r][c] = ""
+				e.screenBg[r][c] = ""
 			}
 		}
 		if params == "3" {
@@ -219,10 +250,12 @@ func (e *TermEmulator) eraseDisplay(params string) {
 	case "0", "":
 		for c := e.col; c < e.w; c++ {
 			e.screen[e.row][c] = ""
+			e.screenBg[e.row][c] = ""
 		}
 		for r := e.row + 1; r < e.h; r++ {
 			for c := range e.screen[r] {
 				e.screen[r][c] = ""
+				e.screenBg[r][c] = ""
 			}
 		}
 	}
@@ -234,6 +267,7 @@ func (e *TermEmulator) eraseLine(params string) {
 	}
 	for c := range e.screen[e.row] {
 		e.screen[e.row][c] = ""
+		e.screenBg[e.row][c] = ""
 	}
 	e.pendingWrap = false
 }
@@ -248,6 +282,17 @@ func (e *TermEmulator) Visible(row int) string {
 		b.WriteString(cell)
 	}
 	return b.String()
+}
+
+// VisibleBg returns the per-cell background SGR params of a screen row
+// ("" = default background), for asserting background-color continuity.
+func (e *TermEmulator) VisibleBg(row int) []string {
+	if row < 0 || row >= e.h {
+		return nil
+	}
+	out := make([]string, e.w)
+	copy(out, e.screenBg[row])
+	return out
 }
 
 func (e *TermEmulator) Scrollback() []string { return e.scrollback }

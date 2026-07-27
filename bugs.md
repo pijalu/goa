@@ -1109,4 +1109,44 @@ row index arithmetic, (3) rewrite content after every `2K` on bce-less terminals
 **Test:** filmstrip regression asserting full-width status bg on the widget's last row
 when the spinner is active beneath it.
 
-**Status: OPEN.**
+**Status: INVESTIGATED — could not reproduce in the harness; live capture tooling added.**
+
+Deep byte-level investigation (2026-07-27), every layer cleared:
+
+- **Hypothesis 1 RULED OUT:** the compositor's row-diff (`unchangedRow`,
+  `tui/compositor.go:1063`) compares FULL BYTES (ANSI included) — a bg-only flip is
+  detected and repainted. Verified end-to-end by
+  `TestCompositor_ToolWidgetLastRowKeepsStatusBg` (`tui/compositor_tool_bg_test.go`):
+  a real `ToolExecutionComponent` flipped pending→success WITH a simultaneous
+  canvas-growth scroll keeps full-width success bg on every widget row, replayed
+  through a real terminal emulator.
+- **Widget RULED OUT:** every row (topPad/header/body/duration/bottomPad) is painted
+  via `padToWidthStyled` (nested `\x1b[0m` re-applies bg) and every row measures
+  EXACTLY `width` in pending/running/success states (no miscount →
+  `truncateToWidth` never cuts the bg tail). Read renderer checked in collapsed AND
+  expanded paths.
+- **App event flow RULED OUT (5 live-engine scenarios, bg-tracking emulator):**
+  pending→running→success flips, spinner ticks, the running "elapsed X.XXs · N B ·
+  M lines" duration row (the user's exact screenshot line, "● read x.go" above the
+  "⬡ working…" spinner), full-console scrolling, and goal-bubble chrome growth/clear
+  mid-session (off-by-one clobber attempt) — ALL rows carry the correct bg.
+- **Tooling added for the next step:** (a) `TermEmulator` now tracks per-cell
+  background (`VisibleBg`) so any future test can assert bg; (b) `GOA_TERM_LOG=<path>`
+  tees the real terminal output stream to a file (`tui/terminal.go` Write/WriteString)
+  — the one dimension the harness cannot arbitrate is the real terminal's escape
+  semantics. `TestProcessTerminal_TermLog` covers it.
+
+**Remaining hypotheses (need one live capture to discriminate):**
+1. Real-terminal `\x1b[2K` erase semantics (BCE/non-BCE) interacting with a skipped
+   or partial row rewrite — invisible to the byte-level emulator.
+2. Perception/design: the DEFAULT-bg gap row directly beneath the green block (idle
+   status row / editor border) reads as "the tool call's last line". Fix would be a
+   bg-styled trailing spacer on the widget (precedent: `userMessage` withSpacers
+   with bgHex) — but only if the user confirms the gap row is the complaint.
+3. A path the harness does not cover (bgPanel visible, orchestration view, ACP).
+
+**Next step (user action needed):** reproduce once with
+`GOA_TERM_LOG=/tmp/goa-term.log goa`, note the exact line (text + actual vs expected
+color), and share the log around the moment — the byte stream will show whether the
+row was ever written without bg (compositor/viewport bug) or written correctly
+(terminal interpretation).

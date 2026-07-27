@@ -497,11 +497,48 @@ func (t *ProcessTerminal) drainInput(maxMs, idleMs int) {
 	drainInputNonBlocking(t.fd, maxMs, idleMs)
 }
 
+// termLog is the optional terminal-output capture (GOA_TERM_LOG). When set,
+// every byte written to stdout is also appended to the file — the diagnostic
+// for rendering bugs that only reproduce on a real terminal (bugs.md
+// Issue 20: escape-sequence semantics the byte-level harness cannot
+// arbitrate). Lazily opened on first write; append so relaunches keep history.
+var termLog struct {
+	once sync.Once
+	file *os.File
+}
+
+func termLogWriter() *os.File {
+	// Check the env first so the once only fires when the feature is enabled
+	// (an early write with GOA_TERM_LOG unset must not latch a nil file for
+	// the rest of the process).
+	path := os.Getenv("GOA_TERM_LOG")
+	if path == "" {
+		return nil
+	}
+	termLog.once.Do(func() {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err == nil {
+			termLog.file = f
+		}
+	})
+	return termLog.file
+}
+
 // Write writes bytes to stdout.
-func (t *ProcessTerminal) Write(p []byte) (n int, err error) { return os.Stdout.Write(p) }
+func (t *ProcessTerminal) Write(p []byte) (n int, err error) {
+	if f := termLogWriter(); f != nil {
+		_, _ = f.Write(p)
+	}
+	return os.Stdout.Write(p)
+}
 
 // WriteString writes a string.
-func (t *ProcessTerminal) WriteString(s string) { os.Stdout.WriteString(s) }
+func (t *ProcessTerminal) WriteString(s string) {
+	if f := termLogWriter(); f != nil {
+		_, _ = f.WriteString(s)
+	}
+	os.Stdout.WriteString(s)
+}
 
 // Size returns terminal dimensions.
 //
