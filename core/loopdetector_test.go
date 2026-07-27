@@ -281,13 +281,21 @@ func TestLoopDetector_ThinkingLoop_MultiLineCodeFenceNotAloop(t *testing.T) {
 
 	codeLine1 := `        if p.cur.Type == TokenKeyword && (p.cur.Value == "PRIMARY" || p.cur.Value == "UNIQUE" ||`
 	codeLine2 := `            p.cur.Value == "CHECK" || p.cur.Value == "FOREIGN" || p.cur.Value == "CONSTRAINT") {`
-	prose := `Let me check what skipTableConstraints looks like and why it does not consume the token.`
 
-	// Reason iteratively: prose, then a fenced code quote, more prose, then the
-	// same fenced quote again — nine total repetitions of the code lines, all
-	// inside fences. Must never trip.
+	// Reason iteratively: varied prose, then a fenced code quote, more prose,
+	// then the same fenced quote again — many total repetitions of the code
+	// lines, all inside fences. The prose differs each iteration (real iterative
+	// reasoning is not a verbatim repeat); only the quoted CODE repeats, and
+	// quoted code must never trip the detector.
+	prose := []string{
+		`Let me check what skipTableConstraints looks like and why it does not consume the token.`,
+		`Now I want to see how the parser advances past a table-level constraint here.`,
+		`Next I am tracing the cursor movement through the constraint branch carefully.`,
+		`Then I will verify whether the keyword token is consumed or left pending.`,
+		`Finally I re-quote the same snippet to compare the two parse paths again.`,
+	}
 	for i := 0; i < 5; i++ {
-		block := prose + "\n```go\n" + codeLine1 + "\n" + codeLine2 + "\n```\n"
+		block := prose[i] + "\n```go\n" + codeLine1 + "\n" + codeLine2 + "\n```\n"
 		if lvl := ld.RecordThinkingDelta(block); lvl != LoopOK {
 			t.Fatalf("fenced code quote triggered %d at iter %d, want LoopOK (quoted code is not model repetition)", lvl, i)
 		}
@@ -323,5 +331,61 @@ func TestLoopDetector_ThinkingLoop_ProseRepetitionStillDetected(t *testing.T) {
 	}
 	if lvl := ld.RecordThinkingDelta(prose + "\n"); lvl != LoopInterrupt {
 		t.Fatalf("genuine prose repetition: got %d, want LoopInterrupt", lvl)
+	}
+}
+
+// TestLoopDetector_ThinkingLoop_AlternatingPhrases is the regression for the
+// production loop where the model alternated two phrasings of the same intent
+// ("Let me check the full file." / "Let me read the full file.") for hundreds
+// of lines without tripping the detector. Exact-line hashing counts each
+// phrasing separately, so neither crosses the interrupt threshold — the
+// detector must recognize the low line diversity of the window as a loop.
+func TestLoopDetector_ThinkingLoop_AlternatingPhrases(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	a := "Let me check the full file."
+	b := "Let me read the full file."
+	var lvl LoopWarningLevel
+	for i := 0; i < 40; i++ {
+		if i%2 == 0 {
+			lvl = ld.RecordThinkingDelta(a + "\n")
+		} else {
+			lvl = ld.RecordThinkingDelta(b + "\n")
+		}
+		if lvl == LoopInterrupt {
+			return // caught — pass
+		}
+	}
+	t.Fatalf("alternating A/B loop never interrupted after 40 lines (last level %d)", lvl)
+}
+
+// TestLoopDetector_ThinkingLoop_ShortLineLoop covers the same production
+// failure's second gap: the looping lines are ~5 words, below the
+// minThinkWordCount=10 floor, so they were never counted at all. A pure
+// (non-alternating) short-line loop must still escalate to at least a warning.
+func TestLoopDetector_ThinkingLoop_ShortLineLoop(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	line := "Let me read the full file."
+	var lvl LoopWarningLevel
+	for i := 0; i < 40; i++ {
+		lvl = ld.RecordThinkingDelta(line + "\n")
+		if lvl >= LoopWarning {
+			return // escalated — pass
+		}
+	}
+	t.Fatalf("pure short-line loop never warned after 40 lines (last level %d)", lvl)
+}
+
+// TestLoopDetector_ThinkingLoop_VariedReasoningNoFalsePositive guards the
+// diversity-based detection: legitimate deep-debugging produces many distinct
+// short lines and must NOT trip the loop detector even though the lines are
+// short and numerous.
+func TestLoopDetector_ThinkingLoop_VariedReasoningNoFalsePositive(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	// 40 distinct short reasoning lines — high diversity, must stay LoopOK.
+	for i := 0; i < 40; i++ {
+		line := "Now inspecting step number " + fmt.Sprintf("%d", i) + " carefully."
+		if lvl := ld.RecordThinkingDelta(line + "\n"); lvl != LoopOK {
+			t.Fatalf("varied reasoning triggered %d at line %d, want LoopOK", lvl, i)
+		}
 	}
 }

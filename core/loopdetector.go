@@ -71,6 +71,27 @@ type LoopDetector struct {
 	// (bugs.md: thinking-loop false positive, exports 20260721-142256/142545).
 	thinkInCodeBlock bool
 
+	// Diversity-based loop detection. The exact-line counter above misses two
+	// production failure modes (bugs.md Issue 6): (a) the model ALTERNATES two
+	// phrasings of the same intent ("Let me check the full file." / "Let me
+	// read the full file."), so neither line's individual count crosses the
+	// threshold; and (b) the looping lines are short (< minThinkWordCount
+	// words), so they are filtered out before counting. Both are caught by
+	// watching the DIVERSITY of recent prose lines: a genuine loop keeps only a
+	// handful of distinct normalized lines in play while volume grows, whereas
+	// legitimate reasoning keeps producing new lines.
+	//
+	// thinkRecentLines is a sliding window (ring) of the most recent
+	// thinkWindowSize normalized prose lines; thinkRecentCounts counts each
+	// distinct normalized line currently in the window. thinkWindowFull turns
+	// true once the window has been filled at least once, so detection only
+	// arms after enough volume to avoid false positives on short turns.
+	thinkRecentLines  []string
+	thinkRecentCounts map[string]int
+	thinkRecentHead   int
+	thinkRecentLen    int
+	thinkWindowFull   bool
+
 	// Error tracking (ring buffer). Populated by RecordToolResult; retained as
 	// the integration point for a future (genuinely wired) error-rate check.
 	errorHistory []bool // last N tool results (true = error)
@@ -128,6 +149,18 @@ const loopErrorHistorySize = 10
 // a word-based threshold (10 words) to provide more meaningful filtering.
 const minThinkWordCount = 10
 
+// thinkWindowSize is the number of recent prose lines kept for diversity-based
+// loop detection. thinkMinWindowFill is how many lines must accumulate before
+// diversity detection arms; thinkMaxDistinctLines is the maximum number of
+// distinct normalized lines allowed in a full window before it is treated as a
+// loop. A genuine A/B alternation or short-line loop keeps the distinct count
+// at 1–2 over a full window; legitimate reasoning produces many more.
+const (
+	thinkWindowSize       = 24
+	thinkMinWindowFill    = 12
+	thinkMaxDistinctLines = 3
+)
+
 // NewLoopDetector creates a loop detector with the given config.
 func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 	if cfg.ThinkingLoopWarning <= 0 {
@@ -144,6 +177,8 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		thinkLineCounts:         make(map[string]int),
 		thinkWarningThreshold:   cfg.ThinkingLoopWarning,
 		thinkInterruptThreshold: cfg.ThinkingLoopInterrupt,
+		thinkRecentLines:        make([]string, thinkWindowSize),
+		thinkRecentCounts:       make(map[string]int),
 		persistThinkDisabled:    cfg.ThinkingDisabled,
 		persistToolDisabled:     cfg.ToolDisabled,
 	}
@@ -411,14 +446,20 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 		if idx < 0 {
 			break
 		}
-		line := trimSpace(ld.thinkPending[:idx])
+		raw := trimSpace(ld.thinkPending[:idx])
 		ld.thinkPending = ld.thinkPending[idx+1:]
 
-		if ld.skipCodeFenceLine(line) {
+		if ld.skipCodeFenceLine(raw) {
 			continue
 		}
 
-		line = processThinkingLine(line)
+		// Diversity tracking runs on the raw prose line (normalized), BEFORE the
+		// minThinkWordCount filter drops short lines — a short-line loop is still
+		// a loop (bugs.md Issue 6). Code/tool blocks and structural lines are
+		// excluded so legitimate output never lowers diversity.
+		ld.trackProseForDiversity(raw)
+
+		line := processThinkingLine(raw)
 		if line == "" {
 			continue
 		}
@@ -432,14 +473,151 @@ func (ld *LoopDetector) RecordThinkingDelta(text string) LoopWarningLevel {
 		}
 	}
 
+	return ld.thinkLevel()
+}
+
+// thinkLevel combines the exact-line counter and the diversity-based detector
+// into a single warning level. Either path may escalate; the higher wins.
+func (ld *LoopDetector) thinkLevel() LoopWarningLevel {
+	exact := LoopOK
 	switch {
 	case ld.thinkMaxRepeat >= ld.thinkInterruptThreshold:
-		return LoopInterrupt
+		exact = LoopInterrupt
 	case ld.thinkMaxRepeat >= ld.thinkWarningThreshold:
-		return LoopWarning
-	default:
+		exact = LoopWarning
+	}
+	if d := ld.diversityLevel(); d > exact {
+		return d
+	}
+	return exact
+}
+
+// normalizeProseLine reduces a reasoning line to a canonical form for
+// diversity comparison: lowercase, punctuation stripped, whitespace collapsed.
+// This lets "Let me check the full file." and "Let me check the full file,"
+// (and case variants) count as the same line, so near-identical filler is
+// recognized as repetition.
+func normalizeProseLine(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := true // collapse leading whitespace too
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastSpace = false
+		case r == ' ' || r == '\t':
+			if !lastSpace {
+				b.WriteByte(' ')
+			}
+			lastSpace = true
+		default:
+			// drop punctuation and other symbols
+		}
+	}
+	return trimSpace(b.String())
+}
+
+// trackProseForDiversity records a raw reasoning line in the sliding diversity
+// window when it is prose (non-structural, non code/tool). Structural lines and
+// lines that are pure code/markup are skipped so legitimate iterative output
+// does not look like a low-diversity loop.
+func (ld *LoopDetector) trackProseForDiversity(raw string) {
+	cleaned := stripToolCallBlocks(stripCodeBlocks(raw))
+	cleaned = trimSpace(cleaned)
+	if cleaned == "" {
+		return
+	}
+	if isStructuralLine(cleaned) {
+		return
+	}
+	norm := normalizeProseLine(cleaned)
+	if norm == "" {
+		return
+	}
+	// Require a minimum of substance so list markers ("- yes", "1. no"), bullets
+	// and short genuine sentences that legitimately recur across iterative code
+	// quotes (bugs.md: a real reasoning sentence repeated while re-quoting a
+	// code block is NOT a loop) do not dominate the window. Five words is low
+	// enough to capture short filler loops ("let me check the full file") while
+	// leaving longer genuine reasoning to the exact-line counter.
+	if wordCount(norm) < 5 {
+		return
+	}
+	ld.pushRecentLine(norm)
+}
+
+// pushRecentLine appends a normalized line to the sliding window, evicting the
+// oldest when full, and maintains the distinct-count map.
+func (ld *LoopDetector) pushRecentLine(norm string) {
+	if ld.thinkRecentLen == thinkWindowSize {
+		evict := ld.thinkRecentLines[ld.thinkRecentHead]
+		if c := ld.thinkRecentCounts[evict]; c <= 1 {
+			delete(ld.thinkRecentCounts, evict)
+		} else {
+			ld.thinkRecentCounts[evict] = c - 1
+		}
+		ld.thinkRecentLines[ld.thinkRecentHead] = norm
+		ld.thinkRecentHead = (ld.thinkRecentHead + 1) % thinkWindowSize
+		ld.thinkRecentCounts[norm]++
+		ld.thinkWindowFull = true
+		return
+	}
+	ld.thinkRecentLines[ld.thinkRecentLen] = norm
+	ld.thinkRecentLen++
+	ld.thinkRecentCounts[norm]++
+	if ld.thinkRecentLen >= thinkMinWindowFill {
+		ld.thinkWindowFull = true
+	}
+}
+
+// diversityLevel reports a loop level based on how few DISTINCT normalized
+// lines occupy the recent window. Once the window has enough volume
+// (thinkWindowFull), a distinct count at or below thinkMaxDistinctLines means
+// the model is recycling a tiny set of phrasings — an alternating or
+// short-line loop that exact-line matching cannot see.
+func (ld *LoopDetector) diversityLevel() LoopWarningLevel {
+	if !ld.thinkWindowFull {
 		return LoopOK
 	}
+	distinct := len(ld.thinkRecentCounts)
+	// Diversity detection targets CYCLING among a small set of phrasings (the
+	// A/B alternation that per-line exact matching cannot see, bugs.md Issue 6)
+	// and the single-SHORT-line loop that falls under the exact counter's
+	// minThinkWordCount floor. A single repeated LONG genuine sentence is left
+	// to the exact-line counter (one real reasoning line repeated while
+	// re-quoting code is not a loop — bugs.md fence false positive).
+	if distinct == 1 {
+		if !ld.singleShortLineLoop() {
+			return LoopOK
+		}
+	} else if distinct > thinkMaxDistinctLines {
+		return LoopOK
+	}
+	// Low diversity over a full window. Interrupt when the window is completely
+	// saturated (thinkRecentLen reached the cap) with a tiny phrase set; warn
+	// once it is merely filled past the arming point.
+	if ld.thinkRecentLen >= thinkWindowSize {
+		return LoopInterrupt
+	}
+	return LoopWarning
+}
+
+// singleShortLineLoop reports whether the window is dominated by one repeated
+// short line (fewer than minThinkWordCount words, so the exact-line counter
+// never sees it) recurring CONSECUTIVELY. A genuine reasoning sentence repeated
+// across iterative code quotes is interleaved with the (skipped) fenced content
+// and other prose, so its occurrences are not back-to-back; a filler loop
+// repeats the same short line with nothing in between (bugs.md Issue 6). We
+// detect the loop only when the single short line also forms a long run.
+func (ld *LoopDetector) singleShortLineLoop() bool {
+	for line := range ld.thinkRecentCounts {
+		// Only one entry exists (distinct == 1). Act only when that single
+		// recycled line is short enough to escape the exact counter.
+		return wordCount(line) < minThinkWordCount
+	}
+	return false
 }
 
 // skipCodeFenceLine tracks ```-fenced code blocks across lines and reports
@@ -473,6 +651,13 @@ func (ld *LoopDetector) ResetThinking() {
 	ld.thinkLineCounts = make(map[string]int)
 	ld.thinkMaxRepeat = 0
 	ld.thinkInCodeBlock = false
+	// Reset diversity-tracking state so the next turn is evaluated fresh and a
+	// latched low-diversity window cannot kill the first delta of a new turn.
+	ld.thinkRecentLines = make([]string, thinkWindowSize)
+	ld.thinkRecentCounts = make(map[string]int)
+	ld.thinkRecentHead = 0
+	ld.thinkRecentLen = 0
+	ld.thinkWindowFull = false
 }
 
 // indexByte is a small wrapper kept for testability/readability.
@@ -536,15 +721,23 @@ func isStructuralLine(line string) bool {
 		return true
 	}
 
-	// Common programming-language keywords at the start of a line.
+	// Common programming-language keywords at the start of a line. Declarative
+	// keywords that collide with common English prose openers ("let me", "do
+	// not", "new information", "type of", "final answer") are intentionally
+	// omitted: treating them as code disabled thinking-loop detection for the
+	// most frequent reasoning-filler prefixes (bugs.md Issue 6 — the
+	// "Let me check/read the full file." loop went undetected because every
+	// "Let me …" line matched the JS "let " keyword). Go declarations are still
+	// caught by startsWithIdentifierAndCode below; other languages' code is
+	// expected inside ``` fences, which skipCodeFenceLine handles separately.
 	keywords := []string{
 		"func ", "def ", "class ", "interface ", "struct ", "enum ", "union ", "typedef ",
-		"package ", "import ", "const ", "var ", "let ", "type ", "val ", "final ",
-		"public ", "private ", "protected ", "static ", "void ", "int ", "bool ", "string ",
+		"package ", "import ", "const ", "var ",
+		"public ", "private ", "protected ", "static ", "void ",
 		"return ", "if ", "else ", "for ", "while ", "switch ", "case ", "default ", "break ", "continue ",
-		"try ", "catch ", "finally ", "throw ", "new ", "delete ", "async ", "await ",
-		"function ", "module ", "export ", "from ", "extends ", "implements ",
-		"namespace ", "using ", "include ", "require ", "end ", "do ", "begin ",
+		"try ", "catch ", "finally ", "throw ", "delete ", "async ", "await ",
+		"function ", "module ", "export ", "extends ", "implements ",
+		"namespace ", "include ", "require ",
 	}
 	lower := strings.ToLower(s)
 	for _, kw := range keywords {
