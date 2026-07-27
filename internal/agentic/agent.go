@@ -85,6 +85,14 @@ type Agent struct {
 	// empty follow-up ("done, nothing more to say") is a legitimate turn end.
 	turnHadToolExecution bool
 
+	// turnSawContent / turnSawThinking record whether the model produced any
+	// visible content or any thinking tokens at any earlier point in the current
+	// turn (bugs.md Issue 13). They let the consecutive-tool-rounds streak treat
+	// a model that reasoned earlier in the turn as productive, rather than
+	// demanding fresh reasoning in every single round.
+	turnSawContent  bool
+	turnSawThinking bool
+
 	// streamingToolCalls tracks tool calls that are still being streamed
 	// (arguments not yet complete). Maps tool call ID to accumulated partial
 	// state so EventToolCallDelta can update the TUI incrementally.
@@ -716,12 +724,11 @@ const metaSteeringDrained = "steering_drained"
 // turns. Use for transient nudges (e.g. the recovery hint); use
 // InjectSystemMessage for durable runtime notices (tool changes).
 //
-// The message is deliberately NOT emitted to observers as a content event:
-// it is an internal control nudge for the model, and rendering it as a
-// message bubble would confuse the user (the model also tends to parrot it
-// as a user-facing "budget" status). However, host control notes (prefixed
-// with "[goa-system]") DO emit an EventProgress so the user sees a visible
-// notification that a guardrail fired.
+// The message is also surfaced to the user as a durable chat bubble so every
+// nudge sent to the model is visible and part of the chat history (bugs.md:
+// the user MUST be aware of nudges). Host control notes (prefixed "[goa-system]")
+// are emitted as a system-notification content event, which the app renders as
+// a persistent bubble (the same path used for "Error: 401" notices).
 func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	msg := Message{
 		Type:     Content,
@@ -733,14 +740,19 @@ func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	a.history = append(a.history, msg)
 	a.mu.Unlock()
 
-	// Emit a visible progress event for host control notes so the user is
-	// not left wondering why the model stopped or changed behavior. The
-	// event is transient (not part of conversation history) and shows in
-	// the TUI status area.
+	// Surface the FULL nudge text to the user as a persistent chat bubble
+	// (bugs.md: the user MUST be aware of every nudge sent to the model).
+	// Previously only a transient EventProgress ("System guardrail…") was shown,
+	// hiding the actual content/numbers and leaving the user unable to tell what
+	// the model was told. Now every host control note (prefixed "[goa-system]")
+	// is emitted as a system-notification content event so it renders as a
+	// durable bubble and is part of the chat history.
 	if strings.HasPrefix(content, "[goa-system]") {
 		a.emitEvent(OutputEvent{
-			Type: EventProgress,
-			Text: "System guardrail: model told to wrap up or adjust behavior.",
+			Type:     EventContent,
+			Role:     System,
+			Text:     content,
+			Metadata: map[string]string{"category": "system-notification"},
 		})
 	}
 }

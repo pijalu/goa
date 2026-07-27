@@ -42,6 +42,73 @@ func TestResolveProfile_KimiProvidersHaveAuth(t *testing.T) {
 	}
 }
 
+// TestResolveProfile_UnmatchedProvidersGetDefaultAuth is the regression test for
+// bugs.md Issue 9: providers without a dedicated variant profile (poolside, groq,
+// fireworks, perplexity, zai-api, custom) previously resolved to an empty profile,
+// so AuthHook dropped the API key and the request went out with no Authorization
+// header (401). The resolver must now fall back to a sane default profile that
+// includes standard Bearer authentication.
+func TestResolveProfile_UnmatchedProvidersGetDefaultAuth(t *testing.T) {
+	unmatched := []Provider{
+		ProviderPoolside, ProviderGroq, ProviderFireworks, ProviderPerplexity,
+		ProviderZaiApi, ProviderCustom, Provider("some-future-provider"),
+	}
+	for _, prov := range unmatched {
+		profile := ResolveProfile(Model{
+			ID:       "test-model",
+			Api:      ApiOpenAICompletions,
+			Provider: prov,
+			BaseURL:  "https://example.test/v1",
+		})
+		assert.Equal(t, "default-openai-compat", profile.ID, "provider %q should use the default profile", prov)
+		assert.Equal(t, "Authorization", profile.Auth.Header, "provider %q must inject Authorization header", prov)
+		assert.Equal(t, "Bearer ", profile.Auth.Prefix, "provider %q must use Bearer prefix", prov)
+		assert.Equal(t, AuthMethodAPIKey, profile.Auth.Method, "provider %q must use api_key auth", prov)
+	}
+}
+
+// TestDefaultProfile_SaneBaseline pins the baseline feature set so the default
+// cannot silently regress to dropping auth or emitting a non-standard field.
+func TestDefaultProfile_SaneBaseline(t *testing.T) {
+	p := DefaultProfile(Model{Api: ApiOpenAICompletions, Provider: ProviderPoolside, BaseURL: "https://inference.poolside.ai/v1"})
+
+	// Auth is the critical bit.
+	assert.Equal(t, "Authorization", p.Auth.Header)
+	assert.Equal(t, "Bearer ", p.Auth.Prefix)
+	assert.Equal(t, AuthMethodAPIKey, p.Auth.Method)
+	assert.False(t, p.Auth.Required, "default must not hard-require a key (local/custom endpoints)")
+
+	// Sane OpenAI-compatible compat/tool/error defaults.
+	assert.Equal(t, "max_tokens", p.Compat.MaxTokensField)
+	assert.Equal(t, "openai", p.Compat.ThinkingFormat)
+	assert.True(t, p.Compat.StreamIncludesUsage)
+	assert.Equal(t, SchemaSanitizerOpenAI, p.ToolCompat.SchemaSanitizer)
+	assert.Equal(t, CacheModeNone, p.CachePolicy.Mode)
+	assert.Equal(t, []int{429, 500, 502, 503, 504}, p.ErrorRules.RetryableStatuses)
+
+	// Match echoes the model so the synthesized profile is attributable.
+	assert.Equal(t, string(ProviderPoolside), p.Match.Provider)
+}
+
+// TestResolver_NoMatchFallsBackToDefault verifies Resolver.Resolve returns the
+// default (not a zero profile) when nothing matches, while still preferring a
+// real match when one exists.
+func TestResolver_NoMatchFallsBackToDefault(t *testing.T) {
+	r := NewResolver([]VariantProfile{
+		{ID: "openai-base", Match: ProfileMatch{API: string(ApiOpenAICompletions), Provider: "openai"}},
+	})
+
+	// No match -> default with auth.
+	noMatch := r.Resolve(Model{Api: ApiOpenAICompletions, Provider: ProviderPoolside, ID: "laguna-s-2-1"})
+	assert.Equal(t, "default-openai-compat", noMatch.ID)
+	assert.Equal(t, "Authorization", noMatch.Auth.Header)
+	assert.False(t, noMatch.IsEmpty(), "default profile must not be 'empty'")
+
+	// A real match still wins over the default.
+	match := r.Resolve(Model{Api: ApiOpenAICompletions, Provider: ProviderOpenAI, ID: "gpt-4o"})
+	assert.Equal(t, "openai-base", match.ID)
+}
+
 func TestLoadEmbeddedProfile(t *testing.T) {
 	p, err := LoadEmbeddedProfile("openai-base")
 	require.NoError(t, err)

@@ -202,25 +202,24 @@ func runModelAdd(host core.UIHost, cfg *config.Config, saver config.ConfigSaver,
 	return doAddModel(cfg, saver, host, args[0], args[1], args[2])
 }
 
-// runAddModelFromSelector guides the user through adding a model from the
-// provider's available model list, similar to /config's add model flow.
-// The active provider is used by default; the provider picker only appears
-// when no provider is active or the active one is unknown.
+// runAddModelFromSelector guides the user through adding a model: it ALWAYS
+// asks for the provider first, then proposes that provider's known models
+// (loaded asynchronously via pickModelFromProvider). The model list is scoped
+// to the chosen provider only — never models known for other providers. The
+// active provider is pre-selected (not auto-chosen) so the user confirms or
+// picks a different one explicitly.
 func runAddModelFromSelector(host core.UIHost, cfg *config.Config, saver config.ConfigSaver) {
-	if cfg.ActiveProvider != "" && cfg.GetProviderByID(cfg.ActiveProvider) != nil {
-		pickModelFromProvider(host, cfg, saver, cfg.ActiveProvider)
-		return
-	}
 	providers := configuredProviderItemsSimple(cfg)
 	if len(providers) == 0 {
 		host.Flash("No providers configured. Use /config to add one.")
 		return
 	}
-	if len(providers) == 1 {
-		pickModelFromProvider(host, cfg, saver, providers[0].Value)
-		return
+	// Pre-select the active provider when one is set, as a convenience default.
+	active := ""
+	if cfg.ActiveProvider != "" && cfg.GetProviderByID(cfg.ActiveProvider) != nil {
+		active = cfg.ActiveProvider
 	}
-	host.SelectOption("Select provider:", providers, "", func(providerID string, ok bool) {
+	host.SelectOption("Select provider:", providers, active, func(providerID string, ok bool) {
 		if !ok || providerID == "" {
 			return
 		}

@@ -60,6 +60,19 @@ var supportedProviders = []ProviderMapping{
 	{Key: "xai", Provider: "xai", API: "openai-completions", BaseURL: "https://api.x.ai/v1"},
 	{Key: "zai", Provider: "zai-api", API: "openai-completions", BaseURL: "https://api.z.ai/api/paas/v4"},
 	{Key: "zai-coding-plan", Provider: "zai", API: "openai-completions", BaseURL: "https://api.z.ai/api/coding/paas/v4"},
+	// OpenAI-compatible providers catalogued in goa but previously not imported
+	// from models.dev (bugs.md Issue 10). Endpoints + env keys match models.dev;
+	// the API field is goa's wire-type for the provider's OpenAI-compatible API.
+	{Key: "poolside", Provider: "poolside", API: "openai-completions", BaseURL: "https://inference.poolside.ai/v1"},
+	{Key: "perplexity", Provider: "perplexity", API: "openai-completions", BaseURL: "https://api.perplexity.ai"},
+	{Key: "fireworks-ai", Provider: "fireworks", API: "openai-completions", BaseURL: "https://api.fireworks.ai/inference/v1/"},
+	{Key: "openrouter", Provider: "openrouter", API: "openai-completions", BaseURL: "https://openrouter.ai/api/v1"},
+	{Key: "opencode", Provider: "opencode", API: "openai-completions", BaseURL: "https://opencode.ai/zen/v1"},
+	{Key: "opencode-go", Provider: "opencode-go", API: "openai-completions", BaseURL: "https://opencode.ai/zen/go/v1"},
+	{Key: "moonshotai", Provider: "kimi", API: "openai-completions", BaseURL: "https://api.moonshot.ai/v1"},
+	{Key: "kimi-for-coding", Provider: "kimi-code", API: "openai-completions", BaseURL: "https://api.kimi.com/coding/v1"},
+	{Key: "cerebras", Provider: "cerebras", API: "openai-completions", BaseURL: "https://api.cerebras.ai/v1"},
+	{Key: "chutes", Provider: "chutes", API: "openai-completions", BaseURL: "https://llm.chutes.ai/v1"},
 }
 
 func main() {

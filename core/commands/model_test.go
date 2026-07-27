@@ -224,6 +224,55 @@ func TestModelCommand_AddNoProvider(t *testing.T) {
 	}
 }
 
+// TestModelCommand_AddAlwaysPromptsProvider verifies the interactive add-model
+// flow ALWAYS asks for the provider first (bugs.md Issue 11), even when an
+// active provider is set — and pre-selects that active provider as the default.
+// The subsequent model list is scoped to the chosen provider only.
+func TestModelCommand_AddAlwaysPromptsProvider(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.ConfigSaver = &fakeConfigSaver{}
+	ctx.Config.ActiveProvider = "openai" // active provider must NOT bypass the picker
+	ctx.Config.Providers = []config.ProviderConfig{
+		{ID: "openai", Endpoint: "https://api.openai.com/v1"},
+		{ID: "poolside", Endpoint: "https://inference.poolside.ai/v1"},
+	}
+
+	var gotTitle, gotCurrent string
+	var gotOptions []tui.SelectorItem
+	prompted := false
+	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		prompted = true
+		gotTitle, gotOptions, gotCurrent = title, options, current
+		onSelected("", false) // cancel: we only assert the provider prompt itself
+	}
+
+	if err := runModelCommand(ctx, nil, ctx.Config, ctx.ConfigSaver, []string{"add"}); err != nil {
+		t.Fatalf("runModelCommand add: %v", err)
+	}
+
+	if !prompted {
+		t.Fatal("add-model did not prompt for a provider; it must always ask")
+	}
+	if gotTitle != "Select provider:" {
+		t.Errorf("prompt title = %q, want %q", gotTitle, "Select provider:")
+	}
+	if gotCurrent != "openai" {
+		t.Errorf("pre-selected provider = %q, want active provider %q", gotCurrent, "openai")
+	}
+	var sawOpenAI, sawPoolside bool
+	for _, it := range gotOptions {
+		if it.Value == "openai" {
+			sawOpenAI = true
+		}
+		if it.Value == "poolside" {
+			sawPoolside = true
+		}
+	}
+	if !sawOpenAI || !sawPoolside {
+		t.Errorf("provider picker should list all configured providers; got %v", gotOptions)
+	}
+}
+
 // TestModelCommand_StatusShowsCurrent verifies /model? prints the live state.
 func TestModelCommand_StatusShowsCurrent(t *testing.T) {
 	cmd := &ModelCommand{}

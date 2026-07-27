@@ -730,6 +730,11 @@ type BashConfig struct {
 	// When enabled, the LLM is told to keep bash scripts simple and avoid
 	// dynamic command construction. Disabled by default.
 	EnableComplexityAnalysis bool `yaml:"enable_complexity_analysis"`
+	// WarnFileEdits prepends a non-blocking hint to the output of shell commands
+	// that modify project files (redirects, sed -i, interpreter inline writes),
+	// steering the model to the edit tool (bugs.md). Never blocks. nil = enabled
+	// (default); set false to silence the hint. Toggleable in /config.
+	WarnFileEdits *bool `yaml:"warn_file_edits,omitempty"`
 }
 
 // SSHConfig controls SSH bash tool behavior.

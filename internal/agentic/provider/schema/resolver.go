@@ -48,7 +48,11 @@ func scoreMatch(m ProfileMatch) int {
 	return score
 }
 
-// Resolve returns the best matching variant profile for a model.
+// Resolve returns the best matching variant profile for a model. When no
+// profile matches, it returns DefaultProfile() so that unmatched or custom
+// providers still get a sane baseline — most importantly standard Bearer
+// authentication — instead of an empty profile that silently drops the API key
+// (bugs.md Issue 9: poolside/groq/fireworks/perplexity/zai-api/azure/custom).
 func (r *Resolver) Resolve(model Model) VariantProfile {
 	var best VariantProfile
 	bestScore := -1
@@ -62,8 +66,61 @@ func (r *Resolver) Resolve(model Model) VariantProfile {
 			bestScore = s
 		}
 	}
+	if bestScore < 0 {
+		return DefaultProfile(model)
+	}
 	return best
 }
+
+// DefaultProfile returns a sane baseline variant profile for providers that
+// have no dedicated variant profile. It models a generic OpenAI-compatible
+// endpoint: standard "Authorization: Bearer <key>" auth, max_tokens, OpenAI
+// thinking format, usage-in-streaming, OpenAI schema sanitizer, and the common
+// retryable-status set. This guarantees any configured or custom provider can
+// authenticate and function out of the box; dedicated variant profiles layered
+// on top refine behavior for specific providers.
+//
+// The Match is derived from the model so downstream logging/introspection
+// reflects which provider the default was synthesized for.
+func DefaultProfile(model Model) VariantProfile {
+	return VariantProfile{
+		ID: "default-openai-compat",
+		Match: ProfileMatch{
+			API:      string(model.Api),
+			Provider: string(model.Provider),
+			BaseURL:  model.BaseURL,
+		},
+		Defaults: Defaults{
+			Temperature: f64(1.0),
+			MaxTokens:   intP(4096),
+		},
+		Compat: CompatFlags{
+			SupportsStore:       boolP(false),
+			MaxTokensField:      "max_tokens",
+			ThinkingFormat:      "openai",
+			SupportsPromptCache: false,
+			StreamIncludesUsage: true,
+		},
+		Auth: AuthConfig{
+			Method: AuthMethodAPIKey,
+			Header: "Authorization",
+			Prefix: "Bearer ",
+			// Required stays false: local/custom endpoints without a key must
+			// still work; when a key IS configured it is now always sent.
+			Required: false,
+		},
+		CachePolicy: CachePolicy{Mode: CacheModeNone, BreakpointCap: 0},
+		ToolCompat: ToolCompat{
+			ToolCallIDRules: ToolCallIDRules{MaxLength: 40, Alphabet: "[a-zA-Z0-9_-]"},
+			SchemaSanitizer: SchemaSanitizerOpenAI,
+		},
+		ErrorRules: ErrorRules{RetryableStatuses: []int{429, 500, 502, 503, 504}},
+	}
+}
+
+func f64(v float64) *float64 { return &v }
+func intP(v int) *int        { return &v }
+func boolP(v bool) *bool     { return &v }
 
 func profileMatches(m ProfileMatch, model Model) bool {
 	if m.API != "" && m.API != string(model.Api) {

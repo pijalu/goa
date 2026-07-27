@@ -188,6 +188,7 @@ func (m *configMenu) showRoot() error {
 		{Value: "multi_agent", Label: "Multi-agent", Description: multiAgentLabel(cfg, m.ctx.ForegroundOrchestrator)},
 		{Value: "orchestrator", Label: "Orchestrator", Description: orchestratorLabel(cfg)},
 		{Value: "tools", Label: "Tools", Description: toolsEnabledLabel(cfg)},
+		{Value: "bash", Label: "Bash", Description: bashSettingsLabel(cfg)},
 		{Value: "mcp", Label: "MCP servers", Description: mcpServersLabel(cfg)},
 		{Value: "sandbox", Label: "Sandbox", Description: sandboxLabel(cfg)},
 		{Value: "loop_detection", Label: "Loop detection", Description: loopDetectionLabel(cfg)},
@@ -228,6 +229,7 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"multi_agent":     (*configMenu).openMultiAgent,
 		"orchestrator":    (*configMenu).openOrchestrator,
 		"tools":           (*configMenu).openTools,
+		"bash":            (*configMenu).openBash,
 		"mcp":             (*configMenu).openMCP,
 		"sandbox":         (*configMenu).openSandbox,
 		"loop_detection":  (*configMenu).openLoopDetection,
@@ -246,6 +248,7 @@ func (m *configMenu) openSpinner()       { m.open(m.settingSpinner) }
 func (m *configMenu) openThinkingLevel() { m.open(m.settingThinkingLevel) }
 func (m *configMenu) openMultiAgent()    { m.open(m.settingMultiAgent) }
 func (m *configMenu) openTools()         { m.open(m.settingTools) }
+func (m *configMenu) openBash()          { m.open(m.settingBash) }
 func (m *configMenu) openMCP()           { m.open(m.settingMCP) }
 func (m *configMenu) openLoopDetection() { m.open(m.settingLoopDetection) }
 func (m *configMenu) openSkills()        { m.open(m.settingSkills) }
@@ -720,6 +723,47 @@ func (m *configMenu) settingMultiAgentEnabled() {
 	}
 	m.applySet("multi_agent.enabled", next)
 	m.settingMultiAgent()
+}
+
+// bashSettingsLabel summarizes bash-tool guard settings for the top-level menu.
+func bashSettingsLabel(cfg *config.Config) string {
+	return "warn on shell file edits: " + boolLabel(warnFileEditsOn(cfg))
+}
+
+// warnFileEditsOn reports whether the bash file-edit hint is active (nil = on).
+func warnFileEditsOn(cfg *config.Config) bool {
+	return cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits
+}
+
+// settingBash is the /config → Bash sub-menu for bash-tool guards.
+func (m *configMenu) settingBash() {
+	m.current = m.settingBash
+	cfg := m.ctx.Config
+	items := []tui.SelectorItem{
+		{Value: "warn_file_edits", Label: "Warn on shell file edits", Description: boolLabel(warnFileEditsOn(cfg))},
+	}
+	m.ctx.SelectOption("Bash settings:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		if selected == "warn_file_edits" {
+			m.toggleWarnFileEdits()
+			return
+		}
+		m.back()
+	})
+}
+
+// toggleWarnFileEdits flips the bash file-edit hint and persists it via the
+// tools.bash.warn_file_edits setter (saved to the home config layer).
+func (m *configMenu) toggleWarnFileEdits() {
+	next := "true"
+	if warnFileEditsOn(m.ctx.Config) {
+		next = "false"
+	}
+	m.applySet("tools.bash.warn_file_edits", next)
+	m.settingBash()
 }
 
 // settingTools is the /config → Tools sub-menu for toggling optional tools.

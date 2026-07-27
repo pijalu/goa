@@ -5,6 +5,8 @@ package agentic
 import (
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
 // TestEphemeralSystemMessage_StrippedAtTurnEnd verifies that ephemeral system
@@ -76,65 +78,57 @@ func TestEphemeralSystemMessage_TagNotSentToModel(t *testing.T) {
 	// ...but provider.Message has no ephemeral field, so the tag cannot leak.
 }
 
-// TestEphemeralSystemMessage_NotEmittedAsContentEvent is the regression for
-// the "hidden steering" bug: the [goa-system] round-limit nudge was emitted
-// as a content event, so the TUI rendered an internal control message and
-// the model parroted it as a user-facing "budget". Ephemeral injections must
-// reach history (the model sees them) without producing CONTENT observer
-// events. They DO emit an EventProgress for user visibility (guardrail
-// notification), but never an EventContent.
-func TestEphemeralSystemMessage_NotEmittedAsContentEvent(t *testing.T) {
+// TestEphemeralSystemMessage_InModelHistoryAndUserBubble verifies that an
+// ephemeral host control nudge reaches the model's history AND is surfaced to
+// the user as a durable system-notification chat bubble (bugs.md: every nudge
+// must be user-visible and part of chat history).
+func TestEphemeralSystemMessage_InModelHistoryAndUserBubble(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
 	obs := &mockEventObserver{}
 	a.AddObserver(obs)
 
-	a.InjectEphemeralSystemMessage("[goa-system] internal control note")
+	nudge := "[goa-system] internal control note"
+	a.InjectEphemeralSystemMessage(nudge)
 
-	// History receives the message (model-visible during the turn)...
+	// The model sees it in history (during the turn)...
 	a.mu.Lock()
 	histLen := len(a.history)
 	a.mu.Unlock()
 	if histLen != 1 {
 		t.Fatalf("expected 1 history entry after injection, got %d", histLen)
 	}
-	// ...but no CONTENT event is emitted to observers.
+	// ...AND the user sees it as a system-notification content bubble.
+	found := false
 	for _, e := range obs.Events() {
-		if e.Type == EventContent {
-			t.Fatalf("ephemeral injection leaked EventContent: %+v", e)
+		if e.Type == EventContent && e.Metadata["category"] == "system-notification" && e.Text == nudge {
+			found = true
+			break
 		}
+	}
+	if !found {
+		t.Fatalf("nudge not surfaced as a system-notification bubble: %+v", obs.Events())
 	}
 }
 
-// TestConsecutiveToolRounds_NudgeFiresOncePerTurn verifies the forced-answer
-// nudge fires at most once per turn, so legitimate long investigations are not
-// interrupted by a repeating nudge/answer cycle (bugs.md hidden-steering).
-func TestConsecutiveToolRounds_NudgeFiresOncePerTurn(t *testing.T) {
+// TestConsecutiveToolRounds_LimitReported verifies checkConsecutiveToolRounds
+// reports true exactly when the silent-round streak reaches the configured limit
+// (bugs.md Issue 13: convergence is now driven by this signal, not a self-resetting
+// nudge, so the caller can run a recovery stream in the same round).
+func TestConsecutiveToolRounds_LimitReported(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 2})
 
-	countEphemeral := func() int {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		n := 0
-		for _, m := range a.history {
-			if m.Metadata[metaEphemeral] == "true" {
-				n++
-			}
-		}
-		return n
+	if a.checkConsecutiveToolRounds() { // round 1
+		t.Fatal("round 1: limit reported, want false (below limit 2)")
 	}
-
-	// First streak reaching the limit → one nudge.
-	a.checkConsecutiveToolRounds() // round 1
-	a.checkConsecutiveToolRounds() // round 2 → nudge
-	if got := countEphemeral(); got != 1 {
-		t.Fatalf("after first streak, ephemeral nudges = %d, want 1", got)
+	if !a.checkConsecutiveToolRounds() { // round 2 → limit reached
+		t.Fatal("round 2: limit not reported, want true (streak reached limit 2)")
 	}
-
-	// Second streak reaching the limit in the same turn → no additional nudge.
-	a.checkConsecutiveToolRounds() // round 1
-	a.checkConsecutiveToolRounds() // round 2 → suppressed (already fired)
-	if got := countEphemeral(); got != 1 {
-		t.Fatalf("after second streak, ephemeral nudges = %d, want still 1 (once per turn)", got)
+	// Streak is NOT self-reset; it stays at the limit so the caller converges now.
+	a.mu.Lock()
+	streak := a.consecutiveToolRounds
+	a.mu.Unlock()
+	if streak != 2 {
+		t.Fatalf("streak = %d, want 2 (not self-reset; caller owns convergence)", streak)
 	}
 }
 
@@ -187,84 +181,94 @@ func TestTrackToolCallingRound_ThinkingResetsStreak(t *testing.T) {
 	}
 }
 
-// TestTrackToolCallingRound_NudgeNotFiredWithThinking verifies that the
-// forced-answer nudge does NOT fire when the model is actively reasoning
+// TestTrackToolCallingRound_LimitNotReachedWithThinking verifies that the
+// silent-limit signal is NOT reported when the model is actively reasoning
 // (thinking tokens present), even after many consecutive tool rounds.
-func TestTrackToolCallingRound_NudgeNotFiredWithThinking(t *testing.T) {
+func TestTrackToolCallingRound_LimitNotReachedWithThinking(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 2})
 
 	// Simulate 5 rounds, each with thinking + tool calls (no visible text).
-	// The nudge should never fire because thinking resets the streak.
+	// The limit must never be reported because thinking resets the streak.
 	for i := 0; i < 5; i++ {
 		a.thinkingBuf.WriteString("thinking")
-		a.trackToolCallingRound()
+		if a.trackToolCallingRound() {
+			t.Fatalf("round %d: silent-limit reported, want false (thinking present)", i+1)
+		}
 		a.thinkingBuf.Reset()
 	}
-
-	// Verify no ephemeral nudge was injected.
-	a.mu.Lock()
-	n := 0
-	for _, m := range a.history {
-		if m.Metadata[metaEphemeral] == "true" {
-			n++
-		}
-	}
-	a.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("ephemeral nudges = %d, want 0 (thinking rounds should not trigger nudge)", n)
-	}
 }
 
-// TestTrackToolCallingRound_NudgeFiredWithoutThinking verifies that the
-// forced-answer nudge DOES fire when rounds have neither content nor thinking.
-func TestTrackToolCallingRound_NudgeFiredWithoutThinking(t *testing.T) {
+// TestTrackToolCallingRound_LimitReachedWithoutThinking verifies that the
+// silent-limit signal IS reported when rounds have neither content nor thinking.
+func TestTrackToolCallingRound_LimitReachedWithoutThinking(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 2})
 
-	// Two silent rounds (no content, no thinking, tool calls only).
-	a.trackToolCallingRound()
-	a.trackToolCallingRound()
-
-	// The nudge should have fired.
-	a.mu.Lock()
-	n := 0
-	for _, m := range a.history {
-		if m.Metadata[metaEphemeral] == "true" {
-			n++
-		}
+	// Round 1: below limit. Round 2: limit reached.
+	if a.trackToolCallingRound() {
+		t.Fatal("round 1: silent-limit reported, want false")
 	}
-	a.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("ephemeral nudges = %d, want 1 (silent rounds should trigger nudge)", n)
+	if !a.trackToolCallingRound() {
+		t.Fatal("round 2: silent-limit not reported, want true")
 	}
 }
 
-// TestInjectEphemeralSystemMessage_EmitsProgressEvent verifies that injecting
-// an ephemeral system message also emits an EventProgress so the user sees
-// the guardrail notification in the TUI (bugs.md host-control-note-invisible).
-func TestInjectEphemeralSystemMessage_EmitsProgressEvent(t *testing.T) {
+// TestTrackToolCallingRound_TurnReasoningResetsStreak is the bugs.md Issue 13
+// regression test: a model that reasoned (thinking/content) in an EARLIER round
+// of the same turn must NOT have its later message-less tool rounds counted as
+// silent — the streak resets on turn-level reasoning, not just same-round.
+func TestTrackToolCallingRound_TurnReasoningResetsStreak(t *testing.T) {
+	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 2})
+
+	// Round 0: model thinks (marks turn-level reasoning), then a tool call.
+	a.thinkingBuf.WriteString("big reasoning block")
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Delta: "big reasoning block"})
+	a.thinkingBuf.Reset() // buffer cleared for next round, but turn flag persists
+
+	// Rounds 1..N: message-less tool-call-only rounds. The streak must stay 0
+	// because the model reasoned earlier this turn.
+	for i := 0; i < 5; i++ {
+		if a.trackToolCallingRound() {
+			t.Fatalf("round %d: silent-limit reported, want false (model reasoned earlier this turn)", i+1)
+		}
+	}
+}
+
+// TestInjectEphemeralSystemMessage_EmitsVisibleBubble verifies that a host
+// control nudge ("[goa-system]…") is surfaced to the user as a durable
+// system-notification CONTENT event (rendered as a persistent chat bubble and
+// part of chat history) carrying the FULL nudge text — not a transient progress
+// line (bugs.md: the user MUST be aware of every nudge sent to the model).
+func TestInjectEphemeralSystemMessage_EmitsVisibleBubble(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
 	obs := &mockEventObserver{}
 	a.AddObserver(obs)
 
-	a.InjectEphemeralSystemMessage("[goa-system] Internal control note: forced answer nudge")
+	nudge := "[goa-system] Internal control note: 15 consecutive tool-calling rounds elapsed"
+	a.InjectEphemeralSystemMessage(nudge)
 
 	events := obs.Events()
-	found := false
-	for _, e := range events {
-		if e.Type == EventProgress && strings.Contains(e.Text, "guardrail") {
-			found = true
+	var bubble *OutputEvent
+	for i := range events {
+		if events[i].Type == EventContent && events[i].Metadata["category"] == "system-notification" {
+			bubble = &events[i]
 			break
 		}
 	}
-	if !found {
-		t.Fatalf("expected EventProgress with 'guardrail' text, got %d events: %+v", len(events), events)
+	if bubble == nil {
+		t.Fatalf("expected a system-notification content event (chat bubble), got %d events: %+v", len(events), events)
+	}
+	if bubble.Role != System {
+		t.Errorf("bubble Role = %v, want System", bubble.Role)
+	}
+	if bubble.Text != nudge {
+		t.Errorf("bubble Text = %q, want the full nudge text %q", bubble.Text, nudge)
 	}
 }
 
-// TestInjectEphemeralSystemMessage_NoProgressEventForNonControl verifies that
+// TestInjectEphemeralSystemMessage_NoBubbleForNonControl verifies that
 // non-control ephemeral messages (not starting with "[goa-system]") do NOT
-// emit a progress event — only host control notes need user visibility.
-func TestInjectEphemeralSystemMessage_NoProgressEventForNonControl(t *testing.T) {
+// emit a user-visible bubble — only host control notes need user visibility.
+func TestInjectEphemeralSystemMessage_NoBubbleForNonControl(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
 	obs := &mockEventObserver{}
 	a.AddObserver(obs)
@@ -273,68 +277,40 @@ func TestInjectEphemeralSystemMessage_NoProgressEventForNonControl(t *testing.T)
 
 	events := obs.Events()
 	for _, e := range events {
-		if e.Type == EventProgress {
-			t.Fatalf("unexpected EventProgress for non-control message: %+v", e)
+		if e.Type == EventContent && e.Metadata["category"] == "system-notification" {
+			t.Fatalf("unexpected system-notification bubble for non-control message: %+v", e)
 		}
 	}
 }
 
-// TestMaxConsecutiveToolRounds_ZeroDisables verifies that setting the limit
-// to 0 disables the forced-answer nudge entirely.
+// TestMaxConsecutiveToolRounds_ZeroDisables verifies that a negative/disabled
+// limit never reports the silent-limit signal.
 func TestMaxConsecutiveToolRounds_ZeroDisables(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: -1})
 
-	// Run many silent rounds — nudge should never fire.
+	// Run many silent rounds — the limit must never be reported.
 	for i := 0; i < 20; i++ {
-		a.trackToolCallingRound()
-	}
-
-	a.mu.Lock()
-	n := 0
-	for _, m := range a.history {
-		if m.Metadata[metaEphemeral] == "true" {
-			n++
+		if a.trackToolCallingRound() {
+			t.Fatalf("round %d: silent-limit reported, want false (limit disabled)", i+1)
 		}
-	}
-	a.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("ephemeral nudges = %d, want 0 (limit disabled)", n)
 	}
 }
 
-// TestMaxConsecutiveToolRounds_CustomThreshold verifies the nudge fires at
-// the configured threshold, not the default of 15.
+// TestMaxConsecutiveToolRounds_CustomThreshold verifies the silent-limit signal
+// is reported at the configured threshold, not the default of 15.
 func TestMaxConsecutiveToolRounds_CustomThreshold(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 3})
 
 	// 2 rounds — below threshold.
-	a.trackToolCallingRound()
-	a.trackToolCallingRound()
-
-	a.mu.Lock()
-	n := 0
-	for _, m := range a.history {
-		if m.Metadata[metaEphemeral] == "true" {
-			n++
-		}
+	if a.trackToolCallingRound() {
+		t.Fatal("round 1: silent-limit reported, want false")
 	}
-	a.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("after 2 rounds: nudges = %d, want 0 (below threshold)", n)
+	if a.trackToolCallingRound() {
+		t.Fatal("round 2: silent-limit reported, want false")
 	}
 
 	// 3rd round — threshold reached.
-	a.trackToolCallingRound()
-
-	a.mu.Lock()
-	n = 0
-	for _, m := range a.history {
-		if m.Metadata[metaEphemeral] == "true" {
-			n++
-		}
-	}
-	a.mu.Unlock()
-	if n != 1 {
-		t.Fatalf("after 3 rounds: nudges = %d, want 1 (threshold reached)", n)
+	if !a.trackToolCallingRound() {
+		t.Fatal("round 3: silent-limit not reported, want true (threshold 3 reached)")
 	}
 }

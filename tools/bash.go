@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,22 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/secrets"
+)
+
+// Regexes backing detectShellFileEdit (the bash→edit guardrail, bugs.md).
+var (
+	// redirectRe captures a shell output redirect target: "> path", ">> path",
+	// "2> path", "tee path". Excludes fd-dup forms (>&2, 2>&1) via the target
+	// filter in redirectEditTarget. The target stops at whitespace, &, |, ;.
+	redirectRe = regexp.MustCompile(`(?:>>?|\btee)\s*(?:\d>>?)?\s*([^\s&|;><]+)`)
+	// inPlaceEditorRe matches in-place file editors: sed -i, perl -pi/-i, ed.
+	inPlaceEditorRe = regexp.MustCompile(`\bsed\s+[^|;]*-i|\bperl\s+[^|;]*-[a-z]*i|\bed\s+[^|;]*\s`)
+	// interpreterRe matches invoking a script interpreter that could write files.
+	interpreterRe = regexp.MustCompile(`\b(node|deno|bun|python\d*|python3|ruby|perl|php|os\.system|subprocess)\b`)
+	// interpreterWriteRe matches a file-write API call inside an inline script:
+	// node writeFileSync, python open(...,'w'/'a')/Path(...).write_text, ruby
+	// File.write, plus shell-ish fs.createWriteStream.
+	interpreterWriteRe = regexp.MustCompile(`writeFileSync|createWriteStream|open\s*\([^)]*['"][wa]['"]|write_text|write_bytes|File\.(write|open\s*\([^)]*['"][wa]['"])|fs\.write|with\s+open\s*\([^)]*['"][wa]['"]`)
 )
 
 // BashTool executes shell commands locally with security controls:
@@ -58,6 +75,16 @@ type BashTool struct {
 	// per-model/provider resolution instead of a static config bool.
 	// When nil, CompressOutput is used as a fallback.
 	CompressionResolver func() bool
+
+	// WarnFileEdits, when true, prepends a non-blocking hint to the output of
+	// shell commands that modify project files (redirects, in-place editors,
+	// interpreter inline file writes), steering the model to the edit tool
+	// (bugs.md). Never blocks. Configurable via tools.bash.warn_file_edits.
+	WarnFileEdits bool
+	// WarnFileEditsResolver, when non-nil, is called at execution time to
+	// decide whether the hint is active (live /config toggle). When nil,
+	// WarnFileEdits is used as the static fallback.
+	WarnFileEditsResolver func() bool
 }
 
 // Bash timeout defaults.
@@ -154,6 +181,11 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 		return "", err
 	}
 
+	// Non-blocking nudge (bugs.md): if the command modifies a project file via
+	// the shell, we still run it but prepend a hint steering the model to the
+	// edit tool next time. Never block on this — bash is sometimes the only way.
+	fileEditHint := t.fileEditHint(p.Command)
+
 	output, duration, timedOut, err := t.runCommand(ctx, &p)
 
 	// A cancelled turn takes precedence over the timeout/exit reporting so
@@ -166,7 +198,11 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 		return "", toolErr("bash", "timeout", fmt.Sprintf("Command timed out after %ds", actualTimeout))
 	}
 
-	return t.formatOutput(&p, output, err, duration)
+	out, fmtErr := t.formatOutput(&p, output, err, duration)
+	if fileEditHint != "" {
+		out = fileEditHint + out
+	}
+	return out, fmtErr
 }
 
 func (t *BashTool) runCommand(ctx context.Context, p *bashParams) ([]byte, time.Duration, bool, error) {
@@ -545,6 +581,71 @@ func (t *BashTool) checkAnalyzed(cmd string) error {
 		}
 	}
 	return nil
+}
+
+// fileEditHint returns a non-blocking hint to prepend to the command output
+// when the command modifies a project file via the shell, steering the model to
+// the edit tool next time. It NEVER blocks — the command always runs (bugs.md:
+// a hard block broke legitimate workflows; a visible nudge is enough). Returns
+// "" when the command looks read-only or the hint is disabled. Conservative:
+// on doubt it stays silent rather than nag.
+// warnFileEditsEnabled resolves whether the file-edit hint is active: the live
+// /config resolver wins when present, else the static WarnFileEdits field.
+func (t *BashTool) warnFileEditsEnabled() bool {
+	if t.WarnFileEditsResolver != nil {
+		return t.WarnFileEditsResolver()
+	}
+	return t.WarnFileEdits
+}
+
+func (t *BashTool) fileEditHint(cmd string) string {
+	if !t.warnFileEditsEnabled() {
+		return ""
+	}
+	if reason := detectShellFileEdit(cmd); reason != "" {
+		return fmt.Sprintf("Note: this command modified a file via the shell (%s). Prefer the 'edit' tool for project file changes (search/replace, replace_lines, insert_after/before, delete_lines) — it is safer and drift-aware. If an edit failed with not_found, re-read the region with 'read' and apply a smaller, tightly-anchored edit.\n", reason)
+	}
+	return ""
+}
+
+// detectShellFileEdit returns a short reason when the command appears to modify
+// a file via the shell, or "" when it looks read-only. Conservative by design.
+func detectShellFileEdit(cmd string) string {
+	// Output redirects / tee into a file (allow /dev/null and /tmp scratch).
+	if r := redirectEditTarget(cmd); r != "" {
+		return "writes to file via redirect/tee: " + r
+	}
+	// In-place editors.
+	if inPlaceEditorRe.MatchString(cmd) {
+		return "in-place file edit (sed -i / perl -pi / ed)"
+	}
+	// Interpreter inline file writes.
+	if interpreterRe.MatchString(cmd) {
+		if m := interpreterWriteRe.FindString(cmd); m != "" {
+			return "interpreter inline file write: " + m
+		}
+	}
+	return ""
+}
+
+// redirectEditTarget returns the target path when cmd contains a shell redirect
+// or tee that writes to a real file (not /dev/null, not /tmp scratch, not a
+// file descriptor like >&2). Otherwise returns "".
+func redirectEditTarget(cmd string) string {
+	for _, m := range redirectRe.FindAllStringSubmatch(cmd, -1) {
+		target := m[1]
+		if target == "" || target == "&1" || target == "&2" {
+			continue
+		}
+		if target == "/dev/null" || strings.HasPrefix(target, "/dev/") {
+			continue
+		}
+		if strings.HasPrefix(target, "/tmp/") || strings.HasPrefix(target, "/var/tmp/") || strings.HasPrefix(target, "/var/folders/") {
+			continue
+		}
+		return target
+	}
+	return ""
 }
 
 // checkJail enforces project-directory containment when Jail is enabled.

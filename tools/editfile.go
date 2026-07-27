@@ -721,7 +721,8 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 
 	result, err := fuzzyEdit(string(data), oldStr, newStr, allowFuzz)
 	if err != nil {
-		return "", t.searchReplaceError(originalPath, oldStr, err)
+		matched, total := countMatchingLines(string(data), oldStr)
+		return "", t.searchReplaceError(originalPath, oldStr, err, matched, total)
 	}
 
 	if t.GitStager != nil {
@@ -757,7 +758,7 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 	return resultMsg, nil
 }
 
-func (t *EditFileTool) searchReplaceError(path, oldStr string, err error) *internal.ToolError {
+func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, matched, total int) *internal.ToolError {
 	switch {
 	case errors.Is(err, ErrAmbiguous):
 		return &internal.ToolError{Tool: "edit", Type: "ambiguous_match",
@@ -768,9 +769,16 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error) *inter
 		if t.AllowFuzz {
 			message = "Text %q not found in %s (tried exact, trailing whitespace, and fuzzy matching)"
 		}
+		detail := fmt.Sprintf(message, truncateStr(oldStr, 40), path)
+		// bugs.md: surface how much of the block actually matched so the model
+		// understands this is content drift (not a broken tool) and recovers by
+		// re-reading + making a smaller anchored edit, instead of switching to bash.
+		if total > 0 {
+			detail += fmt.Sprintf(" — %d/%d lines of old_string matched the current file", matched, total)
+		}
 		return &internal.ToolError{Tool: "edit", Type: "not_found",
-			Detail:   fmt.Sprintf(message, truncateStr(oldStr, 40), path),
-			HintText: "Use 'read' to verify the current file content (the file may have changed since your last read). Match the exact text including indentation and blank lines. For deletions or multi-line changes, use 'operation: delete_lines' or 'operation: replace_lines' with line numbers."}
+			Detail:   detail,
+			HintText: "The file has drifted from your last read (see the line-match count above). Re-read the target region with 'read' first, then retry with a SMALLER edit: fewer lines and a tight unique anchor. For multi-line or drifted blocks prefer 'operation: replace_lines' or 'delete_lines' with start_line/end_line (immune to content drift). Do NOT use bash/node/python to edit the file — always use this edit tool."}
 	case errors.Is(err, ErrNoChange):
 		return &internal.ToolError{Tool: "edit", Type: "no_change",
 			Detail:   "Old and new text are identical",

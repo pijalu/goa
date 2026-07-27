@@ -145,6 +145,25 @@ func fuzzyEdit(file, oldStr, newStr string, allowFuzz bool) (*EditResult, error)
 	return nil, ErrNotFound
 }
 
+// countMatchingLines reports how many of oldStr's non-empty lines appear
+// verbatim in content. It powers the "lines matched M/N" diagnostic attached to
+// edit not-found errors (bugs.md: models reconstruct large blocks from memory
+// and ~25% of lines drift, so a bare "not found" makes them think the tool is
+// broken and reach for bash; showing the real overlap steers them to re-read
+// and make a smaller, anchored edit instead).
+func countMatchingLines(content, oldStr string) (matched, total int) {
+	for _, l := range strings.Split(oldStr, "\n") {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		total++
+		if strings.Contains(content, l) {
+			matched++
+		}
+	}
+	return matched, total
+}
+
 // exactNormalize is the identity function: used for the exact-match
 // strategy.
 func exactNormalize(s string) string {

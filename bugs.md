@@ -456,3 +456,358 @@ response chain — wasted cache reads and potential cross-conversation bleed.
 8. Issue 7 — LSP: full multi-language subsystem (OpenCode parity). ✅ FIXED + tested
    (embedded 34-server registry, per-file selection, npx/go-install, model tool,
    file-action linking, global + per-server config).
+
+---
+
+## Issue 9 — Poolside (and 6 other providers) send no Authorization header → 401
+
+**Symptom:** Switching to Poolside (`/model` → `laguna-s-2-1`) and prompting yields
+`Error: 401 - {"error":"please check the api-key you provided"}`. Export
+`goa-export-20260727-030210.zip` `diagnostics/trace.json` shows the request to model
+`poolside/laguna-s-2.1` returned HTTP 401 in ~200ms.
+
+**Investigation (decisive):**
+- The configured key is VALID: direct curl to `https://inference.poolside.ai/v1/chat/completions`
+  with `Authorization: Bearer <cfg key>` and model `poolside/laguna-s-2.1` returns **200**.
+- Server differentiates: **no `Authorization` header → 401**; empty/wrong Bearer → **403**.
+  Goa got **401**, so Goa sent **no auth header at all**.
+- `provider.ProviderManager.BuildStreamOptions()` correctly resolves the key (len 45).
+- But the runtime uses `GenericStream` (protocol path), where auth is injected by
+  `hooks/auth.go` `AuthHook.ApplyRequest` → `injectAuth(ctx.Headers, h.profile.Auth, key)`.
+  `injectAuth` **returns early when `auth.Header == ""`**. The `profile` comes from
+  `schema.ResolveProfile(model)`.
+- Probe: `ResolveProfile(poolsideModel)` → `profileID="" auth.Header=""` (EMPTY), while
+  `kimi-code/deepseek/zai/opencode-go/...` → `auth.Header="Authorization" prefix="Bearer "`.
+
+**Root cause (confirmed):** there is **no `poolside.json` variant profile** in
+`internal/agentic/provider/schema/variants/`. Auth headers come ONLY from a matched
+variant profile's `Auth` config. Poolside matches nothing → empty `Auth.Header` → key
+never sent → 401. The resolver has **no fallback**: `Resolver.Resolve` returns
+`VariantProfile{}` when nothing matches.
+
+**Blast radius (probe of every catalog provider):** 7 providers resolve to NO profile →
+all broken the same way: `poolside`, `groq`, `fireworks`, `perplexity`, `zai-api`,
+`azure`, `custom`. (`openai-base.json` requires `provider:"openai"`, so it never catches
+them.) Every provider WITH a dedicated profile works — matches the user's report that
+"the issue seems only to trigger on poolside" (their other configured providers all have
+profiles).
+
+**Fix (per user directive — default sane fallback, not per-provider whack-a-mole):**
+when no variant profile matches, the resolver returns a **sane default profile** that
+includes standard OpenAI-compatible Bearer authentication and baseline compat/tool/cache/
+error defaults. This fixes all 7 broken providers, custom endpoints, and every future
+provider in one place.
+
+**Test:** resolving an unmatched provider (poolside / custom) yields a profile with
+`Auth.Header == "Authorization"`; `AuthHook` injects the Bearer header when a key is
+present; end-to-end probe through `provider.Stream` for the active poolside model
+returns HTTP 200.
+
+**Status: FIXED.** Implemented in `internal/agentic/provider/schema/resolver.go`:
+`Resolver.Resolve` now returns `DefaultProfile(model)` when no variant profile matches
+(instead of a zero `VariantProfile{}`). `DefaultProfile` models a generic
+OpenAI-compatible endpoint — `Auth{api_key, "Authorization", "Bearer ", Required:false}`,
+`max_tokens`, `openai` thinking format, usage-in-streaming, OpenAI schema sanitizer,
+cache `none`, retry statuses `[429 500 502 503 504]`. `Required:false` keeps keyless
+local/custom endpoints working while guaranteeing a configured key is always sent.
+
+**Verification (live):** probe through the real path (`CascadeLoader` →
+`ProviderManager.BuildStreamOptions` → `agenticprovider.Stream`) for the active
+poolside model returned **HTTP 200** (`stopReason=end_turn`, 1 content block);
+all 7 previously-broken providers now resolve to `default-openai-compat` with
+`Auth.Header="Authorization"`.
+
+**Regression tests (all pass, incl. `-race`):**
+- `schema`: `TestResolveProfile_UnmatchedProvidersGetDefaultAuth`,
+  `TestDefaultProfile_SaneBaseline`, `TestResolver_NoMatchFallsBackToDefault`.
+- `hooks`: `TestAuthHook_UnmatchedProviderInjectsKey` (full pipeline injects
+  `Bearer <key>` for a poolside model).
+
+---
+
+## Issue 10 — Provider catalog / genmodels not fully reconciled with models.dev
+
+**Symptom / directive:** "all provider configuration (endpoints, type) should be
+correctly pre-configured in goa using models.dev" and "make sure all providers from
+models.dev are correctly imported".
+
+**Root cause:** three independent hardcoded lists drift apart:
+- `internal/agentic/provider/schema/catalog.go` — provider defs (endpoint, API type,
+  env keys, `ModelsDevKey`). Poolside IS present here.
+- `cmd/genmodels/main.go` `supportedProviders` — models.dev key → goa provider/API/
+  baseURL. **Poolside (and several catalog providers) are MISSING**, so their models are
+  never imported from models.dev.
+- `internal/agentic/provider/schema/variants/*.json` — auth/compat profiles (Issue 9).
+
+**Fix:** reconcile `supportedProviders` with the catalog so every catalog provider with a
+`ModelsDevKey` is imported from models.dev with the correct endpoint + API type; add the
+missing providers (at minimum Poolside). The Issue 9 default-profile fallback guarantees
+that any provider so imported also authenticates.
+
+**Status: FIXED.** Expanded `cmd/genmodels/main.go` `supportedProviders` from 9 → 19
+entries, adding the catalog's OpenAI-compatible providers that exist on models.dev:
+`poolside`, `perplexity`, `fireworks-ai`, `openrouter`, `opencode`, `opencode-go`,
+`moonshotai` (→kimi), `kimi-for-coding` (→kimi-code), `cerebras`, `chutes`. Each maps the
+models.dev key → goa provider id, goa wire API type, and the models.dev `api` endpoint
+(verified against the live `https://models.dev/api.json`, 172 providers).
+
+Regenerated `internal/agentic/provider/models/models_generated.go`: now imports **18
+providers** (was 9). Poolside contributes its 3 models with correct wiring, e.g.
+`poolside/laguna-s-2.1 {Api: openai-completions, Provider: poolside,
+BaseURL: https://inference.poolside.ai/v1, ContextWindow: 1048576, Reasoning: true}`.
+
+Notes:
+- `perplexity` is intentionally absent from the generated file: genmodels only imports
+  tool-calling models and every Sonar model has `tool_call=false` (search QA, no
+  function-calling) — a pre-existing deliberate filter, not a bug. Its provider still
+  authenticates via the Issue 9 default profile.
+- models.dev has ~172 providers; goa supports a curated subset (the others need wire-type
+  or auth decisions, e.g. `npm: @ai-sdk/anthropic`). The default-profile fallback covers
+  auth for any of them if added later; widening the curated set further is follow-up, not
+  part of this bug.
+
+**Verification:** `go build ./...` clean; full suite + `-race` green.
+
+---
+
+## Issue 11 — `/model add` two-step flow review (select provider → async known-model list)
+
+**Directive:** "1/ select provider 2/ propose list of known model — run an async model
+load of the given provider model ... this should be implemented for model command
+addition".
+
+**Current state (`core/commands/model.go`):**
+- `runAddModelFromSelector` (L209): uses the **active provider by default** and only
+  shows the provider picker when none is active/unknown — does not always "select provider".
+- `pickModelFromProvider` (L236): **already async** — wraps the fetch in
+  `ctx.SelectOptionAsync("Select model to add:", fetch, onSelected)` (L262-264), merging
+  live `/models` + registry via `modelListForProvider` (L151). So step 2's async load
+  exists.
+
+**Gap (confirmed by user):** step 1 (explicit provider selection) was skipped whenever a
+provider was already active (the flow auto-used the active provider, and also auto-picked
+the provider when only one was configured). The user directive: **always ask for the
+provider**, and the proposed model list must be **scoped to the chosen provider** — never
+models known for other providers.
+
+**Fix:** `core/commands/model.go` `runAddModelFromSelector` — removed the active-provider
+shortcut and the single-provider auto-pick. The flow now ALWAYS shows the provider picker
+(`SelectOption("Select provider:", ...)`), pre-selecting the active provider (when one is
+set) purely as a highlighted default the user can confirm or change. Step 2
+(`pickModelFromProvider`) was already async and already provider-scoped via
+`modelListForProvider(providerID)` (live `/models` + registry for that provider only), so
+no change was needed there — the chosen provider's models are the only ones proposed.
+
+**Test:** `core/commands/model_test.go` `TestModelCommand_AddAlwaysPromptsProvider` —
+with an active provider set, asserts the picker IS shown (title `Select provider:`),
+pre-selects the active provider, and lists all configured providers. Passes (incl. `-race`
+on the package).
+
+**Status: FIXED.**
+
+---
+
+## Fix order / status (continued)
+9. Issue 9 — Poolside/6 providers no auth header (default-profile fallback). ✅ FIXED + tested (+race)
+10. Issue 10 — catalog/genmodels × models.dev reconciliation. ✅ FIXED (9→18 providers; poolside imported)
+11. Issue 11 — `/model add` always prompts provider; model list scoped to chosen
+    provider. ✅ FIXED + tested (+race)
+12. Issue 12 — model falls back to bash to edit files (large-edit drift). ✅ FIXED + tested
+    (+race): bash file-edit guardrail (BlockFileEdits, default ON) + smarter edit
+    not-found hint + line-match (M/N) diagnostic.
+
+---
+
+## Issue 12 — Model falls back to bash/node to edit files (large-edit drift)
+
+**Symptom (export `mhh-ace/.goa/exports/goa-export-20260727-032553.zip`, opencode-go /
+deepseek-v4-flash):** the model starts editing `game/index.html` via `node -e
+fs.readFileSync/replace/writeFileSync` instead of the `edit` tool. The bash edits then
+corrupt the file: `<script><script>` double-tag → `Unexpected token '<'` → `Unexpected
+token '}'` → extra `}` (depth −2) → lost `<head>`/`<style>`, costing ~40 tool calls to
+un-break.
+
+**Investigation (decisive):** `edit` is NOT broken — 69 successes vs 2 failures, both
+`[edit error: not_found]` (no crash). The failing call submitted a **8,332-char / 257-line
+`old_string`** of which **25% of lines had drifted** from the file (e.g. model wrote
+`max-width: 900px`, file had `max-width: 860px; padding: 10px`). Goa's matcher tried
+exact → trailing-whitespace → fuzzy and correctly refused. Timeline shows `bash_edit=0`
+for the first ~44k events, then bash-for-editing appears and dominates once the model's
+stale in-memory copy of the 1300-line file diverged too far.
+
+**Root cause:** not the matcher — the usage pattern. On a large single-file doc the model
+reconstructs a big region from memory as one huge `old_string`; as the file evolves the
+copy drifts, `edit` correctly fails, and the model escalates to bash (against the
+"prefer dedicated tools over bash" guidance) because nothing steers it back to small,
+anchored, re-read edits and nothing guards against bash file writes.
+
+**Fix (3 parts, all implemented).** NOTE — revised per user directive "never block, only
+hint": part 1 is a NON-BLOCKING nudge, not a block, and is configurable in /config.
+1. **Non-blocking hint (configurable)** — `tools/bash.go`: `BashTool.WarnFileEdits`
+   (+ `WarnFileEditsResolver` for live toggle). `ExecuteContext` runs the command
+   ALWAYS; `fileEditHint`/`detectShellFileEdit` only prepends a "Prefer the 'edit' tool"
+   note when the command modifies a file via the shell: redirects/tee to real files
+   (allows `/dev/null`, `/tmp` scratch, fd dups), in-place editors (`sed -i`, `perl -pi`),
+   and interpreter inline writes (`node writeFileSync`, `python open(...,'w')`/
+   `Path.write_text`, ruby `File.write`). Read-only commands stay silent. Config
+   `tools.bash.warn_file_edits` (nil=on; merged in `config_merge.go`; setter
+   `setBoolPtr` in `config_cli.go`; completion entry). `/config → Bash → Warn on shell
+   file edits` toggles it (persisted to home config; live via the resolver).
+2. **Smarter not-found recovery hint** — `tools/editfile.go` `searchReplaceError`: now
+   tells the model to re-read the region, retry with a SMALLER tightly-anchored edit,
+   prefer `replace_lines`/`delete_lines` (immune to content drift), and NOT to use
+   bash/node/python to edit files.
+3. **Line-match diagnostic** — `tools/fuzzyedit.go` `countMatchingLines` + wired into
+   `searchReplace`: the not-found Detail now appends `— M/N lines of old_string matched
+   the current file`, so the model sees it's content drift, not a broken tool.
+
+**Tests (all pass, incl. `-race`):** `tools/bash_edit_guard_test.go`:
+`TestDetectShellFileEdit` (9 flagged / 8 allowed patterns), `TestBashTool_WarnFileEdits`
+(hint prepended + command STILL runs / read-only silent / disabled silent / resolver
+override), `TestEditNotFound_LineMatchDiagnostic` (asserts `2/4` match count,
+`replace_lines`, re-read, anti-bash guidance). `TestConfigMenu_RootShowsItems` updated
+for the new `/config → Bash` root item.
+
+**Status: FIXED (non-blocking, configurable).**
+
+---
+
+## Issue 13 — "15 consecutive tool-calling rounds" forced-answer nudge is a FALSE POSITIVE (thinking present)
+
+**Symptom (export `.goa/exports/goa-export-20260727-035735.zip`, issue.md: "false
+positive on tool call"; provider kimi-code, model k3):** mid-session the agent was
+interrupted by the ephemeral note *"15 consecutive tool-calling rounds elapsed without
+an answer. Now produce the final answer…"*. The user reports there was NOT 15
+consecutive silent tool rounds — **the model was thinking** between calls.
+
+**Evidence (logs/agent.log of the export):** compressed event run is
+`think x2585 → content x30 → toolcall x213 → Re-streaming(round 16) → think x1171`.
+So the round that hit the limit streamed **2585 thinking tokens** before its tool calls.
+3756 thinking deltas total vs only 30 content deltas.
+
+**Expected behavior (already the design):** `trackToolCallingRound`
+(`internal/agentic/agent_streaming.go:110`) resets `consecutiveToolRounds` when
+`contentBuf.Len() > 0 || thinkingBuf.Len() > 0` — a round with thinking is NOT a silent
+tool round and must not count toward the forced-answer nudge (`checkConsecutiveToolRounds`,
+limit = `execution.max_consecutive_tool_rounds` = 15).
+
+**Root cause (hypothesis to confirm):** with 2585 thinking tokens buffered, the reset
+*should* have fired — so the streak counted up anyway. Suspects, in order:
+1. **Buffer lifecycle:** `resetStreamRoundState()` clears `thinkingBuf`
+   (agent_streaming.go:931-932). It is called from `startStreamRound` (round>0, L172)
+   and the recovery/retry paths (L1189, L1300). If any path resets the buffer *after*
+   the round's thinking deltas but *before* `trackToolCallingRound()` reads them
+   (runStreamRound L76), `hadThinking` is false and the streak increments spuriously.
+2. **kimi-code thinking event type:** thinking deltas are logged (`[delta] thinking`)
+   via `handleThinkingDelta`→`thinkingBuf.WriteString`. If k3 emits reasoning under a
+   different wire field that the agent logs but does NOT route to
+   `provider.EventThinkingDelta`/`handleThinkingDelta`, `thinkingBuf` stays empty while
+   the log still shows thinking. (The `[delta] thinking` TRACE is emitted inside
+   `handleThinkingDelta`, so this is less likely — but verify the dispatch table at
+   agent_streaming.go:363-371 actually fires for k3's reasoning events.)
+
+**Repro / next step:** write an agent-level test that streams N rounds each producing
+thinking deltas followed by tool calls (mirroring the kimi-code k3 event sequence), then
+assert no forced-answer nudge is injected and `consecutiveToolRounds` stays 0. The
+existing `TestTrackToolCallingRound_NudgeNotFiredWithThinking` covers the unit logic
+(buffer-set → reset), so the regression must be reproduced at the stream/event level to
+pin whether it is (1) buffer-reset timing or (2) event-type routing.
+
+**Root cause (CONFIRMED via stream-level repro + UI evidence):** two design defects in
+`internal/agentic/agent_streaming.go`.
+1. **Streak mis-attribution.** `trackToolCallingRound` only reset the
+   `consecutiveToolRounds` streak when the *current* round's `contentBuf`/`thinkingBuf`
+   was non-empty. The kimi-code k3 model front-loads a large reasoning block in round 0
+   (export: 2585 thinking deltas) then issues many tool calls across later rounds with no
+   *fresh* reasoning each round — so those productive rounds were wrongly counted as
+   "silent" and the streak climbed to the 15 limit, forcing an answer. UI transcript
+   confirms content/thinking ("Let me …" messages) between tool calls.
+2. **Hard numeric caps.** A forced-answer nudge at 15 rounds AND a hard 250-round cap
+   ended the turn on a *number*, regardless of progress.
+
+**Side-effect — model self-reports a bogus round limit (VERIFIED via export
+`goa-export-20260727-035938.zip`, issue "rounds ???", provider kimi-code/k3):** the TUI
+showed the model claiming *"I have limited rounds left (this is round 29/30)"*. Verified
+facts about that figure:
+- The literal string `29/30` appears **nowhere** in the export (`session/events.jsonl`,
+  `session.md`) — it is not present as an injected value.
+- The model received **no** turn/round budget: the goal turn-budget injector
+  (`core/goal/injection.go formatTurnBudget`, format `turns N/M (remaining K)`) was
+  **inactive** (manifest `activeMode: coding-posture`, no goal). And no guardrail message
+  emits an `N/30` figure — they say `limit: %d` with values like 2 (repeat) or 15
+  (consecutive rounds), never a 30 denominator.
+- The model's own numeric limits in this session were `max_consecutive_tool_rounds=15`
+  and `max_stream_rounds` default 50 — **neither is 30**.
+
+Conclusion: the "29/30" was generated by the model itself in its Thinking text while
+under pressure to converge (it had just been told to wrap up by a guardrail note). It is
+the model rationalizing a made-up budget, NOT a real Goa-injected limit. The underlying
+trigger — being pushed to wrap up mid-work — is the false-positive consecutive-tool-round
+nudge fixed above. (If a real `N/M` budget is ever seen, check the goal turn-budget
+injector, which is the only component that emits that exact `N/M` shape.)
+
+**Fix (agent_streaming.go):**
+- Added `turnSawContent` / `turnSawThinking` (agent.go), set in `handleTextDelta` /
+  `handleThinkingDelta`, reset per turn in `prepareTurn`. `trackToolCallingRound` now
+  resets the streak if the model produced a message/thinking **anywhere earlier in the
+  turn**, not just the current round — so any message/thinking between tool calls counts.
+- Reworked convergence to be **message-driven, not a number**: removed the forced-answer
+  nudge and the hard 250-round cap. The turn now runs a recovery (final-answer) stream
+  only when `trackToolCallingRound()` reports the model has gone *truly silent* for the
+  configured consecutive rounds (no message AND no thinking anywhere in the turn).
+  `checkConsecutiveToolRounds`/`trackToolCallingRound` now return the limit-reached bool
+  instead of self-resetting + injecting a nudge, so the caller owns convergence.
+
+**Regression tests (all pass, incl. -race):**
+- `agent_toolrounds_repro_test.go` (stream-level): `TestConsecutiveToolRounds_ThinkingEachRound_NeverNudges`,
+  `_BatchThinking_NeverNudges`, `_ToolThenThinking`, `_ContentMessageEachRound` — all assert
+  no convergence while reasoning/messages present, across 20 rounds (> 15).
+- `ephemeral_system_test.go` (unit): `TestConsecutiveToolRounds_LimitReported`,
+  `TestTrackToolCallingRound_LimitReachedWithoutThinking`, `_LimitNotReachedWithThinking`,
+  `_TurnReasoningResetsStreak` (Issue 13 core), `TestMaxConsecutiveToolRounds_CustomThreshold`,
+  `_ZeroDisables`.
+- `TestAgent_ExecutesTool_Stream` (convergence still terminates on silent loop).
+
+**Status: FIXED.**
+12. Issue 12 — model falls back to bash to edit files (large-edit drift). ✅ FIXED + tested
+    (+race): NON-BLOCKING bash file-edit hint (tools.bash.warn_file_edits, default ON,
+    /config → Bash toggle, persisted) + smarter edit not-found hint + line-match (M/N)
+    diagnostic.
+13. Issue 13 — "15 consecutive tool-calling rounds" nudge FALSE POSITIVE (thinking
+    present, kimi-code k3). 🔎 OPEN — localized to thinkingBuf reset-timing vs
+    thinking-event routing; needs stream-level repro.
+
+---
+
+## Issue 14 — Guardrail nudges are invisible to the user (not shown as TUI bubbles / not in chat history)
+
+**Symptom (user directive):** "make sure nudge appear in the TUI as a bubble — the user
+*must* be aware of nudge sent to the model" and "make sure nudge are part of history of
+the chat." The system-update note in this very session (*"15 consecutive tool-calling
+rounds elapsed…"*) reached the model but the user never saw its content.
+
+**Root cause:** `Agent.InjectEphemeralSystemMessage` (`internal/agentic/agent.go`)
+appended the nudge to the *model's* history but emitted only a transient `EventProgress`
+("System guardrail: model told to wrap up or adjust behavior.") — a status line with a
+GENERIC message, NOT the actual nudge text/numbers, and NOT a persistent chat bubble. The
+real content was invisible (and stripped at turn end), so the user could never see what
+the model was told. The old comment justified this ("rendering it as a bubble would
+confuse the user… the model tends to parrot it as a user-facing 'budget'") — the opposite
+of the required transparency.
+
+**Fix:** every host control note (prefixed `[goa-system]`) is now ALSO emitted as an
+`EventContent` with `Role: System` + `Metadata{"category":"system-notification"}` — the
+same path used for "Error: 401" notices — which the interactive app renders via
+`chat.AddSystemMessage` (stats.go:202) as a **durable chat bubble that is part of chat
+history**. Applies to all nudge sources: recovery/round-limit, tool-budget, loop
+guardrail, premature-stop auto-continue, and goal stall `Remind`.
+
+**Tests (pass):** `ephemeral_system_test.go`:
+`TestEphemeralSystemMessage_InModelHistoryAndUserBubble` (nudge in model history AND
+user bubble with full text), `TestInjectEphemeralSystemMessage_EmitsVisibleBubble`
+(full-text system-notification content event, Role=System),
+`TestInjectEphemeralSystemMessage_NoBubbleForNonControl` (non-control messages stay silent).
+
+**Status: FIXED.**
+14. Issue 14 — guardrail nudges invisible to user (no TUI bubble / not in chat history).
+    ✅ FIXED + tested: nudges now emitted as durable system-notification chat bubbles.

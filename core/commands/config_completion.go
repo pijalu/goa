@@ -124,6 +124,7 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"multi_agent.companion_provider", "provider id"},
 		{"tools.enabled.goal", "enable goal tools (default false)"},
 		{"tools.bash.enable_complexity_analysis", "true | false"},
+		{"tools.bash.warn_file_edits", "true | false (default true)"},
 		{"tools.bash.jail", "true | false"},
 		{"tools.bash.max_complexity_score", "integer (0 = default)"},
 		{"tools.terminal.sandbox.enabled", "true | false"},

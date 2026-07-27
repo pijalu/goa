@@ -519,6 +519,11 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		Jail:                cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
 		MaxOutputBytes:      cfg.Tools.Bash.MaxOutputBytes,
 		EnableComplexity:    cfg.Tools.Bash.EnableComplexityAnalysis,
+		WarnFileEdits: cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits,
+		// Resolve live so /config → tools.bash.warn_file_edits takes effect immediately.
+		WarnFileEditsResolver: func() bool {
+			return cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits
+		},
 		CompressionResolver: func() bool { return compression },
 		Analyzer:            analyzerForBash(cfg.Tools.Bash),
 		Redactor:            secrets.DefaultRedactor(),

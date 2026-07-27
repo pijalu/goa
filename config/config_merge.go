@@ -367,6 +367,9 @@ func (c *Config) mergeTools(other *Config) {
 	if other.Tools.Bash.CompressOutput != nil {
 		c.Tools.Bash.CompressOutput = other.Tools.Bash.CompressOutput
 	}
+	if other.Tools.Bash.WarnFileEdits != nil {
+		c.Tools.Bash.WarnFileEdits = other.Tools.Bash.WarnFileEdits
+	}
 	mergeTerminal(&c.Tools.Terminal, &other.Tools.Terminal)
 	if other.Tools.SSH.Hosts != nil {
 		c.Tools.SSH.Hosts = other.Tools.SSH.Hosts

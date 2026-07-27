@@ -416,6 +416,7 @@ var configSetters = map[string]configSetter{
 	"execution.disable_tool_budget":                  setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
 	"skills.execution_mode":                          setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
 	"tools.bash.enable_complexity_analysis":          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
+	"tools.bash.warn_file_edits":                     setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.Bash.WarnFileEdits }),
 	"tools.bash.jail":                                setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
 	"tools.bash.max_complexity_score":                setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
 	"tools.terminal.sandbox.enabled":                 setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),

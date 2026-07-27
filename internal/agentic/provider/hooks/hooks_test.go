@@ -37,6 +37,36 @@ func TestAuthHookInjectsAPIKey(t *testing.T) {
 	assert.Contains(t, ctx.Headers["User-Agent"], "goa/")
 }
 
+// TestAuthHook_UnmatchedProviderInjectsKey is the regression test for bugs.md
+// Issue 9 (Poolside 401). A provider with no dedicated variant profile must still
+// get its configured API key injected as an Authorization header, because the
+// resolver now falls back to a default profile carrying standard Bearer auth.
+// Previously the empty profile's Auth.Header was "" and injectAuth dropped the key.
+func TestAuthHook_UnmatchedProviderInjectsKey(t *testing.T) {
+	model := schema.Model{
+		ID:       "laguna-s-2-1",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderPoolside,
+		BaseURL:  "https://inference.poolside.ai/v1",
+	}
+	profile := schema.ResolveProfile(model)
+
+	pipeline := BuildPipeline(model)
+	require.NoError(t, pipeline.Init(profile))
+
+	ctx := &RequestContext{
+		Model:    model,
+		Context:  schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}},
+		Options:  schema.StreamOptions{APIKey: "sky-valid-key"},
+		Profile:  profile,
+		Headers:  make(map[string]string),
+		Pipeline: pipeline,
+	}
+	require.NoError(t, pipeline.ApplyRequest(ctx))
+	assert.Equal(t, "Bearer sky-valid-key", ctx.Headers["Authorization"],
+		"unmatched provider must send its configured API key as a Bearer token")
+}
+
 func TestAuthHookGitHubCopilotHeaders(t *testing.T) {
 	h := &AuthHook{}
 	require.NoError(t, h.Init(schema.VariantProfile{}))

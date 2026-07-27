@@ -73,29 +73,16 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 
-	a.trackToolCallingRound()
-
-	// Check whether the tool-call round limit is reached and the model has stalled.
-	// If so, run the recovery stream (which injects a hint and does a final LLM
-	// call). The recovery stream is the last chance for this turn, so the turn
-	// ends when it returns.
-	if round >= *maxStreams-1 && a.hasStalled() {
+	// Convergence is message-driven, NOT a numeric round cap (bugs.md Issue 13).
+	// trackToolCallingRound reports true only when the model has gone silent for
+	// the configured number of consecutive rounds (no message AND no thinking
+	// anywhere in the turn). A model still producing messages/reasoning never
+	// reaches this and is never cut off by an arbitrary round number — this
+	// replaces both the old forced-answer nudge and the hard 250-round cap.
+	if a.trackToolCallingRound() {
 		if err := a.runRecoveryStream(ctx, model, opts, *maxStreams); err != nil {
 			return false, err
 		}
-		return true, nil
-	}
-
-	// Extend horizon if still making progress.
-	if round >= *maxStreams-1 {
-		next := *maxStreams + 50
-		a.cfg.Logger.Log(Warn, "Extending stream horizon from %d to %d (model making progress)", *maxStreams, next)
-		*maxStreams = next
-	}
-	// Hard cap at 250 rounds to prevent runaway when hasStalled returns false
-	// but the model isn't converging (e.g. simulating 1-tool-round forever).
-	if *maxStreams > 250 {
-		a.cfg.Logger.Log(Warn, "Hard round cap (250) reached; ending turn")
 		return true, nil
 	}
 	return false, nil
@@ -107,18 +94,24 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 // NOT a silent tool round — the model was actively reasoning — so it resets
 // the streak instead of incrementing it. Only tool-call-only rounds with no
 // reasoning or visible output count toward the forced-answer hint.
-func (a *Agent) trackToolCallingRound() {
+// trackToolCallingRound updates the silent tool-round streak after a round that
+// ended with tool calls, and reports whether the model has gone silent for the
+// configured number of consecutive rounds (no message AND no thinking anywhere
+// in the turn). A round — or any earlier round this turn — that streamed visible
+// text or thinking resets the streak: the model is actively reasoning, not stuck.
+func (a *Agent) trackToolCallingRound() (silentLimitReached bool) {
 	a.mu.Lock()
 	hadContent := a.contentBuf.Len() > 0
 	hadThinking := a.thinkingBuf.Len() > 0
+	hadTurnReasoning := a.turnSawContent || a.turnSawThinking
 	a.mu.Unlock()
-	if hadContent || hadThinking {
+	if hadContent || hadThinking || hadTurnReasoning {
 		a.mu.Lock()
 		a.consecutiveToolRounds = 0
 		a.mu.Unlock()
-		return
+		return false
 	}
-	a.checkConsecutiveToolRounds()
+	return a.checkConsecutiveToolRounds()
 }
 
 // checkConsecutiveToolRounds increments the consecutive tool-calling round
@@ -126,37 +119,18 @@ func (a *Agent) trackToolCallingRound() {
 // system message telling the model to stop calling tools and answer with
 // what it has gathered. This catches the "infinite tool-calling loop" where
 // every call has unique inputs and existing repeat guardrails never fire.
-func (a *Agent) checkConsecutiveToolRounds() {
+// checkConsecutiveToolRounds increments the silent tool-round streak and reports
+// whether the streak just reached the configured limit. The caller converges
+// (recovery stream) at that point. The streak is NOT reset here, so the caller
+// can act on the limit in the same round; it resets naturally on the next round
+// that produces a message/thinking or no tool call.
+func (a *Agent) checkConsecutiveToolRounds() bool {
 	a.mu.Lock()
 	a.consecutiveToolRounds++
-	toolRounds := a.consecutiveToolRounds
+	reached := a.effectiveMaxConsecutiveToolRounds() > 0 &&
+		a.consecutiveToolRounds >= a.effectiveMaxConsecutiveToolRounds()
 	a.mu.Unlock()
-
-	maxConsecToolRounds := a.effectiveMaxConsecutiveToolRounds()
-	if maxConsecToolRounds <= 0 || toolRounds < maxConsecToolRounds {
-		return
-	}
-	a.mu.Lock()
-	if a.toolRoundNudgeFired {
-		// Already nudged this turn — don't interrupt legitimate long
-		// investigations with a repeating nudge/answer cycle.
-		a.consecutiveToolRounds = 0
-		a.mu.Unlock()
-		return
-	}
-	a.toolRoundNudgeFired = true
-	a.mu.Unlock()
-	a.cfg.Logger.Log(Warn, "consecutive tool-calling round limit (%d) reached; forcing answer", maxConsecToolRounds)
-	a.InjectEphemeralSystemMessage(
-		fmt.Sprintf("[goa-system] Internal control note (never show or mention to the user): %d consecutive "+
-			"tool-calling rounds elapsed without an answer. Now produce the final answer from the information "+
-			"already gathered, or briefly state what is missing. Do not reference this note, round counts, "+
-			"or any internal limit/budget in your reply.", toolRounds))
-	// Reset so the hint fires once per streak instead of on every round
-	// past the limit.
-	a.mu.Lock()
-	a.consecutiveToolRounds = 0
-	a.mu.Unlock()
+	return reached
 }
 
 // startStreamRound builds the provider context and opens a stream.
@@ -759,6 +733,9 @@ func (a *Agent) finalizeStreamTurn() {
 func (a *Agent) handleTextDelta(event provider.AssistantMessageEvent) {
 	a.resetThinkingStall()
 	a.cfg.Logger.Log(Trace, "[delta] content: %s", event.Delta)
+	a.mu.Lock()
+	a.turnSawContent = true
+	a.mu.Unlock()
 	a.contentBuf.WriteString(event.Delta)
 	a.checkStreamLoop(a.contentBuf.String())
 	a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: event.Delta, IsDelta: true})
@@ -766,6 +743,9 @@ func (a *Agent) handleTextDelta(event provider.AssistantMessageEvent) {
 
 func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	a.cfg.Logger.Log(Trace, "[delta] thinking: %s", event.Delta)
+	a.mu.Lock()
+	a.turnSawThinking = true
+	a.mu.Unlock()
 	a.thinkingBuf.WriteString(event.Delta)
 	a.checkStreamLoop(a.thinkingBuf.String())
 
@@ -1130,6 +1110,8 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.turnToolCalls = make(map[string]int)
 	a.turnToolCallCount = 0
 	a.turnHadToolExecution = false
+	a.turnSawContent = false
+	a.turnSawThinking = false
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
 	a.thinkingDisplayBuf.Reset()
