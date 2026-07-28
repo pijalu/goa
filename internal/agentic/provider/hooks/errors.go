@@ -59,7 +59,7 @@ func (h *ErrorHook) ApplyError(ctx *ErrorContext) error {
 	}
 
 	ctx.IsRateLimit = ctx.StatusCode == http.StatusTooManyRequests || containsAny(body, rateLimitPatterns)
-	ctx.IsRetryable = ctx.IsRateLimit || ctx.IsContextOverflow || isRetryableStatus(ctx.StatusCode, h.profile.ErrorRules.RetryableStatuses)
+	ctx.IsRetryable = h.isRetryable(ctx)
 
 	if ctx.IsRetryable {
 		ctx.RetryAfter = parseRetryAfter(ctx.Headers, h.profile.ErrorRules.RetryAfterHeader)
@@ -89,6 +89,28 @@ func (h *ErrorHook) ApplyError(ctx *ErrorContext) error {
 	}
 
 	return nil
+}
+
+// isRetryable reports whether the classified error is worth retrying. Rate
+// limits and context overflows are always retryable; otherwise the status is
+// checked against the profile's configured retryable set. HTTP 408 (Request
+// Timeout) is intrinsically transient — RFC 9110 §15.5.9 lets the client
+// repeat the request unmodified, and LLM servers/proxies (LM Studio,
+// llama.cpp, gateways) return it when a generation stalls. It must be retried
+// regardless of the profile: every embedded variant profile carries its own
+// retryable_statuses list, and mergeErrorRules REPLACES rather than extends
+// the default list (the only one containing 408), so profile-driven
+// classification alone let a 408 through as non-retryable — the agent
+// surfaced it immediately and goal mode paused on a transient error without a
+// single retry. Like 429, classify it intrinsically.
+func (h *ErrorHook) isRetryable(ctx *ErrorContext) bool {
+	if ctx.IsRateLimit || ctx.IsContextOverflow {
+		return true
+	}
+	if ctx.StatusCode == http.StatusRequestTimeout {
+		return true
+	}
+	return isRetryableStatus(ctx.StatusCode, h.profile.ErrorRules.RetryableStatuses)
 }
 
 func isRetryableNetworkError(err error) bool {

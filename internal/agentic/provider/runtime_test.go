@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 	"github.com/stretchr/testify/assert"
@@ -129,6 +130,43 @@ func TestGenericStreamWithMockTransport(t *testing.T) {
 	result := stream.Result()
 	require.NotNil(t, result)
 	assert.Equal(t, "Hello world", resultText(result))
+}
+
+// TestGenericStream408IsRetryableWithEmbeddedProfile proves the full wire
+// path that paused goal mode in production: an HTTP 408 from a provider whose
+// embedded profile omits 408 from retryable_statuses (lm-studio and every
+// other embedded profile) must STILL surface as a retryable ProviderError so
+// the agent's stream-retry loop kicks in instead of failing the turn — and
+// the goal — on a transient timeout. HOME is redirected so user profile
+// overrides cannot leak into the resolution.
+func TestGenericStream408IsRetryableWithEmbeddedProfile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := transport.Default()
+	defer transport.SetDefault(old)
+
+	transport.SetDefault(&mockTransport{
+		status: 408,
+		header: map[string]string{"Content-Type": "application/json"},
+		body:   `{"error":{"message":"request timeout","type":"request_timeout"}}`,
+	})
+
+	model := schema.Model{
+		ID:       "local-model",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderLMStudio,
+		BaseURL:  "http://localhost:1234/v1",
+	}
+	stream, err := GenericStream(model, schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}}, schema.StreamOptions{MaxTokens: 10})
+	require.NoError(t, err)
+	require.NotNil(t, stream)
+
+	streamErr := stream.Err()
+	require.Error(t, streamErr, "a 408 must terminate the stream with an error")
+	var provErr *hooks.ProviderError
+	require.ErrorAs(t, streamErr, &provErr, "HTTP errors must be wrapped as ProviderError")
+	assert.Equal(t, 408, provErr.StatusCode())
+	assert.True(t, provErr.IsRetryable,
+		"408 must be classified retryable even when the resolved embedded profile (%s) omits it from retryable_statuses", schema.ResolveProfile(model).ID)
 }
 
 func resultText(result *schema.AssistantMessage) string {
