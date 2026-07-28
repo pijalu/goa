@@ -193,3 +193,26 @@ func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
 		t.Fatalf("z.ai footer segment must render for the active provider, got empty")
 	}
 }
+
+// TestQuota_ZaiSegmentOrdersWindowsShortToLong is the regression for the
+// status bar showing "[0%|42%]" (monthly|session): the z.ai monitor API
+// returns limits monthly-first and the segment took the first two in emission
+// order. The segment must sort windows shortest-period first — session|weekly
+// — regardless of API order (bugs.md: z.ai status bar quota wrong).
+func TestQuota_ZaiSegmentOrdersWindowsShortToLong(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
+	env.setActiveProvider("zai")
+	// Live API order: monthly (0%) first, then session (41%), then weekly (38%).
+	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"code":200,"data":{"level":"pro","limits":[
+		{"type":"TIME_LIMIT","unit":5,"number":1,"usage":1000,"currentValue":0,"remaining":1000,"percentage":0,"nextResetTime":1787122604987},
+		{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096},
+		{"type":"TOKENS_LIMIT","unit":6,"number":1,"percentage":38,"nextResetTime":1784876204993}
+	]},"success":true}`)
+	env.load(t)
+	env.callCommand("quota", "refresh")
+	seg := ansi.Strip(env.renderSegment())
+	if seg != "[41%|38%]" {
+		t.Fatalf("segment = %q, want [41%%|38%%] (session|weekly, shortest window first)", seg)
+	}
+}

@@ -290,12 +290,19 @@ function statusRender() {
 }
 
 // colorizedSegment builds "[8%|24%]" with each window's percentage wrapped in
-// its own semantic color. Falls back to the single worst-window color when
-// goa.segmentColor is unavailable (older hosts).
+// its own semantic color. Windows are sorted shortest-period first
+// (session|weekly|monthly) — fetcher emission order is NOT guaranteed (the
+// z.ai monitor API returns monthly first). Falls back to the single
+// worst-window color when goa.segmentColor is unavailable (older hosts).
 function colorizedSegment(entry) {
 	var parts = [];
-	for (var i = 0; i < entry.limits.length && parts.length < 2; i++) {
-		var lim = entry.limits[i];
+	// Sort a copy: the cached limits array is shared with /quota, which keeps
+	// the provider's own row order. Windows without a known period sort last.
+	var sorted = entry.limits.slice().sort(function(a, b) {
+		return (a.periodMs || 1e15) - (b.periodMs || 1e15);
+	});
+	for (var i = 0; i < sorted.length && parts.length < 2; i++) {
+		var lim = sorted[i];
 		if (!lim.limit || lim.limit <= 0) {
 			continue;
 		}

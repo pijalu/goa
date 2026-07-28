@@ -61,6 +61,104 @@ func TestGoalRenderer_SetBudget(t *testing.T) {
 	}
 }
 
+// TestGoalRenderer_BatchCreate pins the batch-create call header: the first
+// objective is shown with a "+N more" suffix instead of an empty detail.
+func TestGoalRenderer_BatchCreate(t *testing.T) {
+	r := GoalRenderer{}
+	call := r.RenderCall(map[string]any{"action": "create", "objectives": []any{"Fix tests", "Run suite", "Commit"}}, tuirender.RenderContext{})
+	if !strings.Contains(call, "Started goal") || !strings.Contains(call, "Fix tests") || !strings.Contains(call, "+2 more") {
+		t.Errorf("batch create call = %q", call)
+	}
+}
+
+// TestGoalRenderer_UpdateBlockedShowsReason pins the blocked/paused headers
+// carrying the (truncated) justification so the timeline shows WHY the goal
+// yields.
+func TestGoalRenderer_UpdateBlockedShowsReason(t *testing.T) {
+	r := GoalRenderer{}
+	call := r.RenderCall(map[string]any{"action": "update", "status": "blocked", "reason": "rate limited by provider"}, tuirender.RenderContext{})
+	if !strings.Contains(call, "blocked") || !strings.Contains(call, "rate limited") {
+		t.Errorf("blocked call = %q", call)
+	}
+}
+
+// TestGoalRenderer_TodoActions is the regression for the status timeline
+// showing "◆ Goal / No current goal" for every add_todo call: the call header
+// must name the todo title and the {"todo":…} result must summarize the added
+// item — never claim there is no goal.
+func TestGoalRenderer_TodoActions(t *testing.T) {
+	r := GoalRenderer{}
+	call := r.RenderCall(map[string]any{"action": "add_todo", "todoTitle": "Write tests"}, tuirender.RenderContext{})
+	if !strings.Contains(call, "Added todo") || !strings.Contains(call, "Write tests") {
+		t.Errorf("add_todo call = %q", call)
+	}
+	res := r.RenderResult(`{"todo":{"id":"t1","title":"Write tests","status":"pending"}}`, tuirender.RenderContext{})
+	if !strings.Contains(res, "t1") || !strings.Contains(res, "Write tests") {
+		t.Errorf("add_todo result = %q", res)
+	}
+	if strings.Contains(res, "No current goal") {
+		t.Errorf("add_todo result must not claim 'No current goal': %q", res)
+	}
+
+	call = r.RenderCall(map[string]any{"action": "update_todo", "todoId": "t1", "todoStatus": "done"}, tuirender.RenderContext{})
+	if !strings.Contains(call, "Updated todo") || !strings.Contains(call, "t1") || !strings.Contains(call, "done") {
+		t.Errorf("update_todo call = %q", call)
+	}
+	res = r.RenderResult(`{"goal":{"objective":"Fix tests","status":"active","todos":[{"id":"t1","title":"a","status":"done"},{"id":"t2","title":"b","status":"pending"}]}}`, tuirender.RenderContext{})
+	if !strings.Contains(res, "todos 1/2") {
+		t.Errorf("update_todo result should show todo progress, got %q", res)
+	}
+}
+
+// TestGoalRenderer_QueueActions pins the call headers and result summaries
+// for the goal-list actions (list / cancel / reorder) and for creates that
+// only enqueue: none of them may render as "No current goal".
+func TestGoalRenderer_QueueActions(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{}
+
+	if call := r.RenderCall(map[string]any{"action": "list"}, ctx); !strings.Contains(call, "Listed goals") {
+		t.Errorf("list call = %q", call)
+	}
+	res := r.RenderResult(`{"active":{"objective":"Fix tests","status":"active"},"queued":[{"id":"g1","name":"happy.fox","objective":"A"},{"id":"g2","name":"calm.owl","objective":"B"}],"count":2}`, ctx)
+	for _, want := range []string{"Fix tests", "2 queued", "happy.fox", "calm.owl"} {
+		if !strings.Contains(res, want) {
+			t.Errorf("list result missing %q: %q", want, res)
+		}
+	}
+	if res := r.RenderResult(`{"active":null,"queued":[],"count":0}`, ctx); !strings.Contains(res, "No active goal") {
+		t.Errorf("empty list result = %q", res)
+	}
+
+	call := r.RenderCall(map[string]any{"action": "cancel", "goalId": "happy.fox"}, ctx)
+	if !strings.Contains(call, "Cancelled goal") || !strings.Contains(call, "happy.fox") {
+		t.Errorf("cancel call = %q", call)
+	}
+	if res := r.RenderResult(`{"cancelled":{"id":"g1","name":"happy.fox","objective":"Write docs"}}`, ctx); !strings.Contains(res, "Cancelled") || !strings.Contains(res, "happy.fox") {
+		t.Errorf("cancel result = %q", res)
+	}
+
+	call = r.RenderCall(map[string]any{"action": "reorder", "goalId": "calm.owl", "direction": "up"}, ctx)
+	if !strings.Contains(call, "Reordered goal") || !strings.Contains(call, "calm.owl") || !strings.Contains(call, "up") {
+		t.Errorf("reorder call = %q", call)
+	}
+	res = r.RenderResult(`{"queued":[{"name":"calm.owl","objective":"B"},{"name":"happy.fox","objective":"A"}]}`, ctx)
+	if strings.Index(res, "calm.owl") > strings.Index(res, "happy.fox") {
+		t.Errorf("reorder result should list the queue in its new order: %q", res)
+	}
+
+	// Create while another goal is active: everything lands in the queue.
+	res = r.RenderResult(`{"queued":2}`, ctx)
+	if !strings.Contains(res, "2 goals queued") || strings.Contains(res, "No current goal") {
+		t.Errorf("queued-only create result = %q", res)
+	}
+	// Batch create with an activated goal reports the queue count too.
+	res = r.RenderResult(`{"goal":{"objective":"Main","status":"active"},"queued":2}`, ctx)
+	if !strings.Contains(res, "Main") || !strings.Contains(res, "2 queued") {
+		t.Errorf("multi-create result = %q", res)
+	}
+}
+
 // TestRenderGoalSummary_PlainTextPassthrough pins bugs.md Bug A: plain-text
 // results (e.g. "Goal marked complete." + the verification evidence block,
 // or "Goal blocked: …") must render as-is instead of disappearing behind
