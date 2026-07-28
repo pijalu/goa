@@ -62,6 +62,17 @@ type ContextTool interface {
 	ExecuteContext(ctx context.Context, input string) (string, error)
 }
 
+// ContextResultTool is an optional interface a Tool may implement when it
+// needs BOTH the caller's context (progress emission, cancellation) AND the
+// ToolResult control signals (StopTurn). It is checked FIRST, before
+// ContextTool and ResultTool: without it, a tool implementing ContextTool
+// would silently lose its StopTurn signal (bugs.md Bug A: goal completions
+// must still stop the turn while announcing the verify command live).
+type ContextResultTool interface {
+	Tool
+	ExecuteContextWithResult(ctx context.Context, input string) (ToolResult, error)
+}
+
 // BaseTool provides a default IsRetryable implementation that returns false.
 // Embed this in tool structs to satisfy the Tool interface without retry.
 type BaseTool struct{}

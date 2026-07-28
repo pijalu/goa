@@ -652,7 +652,8 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 		// the renderer will handle ArgsComplete=false via RenderContext.
 		tc.argsComplete = false
 	} else {
-		tc.argsComplete = true
+		// Centralized transition: stamps the "waiting" clock (bugs.md Bug W).
+		tc.markArgsComplete()
 	}
 	tc.SetOnInvalidate(func() {
 		for i := range cv.entries {
@@ -788,23 +789,32 @@ func (cv *ChatViewport) HasRunningToolWidgets() bool {
 	return cv.runningToolCount.Load() > 0
 }
 
-// patchRunningToolWidgets updates the spinner frame for every running tool
+// patchRunningToolWidgets updates the spinner frame for every live tool
 // widget without marking the whole conversation dirty. The per-entry rendered
 // lines and the frame cache are patched in place, so the compositor never has
-// to reprocess the full chat history on every spinner tick.
+// to reprocess the full chat history on every spinner tick. Live means
+// Running (elapsed ticking) OR Pending with complete args (the "waiting Ns…"
+// display of a queued call, bugs.md Bug W — it must tick too).
 func (cv *ChatViewport) patchRunningToolWidgets(width int) {
 	if width == 0 || cv.renderCache.lines == nil {
 		return
 	}
 	for i := range cv.entries {
 		tc, ok := cv.entries[i].View.(*ToolExecutionComponent)
-		if !ok || tc.Status() != ToolRunning {
+		if !ok || !isLiveToolWidget(tc) {
 			continue
 		}
 		tc.updateBox()
 		tc.Invalidate()
 		cv.updateEntryInCache(i, width)
 	}
+}
+
+// isLiveToolWidget reports whether a tool widget has a ticking timer:
+// Running (elapsed) or args-complete Pending (waiting, bugs.md Bug W).
+func isLiveToolWidget(tc *ToolExecutionComponent) bool {
+	return tc.Status() == ToolRunning ||
+		(tc.Status() == ToolPending && tc.ArgsComplete())
 }
 
 // updateEntryInCache re-renders a single entry and patches its lines into the

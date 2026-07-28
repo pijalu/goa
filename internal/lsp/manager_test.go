@@ -122,6 +122,28 @@ var testSpecs = []ServerSpec{
 	{ID: "pyright", Extensions: []string{".py"}, Markers: []string{"pyproject.toml"}, Command: []string{"pyright-langserver"}, LanguageID: "python"},
 }
 
+// waitReady waits (bounded) for the server handling path to finish its
+// asynchronous spawn. Touches (OpenDocument/DidChange) are non-blocking by
+// design — tests that need a READY server synchronize here first.
+func waitReady(t *testing.T, m *Manager, path string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if c := m.waitClientFor(ctx, path); c == nil {
+		t.Fatalf("server for %s did not start", path)
+	}
+}
+
+// openSync opens path after its server is ready (test convenience for the
+// production non-blocking OpenDocument).
+func openSync(t *testing.T, m *Manager, path, text string) {
+	t.Helper()
+	waitReady(t, m, path)
+	if err := m.OpenDocument(context.Background(), path, text); err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+}
+
 func TestManager_StartAndClose(t *testing.T) {
 	rec := &fakeServerRecorder{}
 	sink := &syncBuffer{}
@@ -156,13 +178,11 @@ func TestManager_NoServerForExtension(t *testing.T) {
 func TestManager_PerFileServerSelection(t *testing.T) {
 	rec := &fakeServerRecorder{}
 	mgr := startedManager(t, t.TempDir(), rec, &syncBuffer{}, testSpecs)
-	ctx := context.Background()
-	if err := mgr.OpenDocument(ctx, "main.go", "package main"); err != nil {
-		t.Fatalf("open go: %v", err)
-	}
-	if err := mgr.OpenDocument(ctx, "app.py", "print(1)"); err != nil {
-		t.Fatalf("open py: %v", err)
-	}
+	// Touches kick the async spawns; wait for both servers to come up.
+	_ = mgr.OpenDocument(context.Background(), "main.go", "package main")
+	_ = mgr.OpenDocument(context.Background(), "app.py", "print(1)")
+	waitReady(t, mgr, "main.go")
+	waitReady(t, mgr, "app.py")
 	if len(rec.configs) != 2 {
 		t.Fatalf("expected 2 spawned servers (gopls + pyright), got %d", len(rec.configs))
 	}
@@ -179,14 +199,9 @@ func TestManager_LazySpawnReusesClient(t *testing.T) {
 	rec := &fakeServerRecorder{}
 	dir := t.TempDir()
 	mgr := startedManager(t, dir, rec, &syncBuffer{}, testSpecs)
-	ctx := context.Background()
 	// Two Go files in the same root share ONE gopls client.
-	if err := mgr.OpenDocument(ctx, "a.go", "package main"); err != nil {
-		t.Fatalf("open a.go: %v", err)
-	}
-	if err := mgr.OpenDocument(ctx, "b.go", "package main"); err != nil {
-		t.Fatalf("open b.go: %v", err)
-	}
+	openSync(t, mgr, "a.go", "package main")
+	openSync(t, mgr, "b.go", "package main")
 	if len(rec.configs) != 1 {
 		t.Errorf("expected 1 gopls client for two go files, got %d", len(rec.configs))
 	}
@@ -196,9 +211,7 @@ func TestManager_DidChangeIncrementsVersion(t *testing.T) {
 	sink := &syncBuffer{}
 	mgr := startedManager(t, t.TempDir(), &fakeServerRecorder{}, sink, testSpecs)
 	ctx := context.Background()
-	if err := mgr.OpenDocument(ctx, "main.go", "package main"); err != nil {
-		t.Fatalf("open: %v", err)
-	}
+	openSync(t, mgr, "main.go", "package main")
 	for i := 0; i < 3; i++ {
 		if err := mgr.DidChange(ctx, "main.go", "package main\n"); err != nil {
 			t.Fatalf("didChange %d: %v", i, err)
@@ -228,8 +241,18 @@ func TestManager_UnavailableServerMarkedBroken(t *testing.T) {
 	if err := mgr.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
+	// First touch kicks the async spawn (reports "starting"), which resolves
+	// to broken; the next touch reports the failure.
 	if err := mgr.OpenDocument(context.Background(), "f.xyz", "x"); err == nil {
 		t.Fatal("expected error for unavailable server")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if c := mgr.waitClientFor(ctx, "f.xyz"); c != nil {
+		t.Fatal("expected no client for unavailable server")
+	}
+	if err := mgr.OpenDocument(context.Background(), "f.xyz", "x"); err == nil {
+		t.Fatal("expected broken-server error after spawn resolved")
 	}
 	if len(rec.configs) != 0 {
 		t.Errorf("unavailable server should not spawn, got %d configs", len(rec.configs))

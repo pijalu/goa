@@ -55,6 +55,10 @@ func (r GoalRenderer) PreviewLines() int { return 3 }
 // HideResultWhenCollapsed returns false.
 func (r GoalRenderer) HideResultWhenCollapsed() bool { return false }
 
+// renderGoalSummary renders the goal tool result. JSON goal snapshots get the
+// compact one-line summary; plain-text results (e.g. "Goal marked complete."
+// followed by the verification evidence — bugs.md Bug A) are shown as-is so
+// the command, timeout and output tail stay visible instead of disappearing.
 func renderGoalSummary(output string) string {
 	var result struct {
 		Goal *struct {
@@ -66,7 +70,7 @@ func renderGoalSummary(output string) string {
 		} `json:"goal"`
 	}
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		return ""
+		return output
 	}
 	if result.Goal == nil {
 		return "No current goal"

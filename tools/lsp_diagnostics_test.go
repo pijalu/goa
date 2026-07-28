@@ -23,6 +23,7 @@ type pollFakeManager struct {
 
 func (f *pollFakeManager) OpenDocument(ctx context.Context, path, text string) error { return nil }
 func (f *pollFakeManager) DidChange(ctx context.Context, path, text string) error    { return nil }
+func (f *pollFakeManager) ServerIDFor(path string) string                            { return "gopls" }
 func (f *pollFakeManager) DiagnosticsFor(ctx context.Context, path string) []lsp.Diagnostic {
 	if time.Since(f.started) < f.delay {
 		return nil

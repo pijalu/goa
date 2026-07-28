@@ -61,9 +61,17 @@ func TestGoalRenderer_SetBudget(t *testing.T) {
 	}
 }
 
-func TestRenderGoalSummary_InvalidJSON(t *testing.T) {
-	if got := renderGoalSummary("not-json"); got != "" {
-		t.Errorf("got %q", got)
+// TestRenderGoalSummary_PlainTextPassthrough pins bugs.md Bug A: plain-text
+// results (e.g. "Goal marked complete." + the verification evidence block,
+// or "Goal blocked: …") must render as-is instead of disappearing behind
+// the JSON parse failure.
+func TestRenderGoalSummary_PlainTextPassthrough(t *testing.T) {
+	out := "Goal marked complete.\n\nVerification passed in 12.3s (timeout 2m0s):\n$ go test ./...\nok  \tpkg\t0.3s"
+	if got := renderGoalSummary(out); got != out {
+		t.Errorf("plain-text result must pass through unchanged, got %q", got)
+	}
+	if got := renderGoalSummary("Goal blocked: rate limited"); got != "Goal blocked: rate limited" {
+		t.Errorf("short plain-text result must pass through unchanged, got %q", got)
 	}
 }
 

@@ -5,6 +5,8 @@
 package lsp
 
 import (
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -131,4 +133,120 @@ func TestRegistryLoads(t *testing.T) {
 			t.Errorf("expected builtin server %q in registry", id)
 		}
 	}
+}
+
+// withNpxLookPath stubs lookPath: npx present, everything else absent, so
+// resolveCommand takes the npx branch.
+func withNpxLookPath(t *testing.T) {
+	t.Helper()
+	orig := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "npx" {
+			return "/usr/bin/npx", nil
+		}
+		return "", errors.New("not found: " + name)
+	}
+	t.Cleanup(func() { lookPath = orig })
+}
+
+// TestResolveCommand_NpxForm asserts the npx argv uses --package with the
+// declared Binary (not the bare package guess that broke pyright, vue, astro,
+// prisma and dockerfile servers — bugs.md Issue LSP).
+func TestResolveCommand_NpxForm(t *testing.T) {
+	withNpxLookPath(t)
+	spec := &ServerSpec{
+		Command: []string{"pyright-langserver", "--stdio"},
+		Npx:     &NpxSpec{Package: "pyright", Binary: "pyright-langserver", Args: []string{"--stdio"}},
+	}
+	argv, ok := spec.resolveCommand(t.TempDir(), false)
+	if !ok {
+		t.Fatal("expected npx resolution to succeed")
+	}
+	got := strings.Join(argv, " ")
+	want := "/usr/bin/npx --yes --package pyright pyright-langserver --stdio"
+	if got != want {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+}
+
+// TestResolveCommand_NpxExtraPackages asserts extra packages are installed
+// alongside (typescript-language-server needs typescript@5).
+func TestResolveCommand_NpxExtraPackages(t *testing.T) {
+	withNpxLookPath(t)
+	spec := &ServerSpec{
+		Command: []string{"typescript-language-server", "--stdio"},
+		Npx: &NpxSpec{
+			Package:       "typescript-language-server",
+			ExtraPackages: []string{"typescript@5"},
+			Args:          []string{"--stdio"},
+		},
+	}
+	argv, ok := spec.resolveCommand(t.TempDir(), false)
+	if !ok {
+		t.Fatal("expected npx resolution to succeed")
+	}
+	got := strings.Join(argv, " ")
+	want := "/usr/bin/npx --yes --package typescript-language-server --package typescript@5 typescript-language-server --stdio"
+	if got != want {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+}
+
+// registryNpxBin returns the effective npx bin for a spec (Binary or Package).
+func registryNpxBin(s ServerSpec) string {
+	if s.Npx == nil {
+		return ""
+	}
+	if s.Npx.Binary != "" {
+		return s.Npx.Binary
+	}
+	return s.Npx.Package
+}
+
+// TestRegistry_NpxBinaries pins the embedded registry specs whose runnable bin
+// differs from the npm package name — a bare `npx <pkg>` either fails outright
+// (pyright: "Unexpected option --stdio") or guesses the wrong bin.
+func TestRegistry_NpxBinaries(t *testing.T) {
+	wantBin := map[string]string{
+		"pyright":    "pyright-langserver",
+		"typescript": "typescript-language-server",
+		"svelte":     "svelteserver",
+		"vue":        "vue-language-server",
+		"astro":      "astro-ls",
+		"prisma":     "prisma-language-server",
+		"dockerfile": "docker-langserver",
+		"biome":      "biome",
+	}
+	found := map[string]bool{}
+	for _, s := range Registry() {
+		want, ok := wantBin[s.ID]
+		if !ok {
+			continue
+		}
+		found[s.ID] = true
+		if bin := registryNpxBin(s); bin != want {
+			t.Errorf("%s: npx bin = %q, want %q", s.ID, bin, want)
+		}
+	}
+	for id := range wantBin {
+		if !found[id] {
+			t.Errorf("server %q missing from registry", id)
+		}
+	}
+}
+
+// TestRegistry_TypescriptNeedsTypescript5 pins the extra package: typescript-
+// language-server cannot run without a classic tsserver, and typescript v6+
+// removed lib/tsserver.js — the fallback must pull typescript@5 alongside.
+func TestRegistry_TypescriptNeedsTypescript5(t *testing.T) {
+	for _, s := range Registry() {
+		if s.ID != "typescript" {
+			continue
+		}
+		if s.Npx == nil || len(s.Npx.ExtraPackages) != 1 || s.Npx.ExtraPackages[0] != "typescript@5" {
+			t.Errorf("typescript extra_packages = %v, want [typescript@5]", s.Npx.ExtraPackages)
+		}
+		return
+	}
+	t.Error("typescript server missing from registry")
 }

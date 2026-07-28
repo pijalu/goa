@@ -67,7 +67,7 @@ func TestToolExecution_ReadFile_CollapsedByDefault(t *testing.T) {
 	}
 	// Header should show the verb and path.
 	header := strings.TrimSpace(ansi.Strip(lines[1]))
-	header = strings.TrimPrefix(header, "◉ ")
+	header = strings.TrimPrefix(strings.TrimPrefix(header, "◉ "), "⧖ ")
 	if !strings.HasPrefix(header, "read README.md") {
 		t.Errorf("collapsed header = %q, want prefix 'read README.md'", header)
 	}
@@ -103,7 +103,7 @@ func TestToolExecution_ReadFile_HeaderShowsFileAndLines(t *testing.T) {
 		t.Fatal("expected rendered lines")
 	}
 	header := strings.TrimSpace(ansi.Strip(lines[1]))
-	header = strings.TrimPrefix(header, "◉ ")
+	header = strings.TrimPrefix(strings.TrimPrefix(header, "◉ "), "⧖ ")
 	// Header is the renderer output; no separate "read" tool-name line.
 	if header != "read PLAN.md:200-400" {
 		t.Errorf("header = %q, want %q", header, "read PLAN.md:200-400")
@@ -850,5 +850,38 @@ func TestToolExecution_RunningAgainKeepsTimer(t *testing.T) {
 	tc.SetStatus(ToolRunning)
 	if el := time.Since(tc.startTime); el < 25*time.Second {
 		t.Fatalf("re-setting ToolRunning must not restart elapsed; got %v", el)
+	}
+}
+
+// TestToolExecution_WaitingPresentation pins bugs.md Bug W: a queued call
+// (Pending with complete args) shows the ⧖ hourglass and "waiting Ns…",
+// NOT the running dot and "elapsed" — elapsed is execution-only.
+func TestToolExecution_WaitingPresentation(t *testing.T) {
+	tc := NewToolExecution("bash", `{"command":"sleep 5"}`)
+	tc.SetArgsJSON(`{"command":"sleep 5"}`)
+	// Queue the call for a while (scheduler has not started it).
+	tc.waitStart = time.Now().Add(-3 * time.Second)
+	lines := tc.Render(80)
+	rendered := ansi.Strip(strings.Join(lines, "\n"))
+	if !strings.Contains(rendered, "⧖") {
+		t.Errorf("queued call must show the ⧖ hourglass, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "waiting 3.") {
+		t.Errorf("queued call must show 'waiting Ns…', got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "elapsed") {
+		t.Errorf("queued call must NOT show 'elapsed' (execution-only), got:\n%s", rendered)
+	}
+
+	// Still-streaming args (Pending, incomplete) keep ◉ + stream-age elapsed.
+	tc2 := NewToolExecution("write", `{"path":"f.go"}`)
+	tc2.SetArgsPartial(`{"path":"f.go","content":"pack`)
+	tc2.startTime = time.Now().Add(-2 * time.Second)
+	r2 := ansi.Strip(strings.Join(tc2.Render(80), "\n"))
+	if !strings.Contains(r2, "◉") || strings.Contains(r2, "⧖") {
+		t.Errorf("streaming call must show ◉ (not ⧖), got:\n%s", r2)
+	}
+	if strings.Contains(r2, "waiting") {
+		t.Errorf("streaming call must not show 'waiting', got:\n%s", r2)
 	}
 }

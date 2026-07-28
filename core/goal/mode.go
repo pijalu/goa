@@ -576,8 +576,8 @@ func (m *GoalMode) RunVerifyCommand(ctx context.Context) (string, bool, error) {
 	if verifier == nil || !enabled {
 		return "", false, errors.New("command verification is disabled")
 	}
-	output, ok := verifier.Verify(ctx, *command)
-	return output, ok, nil
+	outcome := verifier.Verify(ctx, *command)
+	return outcome.Output, outcome.OK, nil
 }
 
 // EventLog returns the raw goal event records from the store (the

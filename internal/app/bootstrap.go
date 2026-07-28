@@ -462,7 +462,8 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 // registerTools registers the built-in filesystem and execution tools.
 // Optional tools are skipped when disabled in configuration. It also connects
 // configured MCP servers and returns their manager (nil when none configured).
-func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager) (*lsp.Manager, *mcp.Manager) {
+// headless suppresses interactive-only tools (bugs.md Bug C).
+func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager, headless bool) (*lsp.Manager, *mcp.Manager) {
 	gitStager := tools.NewGitStager(projectDir)
 
 	// Shared change tracker for edit/write → smartsearch index refresh.
@@ -539,7 +540,7 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		CompressionResolver: func() bool { return compression },
 	})
 
-	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker)
+	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker, headless)
 	mcpMgr := registerMCPServers(reg, projectDir, cfg)
 	return lspMgr, mcpMgr
 }
@@ -577,7 +578,9 @@ func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.
 }
 
 // registerOptionalTools registers tools that are gated by configuration flags.
-func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker) {
+// headless suppresses interactive-only tools: ask_user_question requires a
+// human at the input line, which headless mode has none of (bugs.md Bug C).
+func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker, headless bool) {
 	if cfg.Tools.Enabled.Verify {
 		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
 	}
@@ -597,10 +600,11 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 	if cfg.Tools.Enabled.Memento {
 		reg.Register(&tools.MementoTool{ProjectDir: projectDir, GlobalDir: cfg.ConfigDir})
 	}
-	// ask_user_question is enabled BY DEFAULT (inverted flag). The host
-	// callback (Clarify) is injected after the App is built — see
-	// internal/app attachClarifyTool.
-	if !cfg.Tools.Enabled.ClarifyDisabled {
+	// ask_user_question is enabled BY DEFAULT (inverted flag) — except in
+	// headless mode, where there is no user at the input line to answer
+	// (bugs.md Bug C). The host callback (Clarify) is injected after the App
+	// is built — see internal/app attachClarifyTool.
+	if !cfg.Tools.Enabled.ClarifyDisabled && !headless {
 		reg.Register(&ask.AskUserQuestionTool{})
 	}
 
@@ -645,14 +649,18 @@ func defaultInt(val, defaultVal int) int {
 	return val
 }
 
-// newLSPManager builds a multi-language LSP manager from config. It returns nil
-// only when LSP is disabled entirely (`lsp: false`). Servers are spawned lazily
-// per file, so Start never fails startup; per-server failures are recorded and
-// surfaced via diagnostics absence rather than a hard error. Config overrides
-// (disable/override/custom servers) and disable_download are honored, matching
-// OpenCode's lsp config model.
+// newLSPManager builds a multi-language LSP manager from config. It returns
+// nil when LSP is disabled EITHER globally (`lsp: false`) OR via the
+// user-facing tool switch (`tools.enabled.lsp: false`) — off means off: no
+// manager, no file touches, no background server spawns (bugs.md Issue LSP:
+// the tool flag used to gate only the model-facing tool while the manager
+// kept spawning servers, wedging reads for ~55s on cold npx downloads).
+// Servers spawn lazily per file (async, never blocking file tools), so Start
+// never fails startup; per-server failures are recorded and surfaced via
+// diagnostics absence. Config overrides (disable/override/custom servers) and
+// disable_download are honored, matching OpenCode's lsp config model.
 func newLSPManager(projectDir string, cfg *config.Config) *lsp.Manager {
-	if cfg != nil && !cfg.LSP.IsEnabled() {
+	if cfg != nil && (!cfg.LSP.IsEnabled() || !cfg.Tools.Enabled.LSP) {
 		return nil
 	}
 	installAllowed := cfg == nil || !cfg.LSP.DisableDownload

@@ -11,11 +11,15 @@ import (
 
 // Diagnostic matches a subset of the LSP Diagnostic type.
 type Diagnostic struct {
-	Range    Range  `json:"range"`
-	Severity int    `json:"severity"`
-	Code     string `json:"code,omitempty"`
-	Source   string `json:"source,omitempty"`
-	Message  string `json:"message"`
+	Range    Range `json:"range"`
+	Severity int   `json:"severity"`
+	// Code is `any` because the LSP spec allows integer | string — tsserver
+	// sends numeric codes (2552) while pyright sends strings; a strict string
+	// field made the notification handler drop tsserver diagnostics entirely
+	// (bugs.md Issue LSP).
+	Code    any    `json:"code,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message"`
 }
 
 // Range is a zero-indexed LSP range.

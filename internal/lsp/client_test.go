@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/textproto"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,8 +174,58 @@ func TestClient_Initialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initialize failed: %v", err)
 	}
-	if !res.Capabilities.DefinitionProvider {
-		t.Error("expected definitionProvider capability")
+	if enabled, _ := res.Capabilities.DefinitionProvider.(bool); !enabled {
+		t.Errorf("expected definitionProvider capability, got %v", res.Capabilities.DefinitionProvider)
+	}
+}
+
+// serveOneInitializeResponse answers the next initialize request on the pipe
+// pair with the given JSON result payload. Used by the capability-shape tests.
+func serveOneInitializeResponse(serverIn io.Reader, serverOut io.Writer, resultJSON string) {
+	reader := bufio.NewReader(serverIn)
+	var length int
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		if strings.HasPrefix(line, "Content-Length:") {
+			fmt.Sscanf(line, "Content-Length: %d", &length)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(serverIn, body); err != nil {
+		return
+	}
+	fmt.Fprintf(serverOut, "Content-Length: %d\r\n\r\n%s", len(resultJSON), resultJSON)
+}
+
+// TestClient_Initialize_ObjectProviderCapabilities reproduces pyright's
+// initialize response: provider flags arrive as OBJECTS
+// ({"workDoneProgress":true}), which the LSP spec allows
+// (boolean | ProviderOptions). The strict-bool unmarshal used to fail the
+// whole handshake, breaking pyright spawns (bugs.md Issue LSP).
+func TestClient_Initialize_ObjectProviderCapabilities(t *testing.T) {
+	serverIn, clientOut := io.Pipe()
+	clientIn, serverOut := io.Pipe()
+	client := NewClient(&fakeConn{Reader: clientIn, Writer: clientOut})
+	defer client.Close()
+	go client.ReadNotifications(context.Background())
+
+	go serveOneInitializeResponse(serverIn, serverOut,
+		`{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"definitionProvider":{"workDoneProgress":true},"hoverProvider":true}}}`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res, err := client.Initialize(ctx, InitializeParams{RootURI: "file:///tmp"})
+	if err != nil {
+		t.Fatalf("initialize with object provider capabilities failed: %v", err)
+	}
+	if res.Capabilities.DefinitionProvider == nil || res.Capabilities.HoverProvider == nil {
+		t.Errorf("expected provider capabilities, got %+v", res.Capabilities)
 	}
 }
 

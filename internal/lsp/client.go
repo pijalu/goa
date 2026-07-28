@@ -320,13 +320,16 @@ type ServerInfo struct {
 	Version string `json:"version,omitempty"`
 }
 
-// ServerCapabilities is a subset of LSP server capabilities.
+// ServerCapabilities is a subset of LSP server capabilities. Provider flags
+// are `any` because the spec allows `boolean | object` (e.g. pyright sends
+// {"workDoneProgress":true}); a strict bool broke every pyright initialize
+// handshake (bugs.md Issue LSP). The values are informational only.
 type ServerCapabilities struct {
-	TextDocumentSync        any  `json:"textDocumentSync,omitempty"`
-	DefinitionProvider      bool `json:"definitionProvider,omitempty"`
-	HoverProvider           bool `json:"hoverProvider,omitempty"`
-	DocumentSymbolProvider  bool `json:"documentSymbolProvider,omitempty"`
-	WorkspaceSymbolProvider bool `json:"workspaceSymbolProvider,omitempty"`
+	TextDocumentSync        any `json:"textDocumentSync,omitempty"`
+	DefinitionProvider      any `json:"definitionProvider,omitempty"`
+	HoverProvider           any `json:"hoverProvider,omitempty"`
+	DocumentSymbolProvider  any `json:"documentSymbolProvider,omitempty"`
+	WorkspaceSymbolProvider any `json:"workspaceSymbolProvider,omitempty"`
 }
 
 // InitializedParams is the notification payload for initialized.

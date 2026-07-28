@@ -34,6 +34,7 @@
   language_id: "" # per-extension (typescript / typescriptreact / javascript...)
   npx:
     package: typescript-language-server
+    extra_packages: ["typescript@5"]
     args: ["--stdio"]
 
 - id: deno
@@ -49,6 +50,7 @@
   language_id: python
   npx:
     package: pyright
+    binary: pyright-langserver
     args: ["--stdio"]
 
 - id: ty
@@ -128,6 +130,7 @@
   language_id: svelte
   npx:
     package: svelte-language-server
+    binary: svelteserver
     args: ["--stdio"]
 
 - id: vue
@@ -137,6 +140,7 @@
   language_id: vue
   npx:
     package: "@vue/language-server"
+    binary: vue-language-server
     args: ["--stdio"]
 
 - id: astro
@@ -146,6 +150,7 @@
   language_id: astro
   npx:
     package: "@astrojs/language-server"
+    binary: astro-ls
     args: ["--stdio"]
 
 - id: biome
@@ -155,6 +160,7 @@
   language_id: "" # per-extension
   npx:
     package: "@biomejs/biome"
+    binary: biome
     args: ["lsp-proxy"]
 
 - id: yaml-ls
@@ -188,6 +194,7 @@
   language_id: prisma
   npx:
     package: "@prisma/language-server"
+    binary: prisma-language-server
     args: ["--stdio"]
 
 - id: dart
@@ -230,6 +237,7 @@
   language_id: dockerfile
   npx:
     package: dockerfile-language-server-nodejs
+    binary: docker-langserver
     args: ["--stdio"]
 
 - id: gleam

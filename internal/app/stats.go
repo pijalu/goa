@@ -89,6 +89,8 @@ func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
 		a.handleStateChange(ev)
 	case agentic.EventToolCall:
 		a.handleToolCall(ev)
+	case agentic.EventToolStart:
+		a.handleToolStart(ev)
 	case agentic.EventToolProgress:
 		a.handleToolProgress(ev)
 	case agentic.EventTokenStats, agentic.EventContextStats:
@@ -344,6 +346,15 @@ func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agenti
 	tc.SetStatus(a.toolStatusFromResult(ev.Text))
 	tc.SetPartial(false)
 	a.clearToolBusy()
+}
+
+// handleToolStart flips a tool widget from waiting (⧖, queued) to running
+// (elapsed) at the TRUE execution start: the scheduler started the task
+// (EventToolStart). Until this arrives a finalized call stays Pending and
+// shows "waiting Ns…" — never a fake elapsed that includes queue time
+// (bugs.md Bug W).
+func (a *App) handleToolStart(ev *agentic.OutputEvent) {
+	a.toolTracker().OnStart(ev)
 }
 
 // handleToolProgress renders partial output emitted by a still-running tool
@@ -611,9 +622,12 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	// Start the shared status spinner first so that the tool widget and
 	// footer observe a non-empty CurrentSpinnerFrame when they render.
 	a.subs.statusMsg.Show(label)
-	if !ev.IsDelta {
-		tc.SetStatus(tui.ToolRunning)
-	}
+	// NOTE: the widget is deliberately NOT stamped Running here. Stamping at
+	// args-complete starts every widget of a batch at the same instant, so
+	// queued (conflict-serialized) calls display a fake ticking "elapsed"
+	// (bugs.md "Multi-tool calling and timeout" + Bug W). The Running
+	// transition happens on EventToolStart (true scheduler execution start)
+	// or, as a backstop, the call's first progress event.
 
 	// The footer model spinner is not used during a tool call; only the chat
 	// status spinner shows the tool's progress.

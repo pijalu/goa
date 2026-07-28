@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/perms"
@@ -463,6 +464,11 @@ type GoalsConfig struct {
 	// default unless overridden per goal (freshContext arg, /goal:new:fresh,
 	// /goal:new:reuse). Nil = default (true).
 	FreshContext *bool `yaml:"fresh_context,omitempty"`
+	// VerifyTimeout bounds a single verify-command execution at goal
+	// completion (e.g. "2m", "90s"). Empty/invalid = default (2m). The bound
+	// is displayed to the user in the completion evidence (bugs.md Bug A:
+	// "the goal complete should have a clear timeout").
+	VerifyTimeout string `yaml:"verify_timeout,omitempty"`
 }
 
 // VerifyCommandsEnabled reports whether machine verification runs (default true).
@@ -480,6 +486,18 @@ func (g GoalsConfig) AutoUnblockEnabled() bool {
 // (default true = clean context per goal; explicit false = reuse conversation).
 func (g GoalsConfig) FreshContextEnabled() bool {
 	return g.FreshContext == nil || *g.FreshContext
+}
+
+// VerifyTimeoutOr parses goals.verify_timeout, returning fallback when the
+// value is empty or invalid.
+func (g GoalsConfig) VerifyTimeoutOr(fallback time.Duration) time.Duration {
+	if g.VerifyTimeout == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(g.VerifyTimeout); err == nil && d > 0 {
+		return d
+	}
+	return fallback
 }
 
 // GoalsRetentionConfig controls how long terminal normal goals are kept.

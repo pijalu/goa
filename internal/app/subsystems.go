@@ -199,7 +199,7 @@ func (s *subsystems) effectiveModeState() internal.ModeState {
 // InitSubsystems wires together all of Goa's subsystems from a loaded config
 // and runtime options.
 func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir string, opts RuntimeOptions) *subsystems {
-	subs := initBaseSubsystems(cfg, projectDir)
+	subs := initBaseSubsystems(cfg, projectDir, opts.Headless())
 	agentBundle := initAgentBundle(cfg, projectDir)
 	initHookEngine(cfg, projectDir, agentBundle.agentMgr)
 
@@ -231,7 +231,8 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// Goal tools are always registered (stable tool array, bugs.md S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
-	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled)
+	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled,
+		func() time.Duration { return cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) })
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
@@ -277,7 +278,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry, swarmState, taskBus)
 }
 
-func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
+func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) baseSubsystems {
 	wtMode := cfg.Execution.WorktreeMode
 	if wtMode == "" {
 		wtMode = internal.WorktreeMultiAgent
@@ -298,7 +299,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string) baseSubsystems {
 	}
 
 	toolRegistry := tools.NewToolRegistry()
-	lspMgr, mcpMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr)
+	lspMgr, mcpMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr, headless)
 	if cfg.Tools.Enabled.PTYExec {
 		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
 	}
@@ -481,8 +482,9 @@ func configureGoalMode(cfg *config.Config, projectDir string, manager *core.Goal
 		manager.Mode.SetDoneGate(goal.DefaultDoneGate)
 	}
 	// Machine verification (goals.verify_commands): exec the recorded verify
-	// command in the project dir at completion time.
-	manager.Mode.SetVerifier(newExecCommandVerifier(projectDir), cfg.Goals.VerifyCommandsEnabled())
+	// command in the project dir at completion time, bounded by the
+	// configurable goals.verify_timeout (default 2m).
+	manager.Mode.SetVerifier(newExecCommandVerifier(projectDir, cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout)), cfg.Goals.VerifyCommandsEnabled())
 	// Escalation bound (goals.max_verify_failures): config -1 = no cap maps
 	// to mode 0; negative values are clamped to 0 defensively.
 	manager.Mode.SetMaxVerifyFailures(max(cfg.Goals.MaxVerifyFailures, 0))
@@ -643,8 +645,8 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 	return agent.Run(ctx, input)
 }
 
-func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool) {
-	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock, freshContextDefault))
+func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) {
+	toolRegistry.Register(newGoalTool(manager, createFlagOn, autoUnblock, freshContextDefault, verifyTimeout))
 }
 
 // newGoalTool builds the single agent-facing goal tool bound to the manager's
@@ -652,7 +654,9 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 // /tools:goal:on factory (makeToolFactory) construct it identically.
 // autoUnblock gates the auto-spawning of an unblocking investigation goal when
 // the model blocks a goal with justification (goals.auto_unblock; nil = on).
-func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool) agentic.Tool {
+// verifyTimeout feeds the live display of the verify-command bound at goal
+// completion (goals.verify_timeout; nil = default 2m) — bugs.md Bug A.
+func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
 	// goal is already active (bugs.md S2: all goal actions work during a goal).
 	createAllowed := func() bool {
@@ -666,6 +670,7 @@ func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func(
 		gt.Queue = manager.Queue
 		gt.AutoUnblock = autoUnblock
 		gt.FreshContextDefault = freshContextDefault
+		gt.VerifyTimeout = verifyTimeout
 	}
 	return tool
 }

@@ -426,6 +426,11 @@ func toggleTool(ctx core.Context, name, onOff string) error {
 		if ctx.AgentManager != nil {
 			_ = ctx.AgentManager.SetTools(ctx.ToolRegistry.All())
 		}
+		// Let integrations bound to the tool tear down live (e.g. lsp closes
+		// its manager and detaches read/edit/write linking).
+		if ctx.ToolTeardown != nil {
+			ctx.ToolTeardown(name)
+		}
 	}
 
 	ctx.Writef("Tool %s %s. %s\n", name, onOffLabel(enabled), restartHint(enabled))

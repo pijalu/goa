@@ -138,7 +138,11 @@ func (t *ReadFileTool) Execute(input string) (string, error) {
 
 // touchLSP notifies the LSP manager that a file was read, opening/updating the
 // document on its server. Best-effort: errors are swallowed so a read never
-// fails because the language server is unavailable.
+// fails because the language server is unavailable. The manager's DidChange
+// NEVER blocks the read on a server start — servers spawn asynchronously and
+// the touch is dropped (self-healed by the next touch) while one is starting
+// (bugs.md "Read stuck": two parallel reads of Python files parked ~55s on a
+// synchronous cold pyright/npx spawn).
 func (t *ReadFileTool) touchLSP(path string, data []byte) {
 	if t.LSPManager == nil {
 		return

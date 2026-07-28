@@ -360,7 +360,9 @@ Lets the LLM ask the user one or more clarifying questions when requirements
 are ambiguous. Each question is shown as a card in the conversation
 (title / summary / question / numbered options) and answered through the
 **main input line**; the card never captures input. Registered by default;
-disable with `tools.enabled.clarify_disabled: true`.
+disable with `tools.enabled.clarify_disabled: true`. **Not registered in
+headless mode** (`goa -p`, `--goal`, `--orchestrate`) — there is no user at
+the input line to answer.
 
 **Parameters:**
 | Field | Type | Description |
@@ -473,6 +475,59 @@ tools:
 - Exploring unfamiliar codebases
 
 For exact pattern matching (regex, function names), use `search` instead.
+
+### `lsp` — Language-server code navigation
+
+Queries the language server for precise, compiler-grade code navigation:
+**definition**, **references**, **hover**, and **document symbols**. Replaces
+grep-and-guess with exact locations. Works for **every language with a
+configured server** — the manager selects the right server per file by
+extension (Go/gopls, Python/pyright, TypeScript/typescript-language-server,
+Rust, Java, C/C++, Ruby, Zig, Lua, Bash, Terraform, Dockerfile, and more from
+the embedded 34-server registry).
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `op` | string | `definition` \| `references` \| `hover` \| `symbols` (required) |
+| `path` | string | Source file path, any supported language (required) |
+| `line` | integer | 0-indexed line of the symbol (not needed for `symbols`) |
+| `character` | integer | 0-indexed column of the symbol (not needed for `symbols`) |
+
+**Diagnostics on edit/write:** every `edit`/`write` also notifies the file's
+language server (any supported type, not just Go) and appends a
+`Diagnostics (<server>):` block to the tool result when the server reports
+problems — the label names the actual analyzer (gopls, pyright,
+typescript-language-server, …).
+
+**Non-blocking guarantee:** language servers spawn **asynchronously** and
+file touches never wait on a server start (a cold `npx` download can take a
+minute — reads/edits used to block for the full duration). While a server is
+starting, touches are skipped and the next touch re-opens the document once
+it is up; the first edit on a cold server may therefore miss diagnostics —
+they appear from the next one onward. Explicit `lsp` navigation queries wait
+for the server (bounded by the turn context / 3-minute handshake cap).
+
+**Configuration:**
+```yaml
+tools:
+  enabled:
+    lsp: true        # master switch for the WHOLE LSP integration
+                     # (navigation tool + edit/write/read linking + server
+                     # spawns). Off means off — no background servers.
+                     # Toggle live at runtime: /tools:lsp:on | /tools:lsp:off
+lsp:                 # optional schema-level tuning (OpenCode parity)
+  disable_download: false   # only use servers already installed
+  servers:
+    pyright: { disabled: true }          # disable a builtin server
+    myls:   { command: ["myls","--stdio"], extensions: [".my"],
+              markers: ["my.toml"], language_id: "mylang" }
+# `lsp: false` disables LSP globally (blocks even /tools:lsp:on).
+```
+
+Servers resolve in order: PATH binary → `npx --yes` fallback (Node servers,
+downloaded on first run) → optional installer into `~/.goa/bin`
+(`lsp.disable_download` skips both downloads).
 
 ### `webfetch` — Fetch web pages as Markdown
 

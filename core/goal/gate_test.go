@@ -40,9 +40,9 @@ type fakeVerifier struct {
 	calls  []string
 }
 
-func (v *fakeVerifier) Verify(_ context.Context, command string) (string, bool) {
+func (v *fakeVerifier) Verify(_ context.Context, command string) VerifyOutcome {
 	v.calls = append(v.calls, command)
-	return v.output, v.ok
+	return VerifyOutcome{Output: v.output, OK: v.ok, DurationMs: 5, TimeoutMs: 120000}
 }
 
 // fakeJudge returns a scripted verdict.
@@ -294,6 +294,20 @@ func TestRequestComplete_VerifyCommandPass(t *testing.T) {
 	}
 	if len(verifier.calls) != 1 || verifier.calls[0] != cmd {
 		t.Errorf("verify command must run exactly once with the recorded command: %v", verifier.calls)
+	}
+	// Bug A: the command evidence must travel with the result so the user can
+	// see exactly what ran, its output, and the applied timeout.
+	if res.Verification == nil {
+		t.Fatal("CompleteClosed must carry the verification evidence")
+	}
+	if res.Verification.Command != cmd {
+		t.Errorf("evidence command = %q, want %q", res.Verification.Command, cmd)
+	}
+	if res.Verification.Output != "ok\t12 packages" {
+		t.Errorf("evidence output = %q", res.Verification.Output)
+	}
+	if res.Verification.TimeoutMs != 120000 {
+		t.Errorf("evidence timeout = %d, want 120000", res.Verification.TimeoutMs)
 	}
 }
 

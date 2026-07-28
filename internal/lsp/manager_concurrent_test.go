@@ -25,6 +25,9 @@ func TestManager_ConcurrentDidChange(t *testing.T) {
 	sink := &syncBuffer{}
 	mgr := startedManager(t, t.TempDir(), &fakeServerRecorder{}, sink, testSpecs)
 	ctx := context.Background()
+	// The server must be UP before the race: touches on a starting server are
+	// dropped by design (async spawn), which is not what this race exercises.
+	waitReady(t, mgr, "warmup.go")
 
 	const goroutines = 8
 	const opsPerGoroutine = 50
@@ -54,6 +57,8 @@ func TestManager_ConcurrentOpenSameFileSingleDidOpen(t *testing.T) {
 	sink := &syncBuffer{}
 	mgr := startedManager(t, t.TempDir(), &fakeServerRecorder{}, sink, testSpecs)
 	ctx := context.Background()
+	// Server up first (touches on a starting server are dropped by design).
+	waitReady(t, mgr, "warmup.go")
 
 	const goroutines = 16
 	var wg sync.WaitGroup
@@ -82,6 +87,8 @@ func TestManager_ConcurrentOpenAndChange(t *testing.T) {
 	dir := t.TempDir()
 	mgr := startedManager(t, dir, &fakeServerRecorder{}, sink, testSpecs)
 	ctx := context.Background()
+	// Server up first (touches on a starting server are dropped by design).
+	waitReady(t, mgr, "warmup.go")
 
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {

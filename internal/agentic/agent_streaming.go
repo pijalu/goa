@@ -843,6 +843,15 @@ func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, contentIndex int
 	emitName := ptc.toolName
 	a.mu.Unlock()
 
+	// Do not emit until the tool name is known: OpenAI-style streams ship the
+	// call id/index in the first chunk and the name only in a later one, and a
+	// nameless delta made the TUI create a blank-header tool widget that never
+	// updated (bugs.md "Empty tool TUI"). Args accumulate here and are emitted
+	// cumulative, so the first named delta carries the full prefix.
+	if emitName == "" {
+		return
+	}
+
 	// Emit partial EventToolCall to observers (TUI will show ◉ pending icon).
 	a.emitEvent(OutputEvent{
 		Type:       EventToolCall,
@@ -872,6 +881,11 @@ func (a *Agent) handleToolCallDeltaByIndex(contentIndex int, delta string) {
 	emitID := ptc.toolCallID
 	emitName := ptc.toolName
 	a.mu.Unlock()
+
+	// Same nameless guard as handleToolCallPartial (bugs.md "Empty tool TUI").
+	if emitName == "" {
+		return
+	}
 
 	a.emitEvent(OutputEvent{
 		Type:       EventToolCall,

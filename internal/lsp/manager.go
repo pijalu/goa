@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Manager coordinates one language-server client per (server, project-root)
@@ -27,7 +28,10 @@ type Manager struct {
 	clients  map[string]*serverClient // key: serverID + "|" + root
 	broken   map[string]error         // key: serverID + "|" + root → start error
 	diags    *Diagnostics
-	spawning map[string]*sync.WaitGroup
+	// spawning tracks in-flight async spawns: key → flight whose done channel
+	// closes when the spawn resolves (client registered or key marked broken).
+	// A channel (not sync.WaitGroup) so waiters can bound the wait with ctx.
+	spawning map[string]*spawnFlight
 	// serverFactory starts a server process; defaults to Start (spawns the real
 	// binary). Swappable in tests.
 	serverFactory func(ctx context.Context, cfg ServerConfig) (*Server, error)
@@ -40,6 +44,20 @@ type Manager struct {
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
 }
+
+// spawnFlight tracks one in-flight server spawn; done is closed when the
+// spawn resolves (success → client registered, failure → key marked broken).
+type spawnFlight struct{ done chan struct{} }
+
+// spawnHandshakeTimeout bounds server startup + the initialize handshake.
+// Cold npx downloads (pyright, typescript-language-server) take ~1 minute on
+// first run; 3 minutes is generous. The timeout governs ONLY the resolve +
+// initialize handshake — the server PROCESS stays on lifecycleCtx, so a
+// healthy server is never killed by this deadline. Before this bound, a
+// server that accepted its pipe but never answered Initialize wedged the
+// calling tool FOREVER (bugs.md "Read stuck" / Issue 21-style hang).
+// A var (not const) so tests can shrink the bound.
+var spawnHandshakeTimeout = 3 * time.Minute
 
 // serverClient is one running language server and the files it has open.
 type serverClient struct {
@@ -80,7 +98,7 @@ func NewManager(rootDir string, opts ...Option) *Manager {
 		clients:       make(map[string]*serverClient),
 		broken:        make(map[string]error),
 		diags:         NewDiagnostics(),
-		spawning:      make(map[string]*sync.WaitGroup),
+		spawning:      make(map[string]*spawnFlight),
 		serverFactory: Start,
 		resolve: func(spec *ServerSpec, binDir string, installAllowed bool) ([]string, bool) {
 			return spec.resolveCommand(binDir, installAllowed)
@@ -116,20 +134,39 @@ func (m *Manager) StartError() error { return nil }
 // clientKey identifies a (server, root) pair.
 func clientKey(serverID, root string) string { return serverID + "|" + root }
 
-// clientFor returns the running client for the given file, spawning the server
-// on first use. It returns nil (and no error) when no server handles the file
-// or the server is unavailable; diagnostics/navigation degrade gracefully.
-func (m *Manager) clientFor(ctx context.Context, path string) *serverClient {
-	if m == nil || !m.started {
-		return nil
+// lookup resolves path to its server spec, (server, root) key, and root.
+// ok is false when the manager is down or no server handles the file type.
+// Nil-receiver safe: bootstrap may hold a typed-nil manager when LSP is off.
+func (m *Manager) lookup(path string) (spec *ServerSpec, key, root string, ok bool) {
+	if m == nil {
+		return nil, "", "", false
 	}
-	spec := specForFile(m.specs, path)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.started {
+		return nil, "", "", false
+	}
+	spec = specForFile(m.specs, path)
 	if spec == nil {
+		return nil, "", "", false
+	}
+	root = spec.FindRoot(path, m.rootDir)
+	return spec, clientKey(spec.ID, root), root, true
+}
+
+// clientFor returns the RUNNING client for the given file — it never blocks.
+// When the server is not up yet it kicks an asynchronous spawn (single-flight)
+// and returns nil so the caller degrades gracefully instead of parking on a
+// server start. Server starts can take ~1 minute (cold npx download) and used
+// to run synchronously here, which wedged file tools for the full duration —
+// two parallel reads of Python files both reported "Took 55.1s"
+// (bugs.md "Read stuck"). Use waitClientFor where blocking is acceptable
+// (model-initiated navigation queries, which carry a ctx).
+func (m *Manager) clientFor(path string) *serverClient {
+	spec, key, root, ok := m.lookup(path)
+	if !ok {
 		return nil
 	}
-	root := spec.FindRoot(path, m.rootDir)
-	key := clientKey(spec.ID, root)
-
 	m.mu.Lock()
 	if c, ok := m.clients[key]; ok {
 		m.mu.Unlock()
@@ -139,22 +176,63 @@ func (m *Manager) clientFor(ctx context.Context, path string) *serverClient {
 		m.mu.Unlock()
 		return nil
 	}
-	// Single-flight: one goroutine spawns, others wait.
-	if wg, spawning := m.spawning[key]; spawning {
+	if _, spawning := m.spawning[key]; spawning {
 		m.mu.Unlock()
-		wg.Wait()
+		return nil // server is starting: degrade, do not block
+	}
+	m.startSpawnLocked(spec, key, root)
+	m.mu.Unlock()
+	return nil
+}
+
+// waitClientFor is clientFor but waits (bounded by ctx) for an in-flight or
+// freshly kicked spawn to resolve. Used by model-initiated query ops where
+// blocking is expected and the caller's ctx bounds the wait (turn cancel,
+// tool deadline).
+func (m *Manager) waitClientFor(ctx context.Context, path string) *serverClient {
+	spec, key, root, ok := m.lookup(path)
+	if !ok {
+		return nil
+	}
+	m.mu.Lock()
+	if c, ok := m.clients[key]; ok {
+		m.mu.Unlock()
+		return c
+	}
+	if _, broken := m.broken[key]; broken {
+		m.mu.Unlock()
+		return nil
+	}
+	flight, spawning := m.spawning[key]
+	if !spawning {
+		flight = m.startSpawnLocked(spec, key, root)
+	}
+	m.mu.Unlock()
+
+	select {
+	case <-flight.done:
 		m.mu.Lock()
 		c := m.clients[key]
 		m.mu.Unlock()
 		return c
+	case <-ctx.Done():
+		return nil
 	}
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	m.spawning[key] = wg
-	m.mu.Unlock()
+}
 
-	c := m.spawn(m.lifecycleCtx, spec, root)
+// startSpawnLocked records a new spawn flight and launches the async spawn.
+// Caller must hold m.mu.
+func (m *Manager) startSpawnLocked(spec *ServerSpec, key, root string) *spawnFlight {
+	flight := &spawnFlight{done: make(chan struct{})}
+	m.spawning[key] = flight
+	go m.spawnAsync(spec, root, key, flight)
+	return flight
+}
 
+// spawnAsync runs the slow spawn off the caller's path, then publishes the
+// outcome (client registered, or key marked broken) and releases waiters.
+func (m *Manager) spawnAsync(spec *ServerSpec, root, key string, flight *spawnFlight) {
+	c := m.spawn(spec, root)
 	m.mu.Lock()
 	if c != nil {
 		m.clients[key] = c
@@ -163,18 +241,21 @@ func (m *Manager) clientFor(ctx context.Context, path string) *serverClient {
 	}
 	delete(m.spawning, key)
 	m.mu.Unlock()
-	wg.Done()
-	return c
+	close(flight.done)
 }
 
 // spawn resolves the server's command and starts it, returning nil when the
-// server cannot be launched.
-func (m *Manager) spawn(ctx context.Context, spec *ServerSpec, root string) *serverClient {
+// server cannot be launched. The process is tied to lifecycleCtx (long-lived);
+// only the resolve + initialize handshake is bounded by spawnHandshakeTimeout.
+func (m *Manager) spawn(spec *ServerSpec, root string) *serverClient {
+	hsCtx, cancel := context.WithTimeout(m.lifecycleCtx, spawnHandshakeTimeout)
+	defer cancel()
+
 	argv, ok := m.resolve(spec, m.binDir, m.install)
 	if !ok || len(argv) == 0 {
 		return nil
 	}
-	server, err := m.serverFactory(ctx, ServerConfig{
+	server, err := m.serverFactory(m.lifecycleCtx, ServerConfig{
 		Command: argv[0],
 		Args:    argv[1:],
 		RootDir: root,
@@ -185,19 +266,19 @@ func (m *Manager) spawn(ctx context.Context, spec *ServerSpec, root string) *ser
 	}
 	client := server.Client()
 	client.OnNotification("textDocument/publishDiagnostics", m.diags.Handler())
-	rootURI := "file://" + filepath.ToSlash(root)
-	if _, err := client.Initialize(ctx, InitializeParams{
+	rootURI := uriFor(root)
+	if _, err := client.Initialize(hsCtx, InitializeParams{
 		ProcessID:             0,
 		RootURI:               rootURI,
-		Capabilities:          map[string]any{},
+		Capabilities:          clientCapabilities(),
 		InitializationOptions: initOptions(spec, root),
 		Trace:                 "off",
 	}); err != nil {
-		_ = server.Close(ctx)
+		_ = server.Close(m.lifecycleCtx)
 		return nil
 	}
 	if err := client.Initialized(InitializedParams{}); err != nil {
-		_ = server.Close(ctx)
+		_ = server.Close(m.lifecycleCtx)
 		return nil
 	}
 	return &serverClient{
@@ -208,12 +289,30 @@ func (m *Manager) spawn(ctx context.Context, spec *ServerSpec, root string) *ser
 	}
 }
 
-// uriFor converts a path to a file:// URI.
+// uriFor converts a path to a file:// URI. Symlinks are resolved (macOS
+// /tmp→/private/tmp, /var→/private/var): some servers (typescript-language-
+// server) canonicalize URIs to the real path in publishDiagnostics, while
+// others (gopls, pyright) echo the didOpen URI back — resolving up front
+// keeps didOpen and diagnostics keyed identically for BOTH kinds
+// (bugs.md Issue LSP: tsserver diagnostics silently dropped).
 func uriFor(path string) string {
-	if filepath.IsAbs(path) {
-		return "file://" + filepath.ToSlash(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
 	}
 	return "file://" + filepath.ToSlash(path)
+}
+
+// clientCapabilities declares what the goa LSP client supports. Crucially it
+// includes textDocument.publishDiagnostics: servers such as
+// typescript-language-server only PUSH diagnostics when the client declares
+// the capability — with an empty capabilities object they stay silent forever
+// (bugs.md Issue LSP: tsserver produced zero diagnostics).
+func clientCapabilities() map[string]any {
+	return map[string]any{
+		"textDocument": map[string]any{
+			"publishDiagnostics": map[string]any{},
+		},
+	}
 }
 
 // mergeEnv returns os.Environ() with the spec's Env overrides applied, or nil
@@ -329,22 +428,48 @@ func (c *serverClient) isOpen(uri string) bool {
 }
 
 // OpenDocument notifies the appropriate server that a document was opened.
+// It never blocks: when the server is still starting (or unavailable) the
+// notification is dropped and a descriptive error returned — file tools
+// ignore it and the next touch re-opens the document once the server is up
+// (notifyChange self-heals by opening unopened documents).
 func (m *Manager) OpenDocument(ctx context.Context, path, text string) error {
-	c := m.clientFor(ctx, path)
+	c := m.clientFor(path)
 	if c == nil {
-		return fmt.Errorf("lsp manager: no server for %s", path)
+		return m.noClientError(path)
 	}
 	return c.notifyOpen(uriFor(path), c.spec.languageID(path), text)
 }
 
 // DidChange notifies the appropriate server of a content change, opening the
-// document first if it was not open (so a bare DidChange still works).
+// document first if it was not open (so a bare DidChange still works). Like
+// OpenDocument it never blocks on a starting server (bugs.md "Read stuck").
 func (m *Manager) DidChange(ctx context.Context, path, text string) error {
-	c := m.clientFor(ctx, path)
+	c := m.clientFor(path)
 	if c == nil {
-		return fmt.Errorf("lsp manager: no server for %s", path)
+		return m.noClientError(path)
 	}
 	return c.notifyChange(uriFor(path), c.spec.languageID(path), text)
+}
+
+// noClientError describes why no client is available for path: unsupported
+// file type, server still starting, or server failed to start.
+func (m *Manager) noClientError(path string) error {
+	_, key, _, ok := m.lookup(path)
+	if !ok {
+		return fmt.Errorf("lsp manager: no server for %s", path)
+	}
+	m.mu.Lock()
+	_, starting := m.spawning[key]
+	_, broken := m.broken[key]
+	m.mu.Unlock()
+	switch {
+	case starting:
+		return fmt.Errorf("lsp manager: server for %s is still starting", path)
+	case broken:
+		return fmt.Errorf("lsp manager: server for %s failed to start", path)
+	default:
+		return fmt.Errorf("lsp manager: no server for %s", path)
+	}
 }
 
 // DiagnosticsFor returns the latest diagnostics published for a file path.
@@ -353,6 +478,18 @@ func (m *Manager) DiagnosticsFor(ctx context.Context, path string) []Diagnostic 
 		return nil
 	}
 	return m.diags.Get(uriFor(path))
+}
+
+// ServerIDFor returns the id of the language server that handles path
+// (e.g. "gopls", "pyright"), or "" when no server supports the file type.
+// Used to label diagnostics with the actual source server instead of a
+// hardcoded "gopls" (bugs.md Issue LSP — py/js files reported as gopls).
+func (m *Manager) ServerIDFor(path string) string {
+	spec, _, _, ok := m.lookup(path)
+	if !ok {
+		return ""
+	}
+	return spec.ID
 }
 
 // HasErrors reports whether any tracked file has an error-level diagnostic.
@@ -364,11 +501,16 @@ func (m *Manager) HasErrors() bool {
 }
 
 // ensureOpen makes sure the document is open on its server before a position
-// request, opening it (with on-disk contents) if needed.
+// request, opening it (with on-disk contents) if needed. Unlike the fire-and-
+// forget touch path it WAITS for a starting server (bounded by ctx) because
+// the model explicitly asked for a navigation answer.
 func (m *Manager) ensureOpen(ctx context.Context, path string) (*serverClient, error) {
-	c := m.clientFor(ctx, path)
+	c := m.waitClientFor(ctx, path)
 	if c == nil {
-		return nil, fmt.Errorf("lsp manager: no server for %s", path)
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("lsp manager: waiting for server for %s: %w", path, ctx.Err())
+		}
+		return nil, m.noClientError(path)
 	}
 	uri := uriFor(path)
 	if c.isOpen(uri) {
@@ -462,7 +604,7 @@ func (m *Manager) Close(ctx context.Context) error {
 	return firstErr
 }
 
-// Status reports which servers are running, for diagnostics/UI.
+// Status reports which servers are running (and starting), for diagnostics/UI.
 func (m *Manager) Status() string {
 	if m == nil {
 		return "lsp: none"
@@ -472,6 +614,11 @@ func (m *Manager) Status() string {
 	var ids []string
 	for _, c := range m.clients {
 		ids = append(ids, c.spec.ID)
+	}
+	for key := range m.spawning {
+		if idx := strings.IndexByte(key, '|'); idx > 0 {
+			ids = append(ids, key[:idx]+"(starting)")
+		}
 	}
 	if len(ids) == 0 {
 		return "lsp: none"

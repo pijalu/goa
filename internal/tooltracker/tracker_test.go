@@ -210,3 +210,78 @@ func TestTracker_NilSafe(t *testing.T) {
 	tr.FailAll()
 	tr.Reset()
 }
+
+// TestTracker_NamelessDeltaCreatesNoWidget reproduces bugs.md "Empty tool
+// TUI": an OpenAI-style stream ships the call id/index first and the tool
+// name in a later chunk. A nameless delta must NOT create a widget — one
+// appears at the first NAMED delta, and exactly one widget exists overall.
+func TestTracker_NamelessDeltaCreatesNoWidget(t *testing.T) {
+	tr, made := newTestTracker(t)
+
+	// Nameless start chunks (id first, name later) — must be ignored.
+	for _, input := range []string{"", `{"command":"ls`, `{"command":"ls -la"}`} {
+		if _, created := tr.OnCall(&agentic.OutputEvent{
+			Type: agentic.EventToolCall, IsDelta: true,
+			ToolName: "", ToolInput: input, ToolCallID: "c1",
+		}); created {
+			t.Fatalf("nameless delta must not create a widget (input %q)", input)
+		}
+	}
+	if len(*made) != 0 {
+		t.Fatalf("no widget may exist before the name arrives, got %d", len(*made))
+	}
+
+	// First named delta creates THE widget (args preserved from the named
+	// delta onward — the agent re-emits args cumulative).
+	if _, created := tr.OnCall(&agentic.OutputEvent{
+		Type: agentic.EventToolCall, IsDelta: true,
+		ToolName: "bash", ToolInput: `{"command":"ls -la"}`, ToolCallID: "c1",
+	}); !created {
+		t.Fatal("first named delta must create the widget")
+	}
+	// Further named deltas reuse it.
+	tr.OnCall(&agentic.OutputEvent{Type: agentic.EventToolCall, IsDelta: true,
+		ToolName: "bash", ToolInput: `{"command":"ls -la /tmp"}`, ToolCallID: "c1"})
+	if len(*made) != 1 {
+		t.Fatalf("exactly one widget expected, got %d", len(*made))
+	}
+	if (*made)[0].ToolName() != "bash" {
+		t.Errorf("widget name = %q, want bash", (*made)[0].ToolName())
+	}
+}
+
+// TestTracker_OnStartFlipsPendingToRunning verifies the EventToolStart
+// transition (bugs.md Bug W): the widget flips Pending→Running at the true
+// execution start, and a call that was never started stays Pending (waiting).
+func TestTracker_OnStartFlipsPendingToRunning(t *testing.T) {
+	tr, made := newTestTracker(t)
+
+	// Two finalized calls (args complete) — both Pending (queued).
+	tr.OnCall(&agentic.OutputEvent{Type: agentic.EventToolCall, IsDelta: false,
+		ToolName: "edit", ToolInput: `{"path":"f.go"}`, ToolCallID: "c1"})
+	tr.OnCall(&agentic.OutputEvent{Type: agentic.EventToolCall, IsDelta: false,
+		ToolName: "edit", ToolInput: `{"path":"f.go"}`, ToolCallID: "c2"})
+	if len(*made) != 2 {
+		t.Fatalf("expected 2 widgets, got %d", len(*made))
+	}
+
+	// Only c1 starts executing.
+	tc := tr.OnStart(&agentic.OutputEvent{Type: agentic.EventToolStart,
+		ToolName: "edit", ToolCallID: "c1"})
+	if tc == nil {
+		t.Fatal("OnStart must resolve c1's widget")
+	}
+	if (*made)[0].Status() != tui.ToolRunning {
+		t.Errorf("c1 must be Running after its start event, got %v", (*made)[0].Status())
+	}
+	if (*made)[1].Status() != tui.ToolPending {
+		t.Errorf("c2 must stay Pending (waiting) until its own start, got %v", (*made)[1].Status())
+	}
+
+	// Results still resolve afterwards.
+	tr.OnResult(&agentic.OutputEvent{Type: agentic.EventToolResult,
+		ToolName: "edit", ToolCallID: "c1", Text: "[edit] ok"})
+	if (*made)[0].Status() != tui.ToolSuccess {
+		t.Errorf("c1 must be Success after result, got %v", (*made)[0].Status())
+	}
+}

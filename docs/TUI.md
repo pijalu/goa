@@ -233,6 +233,25 @@ parallel agents do not overwrite each other's blocks. See
 `internal/app/orchestrator_conversation_render_test.go` for the Filmstrip
 regression pattern.
 
+### Tool widget lifecycle
+
+A tool call widget moves through four display states, driven by agent events:
+
+| State | Icon | Duration line | Meaning |
+|-------|------|---------------|---------|
+| Pending (args streaming) | ◉ | `elapsed Ns` | The model is still streaming the call's arguments. |
+| Pending (queued) | ⧖ | `waiting Ns…` | Args complete, but the scheduler has not started execution yet (conflict-serialized behind another call or at the parallel cap). The wait clock starts at args completion. |
+| Running | ● | `elapsed Ns` | Actually executing — flipped by `EventToolStart`, which the `ToolScheduler` emits the moment the task leaves the queue. The elapsed clock restarts here, so it measures execution only. |
+| Success / Error | ✓ / ✗ | `Took Ns` | Final execution time. |
+
+Before `EventToolStart` existed, every finalized call was stamped Running at
+args-complete, so queued calls showed a fake ticking `elapsed` that included
+queue time (three serialized calls all displaying the same value). Event order
+per call: `EventToolCall` (deltas → final) → `EventToolStart` (queued →
+executing) → `EventToolProgress` (optional, live output) → `EventToolResult`.
+`EventToolStart` is persisted in the session event log (useful for queue-wait
+analysis in exports) and ignored by headless/ACP renderers.
+
 ## Agent-testable UI (Filmstrip)
 
 The TUI is designed to be testable **without a real terminal**, so that both

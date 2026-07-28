@@ -34,6 +34,10 @@ type LSPDocumentManager interface {
 	DidChange(ctx context.Context, path, text string) error
 	// DiagnosticsFor returns the latest diagnostics published for path, or nil.
 	DiagnosticsFor(ctx context.Context, path string) []lsp.Diagnostic
+	// ServerIDFor returns the id of the server handling path (e.g. "gopls",
+	// "pyright"), or "" when the file type has no server. Used to label the
+	// diagnostics block with its actual source.
+	ServerIDFor(path string) string
 }
 
 type WriteFileTool struct {
@@ -124,12 +128,19 @@ func (t *WriteFileTool) Execute(input string) (string, error) {
 }
 
 // lspDiagnostics notifies the LSP server of a document change (open or edit)
-// and returns a formatted diagnostics block for the tool result. It is a
-// no-op for non-Go files or when no manager is configured. The open flag
-// selects DidOpen (write) vs DidChange (edit).
+// and returns a formatted diagnostics block for the tool result. Every file
+// type is forwarded — the manager itself selects the right server per file
+// and no-ops unsupported extensions (bugs.md Issue LSP: LSP must cover ALL
+// supported files, not just .go). The notification never blocks the tool on a
+// server start (manager spawns asynchronously); diagnostics appear once the
+// server is up and has processed the document. The open flag selects DidOpen
+// (write) vs DidChange (edit).
 func (t *WriteFileTool) lspDiagnostics(ctx context.Context, resolvedPath, content string, open bool) string {
-	if t.LSPManager == nil || !strings.HasSuffix(resolvedPath, ".go") {
+	if t.LSPManager == nil {
 		return ""
+	}
+	if t.LSPManager.ServerIDFor(resolvedPath) == "" {
+		return "" // no language server handles this file type
 	}
 	if open {
 		_ = t.LSPManager.OpenDocument(ctx, resolvedPath, content)
@@ -138,7 +149,7 @@ func (t *WriteFileTool) lspDiagnostics(ctx context.Context, resolvedPath, conten
 	}
 	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
 	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
-	return formatLSPDiagnostics(resolvedPath, diags)
+	return formatLSPDiagnostics(resolvedPath, diags, t.LSPManager.ServerIDFor(resolvedPath))
 }
 
 func parseWriteFileParams(input string) (writeFileParams, error) {

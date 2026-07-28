@@ -246,6 +246,26 @@ tools:
         user: deploy
         key_file: ~/.ssh/deploy_key
 
+# ── LSP (language servers) ─────────────────────────────────────────
+# `tools.enabled.lsp` is the master switch for the whole integration:
+# navigation tool, edit/write/read → server linking, and background server
+# spawns. Off means off — nothing spawns, nothing is touched (default: on).
+# Toggle live at runtime with /tools:lsp:on | /tools:lsp:off.
+# Servers spawn ASYNCHRONOUSLY per file type and never block file tools;
+# diagnostics appear on edit/write for every supported language, labeled
+# with their analyzer (gopls, pyright, typescript-language-server, …).
+# Node servers auto-download via `npx --yes` on first use.
+#
+# lsp: false                  # disable LSP globally (blocks even /tools:lsp:on)
+lsp:
+  disable_download: false     # true = only already-installed servers (no npx/install)
+  servers:                    # per-server disable/override/custom (OpenCode schema)
+    pyright: { disabled: true }
+    myls:
+      command: ["myls", "--stdio"]
+      extensions: [".my"]
+      markers: ["my.toml"]
+      language_id: "mylang"
 # ── TUI ────────────────────────────────────────────────────────────
 tui:
   theme: dark                        # dark | light | custom

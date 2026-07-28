@@ -79,6 +79,19 @@ type CompleteResult struct {
 	Outcome  CompleteOutcome
 	// Failure carries machine-verification details for CompleteVerifyFailed.
 	Failure *VerifyFailure
+	// Verification carries the verify-command evidence whenever a command
+	// ran — on success too, so the user can follow exactly what was executed
+	// and what it printed (bugs.md Bug A: "goal complete must show the exact
+	// command and the output").
+	Verification *VerifyEvidence
+}
+
+// VerifyEvidence is the successful-or-not record of a verify-command run.
+type VerifyEvidence struct {
+	Command    string
+	Output     string
+	DurationMs int64
+	TimeoutMs  int64
 }
 
 // VerifyFailure describes one rejected machine verification.
@@ -97,9 +110,23 @@ type VerifyFailure struct {
 }
 
 // CommandVerifier executes a goal's recorded verify command and reports
-// success. Implementations must bound execution time themselves.
+// success. Implementations must bound execution time themselves and report
+// the bound they applied (TimeoutMs) so the UI can show it (bugs.md Bug A:
+// "the goal complete should have a clear timeout").
 type CommandVerifier interface {
-	Verify(ctx context.Context, command string) (output string, ok bool)
+	Verify(ctx context.Context, command string) VerifyOutcome
+}
+
+// VerifyOutcome is the result of one verify-command execution.
+type VerifyOutcome struct {
+	// Output is the (sanitized, possibly capped) combined command output.
+	Output string
+	// OK is true only when the command exited 0 within the timeout.
+	OK bool
+	// DurationMs is the measured wall-clock execution time.
+	DurationMs int64
+	// TimeoutMs is the timeout bound the verifier applied.
+	TimeoutMs int64
 }
 
 // JudgeInput is the case presented to the completion judge.
@@ -162,11 +189,15 @@ func (m *GoalMode) RequestComplete(ctx context.Context, input GoalReasonInput, a
 	}
 	// decision.outcome == CompleteVerifyFailed sentinel meaning "machine
 	// verification required": run it unlocked.
-	failure := m.runVerification(ctx, decision)
+	failure, evidence := m.runVerification(ctx, decision)
 	if failure == nil {
-		return m.finishCompletion(input, actor)
+		res, err := m.finishCompletion(input, actor)
+		res.Verification = evidence
+		return res, err
 	}
-	return m.failCompletion(decision, failure), nil
+	res := m.failCompletion(decision, failure)
+	res.Verification = evidence
+	return res, nil
 }
 
 // beginCompletion performs the fast, locked part of RequestComplete: no-goal
@@ -222,25 +253,34 @@ func (m *GoalMode) effectiveVerifyCommand(state *goalStage) *string {
 
 // runVerification executes the slow verification steps without holding the
 // mode lock: the verify command first (objective), then the judge
-// (semantic). A judge error is fail-open. Nil means "verified".
-func (m *GoalMode) runVerification(ctx context.Context, decision completionDecision) *VerifyFailure {
+// (semantic). A judge error is fail-open. A nil failure means "verified".
+// The evidence records the verify-command run (nil when no command ran) so
+// the caller can surface the exact command and output to the user.
+func (m *GoalMode) runVerification(ctx context.Context, decision completionDecision) (*VerifyFailure, *VerifyEvidence) {
+	var evidence *VerifyEvidence
 	if decision.verifyCmd != nil {
-		output, ok := m.verifier.Verify(ctx, *decision.verifyCmd)
-		if !ok {
-			return &VerifyFailure{Kind: "command", Detail: tailLines(output, 10)}
+		outcome := m.verifier.Verify(ctx, *decision.verifyCmd)
+		evidence = &VerifyEvidence{
+			Command:    *decision.verifyCmd,
+			Output:     outcome.Output,
+			DurationMs: outcome.DurationMs,
+			TimeoutMs:  outcome.TimeoutMs,
+		}
+		if !outcome.OK {
+			return &VerifyFailure{Kind: "command", Detail: tailLines(outcome.Output, 10)}, evidence
 		}
 	}
 	if decision.judge != nil {
 		verdict, err := decision.judge.Judge(ctx, decision.judgeIn)
 		if err != nil {
 			m.telemetry.Track(TelemetryGoalJudgeError, map[string]any{"error": err.Error()})
-			return nil // fail-open: a broken judge never wedges a goal
+			return nil, evidence // fail-open: a broken judge never wedges a goal
 		}
 		if !verdict.Pass {
-			return &VerifyFailure{Kind: "judge", Detail: verdict.Rationale}
+			return &VerifyFailure{Kind: "judge", Detail: verdict.Rationale}, evidence
 		}
 	}
-	return nil
+	return nil, evidence
 }
 
 // finishCompletion closes the goal after successful verification, unless

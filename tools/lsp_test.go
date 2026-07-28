@@ -39,7 +39,7 @@ func (f *fakeLSPQueryManager) DocumentSymbols(ctx context.Context, path string) 
 func TestLSPTool_Unavailable(t *testing.T) {
 	tool := &LSPTool{ProjectDir: t.TempDir(), Manager: &fakeLSPQueryManager{started: false}}
 	_, err := tool.Execute(`{"op":"definition","path":"main.go","line":1,"character":1}`)
-	if err == nil || !strings.Contains(err.Error(), "not running") {
+	if err == nil || !strings.Contains(err.Error(), "no language server is running") {
 		t.Fatalf("expected unavailable error, got %v", err)
 	}
 }

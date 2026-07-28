@@ -39,6 +39,13 @@ const (
 	// transient UI update: it does not complete the tool call and is not sent
 	// to the model.
 	EventToolProgress EventType = "tool_progress"
+	// EventToolStart signals a queued tool call actually began executing
+	// (the scheduler started its task). The UI flips the widget from the
+	// "waiting" state (⧖, queued behind conflicting/earlier calls) to the
+	// "elapsed" state at this moment — NOT at args-complete — so a queued
+	// call's timer measures execution only (bugs.md Bug W). It is transient
+	// UI state: not sent to the model, not persisted to history.
+	EventToolStart EventType = "tool_start"
 	// EventEnd signals the end of a conversation turn.
 	EventEnd EventType = "end"
 	// EventClear signals the conversation was cleared.

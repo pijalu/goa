@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/internal/agentic"
@@ -40,6 +41,14 @@ type GoalTool struct {
 	// actions operate over the active goal + the queue. May be nil (queue-less
 	// setups) — list actions then operate on the active goal only.
 	Queue GoalQueue
+	// VerifyTimeout reports the configured verify-command timeout
+	// (goals.verify_timeout) for the live progress display at completion.
+	// Nil = default 2m (bugs.md Bug A: the timeout must be clear to the user).
+	VerifyTimeout func() time.Duration
+	// challenged tracks that the previous complete request was intercepted
+	// by the done-gate, so the confirming call knows verification is about
+	// to run and can announce it (command + timeout) to the user.
+	challenged bool
 }
 
 // GoalQueue is the subset of the durable goal queue the tool needs. It is
@@ -190,9 +199,24 @@ func (t *GoalTool) Execute(input string) (string, error) {
 	return res.Output, nil
 }
 
+// ExecuteContextWithResult implements agentic.ContextResultTool: the ctx
+// carries the execution-progress emitter so a goal completion can ANNOUNCE
+// the verify command it is about to run (exact command + timeout) instead of
+// sitting silent for up to 2 minutes (bugs.md Bug A), while the ToolResult
+// keeps the StopTurn signal for terminal statuses.
+func (t *GoalTool) ExecuteContextWithResult(ctx context.Context, input string) (agentic.ToolResult, error) {
+	return t.executeWithResult(ctx, input)
+}
+
 // ExecuteWithResult implements agentic.ResultTool and carries the StopTurn
 // signal for terminal update statuses.
 func (t *GoalTool) ExecuteWithResult(input string) (agentic.ToolResult, error) {
+	return t.executeWithResult(context.Background(), input)
+}
+
+// executeWithResult is the ctx-carrying dispatch shared by Execute,
+// ExecuteContext and ExecuteWithResult.
+func (t *GoalTool) executeWithResult(ctx context.Context, input string) (agentic.ToolResult, error) {
 	var args goalArgs
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input", fmt.Errorf("invalid goal input: %w", err))
@@ -201,7 +225,7 @@ func (t *GoalTool) ExecuteWithResult(input string) (agentic.ToolResult, error) {
 	case "create":
 		return t.handleCreate(args)
 	case "update":
-		return t.handleUpdate(args)
+		return t.handleUpdate(ctx, args)
 	case "get":
 		return t.handleGet()
 	case "set_budget":
@@ -436,7 +460,7 @@ func (t *GoalTool) resolveQueuedID(idOrName string) (string, error) {
 	return "", fmt.Errorf("no queued goal with ID or name %q", idOrName)
 }
 
-func (t *GoalTool) handleUpdate(args goalArgs) (agentic.ToolResult, error) {
+func (t *GoalTool) handleUpdate(ctx context.Context, args goalArgs) (agentic.ToolResult, error) {
 	if args.Status == "" {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
 			fmt.Errorf("action \"update\" requires \"status\" (active|complete|paused|blocked)"))
@@ -445,7 +469,13 @@ func (t *GoalTool) handleUpdate(args goalArgs) (agentic.ToolResult, error) {
 		"active":   t.updateActive,
 		"paused":   t.updatePaused,
 		"blocked":  t.updateBlocked,
-		"complete": t.updateComplete,
+	}
+	if args.Status == "complete" {
+		res, err := t.updateComplete(ctx, args)
+		if err != nil {
+			return agentic.ToolResult{}, goalToolErr("goal", "update_failed", err)
+		}
+		return res, nil
 	}
 	handler, ok := handlers[args.Status]
 	if !ok {
@@ -585,7 +615,14 @@ Your ONLY job is to determine whether this blocker can be solved without user in
 // verify command (exit 0 required) and judge; a failure keeps the goal
 // active with the failure detail, escalating to blocked at the configured
 // streak cap. Without a criterion (or gate off), completion is immediate.
-func (t *GoalTool) updateComplete(args goalArgs) (agentic.ToolResult, error) {
+//
+// Transparency (bugs.md Bug A): the confirming call ANNOUNCES the verify
+// command before running it (exact command + timeout, via the execution
+// progress emitter), and a successful completion returns the full evidence
+// block (command, exit, elapsed, timeout, output tail) so the user can
+// follow exactly what validated the goal.
+func (t *GoalTool) updateComplete(ctx context.Context, args goalArgs) (agentic.ToolResult, error) {
+	t.announceVerification(ctx)
 	input := goal.GoalReasonInput{Reason: optionalReason(args)}
 	result, err := t.Mode.RequestComplete(context.Background(), input, goal.GoalActorModel)
 	if err != nil {
@@ -593,14 +630,76 @@ func (t *GoalTool) updateComplete(args goalArgs) (agentic.ToolResult, error) {
 	}
 	switch result.Outcome {
 	case goal.CompleteChallenged:
+		t.challenged = true
 		return agentic.ToolResult{Output: goal.BuildVerificationChallenge(*result.Snapshot)}, nil
 	case goal.CompleteVerifyFailed:
+		t.challenged = false
 		return agentic.ToolResult{Output: goal.BuildVerifyFailureMessage(result), StopTurn: result.Failure != nil && result.Failure.Escalated}, nil
 	case goal.CompleteClosed:
-		return agentic.ToolResult{Output: "Goal marked complete.", StopTurn: true}, nil
+		t.challenged = false
+		return agentic.ToolResult{Output: "Goal marked complete." + formatVerifyEvidence(result.Verification), StopTurn: true}, nil
 	default:
+		t.challenged = false
 		return agentic.ToolResult{Output: "No active goal to complete."}, nil
 	}
+}
+
+// announceVerification emits a live progress update naming the verify command
+// and the configured timeout right before the confirming completion runs it.
+// It fires only when the previous request was challenged AND a verify command
+// is recorded — the exact situation where the tool call would otherwise sit
+// silent for up to the full timeout.
+func (t *GoalTool) announceVerification(ctx context.Context) {
+	if !t.challenged {
+		return
+	}
+	emit := agentic.ProgressFromContext(ctx)
+	if emit == nil {
+		return
+	}
+	snap := t.Mode.GetGoal().Goal
+	if snap == nil || snap.VerifyCommand == nil {
+		return
+	}
+	timeout := 2 * time.Minute
+	if t.VerifyTimeout != nil {
+		timeout = t.VerifyTimeout()
+	}
+	emit(fmt.Sprintf("Running goal verification (timeout %s):\n$ %s", timeout, *snap.VerifyCommand))
+}
+
+// formatVerifyEvidence renders the post-completion evidence block: the exact
+// command, how long it took, the applied timeout, and its output tail.
+func formatVerifyEvidence(v *goal.VerifyEvidence) string {
+	if v == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nVerification passed in %s (timeout %s):\n$ %s",
+		formatMillis(v.DurationMs), formatMillis(v.TimeoutMs), v.Command)
+	if out := strings.TrimRight(v.Output, "\n"); out != "" {
+		b.WriteString("\n")
+		b.WriteString(strings.Join(tailLines(out, 10), "\n"))
+	}
+	return b.String()
+}
+
+// formatMillis renders a millisecond duration compactly (e.g. 0.3s, 12.3s, 1m30s).
+func formatMillis(ms int64) string {
+	d := time.Duration(ms) * time.Millisecond
+	if d < time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	return d.Truncate(100 * time.Millisecond).String()
+}
+
+// tailLines keeps the last n lines of s.
+func tailLines(s string, n int) []string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return lines
 }
 
 // optionalReason maps the raw reason arg to a trimmed *string (nil when blank).

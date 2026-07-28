@@ -317,8 +317,13 @@ func (t *EditFileTool) MutatesState() bool { return true }
 //go:embed editfile.short.md editfile.long.md
 var editfileDocs embed.FS
 
+// notifyLSP forwards the edited document to its language server (any file
+// type the manager supports — bugs.md Issue LSP: not just .go) and returns a
+// formatted diagnostics block for the tool result. The notification never
+// blocks on a server start (async spawn); diagnostics appear once the server
+// is up and has processed the change.
 func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) string {
-	if t.LSPManager == nil || !strings.HasSuffix(resolvedPath, ".go") {
+	if t.LSPManager == nil || t.LSPManager.ServerIDFor(resolvedPath) == "" {
 		return ""
 	}
 	content, err := os.ReadFile(resolvedPath)
@@ -328,7 +333,7 @@ func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) strin
 	_ = t.LSPManager.DidChange(ctx, resolvedPath, string(content))
 	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
 	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
-	return formatLSPDiagnostics(resolvedPath, diags)
+	return formatLSPDiagnostics(resolvedPath, diags, t.LSPManager.ServerIDFor(resolvedPath))
 }
 
 func (t *EditFileTool) ShortDoc() string { return readDoc(editfileDocs, "editfile.short.md") }

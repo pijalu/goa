@@ -22,8 +22,8 @@ type LSPQueryManager interface {
 	References(ctx context.Context, path string, line, character int) ([]lsp.Location, error)
 	Hover(ctx context.Context, path string, line, character int) (*lsp.Hover, error)
 	DocumentSymbols(ctx context.Context, path string) ([]lsp.DocumentSymbol, error)
-	// Started reports whether the language server is running; a typed-nil
-	// manager (bootstrap returns one when gopls is unavailable) reports false.
+	// Started reports whether the manager is running; a typed-nil manager
+	// (LSP disabled — tools.enabled.lsp:false or global lsp:false) reports false.
 	Started() bool
 }
 
@@ -34,8 +34,8 @@ type LSPTool struct {
 	agentic.BaseTool
 	WorktreeMgr *internal.WorktreeManager
 	ProjectDir  string
-	// Manager is the shared LSP manager from bootstrap. May be a typed-nil
-	// *lsp.Manager when gopls is unavailable; Started() reports false then.
+	// Manager is the shared LSP manager from bootstrap (multi-language). May
+	// be a typed-nil *lsp.Manager when LSP is disabled; Started() reports false then.
 	Manager LSPQueryManager
 }
 
@@ -59,10 +59,13 @@ func lspErr(errType, format string, args ...any) *internal.ToolError {
 func (t *LSPTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name: "lsp",
-		Description: "Query the Go language server (gopls) for precise code navigation: " +
+		Description: "Query the language server for precise code navigation: " +
 			"go-to-definition, find-references, hover docs, and document symbols. " +
-			"Use this instead of guessing locations from grep when you need exact " +
-			"symbol definitions or all references to a symbol.",
+			"Works for every language with a configured server (Go/gopls, " +
+			"Python/pyright, TypeScript, Rust, and more — the manager selects " +
+			"the right server per file). Use this instead of guessing locations " +
+			"from grep when you need exact symbol definitions or all references " +
+			"to a symbol.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -73,7 +76,7 @@ func (t *LSPTool) Schema() agentic.ToolSchema {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Go source file path (relative to project root or absolute)",
+					"description": "Source file path (relative to project root or absolute); any language with a language server works",
 				},
 				"line": map[string]any{
 					"type":        "integer",
@@ -94,12 +97,12 @@ func (t *LSPTool) Execute(input string) (string, error) {
 	return t.ExecuteContext(context.Background(), input)
 }
 
-// ExecuteContext runs the lsp tool, honoring cancellation so a hung gopls or a
-// cancelled turn stops the query.
+// ExecuteContext runs the lsp tool, honoring cancellation so a hung language
+// server or a cancelled turn stops the query.
 func (t *LSPTool) ExecuteContext(ctx context.Context, input string) (string, error) {
 	if t.Manager == nil || !t.Manager.Started() {
 		return "", lspErr("unavailable",
-			"language server is not running (gopls unavailable or project has no go.mod)")
+			"LSP is disabled or no language server is running (enable via /tools:lsp:on)")
 	}
 	var p lspParams
 	if err := json.Unmarshal([]byte(input), &p); err != nil {

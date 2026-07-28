@@ -5,12 +5,15 @@
 package app
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/lsp"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tools"
 	"github.com/pijalu/goa/tui"
@@ -27,6 +30,7 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		ExecutionController:    subs.execCtrl,
 		ToolRegistry:           subs.toolRegistry,
 		ToolFactory:            makeToolFactory(subs),
+		ToolTeardown:           makeToolTeardown(subs),
 		SkillRegistry:          subs.skillRegistry,
 		ProviderManager:        subs.providerMgr,
 		ModelValidator:         subs.modelValidator,
@@ -214,20 +218,84 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 	}
 }
 
+// makeToolTeardown returns the /tools:name:off hook tearing integrations
+// bound to a tool. For "lsp" it fully disables the integration: detaches the
+// manager from read/edit/write and closes every running server (bugs.md
+// Issue LSP — off must mean off, including background spawns).
+func makeToolTeardown(subs *subsystems) func(name string) {
+	return func(name string) {
+		if name != "lsp" {
+			return
+		}
+		unwireLSPFromFileTools(subs.toolRegistry)
+		if subs.lspMgr != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = subs.lspMgr.Close(ctx)
+			subs.lspMgr = nil
+		}
+	}
+}
+
 // makeLSPToolRuntime builds the lsp tool for the /tools:lsp:on runtime path.
-// The LSP manager is started at bootstrap on Go projects regardless of the tool
-// flag (edit/write tools use it for diagnostics), so enabling the tool at
-// runtime only needs to register it — no restart required. Returns false when
-// the manager is unavailable (non-Go project or gopls failed to start).
+// When LSP was fully off at bootstrap (tools.enabled.lsp: false → no manager,
+// per bugs.md Issue LSP), the manager is created now and wired into the
+// already-registered read/edit/write tools so the whole integration comes up
+// without a restart. Returns false only when the manager cannot exist (global
+// lsp: false in config).
 func makeLSPToolRuntime(subs *subsystems) (agentic.Tool, bool) {
-	if subs.lspMgr == nil || !subs.lspMgr.Started() {
+	mgr := subs.lspMgr
+	if mgr == nil {
+		mgr = newLSPManager(subs.projectDir, subs.cfg)
+		if mgr == nil {
+			return nil, false
+		}
+		subs.lspMgr = mgr
+		wireLSPIntoFileTools(subs.toolRegistry, mgr)
+	}
+	if !mgr.Started() {
 		return nil, false
 	}
 	return &tools.LSPTool{
 		WorktreeMgr: subs.worktreeMgr,
 		ProjectDir:  subs.projectDir,
-		Manager:     subs.lspMgr,
+		Manager:     mgr,
 	}, true
+}
+
+// wireLSPIntoFileTools attaches the LSP manager to the registered
+// read/edit/write tools (used when the manager is created after bootstrap via
+// /tools:lsp:on). unwireLSPFromFileTools detaches it (/tools:lsp:off).
+func wireLSPIntoFileTools(reg *tools.ToolRegistry, mgr *lsp.Manager) {
+	setLSPOnFileTools(reg, mgr)
+}
+
+// unwireLSPFromFileTools detaches the LSP manager from read/edit/write tools.
+func unwireLSPFromFileTools(reg *tools.ToolRegistry) {
+	setLSPOnFileTools(reg, nil)
+}
+
+// setLSPOnFileTools assigns the LSP manager (or nil) on every registered file
+// tool that supports LSP linking.
+func setLSPOnFileTools(reg *tools.ToolRegistry, mgr tools.LSPDocumentManager) {
+	if reg == nil {
+		return
+	}
+	if t, ok := reg.Get("read"); ok {
+		if rt, ok := t.(*tools.ReadFileTool); ok {
+			rt.LSPManager = mgr
+		}
+	}
+	if t, ok := reg.Get("write"); ok {
+		if wt, ok := t.(*tools.WriteFileTool); ok {
+			wt.LSPManager = mgr
+		}
+	}
+	if t, ok := reg.Get("edit"); ok {
+		if et, ok := t.(*tools.EditFileTool); ok {
+			et.LSPManager = mgr
+		}
+	}
 }
 
 // makeGoalToolRuntime builds the goal tool for the /tools:goal:on runtime
@@ -238,7 +306,8 @@ func makeGoalToolRuntime(subs *subsystems) (agentic.Tool, bool) {
 	if subs.goalManager == nil {
 		return nil, false
 	}
-	return newGoalTool(subs.goalManager, subs.cfg.Tools.Enabled.Goal, subs.cfg.Goals.AutoUnblockEnabled, subs.cfg.Goals.FreshContextEnabled), true
+	return newGoalTool(subs.goalManager, subs.cfg.Tools.Enabled.Goal, subs.cfg.Goals.AutoUnblockEnabled, subs.cfg.Goals.FreshContextEnabled,
+		func() time.Duration { return subs.cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) }), true
 }
 
 func makeBGExecTool(subs *subsystems) agentic.Tool {

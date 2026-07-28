@@ -84,10 +84,18 @@ func (s *Server) Client() *Client {
 	return s.client
 }
 
+// shutdownTimeout bounds the graceful shutdown request: a wedged server that
+// never answers must not hang Close — the caller's ctx may be long-lived (the
+// manager lifecycle ctx), and a hung Shutdown would leak the spawn goroutine
+// and never publish the spawn outcome (bugs.md "Read stuck" follow-up).
+const shutdownTimeout = 2 * time.Second
+
 // Close shuts down the server gracefully and terminates the subprocess.
 func (s *Server) Close(ctx context.Context) error {
 	if s.client != nil {
-		_ = s.client.Shutdown(ctx)
+		shCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
+		_ = s.client.Shutdown(shCtx)
+		cancel()
 		_ = s.client.Exit()
 		_ = s.client.Close()
 	}

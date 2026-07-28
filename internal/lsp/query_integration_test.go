@@ -68,15 +68,19 @@ func startRealManager(t *testing.T, dir string) *Manager {
 // openAndSettle opens a document explicitly and gives gopls a moment to load the
 // package before position queries. Querying immediately after didOpen can hit a
 // cold package load and (on some gopls versions) crash the server; a short
-// settle makes the integration tests deterministic.
+// settle makes the integration tests deterministic. The server spawn is
+// asynchronous (touches never block), so this first waits for readiness.
 func openAndSettle(t *testing.T, mgr *Manager, path string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if c := mgr.waitClientFor(ctx, path); c == nil {
+		t.Fatalf("server for %s did not start", path)
+	}
 	if err := mgr.OpenDocument(ctx, path, string(data)); err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}

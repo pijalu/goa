@@ -96,6 +96,10 @@ type ToolExecutionComponent struct {
 	// the tool timeout bound (bugs.md: widget showed "elapsed 213s" for a
 	// "timeout 120s" call because streaming/approval time was counted).
 	startTime time.Time
+	// waitStart stamps args completion: the "waiting Ns…" display for a
+	// queued (Pending + args-complete) call counts from here, so argument
+	// streaming time is not misreported as queue wait (bugs.md Bug W).
+	waitStart time.Time
 
 	// bodyVersion is bumped whenever a body-input changes (output, args,
 	// status, isPartial, argsComplete, expanded, view policy). buildBody
@@ -329,24 +333,51 @@ func (tc *ToolExecutionComponent) computeBody(renderer ToolRenderer, ctx RenderC
 // display line ("elapsed X.XXs" or "Took X.XXs"); the box builder uses it
 // directly. Durations of 0.01s or less are hidden to avoid noisy flicker for
 // instantaneous tools.
+//
+// Pending splits in two (bugs.md Bug W): args still streaming shows the
+// stream age ("elapsed"), but a finalized call QUEUED behind the scheduler
+// shows "waiting Ns…" — the elapsed clock must measure execution only and
+// starts at the Running transition (true execution start).
 func (tc *ToolExecutionComponent) renderDuration() {
 	const minDuration = 10 * time.Millisecond // 0.01s
-	elapsed := time.Since(tc.startTime)
-	if elapsed <= minDuration {
-		tc.box.duration = ""
-		return
-	}
-	d := formatDuration(elapsed)
 	switch tc.status {
 	case ToolSuccess, ToolError:
+		elapsed := time.Since(tc.startTime)
+		if elapsed <= minDuration {
+			tc.box.duration = ""
+			return
+		}
 		// Cache the final duration so repeated renders stay stable once the
 		// tool has finished.
 		if tc.duration == "" {
-			tc.duration = d
+			tc.duration = formatDuration(elapsed)
 		}
 		tc.box.duration = "Took " + tc.duration
-	case ToolPending, ToolRunning:
-		tc.box.duration = "elapsed " + d + tc.progressSuffix()
+	case ToolRunning:
+		elapsed := time.Since(tc.startTime)
+		if elapsed <= minDuration {
+			tc.box.duration = ""
+			return
+		}
+		tc.box.duration = "elapsed " + formatDuration(elapsed) + tc.progressSuffix()
+	case ToolPending:
+		if tc.argsComplete {
+			// Queued: the waiting clock runs from args completion, not from
+			// widget creation (streaming time is not queue wait).
+			wait := time.Since(tc.waitStart)
+			if tc.waitStart.IsZero() || wait <= minDuration {
+				tc.box.duration = ""
+				return
+			}
+			tc.box.duration = "waiting " + formatDuration(wait) + "…"
+			return
+		}
+		elapsed := time.Since(tc.startTime)
+		if elapsed <= minDuration {
+			tc.box.duration = ""
+			return
+		}
+		tc.box.duration = "elapsed " + formatDuration(elapsed) + tc.progressSuffix()
 	default:
 		tc.box.duration = tc.duration
 	}
@@ -416,12 +447,29 @@ func (tc *ToolExecutionComponent) SetToolArgs(args string) {
 }
 
 // SetArgsComplete marks the tool call arguments as fully received.
-// This triggers the renderer to show the final header (no longer streaming).
+// This triggers the renderer to show the final header (no longer streaming)
+// and starts the "waiting" clock shown while the call queues behind the
+// scheduler (bugs.md Bug W).
 func (tc *ToolExecutionComponent) SetArgsComplete() {
-	tc.argsComplete = true
+	tc.markArgsComplete()
 	tc.invalidateBody()
 	tc.updateBox()
 	tc.Invalidate()
+}
+
+// markArgsComplete centralizes the args-complete transition: it stamps the
+// waiting clock exactly once. All paths that conclude args are complete must
+// go through it (SetArgsComplete, SetArgsJSON, AddToolExecution) — a direct
+// field assignment would leave waitStart zero and the "waiting Ns…" display
+// would count argument-streaming time as queue wait.
+func (tc *ToolExecutionComponent) markArgsComplete() {
+	if tc.argsComplete {
+		return
+	}
+	tc.argsComplete = true
+	if tc.waitStart.IsZero() {
+		tc.waitStart = time.Now()
+	}
 }
 
 // SetArgsPartial updates the header display with partial tool call
@@ -664,7 +712,7 @@ func (tc *ToolExecutionComponent) SetArgsJSON(argsJSON string) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
 		tc.args = args
-		tc.argsComplete = true
+		tc.markArgsComplete()
 		tc.updateContentProgress()
 	}
 	tc.toolArgs = FormatToolArgs(tc.toolName, argsJSON)
@@ -828,6 +876,12 @@ func (tc *ToolExecutionComponent) bgColor() string {
 func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 	switch tc.status {
 	case ToolPending:
+		if tc.argsComplete {
+			// Queued behind the scheduler (conflict / MaxParallel): show the
+			// hourglass so the wait is visually distinct from execution
+			// (bugs.md Bug W: use ⧖ instead of the dots for waiting).
+			return "⧖", TheTheme.ColorHex("tool_running")
+		}
 		return "◉", TheTheme.ColorHex("tool_running")
 	case ToolRunning:
 		// Static amber dot for the on-going marker — never the animated

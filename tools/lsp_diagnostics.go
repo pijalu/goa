@@ -56,14 +56,20 @@ func collectLSPDiagnostics(ctx context.Context, mgr LSPDocumentManager, resolved
 }
 
 // formatLSPDiagnostics renders diagnostics as a compact, model-readable block
-// appended to tool output. Returns "" when there is nothing to report.
-func formatLSPDiagnostics(path string, diags []lsp.Diagnostic) string {
+// appended to tool output. Returns "" when there is nothing to report. The
+// block is labeled with the actual source server (gopls, pyright, …) so the
+// model knows which analyzer produced the hints (bugs.md Issue LSP — the
+// label used to be hardcoded "gopls" for every language).
+func formatLSPDiagnostics(path string, diags []lsp.Diagnostic, serverID string) string {
 	if len(diags) == 0 {
 		return ""
 	}
+	if serverID == "" {
+		serverID = "lsp"
+	}
 	name := filepath.Base(path)
 	var b strings.Builder
-	b.WriteString("\nDiagnostics (gopls):\n")
+	fmt.Fprintf(&b, "\nDiagnostics (%s):\n", serverID)
 	for _, d := range diags {
 		fmt.Fprintf(&b, "  %s:%d:%d: %s: %s\n", name, d.Range.Start.Line+1, d.Range.Start.Character+1, lspSeverityName(d.Severity), d.Message)
 	}

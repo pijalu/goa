@@ -6,6 +6,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal"
 	"gopkg.in/yaml.v3"
@@ -1369,6 +1370,24 @@ func TestGoalsFreshContextEnabled(t *testing.T) {
 	base.DeepMerge(&override)
 	if base.Goals.FreshContextEnabled() {
 		t.Error("DeepMerge: explicit false override should disable fresh_context")
+	}
+}
+
+// TestGoalsVerifyTimeoutOr verifies goals.verify_timeout parsing (bugs.md
+// Bug A): empty/invalid falls back to the default; valid durations win.
+func TestGoalsVerifyTimeoutOr(t *testing.T) {
+	fallback := 2 * time.Minute
+	var def Config
+	if got := def.Goals.VerifyTimeoutOr(fallback); got != fallback {
+		t.Errorf("empty verify_timeout = %v, want fallback %v", got, fallback)
+	}
+	c := Config{Goals: GoalsConfig{VerifyTimeout: "90s"}}
+	if got := c.Goals.VerifyTimeoutOr(fallback); got != 90*time.Second {
+		t.Errorf("verify_timeout 90s = %v, want 1m30s", got)
+	}
+	bad := Config{Goals: GoalsConfig{VerifyTimeout: "soon"}}
+	if got := bad.Goals.VerifyTimeoutOr(fallback); got != fallback {
+		t.Errorf("invalid verify_timeout = %v, want fallback %v", got, fallback)
 	}
 }
 

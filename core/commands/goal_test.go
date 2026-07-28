@@ -947,8 +947,8 @@ type fakeCommandVerifier struct {
 	ok     bool
 }
 
-func (v *fakeCommandVerifier) Verify(_ context.Context, _ string) (string, bool) {
-	return v.output, v.ok
+func (v *fakeCommandVerifier) Verify(_ context.Context, _ string) goal.VerifyOutcome {
+	return goal.VerifyOutcome{Output: v.output, OK: v.ok, DurationMs: 5, TimeoutMs: 120000}
 }
 
 func TestGoalCommand_List(t *testing.T) {

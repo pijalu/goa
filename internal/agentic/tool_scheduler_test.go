@@ -455,3 +455,58 @@ func TestToolScheduler_TaskTimeout_AllowsFastTools(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", results)
 	}
 }
+
+// TestToolScheduler_OnStart verifies the OnStart hook (bugs.md Bug W): it
+// fires for tasks started immediately AND for queued tasks unblocked when a
+// conflicting task finishes — and only then, so the UI can flip "waiting" to
+// "elapsed" at the true execution start.
+func TestToolScheduler_OnStart(t *testing.T) {
+	s := NewToolScheduler(context.Background())
+
+	var mu sync.Mutex
+	var starts []string
+	s.OnStart = func(callID string) {
+		mu.Lock()
+		starts = append(starts, callID)
+		mu.Unlock()
+	}
+
+	release := make(chan struct{})
+	blocking := func(ctx context.Context) (ToolResult, error) {
+		<-release
+		return ToolResult{Output: "ok"}, nil
+	}
+
+	// Two conflicting tasks: the second queues until the first finishes.
+	s.Add(&ToolCallTask{CallID: "c1", Name: "edit", Access: toolaccess.Access{WritePaths: []string{"/f"}}, Execute: blocking})
+	s.Add(&ToolCallTask{CallID: "c2", Name: "edit", Access: toolaccess.Access{WritePaths: []string{"/f"}}, Execute: blocking})
+
+	// c1 starts immediately; c2 is still queued.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(starts)
+		mu.Unlock()
+		if n >= 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	if len(starts) != 1 || starts[0] != "c1" {
+		t.Fatalf("expected exactly c1 started while c2 queued, got %v", starts)
+	}
+	mu.Unlock()
+
+	// Unblock: c1 finishes, c2 starts.
+	close(release)
+	results := s.Collect()
+	if len(results) != 2 || results[0].Err != nil || results[1].Err != nil {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(starts) != 2 || starts[1] != "c2" {
+		t.Fatalf("expected c2 started after c1 finished, got %v", starts)
+	}
+}

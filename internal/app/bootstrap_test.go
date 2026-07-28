@@ -13,7 +13,7 @@ import (
 
 func TestRegisterTools_ClarifyDefaultOn(t *testing.T) {
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
 	if _, ok := reg.Get("ask_user_question"); !ok {
 		t.Fatal("ask_user_question should be registered by default")
 	}
@@ -23,15 +23,33 @@ func TestRegisterTools_ClarifyDisabled(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tools.Enabled.SetEnabled("clarify_disabled", true)
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), cfg, nil)
+	registerTools(reg, nil, nil, t.TempDir(), cfg, nil, false)
 	if _, ok := reg.Get("ask_user_question"); ok {
 		t.Fatal("ask_user_question should NOT be registered when clarify_disabled is true")
 	}
 }
 
+// TestRegisterTools_HeadlessSkipsAskUser pins bugs.md Bug C: headless mode
+// has no user at the input line, so the ask_user_question tool must not be
+// registered — regardless of the clarify_disabled flag.
+func TestRegisterTools_HeadlessSkipsAskUser(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, true)
+	if _, ok := reg.Get("ask_user_question"); ok {
+		t.Fatal("ask_user_question must NOT be registered in headless mode")
+	}
+
+	// Interactive keeps the default-on behavior.
+	reg = tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
+	if _, ok := reg.Get("ask_user_question"); !ok {
+		t.Fatal("ask_user_question must be registered in interactive mode by default")
+	}
+}
+
 func TestAttachClarifyTool(t *testing.T) {
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
 	called := false
 	attachClarifyTool(reg, func(title, summary, question string, options []string, step, total int) (string, bool) {
 		called = true
@@ -56,7 +74,7 @@ func TestAttachClarifyTool(t *testing.T) {
 
 func TestAttachClarifyTool_NilSafe(t *testing.T) {
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil)
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
 	attachClarifyTool(reg, nil) // must not panic
 }
 
@@ -65,14 +83,14 @@ func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 	cfg.Tools.SmartSearch.Enabled = false
 
 	reg := tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), cfg, nil)
+	registerTools(reg, nil, nil, t.TempDir(), cfg, nil, false)
 	if _, ok := reg.Get("smartsearch"); ok {
 		t.Fatal("smartsearch should NOT be registered when disabled")
 	}
 
 	cfg.Tools.SmartSearch.Enabled = true
 	reg = tools.NewToolRegistry()
-	registerTools(reg, nil, nil, t.TempDir(), cfg, nil)
+	registerTools(reg, nil, nil, t.TempDir(), cfg, nil, false)
 	if _, ok := reg.Get("smartsearch"); !ok {
 		t.Fatal("smartsearch should be registered when enabled")
 	}

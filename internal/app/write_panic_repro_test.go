@@ -45,8 +45,11 @@ func TestWritePanicRepro(t *testing.T) {
 	// B: nil interface entirely (no LSP).
 	run("nil_lsp", &tools.WriteFileTool{}, goPayload("/tmp/zz_b.go"))
 
-	// C: live LSP, real content, .go file in the repo.
-	live := newLSPManager(projectDir, &config.Config{})
+	// C: live LSP, real content, .go file in the repo. The tool flag must be
+	// on for a manager to exist (bugs.md Issue LSP: off means off).
+	liveCfg := &config.Config{}
+	liveCfg.Tools.Enabled.LSP = true
+	live := newLSPManager(projectDir, liveCfg)
 	t.Logf("newLSPManager: %v (nil=%v)", live, live == nil)
 	wm := internal.NewWorktreeManager(projectDir, internal.WorktreeMode(""))
 	run("live_lsp_go", &tools.WriteFileTool{

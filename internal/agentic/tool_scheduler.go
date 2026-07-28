@@ -64,6 +64,12 @@ type ToolScheduler struct {
 	// task's done channel at the deadline even if Execute ignores its context,
 	// so Collect() cannot hang on a misbehaving tool. Zero disables it.
 	taskTimeout time.Duration
+	// OnStart, when set, is invoked with the call ID each time a task leaves
+	// the pending queue and actually begins executing — both for immediately
+	// started tasks and for tasks unblocked when a slot frees. The UI uses it
+	// to flip a tool widget from "waiting" to "elapsed" at the TRUE execution
+	// start (bugs.md Bug W: queued tools displayed a fake ticking "elapsed").
+	OnStart func(callID string)
 }
 
 type scheduledTask struct {
@@ -167,6 +173,10 @@ func (s *ToolScheduler) start(st *scheduledTask) {
 	s.mu.Lock()
 	s.active = append(s.active, st)
 	s.mu.Unlock()
+
+	if s.OnStart != nil {
+		s.OnStart(st.CallID)
+	}
 
 	ctx := s.ctx
 	if s.taskTimeout > 0 {

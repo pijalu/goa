@@ -286,14 +286,16 @@ func TestHandleToolCall_FooterBusyIndicator(t *testing.T) {
 
 // TestHandleToolCall_ToolWidgetShowsRunningDot verifies the running tool
 // widget shows the static amber on-going dot (bugs.md: the spinner must not
-// be used for the tool on-going marker — keep the yellow dot).
+// be used for the tool on-going marker — keep the yellow dot). The widget
+// goes Running on EventToolStart (true execution start, bugs.md Bug W).
 func TestHandleToolCall_ToolWidgetShowsRunningSpinner(t *testing.T) {
 	_, def := spinner.Default()
 	tui.SetSpinner(def)
 	defer tui.SetSpinner(spinner.Definition{})
 
 	app := New(testSubsystems())
-	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`})
+	app.handleToolCall(&agentic.OutputEvent{Type: agentic.EventToolCall, ToolName: "bash", ToolInput: `{"command":"ls"}`, ToolCallID: "c1"})
+	app.handleToolStart(&agentic.OutputEvent{Type: agentic.EventToolStart, ToolName: "bash", ToolCallID: "c1"})
 
 	tc := lastTool(app.subs.chat)
 	if tc == nil {
@@ -596,6 +598,11 @@ func TestHandleToolCall_IsDeltaCreatesPendingWidget(t *testing.T) {
 	}
 }
 
+// TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning verifies the
+// widget lifecycle across a streamed call: Pending while args stream, still
+// Pending (waiting, ⧖) once args complete, and Running only on the
+// scheduler's EventToolStart (true execution start — bugs.md Bug W; the
+// final call event no longer pre-stamps Running).
 func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
 	app := New(testSubsystems())
 
@@ -616,7 +623,7 @@ func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
 		t.Errorf("expected ToolPending after delta, got %v", tc.Status())
 	}
 
-	// Step 2: Final event (IsDelta=false).
+	// Step 2: Final event (IsDelta=false) — args complete, still queued.
 	app.handleToolCall(&agentic.OutputEvent{
 		Type:       agentic.EventToolCall,
 		ToolName:   "write",
@@ -625,30 +632,43 @@ func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
 		IsDelta:    false,
 	})
 
-	// Now the widget should transition to Running.
-	if tc.Status() != tui.ToolRunning {
-		t.Errorf("expected ToolRunning after final event, got %v", tc.Status())
-	}
 	if !tc.ArgsComplete() {
 		t.Error("expected ArgsComplete after final event")
 	}
+	if tc.Status() != tui.ToolPending {
+		t.Errorf("expected ToolPending (waiting) after final event — Running belongs to EventToolStart, got %v", tc.Status())
+	}
+
+	// Step 3: the scheduler starts execution → Running.
+	app.handleToolStart(&agentic.OutputEvent{Type: agentic.EventToolStart, ToolName: "write", ToolCallID: "call_2"})
+	if tc.Status() != tui.ToolRunning {
+		t.Errorf("expected ToolRunning after EventToolStart, got %v", tc.Status())
+	}
 }
 
-func TestHandleToolCall_NonDeltaCreatesRunningWidget(t *testing.T) {
+// TestHandleToolCall_NonDeltaCreatesWaitingWidget verifies a final (non-delta)
+// tool call creates the widget in Pending/waiting state — Running happens on
+// EventToolStart (bugs.md Bug W: stamping Running at args-complete made every
+// queued call display a fake ticking elapsed).
+func TestHandleToolCall_NonDeltaCreatesWaitingWidget(t *testing.T) {
 	app := New(testSubsystems())
 
-	// Non-delta (legacy path): widget should be created in Running state directly.
 	app.handleToolCall(&agentic.OutputEvent{
-		Type:      agentic.EventToolCall,
-		ToolName:  "bash",
-		ToolInput: `{"command":"ls"}`,
+		Type:       agentic.EventToolCall,
+		ToolName:   "bash",
+		ToolInput:  `{"command":"ls"}`,
+		ToolCallID: "c1",
 		// IsDelta defaults to false
 	})
 
-	if lastTool(app.subs.chat) == nil {
+	tc := lastTool(app.subs.chat)
+	if tc == nil {
 		t.Fatal("expected tool widget after non-delta tool call")
 	}
-	if lastTool(app.subs.chat).Status() != tui.ToolRunning {
-		t.Errorf("expected ToolRunning for non-delta tool call, got %v", lastTool(app.subs.chat).Status())
+	if tc.Status() != tui.ToolPending {
+		t.Errorf("expected ToolPending (waiting) for non-delta tool call, got %v", tc.Status())
+	}
+	if !tc.ArgsComplete() {
+		t.Error("expected args complete for non-delta tool call")
 	}
 }

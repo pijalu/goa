@@ -68,6 +68,21 @@ func (a *Agent) appendAssistantToolCallMessage(tcs []provider.ContentBlock) {
 func (a *Agent) scheduleAndRunToolCalls(ctx context.Context, tcs []provider.ContentBlock) []ToolCallResult {
 	sched := NewToolScheduler(ctx)
 	defer sched.Shutdown()
+	// Surface true execution starts to the UI: a queued task (conflict or
+	// MaxParallel) shows "waiting" until the scheduler actually starts it
+	// (bugs.md Bug W). Emitted from scheduler goroutines like tool progress.
+	names := make(map[string]string, len(tcs))
+	for i := range tcs {
+		names[tcs[i].ToolCallID] = tcs[i].ToolName
+	}
+	sched.OnStart = func(callID string) {
+		a.emitEvent(OutputEvent{
+			Type:       EventToolStart,
+			State:      StateToolCall,
+			ToolName:   names[callID],
+			ToolCallID: callID,
+		})
+	}
 	for i := range tcs {
 		tc := tcs[i]
 		if a.budgetToolCalls[tc.ToolCallID] != "" {
@@ -333,7 +348,12 @@ func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, er
 	if !ok {
 		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 	}
-	// ContextTool takes priority: it lets the tool observe cancellation.
+	// ContextResultTool takes priority: ctx AND control signals (StopTurn).
+	if crt, ok := tool.(ContextResultTool); ok {
+		return crt.ExecuteContextWithResult(ctx, input)
+	}
+	// ContextTool next: it lets the tool observe cancellation (but its plain
+	// string result carries no StopTurn).
 	if ct, ok := tool.(ContextTool); ok {
 		out, err := ct.ExecuteContext(ctx, input)
 		return ToolResult{Output: out, Error: err}, err

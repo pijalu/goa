@@ -20,6 +20,9 @@ type fakeLSPManager struct {
 	changed  map[string]string
 	diags    map[string][]lsp.Diagnostic
 	nextDiag []lsp.Diagnostic
+	// serverIDs maps file extension (with dot) → server id returned by
+	// ServerIDFor; nil defaults to ".go → gopls" (legacy single-server fake).
+	serverIDs map[string]string
 }
 
 func (f *fakeLSPManager) OpenDocument(ctx context.Context, path, text string) error {
@@ -37,6 +40,16 @@ func (f *fakeLSPManager) DiagnosticsFor(ctx context.Context, path string) []lsp.
 		return f.diags[path]
 	}
 	return f.nextDiag
+}
+
+func (f *fakeLSPManager) ServerIDFor(path string) string {
+	if f.serverIDs != nil {
+		return f.serverIDs[filepath.Ext(path)]
+	}
+	if strings.HasSuffix(path, ".go") {
+		return "gopls"
+	}
+	return ""
 }
 
 func TestWriteFileTool_LSPManager_Notify(t *testing.T) {
@@ -57,7 +70,11 @@ func TestWriteFileTool_LSPManager_Notify(t *testing.T) {
 	}
 }
 
-func TestWriteFileTool_LSPManager_SkipsNonGo(t *testing.T) {
+// TestWriteFileTool_LSPManager_SkipsUnsupported verifies the tool skips files
+// whose TYPE has no language server (the manager decides per extension, not
+// the tool — bugs.md Issue LSP). The old behavior hardcoded a .go-only guard
+// in the tool; selection now lives in ServerIDFor.
+func TestWriteFileTool_LSPManager_SkipsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	mgr := &fakeLSPManager{opened: make(map[string]string)}
 	tool := &WriteFileTool{
@@ -71,7 +88,36 @@ func TestWriteFileTool_LSPManager_SkipsNonGo(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if len(mgr.opened) != 0 {
-		t.Errorf("expected no LSP notification for non-Go file, got %v", mgr.opened)
+		t.Errorf("expected no LSP notification for unsupported file, got %v", mgr.opened)
+	}
+}
+
+// TestWriteFileTool_LSPManager_NotifyPython verifies LSP wiring covers ALL
+// LSP-supported file types, not just .go (bugs.md Issue LSP user directive).
+func TestWriteFileTool_LSPManager_NotifyPython(t *testing.T) {
+	dir := t.TempDir()
+	mgr := &fakeLSPManager{
+		opened:    make(map[string]string),
+		serverIDs: map[string]string{".py": "pyright"},
+		nextDiag: []lsp.Diagnostic{
+			{Severity: 1, Message: "\"undefined_xyz\" is not defined", Range: lsp.Range{Start: lsp.Position{Line: 0, Character: 0}}},
+		},
+	}
+	tool := &WriteFileTool{ProjectDir: dir, LSPManager: mgr}
+
+	path := filepath.Join(dir, "main.py")
+	out, err := tool.Execute(`{"path": "` + path + `", "content": "undefined_xyz"}`)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if _, ok := mgr.opened[path]; !ok {
+		t.Errorf("expected OpenDocument to be called for Python file %s", path)
+	}
+	if !strings.Contains(out, "Diagnostics (pyright)") {
+		t.Errorf("expected pyright-labeled diagnostics block, got:\n%s", out)
+	}
+	if !strings.Contains(out, "is not defined") {
+		t.Errorf("expected diagnostic message in output, got:\n%s", out)
 	}
 }
 
@@ -137,7 +183,9 @@ func TestEditFileTool_LSPManager_NotifyOperation(t *testing.T) {
 	}
 }
 
-func TestEditFileTool_LSPManager_SkipsNonGo(t *testing.T) {
+// TestEditFileTool_LSPManager_SkipsUnsupported verifies edit skips files
+// whose type has no language server (manager-side selection).
+func TestEditFileTool_LSPManager_SkipsUnsupported(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "notes.md")
 	if err := os.WriteFile(path, []byte("# notes\n"), 0644); err != nil {
@@ -155,7 +203,37 @@ func TestEditFileTool_LSPManager_SkipsNonGo(t *testing.T) {
 		t.Fatalf("execute failed: %v", err)
 	}
 	if len(mgr.changed) != 0 {
-		t.Errorf("expected no LSP notification for non-Go file, got %v", mgr.changed)
+		t.Errorf("expected no LSP notification for unsupported file, got %v", mgr.changed)
+	}
+}
+
+// TestEditFileTool_LSPManager_NotifyJavaScript verifies edit→LSP wiring for a
+// JS file (bugs.md Issue LSP user directive: js/py/go must all be wired).
+func TestEditFileTool_LSPManager_NotifyJavaScript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.js")
+	if err := os.WriteFile(path, []byte("const x = 1;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	mgr := &fakeLSPManager{
+		changed:   make(map[string]string),
+		serverIDs: map[string]string{".js": "typescript"},
+		nextDiag: []lsp.Diagnostic{
+			{Severity: 1, Message: "Cannot find name 'undefinedXYZ'.", Range: lsp.Range{Start: lsp.Position{Line: 1, Character: 0}}},
+		},
+	}
+	tool := &EditFileTool{ProjectDir: dir, LSPManager: mgr}
+
+	input := fmt.Sprintf(`{"path": "%s", "old_string": "const x = 1;", "new_string": "undefinedXYZ();"}`, path)
+	out, err := tool.Execute(input)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if _, ok := mgr.changed[path]; !ok {
+		t.Errorf("expected DidChange to be called for JavaScript file %s", path)
+	}
+	if !strings.Contains(out, "Diagnostics (typescript)") {
+		t.Errorf("expected typescript-labeled diagnostics block, got:\n%s", out)
 	}
 }
 

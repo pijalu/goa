@@ -22,8 +22,18 @@ var embeddedServersYAML []byte
 // PATH binary is absent. npx downloads the package on first run, so no
 // separate install step is needed (per the user's direction to use npx).
 type NpxSpec struct {
-	Package string   `yaml:"package"`
-	Args    []string `yaml:"args"`
+	// Package is the npm package installed into the npx cache.
+	Package string `yaml:"package"`
+	// Binary is the executable to run from Package. Defaults to Package —
+	// required when they differ, e.g. package "pyright" ships the
+	// "pyright-langserver" bin, package "svelte-language-server" ships
+	// "svelteserver" (bugs.md Issue LSP: bare `npx <pkg>` guessed wrong bins).
+	Binary string `yaml:"binary,omitempty"`
+	// ExtraPackages are additional npm packages the server needs alongside it
+	// (e.g. typescript-language-server requires typescript@5 — v6+ removed the
+	// classic lib/tsserver.js it launches).
+	ExtraPackages []string `yaml:"extra_packages,omitempty"`
+	Args          []string `yaml:"args"`
 }
 
 // InstallSpec describes how to fetch a server that npx cannot run (gopls via
@@ -257,12 +267,8 @@ func (s *ServerSpec) resolveCommand(binDir string, installAllowed bool) (argv []
 		return append([]string{bin}, s.Command[1:]...), true
 	}
 	// 2. npx (Node servers): npx downloads the package on first run.
-	if s.Npx != nil && s.Npx.Package != "" {
-		if npxBin, err := lookPath("npx"); err == nil {
-			argv := []string{npxBin, "--yes", s.Npx.Package}
-			argv = append(argv, s.Npx.Args...)
-			return argv, true
-		}
+	if argv, ok := s.npxArgv(); ok {
+		return argv, true
 	}
 	// 3. Install (opt-out).
 	if installAllowed && s.Install != nil {
@@ -271,6 +277,32 @@ func (s *ServerSpec) resolveCommand(binDir string, installAllowed bool) (argv []
 		}
 	}
 	return nil, false
+}
+
+// npxArgv builds the npx fallback argv for Node-based servers. The --package
+// form is used because the runnable bin often differs from the package name
+// (pyright→pyright-langserver, @vue/language-server→vue-language-server, …)
+// and extra packages may be required (typescript-language-server needs
+// typescript@5 — v6+ dropped lib/tsserver.js).
+func (s *ServerSpec) npxArgv() ([]string, bool) {
+	if s.Npx == nil || s.Npx.Package == "" {
+		return nil, false
+	}
+	npxBin, err := lookPath("npx")
+	if err != nil {
+		return nil, false
+	}
+	bin := s.Npx.Binary
+	if bin == "" {
+		bin = s.Npx.Package
+	}
+	argv := []string{npxBin, "--yes", "--package", s.Npx.Package}
+	for _, extra := range s.Npx.ExtraPackages {
+		argv = append(argv, "--package", extra)
+	}
+	argv = append(argv, bin)
+	argv = append(argv, s.Npx.Args...)
+	return argv, true
 }
 
 // run executes the installer, returning the path to the installed binary.

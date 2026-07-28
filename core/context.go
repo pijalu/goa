@@ -256,6 +256,11 @@ type Context struct {
 	// /tools:name:on to register a tool at runtime without restarting.
 	ToolFactory func(name string) (agentic.Tool, bool)
 
+	// ToolTeardown, when set, is called after /tools:name:off unregisters a
+	// tool so integrations tied to it can be torn down live (e.g. lsp closes
+	// its manager and detaches read/edit/write linking — bugs.md Issue LSP).
+	ToolTeardown func(name string)
+
 	// SkillRegistry provides skill lookup (populated by M08).
 	SkillRegistry SkillRegistry
 

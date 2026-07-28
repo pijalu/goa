@@ -770,9 +770,15 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
 	c.advanceScrollback(&buf, canvas, target, width, height)
-	// The scroll just revealed (target - c.vt) rows at the bottom of the window;
-	// repaintWindow must not redraw them.
-	c.lastScrollCount = max(0, target-c.vt)
+	// repaintWindow must not redraw the rows the scroll just revealed at the
+	// bottom of the window. The count must mirror what advanceScrollback
+	// actually wrote — (target - max(c.vt, c.scrollTop)) — NOT (target - c.vt):
+	// when the window top moved but the watermark did NOT advance (canvas
+	// shrank then regrew, e.g. a stream finalizing mid-flip), the scroll wrote
+	// ZERO rows, and counting (target - c.vt) skips a bottom transcript row
+	// that was never repainted — leaving a stale row behind (bugs.md Bug D:
+	// a tool widget's last line kept the pending bg after success).
+	c.lastScrollCount = max(0, target-max(c.vt, c.scrollTop))
 	c.repaintWindow(&buf, canvas, vt, width, height)
 	c.appendCursorSeq(&buf, cursor, len(canvas), width, vt, height)
 	buf.WriteString("\x1b[?2026l")

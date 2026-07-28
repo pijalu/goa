@@ -88,7 +88,8 @@ The gate applies only to **model-initiated** completions of goals **with a recor
 A goal may record a **verify command** — a machine-checkable done-condition supplied at creation (goal tool `create` arg `verifyCommand`, preserved through queueing and promotion). After the model confirms completion (challenge answered, evidence given), the done-gate executes the command through the system shell (`$SHELL`, bash fallback) in the project directory:
 
 - **exit 0** → completion proceeds; **non-zero** → completion is rejected with the output tail (last 10 lines) as the failure detail.
-- Execution is bounded by a **2-minute hard timeout** and the returned output is ANSI-sanitized and capped at 4 KB. The call runs unlocked, so it cannot deadlock goal state — but ESC does not interrupt it (the goal tool has no cancellable context; documented limitation).
+- Execution is bounded by a **configurable timeout** — `goals.verify_timeout` (default `2m`) — and the returned output is ANSI-sanitized and capped at 4 KB. The call runs unlocked, so it cannot deadlock goal state — but ESC does not interrupt it (the goal tool has no cancellable context; documented limitation).
+- **Transparency:** before the confirming `complete` call runs the command, the goal widget announces it live (`Running goal verification (timeout 2m0s): $ <command>`), and a successful completion returns the full evidence block in the chat bubble — exact command, elapsed time, applied timeout, and output tail — so you can always see what validated the goal.
 - `goals.verify_commands: false` disables execution globally: the gate then skips the command (judge/streak logic still runs), and `/goal:verify` errors.
 - **Todo consistency:** a gated `complete` is rejected while any goal todo is not `done` — finish the checklist or update it first.
 - **Escalation:** consecutive verification failures increment an in-memory streak; at `goals.max_verify_failures` (default 3) the goal is **auto-blocked** for user review (reason: "verification failed N times consecutively"). `-1` removes the cap (not recommended). Any transition out of `active` or a session restart resets the streak.
@@ -168,6 +169,7 @@ A goal can carry a framework-managed todo list (`add_todo` / `update_todo`). The
 |-----|---------|---------|
 | `goals.done_gate` | `verify` | Completion gate: `verify` (challenge round-trip), `evidence` (reason required), `off`. |
 | `goals.verify_commands` | `true` | Execute recorded verify commands at completion. |
+| `goals.verify_timeout` | `2m` | Hard bound on a single verify-command execution; shown in the completion evidence. |
 | `goals.max_verify_failures` | `3` | Consecutive verification failures before auto-block. `-1` = no cap. |
 | `goals.stall_turns` | `5` | Stale turns before a stall challenge. `-1`/`0` = disabled. |
 | `goals.default_turn_budget` | `50` | Implicit hard turn ceiling for new goals. `-1` = unlimited. |

@@ -40,8 +40,8 @@ func TestTUI_DiffRender_ToolPendingToSuccess(t *testing.T) {
 	pendingWrites := stripANSI(strings.Join(term.writes, ""))
 	term.writes = nil
 
-	if !strings.Contains(pendingWrites, "◉ $ ls -F") {
-		t.Fatalf("pending render should contain '◉ $ ls -F', got:\n%s", pendingWrites)
+	if !strings.Contains(pendingWrites, "⧖ $ ls -F") {
+		t.Fatalf("pending render should contain '⧖ $ ls -F', got:\n%s", pendingWrites)
 	}
 
 	// Transition to success with output.
@@ -53,8 +53,8 @@ func TestTUI_DiffRender_ToolPendingToSuccess(t *testing.T) {
 	successWrites := stripANSI(strings.Join(term.writes, ""))
 
 	// The final screen should not still show the pending icon.
-	if strings.Contains(successWrites, "◉ $ ls -F") {
-		t.Errorf("success diff render still contains pending header '◉ $ ls -F'; old line was not overwritten:\n%s", successWrites)
+	if strings.Contains(successWrites, "⧖ $ ls -F") {
+		t.Errorf("success diff render still contains pending header '⧖ $ ls -F'; old line was not overwritten:\n%s", successWrites)
 	}
 	if !strings.Contains(successWrites, "✓ $ ls -F") {
 		t.Errorf("success diff render should contain '✓ $ ls -F', got:\n%s", successWrites)
@@ -89,8 +89,8 @@ func TestTUI_DiffRender_ToolPendingToSuccess_NearViewportBottom(t *testing.T) {
 	pendingWrites := stripANSI(strings.Join(term.writes, ""))
 	term.writes = nil
 
-	if !strings.Contains(pendingWrites, "◉ $ ls -F") {
-		t.Fatalf("pending render should contain '◉ $ ls -F', got:\n%s", pendingWrites)
+	if !strings.Contains(pendingWrites, "⧖ $ ls -F") {
+		t.Fatalf("pending render should contain '⧖ $ ls -F', got:\n%s", pendingWrites)
 	}
 
 	// Output long enough that the success block pushes beyond the 5-row viewport.
@@ -105,7 +105,7 @@ func TestTUI_DiffRender_ToolPendingToSuccess_NearViewportBottom(t *testing.T) {
 	engine.RenderNow()
 
 	successWrites := stripANSI(strings.Join(term.writes, ""))
-	if strings.Contains(successWrites, "◉ $ ls -F") {
+	if strings.Contains(successWrites, "⧖ $ ls -F") {
 		t.Errorf("success diff render still contains pending header after scroll:\n%s", successWrites)
 	}
 	if !strings.Contains(successWrites, "✓ $ ls -F") {
@@ -135,8 +135,8 @@ func TestTUI_DiffRender_ToolPendingToSuccess_WithPrecedingContent(t *testing.T) 
 	pendingWrites := stripANSI(strings.Join(term.writes, ""))
 	term.writes = nil
 
-	if !strings.Contains(pendingWrites, "◉ $ ls -F") {
-		t.Fatalf("pending render should contain '◉ $ ls -F', got:\n%s", pendingWrites)
+	if !strings.Contains(pendingWrites, "⧖ $ ls -F") {
+		t.Fatalf("pending render should contain '⧖ $ ls -F', got:\n%s", pendingWrites)
 	}
 
 	tc.SetOutput(".goa/\nDuration: 0.05s\n")
@@ -145,7 +145,7 @@ func TestTUI_DiffRender_ToolPendingToSuccess_WithPrecedingContent(t *testing.T) 
 	engine.RenderNow()
 
 	successWrites := stripANSI(strings.Join(term.writes, ""))
-	if strings.Contains(successWrites, "◉ $ ls -F") {
+	if strings.Contains(successWrites, "⧖ $ ls -F") {
 		t.Errorf("success diff render still contains pending header:\n%s", successWrites)
 	}
 	if !strings.Contains(successWrites, "✓ $ ls -F") {

@@ -70,6 +70,24 @@ func (t *Tracker) OnCall(ev *agentic.OutputEvent) (*tui.ToolExecutionComponent, 
 	return t.onCallFinal(ev)
 }
 
+// OnStart processes an EventToolStart: transitions the widget Pending →
+// Running at the TRUE execution start (the scheduler started the task), so a
+// queued call's elapsed timer measures execution only — never queue time
+// (bugs.md Bug W). Returns the widget, or nil if none matched.
+func (t *Tracker) OnStart(ev *agentic.OutputEvent) *tui.ToolExecutionComponent {
+	if ev == nil {
+		return nil
+	}
+	tc := t.findForResult(ev.ToolCallID, ev.ToolName)
+	if tc == nil {
+		return nil
+	}
+	if tc.Status() == tui.ToolPending {
+		tc.SetStatus(tui.ToolRunning)
+	}
+	return tc
+}
+
 // OnProgress processes an EventToolProgress: refreshes the widget's partial
 // output without retiring it. Returns the widget, or nil if none matched.
 func (t *Tracker) OnProgress(ev *agentic.OutputEvent) *tui.ToolExecutionComponent {
@@ -144,6 +162,16 @@ func (t *Tracker) Reset() {
 // ── delta path ──
 
 func (t *Tracker) onCallDelta(ev *agentic.OutputEvent) (*tui.ToolExecutionComponent, bool) {
+	// Ignore nameless deltas: a widget created with an empty tool name can
+	// never be matched by later named events (name-based noID lookup) nor
+	// re-titled (widgets have no SetToolName), so it stays a blank box with a
+	// ticking timer forever (bugs.md "Empty tool TUI"). The agent already
+	// suppresses nameless emissions; this is defense in depth for any other
+	// event source. The call gets its widget at its first named delta or at
+	// the final event.
+	if ev.ToolName == "" {
+		return nil, false
+	}
 	if ev.ToolCallID != "" {
 		if tc := t.byID[ev.ToolCallID]; tc != nil {
 			tc.SetArgsPartial(ev.ToolInput)
