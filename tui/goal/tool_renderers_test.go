@@ -110,13 +110,12 @@ func TestGoalRenderer_TodoActions(t *testing.T) {
 	}
 }
 
-// TestGoalRenderer_QueueActions pins the call headers and result summaries
-// for the goal-list actions (list / cancel / reorder) and for creates that
-// only enqueue: none of them may render as "No current goal".
-func TestGoalRenderer_QueueActions(t *testing.T) {
+// TestGoalRenderer_ListAction pins the list call header and the
+// {"active":…, "queued":[…]} result summary — it must describe the goal list,
+// never claim "No current goal".
+func TestGoalRenderer_ListAction(t *testing.T) {
 	r := GoalRenderer{}
 	ctx := tuirender.RenderContext{}
-
 	if call := r.RenderCall(map[string]any{"action": "list"}, ctx); !strings.Contains(call, "Listed goals") {
 		t.Errorf("list call = %q", call)
 	}
@@ -129,7 +128,13 @@ func TestGoalRenderer_QueueActions(t *testing.T) {
 	if res := r.RenderResult(`{"active":null,"queued":[],"count":0}`, ctx); !strings.Contains(res, "No active goal") {
 		t.Errorf("empty list result = %q", res)
 	}
+}
 
+// TestGoalRenderer_CancelAction pins the cancel call header and the
+// {"cancelled":{…}} result summary.
+func TestGoalRenderer_CancelAction(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{}
 	call := r.RenderCall(map[string]any{"action": "cancel", "goalId": "happy.fox"}, ctx)
 	if !strings.Contains(call, "Cancelled goal") || !strings.Contains(call, "happy.fox") {
 		t.Errorf("cancel call = %q", call)
@@ -137,22 +142,33 @@ func TestGoalRenderer_QueueActions(t *testing.T) {
 	if res := r.RenderResult(`{"cancelled":{"id":"g1","name":"happy.fox","objective":"Write docs"}}`, ctx); !strings.Contains(res, "Cancelled") || !strings.Contains(res, "happy.fox") {
 		t.Errorf("cancel result = %q", res)
 	}
+}
 
-	call = r.RenderCall(map[string]any{"action": "reorder", "goalId": "calm.owl", "direction": "up"}, ctx)
+// TestGoalRenderer_ReorderAction pins the reorder call header and the
+// {"queued":[…]} result listing the queue in its new order.
+func TestGoalRenderer_ReorderAction(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{}
+	call := r.RenderCall(map[string]any{"action": "reorder", "goalId": "calm.owl", "direction": "up"}, ctx)
 	if !strings.Contains(call, "Reordered goal") || !strings.Contains(call, "calm.owl") || !strings.Contains(call, "up") {
 		t.Errorf("reorder call = %q", call)
 	}
-	res = r.RenderResult(`{"queued":[{"name":"calm.owl","objective":"B"},{"name":"happy.fox","objective":"A"}]}`, ctx)
+	res := r.RenderResult(`{"queued":[{"name":"calm.owl","objective":"B"},{"name":"happy.fox","objective":"A"}]}`, ctx)
 	if strings.Index(res, "calm.owl") > strings.Index(res, "happy.fox") {
 		t.Errorf("reorder result should list the queue in its new order: %q", res)
 	}
+}
 
-	// Create while another goal is active: everything lands in the queue.
-	res = r.RenderResult(`{"queued":2}`, ctx)
+// TestGoalRenderer_QueuedCreateResults pins creates that only enqueue: a
+// bare {"queued":n} result must report the queued count (never "No current
+// goal"), and a multi-create with an activated goal reports both.
+func TestGoalRenderer_QueuedCreateResults(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{}
+	res := r.RenderResult(`{"queued":2}`, ctx)
 	if !strings.Contains(res, "2 goals queued") || strings.Contains(res, "No current goal") {
 		t.Errorf("queued-only create result = %q", res)
 	}
-	// Batch create with an activated goal reports the queue count too.
 	res = r.RenderResult(`{"goal":{"objective":"Main","status":"active"},"queued":2}`, ctx)
 	if !strings.Contains(res, "Main") || !strings.Contains(res, "2 queued") {
 		t.Errorf("multi-create result = %q", res)
