@@ -148,6 +148,12 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		if err := r.Register(dep.GoalCommand); err != nil {
 			return err
 		}
+		// /todo manages the active goal's todo list — bound to the same
+		// GoalMode as /goal so command-driven and model-driven todo changes
+		// observe one another (and both refresh the footer markers).
+		if err := r.Register(&TodoCommand{Mode: dep.GoalCommand.Mode}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -443,3 +443,62 @@ func TestGoalDriver_FreshContextRouting(t *testing.T) {
 		t.Errorf("default goal: normalRuns=%d freshRuns=%d, want 1/0", def.normalRuns, def.freshRuns)
 	}
 }
+
+// busyRunner simulates agent.Run's queue-on-busy semantics hitting the
+// driver: while "busy", Run returns instantly (the continuation prompt was
+// merely queued). Unbounded instant returns are what let a Drive started
+// mid-turn hot-loop and queue hundreds of phantom continuation turns
+// (bugs.md Issue 7: "goal cannot be stopped"). The driver must treat the
+// busy signal as a clean stop instead of spinning.
+type busyRunner struct {
+	runs atomic.Int32
+}
+
+func (b *busyRunner) Run(ctx context.Context, prompt string) error {
+	b.runs.Add(1)
+	return ErrAgentBusy
+}
+
+// TestGoalDriver_BusyAgentExitsCleanly asserts that when the agent is busy
+// with another turn (ErrAgentBusy), Drive stops WITHOUT pausing the goal and
+// WITHOUT looping: the post-turn hook of the in-flight turn re-starts the
+// drive once the agent is idle.
+func TestGoalDriver_BusyAgentExitsCleanly(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "keep me"}, goal.GoalActorUser); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	agent := &busyRunner{}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatalf("Drive returned %v, want nil (busy is a clean stop)", err)
+	}
+	if got := agent.runs.Load(); got != 1 {
+		t.Errorf("Run called %d times, want exactly 1 (no busy spin)", got)
+	}
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("goal cleared on busy; want it left active for the next drive")
+	}
+	if g.Status != goal.GoalActive {
+		t.Errorf("goal status = %q, want %q (busy must not pause)", g.Status, goal.GoalActive)
+	}
+}
+
+// TestGoalDriver_BusyThenRecovers asserts a drive that stopped on busy can be
+// re-started and makes progress once the agent is idle again.
+func TestGoalDriver_BusyThenRecovers(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "finish me"}, goal.GoalActorUser); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	agent := &fakeAgentThatCompletes{mode: mode}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("goal still active after completing turn")
+	}
+}

@@ -19,6 +19,7 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:manage                Open the queued-goals manager
   /goal:reorder:<map>         Reorder queue with letter mapping (e.g. 1B,2C,3A)
   /goal:status                Show current goal status
+  /goal:current               Show the current goal in full: objective, criterion, verify command, todos
   /goal:list                  List active + queued goals in order, with full objectives (markdown)
   /goal:pause                 Pause the active goal
   /goal:resume                Resume a paused or blocked goal

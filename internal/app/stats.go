@@ -329,6 +329,7 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 	}
 
 	if tc := a.toolTracker().OnResult(ev); tc != nil {
+		a.echoScrolledOffToolResult(tc, ev)
 		a.clearToolBusy()
 		return
 	}
@@ -336,6 +337,36 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 	// already retired or never seen): render a plain tool-result entry.
 	a.subs.chat.AddToolResult(ev.Text)
 	a.clearToolBusy()
+}
+
+// echoScrolledOffToolResult appends a compact completion echo when a tool
+// finishes while its widget is fully scrolled into terminal scrollback. The
+// compositor never repaints committed rows, so the widget's ✓/✗ transition
+// would be invisible and the frozen running rows would read as "still
+// ongoing" (bugs.md Issue 6: the first series of a parallel cancel batch
+// "stayed blue"). The echo renders the tool renderer's own summary (e.g.
+// "✓ Cancelled silky.nyala: G05 — …"), capped at a few lines, ANSI-free.
+func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
+	if a.subs.chat == nil || !a.subs.chat.IsScrolledOff(tc) {
+		return
+	}
+	isErr := a.toolStatusFromResult(ev.Text) == tui.ToolError
+	icon := "✓"
+	if isErr {
+		icon = "✗"
+	}
+	body := ""
+	if r := tui.GetToolRenderer(ev.ToolName); r != nil {
+		body = r.RenderResult(ev.Text, tui.RenderContext{ArgsComplete: true, IsError: isErr})
+	}
+	if body == "" {
+		body = ev.Text
+	}
+	lines := strings.Split(strings.TrimRight(ansi.Strip(body), "\n"), "\n")
+	if len(lines) > 3 {
+		lines = append(lines[:3], "…")
+	}
+	a.subs.chat.AddToolResult(icon + " " + strings.Join(lines, "\n"))
 }
 
 // applyToolResultToWidget is retained for the orchestrator/multi-agent path

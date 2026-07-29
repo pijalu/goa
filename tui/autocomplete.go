@@ -7,6 +7,7 @@ package tui
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -25,6 +26,10 @@ const (
 	CatCommand                      // base commands
 	CatModifier                     // parameter variants
 	CatHistory                      // history-search entries
+	// CatFiles groups @-file completions. It must be explicit: the zero value
+	// is CatMostUsed, so an unset Category used to render files under the
+	// "── Most Used ──" header (bugs.md Issue 8).
+	CatFiles // @-file path completions
 )
 
 // Completion represents a single completion candidate.
@@ -342,6 +347,9 @@ func NewFileCompleter(workdir string) *FileCompleter {
 // Complete returns file path completions for the given prefix.
 // Only activates when prefix starts with @ (e.g., @src/main.go).
 // Uses `fd` CLI for fast gitignore-aware search, falls back to os.ReadDir.
+// Results are ranked exact > prefix > fuzzy and carry the CatFiles category
+// (bugs.md Issue 8); a token that already names an existing file completes
+// to nothing (popup suppressed — the path is done).
 func (f *FileCompleter) Complete(prefix string) []Completion {
 	if prefix == "" || !strings.HasPrefix(prefix, "@") {
 		return nil
@@ -351,13 +359,18 @@ func (f *FileCompleter) Complete(prefix string) []Completion {
 	dir, partial := splitPathPrefix(pathPrefix)
 	searchDir := resolveSearchDir(dir, f.workdir)
 
+	// Exact-path suppression: the typed token already names an existing file.
+	if partial != "" && isExistingFile(searchDir, partial) {
+		return nil
+	}
+
 	home := os.Getenv("HOME")
 	var result []Completion
 
 	// Try fd first for fast, gitignore-aware search
 	if fdAvailable {
 		if comps := f.tryFdCompletion(searchDir, partial, home); comps != nil {
-			return comps
+			return rankFileCompletions(comps, partial)
 		}
 	}
 
@@ -372,7 +385,52 @@ func (f *FileCompleter) Complete(prefix string) []Completion {
 			result = append(result, *comp)
 		}
 	}
-	return result
+	return rankFileCompletions(result, partial)
+}
+
+// isExistingFile reports whether dir/name is an existing regular file.
+func isExistingFile(dir, name string) bool {
+	info, err := os.Stat(filepath.Join(dir, name))
+	return err == nil && info.Mode().IsRegular()
+}
+
+// rankFileCompletions orders candidates exact > case-sensitive prefix >
+// case-insensitive prefix > fuzzy, with shorter basenames first inside a
+// tier (closest to a complete path), and stamps the CatFiles category. fd
+// and readdir return filesystem order, which left exact matches buried
+// under fuzzy ones (bugs.md Issue 8: @plans/plan offered
+// PLAN-00-TEST-INFRA.md before plan.md — both are case-insensitive prefix
+// matches, so case sensitivity is the tie-breaker).
+func rankFileCompletions(comps []Completion, partial string) []Completion {
+	lower := strings.ToLower(partial)
+	tier := func(c Completion) int {
+		base := filepath.Base(c.Value)
+		switch {
+		case base == partial:
+			return 0 // exact
+		case strings.HasPrefix(base, partial):
+			return 1 // prefix, same case as typed
+		case strings.HasPrefix(strings.ToLower(base), lower):
+			return 2 // prefix, case-insensitive
+		default:
+			return 3 // fuzzy
+		}
+	}
+	sort.SliceStable(comps, func(i, j int) bool {
+		ti, tj := tier(comps[i]), tier(comps[j])
+		if ti != tj {
+			return ti < tj
+		}
+		bi, bj := filepath.Base(comps[i].Value), filepath.Base(comps[j].Value)
+		if len(bi) != len(bj) {
+			return len(bi) < len(bj)
+		}
+		return bi < bj
+	})
+	for i := range comps {
+		comps[i].Category = CatFiles
+	}
+	return comps
 }
 
 func (f *FileCompleter) tryFdCompletion(searchDir, partial, home string) []Completion {

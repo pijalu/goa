@@ -293,6 +293,13 @@ type steeringSourceAdapter struct{ q *SteeringQueue }
 func (a steeringSourceAdapter) Drain() []string { return a.q.Flush() }
 
 func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelFunc, gen int, runner agentRunner, input string, images []string) {
+	// turnEndedCleanly gates the post-turn hook: a panicking turn must not
+	// re-drive goals (the agent may panic again). The hook itself runs in the
+	// cleanup defer — AFTER am.running is cleared and steering dispatched —
+	// because the goal driver started by the hook must never observe the
+	// agent as still busy with this turn (bugs.md Issue 7: a drive started
+	// while the agent is mid-turn queue-storms continuation prompts).
+	turnEndedCleanly := false
 	defer am.recoverTurnPanic()
 	defer func() {
 		cancel()
@@ -312,6 +319,10 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 		if pending != "" {
 			am.emitSteeringInjected(pending)
 			_ = am.SendUserInput(pending)
+		}
+
+		if turnEndedCleanly && am.postTurnHook != nil {
+			am.postTurnHook()
 		}
 	}()
 
@@ -342,9 +353,7 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	}
 	am.mu.Unlock()
 
-	if am.postTurnHook != nil {
-		am.postTurnHook()
-	}
+	turnEndedCleanly = true
 }
 
 func (am *AgentManager) emitSteeringInjected(text string) {
@@ -662,6 +671,14 @@ func (am *AgentManager) SetActiveAgentForTest(agent *agentic.Agent) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.activeAgent = agent
+}
+
+// SetRunningForTest sets the turn-in-progress flag. Test-only: production
+// code transitions it via SendUserInput/runAgentTurn.
+func (am *AgentManager) SetRunningForTest(running bool) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.running = running
 }
 
 // SetTools updates the tools available to the active agent. Changes take

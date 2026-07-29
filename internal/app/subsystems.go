@@ -584,17 +584,59 @@ func wireDreamScheduler(agentMgr *core.AgentManager, scheduler *dreamScheduler) 
 	})
 }
 
+// goalEventPublisher delivers goal state changes to the app's Agent bus.
+// Delivery is lossless and ordered (bugs.md Issue 1): a non-blocking send
+// used to silently drop updates when the bus was full — exactly the
+// mid-turn situation where a goal create/resume/complete happens — leaving
+// the goal bubble hidden (create dropped) or stale (clear dropped). When
+// the bus is full, updates queue in publish order and a single drain
+// goroutine delivers them as room frees up.
 type goalEventPublisher struct {
 	bus *event.Bus
+
+	mu       sync.Mutex
+	queue    []event.AgentEvent
+	draining bool
 }
 
 func (p *goalEventPublisher) Publish(snapshot *goal.GoalSnapshot, change *goal.GoalChange) {
 	if p.bus == nil {
 		return
 	}
+	ev := event.AgentEvent{GoalUpdate: &event.GoalUpdate{Snapshot: snapshot, Change: change}}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.queue) > 0 {
+		// A drain is already pending: keep publish order by queueing.
+		p.queue = append(p.queue, ev)
+		return
+	}
 	select {
-	case p.bus.Agent <- event.AgentEvent{GoalUpdate: &event.GoalUpdate{Snapshot: snapshot, Change: change}}:
+	case p.bus.Agent <- ev:
+		return
 	default:
+	}
+	p.queue = append(p.queue, ev)
+	if !p.draining {
+		p.draining = true
+		go p.drain()
+	}
+}
+
+// drain delivers queued updates in publish order, blocking on the bus until
+// the consumer catches up. At most one drain goroutine runs at a time.
+func (p *goalEventPublisher) drain() {
+	for {
+		p.mu.Lock()
+		if len(p.queue) == 0 {
+			p.draining = false
+			p.mu.Unlock()
+			return
+		}
+		ev := p.queue[0]
+		p.queue = p.queue[1:]
+		p.mu.Unlock()
+		p.bus.Agent <- ev
 	}
 }
 
@@ -618,6 +660,14 @@ type agentManagerRunner struct {
 }
 
 func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
+	// Never run a goal turn while a user turn owns the agent: agent.Run's
+	// queue-on-busy semantics would return instantly and the drive loop
+	// would hot-spin, queueing hundreds of phantom continuation prompts
+	// (bugs.md Issue 7). The in-flight turn's post-turn hook re-starts the
+	// drive once the agent is idle.
+	if r.agentMgr.IsRunning() {
+		return core.ErrAgentBusy
+	}
 	agent := r.agentMgr.CurrentAgent()
 	if agent == nil {
 		return fmt.Errorf("no active agent session")
@@ -635,6 +685,11 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 // live context mid-session, matching "new agent / clean context" semantics —
 // the goal carries only its objective forward.
 func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin bool) error {
+	// Same busy guard as Run — a fresh-context goal must never queue-storm
+	// either (bugs.md Issue 7).
+	if r.agentMgr.IsRunning() {
+		return core.ErrAgentBusy
+	}
 	agent := r.agentMgr.CurrentAgent()
 	if agent == nil {
 		return fmt.Errorf("no active agent session")

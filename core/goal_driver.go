@@ -57,6 +57,17 @@ const (
 	PauseRuntimeError = "Paused after runtime error"
 )
 
+// ErrAgentBusy is returned by an AgentRunner when the agent is busy with
+// another turn. It is a clean stop for the drive loop — NOT an error: the
+// goal stays active (never paused) and the post-turn hook of the in-flight
+// turn re-starts the drive once the agent is idle. Without this guard, a
+// drive started mid-turn hits the agent's queue-on-busy semantics: Run
+// returns instantly, the loop hot-spins, and hundreds of continuation
+// prompts flood the agent's input queue — phantom turns that keep arriving
+// even after the goal is cleared (bugs.md Issue 7: "goal cannot be
+// stopped").
+var ErrAgentBusy = errors.New("goal driver: agent busy with another turn")
+
 // AgentRunner is the subset of agentic.Agent used by GoalDriver.
 type AgentRunner interface {
 	Run(ctx context.Context, input string) error
@@ -162,9 +173,7 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 
 		err := d.runTurn(ctx, active)
 		if err != nil {
-			reason := mapDriverError(err)
-			d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime)
-			return err
+			return d.handleTurnError(err)
 		}
 
 		current := d.Mode.GetActiveGoal()
@@ -178,6 +187,20 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 		}
 		d.checkStall(current)
 	}
+}
+
+// handleTurnError maps a turn failure to the drive-loop verdict. ErrAgentBusy
+// is a CLEAN stop (nil): another turn owns the agent, so the goal stays
+// active and the in-flight turn's post-turn hook re-starts the drive once
+// the agent is idle (bugs.md Issue 7). Any other error pauses the goal with
+// a mapped reason and propagates.
+func (d *GoalDriver) handleTurnError(err error) error {
+	if errors.Is(err, ErrAgentBusy) {
+		return nil
+	}
+	reason := mapDriverError(err)
+	d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime)
+	return err
 }
 
 // checkStall runs the stall watchdog after a completed turn. It only guards

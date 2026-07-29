@@ -291,6 +291,11 @@ func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
 			Text:       text,
 		}, ok)
 		if tc != nil {
+			a.echoScrolledOffToolResult(tc, &agentic.OutputEvent{
+				Type:     agentic.EventToolResult,
+				ToolName: tc.ToolName(),
+				Text:     text,
+			})
 			return
 		}
 	}

@@ -38,14 +38,10 @@ func (f *Footer) Render(width int) []string {
 		return f.renderOrchStatsLines(width, styler)
 	}
 
-	// Line 1: working directory (left) / profile(minor) + mode badge (right)
+	// Line 1: working directory (left) / [◈ goal] profile(minor) [todos] + mode badge (right)
 	workdir := f.formatWorkdirAdaptive(width)
 	modeBadge := ansi.Fg(f.modeColor()) + strings.ToUpper(f.data.Mode) + ansi.Reset + fg
-	profileLabel := f.data.Profile
-	if f.data.MinorMode != "" {
-		profileLabel = fmt.Sprintf("%s(%s)", f.data.Profile, f.data.MinorMode)
-	}
-	right1 := fmt.Sprintf("%s │ %s", profileLabel, modeBadge)
+	right1 := fmt.Sprintf("%s │ %s", f.goalProfileLabel(fg), modeBadge)
 	line1 := renderTwoCol(workdir, right1, width, styler)
 
 	// Line 2: conversation stats / activity / steering hint / goal status (left) / model + workflow hint (right)
@@ -531,6 +527,45 @@ func FormatFooterLine(stats, model, provider, thinking, activity string, busy, a
 	}
 	b.WriteString(modelPart)
 	return b.String()
+}
+
+// goalProfileLabel renders the line-1 right-side label: when a goal exists,
+// a ◈ marker (colored by goal status) and up to three ⬩ pending-todo markers
+// with a "+x" overflow counter surround the profile label —
+// "◈ coding-posture ⬩⬩⬩+2 │ YOLO" (bugs.md Issues 3-4). Without a goal the
+// label is the bare profile(minor) text.
+func (f *Footer) goalProfileLabel(fg string) string {
+	label := f.data.Profile
+	if f.data.MinorMode != "" {
+		label = fmt.Sprintf("%s(%s)", f.data.Profile, f.data.MinorMode)
+	}
+	if f.data.GoalStatus == "" {
+		return label
+	}
+	var b strings.Builder
+	b.WriteString(ansi.Fg(f.goalStatusColor()) + "◈" + ansi.Reset + fg + " ")
+	b.WriteString(label)
+	if n := f.data.GoalPendingTodos; n > 0 {
+		b.WriteString(" ")
+		b.WriteString(strings.Repeat("⬩", min(n, 3)))
+		if n > 3 {
+			fmt.Fprintf(&b, "+%d", n-3)
+		}
+	}
+	return b.String()
+}
+
+// goalStatusColor maps the goal status to the ◈ marker color: active is
+// green (running), paused is blue (idle), blocked is red (needs input).
+func (f *Footer) goalStatusColor() string {
+	switch f.data.GoalStatus {
+	case "paused":
+		return TheTheme.ColorHex("tool_running")
+	case "blocked":
+		return TheTheme.ColorHex("tool_error")
+	default: // active and any forward-compatible state
+		return TheTheme.ColorHex("tool_success")
+	}
 }
 
 func (f *Footer) modeColor() string {

@@ -1930,3 +1930,80 @@ func TestAgentManager_ResetConversationID(t *testing.T) {
 		t.Fatalf("agent StreamOptions.SessionID = %q, want rotated %q", got, newID)
 	}
 }
+
+// okRunner completes a turn immediately.
+type okRunner struct{}
+
+func (o *okRunner) Run(ctx context.Context, input string) error { return nil }
+func (o *okRunner) RunWithImages(ctx context.Context, input string, images []string) error {
+	return nil
+}
+
+// TestRunAgentTurn_PostTurnHookFiresAfterCleanup asserts the post-turn hook
+// observes the turn as fully ended (bugs.md Issue 7): the hook starts the
+// goal driver, and if it fired while the manager still marked the turn
+// running, the driver's agent-busy guard would always trip — or worse,
+// without the guard, the driver would queue-storm continuation prompts into
+// the still-processing agent.
+func TestRunAgentTurn_PostTurnHookFiresAfterCleanup(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+
+	runningAtHook := true
+	hookFired := false
+	am.SetPostTurnHook(func() {
+		hookFired = true
+		runningAtHook = am.IsRunning()
+	})
+
+	// Simulate SendUserInput's running state for the duration of the turn.
+	am.mu.Lock()
+	am.running = true
+	am.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	am.runAgentTurn(ctx, cancel, 1, &okRunner{}, "hello", nil)
+
+	if !hookFired {
+		t.Fatal("post-turn hook did not fire")
+	}
+	if runningAtHook {
+		t.Error("post-turn hook fired while the manager still marked the turn running")
+	}
+}
+
+// TestRunAgentTurn_PostTurnHookSkippedOnPanic guards the panic path: a
+// panicking turn must not re-drive goals (the hook only fires for turns that
+// ended normally).
+func TestRunAgentTurn_PostTurnHookSkippedOnPanic(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	am.SetForwardInternalEvents(true)
+
+	hookFired := false
+	am.SetPostTurnHook(func() { hookFired = true })
+
+	am.mu.Lock()
+	am.running = true
+	am.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		am.runAgentTurn(ctx, cancel, 1, &panicRunner{}, "hello", nil)
+	}()
+	select {
+	case <-am.events:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no EventEnd emitted after agent panic")
+	}
+	<-done
+
+	if hookFired {
+		t.Error("post-turn hook fired after a panicking turn; want it skipped")
+	}
+}

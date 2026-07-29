@@ -522,6 +522,38 @@ func (cv *ChatViewport) Children() []Component {
 	return views
 }
 
+// IsScrolledOff reports whether component c's rendered rows lie entirely
+// above the currently visible window (scrolled into terminal scrollback).
+// The compositor's scroll watermark never repaints committed rows
+// ("canvas rows are immutable"), so a later state change of c is INVISIBLE
+// on screen — the symptom behind bugs.md Issue 6 (a tool completing after
+// its running-state rows scrolled off leaves a frozen "◉" ghost). The app
+// uses this to append a compact completion echo for such tools. It is
+// computed from the same frame the compositor folds (entry lineOffset +
+// renderCache length vs the layout-allocated height); unknown geometry
+// (never rendered, stale offset) reports false — never a spurious echo.
+func (cv *ChatViewport) IsScrolledOff(c Component) bool {
+	if c == nil || cv.allocatedHeight <= 0 {
+		return false
+	}
+	total := len(cv.renderCache.lines)
+	if total <= cv.allocatedHeight {
+		return false // everything fits on screen; nothing is scrolled off
+	}
+	visibleStart := total - cv.allocatedHeight
+	for i := range cv.entries {
+		e := &cv.entries[i]
+		if e.View != c {
+			continue
+		}
+		if e.renderedLines == nil || e.lineOffset < 0 || e.lineOffset > total {
+			return false // unknown geometry: no spurious echo
+		}
+		return e.lineOffset+len(e.renderedLines) <= visibleStart
+	}
+	return false
+}
+
 // ── Typed factory helpers (compose factory + Append) ──
 
 // AddMessage appends a message built from a ChatMessage (legacy data shape).

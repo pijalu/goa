@@ -907,6 +907,18 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 	}
 }
 
+// seedGoalUI restores the goal bubble and footer from the goal manager's
+// current state at startup. The durable goal store is replayed before the
+// TUI exists, so no GoalUpdate bus event covers an already-persisted goal —
+// without this seed the bubble stays hidden until the next live goal event
+// (bugs.md Issue 1).
+func (a *App) seedGoalUI() {
+	if a.subs.goalManager == nil {
+		return
+	}
+	a.updateGoalFooter(&event.GoalUpdate{Snapshot: a.subs.goalManager.Mode.GetGoal().Goal})
+}
+
 func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	if a.subs.goalBubble != nil {
 		if update.Snapshot != nil {
@@ -918,18 +930,33 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	if a.subs.footer == nil {
 		return
 	}
-	data := a.subs.footer.Data()
+	// SetGoalData is the explicit writer of the footer's goal fields (routine
+	// SetData rebuilds preserve them — a stats tick must never clear the
+	// ◈/⬩ markers, bugs.md Issues 3-4).
 	if update.Snapshot == nil {
-		data.GoalStatus = ""
-		data.GoalObjective = ""
+		a.subs.footer.SetGoalData("", "", 0)
 	} else {
-		data.GoalStatus = string(update.Snapshot.Status)
-		data.GoalObjective = update.Snapshot.Objective
+		a.subs.footer.SetGoalData(
+			string(update.Snapshot.Status),
+			update.Snapshot.Objective,
+			countPendingGoalTodos(update.Snapshot.Todos),
+		)
 	}
-	a.subs.footer.SetData(data)
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
+}
+
+// countPendingGoalTodos counts the todos that are not done yet (pending +
+// in_progress) — the number behind the footer's ⬩ markers.
+func countPendingGoalTodos(todos []goal.GoalTodoItem) int {
+	n := 0
+	for _, td := range todos {
+		if td.Status != goal.TodoDone {
+			n++
+		}
+	}
+	return n
 }
 
 func (a *App) promoteNextQueuedGoal() {

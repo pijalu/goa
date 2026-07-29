@@ -540,10 +540,56 @@ func (m *GoalMode) UpdateGoalTodo(id, status string, actor GoalActor) (GoalSnaps
 	return GoalSnapshot{}, fmt.Errorf("todo %q not found", id)
 }
 
+// RenameGoalTodo changes the title of an existing todo item and persists
+// the list (/todo:edit). IDs and statuses are untouched.
+func (m *GoalMode) RenameGoalTodo(id, title string, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.requireState()
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return GoalSnapshot{}, errors.New("todo title cannot be empty")
+	}
+	for i := range state.todos {
+		if state.todos[i].ID == id {
+			state.todos[i].Title = title
+			m.persistTodosLocked(state, actor)
+			return m.toSnapshot(state), nil
+		}
+	}
+	return GoalSnapshot{}, fmt.Errorf("todo %q not found", id)
+}
+
+// RemoveGoalTodo deletes a todo item and persists the list (/todo:delete).
+// Surviving items keep their IDs (IDs are never reused within a goal).
+func (m *GoalMode) RemoveGoalTodo(id string, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.requireState()
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	for i := range state.todos {
+		if state.todos[i].ID == id {
+			state.todos = append(state.todos[:i], state.todos[i+1:]...)
+			m.persistTodosLocked(state, actor)
+			return m.toSnapshot(state), nil
+		}
+	}
+	return GoalSnapshot{}, fmt.Errorf("todo %q not found", id)
+}
+
 // persistTodosLocked records the todo list to the event log and publishes a
-// silent state update. Caller must hold the lock.
+// state update. Caller must hold the lock. The publish is deliberate (not
+// Silent): the footer renders ⬩ pending-todo markers from goal snapshots, so
+// every todo mutation must refresh the status line (bugs.md Issue 4). The
+// update carries no Change, so no chat marker is emitted — only the bubble
+// and footer observe it.
 func (m *GoalMode) persistTodosLocked(state *goalStage, actor GoalActor) {
-	m.persistState(state, persistOptions{Silent: true})
+	m.persistState(state, persistOptions{})
 	a := string(actor)
 	m.appendGoalUpdateRecord(GoalEventRecord{
 		Type:      GoalEventUpdate,

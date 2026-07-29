@@ -311,6 +311,8 @@ func categoryHeader(cat CompCategory) string {
 		return "── Modifiers ──"
 	case CatHistory:
 		return "── History ──"
+	case CatFiles:
+		return "── Files ──"
 	default:
 		return "──"
 	}

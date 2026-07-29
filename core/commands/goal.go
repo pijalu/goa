@@ -77,6 +77,7 @@ func (c *GoalCommand) LongHelp() string {
 // under the cyclomatic-complexity budget.
 var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error{
 	"status":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showStatus(ctx) },
+	"current":  func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showCurrent(ctx) },
 	"list":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showList(ctx) },
 	"pause":    func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.pause(ctx) },
 	"resume":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.resume(ctx) },
@@ -156,6 +157,7 @@ var goalSubcommandKinds = map[string]struct {
 	errorHint string // non-empty → emit this usage hint when text missing
 }{
 	"status":  {mode: subNone, kind: "status"},
+	"current": {mode: subNone, kind: "current"},
 	"list":    {mode: subNone, kind: "list"},
 	"pause":   {mode: subNone, kind: "pause"},
 	"resume":  {mode: subNone, kind: "resume"},
@@ -245,6 +247,71 @@ func (c *GoalCommand) showStatus(ctx core.Context) error {
 	writeFmt(ctx, "Tokens: %s\n", goal.FormatTokens(g.TokensUsed))
 	writeFmt(ctx, "Elapsed: %s\n", goal.FormatElapsed(g.WallClockMs))
 	return nil
+}
+
+// showCurrent implements /goal:current: print the currently executed goal
+// with its full (untruncated) objective, completion criterion, verify command
+// and todo list with statuses — richer than /goal:status, which shows only
+// counters. Rendered as markdown so it formats in the chat panel.
+func (c *GoalCommand) showCurrent(ctx core.Context) error {
+	result := c.Mode.GetGoal()
+	if result.Goal == nil {
+		writeStr(ctx, "No current goal.\n")
+		return nil
+	}
+	g := result.Goal
+	var sb strings.Builder
+	name := g.Name
+	if name == "" {
+		name = "(unnamed)"
+	}
+	if g.ManagedBy != "" {
+		name += " [" + g.ManagedBy + "]"
+	}
+	fmt.Fprintf(&sb, "**%s** — status %s · turns %d · %s tokens · %s\n\n",
+		name, g.Status, g.TurnsUsed, goal.FormatTokens(g.TokensUsed), goal.FormatElapsed(g.WallClockMs))
+	fmt.Fprintf(&sb, "%s\n\n", g.Objective)
+	if g.CompletionCriterion != nil {
+		fmt.Fprintf(&sb, "- Completion criterion: %s\n", *g.CompletionCriterion)
+	}
+	if g.VerifyCommand != nil {
+		fmt.Fprintf(&sb, "- Verify command: `%s`\n", *g.VerifyCommand)
+	}
+	if g.CompletionCriterion != nil || g.VerifyCommand != nil {
+		sb.WriteString("\n")
+	}
+	writeGoalTodos(&sb, g.Todos)
+	writeStr(ctx, sb.String())
+	return nil
+}
+
+// writeGoalTodos renders the todo list with status markers, one per line.
+func writeGoalTodos(sb *strings.Builder, todos []goal.GoalTodoItem) {
+	if len(todos) == 0 {
+		return
+	}
+	done := 0
+	for _, td := range todos {
+		if td.Status == goal.TodoDone {
+			done++
+		}
+	}
+	fmt.Fprintf(sb, "Todos (%d/%d done):\n\n", done, len(todos))
+	for _, td := range todos {
+		fmt.Fprintf(sb, "- %s %s\n", todoStatusMark(td.Status), td.Title)
+	}
+}
+
+// todoStatusMark renders a todo status as a checkbox-style marker.
+func todoStatusMark(status string) string {
+	switch status {
+	case goal.TodoDone:
+		return "[x]"
+	case goal.TodoInProgress:
+		return "[>]"
+	default:
+		return "[ ]"
+	}
 }
 
 // showList implements /goal:list: list the active goal and every queued goal

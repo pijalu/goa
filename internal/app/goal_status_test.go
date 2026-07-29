@@ -67,3 +67,56 @@ func newTestGoalManager() *core.GoalManager {
 	mgr.Queue = core.NewGoalQueueStore("")
 	return mgr
 }
+
+// TestHandleGoalUpdate_CountsPendingTodos (bugs.md Issue 4): the footer's
+// pending-todo count drives the ⬩ markers — done todos don't count.
+func TestHandleGoalUpdate_CountsPendingTodos(t *testing.T) {
+	a := &App{}
+	footer := tui.NewFooter()
+	chat := tui.NewChatViewport()
+	a.subs = &subsystems{footer: footer, chat: chat, goalManager: newTestGoalManager()}
+
+	snap := &goal.GoalSnapshot{
+		Objective: "x",
+		Status:    goal.GoalActive,
+		Todos: []goal.GoalTodoItem{
+			{ID: "t1", Title: "a", Status: goal.TodoDone},
+			{ID: "t2", Title: "b", Status: goal.TodoPending},
+			{ID: "t3", Title: "c", Status: goal.TodoInProgress},
+			{ID: "t4", Title: "d", Status: goal.TodoPending},
+			{ID: "t5", Title: "e", Status: goal.TodoPending},
+		},
+	}
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: snap})
+	if got := footer.Data().GoalPendingTodos; got != 4 {
+		t.Errorf("GoalPendingTodos = %d, want 4 (done excluded)", got)
+	}
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+	if got := footer.Data().GoalPendingTodos; got != 0 {
+		t.Errorf("GoalPendingTodos after clear = %d, want 0", got)
+	}
+}
+
+// TestFooterGoalFieldsSurviveStatsRebuild (bugs.md Issues 3-4): a routine
+// footer SetData (stats/activity tick without goal knowledge) must not wipe
+// the ◈/⬩ goal markers.
+func TestFooterGoalFieldsSurviveStatsRebuild(t *testing.T) {
+	a := &App{}
+	footer := tui.NewFooter()
+	chat := tui.NewChatViewport()
+	a.subs = &subsystems{footer: footer, chat: chat, goalManager: newTestGoalManager()}
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: &goal.GoalSnapshot{
+		Objective: "keep me", Status: goal.GoalActive,
+		Todos: []goal.GoalTodoItem{{ID: "t1", Title: "x", Status: goal.TodoPending}},
+	}})
+
+	// Routine stats rebuild — no goal fields in the payload.
+	footer.SetData(tui.FooterData{Stats: "↑1k ↓2k 50%"})
+
+	data := footer.Data()
+	if data.GoalStatus != "active" || data.GoalObjective != "keep me" || data.GoalPendingTodos != 1 {
+		t.Errorf("goal fields lost across stats rebuild: %+v", data)
+	}
+}

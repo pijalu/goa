@@ -289,6 +289,11 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 
 	footer.SetData(a.initialFooterData())
 	tui.SetToolProjectDir(subs.projectDir)
+
+	// Restore the goal bubble + footer goal fields from the persisted goal
+	// (replayed from the durable store before the TUI existed — bugs.md
+	// Issue 1: no live GoalUpdate event covers it, so seed it here).
+	a.seedGoalUI()
 }
 
 func taskSnapshotsFromManager(mgr *background.Manager) []bgpanel.Task {

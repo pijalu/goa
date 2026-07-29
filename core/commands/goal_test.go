@@ -1190,3 +1190,51 @@ func TestGoalCommand_QueueNext_FreshContextStored(t *testing.T) {
 		t.Errorf("expected queued goal FreshContext=true, got %+v", queued)
 	}
 }
+
+// TestGoalCommand_Current reproduces the /goal:current request: it must print
+// the currently executed goal with its full objective, criterion, verify
+// command and todos with statuses (richer than /goal:status).
+func TestGoalCommand_Current(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	// No goal → clear message.
+	if err := cmd.Run(ctx, []string{"current"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ctx.OutputBuffer.String(); !strings.Contains(got, "No current goal") {
+		t.Fatalf("/goal:current with no goal = %q", got)
+	}
+	ctx.OutputBuffer.Reset()
+
+	// Active goal with todos, criterion and verify command.
+	criterion := "tests pass"
+	verify := "go test ./..."
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{
+		Objective: "fix the parser", Name: "calm.fox",
+		CompletionCriterion: &criterion, VerifyCommand: &verify,
+	}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mode.AddGoalTodo("write failing test", goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mode.AddGoalTodo("make it pass", goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Run(ctx, []string{"current"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+	for _, want := range []string{
+		"calm.fox", "fix the parser", "active",
+		"tests pass", "go test ./...",
+		"write failing test", "make it pass", "[ ]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/goal:current output missing %q:\n%s", want, out)
+		}
+	}
+}
