@@ -23,12 +23,12 @@ func (pm *ProviderManager) IsLocalProvider() bool {
 	if pCfg == nil {
 		return false
 	}
-	return isLocalProvider(pCfg.Endpoint)
+	return IsLocalEndpoint(pCfg.Endpoint)
 }
 
-// isLocalProvider returns true if the endpoint points to a local LLM server
+// IsLocalEndpoint returns true if the endpoint points to a local LLM server
 // (LM Studio, llama.cpp, Ollama) that may expose context window metadata.
-func isLocalProvider(endpoint string) bool {
+func IsLocalEndpoint(endpoint string) bool {
 	e := strings.ToLower(endpoint)
 	return strings.Contains(e, "localhost:1234") || strings.Contains(e, "127.0.0.1:1234") ||
 		strings.Contains(e, "localhost:11434") || strings.Contains(e, "127.0.0.1:11434") ||

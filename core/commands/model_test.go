@@ -16,53 +16,43 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// fakeModelValidator implements core.ModelValidator with scripted states.
-type fakeModelValidator struct {
-	states map[string]provider.ModelValidity
-}
-
-func (f *fakeModelValidator) IsValid(modelID string) bool {
-	return f.State(modelID) == provider.ValidityValid
-}
-
-func (f *fakeModelValidator) State(modelID string) provider.ModelValidity {
-	return f.states[modelID]
-}
-
-// TestConfiguredModelItems_ValidityColors pins the bugs.md "Model list" fix:
-// confirmed-available models render green (tool_success), confirmed-missing
-// render red (error), and unprobed/transient models keep the default color
-// (never red).
-func TestConfiguredModelItems_ValidityColors(t *testing.T) {
+// TestConfiguredModelItems_LocalColors pins the model-list coloring rule:
+// models served by a local provider (localhost / 127.0.0.1 endpoint) render
+// green (tool_success); all other models — remote providers, or models whose
+// provider is missing from config — keep the default color.
+func TestConfiguredModelItems_LocalColors(t *testing.T) {
 	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{ID: "local", Endpoint: "http://localhost:1234/v1"},
+			{ID: "ollama", Endpoint: "http://127.0.0.1:11434/v1"},
+			{ID: "remote", Endpoint: "https://api.openai.com/v1"},
+		},
 		Models: []config.ModelConfig{
-			{ID: "good", ProviderID: "local", Model: "good"},
-			{ID: "gone", ProviderID: "local", Model: "gone"},
-			{ID: "unknown", ProviderID: "local", Model: "unknown"},
+			{ID: "llama", ProviderID: "local", Model: "llama"},
+			{ID: "qwen", ProviderID: "ollama", Model: "qwen"},
+			{ID: "gpt", ProviderID: "remote", Model: "gpt"},
+			{ID: "orphan", ProviderID: "missing", Model: "orphan"},
 		},
 	}
-	validator := &fakeModelValidator{states: map[string]provider.ModelValidity{
-		"good": provider.ValidityValid,
-		"gone": provider.ValidityInvalid,
-		// "unknown" deliberately absent → ValidityUnknown
-	}}
 
-	items := configuredModelItems(cfg, "", validator)
+	items := configuredModelItems(cfg, "")
 	colors := map[string]string{}
 	for _, it := range items {
 		colors[it.Value] = it.Color
 	}
 
 	green := tui.TheTheme.ColorHex("tool_success")
-	red := tui.TheTheme.ColorHex("error")
-	if colors["good"] != green {
-		t.Errorf("confirmed model color = %q, want green %q", colors["good"], green)
+	if colors["llama"] != green {
+		t.Errorf("local model color = %q, want green %q", colors["llama"], green)
 	}
-	if colors["gone"] != red {
-		t.Errorf("missing model color = %q, want red %q", colors["gone"], red)
+	if colors["qwen"] != green {
+		t.Errorf("127.0.0.1 model color = %q, want green %q", colors["qwen"], green)
 	}
-	if colors["unknown"] != "" {
-		t.Errorf("unprobed model color = %q, want default (empty) — never red before a verdict", colors["unknown"])
+	if colors["gpt"] != "" {
+		t.Errorf("remote model color = %q, want default (empty)", colors["gpt"])
+	}
+	if colors["orphan"] != "" {
+		t.Errorf("model with missing provider color = %q, want default (empty)", colors["orphan"])
 	}
 }
 

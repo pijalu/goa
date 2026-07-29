@@ -49,6 +49,7 @@ func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 			Value:       mod.ID,
 			Label:       mod.ID,
 			Description: mod.Model,
+			Color:       localModelColor(m.ctx.Config, mod.ProviderID),
 		})
 	}
 	if len(items) == 0 {

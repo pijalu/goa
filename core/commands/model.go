@@ -110,8 +110,7 @@ func runModelCommand(host core.UIHost, pm core.ProviderManager, cfg *config.Conf
 
 func showModelSelector(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, pCfg *config.ProviderConfig) error {
 	activeModel := cfg.ActiveModel
-	validator := modelValidatorFor(host)
-	items := configuredModelItems(cfg, activeModel, validator)
+	items := configuredModelItems(cfg, activeModel)
 	if len(items) == 0 {
 		items = []tui.SelectorItem{{Value: activeModel, Label: activeModel, Description: "current"}}
 	}
@@ -319,14 +318,6 @@ func modelIndex(models []config.ModelConfig, id string) int {
 		}
 	}
 	return -1
-}
-
-// modelValidatorFor returns the model validator from the host context, if any.
-func modelValidatorFor(host core.UIHost) core.ModelValidator {
-	if ctx, ok := host.(core.Context); ok {
-		return ctx.ModelValidator
-	}
-	return nil
 }
 
 // confirmAndRemoveModel shows a confirmation dialog and removes the model.
@@ -545,12 +536,13 @@ func providerIDForModel(cfg *config.Config, modelID string) string {
 // Pass activeProviderOnly=true to restrict to the active provider (used by
 // the tab-completion path where a shorter list is preferable).
 //
-// Models that the background validator has marked invalid are shown in red.
-func configuredModelItems(cfg *config.Config, activeModel string, validator core.ModelValidator) []tui.SelectorItem {
-	return configuredModelItemsFiltered(cfg, activeModel, false, validator)
+// Models served by a local provider (localhost endpoint) are shown in green;
+// all other models keep the default color.
+func configuredModelItems(cfg *config.Config, activeModel string) []tui.SelectorItem {
+	return configuredModelItemsFiltered(cfg, activeModel, false)
 }
 
-func configuredModelItemsFiltered(cfg *config.Config, activeModel string, activeProviderOnly bool, validator core.ModelValidator) []tui.SelectorItem {
+func configuredModelItemsFiltered(cfg *config.Config, activeModel string, activeProviderOnly bool) []tui.SelectorItem {
 	var items []tui.SelectorItem
 	providerID := cfg.ActiveProvider
 	for _, m := range cfg.Models {
@@ -561,23 +553,23 @@ func configuredModelItemsFiltered(cfg *config.Config, activeModel string, active
 		if m.ID == activeModel {
 			desc += " (active)"
 		}
-		item := tui.SelectorItem{
+		items = append(items, tui.SelectorItem{
 			Value:       m.ID,
 			Label:       m.ID,
 			Description: desc,
-		}
-		if validator != nil {
-			// Tri-state (bugs.md "Model list"): confirmed-available is green,
-			// confirmed-missing is red, unprobed/transient stays default —
-			// a provider that merely failed to answer never paints red.
-			switch validator.State(m.ID) {
-			case provider.ValidityInvalid:
-				item.Color = tui.TheTheme.ColorHex("error")
-			case provider.ValidityValid:
-				item.Color = tui.TheTheme.ColorHex("tool_success")
-			}
-		}
-		items = append(items, item)
+			Color:       localModelColor(cfg, m.ProviderID),
+		})
 	}
 	return items
+}
+
+// localModelColor returns the selector label color for a configured model:
+// green when the model's provider is a local LLM server (localhost /
+// 127.0.0.1 endpoint), empty (default color) otherwise.
+func localModelColor(cfg *config.Config, providerID string) string {
+	pCfg := cfg.GetProviderByID(providerID)
+	if pCfg == nil || !provider.IsLocalEndpoint(pCfg.Endpoint) {
+		return ""
+	}
+	return tui.TheTheme.ColorHex("tool_success")
 }

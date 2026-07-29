@@ -327,7 +327,7 @@ func (pm *ProviderManager) RefreshLocalContextWindow() int {
 	if pCfg == nil || modelName == "" {
 		return 0
 	}
-	if !isLocalProvider(pCfg.Endpoint) {
+	if !IsLocalEndpoint(pCfg.Endpoint) {
 		return 0
 	}
 	return detectLocalContextWindow(*pCfg, modelName, pCfg.APIKey)
