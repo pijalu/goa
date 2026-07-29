@@ -5,6 +5,8 @@ package agentic
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
 	"testing"
 	"time"
 
@@ -26,7 +28,14 @@ func TestShouldRetryStreamError(t *testing.T) {
 		// Transport abort: context.Canceled with a live parent context
 		// is retryable (server-side connection drop).
 		{"context canceled (transport abort)", context.Canceled, true},
-		{"context deadline", context.DeadlineExceeded, false},
+		// Request-scoped deadline with a live parent: the transport's
+		// ResponseHeaderTimeout unwraps to context.DeadlineExceeded (Go
+		// 1.26), so a slow-to-respond LLM server (model still loading)
+		// surfaces as DeadlineExceeded even though a fresh request can
+		// succeed. Must be retried like any other transient failure.
+		{"context deadline (request-scoped)", context.DeadlineExceeded, true},
+		{"header timeout (url.Error)", headerTimeoutErr(), true},
+		{"header timeout provider error", &hooks.ProviderError{Err: headerTimeoutErr(), IsRetryable: true}, true},
 
 		// Context overflow is always retryable here (once-only guard lives in
 		// the caller).
@@ -58,6 +67,17 @@ func TestShouldRetryStreamError(t *testing.T) {
 	}
 }
 
+// headerTimeoutErr synthesizes the error shape Go's http.Transport returns
+// when ResponseHeaderTimeout fires: a *url.Error whose chain unwraps to
+// context.DeadlineExceeded (verified against Go 1.26).
+func headerTimeoutErr() error {
+	return &url.Error{
+		Op:  "Post",
+		URL: "http://localhost:1234/v1/chat/completions",
+		Err: fmt.Errorf("net/http: timeout awaiting response headers: %w", context.DeadlineExceeded),
+	}
+}
+
 // TestShouldRetryStreamError_UserCancel verifies that context.Canceled with a
 // canceled parent context (user pressed Escape/Ctrl+C) is NOT retried.
 func TestShouldRetryStreamError_UserCancel(t *testing.T) {
@@ -65,6 +85,20 @@ func TestShouldRetryStreamError_UserCancel(t *testing.T) {
 	cancel() // immediately cancel
 	assert.False(t, shouldRetryStreamError(cancelledCtx, context.Canceled),
 		"context.Canceled with canceled parent context (user cancel) must not be retried")
+}
+
+// TestShouldRetryStreamError_ParentDeadlineExpired verifies that a
+// DeadlineExceeded stream error is NOT retried when the parent (turn)
+// context's own deadline has fired: a retry would fail immediately against
+// the same dead context, so the error is surfaced instead.
+func TestShouldRetryStreamError_ParentDeadlineExpired(t *testing.T) {
+	expiredCtx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	time.Sleep(time.Millisecond) // let the deadline fire
+	assert.False(t, shouldRetryStreamError(expiredCtx, context.DeadlineExceeded),
+		"DeadlineExceeded with expired parent context (turn deadline) must not be retried")
+	assert.False(t, shouldRetryStreamError(expiredCtx, headerTimeoutErr()),
+		"header-timeout-shaped error with expired parent context must not be retried")
 }
 
 func TestRetryBackoffHonorsRetryAfter(t *testing.T) {
@@ -102,6 +136,23 @@ func TestFormatFatalStreamMessage(t *testing.T) {
 
 	// The retry counterpart keeps the suffix (back-compat with existing tests).
 	assert.Contains(t, formatRetryMessage(errors.New("boom")), "- retrying")
+}
+
+// TestFormatStreamMessage_NonHTTPProviderError pins the "Error: 0 -" defect:
+// a ProviderError with status 0 and an empty body (connection timeout,
+// refused, reset — no HTTP response ever arrived) must render the underlying
+// error text, not the meaningless "Error: 0 - " status line.
+func TestFormatStreamMessage_NonHTTPProviderError(t *testing.T) {
+	provErr := &hooks.ProviderError{Err: headerTimeoutErr(), IsRetryable: true}
+
+	fatal := formatFatalStreamMessage(provErr)
+	assert.Contains(t, fatal, "timeout awaiting response headers")
+	assert.NotContains(t, fatal, "Error: 0 -")
+
+	retrying := formatRetryMessage(provErr)
+	assert.Contains(t, retrying, "timeout awaiting response headers")
+	assert.Contains(t, retrying, "- retrying")
+	assert.NotContains(t, retrying, "Error: 0 -")
 }
 
 // TestFormatFatalStreamMessage and friends above cover the retry decision

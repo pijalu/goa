@@ -30,8 +30,10 @@ var errEmptyResponse = errors.New("provider returned an empty response (no conte
 // It trusts the provider hook classification when the error is a
 // *hooks.ProviderError, and otherwise falls back to a transient-error
 // heuristic for bare mid-stream failures (idle timeout, dropped connection,
-// unexpected EOF). User-imposed deadlines are never retried — retrying
-// them cannot succeed.
+// unexpected EOF). Deadlines are retried only when the parent context is
+// still alive: a request-scoped timeout (transport header timeout) gets a
+// fresh request on retry, while a parent-imposed deadline cannot succeed
+// and is surfaced immediately.
 //
 // Context cancellation requires special handling: when the outer context
 // (parentCtx) is still alive but the stream error is context.Canceled,
@@ -47,9 +49,15 @@ func shouldRetryStreamError(parentCtx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	// User-imposed deadlines are never retried — retrying them cannot succeed.
+	// Deadline exceeded: same discrimination as context.Canceled below.
+	// When the outer context is still alive, the deadline that fired was
+	// request-scoped — e.g. the transport's ResponseHeaderTimeout, which Go
+	// unwraps to context.DeadlineExceeded — and a retry issues a fresh
+	// request that can succeed (LM Studio still loading the model). When
+	// the outer context's own deadline fired (user-imposed turn deadline),
+	// retrying cannot succeed and the error is surfaced immediately.
 	if errors.Is(err, context.DeadlineExceeded) {
-		return false
+		return parentCtx.Err() == nil
 	}
 	// Context cancellation: distinguish transport abort from user cancel.
 	// When the outer context is still alive (parentCtx.Err() == nil), a
@@ -194,6 +202,12 @@ func formatStreamMessage(err error, retrying bool) string {
 	if errors.As(err, &respErr) {
 		status := respErr.StatusCode()
 		body := respErr.ResponseBody()
+		if status == 0 && body == "" {
+			// Non-HTTP failure (connection timeout/refused/reset): no status
+			// line or body exists to decode — "Error: 0 - " carries zero
+			// information. Render the underlying error text instead.
+			return fmt.Sprintf("Error: %s%s", err.Error(), suffix)
+		}
 		var parsed struct {
 			Error struct {
 				Message string `json:"message"`
