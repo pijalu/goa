@@ -16,6 +16,56 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
+// fakeModelValidator implements core.ModelValidator with scripted states.
+type fakeModelValidator struct {
+	states map[string]provider.ModelValidity
+}
+
+func (f *fakeModelValidator) IsValid(modelID string) bool {
+	return f.State(modelID) == provider.ValidityValid
+}
+
+func (f *fakeModelValidator) State(modelID string) provider.ModelValidity {
+	return f.states[modelID]
+}
+
+// TestConfiguredModelItems_ValidityColors pins the bugs.md "Model list" fix:
+// confirmed-available models render green (tool_success), confirmed-missing
+// render red (error), and unprobed/transient models keep the default color
+// (never red).
+func TestConfiguredModelItems_ValidityColors(t *testing.T) {
+	cfg := &config.Config{
+		Models: []config.ModelConfig{
+			{ID: "good", ProviderID: "local", Model: "good"},
+			{ID: "gone", ProviderID: "local", Model: "gone"},
+			{ID: "unknown", ProviderID: "local", Model: "unknown"},
+		},
+	}
+	validator := &fakeModelValidator{states: map[string]provider.ModelValidity{
+		"good": provider.ValidityValid,
+		"gone": provider.ValidityInvalid,
+		// "unknown" deliberately absent → ValidityUnknown
+	}}
+
+	items := configuredModelItems(cfg, "", validator)
+	colors := map[string]string{}
+	for _, it := range items {
+		colors[it.Value] = it.Color
+	}
+
+	green := tui.TheTheme.ColorHex("tool_success")
+	red := tui.TheTheme.ColorHex("error")
+	if colors["good"] != green {
+		t.Errorf("confirmed model color = %q, want green %q", colors["good"], green)
+	}
+	if colors["gone"] != red {
+		t.Errorf("missing model color = %q, want red %q", colors["gone"], red)
+	}
+	if colors["unknown"] != "" {
+		t.Errorf("unprobed model color = %q, want default (empty) — never red before a verdict", colors["unknown"])
+	}
+}
+
 func TestModelCommand_NoArgs_ShowsSelector(t *testing.T) {
 	var capturedTitle string
 	var capturedCurrent string

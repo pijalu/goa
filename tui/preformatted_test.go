@@ -113,6 +113,28 @@ func TestIsPreformatted_WideLines(t *testing.T) {
 	}
 }
 
+// TestIsPreformatted_GoalListMarkdown pins the bugs.md "Goal list issue" fix:
+// /goal:list output opens with an h2 ("## Goals") and has long objective
+// lines. hasMDHeader only matched "# " (h1), so the wide objectives flipped
+// the text to preformatted — raw "##"/"**" shown, no wrapping. Any ATX header
+// level must mark the text as markdown.
+func TestIsPreformatted_GoalListMarkdown(t *testing.T) {
+	goalList := "## Goals\n\n" +
+		"**1. [active] crimson.toad**\n" +
+		"*status active · turns 2 · 65.4k tokens · 3m31*\n" +
+		"Implement G04: Query Planner & Index Selection. Build cost-based planner that uses indexes for seeks, range scans, and JOINs.\n\n" +
+		"**2. [queued] fuzzy.lark**\n" +
+		"Implement G05: ALTER TABLE Token-Level Rename. Replace regex-based string replacement with token-level processing using the lexer.\n"
+	if isPreformatted(goalList) {
+		t.Error("/goal:list output is markdown (h2 header) — must not be preformatted")
+	}
+	for _, header := range []string{"# h1", "## h2", "### h3", "###### h6"} {
+		if !looksLikeMarkdown(header + "\n\nbody text\nmore text") {
+			t.Errorf("ATX header %q should be detected as markdown", header)
+		}
+	}
+}
+
 func TestIsPreformatted_HelpCommand(t *testing.T) {
 	// /help outputs markdown — must NOT be preformatted
 	helpText := `# Goa Commands

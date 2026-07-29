@@ -194,8 +194,7 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 		return "", toolErr("bash", "cancelled", fmt.Sprintf("Command cancelled: %v", ctxErr))
 	}
 	if timedOut {
-		actualTimeout := normalizeBashTimeout(p.Timeout)
-		return "", toolErr("bash", "timeout", fmt.Sprintf("Command timed out after %ds", actualTimeout))
+		return "", timeoutErr(normalizeBashTimeout(p.Timeout))
 	}
 
 	out, fmtErr := t.formatOutput(&p, output, err, duration)
@@ -389,6 +388,22 @@ func toolErr(tool, typ, detail string) *internal.ToolError {
 	return &internal.ToolError{
 		Tool: tool, Type: typ, Detail: detail,
 		HintText: "See /docs TOOLS or /tools " + tool + " for usage.",
+	}
+}
+
+// timeoutErr builds the timeout error with a timeout-specific actionable hint
+// (bugs.md "Timeout hint"): raise the `timeout` parameter when there is
+// headroom, otherwise split the work — never the generic docs usage line.
+func timeoutErr(actualTimeout int) *internal.ToolError {
+	hint := fmt.Sprintf("The command exceeded the %ds timeout. Increase the \"timeout\" parameter (default: %ds, max: %ds) or split the command into smaller/faster steps.",
+		actualTimeout, DefaultBashTimeoutS, MaxBashTimeoutS)
+	if actualTimeout >= MaxBashTimeoutS {
+		hint = fmt.Sprintf("The command exceeded the maximum %ds timeout. Split the command into smaller/faster steps or run it in the background with bgexec.", MaxBashTimeoutS)
+	}
+	return &internal.ToolError{
+		Tool: "bash", Type: "timeout",
+		Detail:   fmt.Sprintf("Command timed out after %ds", actualTimeout),
+		HintText: hint,
 	}
 }
 

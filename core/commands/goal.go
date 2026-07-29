@@ -285,14 +285,18 @@ func (c *GoalCommand) showList(ctx core.Context) error {
 
 // writeGoalListEntry renders one goal as a markdown list item: a bold header
 // with order number, placement and name, an optional metadata line, then the
-// complete untruncated objective on its own line.
+// complete untruncated objective on its own line. The parts are separated by
+// blank lines so the markdown renderer keeps them as DISTINCT blocks —
+// consecutive plain lines would soft-join into a single paragraph (bugs.md
+// "Goal list issue"). Blank separator lines are dropped by the renderer, so
+// this costs no extra rows.
 func writeGoalListEntry(sb *strings.Builder, order int, placement, name, meta, objective string) {
 	if name == "" {
 		name = "(unnamed)"
 	}
-	fmt.Fprintf(sb, "**%d. [%s] %s**\n", order, placement, name)
+	fmt.Fprintf(sb, "**%d. [%s] %s**\n\n", order, placement, name)
 	if meta != "" {
-		fmt.Fprintf(sb, "*%s*\n", meta)
+		fmt.Fprintf(sb, "*%s*\n\n", meta)
 	}
 	fmt.Fprintf(sb, "%s\n\n", objective)
 }

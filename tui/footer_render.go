@@ -555,6 +555,10 @@ func (f *Footer) formatGoalStatus(fg string) string {
 	if obj == "" {
 		return color + "⟐ goal" + ansi.Reset + fg
 	}
+	// The footer is a single-line region: flatten embedded newlines from
+	// model-authored objectives or they break the footer row (raw-mode LF
+	// does not carriage-return — bugs.md "Corruption on goal change").
+	obj = strings.Join(strings.Fields(obj), " ")
 	return color + "⟐ " + truncateToWidth(obj, 30, "") + statusSuffix(status) + ansi.Reset + fg
 }
 

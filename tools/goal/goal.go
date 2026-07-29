@@ -61,6 +61,9 @@ type GoalQueue interface {
 	PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
 	Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error)
 	Move(id, direction string) ([]goal.UpcomingGoal, error)
+	// Restore puts a removed goal back at the front of the queue. Used to
+	// roll back a promote when the follow-up activation fails.
+	Restore(item goal.UpcomingGoal) ([]goal.UpcomingGoal, error)
 }
 
 // goalArgs is the union of all per-action fields. `action` selects which
@@ -107,7 +110,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"enum":        []string{"create", "update", "get", "set_budget", "add_todo", "update_todo", "list", "cancel", "reorder"},
+					"enum":        []string{"create", "update", "get", "set_budget", "add_todo", "update_todo", "list", "cancel", "reorder", "postpone", "promote"},
 					"description": "The goal operation to perform.",
 				},
 				"objective": map[string]any{
@@ -221,29 +224,66 @@ func (t *GoalTool) executeWithResult(ctx context.Context, input string) (agentic
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input", fmt.Errorf("invalid goal input: %w", err))
 	}
-	switch args.Action {
-	case "create":
-		return t.handleCreate(args)
-	case "update":
-		return t.handleUpdate(ctx, args)
-	case "get":
-		return t.handleGet()
-	case "set_budget":
-		return t.handleSetBudget(args)
-	case "add_todo":
-		return t.handleAddTodo(args)
-	case "update_todo":
-		return t.handleUpdateTodo(args)
-	case "list":
-		return t.handleList()
-	case "cancel":
-		return t.handleCancel(args)
-	case "reorder":
-		return t.handleReorder(args)
-	default:
+	action := inferAction(args)
+	handler, ok := t.actionHandlers()[action]
+	if !ok {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_action",
-			fmt.Errorf("invalid goal action %q: must be create, update, get, set_budget, add_todo, update_todo, list, cancel, or reorder", args.Action))
+			fmt.Errorf("invalid goal action %q: must be create, update, get, set_budget, add_todo, update_todo, list, cancel, reorder, postpone, or promote", args.Action))
 	}
+	return handler(ctx, args)
+}
+
+// actionHandlers maps each goal action to its handler. The uniform ctx
+// signature keeps the dispatcher flat; handlers that ignore ctx use `_`.
+func (t *GoalTool) actionHandlers() map[string]func(context.Context, goalArgs) (agentic.ToolResult, error) {
+	wrap := func(h func(goalArgs) (agentic.ToolResult, error)) func(context.Context, goalArgs) (agentic.ToolResult, error) {
+		return func(_ context.Context, a goalArgs) (agentic.ToolResult, error) { return h(a) }
+	}
+	return map[string]func(context.Context, goalArgs) (agentic.ToolResult, error){
+		"create":      wrap(t.handleCreate),
+		"update":      t.handleUpdate,
+		"get":         wrap(func(goalArgs) (agentic.ToolResult, error) { return t.handleGet() }),
+		"set_budget":  wrap(t.handleSetBudget),
+		"add_todo":    wrap(t.handleAddTodo),
+		"update_todo": wrap(t.handleUpdateTodo),
+		"list":        wrap(func(goalArgs) (agentic.ToolResult, error) { return t.handleList() }),
+		"cancel":      wrap(t.handleCancel),
+		"reorder":     wrap(t.handleReorder),
+		"postpone":    wrap(t.handlePostpone),
+		"promote":     wrap(t.handlePromote),
+	}
+}
+
+// inferAction returns the effective action for a call. `action` always wins
+// when present; when omitted (a common model slip — e.g. sending only
+// {"status":"blocked",...}), the intended action is inferred from whichever
+// payload fields are set, so the call does what the model obviously meant
+// instead of erroring (bugs.md "Goal management tool issue").
+func inferAction(args goalArgs) string {
+	if args.Action != "" {
+		return args.Action
+	}
+	for _, rule := range actionInferenceRules {
+		if rule.match(args) {
+			return rule.action
+		}
+	}
+	return "get"
+}
+
+// actionInferenceRules maps payload-field presence to the intended action, in
+// priority order (first match wins).
+var actionInferenceRules = []struct {
+	match  func(goalArgs) bool
+	action string
+}{
+	{func(a goalArgs) bool { return a.Status != "" }, "update"},
+	{func(a goalArgs) bool { return a.Objective != "" || len(a.Objectives) > 0 }, "create"},
+	{func(a goalArgs) bool { return a.TodoTitle != "" }, "add_todo"},
+	{func(a goalArgs) bool { return a.TodoID != "" || a.TodoStatus != "" }, "update_todo"},
+	{func(a goalArgs) bool { return a.GoalID != "" && a.Direction != "" }, "reorder"},
+	{func(a goalArgs) bool { return a.GoalID != "" }, "cancel"},
+	{func(a goalArgs) bool { return a.Value != nil || a.Unit != "" }, "set_budget"},
 }
 
 func (t *GoalTool) handleAddTodo(args goalArgs) (agentic.ToolResult, error) {
@@ -297,13 +337,17 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 	}
 
 	// Todo-like default: ADD to the goal list. The first objective becomes the
-	// active goal only when none is active; every objective after that (and all
-	// of them when one is already active) is appended to the queue — never an
-	// implicit replace.
+	// active goal only when NO goal exists at all; every objective after that
+	// (and all of them when a goal exists — active, paused, or blocked) is
+	// appended to the queue — never an implicit replace. Checking existence
+	// (not just active status) matters: GetActiveGoal hides paused/blocked
+	// goals while CreateGoal rejects any existing state, so an active-only
+	// check makes create fail with "a goal already exists" behind a parked
+	// goal (bugs.md "Goal management tool issue").
 	var activated *goal.GoalSnapshot
 	queued := 0
 	for _, obj := range objectives {
-		if activated == nil && t.Mode.GetActiveGoal() == nil {
+		if activated == nil && t.Mode.GetGoal().Goal == nil {
 			res, err := t.createActive(args, obj, false)
 			if err != nil {
 				return res, err
@@ -443,6 +487,101 @@ func (t *GoalTool) handleReorder(args goalArgs) (agentic.ToolResult, error) {
 	}
 	out, _ := json.Marshal(map[string]any{"queued": goals})
 	return agentic.ToolResult{Output: string(out)}, nil
+}
+
+// handlePostpone demotes the active goal to the BACK of the queue so the next
+// scheduled goal starts (bugs.md "Goal scheduling"). It is the model's
+// deprioritize primitive: the demoted goal keeps its objective, criterion,
+// verify command and context mode, and the clear event drives the host's
+// auto-promotion of the new queue head — exactly as after a completion.
+// With an empty queue the goal simply parks in the queue until promoted.
+func (t *GoalTool) handlePostpone(args goalArgs) (agentic.ToolResult, error) {
+	snap := t.Mode.GetGoal().Goal
+	if snap == nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "postpone_failed",
+			fmt.Errorf("no active goal to postpone"))
+	}
+	if t.Queue == nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "postpone_failed",
+			fmt.Errorf("no goal queue available"))
+	}
+	if _, err := t.Queue.AppendGoal(goal.UpcomingGoalInput{
+		Objective:           snap.Objective,
+		CompletionCriterion: snap.CompletionCriterion,
+		VerifyCommand:       snap.VerifyCommand,
+		FreshContext:        snap.FreshContext,
+	}); err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "postpone_failed", err)
+	}
+	if _, err := t.Mode.CancelGoal(goal.GoalActorModel); err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "postpone_failed", err)
+	}
+	out, _ := json.Marshal(map[string]any{"postponed": goal.ForModel(*snap), "position": "back"})
+	return agentic.ToolResult{
+		Output:   string(out) + "\nGoal moved to the back of the queue; the next queued goal starts now.",
+		StopTurn: true,
+	}, nil
+}
+
+// handlePromote activates a queued goal NOW (bugs.md "Goal scheduling"): the
+// model's prioritize primitive. The current goal (if any) is demoted to the
+// FRONT of the queue so it resumes right after, and the chosen queued goal
+// becomes active atomically (replace semantics inside GoalMode).
+func (t *GoalTool) handlePromote(args goalArgs) (agentic.ToolResult, error) {
+	if args.GoalID == "" {
+		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
+			fmt.Errorf("action \"promote\" requires \"goalId\" (queued goal ID or name)"))
+	}
+	if t.Queue == nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "promote_failed", fmt.Errorf("no goal queue available"))
+	}
+	id, err := t.resolveQueuedID(args.GoalID)
+	if err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "promote_failed", err)
+	}
+	_, promoted, err := t.Queue.Remove(id)
+	if err != nil || promoted == nil {
+		if err == nil {
+			err = fmt.Errorf("queued goal %q not found", args.GoalID)
+		}
+		return agentic.ToolResult{}, goalToolErr("goal", "promote_failed", err)
+	}
+	// Demote the current goal to the FRONT of the queue so it resumes next.
+	var demoted *goal.GoalSnapshot
+	if snap := t.Mode.GetGoal().Goal; snap != nil {
+		demoted = snap
+		if _, err := t.Queue.PrependGoal(goal.UpcomingGoalInput{
+			Objective:           snap.Objective,
+			CompletionCriterion: snap.CompletionCriterion,
+			VerifyCommand:       snap.VerifyCommand,
+			FreshContext:        snap.FreshContext,
+		}); err != nil {
+			_, _ = t.Queue.Restore(*promoted)
+			return agentic.ToolResult{}, goalToolErr("goal", "promote_failed", err)
+		}
+	}
+	snap, err := t.Mode.CreateGoal(goal.CreateGoalInput{
+		Objective:           promoted.Objective,
+		Name:                promoted.Name,
+		CompletionCriterion: promoted.CompletionCriterion,
+		VerifyCommand:       promoted.VerifyCommand,
+		FreshContext:        promoted.FreshContext,
+		Replace:             true, // atomically clears the demoted goal
+	}, goal.GoalActorModel)
+	if err != nil {
+		_, _ = t.Queue.Restore(*promoted)
+		return agentic.ToolResult{}, goalToolErr("goal", "promote_failed", err)
+	}
+	payload := map[string]any{"promoted": goal.ForModel(snap)}
+	if demoted != nil {
+		payload["demoted"] = goal.ForModel(*demoted)
+		payload["demotedPosition"] = "front"
+	}
+	out, _ := json.Marshal(payload)
+	return agentic.ToolResult{
+		Output:   string(out) + "\nQueued goal activated; the previous goal waits at the front of the queue.",
+		StopTurn: true,
+	}, nil
 }
 
 // resolveQueuedID maps a goalId that may be a queue ID or a friendly name to
@@ -637,7 +776,7 @@ func (t *GoalTool) updateComplete(ctx context.Context, args goalArgs) (agentic.T
 		return agentic.ToolResult{Output: goal.BuildVerifyFailureMessage(result), StopTurn: result.Failure != nil && result.Failure.Escalated}, nil
 	case goal.CompleteClosed:
 		t.challenged = false
-		return agentic.ToolResult{Output: "Goal marked complete." + formatVerifyEvidence(result.Verification), StopTurn: true}, nil
+		return agentic.ToolResult{Output: "Goal marked complete." + formatVerifyEvidence(result.Verification) + formatOpenTodosReminder(result.Snapshot), StopTurn: true}, nil
 	default:
 		t.challenged = false
 		return agentic.ToolResult{Output: "No active goal to complete."}, nil
@@ -666,6 +805,35 @@ func (t *GoalTool) announceVerification(ctx context.Context) {
 		timeout = t.VerifyTimeout()
 	}
 	emit(fmt.Sprintf("Running goal verification (timeout %s):\n$ %s", timeout, *snap.VerifyCommand))
+}
+
+// formatOpenTodosReminder appends the open-todos reminder to a completion
+// result (bugs.md "when a goal is achieved: if there are pending todos, the
+// framework should remind the model of the open todos"). A gated completion
+// (recorded criterion) already requires every todo done, so this fires for
+// criterion-less completions. Todos are contained by the goal and die with
+// it — the reminder exists so unfinished work is not silently dropped: the
+// model can schedule a follow-up goal if the work is still needed.
+func formatOpenTodosReminder(snap *goal.GoalSnapshot) string {
+	if snap == nil {
+		return ""
+	}
+	var open []string
+	for _, todo := range snap.Todos {
+		if todo.Status != goal.TodoDone {
+			open = append(open, todo.Title)
+		}
+	}
+	if len(open) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nReminder: %d todo(s) were still open when the goal completed:", len(open))
+	for _, title := range open {
+		fmt.Fprintf(&b, "\n- %s", title)
+	}
+	b.WriteString("\nTodos do not escape the goal — if any of this work is still needed, create a follow-up goal for it now.")
+	return b.String()
 }
 
 // formatVerifyEvidence renders the post-completion evidence block: the exact

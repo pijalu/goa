@@ -563,3 +563,29 @@ func TestFooter_Render_NoCompanionShowsMainOnly(t *testing.T) {
 		t.Errorf("expected model name, got %q", stripped)
 	}
 }
+
+// TestFooter_GoalStatus_MultiLineObjective pins the bugs.md "Corruption on
+// goal change" fix for the footer: the goal segment is a single-line region,
+// so a multi-line objective must be flattened — a surviving "\n" breaks the
+// footer row (raw-mode LF does not carriage-return).
+func TestFooter_GoalStatus_MultiLineObjective(t *testing.T) {
+	f := NewFooter()
+	f.SetData(FooterData{
+		GoalStatus:    "active",
+		GoalObjective: "UNBLOCKING INVESTIGATION — find a solution.\n\nThe goal \"X\" was blocked because: ...",
+	})
+	got := f.formatGoalStatus("")
+	if strings.Contains(got, "\n") {
+		t.Errorf("footer goal segment contains an embedded newline: %q", got)
+	}
+	if !strings.Contains(ansi.Strip(got), "UNBLOCKING INVESTIGATION") {
+		t.Errorf("footer goal segment missing objective head: %q", got)
+	}
+
+	// Short first paragraph: truncation no longer saves us — the newline must
+	// be flattened before it reaches the single-line footer region.
+	f.SetData(FooterData{GoalStatus: "active", GoalObjective: "short head\nrest of the objective"})
+	if got := f.formatGoalStatus(""); strings.Contains(got, "\n") {
+		t.Errorf("footer goal segment leaks newline from short first paragraph: %q", got)
+	}
+}

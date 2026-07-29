@@ -12,12 +12,19 @@ import (
 // TestCompositor_ChromeChangeDoesNotDuplicateScrollback reproduces the
 // duplicate-row bug seen at the start of a conversation with the goal/steering
 // bubble visible. A bottom-chrome height change (steering/goal bubble
-// appearing or clearing) while the transcript scrolls triggers a
-// frameGeometryReset that wipes the screen + scrollback (\x1b[2J\x1b[H\x1b[3J)
-// and re-emits the transcript. The incremental scroll path also double-writes
-// the bottom row (repaintWindow redrawing the row emitSteadyScroll just
-// emitted). After the fix, replaying the byte stream through a terminal that
-// honors the wipe leaves every transcript row exactly once.
+// appearing or clearing) while the transcript scrolls used to double-write
+// rows (repaintWindow redrawing the row emitSteadyScroll just emitted).
+//
+// Invariant (updated for bugs.md "Slow performance on very large
+// conversations"): chrome changes no longer wipe scrollback (\x1b[3J) — the
+// old geometry reset destroyed the user's terminal history AND re-emitted the
+// whole transcript per keystroke. The incremental path keeps a small,
+// bounded overlap across the scrollback↔screen boundary on a chrome SHRINK
+// (the window reveals up to Δchrome already-scrolled rows; sanctioned by
+// windowTop's "dips below scrollTop" regime and the quota-stream assertion).
+// What must NEVER happen: a row lost outright, a row duplicated WITHIN
+// scrollback, or a row duplicated WITHIN the visible window (the actual
+// corruption symptoms).
 func TestCompositor_ChromeChangeDoesNotDuplicateScrollback(t *testing.T) {
 	const (
 		termH      = 10
@@ -48,41 +55,40 @@ func TestCompositor_ChromeChangeDoesNotDuplicateScrollback(t *testing.T) {
 	comp.Render(mkScene(historyN, baseChrome+3))   // grow with bubble
 	comp.Render(mkScene(historyN, baseChrome))     // bubble clears -> reset
 
-	// Replay the byte stream, honoring the scrollback wipe (\x1b[3J) the way a
-	// real terminal does: at each wipe, the visible rows about to be re-emitted
-	// become the new scrollback baseline, so start a fresh emulator. (A real
-	// terminal drops pre-wipe scrollback; the emulator keeps it appended.)
-	var emu *TermEmulator
-	emu = NewTermEmulator(termH, w)
+	// Replay the byte stream. Chrome changes no longer wipe scrollback, so a
+	// single emulator accumulates the whole session — exactly what a real
+	// terminal shows.
+	emu := NewTermEmulator(termH, w)
 	for _, wr := range term.Writes() {
-		if strings.Contains(wr, "\x1b[3J") {
-			emu = NewTermEmulator(termH, w)
-		}
 		emu.Process(wr)
 	}
-	// Collect exact terminal rows (scrollback + screen), trimmed. Exact-row
-	// matching avoids "row-1" matching "row-10".."row-17" as a substring.
-	var rows []string
-	for _, s := range emu.Scrollback() {
-		rows = append(rows, strings.TrimSpace(s))
-	}
+	scrollback := emu.Scrollback()
+	var screen []string
 	for r := 0; r < termH; r++ {
-		rows = append(rows, strings.TrimSpace(emu.Visible(r)))
+		screen = append(screen, strings.TrimSpace(emu.Visible(r)))
 	}
-
-	count := func(want string) int {
+	// Exact-row matching avoids "row-1" matching "row-10".."row-17".
+	countIn := func(hay []string, want string) int {
 		n := 0
-		for _, r := range rows {
-			if r == want {
+		for _, r := range hay {
+			if strings.TrimSpace(r) == want {
 				n++
 			}
 		}
 		return n
 	}
+	dump := "\n--- screen ---\n" + strings.Join(screen, "\n") + "\n--- scrollback ---\n" + strings.Join(scrollback, "\n")
 	for i := 0; i < historyN; i++ {
 		row := "row-" + itoaStr(i)
-		if c := count(row); c != 1 {
-			t.Errorf("transcript row %q appears %d times in terminal (want exactly 1)\n--- rows ---\n%s", row, c, strings.Join(rows, "\n"))
+		inSB := countIn(scrollback, row)
+		onScreen := countIn(screen, row)
+		switch {
+		case inSB+onScreen == 0:
+			t.Errorf("transcript row %q LOST from the terminal%s", row, dump)
+		case inSB > 1:
+			t.Errorf("transcript row %q duplicated WITHIN scrollback (%d times) — the watermark re-emitted it%s", row, inSB, dump)
+		case onScreen > 1:
+			t.Errorf("transcript row %q duplicated WITHIN the visible window (%d times) — visible corruption%s", row, onScreen, dump)
 		}
 	}
 }

@@ -410,6 +410,34 @@ and Python (`pytest`) projects. Framework auto-detection from project root.
 }
 ```
 
+### `todo_list` — Session todo list
+
+Tracks work items as a checklist — a single tool with action parameters
+(keeps the tool array small). Todos are lightweight items, **not goals**: no
+lifecycle, turns, budget, or completion criterion. Use them to break the
+current task into visible steps; use goals for autonomous multi-turn work.
+
+**Parameters:**
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | string | `add` \| `update` \| `complete` \| `remove` \| `list` \| `clear` (required) |
+| `id` | string | Todo ID for update/complete/remove |
+| `description` | string | Todo text for add |
+| `status` | string | `pending` \| `in_progress` \| `done` (for update) |
+
+**Goal linkage (bugs.md):**
+- **No goal active** — items live in the session list (conversation scratchpad).
+- **Goal active** — the list is **linked to the goal**: blank at goal start,
+  items added belong to the goal (the framework surfaces them each turn and
+  the stall watchdog counts their transitions as progress), and they are
+  contained by it — when the goal ends, its todos end with it and the session
+  list resurfaces unchanged. `remove`/`clear` are refused while goal-linked.
+  A goal completed with open todos reminds the model of them so unfinished
+  work is not silently dropped.
+
+Enabled via `tools.enabled.todo_list` (default on); toggle at runtime with
+`/tools:todo_list:on|off`.
+
 ### `terminal` — Sandboxed shell execution
 
 Executes shell commands in a hardened sandbox environment with process group

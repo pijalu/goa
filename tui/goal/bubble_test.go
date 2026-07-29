@@ -123,3 +123,43 @@ func TestBubble_UnderThreeLinesNoEllipsis(t *testing.T) {
 		}
 	}
 }
+
+// TestBubble_MultiLineObjective pins the bugs.md "Corruption on goal change"
+// fix: objectives with embedded newlines must render one visual row per line
+// — ansi.Wrap's contract is single-paragraph, so the bubble must split
+// paragraphs itself; a surviving "\n" corrupts the rows above the input line.
+func TestBubble_MultiLineObjective(t *testing.T) {
+	b := NewBubble()
+	b.SetSnapshot(&goal.GoalSnapshot{
+		Status:    goal.GoalActive,
+		Name:      "sunny.otter",
+		Objective: "UNBLOCKING INVESTIGATION — find a solution.\n\n1. analyze6: Add expect field\n2. analyzeC: Fix EXPLAIN output",
+	})
+	lines := b.Render(80)
+	for i, l := range lines {
+		if strings.Contains(l, "\n") {
+			t.Errorf("row %d contains an embedded newline: %q", i, l)
+		}
+		if w := ansi.Width(l); w > 80 {
+			t.Errorf("row %d exceeds width: %d > 80 (%q)", i, w, l)
+		}
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "UNBLOCKING INVESTIGATION") {
+		t.Errorf("render missing objective head: %q", joined)
+	}
+}
+
+// TestBubble_MultiLineObjectiveStillCapped verifies the 3-line cap still
+// applies after paragraph splitting (full objective via /goal:list).
+func TestBubble_MultiLineObjectiveStillCapped(t *testing.T) {
+	b := NewBubble()
+	b.SetSnapshot(&goal.GoalSnapshot{
+		Status:    goal.GoalActive,
+		Objective: "first paragraph that is reasonably long\nsecond paragraph also reasonably long\nthird paragraph to push past the cap\nfourth paragraph for good measure",
+	})
+	lines := b.Render(40)
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines (sep + 3 body + sep), got %d: %v", len(lines), lines)
+	}
+}

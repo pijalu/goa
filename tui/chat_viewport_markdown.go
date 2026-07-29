@@ -59,7 +59,13 @@ func looksLikeMarkdown(text string) bool {
 }
 
 func hasMDHeader(trimmed string) bool {
-	return len(trimmed) > 1 && trimmed[0] == '#' && trimmed[1] == ' '
+	// Any ATX level: "# h1" .. "###### h6" (bugs.md "Goal list issue": a doc
+	// opening with "## Goals" must classify as markdown, not preformatted).
+	i := 0
+	for i < len(trimmed) && trimmed[i] == '#' {
+		i++
+	}
+	return i >= 1 && i <= 6 && i < len(trimmed) && trimmed[i] == ' '
 }
 
 func hasMDFence(trimmed string) bool {

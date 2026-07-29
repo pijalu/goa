@@ -624,6 +624,12 @@ type ToolEnabledConfig struct {
 	// config) so the model gets precise navigation unless the user disables it
 	// or the project has no language server.
 	LSP bool `yaml:"lsp"`
+	// Todo controls the standalone `todo_list` tool (bugs.md: "todo should be
+	// available outside of goal"). Opt-OUT: defaults to true (set in the
+	// embedded default config) so the model can track work items without an
+	// active goal; when a goal is active the tool is linked to the goal's own
+	// todo list.
+	Todo bool `yaml:"todo_list"`
 	// ClarifyDisabled, when true, removes the ask_user_question tool from the
 	// model's toolset. It is an inverted flag: the default (false/unset) leaves
 	// the tool ENABLED by default, matching the requested behavior. All other
@@ -689,6 +695,7 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"agent_swarm":      &t.AgentSwarm,
 		"goa":              &t.Goa,
 		"lsp":              &t.LSP,
+		"todo_list":        &t.Todo,
 		"clarify_disabled": &t.ClarifyDisabled,
 	}
 	return fields[name]

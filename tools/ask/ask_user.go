@@ -47,12 +47,21 @@ type AskUserQuestionTool struct {
 }
 
 type clarifyQuestion struct {
-	Title         string   `json:"title"`
-	Summary       string   `json:"summary"`
-	Question      string   `json:"question"`
-	Options       []string `json:"options,omitempty"`
-	Required      bool     `json:"required,omitempty"`
-	AllowFreeText bool     `json:"allow_free_text,omitempty"`
+	Title    string   `json:"title"`
+	Summary  string   `json:"summary"`
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Required bool     `json:"required,omitempty"`
+	// AllowFreeText is tri-state so the documented schema default (true)
+	// actually applies when the model omits the field: nil = allow the user's
+	// alternate response verbatim; explicit false restricts to the options.
+	AllowFreeText *bool `json:"allow_free_text,omitempty"`
+}
+
+// freeTextAllowed reports whether the user may answer outside the listed
+// options. The schema documents "Default true", so omission means allowed.
+func (q clarifyQuestion) freeTextAllowed() bool {
+	return q.AllowFreeText == nil || *q.AllowFreeText
 }
 
 type clarifyInput struct {
@@ -221,7 +230,7 @@ func (t *AskUserQuestionTool) askOne(clarify ClarifyFunc, q clarifyQuestion, ste
 		return clarifyAnswer{Question: question, Answer: "", Skipped: true}, nil
 	}
 
-	answer := canonicalizeAnswer(raw, opts, q.AllowFreeText)
+	answer := canonicalizeAnswer(raw, opts, q.freeTextAllowed())
 	return clarifyAnswer{Question: question, Answer: answer}, nil
 }
 

@@ -160,6 +160,7 @@ tools:
     request_review: false    # multi-agent review requests
     webfetch: false           # web fetching
     python: true             # embedded gpython interpreter (opt-out)
+    todo_list: true          # session todo list (opt-out; goal-linked when a goal is active)
     clarify_disabled: false  # set true to remove the ask_user_question tool
   edit:
     allow_fuzz_on_edits: true        # DEFAULT: enabled

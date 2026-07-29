@@ -125,3 +125,33 @@ func TestMarker_NoReasonStaysSingleLine(t *testing.T) {
 		t.Errorf("expected 1 line for reason-less marker, got %d: %v", len(got), got)
 	}
 }
+
+// TestMarker_MultiLineReason pins the bugs.md "Corruption on goal change"
+// fix: model-supplied reasons routinely contain newlines; every rendered row
+// must be a single visual line (no embedded "\n").
+func TestMarker_MultiLineReason(t *testing.T) {
+	status := goal.GoalBlocked
+	actor := goal.GoalActorModel
+	reason := "Core fixes are solid: altercons3 passes.\n\nRemaining work:\n1. analyze6: Add expect field\n2. analyzeC: Fix EXPLAIN output"
+	m := NewMarker(&goal.GoalChange{
+		Kind:   goal.GoalChangeLifecycle,
+		Status: &status,
+		Actor:  &actor,
+		Reason: &reason,
+	})
+	lines := m.Render(80)
+	for i, l := range lines {
+		if strings.Contains(l, "\n") {
+			t.Errorf("row %d contains an embedded newline: %q", i, l)
+		}
+		if w := ansi.Width(l); w > 80 {
+			t.Errorf("row %d exceeds width: %d > 80 (%q)", i, w, l)
+		}
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"Core fixes are solid", "Remaining work", "analyze6", "analyzeC"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("render missing %q", want)
+		}
+	}
+}

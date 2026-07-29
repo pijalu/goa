@@ -139,6 +139,7 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "request_review", Description: "Request companion review", Default: false},
 		{Name: "smartsearch", Description: "BM25 code search (needs restart)", Default: false},
 		{Name: "ssh_bash", Description: "Remote SSH command execution", Default: false},
+		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: true},
 		{Name: "webfetch", Description: "URL content fetching", Default: false},
 	}
 }

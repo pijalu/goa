@@ -133,6 +133,51 @@ func TestCanonicalize_NumericAndExact(t *testing.T) {
 	}
 }
 
+// TestExecute_FreeTextDefaultWithOptions pins the bugs.md "ask_user_question
+// alternate response" fix: when the model provides options but omits
+// allow_free_text (schema default true), the user's alternate free-text answer
+// must be returned verbatim — never forced onto the closest option.
+func TestExecute_FreeTextDefaultWithOptions(t *testing.T) {
+	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, _ []string, _, _ int) (string, bool) {
+		return "actually, use the staging branch instead", true
+	}}
+	out, err := tool.Execute(`{"questions":[{"question":"target?","options":["main","release-2.x"]}]}`)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	payload := strings.SplitN(out, "\n", 2)[1]
+	var ans []clarifyAnswer
+	if err := json.Unmarshal([]byte(payload), &ans); err != nil {
+		t.Fatalf("parse answers: %v", err)
+	}
+	if len(ans) != 1 {
+		t.Fatalf("got %d answers", len(ans))
+	}
+	if ans[0].Answer != "actually, use the staging branch instead" {
+		t.Errorf("free-text answer mangled: %q", ans[0].Answer)
+	}
+}
+
+// TestExecute_FreeTextExplicitlyRestricted keeps the opt-out behavior: with
+// allow_free_text=false the answer is still mapped to the closest option.
+func TestExecute_FreeTextExplicitlyRestricted(t *testing.T) {
+	tool := &AskUserQuestionTool{Clarify: func(_, _, _ string, _ []string, _, _ int) (string, bool) {
+		return "mai", true
+	}}
+	out, err := tool.Execute(`{"questions":[{"question":"target?","options":["main","release-2.x"],"allow_free_text":false}]}`)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	payload := strings.SplitN(out, "\n", 2)[1]
+	var ans []clarifyAnswer
+	if err := json.Unmarshal([]byte(payload), &ans); err != nil {
+		t.Fatalf("parse answers: %v", err)
+	}
+	if len(ans) != 1 || ans[0].Answer != "main" {
+		t.Errorf("restricted answer = %+v, want main", ans)
+	}
+}
+
 func TestCanonicalize_OptionsCapped(t *testing.T) {
 	big := make([]string, 50)
 	for i := range big {

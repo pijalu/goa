@@ -566,8 +566,16 @@ func configuredModelItemsFiltered(cfg *config.Config, activeModel string, active
 			Label:       m.ID,
 			Description: desc,
 		}
-		if validator != nil && !validator.IsValid(m.ID) {
-			item.Color = tui.TheTheme.ColorHex("error")
+		if validator != nil {
+			// Tri-state (bugs.md "Model list"): confirmed-available is green,
+			// confirmed-missing is red, unprobed/transient stays default —
+			// a provider that merely failed to answer never paints red.
+			switch validator.State(m.ID) {
+			case provider.ValidityInvalid:
+				item.Color = tui.TheTheme.ColorHex("error")
+			case provider.ValidityValid:
+				item.Color = tui.TheTheme.ColorHex("tool_success")
+			}
 		}
 		items = append(items, item)
 	}

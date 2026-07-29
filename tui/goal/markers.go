@@ -54,8 +54,11 @@ func wrapDetail(text string, width int) []string {
 	if inner < 1 {
 		inner = 1
 	}
+	// Reasons/expectations are model-authored and may contain newlines;
+	// ansi.Wrap is single-paragraph only, so split paragraphs first (bugs.md
+	// "Corruption on goal change").
 	var out []string
-	for _, wl := range ansi.Wrap(text, inner) {
+	for _, wl := range wrapParagraphs(text, inner) {
 		out = append(out, indent+ansi.Faint+wl+ansi.Reset)
 	}
 	return out

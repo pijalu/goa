@@ -132,6 +132,14 @@ When > 0 (embedded default 50), every newly created goal gets that hard turn cei
 
 **Promotion contract:** when the active goal completes, the queue head promotes automatically and preserves its **objective, completion criterion, verify command, fresh-context flag, and friendly alias** (traceability). The promoted goal also inherits the predecessor's completion evidence as a **handoff** note, rendered as an untrusted block in the per-turn goal reminder (rebuilt every turn, so it survives fresh-context resets). On promote failure the item is restored to the front of the queue. The model's batched `create` applies the call's `completionCriterion` to every objective, including queued ones.
 
+**Model scheduling (goal tool):** beyond the FIFO default, the model schedules goals itself:
+
+- `create` with `priority: "front"` — insert at the front of the queue (runs next).
+- `postpone` — demote the **active** goal to the **back** of the queue and start the next scheduled goal: the deprioritize primitive. The goal keeps objective, criterion, verify command, and context mode. With an empty queue the goal simply parks until promoted.
+- `promote` — activate a queued goal **now** (`goalId`): the current goal is demoted to the **front** of the queue (resumes right after) and the chosen goal becomes active atomically.
+
+With `create` (append/front), `postpone`, `promote`, `reorder`, and `cancel` the model has full todo-list-style control over what runs when. `create` never fails because a goal already exists: behind an active, paused, or blocked goal it appends to the queue; and when the `action` field is omitted it is inferred from the fields present (e.g. `status` → `update`, `objective` → `create`).
+
 ## Budgets
 
 The model can set hard limits with `goal` action `set_budget`:
@@ -146,7 +154,28 @@ Supported units: `turns`, `tokens`, `milliseconds`, `seconds`, `minutes`, `hours
 
 ## Todo lists
 
-A goal can carry a framework-managed todo list (`add_todo` / `update_todo`). The list is persisted in the event log and surfaced to the model every turn in the dynamic progress reminder, which directs it to work the next pending item — the framework owns the follow-up turns.
+Todos are lightweight checklist items; goals are autonomous units of work. The two are deliberately different:
+
+| | **Todo** | **Goal** |
+|---|---|---|
+| What it is | A checklist item | An autonomous work unit |
+| Lifecycle | `pending` / `in_progress` / `done` only | `active` / `paused` / `blocked` / `complete` |
+| Execution | The model works items during the current turn(s) | The runtime drives continuation turns for it |
+| Budget / tokens / turns | none | tracked and enforceable |
+| Completion criterion / verify command | none | optional, gated |
+| Scheduling | none (ordered list) | queue, reorder, postpone, promote |
+| Persistence | goal todos: in the goal event log; session todos: in-memory scratchpad | event log + durable queue |
+
+Use **goals** for work that must run autonomously across turns; use **todos** to break the *current* task into visible steps.
+
+### Where todos live
+
+- **`todo_list` tool (standalone; `tools.enabled.todo_list`, default on).** A single tool with `action` parameters — `add`, `update`, `complete`, `remove`, `list`, `clear` — available with **no goal active**. The session list is a conversation scratchpad.
+- **Goal-linked todos (goal tool `add_todo` / `update_todo`, or the same `todo_list` tool while a goal is active).** The linkage rules:
+  - *Blank at goal start* — a new goal begins with an empty list; session items never leak into it.
+  - *Contained by the goal* — items added during the goal belong to it. They never escape: when the goal ends (complete, cancel, replace) its todos end with it, and the session list resurfaces unchanged. `remove`/`clear` are refused while goal-linked (mark items `done` instead).
+  - *Framework-visible* — the list is surfaced to the model every turn in the dynamic progress reminder, the stall watchdog fingerprints status transitions as progress, and a gated `complete` is rejected while any item is not `done`.
+  - *Completion reminder* — when a goal is achieved (completed) with still-open todos, the completion result **reminds the model of the open items** and suggests scheduling a follow-up goal if the work is still needed (a criterion-less completion cannot silently drop unfinished work).
 
 ## Fresh context
 

@@ -211,6 +211,11 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 			return subs.goaTool, true
 		case "goal":
 			return makeGoalToolRuntime(subs)
+		case "todo_list":
+			if subs.goalManager == nil {
+				return nil, false
+			}
+			return &tools.TodoListTool{Mode: subs.goalManager.Mode}, true
 		case "lsp":
 			return makeLSPToolRuntime(subs)
 		}

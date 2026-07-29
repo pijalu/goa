@@ -100,6 +100,60 @@ func TestGoalTool_UpdateCompleteSetsStopTurn(t *testing.T) {
 	}
 }
 
+// TestGoalTool_CompleteRemindsOpenTodos pins the bugs.md requirement: when a
+// goal is ACHIEVED with pending todos, the framework reminds the model of the
+// open items (todos die with the goal, but unfinished work must not vanish
+// silently — the model can schedule a follow-up goal if it is still needed).
+func TestGoalTool_CompleteRemindsOpenTodos(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"ship it"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"add_todo","todoTitle":"done part"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"add_todo","todoTitle":"unfinished part"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"update_todo","todoId":"t1","todoStatus":"done"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := tool.Execute(`{"action":"update","status":"complete","reason":"main work delivered"}`)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if !strings.Contains(out, "Goal marked complete.") {
+		t.Errorf("completion output = %q", out)
+	}
+	if !strings.Contains(out, "unfinished part") {
+		t.Errorf("completion must remind about the open todo, got: %q", out)
+	}
+	if !strings.Contains(out, "1 todo") && !strings.Contains(out, "1 open") {
+		t.Errorf("reminder should count open todos, got: %q", out)
+	}
+
+	// No open todos → no reminder.
+	mode2 := goal.NewGoalMode(nil, nil, nil, nil)
+	tool2 := newGoalTool(mode2, func() bool { return true })
+	if _, err := tool2.Execute(`{"action":"create","objective":"clean run"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool2.Execute(`{"action":"add_todo","todoTitle":"only task"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool2.Execute(`{"action":"update_todo","todoId":"t1","todoStatus":"done"}`); err != nil {
+		t.Fatal(err)
+	}
+	out2, err := tool2.Execute(`{"action":"update","status":"complete","reason":"all done"}`)
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if strings.Contains(out2, "only task") {
+		t.Errorf("no open todos — no reminder expected, got: %q", out2)
+	}
+}
+
 func TestGoalTool_GetReturnsSnapshot(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	tool := newGoalTool(mode, nil)
@@ -138,6 +192,334 @@ func TestGoalTool_ActionFieldMismatch(t *testing.T) {
 	}
 	if _, err := tool.Execute(`{"action":"set_budget","value":5}`); err == nil {
 		t.Error("set_budget without unit must error")
+	}
+}
+
+// TestGoalTool_ActionInferredWhenOmitted pins the bugs.md "Goal management
+// tool issue" fix: models frequently omit `action` and pass only the payload
+// fields (export goa-export-20260729-102137.zip: {"status":"blocked",...} →
+// invalid goal action ""). The tool must infer the intended action from the
+// fields instead of erroring.
+func TestGoalTool_ActionInferredWhenOmitted(t *testing.T) {
+	newSeededTool := func(t *testing.T) (*GoalTool, *fakeQueue) {
+		t.Helper()
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		q := &fakeQueue{}
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+		if _, err := tool.Execute(`{"action":"create","objective":"seed"}`); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		return tool, q
+	}
+
+	t.Run("status implies update", func(t *testing.T) {
+		tool, _ := newSeededTool(t)
+		out, err := tool.Execute(`{"status":"paused","reason":"waiting on CI"}`)
+		if err != nil {
+			t.Fatalf("status without action must infer update: %v", err)
+		}
+		if !strings.Contains(out, "paused") {
+			t.Errorf("output = %q", out)
+		}
+	})
+
+	t.Run("objective implies create", func(t *testing.T) {
+		tool, q := newSeededTool(t)
+		if _, err := tool.Execute(`{"objective":"second goal"}`); err != nil {
+			t.Fatalf("objective without action must infer create: %v", err)
+		}
+		read, _ := q.Read()
+		if len(read) != 1 || read[0].Objective != "second goal" {
+			t.Errorf("queue = %+v", read)
+		}
+	})
+
+	t.Run("todoTitle implies add_todo", func(t *testing.T) {
+		tool, _ := newSeededTool(t)
+		out, err := tool.Execute(`{"todoTitle":"write tests"}`)
+		if err != nil {
+			t.Fatalf("todoTitle without action must infer add_todo: %v", err)
+		}
+		if !strings.Contains(out, "write tests") {
+			t.Errorf("output = %q", out)
+		}
+	})
+
+	t.Run("todoId+todoStatus imply update_todo", func(t *testing.T) {
+		tool, _ := newSeededTool(t)
+		if _, err := tool.Execute(`{"action":"add_todo","todoTitle":"task"}`); err != nil {
+			t.Fatal(err)
+		}
+		out, err := tool.Execute(`{"todoId":"t1","todoStatus":"done"}`)
+		if err != nil {
+			t.Fatalf("todoId/todoStatus without action must infer update_todo: %v", err)
+		}
+		if !strings.Contains(out, `"status":"done"`) {
+			t.Errorf("output = %q", out)
+		}
+	})
+
+	t.Run("goalId+direction implies reorder", func(t *testing.T) {
+		tool, q := newSeededTool(t)
+		if _, err := tool.Execute(`{"action":"create","objective":"g2"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"create","objective":"g3"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"goalId":"q2","direction":"up"}`); err != nil {
+			t.Fatalf("goalId+direction without action must infer reorder: %v", err)
+		}
+		read, _ := q.Read()
+		if len(read) != 2 || read[0].Objective != "g3" {
+			t.Errorf("queue = %+v", read)
+		}
+	})
+
+	t.Run("goalId alone implies cancel", func(t *testing.T) {
+		tool, q := newSeededTool(t)
+		if _, err := tool.Execute(`{"action":"create","objective":"g2"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"goalId":"q1"}`); err != nil {
+			t.Fatalf("goalId without action must infer cancel: %v", err)
+		}
+		read, _ := q.Read()
+		if len(read) != 0 {
+			t.Errorf("queue = %+v", read)
+		}
+	})
+
+	t.Run("value+unit imply set_budget", func(t *testing.T) {
+		tool, _ := newSeededTool(t)
+		out, err := tool.Execute(`{"value":10,"unit":"turns"}`)
+		if err != nil {
+			t.Fatalf("value/unit without action must infer set_budget: %v", err)
+		}
+		if !strings.Contains(out, "10 turns") {
+			t.Errorf("output = %q", out)
+		}
+	})
+
+	t.Run("empty object implies get", func(t *testing.T) {
+		tool, _ := newSeededTool(t)
+		out, err := tool.Execute(`{}`)
+		if err != nil {
+			t.Fatalf("empty input must infer get: %v", err)
+		}
+		if !strings.Contains(out, "seed") {
+			t.Errorf("output = %q", out)
+		}
+	})
+}
+
+// TestGoalTool_CreateQueuesBehindPausedOrBlockedGoal pins the second half of
+// the bugs.md "Goal management tool issue": with a PAUSED or BLOCKED goal,
+// create must ADD to the queue (todo-list semantics) instead of failing with
+// "a goal already exists" (GetActiveGoal filters status==active while
+// CreateGoal rejects any state — the trap the model hit in the export).
+func TestGoalTool_CreateQueuesBehindPausedOrBlockedGoal(t *testing.T) {
+	newTool := func() (*GoalTool, *fakeQueue) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		q := &fakeQueue{}
+		// AutoUnblock disabled: a block parks the goal (status stays blocked).
+		return &GoalTool{
+			Mode:          mode,
+			CreateAllowed: func() bool { return true },
+			Queue:         q,
+			AutoUnblock:   func() bool { return false },
+		}, q
+	}
+
+	t.Run("paused", func(t *testing.T) {
+		tool, q := newTool()
+		if _, err := tool.Execute(`{"action":"create","objective":"first"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"update","status":"paused","reason":"hold"}`); err != nil {
+			t.Fatal(err)
+		}
+		out, err := tool.Execute(`{"action":"create","objective":"second"}`)
+		if err != nil {
+			t.Fatalf("create behind a paused goal must enqueue, got: %v", err)
+		}
+		if !strings.Contains(out, `"queued":1`) {
+			t.Errorf("output = %q", out)
+		}
+		read, _ := q.Read()
+		if len(read) != 1 || read[0].Objective != "second" {
+			t.Errorf("queue = %+v", read)
+		}
+		// The paused goal is untouched.
+		if g := tool.Mode.GetGoal().Goal; g == nil || g.Objective != "first" || g.Status != goal.GoalPaused {
+			t.Errorf("goal = %+v", g)
+		}
+	})
+
+	t.Run("blocked", func(t *testing.T) {
+		tool, q := newTool()
+		if _, err := tool.Execute(`{"action":"create","objective":"first"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"update","status":"blocked","reason":"stuck","expectation":"user input"}`); err != nil {
+			t.Fatal(err)
+		}
+		out, err := tool.Execute(`{"action":"create","objective":"second"}`)
+		if err != nil {
+			t.Fatalf("create behind a blocked goal must enqueue, got: %v", err)
+		}
+		if !strings.Contains(out, `"queued":1`) {
+			t.Errorf("output = %q", out)
+		}
+		read, _ := q.Read()
+		if len(read) != 1 || read[0].Objective != "second" {
+			t.Errorf("queue = %+v", read)
+		}
+		if g := tool.Mode.GetGoal().Goal; g == nil || g.Objective != "first" || g.Status != goal.GoalBlocked {
+			t.Errorf("goal = %+v", g)
+		}
+	})
+}
+
+// TestGoalTool_Postpone pins the bugs.md "Goal scheduling" feature: the
+// model's deprioritize primitive — demote the active goal to the BACK of the
+// queue so the next scheduled goal starts (the clear event drives the app's
+// auto-promotion, exactly as after a completion).
+func TestGoalTool_Postpone(t *testing.T) {
+	t.Run("demotes active to back and stops the turn", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		q := &fakeQueue{}
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+		if _, err := tool.Execute(`{"action":"create","objective":"current work"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"create","objective":"scheduled next"}`); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tool.ExecuteWithResult(`{"action":"postpone"}`)
+		if err != nil {
+			t.Fatalf("postpone: %v", err)
+		}
+		if !res.StopTurn {
+			t.Error("postpone must stop the turn so the next goal starts")
+		}
+		// Active cleared: the queue now holds [scheduled next, current work].
+		if g := mode.GetGoal().Goal; g != nil {
+			t.Errorf("active goal not cleared: %+v", g)
+		}
+		read, _ := q.Read()
+		if len(read) != 2 || read[0].Objective != "scheduled next" || read[1].Objective != "current work" {
+			t.Errorf("queue = %+v", read)
+		}
+		if !strings.Contains(res.Output, "current work") {
+			t.Errorf("output = %q", res.Output)
+		}
+	})
+
+	t.Run("empty queue parks the goal", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		q := &fakeQueue{}
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+		if _, err := tool.Execute(`{"action":"create","objective":"only goal"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"postpone"}`); err != nil {
+			t.Fatalf("postpone with empty queue: %v", err)
+		}
+		read, _ := q.Read()
+		if len(read) != 1 || read[0].Objective != "only goal" {
+			t.Errorf("queue = %+v", read)
+		}
+	})
+
+	t.Run("no active goal errors", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: &fakeQueue{}}
+		if _, err := tool.Execute(`{"action":"postpone"}`); err == nil {
+			t.Error("postpone with no active goal must error")
+		}
+	})
+}
+
+// TestGoalTool_Promote pins the bugs.md "Goal scheduling" feature: the
+// model's prioritize primitive — activate a queued goal NOW; the current goal
+// is demoted to the FRONT of the queue so it resumes right after.
+func TestGoalTool_Promote(t *testing.T) {
+	t.Run("activates queued goal and demotes current to front", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		q := &fakeQueue{}
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+		if _, err := tool.Execute(`{"action":"create","objective":"current work"}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"create","objectives":["queued x","scheduled y"]}`); err != nil {
+			t.Fatal(err)
+		}
+		res, err := tool.ExecuteWithResult(`{"action":"promote","goalId":"q2"}`)
+		if err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		if !res.StopTurn {
+			t.Error("promote must stop the turn so the new goal starts fresh")
+		}
+		if g := mode.GetActiveGoal(); g == nil || g.Objective != "scheduled y" {
+			t.Errorf("active after promote = %+v", g)
+		}
+		// Queue: demoted "current work" at FRONT, then "queued x".
+		read, _ := q.Read()
+		if len(read) != 2 || read[0].Objective != "current work" || read[1].Objective != "queued x" {
+			t.Errorf("queue = %+v", read)
+		}
+	})
+
+	t.Run("promote with no active goal just activates", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		q := &fakeQueue{}
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+		if _, err := q.AppendGoal(goal.UpcomingGoalInput{Objective: "queued x"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tool.Execute(`{"action":"promote","goalId":"q1"}`); err != nil {
+			t.Fatalf("promote: %v", err)
+		}
+		if g := mode.GetActiveGoal(); g == nil || g.Objective != "queued x" {
+			t.Errorf("active = %+v", g)
+		}
+		if read, _ := q.Read(); len(read) != 0 {
+			t.Errorf("queue = %+v", read)
+		}
+	})
+
+	t.Run("unknown goal errors", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: &fakeQueue{}}
+		if _, err := tool.Execute(`{"action":"promote","goalId":"nope"}`); err == nil {
+			t.Error("promote with unknown goalId must error")
+		}
+	})
+
+	t.Run("missing goalId errors", func(t *testing.T) {
+		mode := goal.NewGoalMode(nil, nil, nil, nil)
+		tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: &fakeQueue{}}
+		if _, err := tool.Execute(`{"action":"promote"}`); err == nil {
+			t.Error("promote without goalId must error")
+		}
+	})
+}
+
+// TestGoalTool_SchemaListsSchedulingActions keeps the scheduling actions
+// discoverable in the tool schema.
+func TestGoalTool_SchemaListsSchedulingActions(t *testing.T) {
+	tool := newGoalTool(goal.NewGoalMode(nil, nil, nil, nil), nil)
+	s := tool.Schema()
+	props, _ := s.Schema["properties"].(map[string]any)
+	action, _ := props["action"].(map[string]any)
+	enum, _ := action["enum"].([]string)
+	joined := strings.Join(enum, ",")
+	for _, want := range []string{"postpone", "promote"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("action enum missing %q: %v", want, enum)
+		}
 	}
 }
 
@@ -254,6 +636,11 @@ func (q *fakeQueue) Move(id, direction string) ([]goal.UpcomingGoal, error) {
 			return q.Read()
 		}
 	}
+	return q.Read()
+}
+
+func (q *fakeQueue) Restore(item goal.UpcomingGoal) ([]goal.UpcomingGoal, error) {
+	q.goals = append([]goal.UpcomingGoal{item}, q.goals...)
 	return q.Read()
 }
 

@@ -233,6 +233,12 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	// `create` is allowed when the flag is on OR a goal is already active.
 	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled,
 		func() time.Duration { return cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) })
+	// The standalone todo_list tool (bugs.md: available outside of goal). It is
+	// linked to the goal's own todo list while a goal is active and falls back
+	// to its session list otherwise; tools.enabled.todo gates registration.
+	if cfg.Tools.Enabled.Todo {
+		subs.toolRegistry.Register(&tools.TodoListTool{Mode: goalManager.Mode})
+	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
@@ -658,9 +664,12 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 // completion (goals.verify_timeout; nil = default 2m) — bugs.md Bug A.
 func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
-	// goal is already active (bugs.md S2: all goal actions work during a goal).
+	// goal exists (bugs.md S2: all goal actions work during a goal). Existence
+	// — not just active status — matters: a paused/blocked goal still means
+	// "during a goal", and the tool queues behind it (bugs.md "Goal management
+	// tool issue").
 	createAllowed := func() bool {
-		return createFlagOn || manager.Mode.GetActiveGoal() != nil
+		return createFlagOn || manager.Mode.GetGoal().Goal != nil
 	}
 	tool := tools.NewGoalTools(manager.Mode, createAllowed)[0]
 	// Wire the durable goal queue so the tool manages goals as a todo-like

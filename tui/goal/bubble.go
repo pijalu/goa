@@ -120,8 +120,12 @@ func (b *Bubble) fullText(width int) []string {
 	if b.snapshot.Name != "" {
 		prefix = "[" + b.snapshot.Name + "] "
 	}
+	// Objectives are model-authored and may contain newlines; ansi.Wrap is
+	// single-paragraph only, so split paragraphs first or the embedded "\n"
+	// reaches the terminal and corrupts the rows above the input (bugs.md
+	// "Corruption on goal change").
 	text := marker + prefix + b.snapshot.Objective
-	lines := ansi.Wrap(text, width)
+	lines := wrapParagraphs(text, width)
 	if len(lines) <= maxBubbleLines {
 		return lines
 	}

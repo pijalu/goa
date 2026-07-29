@@ -352,6 +352,11 @@ type Compositor struct {
 	// chromeH is the fixed bottom-chrome band height for the current frame
 	// (Scene.ChromeHeight). scrollTop is clamped so it never enters the band.
 	chromeH int
+	// prevChromeH is the chrome band height of the PREVIOUS frame — the value
+	// that maps prevLines's content end. prevWindowFull consults it so the
+	// steady-scroll geometry check stays correct across a chrome height
+	// change instead of misreading the previous canvas by the chrome delta.
+	prevChromeH int
 	// regionBot is the DECSTBM scroll-region bottom currently in effect on the
 	// terminal (1-indexed; region top is always row 1), or 0 when no region is
 	// set (full-screen scroll). When chromeH > 0 the compositor confines the
@@ -524,17 +529,35 @@ func (c *Compositor) Render(scene *Scene) {
 	c.beginTrace(scene, canvas, width, height)
 	defer c.emitTrace()
 
+	// Mid-transcript edit guard for the incremental paths: when content above
+	// the new window top changed identity since the previous frame (a
+	// streaming block growing ABOVE later-appended content, e.g. /quota
+	// landing mid-stream), the incremental scroll emission would scroll wrong
+	// row identities into scrollback and skip the real ones. Rebuild
+	// scrollback from the FULL canvas (cullFloor 0 — the steady canvas has
+	// rows below the watermark culled) instead.
+	if kind == frameDiff || kind == frameFullRepaint {
+		vt := c.windowTop(len(canvas), height)
+		if c.scrollOffUnstable(canvas, c.scrollTarget(vt, len(canvas))) {
+			canvas, _ = scene.compose(0)
+			c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
+			c.prevLines = copySlice(canvas)
+			c.prevW = width
+			c.prevH = height
+			return
+		}
+	}
+
 	switch kind {
 	case frameFirst:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
 		// emits any off-screen rows into scrollback then draws the window.
 		c.drawWindow(canvas, scene.Cursor, width, height)
 	case frameGeometryReset:
-		// Width change or bottom-chrome height change: the terminal's
-		// scrollback no longer corresponds to the canvas layout (wrap reflowed,
-		// or the transcript region shifted), so the incremental diff cannot map
-		// it. Reset scrollback and re-emit every off-screen row at the current
-		// geometry, then repaint the window.
+		// Width change: the terminal's scrollback no longer corresponds to
+		// the canvas layout (wrap reflowed), so the incremental diff cannot
+		// map it. Reset scrollback and re-emit every off-screen row at the
+		// current geometry, then repaint the window.
 		c.drawWindowResetScrollback(canvas, scene.Cursor, width, height)
 	case frameFullRepaint:
 		// Height-only resize or overlay: drawWindow emits scrolled-off rows
@@ -563,15 +586,15 @@ const (
 	frameFullRepaint                    // height-only resize or overlay present
 )
 
-// classifyFrame computes the frame kind and updates c.chromeH and
-// scene.WidthChanged as a side effect (both describe the current geometry).
+// classifyFrame computes the frame kind and updates c.chromeH, c.prevChromeH
+// and scene.WidthChanged as a side effect (they describe the current and
+// previous geometry).
 func (c *Compositor) classifyFrame(scene *Scene, width, height int) frameKind {
-	// A bottom-chrome height change (a steering/goal bubble or the bg panel
-	// appearing or clearing) shifts the transcript region, so — like a width
-	// change — it invalidates the scrollback↔canvas correspondence.
-	prevChromeH := c.chromeH
+	// Track the chrome-band height across frames: prevWindowFull consults
+	// prevChromeH to map the PREVIOUS canvas's content end (bugs.md "Slow
+	// performance on very large conversations").
+	c.prevChromeH = c.chromeH
 	c.chromeH = max(scene.ChromeHeight, 0)
-	chromeChanged := c.prevLines != nil && c.chromeH != prevChromeH
 
 	widthChanged := c.prevW != 0 && c.prevW != width
 	heightChanged := c.prevH != 0 && c.prevH != height
@@ -580,9 +603,17 @@ func (c *Compositor) classifyFrame(scene *Scene, width, height int) frameKind {
 	switch {
 	case c.prevLines == nil:
 		return frameFirst
-	case widthChanged || chromeChanged:
+	case widthChanged:
+		// Only a WIDTH change invalidates the scrollback↔canvas
+		// correspondence (line wrap reflows): reset + re-emit. A bottom-chrome
+		// height change (editor newline, steering/goal bubble appearing or
+		// clearing) does NOT: canvas rows are immutable, the watermark stays
+		// valid, and the incremental diff handles the shift at O(viewport)
+		// cost. Routing chrome changes through the geometry reset wiped
+		// scrollback and re-emitted the ENTIRE transcript per keystroke —
+		// the 100%-CPU-for-seconds hang on very large conversations.
 		return frameGeometryReset
-	case (widthChanged || heightChanged) || c.hasOverlay(scene):
+	case heightChanged || c.hasOverlay(scene):
 		return frameFullRepaint
 	default:
 		return frameDiff
@@ -844,6 +875,47 @@ func (c *Compositor) scrollTarget(vt, canvasLen int) int {
 	return target
 }
 
+// scrollOffUnstable reports whether the rows about to scroll into scrollback
+// (canvas[from, to)) changed identity since the previous frame. The
+// incremental scroll emission is only sound when that region is stable: both
+// emission paths either push the screen's current top rows (which must equal
+// the new canvas rows there) or write the new canvas rows and scroll the
+// first of them (which must equal the screen rows). A MID-TRANSCRIPT edit
+// above the window — a streaming block that grows ABOVE later-appended
+// content, e.g. /quota landing mid-stream — shifts the region and the
+// emission would destroy unscrolled rows and emit shifted duplicates
+// (bugs.md "Slow performance on very large conversations": the quota-stream
+// regression only stayed hidden because every chrome change force-resynced).
+//
+// Only MALIGNANT instability counts: a transition where both the old and new
+// row are non-blank and differ. Blank↔content transitions are benign — the
+// bottom-align pad rows being consumed by growth, or blank spacers — and the
+// top-down path already handles them.
+func (c *Compositor) scrollOffUnstable(canvas []string, to int) bool {
+	if c.prevLines == nil {
+		return false
+	}
+	from := max(c.vt, c.scrollTop)
+	if from < 0 {
+		from = 0
+	}
+	// Only compare within the PREVIOUS transcript: indices at/above
+	// prevContentEnd held the previous chrome band (displaced by any
+	// transcript growth) or did not exist yet — both benign.
+	prevContentEnd := len(c.prevLines) - c.prevChromeH
+	for i := from; i < to && i < len(canvas); i++ {
+		if i < 0 || i >= prevContentEnd {
+			continue
+		}
+		prev := strings.TrimSpace(ansi.Strip(c.prevLines[i]))
+		cur := strings.TrimSpace(ansi.Strip(canvas[i]))
+		if prev != "" && cur != "" && prev != cur {
+			return true
+		}
+	}
+	return false
+}
+
 // advanceScrollback emits the rows that scrolled off since the last frame into
 // terminal scrollback, exactly once each. When chrome is pinned the scroll is
 // confined to the transcript region via DECSTBM.
@@ -1032,7 +1104,12 @@ func (c *Compositor) prevWindowFull(windowH int) bool {
 	if c.prevLines == nil {
 		return false
 	}
-	contentEnd := len(c.prevLines) - c.chromeH
+	// prevLines is the PREVIOUS canvas: its chrome band is prevChromeH rows,
+	// not chromeH. Using the current chromeH here miscomputes the previous
+	// content end by the chrome delta and could mark a shifted window "full"
+	// on stale rows (the watermark desync e6d8a2f worked around with a full
+	// reset on every chrome change).
+	contentEnd := len(c.prevLines) - c.prevChromeH
 	if contentEnd < c.vt+windowH {
 		return false
 	}

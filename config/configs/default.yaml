@@ -231,6 +231,7 @@ tools:
     agent_swarm: true
     goa: true
     lsp: true
+    todo_list: true
   search:
     threads: 4
     max_results: 30

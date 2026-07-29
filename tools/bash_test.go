@@ -390,6 +390,27 @@ func TestBashTool_Execute_Timeout_Expires(t *testing.T) {
 	}
 }
 
+// TestBashTool_Execute_Timeout_HintIsActionable pins the bugs.md "Timeout hint"
+// fix: a timeout must hint at the TIMEOUT (raise `timeout` or split the work),
+// not the generic "See /docs TOOLS" usage line.
+func TestBashTool_Execute_Timeout_HintIsActionable(t *testing.T) {
+	tool := &BashTool{}
+	_, err := tool.Execute(`{"command": "sleep 10", "timeout": 1}`)
+	if err == nil {
+		t.Fatal("Expected timeout error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "See /docs TOOLS") {
+		t.Errorf("timeout error must not carry the generic docs hint, got: %v", msg)
+	}
+	if !strings.Contains(msg, "timeout") {
+		t.Errorf("hint must reference the timeout, got: %v", msg)
+	}
+	if !strings.Contains(msg, `"timeout"`) {
+		t.Errorf("hint must point at the timeout parameter, got: %v", msg)
+	}
+}
+
 func TestBashTool_Execute_Timeout_CappedAtMax(t *testing.T) {
 	tool := &BashTool{}
 	// A timeout above the max is clamped; the command should still time out

@@ -26,6 +26,9 @@ import (
 // ModelValidator exposes background model validation results to commands.
 type ModelValidator interface {
 	IsValid(modelID string) bool
+	// State returns the tri-state verdict (unknown/valid/invalid) so the UI
+	// can distinguish "not checked yet" from "checked and missing".
+	State(modelID string) provider.ModelValidity
 }
 
 // ModelCache stores provider model lists so commands can avoid redundant API calls.

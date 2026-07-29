@@ -31,6 +31,15 @@ Choose the operation with the `action` field:
 - `list` — show the active goal and the queued goals (id, name, objective, status).
 - `cancel` — remove a queued goal. Requires `goalId` (the queued goal's ID or friendly name).
 - `reorder` — move a queued goal. Requires `goalId` and `direction` (`up` | `down`).
+- `postpone` — demote the ACTIVE goal to the BACK of the queue and start the next queued
+  goal. This is the deprioritize primitive: the goal keeps its objective, criterion, verify
+  command, and context mode, and simply waits its turn again. Use it when something more
+  urgent must run first and you do not want to abandon the current goal. With an empty
+  queue the goal parks in the queue until you `promote` it.
+- `promote` — activate a queued goal NOW. Requires `goalId` (the queued goal's ID or
+  friendly name). The current goal is demoted to the FRONT of the queue (it resumes right
+  after) and the chosen queued goal becomes active. Use it to schedule exactly which goal
+  runs next without losing the current one.
 - `update` — set the goal's lifecycle status (this is how you resume, end, or yield a goal).
   Requires `status`, one of:
   - `active` — resume a paused or blocked goal when the user asks you to work on it (any
@@ -63,9 +72,13 @@ Choose the operation with the `action` field:
   not reasonable, do not set it; tell the user.
 - `add_todo` — add a task to the goal's managed todo list. Requires `todoTitle`. For a
   multi-step goal, decompose it into ordered todo items up front so the goal self-tracks;
-  the list is surfaced back to you each turn.
+  the list is surfaced back to you each turn. Goal todos are lightweight checklist items
+  (not goals): they are LINKED to this goal — blank at its start, contained by it, and
+  closed with it; they never escape into another goal or the session list.
 - `update_todo` — set a todo item's status. Requires `todoId` and `todoStatus`
-  (`pending` | `in_progress` | `done`). Mark items done as you complete them.
+  (`pending` | `in_progress` | `done`). Mark items done as you complete them. Completing
+  the goal with items still open reminds you of them so unfinished work is not silently
+  dropped — schedule a follow-up goal for work that is still needed.
 
 If a goal is active and you do not call `update`, the goal keeps running: after your turn
 ends you will be prompted to continue. A stall watchdog tracks measurable progress (todo
