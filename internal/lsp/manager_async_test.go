@@ -20,12 +20,13 @@ import (
 type gatedFactory struct {
 	mu      sync.Mutex
 	gate    chan struct{}
+	entered chan struct{} // signaled (non-blocking) when a spawn enters the factory
 	started int
 	sink    *syncBuffer
 }
 
 func newGatedFactory(sink *syncBuffer) *gatedFactory {
-	return &gatedFactory{gate: make(chan struct{}), sink: sink}
+	return &gatedFactory{gate: make(chan struct{}), entered: make(chan struct{}, 1), sink: sink}
 }
 
 func (f *gatedFactory) factory() func(ctx context.Context, cfg ServerConfig) (*Server, error) {
@@ -33,6 +34,10 @@ func (f *gatedFactory) factory() func(ctx context.Context, cfg ServerConfig) (*S
 		f.mu.Lock()
 		f.started++
 		f.mu.Unlock()
+		select {
+		case f.entered <- struct{}{}:
+		default: // a previous spawn already signaled
+		}
 		select {
 		case <-f.gate:
 		case <-ctx.Done():
@@ -46,6 +51,20 @@ func (f *gatedFactory) spawnCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.started
+}
+
+// awaitEntered blocks until the first spawn has entered the factory, failing
+// the test when no spawn is kicked within the timeout. Asserting on
+// spawnCount without this edge races the async spawn goroutine: under load
+// (go test ./...) the goroutine may not be scheduled before the counting
+// goroutine runs, reporting a spurious "0 spawns".
+func (f *gatedFactory) awaitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spawn never entered the factory within 2s")
+	}
 }
 
 // release lets all blocked and future spawns complete.
@@ -148,6 +167,12 @@ func TestManager_TouchNeverBlocksOnSpawn(t *testing.T) {
 			t.Errorf("touch %d: expected 'still starting' error, got %v", g, err)
 		}
 	}
+	// The spawn runs on its own goroutine (clientFor kicks it async): wait
+	// until it has entered the factory before counting. While that first
+	// spawn is parked on the gate, m.spawning[key] stays set, so no second
+	// spawn can be kicked — observing entry then counting 1 proves the
+	// single-flight.
+	gated.awaitEntered(t)
 	if n := gated.spawnCount(); n != 1 {
 		t.Errorf("expected single-flight (1 spawn), got %d", n)
 	}
