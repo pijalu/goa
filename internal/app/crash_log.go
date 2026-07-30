@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/pijalu/goa/tui"
 )
 
 // crashLogFile is the destination for crash/panic diagnostics. It is set by
@@ -38,7 +40,9 @@ func setupCrashLog(projectDir string) func() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("goa crash log started: %s", path)
 
-	cleanup := teeStderr(f)
+	// While the full-screen TUI owns the terminal, captured stderr stays
+	// off the screen (tui.OwnsScreen) — it would corrupt the frame.
+	cleanup := teeStderr(f, tui.OwnsScreen)
 	return func() {
 		log.SetOutput(origLog)
 		cleanup()

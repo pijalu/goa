@@ -16,10 +16,15 @@ import (
 
 // teeStderr redirects fd 2 through a pipe so everything written to standard
 // error — including Go runtime fatal errors (e.g. "concurrent map writes"),
-// which bypass os.Stderr and write straight to fd 2 — is forwarded BOTH to
-// the original stderr and to f. It returns a cleanup that restores fd 2,
-// drains the pipe into f, and closes f.
-func teeStderr(f *os.File) func() {
+// which bypass os.Stderr and write straight to fd 2 — is captured into f.
+// Bytes are additionally forwarded to the original stderr ONLY while no
+// full-screen TUI owns the terminal (ownsScreen reports raw-mode
+// ownership): while the TUI is active, a stray write — e.g. macOS libmalloc
+// "MallocStackLogging" warnings, or output from child processes inheriting
+// fd 2 — would be echoed mid-frame and corrupt the differential render.
+// Returns a cleanup that restores fd 2, drains the pipe into f, and
+// closes f.
+func teeStderr(f *os.File, ownsScreen func() bool) func() {
 	// Preserve the current stderr for forwarding and later restore.
 	saved, err := unix.Dup(unix.Stderr)
 	if err != nil {
@@ -47,7 +52,7 @@ func teeStderr(f *os.File) func() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(io.MultiWriter(savedFile, f), r)
+		_, _ = io.Copy(&stderrSink{tty: savedFile, file: f, ownsScreen: ownsScreen}, r)
 	}()
 
 	return func() {
@@ -62,4 +67,21 @@ func teeStderr(f *os.File) func() {
 		_ = savedFile.Close()
 		_ = f.Close()
 	}
+}
+
+// stderrSink is the tee's drain destination: the crash log always receives
+// every captured byte; the original terminal receives them only while no
+// full-screen TUI owns it (nil ownsScreen = never owns = always forward).
+type stderrSink struct {
+	tty        *os.File
+	file       *os.File
+	ownsScreen func() bool
+}
+
+func (s *stderrSink) Write(p []byte) (int, error) {
+	n, err := s.file.Write(p)
+	if s.ownsScreen == nil || !s.ownsScreen() {
+		_, _ = s.tty.Write(p)
+	}
+	return n, err
 }

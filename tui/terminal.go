@@ -31,6 +31,26 @@ type Terminal interface {
 	io.Writer
 }
 
+// screenOwnerCount tracks live ProcessTerminal sessions holding raw mode —
+// i.e. a full-screen TUI currently owns the display. While it is non-zero,
+// stray process-level writes to stdout/stderr (macOS libmalloc warnings such
+// as "MallocStackLogging: can't turn off ...", C libraries, child processes
+// inheriting fd 2) must NOT reach the TTY: they bypass Go entirely and
+// corrupt the differential frame. The internal/app crash-log tee consults
+// OwnsScreen to decide whether to forward captured stderr to the terminal
+// or only to the log file.
+var screenOwnerCount atomic.Int64
+
+// OwnsScreen reports whether a full-screen terminal session currently owns
+// the display (raw mode acquired by a ProcessTerminal).
+func OwnsScreen() bool { return screenOwnerCount.Load() > 0 }
+
+// claimScreen/releaseScreen bracket raw-mode ownership. Counter-based so
+// overlapping sessions (e.g. a restarted TUI before the old one fully
+// stops) resolve correctly.
+func claimScreen()   { screenOwnerCount.Add(1) }
+func releaseScreen() { screenOwnerCount.Add(-1) }
+
 // ProcessTerminal implements Terminal with raw mode and Kitty keyboard protocol.
 type ProcessTerminal struct {
 	fd       int
@@ -39,6 +59,10 @@ type ProcessTerminal struct {
 	restore  func()
 	running  bool
 	done     chan struct{}
+
+	// screenClaimed records that Start acquired raw mode and claimed screen
+	// ownership, so Stop releases it exactly once (even on partial paths).
+	screenClaimed bool
 
 	// lastGoodSize caches the most recent plausible terminal size. The
 	// TIOCGWINSZ ioctl can transiently fail (or return a degenerate size) on
@@ -92,6 +116,11 @@ func (t *ProcessTerminal) Start(onInput func(string), onResize func()) {
 	if err == nil {
 		t.restore = restore
 		t.running = true
+		// Raw mode acquired: a full-screen session owns the display from
+		// here until Stop. Stray fd-level writes must be kept off the TTY
+		// (see OwnsScreen).
+		t.screenClaimed = true
+		claimScreen()
 		t.stdinBuffer = NewStdinBuffer()
 
 		// Enable Windows VT input (no-op on other platforms)
@@ -420,6 +449,12 @@ func (t *ProcessTerminal) Stop() {
 			// suppress double-close panics during shutdown
 		}
 	}()
+	// Release screen ownership first (exactly once, on any path): from here
+	// on, captured process stderr may be forwarded to the terminal again.
+	if t.screenClaimed {
+		t.screenClaimed = false
+		releaseScreen()
+	}
 	if !t.running {
 		// Already stopped or raw mode was never entered. Still attempt a
 		// terminal restore in case Stop is called after a partial startup.
