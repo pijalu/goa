@@ -34,14 +34,12 @@ func (f *Footer) SetData(data FooterData) {
 // on or off so the footer reflects the change immediately.
 func (f *Footer) SetMinorMode(mode string) { f.data.MinorMode = mode }
 
-// SetGoalData explicitly sets or clears the goal fields (status, objective,
-// pending-todo count), bypassing SetData's preservation logic — the goal
-// equivalent of SetMinorMode. updateGoalFooter is the sole caller; pass
-// empty status to clear the ◈/⬩ markers when no goal exists.
-func (f *Footer) SetGoalData(status, objective string, pendingTodos int) {
+// SetGoalStatus explicitly sets or clears the goal status, bypassing
+// SetData's preservation logic — the goal equivalent of SetMinorMode.
+// updateGoalFooter is the sole caller; pass an empty status to clear the ◈
+// marker when no goal exists.
+func (f *Footer) SetGoalStatus(status string) {
 	f.data.GoalStatus = status
-	f.data.GoalObjective = objective
-	f.data.GoalPendingTodos = pendingTodos
 }
 
 // SetModelBusy sets the main model busy indicator directly.

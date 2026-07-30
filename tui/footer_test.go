@@ -564,31 +564,6 @@ func TestFooter_Render_NoCompanionShowsMainOnly(t *testing.T) {
 	}
 }
 
-// TestFooter_GoalStatus_MultiLineObjective pins the bugs.md "Corruption on
-// goal change" fix for the footer: the goal segment is a single-line region,
-// so a multi-line objective must be flattened — a surviving "\n" breaks the
-// footer row (raw-mode LF does not carriage-return).
-func TestFooter_GoalStatus_MultiLineObjective(t *testing.T) {
-	f := NewFooter()
-	f.SetData(FooterData{
-		GoalStatus:    "active",
-		GoalObjective: "UNBLOCKING INVESTIGATION — find a solution.\n\nThe goal \"X\" was blocked because: ...",
-	})
-	got := f.formatGoalStatus("")
-	if strings.Contains(got, "\n") {
-		t.Errorf("footer goal segment contains an embedded newline: %q", got)
-	}
-	if !strings.Contains(ansi.Strip(got), "UNBLOCKING INVESTIGATION") {
-		t.Errorf("footer goal segment missing objective head: %q", got)
-	}
-
-	// Short first paragraph: truncation no longer saves us — the newline must
-	// be flattened before it reaches the single-line footer region.
-	f.SetData(FooterData{GoalStatus: "active", GoalObjective: "short head\nrest of the objective"})
-	if got := f.formatGoalStatus(""); strings.Contains(got, "\n") {
-		t.Errorf("footer goal segment leaks newline from short first paragraph: %q", got)
-	}
-}
 // TestFooter_Render_GoalMarker (bugs.md Issue 3): an active goal shows the ◈
 // marker next to the mode ("◈ coding-posture │ YOLO"); no goal → no marker.
 func TestFooter_Render_GoalMarker(t *testing.T) {
@@ -605,70 +580,46 @@ func TestFooter_Render_GoalMarker(t *testing.T) {
 		t.Errorf("active goal must render ◈ before the profile, got %q", firstLine)
 	}
 
-	// Explicit clear (the app clears goal state via SetGoalData).
-	f.SetGoalData("", "", 0)
+	// Explicit clear (the app clears goal state via SetGoalStatus).
+	f.SetGoalStatus("")
 	firstLine = ansi.Strip(f.Render(80)[0])
 	if strings.Contains(firstLine, "◈") {
 		t.Errorf("no goal → no ◈ marker, got %q", firstLine)
 	}
 }
 
+// TestFooter_Render_NoGoalDetail pins the "status bar carries no goal
+// detail" rule: objective text and todo counts are the goal bubble's job.
+// The ◈ marker belongs to line 1 only, and only while the goal is active —
+// line 2 must never carry a goal segment, for any goal status.
+func TestFooter_Render_NoGoalDetail(t *testing.T) {
+	for _, status := range []string{"active", "paused", "blocked"} {
+		f := NewFooter()
+		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m", GoalStatus: status})
+		lines := f.Render(80)
+		for i, line := range lines {
+			if strings.Contains(line, "⬩") {
+				t.Errorf("goal status %q: line %d renders todo markers: %q", status, i, ansi.Strip(line))
+			}
+			if i > 0 && strings.Contains(line, "◈") {
+				t.Errorf("goal status %q: line %d must not carry a goal segment: %q", status, i, ansi.Strip(line))
+			}
+		}
+	}
+}
+
 // TestFooter_Render_GoalMarkerStatuses covers the non-active goal states:
 // the ◈ marker next to the profile marks an ACTIVE goal only — a paused or
 // blocked goal must NOT carry it (it would falsely read as "goal running").
-// The goal stays visible in the line-2 segment with its status suffix.
+// Paused/blocked goals surface in the goal bubble chrome instead.
 func TestFooter_Render_GoalMarkerStatuses(t *testing.T) {
 	for _, status := range []string{"paused", "blocked"} {
 		f := NewFooter()
 		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m",
-			GoalStatus: status, GoalObjective: "do the thing"})
-		lines := f.Render(80)
-		firstLine := ansi.Strip(lines[0])
+			GoalStatus: status})
+		firstLine := ansi.Strip(f.Render(80)[0])
 		if strings.Contains(firstLine, "◈") {
 			t.Errorf("goal status %q must NOT render the ◈ profile marker, got %q", status, firstLine)
 		}
-		// Line 2 still surfaces the goal with its ◈ symbol and status suffix.
-		secondLine := ansi.Strip(lines[1])
-		if !strings.Contains(secondLine, "◈ do the thing ("+status+")") {
-			t.Errorf("goal status %q must keep the line-2 goal segment, got %q", status, secondLine)
-		}
-	}
-}
-
-// TestFooter_Render_GoalTodoMarkers (bugs.md Issue 4): pending todos render
-// one ⬩ each after the mode, up to 3, with "+x" for the remainder.
-func TestFooter_Render_GoalTodoMarkers(t *testing.T) {
-	cases := []struct {
-		pending int
-		want    string
-	}{
-		{0, "◈ coding-posture │"},
-		{1, "◈ coding-posture ⬩ │"},
-		{2, "◈ coding-posture ⬩⬩ │"},
-		{3, "◈ coding-posture ⬩⬩⬩ │"},
-		{5, "◈ coding-posture ⬩⬩⬩+2 │"},
-		{7, "◈ coding-posture ⬩⬩⬩+4 │"},
-	}
-	for _, tc := range cases {
-		f := NewFooter()
-		f.SetData(FooterData{
-			Workdir: "/test", Mode: "yolo", Profile: "coding-posture", Model: "test-model",
-			GoalStatus: "active", GoalPendingTodos: tc.pending,
-		})
-		firstLine := ansi.Strip(f.Render(80)[0])
-		if !strings.Contains(firstLine, tc.want) {
-			t.Errorf("pending=%d: footer missing %q, got %q", tc.pending, tc.want, firstLine)
-		}
-	}
-}
-
-// TestFooter_Render_TodoMarkersRequireGoal: todo markers without a goal make
-// no sense — they render only together with the ◈ goal marker.
-func TestFooter_Render_TodoMarkersRequireGoal(t *testing.T) {
-	f := NewFooter()
-	f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m", GoalPendingTodos: 3})
-	firstLine := ansi.Strip(f.Render(80)[0])
-	if strings.Contains(firstLine, "⬩") {
-		t.Errorf("todo markers without a goal, got %q", firstLine)
 	}
 }

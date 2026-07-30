@@ -44,9 +44,6 @@ func TestSeedGoalUI_RestoresBubbleAndFooter(t *testing.T) {
 		t.Errorf("bubble objective = %q, want %q", snap.Objective, "persisted goal")
 	}
 	data := footer.Data()
-	if data.GoalObjective != "persisted goal" {
-		t.Errorf("footer GoalObjective = %q, want %q", data.GoalObjective, "persisted goal")
-	}
 	if data.GoalStatus != string(goal.GoalActive) {
 		t.Errorf("footer GoalStatus = %q, want %q", data.GoalStatus, goal.GoalActive)
 	}

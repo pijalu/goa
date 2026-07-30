@@ -30,9 +30,7 @@ type FooterData struct {
 	CompanionBusy          bool   // true when the companion is reviewing
 	MainActivity           string // current main agent activity: "sending", "thinking", "tool", "streaming"
 	CompanionActivity      string // current companion activity, empty when idle
-	GoalStatus             string // "active", "paused", "blocked", or empty when no goal
-	GoalObjective          string // truncated active/paused/blocked goal objective for the footer
-	GoalPendingTodos       int    // pending (not-done) todos of the goal; drives the ⬩ markers
+	GoalStatus             string // "active", "paused", "blocked", or empty when no goal; drives only the ◈ marker (goal detail lives in the goal bubble)
 	OrchestrationStats     string // per-model orchestration stats rendered as an extra footer line
 
 	// PluginSegments holds pre-rendered status-bar segments contributed by JS
@@ -62,18 +60,16 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	return data
 }
 
-// preserveFooterGoal keeps the goal fields across routine footer rebuilds
+// preserveFooterGoal keeps the goal status across routine footer rebuilds
 // (token stats, activity) that construct a fresh FooterData without goal
-// knowledge. updateGoalFooter/SetGoalData is the sole writer of goal state
-// and always sets all three fields together, so the preserved values never
-// go stale: an explicit clear goes through SetGoalData, mirroring how
-// SetMinorMode bypasses preservation for its own field (bugs.md Issues 3-4:
-// the ◈/⬩ markers must not flicker off on every stats tick).
+// knowledge. updateGoalFooter/SetGoalStatus is the sole writer of goal
+// state, so the preserved value never goes stale: an explicit clear goes
+// through SetGoalStatus, mirroring how SetMinorMode bypasses preservation
+// for its own field (bugs.md Issues 3-4: the ◈ marker must not flicker off
+// on every stats tick).
 func preserveFooterGoal(prev, data FooterData) FooterData {
 	if data.GoalStatus == "" {
 		data.GoalStatus = prev.GoalStatus
-		data.GoalObjective = prev.GoalObjective
-		data.GoalPendingTodos = prev.GoalPendingTodos
 	}
 	return data
 }

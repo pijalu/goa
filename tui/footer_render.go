@@ -38,22 +38,17 @@ func (f *Footer) Render(width int) []string {
 		return f.renderOrchStatsLines(width, styler)
 	}
 
-	// Line 1: working directory (left) / [◈ goal] profile(minor) [todos] + mode badge (right)
+	// Line 1: working directory (left) / [◈ active-goal marker] profile(minor) + mode badge (right)
 	workdir := f.formatWorkdirAdaptive(width)
 	modeBadge := ansi.Fg(f.modeColor()) + strings.ToUpper(f.data.Mode) + ansi.Reset + fg
 	right1 := fmt.Sprintf("%s │ %s", f.goalProfileLabel(fg), modeBadge)
 	line1 := renderTwoCol(workdir, right1, width, styler)
 
-	// Line 2: conversation stats / activity / steering hint / goal status (left) / model + workflow hint (right)
+	// Line 2: conversation stats / activity / steering hint (left) / model +
+	// workflow hint (right). Goal detail is deliberately NOT rendered here:
+	// the goal bubble is the dedicated chrome for objective/status/todos —
+	// the footer carries only the ◈ active-goal marker on line 1.
 	left2 := f.buildLeftSide(fg)
-	if f.data.GoalStatus != "" {
-		goalText := f.formatGoalStatus(fg)
-		if left2 != "" {
-			left2 += " │ " + goalText
-		} else {
-			left2 = goalText
-		}
-	}
 
 	// Calculate available width for the model display based on left-side content,
 	// not raw terminal width. This ensures the provider prefix and thinking level
@@ -530,13 +525,12 @@ func FormatFooterLine(stats, model, provider, thinking, activity string, busy, a
 }
 
 // goalProfileLabel renders the line-1 right-side label: while a goal is
-// ACTIVE, a ◈ marker and up to three ⬩ pending-todo markers with a "+x"
-// overflow counter surround the profile label —
-// "◈ coding-posture ⬩⬩⬩+2 │ YOLO" (bugs.md Issues 3-4). The ◈ decoration
-// marks an active goal ONLY: a paused/blocked goal must not read as "goal
-// running" — it stays visible in the line-2 goal segment with its status
-// suffix instead. Without an active goal the label is the bare
-// profile(minor) text.
+// ACTIVE, a bare ◈ marker prefixes the profile label — "◈ coding-posture │
+// YOLO". The marker is the ONLY goal signal in the footer: objective,
+// status and todos live in the dedicated goal bubble chrome, so no goal
+// detail is duplicated here. The ◈ decoration marks an active goal ONLY:
+// a paused/blocked goal must not read as "goal running". Without an active
+// goal the label is the bare profile(minor) text.
 func (f *Footer) goalProfileLabel(fg string) string {
 	label := f.data.Profile
 	if f.data.MinorMode != "" {
@@ -545,19 +539,8 @@ func (f *Footer) goalProfileLabel(fg string) string {
 	if f.data.GoalStatus != "active" {
 		return label
 	}
-	var b strings.Builder
-	b.WriteString(ansi.Fg(TheTheme.ColorHex("tool_success")) + "◈" + ansi.Reset + fg + " ")
-	b.WriteString(label)
-	if n := f.data.GoalPendingTodos; n > 0 {
-		b.WriteString(" ")
-		b.WriteString(strings.Repeat("⬩", min(n, 3)))
-		if n > 3 {
-			fmt.Fprintf(&b, "+%d", n-3)
-		}
-	}
-	return b.String()
+	return ansi.Fg(TheTheme.ColorHex("tool_success")) + "◈" + ansi.Reset + fg + " " + label
 }
-
 
 func (f *Footer) modeColor() string {
 	switch f.data.Mode {
@@ -569,44 +552,6 @@ func (f *Footer) modeColor() string {
 		return "#d29922"
 	case "review":
 		return "#f85149"
-	default:
-		return "#8b949e"
-	}
-}
-
-func (f *Footer) formatGoalStatus(fg string) string {
-	status := f.data.GoalStatus
-	color := ansi.Fg(ansiColorForGoalStatus(status))
-	obj := f.data.GoalObjective
-	if obj == "" {
-		return color + "◈ goal" + ansi.Reset + fg
-	}
-	// The footer is a single-line region: flatten embedded newlines from
-	// model-authored objectives or they break the footer row (raw-mode LF
-	// does not carriage-return — bugs.md "Corruption on goal change").
-	obj = strings.Join(strings.Fields(obj), " ")
-	return color + "◈ " + truncateToWidth(obj, 30, "") + statusSuffix(status) + ansi.Reset + fg
-}
-
-func statusSuffix(status string) string {
-	switch status {
-	case "active":
-		return ""
-	case "paused", "blocked":
-		return " (" + status + ")"
-	default:
-		return ""
-	}
-}
-
-func ansiColorForGoalStatus(status string) string {
-	switch status {
-	case "active":
-		return "#58a6ff"
-	case "paused":
-		return "#8b949e"
-	case "blocked":
-		return "#d29922"
 	default:
 		return "#8b949e"
 	}

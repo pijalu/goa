@@ -930,33 +930,18 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	if a.subs.footer == nil {
 		return
 	}
-	// SetGoalData is the explicit writer of the footer's goal fields (routine
-	// SetData rebuilds preserve them — a stats tick must never clear the
-	// ◈/⬩ markers, bugs.md Issues 3-4).
+	// SetGoalStatus is the explicit writer of the footer's goal field
+	// (routine SetData rebuilds preserve it — a stats tick must never clear
+	// the ◈ marker, bugs.md Issues 3-4). The footer carries no goal detail:
+	// objective/status/todos are the goal bubble's job.
 	if update.Snapshot == nil {
-		a.subs.footer.SetGoalData("", "", 0)
+		a.subs.footer.SetGoalStatus("")
 	} else {
-		a.subs.footer.SetGoalData(
-			string(update.Snapshot.Status),
-			update.Snapshot.Objective,
-			countPendingGoalTodos(update.Snapshot.Todos),
-		)
+		a.subs.footer.SetGoalStatus(string(update.Snapshot.Status))
 	}
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
-}
-
-// countPendingGoalTodos counts the todos that are not done yet (pending +
-// in_progress) — the number behind the footer's ⬩ markers.
-func countPendingGoalTodos(todos []goal.GoalTodoItem) int {
-	n := 0
-	for _, td := range todos {
-		if td.Status != goal.TodoDone {
-			n++
-		}
-	}
-	return n
 }
 
 func (a *App) promoteNextQueuedGoal() {
