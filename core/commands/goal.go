@@ -417,6 +417,17 @@ func (c *GoalCommand) cancel(ctx core.Context) error {
 	if err != nil {
 		return err
 	}
+	// A cancelled goal has nothing left to execute: stop the drive loop so
+	// the in-flight continuation turn is interrupted (its context is the
+	// loop's) and no further continuation turns launch — the "Answering..."
+	// spinner must not survive the cancel. Mirrors the goal half of the ESC
+	// hard stop (handleEscape). Deliberately NOT AgentManager.Interrupt: a
+	// user-owned turn in flight is not the goal's business. Order matters:
+	// CancelGoal first clears the state, so the interrupted turn's error
+	// handling (PauseActiveGoal) no-ops instead of pausing a dead goal.
+	if c.Driver != nil {
+		c.Driver.Stop()
+	}
 	writeStr(ctx, "Goal cancelled.\n")
 	return nil
 }

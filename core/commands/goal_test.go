@@ -514,6 +514,66 @@ func TestGoalCommand_Resume_StartsDriver(t *testing.T) {
 	waitForRun(t, ran, "resume continuation")
 }
 
+// fakeAgentBlocksUntilCancel simulates an in-flight continuation turn: Run
+// blocks until its context is cancelled, then returns the ctx error — the
+// same unwinding a real agent performs on interrupt.
+type fakeAgentBlocksUntilCancel struct {
+	started chan struct{}
+	done    chan error
+}
+
+func (a *fakeAgentBlocksUntilCancel) Run(ctx context.Context, _ string) error {
+	select {
+	case a.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	err := ctx.Err()
+	select {
+	case a.done <- err:
+	default:
+	}
+	return err
+}
+
+// Regression: /goal:cancel must stop the goal's drive loop — the in-flight
+// continuation turn is interrupted and no further turns launch. Previously
+// cancel only cleared the goal state: the current turn ran to completion,
+// leaving the "Answering..." spinner alive with nothing left to execute.
+func TestGoalCommand_Cancel_StopsDriveLoop(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore("")
+	fake := &fakeAgentBlocksUntilCancel{started: make(chan struct{}, 1), done: make(chan error, 1)}
+	driver := &core.GoalDriver{Mode: mode, Agent: fake}
+	switcher := &testAutonomySwitcher{level: internal.AutonomyYolo}
+	cmd := &GoalCommand{Mode: mode, Queue: queue, Driver: driver, AutonomySwitcher: switcher}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"fix tests"}); err != nil {
+		t.Fatal(err)
+	}
+	// Wait until the drive loop is inside the (blocking) continuation turn.
+	select {
+	case <-fake.started:
+	case <-time.After(time.Second):
+		t.Fatal("drive loop did not start a continuation turn")
+	}
+
+	if err := cmd.Run(ctx, []string{"cancel"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The cancel must interrupt the in-flight turn via the loop's context.
+	select {
+	case err := <-fake.done:
+		if err != context.Canceled {
+			t.Fatalf("turn ended with %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not interrupt the in-flight continuation turn")
+	}
+}
+
 func waitForRun(t *testing.T, ran chan struct{}, what string) {
 	t.Helper()
 	select {
