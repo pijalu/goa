@@ -43,7 +43,7 @@ type LSPDocumentManager interface {
 type WriteFileTool struct {
 	WorktreeMgr        *internal.WorktreeManager
 	ProjectDir         string
-	GitStager          *GitStager
+	BackupStager       *BackupStager
 	// FileChangeNotifier, when set, is called after every successful file
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
@@ -192,8 +192,8 @@ func (t *WriteFileTool) ensureParentDirs(resolvedPath string, createDirs *bool) 
 }
 
 func (t *WriteFileTool) stageIfExists(resolvedPath string) {
-	if _, err := os.Stat(resolvedPath); err == nil && t.GitStager != nil {
-		t.GitStager.StageBeforeEdit(resolvedPath, t.ProjectDir)
+	if _, err := os.Stat(resolvedPath); err == nil && t.BackupStager != nil {
+		t.BackupStager.StageBeforeEdit(resolvedPath, t.ProjectDir)
 	}
 }
 

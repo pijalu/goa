@@ -7,10 +7,12 @@ package commands
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/tools/common"
 )
 
 var _ = fmt.Errorf
@@ -103,6 +105,7 @@ func (c *UndoCommand) Run(ctx core.Context, args []string) error {
 
 func listChangedFiles(ctx core.Context) ([]string, error) {
 	cmd := exec.Command("git", "diff", "--name-only")
+	cmd.Dir = ctx.ProjectDir
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff: %w", err)
@@ -119,6 +122,7 @@ func listChangedFiles(ctx core.Context) ([]string, error) {
 
 func listStagedFiles(ctx core.Context) ([]string, error) {
 	cmd := exec.Command("git", "diff", "--cached", "--name-only")
+	cmd.Dir = ctx.ProjectDir
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("git diff --cached: %w", err)
@@ -138,9 +142,24 @@ func undoUnstaged(ctx core.Context, changes []string, n int) error {
 		n = len(changes)
 	}
 	targets := changes[:n]
+	// Agent edits are recovered from .goa/backups snapshots (written before
+	// every edit/write) instead of the git index: agent tooling must never
+	// stage into the user's index. Files without a snapshot fall back to the
+	// generic git checkout for the user's own changes.
+	stager := common.NewBackupStager(ctx.ProjectDir)
 	writeFmt(ctx, "Reverting %d file(s):\n", len(targets))
 	for _, f := range targets {
+		restored, err := stager.RestoreBackup(filepath.Join(ctx.ProjectDir, f), ctx.ProjectDir)
+		if err != nil {
+			writeFmt(ctx, "  ✗ %s: %v\n", f, err)
+			continue
+		}
+		if restored {
+			writeFmt(ctx, "  ✓ %s (restored from backup)\n", f)
+			continue
+		}
 		cmd := exec.Command("git", "checkout", "--", f)
+		cmd.Dir = ctx.ProjectDir
 		if err := cmd.Run(); err != nil {
 			writeFmt(ctx, "  ✗ %s: %v\n", f, err)
 		} else {
@@ -158,6 +177,7 @@ func undoStaged(ctx core.Context, staged []string, n int) error {
 	writeFmt(ctx, "Unstaging %d file(s):\n", len(targets))
 	for _, f := range targets {
 		cmd := exec.Command("git", "restore", "--staged", f)
+		cmd.Dir = ctx.ProjectDir
 		if err := cmd.Run(); err != nil {
 			writeFmt(ctx, "  ✗ %s: %v\n", f, err)
 		} else {

@@ -51,7 +51,7 @@ type editParams struct {
 type EditFileTool struct {
 	WorktreeMgr        *internal.WorktreeManager
 	ProjectDir         string
-	GitStager          *GitStager
+	BackupStager       *BackupStager
 	AllowFuzz          bool // enable fuzzy matching (trailing whitespace, whitespace collapse, reindent)
 	Config             FileToolConfig
 	// FileChangeNotifier, when set, is called after every successful file
@@ -209,8 +209,8 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", wrapEditOpError(opErr, p.Path, string(op))
 	}
 
-	if t.GitStager != nil {
-		t.GitStager.StageBeforeEdit(targetPath, t.ProjectDir)
+	if t.BackupStager != nil {
+		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
 	}
 
 	output := strings.Join(result, "\n")
@@ -730,8 +730,8 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 		return "", t.searchReplaceError(originalPath, oldStr, err, matched, total)
 	}
 
-	if t.GitStager != nil {
-		t.GitStager.StageBeforeEdit(targetPath, t.ProjectDir)
+	if t.BackupStager != nil {
+		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
 	}
 
 	if err := os.WriteFile(targetPath, []byte(result.NewContent), 0644); err != nil {

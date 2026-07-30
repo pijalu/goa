@@ -464,7 +464,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 // configured MCP servers and returns their manager (nil when none configured).
 // headless suppresses interactive-only tools (bugs.md Bug C).
 func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager, headless bool) (*lsp.Manager, *mcp.Manager) {
-	gitStager := tools.NewGitStager(projectDir)
+	backupStager := tools.NewBackupStager(projectDir)
 
 	// Shared change tracker for edit/write → smartsearch index refresh.
 	changeTracker := bm25.NewChangeTracker()
@@ -477,14 +477,14 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 	reg.Register(&tools.WriteFileTool{
 		WorktreeMgr:        wm,
 		ProjectDir:         projectDir,
-		GitStager:          gitStager,
+		BackupStager:       backupStager,
 		FileChangeNotifier: notifyChanged,
 		LSPManager:         lspMgr,
 	})
 	reg.Register(&tools.EditFileTool{
 		WorktreeMgr:        wm,
 		ProjectDir:         projectDir,
-		GitStager:          gitStager,
+		BackupStager:       backupStager,
 		AllowFuzz:          cfg.Tools.Edit.AllowFuzzOnEdits,
 		Config:             cfg.Tools.Edit.FileToolConfig,
 		FileChangeNotifier: notifyChanged,

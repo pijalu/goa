@@ -54,7 +54,7 @@ func TestWritePanicRepro(t *testing.T) {
 	wm := internal.NewWorktreeManager(projectDir, internal.WorktreeMode(""))
 	run("live_lsp_go", &tools.WriteFileTool{
 		WorktreeMgr: wm, ProjectDir: projectDir,
-		GitStager: tools.NewGitStager(projectDir), LSPManager: live,
+		BackupStager: tools.NewBackupStager(projectDir), LSPManager: live,
 	}, goPayload(t.TempDir()+"/zz_c_test.go"))
 
 	// D: live LSP, non-Go file.

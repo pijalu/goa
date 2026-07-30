@@ -17,7 +17,7 @@ import (
 type (
 	FileToolConfig   = common.FileToolConfig
 	ReadFileConfig   = common.ReadFileConfig
-	GitStager        = common.GitStager
+	BackupStager     = common.BackupStager
 	ToolGroup        = common.ToolGroup
 	ToolAccess       = common.ToolAccess
 	Accessor         = common.Accessor
@@ -39,7 +39,7 @@ const (
 var levenshteinDistance = common.LevenshteinDistance
 
 var (
-	NewGitStager              = common.NewGitStager
+	NewBackupStager           = common.NewBackupStager
 	NormalizeFileToolPath     = common.NormalizeFileToolPath
 	ResolveFileToolPath       = common.ResolveFileToolPath
 	FileToolFuzzyMatchEnabled = common.FileToolFuzzyMatchEnabled
