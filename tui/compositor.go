@@ -887,10 +887,16 @@ func (c *Compositor) scrollTarget(vt, canvasLen int) int {
 // (bugs.md "Slow performance on very large conversations": the quota-stream
 // regression only stayed hidden because every chrome change force-resynced).
 //
-// Only MALIGNANT instability counts: a transition where both the old and new
-// row are non-blank and differ. Blank↔content transitions are benign — the
-// bottom-align pad rows being consumed by growth, or blank spacers — and the
-// top-down path already handles them.
+// Only MALIGNANT instability counts: a row whose content MOVED to a
+// different canvas index (a position shift, e.g. a mid-transcript block
+// inserted or collapsed above the scroll-off region). A row edited in place
+// — its previous content no longer exists anywhere in the transcript, as
+// with a live tool widget's ticking elapsed-time text — is benign: the
+// physical row that scrolls off carries the right identity (one tick
+// stale), and resetting scrollback for it would wipe and re-emit the whole
+// transcript on every animation tick (the reset storm). Blank↔content
+// transitions are benign too — the bottom-align pad rows being consumed by
+// growth, or blank spacers — and the top-down path already handles them.
 func (c *Compositor) scrollOffUnstable(canvas []string, to int) bool {
 	if c.prevLines == nil {
 		return false
@@ -903,17 +909,40 @@ func (c *Compositor) scrollOffUnstable(canvas []string, to int) bool {
 	// prevContentEnd held the previous chrome band (displaced by any
 	// transcript growth) or did not exist yet — both benign.
 	prevContentEnd := len(c.prevLines) - c.prevChromeH
+	curIndex := map[string]int{} // lazily filled on the first in-region diff
 	for i := from; i < to && i < len(canvas); i++ {
 		if i < 0 || i >= prevContentEnd {
 			continue
 		}
 		prev := strings.TrimSpace(ansi.Strip(c.prevLines[i]))
 		cur := strings.TrimSpace(ansi.Strip(canvas[i]))
-		if prev != "" && cur != "" && prev != cur {
-			return true
+		if prev == "" || cur == "" || prev == cur {
+			continue
+		}
+		if len(curIndex) == 0 {
+			curIndex = indexCanvasRows(canvas, len(canvas)-c.chromeH)
+		}
+		if j, ok := curIndex[prev]; ok && j != i {
+			return true // position shift: incremental scroll would mis-emit
 		}
 	}
 	return false
+}
+
+// indexCanvasRows maps each transcript row's normalized content (ANSI
+// stripped, whitespace trimmed) to its canvas index, excluding the chrome
+// band. Rows past contentEnd are chrome, not transcript, so they never
+// participate in shift detection. Duplicate rows collapse to one index —
+// acceptable, since identical rows scrolling are visually indistinguishable.
+func indexCanvasRows(canvas []string, contentEnd int) map[string]int {
+	if contentEnd < 0 || contentEnd > len(canvas) {
+		contentEnd = len(canvas)
+	}
+	idx := make(map[string]int, contentEnd)
+	for i := 0; i < contentEnd; i++ {
+		idx[strings.TrimSpace(ansi.Strip(canvas[i]))] = i
+	}
+	return idx
 }
 
 // advanceScrollback emits the rows that scrolled off since the last frame into
@@ -978,9 +1007,13 @@ func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, wi
 // (= the row currently at the top of the screen) to the new top `to`, pushing
 // the scrolled-off rows into terminal scrollback exactly once.
 //
-// The screen currently shows rows [from, from+H) where H is the transcript
-// window height. After the advance it must show [to, to+H). The rows that
-// enter scrollback are [from, to) — the old top. The mechanism writes only the
+// The screen currently shows rows [c.vt, c.vt+H) where H is the transcript
+// window height; normally c.vt == from, but after a transient mid-stream
+// shrink the window can be dipped BELOW the watermark (c.vt < scrollTop =
+// from) — in that regime emitSteadyScroll bypasses the physical-identity
+// mechanism entirely and re-emits top-down. After the advance the window
+// must show [to, to+H). The rows that enter scrollback are [from, to) — the
+// old top. The steady mechanism writes only the
 // rows that were NOT already on screen, namely [from+H, to+H) (clamped to the
 // transcript), at the region bottom, each followed by \n. Every \n scrolls the
 // region: the top row (one of the old visible rows, then each freshly written
@@ -1053,8 +1086,18 @@ func (c *Compositor) emitFirstFrameScroll(buf *strings.Builder, canvas []string,
 //     message). The sound fallback is a top-down re-emit of [from, to+windowH):
 //     rows [from, to) scroll into scrollback in order, rows [to, to+windowH)
 //     fill the screen. This is exactly once, gapless, for both anchorings.
+//
+//   - Dipped window (c.vt < scrollTop): a transient mid-stream shrink
+//     anchored the window BELOW the scrollback watermark (windowTop's
+//     partial-shrink regime), so the physical screen top is c.vt, NOT from
+//     (= max(c.vt, scrollTop)). The full-window branch's line-feeds would
+//     push the physical top rows [c.vt, c.vt+n) — already in scrollback —
+//     in a second time (duplicates) while the watermark skips rows that
+//     never physically scrolled (lost rows): the streaming-stutter bug.
+//     The top-down path does not depend on physical row identity, so it is
+//     the only sound emission while dipped.
 func (c *Compositor) emitSteadyScroll(buf *strings.Builder, canvas []string, from, to, windowH, scrollBot, contentEnd, width int) {
-	if !c.prevWindowFull(windowH) {
+	if !c.prevWindowFull(windowH) || c.vt < c.scrollTop {
 		c.emitTopDownScroll(buf, canvas, from, to, windowH, contentEnd, width)
 		return
 	}
