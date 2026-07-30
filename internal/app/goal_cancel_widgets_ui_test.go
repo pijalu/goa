@@ -134,6 +134,88 @@ func TestUI_VisibleToolResultGetsNoEcho(t *testing.T) {
 }
 
 
+// TestUI_ScrolledVisibleToolResultGetsNoEcho is the regression test for the
+// spurious "← ✓ <output>" duplicates: a TALL transcript (header already in
+// scrollback) with parallel bash calls whose widgets sit INSIDE the visible
+// window when their results arrive. The layout budget the chat viewport gets
+// (SetAllocatedHeight) excludes the header above the transcript, but the
+// header scrolls with it — the visible band is taller than that budget.
+// Judging "scrolled off" by the budget falsely echoed every one of these
+// tools even though the user watched their ✓ transition happen on screen.
+func TestUI_ScrolledVisibleToolResultGetsNoEcho(t *testing.T) {
+	sc := newUIScenario(t, 100, 20)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	// Filler: push the transcript past the visible band so the header is in
+	// scrollback and nothing below fits the (smaller) layout budget.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant,
+		State: agentic.StateThinking, IsDelta: true,
+		Text: "r01\nr02\nr03\nr04\nr05\nr06\nr07\nr08\nr09\nr10\nr11\nr12"})
+
+	// Three parallel bash calls (the reported scenario): widgets appended at
+	// the bottom of the tall transcript — inside the visible window.
+	ids := []string{"c1", "c2", "c3"}
+	outs := []string{"1192", "1145", "4242"}
+	for i, id := range ids {
+		sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
+			ToolName: "bash", ToolCallID: id,
+			ToolInput: fmt.Sprintf(`{"command":"wc -l < f%d"}`, i)})
+	}
+	// Results arrive in order while every widget is still on screen.
+	for i, id := range ids {
+		sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult,
+			ToolName: "bash", ToolCallID: id, Text: outs[i]})
+	}
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	// No completion-echo entry may exist: every widget transitioned in place.
+	for _, e := range sc.chat.Snapshot() {
+		if e.Type == tui.ConsoleToolResult {
+			t.Errorf("on-screen tool got a spurious completion echo entry: %q", e.Text)
+		}
+	}
+	// The terminal shows each output exactly once (widget body) — no "← ✓" rows.
+	joined := replayTerminal(sc, 20, 100)
+	if got := strings.Count(joined, "← ✓"); got != 0 {
+		t.Errorf("terminal shows %d spurious ← ✓ echo rows, want 0:\n%s", got, joined)
+	}
+	for _, out := range outs {
+		if got := strings.Count(joined, out); got != 1 {
+			t.Errorf("output %q appears %d times, want exactly 1 (widget body only):\n%s", out, got, joined)
+		}
+	}
+}
+
+// TestUI_ScrolledOffToolResultGetsEcho pins the echo's ON condition with the
+// corrected geometry: a tool that completes while its widget is genuinely
+// scrolled into terminal scrollback (later content pushed it above the
+// visible band) MUST get a compact completion echo — otherwise its frozen
+// running rows read as "still ongoing" (bugs.md Issue 6).
+func TestUI_ScrolledOffToolResultGetsEcho(t *testing.T) {
+	sc := newUIScenario(t, 100, 20)
+
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolCall, State: agentic.StateToolCall,
+		ToolName: "bash", ToolCallID: "c1", ToolInput: `{"command":"make quality"}`})
+	// Push the widget fully above the visible band before the result lands.
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant,
+		State: agentic.StateThinking, IsDelta: true,
+		Text: "f01\nf02\nf03\nf04\nf05\nf06\nf07\nf08\nf09\nf10\nf11\nf12\nf13\nf14\nf15\nf16\nf17\nf18\nf19\nf20\nf21\nf22\nf23\nf24\nf25"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventToolResult, State: agentic.StateToolResult,
+		ToolName: "bash", ToolCallID: "c1", Text: "quality-gate-output-6789"})
+	sc.apply(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	echoes := 0
+	for _, e := range sc.chat.Snapshot() {
+		if e.Type == tui.ConsoleToolResult && strings.HasPrefix(strings.TrimSpace(e.Text), "✓") {
+			echoes++
+		}
+	}
+	if echoes != 1 {
+		t.Errorf("scrolled-off tool got %d completion echoes, want exactly 1", echoes)
+	}
+}
+
 // streamCancelBatch streams partial arg deltas for every call, then the
 // final args (mirrors provider tool-call streaming).
 func streamCancelBatch(sc *uiScenario, names []string) {

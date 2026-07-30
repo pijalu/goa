@@ -614,14 +614,23 @@ func TestFooter_Render_GoalMarker(t *testing.T) {
 }
 
 // TestFooter_Render_GoalMarkerStatuses covers the non-active goal states:
-// paused and blocked goals still carry the ◈ marker (a goal exists).
+// the ◈ marker next to the profile marks an ACTIVE goal only — a paused or
+// blocked goal must NOT carry it (it would falsely read as "goal running").
+// The goal stays visible in the line-2 segment with its status suffix.
 func TestFooter_Render_GoalMarkerStatuses(t *testing.T) {
 	for _, status := range []string{"paused", "blocked"} {
 		f := NewFooter()
-		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m", GoalStatus: status})
-		firstLine := ansi.Strip(f.Render(80)[0])
-		if !strings.Contains(firstLine, "◈") {
-			t.Errorf("goal status %q must render the ◈ marker, got %q", status, firstLine)
+		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m",
+			GoalStatus: status, GoalObjective: "do the thing"})
+		lines := f.Render(80)
+		firstLine := ansi.Strip(lines[0])
+		if strings.Contains(firstLine, "◈") {
+			t.Errorf("goal status %q must NOT render the ◈ profile marker, got %q", status, firstLine)
+		}
+		// Line 2 still surfaces the goal with its ◈ symbol and status suffix.
+		secondLine := ansi.Strip(lines[1])
+		if !strings.Contains(secondLine, "◈ do the thing ("+status+")") {
+			t.Errorf("goal status %q must keep the line-2 goal segment, got %q", status, secondLine)
 		}
 	}
 }

@@ -1132,9 +1132,22 @@ func (t *TUI) buildScene(w, h int) *Scene {
 	rendered, _ := t.renderChildren(w, h)
 	scene.Layers, scene.Nodes = t.buildBaseLayers(rendered, w, h)
 	scene.ChromeHeight = t.bottomChromeHeight(rendered)
+	t.publishBottomChrome(scene.ChromeHeight)
 	scene.OverlayCapturesInput = t.buildOverlayLayers(scene, w, h)
 	extractCursorMarker(scene)
 	return scene
+}
+
+// publishBottomChrome pushes the fixed bottom-chrome band height to every
+// child that derives visible-window geometry from it (the chat viewport's
+// IsScrolledOff). It is the exact measurement the compositor pins as its
+// chrome band this frame, so consumers share the compositor's truth.
+func (t *TUI) publishBottomChrome(chromeH int) {
+	for _, child := range t.children {
+		if bca, ok := child.(interface{ SetBottomChromeHeight(int) }); ok {
+			bca.SetBottomChromeHeight(chromeH)
+		}
+	}
 }
 
 // bottomChromeHeight returns the total rendered height of the fixed chrome

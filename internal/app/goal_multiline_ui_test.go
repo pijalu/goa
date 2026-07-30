@@ -91,20 +91,22 @@ func TestUI_GoalBubble_MultiLineObjective(t *testing.T) {
 		if strings.Contains(row, "\n") {
 			t.Fatalf("visible row contains an embedded newline: %q", row)
 		}
-		if strings.Contains(row, "⟐") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
+		if strings.Contains(row, "◈ [") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
 			bubbleRows = append(bubbleRows, row)
 		}
 	}
 	if len(bubbleRows) == 0 {
 		t.Fatalf("goal bubble not visible\n%s", frame.Dump())
 	}
-	// Cap: at most 3 body rows (⟐ + content) between separators.
+	// Cap: at most 3 body rows (◈ + content) between separators. The marker
+	// filter uses "◈ [" (bubble header: marker + name bracket) so the footer's
+	// line-1 active-goal ◈ profile marker is not miscounted as bubble body.
 	body := 0
 	for _, row := range frame.Visible {
-		if strings.Contains(row, "─") && !strings.Contains(row, "⟐") {
+		if strings.Contains(row, "─") && !strings.Contains(row, "◈") {
 			continue
 		}
-		if strings.Contains(row, "⟐") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
+		if strings.Contains(row, "◈ [") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
 			body++
 		}
 	}
@@ -113,7 +115,7 @@ func TestUI_GoalBubble_MultiLineObjective(t *testing.T) {
 	}
 	// The footer goal segment must also be newline-free.
 	for _, row := range frame.Visible {
-		if strings.Contains(row, "⟐") && strings.Contains(row, "\n") {
+		if strings.Contains(row, "◈") && strings.Contains(row, "\n") {
 			t.Errorf("footer goal segment contains newline: %q", row)
 		}
 	}

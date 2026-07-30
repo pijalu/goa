@@ -80,14 +80,23 @@ type ChatViewport struct {
 	// a full rebuild even when no entry is dirty (filter-only view switch).
 	lastRenderFilter string
 
-	// viewportH is a viewport-height hint set by the host via SetViewportHeight.
+	// viewportH is the terminal height set by the host via SetViewportHeight.
 	// Render does NOT truncate to it: culling of off-screen rows happens at the
 	// compositor level (placeLayer only iterates the visible subrange of a
 	// layer's content), and returning a tail here would starve the
 	// scrollback-population paths (emitFirstScroll/emitLargeScroll) that read
-	// historical canvas rows. The field is retained so the host can advertise
-	// the viewport size and so a future line-addressable history can use it.
+	// historical canvas rows. Together with bottomChromeH it yields the
+	// transcript's visible band for IsScrolledOff.
 	viewportH int
+
+	// bottomChromeH is the rendered height of the fixed chrome stacked BELOW
+	// the transcript (status bar, bubbles, input editor, footer), pushed by
+	// the layout each frame via SetBottomChromeHeight — the same value the
+	// compositor pins as its chrome band. The transcript's visible window is
+	// viewportH − bottomChromeH rows: children above the transcript (the
+	// header/mascot) scroll with it and do NOT shrink the band, unlike the
+	// bottom-align budget (allocatedHeight) which excludes them.
+	bottomChromeH int
 
 	// generation increments on every mutation (append, update, invalidate).
 	// Render compares it to lastRenderGen: when they match and the cache is
@@ -135,13 +144,24 @@ type ChatViewport struct {
 // the host each frame. ChatViewport does NOT truncate its rendered output to
 // this height: off-screen culling is handled by the compositor (placeLayer
 // iterates only the visible subrange of a layer's content), and returning a
-// tail would starve scrollback-population paths. The hint is retained for a
-// future line-addressable history and is a no-op today.
+// tail would starve scrollback-population paths. IsScrolledOff combines it
+// with bottomChromeH to derive the transcript's visible band.
 func (cv *ChatViewport) SetViewportHeight(h int) {
 	if h < 0 {
 		h = 0
 	}
 	cv.viewportH = h
+}
+
+// SetBottomChromeHeight records the rendered height of the fixed bottom
+// chrome (everything stacked below the transcript). The layout pushes it each
+// frame (TUI.buildScene) from the same measurement the compositor pins as its
+// chrome band, so IsScrolledOff computes the exact visible transcript window.
+func (cv *ChatViewport) SetBottomChromeHeight(h int) {
+	if h < 0 {
+		h = 0
+	}
+	cv.bottomChromeH = h
 }
 
 // TotalHeight returns the total number of lines in the full frame cache, or 0
@@ -528,19 +548,30 @@ func (cv *ChatViewport) Children() []Component {
 // ("canvas rows are immutable"), so a later state change of c is INVISIBLE
 // on screen — the symptom behind bugs.md Issue 6 (a tool completing after
 // its running-state rows scrolled off leaves a frozen "◉" ghost). The app
-// uses this to append a compact completion echo for such tools. It is
-// computed from the same frame the compositor folds (entry lineOffset +
-// renderCache length vs the layout-allocated height); unknown geometry
-// (never rendered, stale offset) reports false — never a spurious echo.
+// uses this to append a compact completion echo for such tools.
+//
+// The visible window is the compositor's transcript band: terminal height
+// (viewportH) minus the fixed bottom chrome (bottomChromeH). It must NOT be
+// derived from the layout-allocated height: that budget also excludes the
+// header/mascot stacked above the transcript, which SCROLLS with the
+// transcript and therefore does not shrink its visible band. Using the
+// budget over-reports by the header height and appends spurious echoes for
+// tools whose completion is plainly visible on screen. Unknown geometry
+// (no layout pass, never rendered, stale offset) reports false — never a
+// spurious echo.
 func (cv *ChatViewport) IsScrolledOff(c Component) bool {
-	if c == nil || cv.allocatedHeight <= 0 {
+	if c == nil {
 		return false
 	}
-	total := len(cv.renderCache.lines)
-	if total <= cv.allocatedHeight {
-		return false // everything fits on screen; nothing is scrolled off
+	visibleH := cv.viewportH - cv.bottomChromeH
+	if visibleH <= 0 {
+		return false // no layout geometry yet: never a spurious echo
 	}
-	visibleStart := total - cv.allocatedHeight
+	total := len(cv.renderCache.lines)
+	if total <= visibleH {
+		return false // the whole transcript fits the visible band
+	}
+	visibleStart := total - visibleH
 	for i := range cv.entries {
 		e := &cv.entries[i]
 		if e.View != c {

@@ -15,7 +15,7 @@ import (
 // input editor. It mirrors the spec layout:
 //
 //	────────────────────────────────────────────────────
-//	⟐ [model-name] Create a html page that renders a fire
+//	◈ [model-name] Create a html page that renders a fire
 //	────────────────────────────────────────────────────
 //
 // Concurrency: the commandLoop is the sole owner of Bubble state; every
@@ -88,7 +88,7 @@ func (b *Bubble) coloredSeparator(width int) string {
 }
 
 func (b *Bubble) collapsedText(width int) string {
-	marker := "⟐ "
+	marker := "◈ "
 	label := "goal hidden"
 	if b.snapshot.Name != "" {
 		label = "[" + b.snapshot.Name + "] "
@@ -115,7 +115,7 @@ func (b *Bubble) collapsedText(width int) string {
 const maxBubbleLines = 3
 
 func (b *Bubble) fullText(width int) []string {
-	marker := "⟐ "
+	marker := "◈ "
 	prefix := ""
 	if b.snapshot.Name != "" {
 		prefix = "[" + b.snapshot.Name + "] "

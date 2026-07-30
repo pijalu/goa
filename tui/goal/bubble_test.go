@@ -39,8 +39,8 @@ func TestBubble_ShowsActiveGoal(t *testing.T) {
 		t.Fatalf("expected at least 3 lines, got %d: %v", len(lines), lines)
 	}
 	content := strings.Join(lines, "\n")
-	if !strings.Contains(content, "⟐") {
-		t.Error("expected bubble to contain ⟐ marker")
+	if !strings.Contains(content, "◈") {
+		t.Error("expected bubble to contain ◈ marker")
 	}
 	if !strings.Contains(content, "[indigo.elk]") {
 		t.Error("expected bubble to contain goal name")

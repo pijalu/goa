@@ -147,11 +147,17 @@ type toolBox struct {
 	duration string
 	bgAnsi   string
 	rendered []string
+	// renderedWidth keys the memoized render: every line embeds its width
+	// (background-painted padding), so a terminal resize MUST rebuild —
+	// returning lines from the old width would stop the background at the
+	// old column count.
+	renderedWidth int
 }
 
 func (b *toolBox) Render(width int) []string {
-	if b.rendered == nil {
+	if b.rendered == nil || b.renderedWidth != width {
 		b.rendered = b.build(width)
+		b.renderedWidth = width
 	}
 	return b.rendered
 }

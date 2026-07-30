@@ -529,21 +529,24 @@ func FormatFooterLine(stats, model, provider, thinking, activity string, busy, a
 	return b.String()
 }
 
-// goalProfileLabel renders the line-1 right-side label: when a goal exists,
-// a ◈ marker (colored by goal status) and up to three ⬩ pending-todo markers
-// with a "+x" overflow counter surround the profile label —
-// "◈ coding-posture ⬩⬩⬩+2 │ YOLO" (bugs.md Issues 3-4). Without a goal the
-// label is the bare profile(minor) text.
+// goalProfileLabel renders the line-1 right-side label: while a goal is
+// ACTIVE, a ◈ marker and up to three ⬩ pending-todo markers with a "+x"
+// overflow counter surround the profile label —
+// "◈ coding-posture ⬩⬩⬩+2 │ YOLO" (bugs.md Issues 3-4). The ◈ decoration
+// marks an active goal ONLY: a paused/blocked goal must not read as "goal
+// running" — it stays visible in the line-2 goal segment with its status
+// suffix instead. Without an active goal the label is the bare
+// profile(minor) text.
 func (f *Footer) goalProfileLabel(fg string) string {
 	label := f.data.Profile
 	if f.data.MinorMode != "" {
 		label = fmt.Sprintf("%s(%s)", f.data.Profile, f.data.MinorMode)
 	}
-	if f.data.GoalStatus == "" {
+	if f.data.GoalStatus != "active" {
 		return label
 	}
 	var b strings.Builder
-	b.WriteString(ansi.Fg(f.goalStatusColor()) + "◈" + ansi.Reset + fg + " ")
+	b.WriteString(ansi.Fg(TheTheme.ColorHex("tool_success")) + "◈" + ansi.Reset + fg + " ")
 	b.WriteString(label)
 	if n := f.data.GoalPendingTodos; n > 0 {
 		b.WriteString(" ")
@@ -555,18 +558,6 @@ func (f *Footer) goalProfileLabel(fg string) string {
 	return b.String()
 }
 
-// goalStatusColor maps the goal status to the ◈ marker color: active is
-// green (running), paused is blue (idle), blocked is red (needs input).
-func (f *Footer) goalStatusColor() string {
-	switch f.data.GoalStatus {
-	case "paused":
-		return TheTheme.ColorHex("tool_running")
-	case "blocked":
-		return TheTheme.ColorHex("tool_error")
-	default: // active and any forward-compatible state
-		return TheTheme.ColorHex("tool_success")
-	}
-}
 
 func (f *Footer) modeColor() string {
 	switch f.data.Mode {
@@ -588,13 +579,13 @@ func (f *Footer) formatGoalStatus(fg string) string {
 	color := ansi.Fg(ansiColorForGoalStatus(status))
 	obj := f.data.GoalObjective
 	if obj == "" {
-		return color + "⟐ goal" + ansi.Reset + fg
+		return color + "◈ goal" + ansi.Reset + fg
 	}
 	// The footer is a single-line region: flatten embedded newlines from
 	// model-authored objectives or they break the footer row (raw-mode LF
 	// does not carriage-return — bugs.md "Corruption on goal change").
 	obj = strings.Join(strings.Fields(obj), " ")
-	return color + "⟐ " + truncateToWidth(obj, 30, "") + statusSuffix(status) + ansi.Reset + fg
+	return color + "◈ " + truncateToWidth(obj, 30, "") + statusSuffix(status) + ansi.Reset + fg
 }
 
 func statusSuffix(status string) string {
