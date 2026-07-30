@@ -31,6 +31,7 @@ const (
 	headlessExitMaxTurns      = 3
 	headlessExitTimeout       = 4
 	headlessExitGoalFailed    = 5
+	headlessExitOrchFailed    = 6
 )
 
 // HeadlessRenderer renders agent output directly to a writer without TUI
@@ -174,6 +175,12 @@ type HeadlessApp struct {
 	toolCallNames   map[string]string
 	toolCallNamesMu sync.Mutex
 
+	// orchErr records a terminal orchestration run failure so it can be
+	// reported (and mapped to a non-zero exit code) instead of vanishing
+	// inside the run goroutine.
+	orchErr   error
+	orchErrMu sync.Mutex
+
 	startTime time.Time
 }
 
@@ -235,6 +242,9 @@ func (h *HeadlessApp) RunWithContext(ctx context.Context) int {
 		if code := h.reportGoalOutcome(); code != 0 {
 			return code
 		}
+		if code := h.terminalOrchestrateCode(); code != 0 {
+			return code
+		}
 	case <-ctx.Done():
 		return h.handleContextCancelled(ctx)
 	}
@@ -253,8 +263,19 @@ func (h *HeadlessApp) RunWithContext(ctx context.Context) int {
 // starts the corresponding completion watcher.
 func (h *HeadlessApp) startWork(ctx context.Context, dc *doneCloser, prompt string) error {
 	if h.opts.Orchestrate != "" {
-		go h.waitForOrch(ctx, dc)
-		return h.startOrchestrate(ctx, h.opts.Orchestrate)
+		if h.subs.orchAdapter == nil || h.subs.orchActive == nil {
+			return fmt.Errorf("orchestrator subsystem not available")
+		}
+		// The completion watcher must only start after startOrchestrate has
+		// installed the runtime: launching it beforehand races with
+		// orchActive.Set and can observe a nil runtime, closing dc before the
+		// run even starts (the process then exits mid-run).
+		rt, err := h.startOrchestrate(ctx, h.opts.Orchestrate, h.subs.orchAdapter)
+		if err != nil {
+			return err
+		}
+		go h.waitForOrch(ctx, dc, rt)
+		return nil
 	}
 	if h.opts.Goal {
 		go h.waitForGoal(ctx, dc)
@@ -281,51 +302,74 @@ func (h *HeadlessApp) handleContextCancelled(ctx context.Context) int {
 	return headlessExitTimeout
 }
 
-// startOrchestrate resumes (or re-runs) an orchestrator run headless. It
-// replays the run's event log to recover topology + objective, builds a fresh
-// Runtime via the adapter, and drives it, forwarding lifecycle events to the
-// headless renderer. The completion watcher (waitForOrch) closes dc when the
-// run finishes.
-func (h *HeadlessApp) startOrchestrate(ctx context.Context, runID string) error {
-	if h.subs.orchAdapter == nil || h.subs.orchActive == nil {
-		return fmt.Errorf("orchestrator subsystem not available")
-	}
+// startOrchestrate resumes an orchestrator run headless. It replays the run's
+// event log to recover topology + objective, builds a Runtime via the builder,
+// and re-roots it onto the existing run (same run-id + event log, finished
+// roles skipped) via Runtime.Resume — mirroring the TUI /orchestrate:resume
+// path. The returned runtime is already installed as the active runtime; the
+// caller must start the completion watcher only after this returns. A terminal
+// run error is captured in orchErr and reported at summary time.
+func (h *HeadlessApp) startOrchestrate(ctx context.Context, runID string, builder orchestrator.Builder) (*orchestrator.Runtime, error) {
 	rootDir := filepath.Join(h.subs.projectDir, ".goa", "orchestrator")
-	objective, top, err := h.resumeObjective(runID, rootDir)
+	internalID, err := orchestrator.ResolveRunID(rootDir, runID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cfg := h.subs.cfg.Orchestrator
-	if top != "" {
-		cfg.Defaults.Topology = top
-	}
-	rt, err := h.subs.orchAdapter.NewRuntime(cfg, rootDir)
+	// Replay the very store the runtime will resume onto: Replay advances the
+	// store's seq so resumed events continue the existing log instead of
+	// restarting at 1.
+	store := orchestrator.NewFileEventStore(rootDir, internalID)
+	snap, err := orchestrator.ReplaySnapshot(store)
 	if err != nil {
-		return err
-	}
-	h.subs.orchActive.Set(rt)
-	h.renderer.UserPrompt(fmt.Sprintf("Resuming orchestration [%s]: %s", cfg.Defaults.Topology, objective))
-	go h.forwardOrchEvents(rt)
-	go func() {
-		_ = rt.Run(ctx, objective)
-	}()
-	return nil
-}
-
-// resumeObjective replays a run's event log and returns (objective, topology)
-// or an error if the run is missing, has no objective, or is finished.
-func (h *HeadlessApp) resumeObjective(runID, rootDir string) (string, string, error) {
-	snap, err := orchestrator.ReplaySnapshot(orchestrator.NewFileEventStore(rootDir, runID))
-	if err != nil {
-		return "", "", fmt.Errorf("resume %s: %w", runID, err)
+		return nil, fmt.Errorf("resume %s: %w", internalID, err)
 	}
 	if snap.Objective == "" {
-		return "", "", fmt.Errorf("run %s has no objective to resume", runID)
+		return nil, fmt.Errorf("run %s has no objective to resume", internalID)
 	}
 	if snap.Finished {
-		return "", "", fmt.Errorf("run %s is already finished", runID)
+		return nil, fmt.Errorf("run %s is already finished", internalID)
 	}
-	return snap.Objective, string(snap.Topology), nil
+	cfg := h.subs.cfg.Orchestrator
+	if snap.Topology != "" {
+		cfg.Defaults.Topology = string(snap.Topology)
+	}
+	rt, err := builder.NewRuntime(cfg, rootDir)
+	if err != nil {
+		return nil, err
+	}
+	if snap.Name != "" {
+		rt.SetName(snap.Name)
+	}
+	// Continue the same run (same run-id + event log) and skip roles that
+	// already finished, instead of forking a new run under a new id.
+	rt.Resume(store, snap)
+	h.subs.orchActive.Set(rt)
+	h.renderer.UserPrompt(fmt.Sprintf("Resuming orchestration [%s]: %s", cfg.Defaults.Topology, snap.Objective))
+	go h.forwardOrchEvents(rt)
+	go func() {
+		h.setOrchErr(rt.Run(ctx, snap.Objective))
+	}()
+	return rt, nil
+}
+
+// setOrchErr records the terminal orchestration error (nil on success).
+func (h *HeadlessApp) setOrchErr(err error) {
+	h.orchErrMu.Lock()
+	h.orchErr = err
+	h.orchErrMu.Unlock()
+}
+
+// terminalOrchestrateCode maps a recorded orchestration failure to the
+// dedicated exit code, reporting it once at summary time.
+func (h *HeadlessApp) terminalOrchestrateCode() int {
+	h.orchErrMu.Lock()
+	err := h.orchErr
+	h.orchErrMu.Unlock()
+	if err == nil {
+		return 0
+	}
+	h.renderer.Error("orchestration failed: " + err.Error())
+	return headlessExitOrchFailed
 }
 
 // forwardOrchEvents renders lifecycle events from a run to the headless output.
@@ -344,9 +388,10 @@ func (h *HeadlessApp) forwardOrchEvents(rt *orchestrator.Runtime) {
 	}
 }
 
-// waitForOrch blocks until the active orchestration run finishes, then closes dc.
-func (h *HeadlessApp) waitForOrch(ctx context.Context, dc *doneCloser) {
-	rt := h.subs.orchActive.Get()
+// waitForOrch blocks until the given orchestration run finishes, then closes
+// dc. The runtime is passed explicitly (never re-read from orchActive) so the
+// watcher cannot observe a not-yet-installed runtime.
+func (h *HeadlessApp) waitForOrch(ctx context.Context, dc *doneCloser, rt *orchestrator.Runtime) {
 	if rt == nil {
 		close(dc.done)
 		return

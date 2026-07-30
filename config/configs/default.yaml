@@ -219,10 +219,10 @@ tools:
         Summarize the following web page in 3-5 concise paragraphs. Preserve key facts, names, numbers, and any URLs that are central to the content.
   enabled:
     bg_exec: true
-    delegate_to: false
+    delegate_to: true
     memento: false
     pty_exec: false
-    request_review: false
+    request_review: true
     ssh_bash: false
     webfetch: true
     verify: true

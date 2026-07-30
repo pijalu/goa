@@ -131,6 +131,26 @@ func TestDefaultConfig_VerifyToolEnabled(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_AgentDrivenToolsEnabled verifies the agent-driven
+// companion tools (request_review, delegate_to) are registered by default via
+// the embedded config: companion mode gates their EXECUTION (tool.Enabled),
+// so their schemas must always be registered or /companion:on can never arm
+// them (e2e T2: the main agent reported request_review missing).
+func TestDefaultConfig_AgentDrivenToolsEnabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	loader := NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.Tools.Enabled.RequestReview {
+		t.Errorf("Tools.Enabled.RequestReview = false, want true (execution is companion-gated)")
+	}
+	if !cfg.Tools.Enabled.DelegateTo {
+		t.Errorf("Tools.Enabled.DelegateTo = false, want true (execution is companion-gated)")
+	}
+}
+
 // TestDefaultConfig_PythonToolEnabled verifies the python tool is opt-OUT:
 // enabled by default via the embedded config.
 func TestDefaultConfig_PythonToolEnabled(t *testing.T) {

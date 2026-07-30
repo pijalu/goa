@@ -262,7 +262,14 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	if subs.providerMgr != nil {
 		if mdl, err := subs.providerMgr.ResolveActiveModel(); err == nil {
 			agentDrivenTools := multiagent.AgentDrivenTools(nil, nil)
-			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg)
+			// Companion intent (restored companion minor mode / agent-driven flag)
+			// must win over a persisted tools.enabled false: existing configs
+			// serialized the old default as an explicit false, which otherwise
+			// keeps request_review/delegate_to unregistered even when the user
+			// explicitly enabled companion mode (e2e T2 bug).
+			companionActive := agentBundle.stateSnapshot.AgentDrivenEnabled ||
+				agentBundle.stateSnapshot.MinorMode == "companion"
+			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg, companionActive)
 			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr, agentBundle.eventBus)
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
 			agentPool.SetOrchestrator(foregroundOrch)
@@ -916,18 +923,24 @@ func initPromptAndWorkflowLayer(cfg *config.Config, projectDir string) (*prompts
 	return promptReg, workflowReg
 }
 
-func registerAgentDrivenTools(toolRegistry *tools.ToolRegistry, tools []agentic.Tool, cfg *config.Config) (*multiagent.RequestReviewTool, *multiagent.DelegateTool) {
+// registerAgentDrivenTools registers the agent-driven companion tools
+// (request_review, delegate_to). Registration is gated by the tools.enabled
+// config flags OR active companion intent (companionActive): the companion
+// mode gates execution via the tools' Enabled flag, and a user who turned
+// companion on must never find its tools missing because a config layer
+// persisted a stale `enabled: false`.
+func registerAgentDrivenTools(toolRegistry *tools.ToolRegistry, tools []agentic.Tool, cfg *config.Config, companionActive bool) (*multiagent.RequestReviewTool, *multiagent.DelegateTool) {
 	var requestReviewTool *multiagent.RequestReviewTool
 	var delegateTool *multiagent.DelegateTool
 	for _, t := range tools {
 		switch v := t.(type) {
 		case *multiagent.RequestReviewTool:
-			if !cfg.Tools.Enabled.RequestReview {
+			if !cfg.Tools.Enabled.RequestReview && !companionActive {
 				continue
 			}
 			requestReviewTool = v
 		case *multiagent.DelegateTool:
-			if !cfg.Tools.Enabled.DelegateTo {
+			if !cfg.Tools.Enabled.DelegateTo && !companionActive {
 				continue
 			}
 			delegateTool = v

@@ -304,7 +304,9 @@ func runFinishReason(err error) string {
 }
 
 // managedRoles returns the configured roles that should actually run as
-// sub-agents (everything except the reserved "orchestrator" role).
+// sub-agents (everything except the reserved "orchestrator" role), in
+// deterministic (sorted) order so pipeline stages and fanout acquisition are
+// reproducible across runs (Go map iteration order is random).
 func (r *Runtime) managedRoles() []string {
 	var roles []string
 	for name := range r.cfg.Roles {
@@ -313,6 +315,7 @@ func (r *Runtime) managedRoles() []string {
 		}
 		roles = append(roles, name)
 	}
+	sort.Strings(roles)
 	return roles
 }
 
@@ -483,14 +486,30 @@ func (r *Runtime) waitForUserAnswer(ctx context.Context) error {
 }
 
 // buildSpecialistResultsPrompt builds the prompt for the next orchestrator turn
-// after specialist outputs are available. If no specialist reported output, it
-// returns a simple continuation prompt.
+// after specialist outputs are available. Hub orchestrator agents are created
+// fresh every turn (no conversation history is carried), so the prompt must be
+// self-contained: it restates the objective alongside the specialist outputs
+// and the tool guidance. Without the objective a fresh orchestrator loses the
+// plot after the first delegation and its confused reply is mistaken for the
+// final answer (e2e T1: the reviewer delegation was silently skipped).
 func (r *Runtime) buildSpecialistResultsPrompt() string {
 	specialists := r.collectSpecialistOutputs()
-	if specialists == "" {
-		return "Continue."
+	section := "No specialist outputs yet."
+	if specialists != "" {
+		// Keep the exact "Specialist outputs:" marker — loop drivers (and
+		// their tests) branch on it to detect synthesis turns.
+		section = "Specialist outputs:\n" + specialists
 	}
-	return "Specialist outputs:\n" + specialists
+	if p := r.renderPrompt("hub_continuation", map[string]any{
+		"Objective":   r.objective,
+		"Specialists": section,
+	}); p != "" {
+		return p
+	}
+	// Inline fallback when the template is unavailable: keep the prompt
+	// self-contained (objective + outputs + guidance).
+	return "Current objective: " + r.objective + "\n\n" + section +
+		"\n\nContinue toward the objective: delegate remaining sub-tasks, rework unsatisfactory output, ask the user, or provide the final answer."
 }
 
 // AskUser records that the orchestrator asked the user a question. The loop

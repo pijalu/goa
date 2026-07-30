@@ -41,7 +41,7 @@ func (t *RequestReviewTool) Schema() agentic.ToolSchema {
 
 func (t *RequestReviewTool) Execute(input string) (string, error) {
 	if !t.Enabled {
-		return "", fmt.Errorf("agent-driven workflows are disabled. Enable with /agent-driven:on, or use framework-driven workflows with /workflows:run:review")
+		return "", fmt.Errorf("agent-driven workflows are disabled. Enable with /companion:on, or use framework-driven companion mode with /companion:framework")
 	}
 	var params struct {
 		Content string `json:"content"`
@@ -113,7 +113,7 @@ func (t *DelegateTool) Schema() agentic.ToolSchema {
 
 func (t *DelegateTool) Execute(input string) (string, error) {
 	if !t.Enabled {
-		return "", fmt.Errorf("agent-driven workflows are disabled. Enable with /agent-driven:on, or use framework-driven workflows with /workflows:run:pair")
+		return "", fmt.Errorf("agent-driven workflows are disabled. Enable with /companion:on, or use framework-driven companion mode with /companion:framework")
 	}
 	var params struct {
 		Agent string `json:"agent"`

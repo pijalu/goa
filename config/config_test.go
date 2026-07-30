@@ -1073,10 +1073,10 @@ func TestToolEnabledConfigDefaults(t *testing.T) {
 		t.Error("Memento should be disabled by default")
 	}
 	if cfg.Tools.Enabled.DelegateTo {
-		t.Error("DelegateTo should be disabled by default")
+		t.Error("DelegateTo should be disabled in a zero Config (embedded default.yaml enables it)")
 	}
 	if cfg.Tools.Enabled.RequestReview {
-		t.Error("RequestReview should be disabled by default")
+		t.Error("RequestReview should be disabled in a zero Config (embedded default.yaml enables it)")
 	}
 	if cfg.Tools.Enabled.Goal {
 		t.Error("Goal should be disabled by default")
