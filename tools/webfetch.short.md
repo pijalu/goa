@@ -5,3 +5,5 @@ Copyright (C) 2026 Pierre Poissinger
 -->
 
 Fetch a URL and convert the page to Markdown
+
+goa://NAME URLs fetch Goa's embedded documentation instead (no network)

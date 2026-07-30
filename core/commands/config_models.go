@@ -16,13 +16,32 @@ func (m *configMenu) selectModelPage(title, current string, onSelected func(stri
 	m.selectModelPageForProvider(title, current, onSelected, "")
 }
 
+// selectModelPageFull is selectModelPage with a provider-aware callback: the
+// provider bound to the chosen model is reported alongside, so callers can
+// persist provider+model atomically (bugs.md Bug B: companion selection must
+// behave like /model — a model cannot be selected without its provider).
+func (m *configMenu) selectModelPageFull(title, current string, onSelected func(modelID, providerID string)) {
+	m.selectModelPageForProviderFull(title, current, onSelected, "")
+}
+
 // selectModelPageForProvider is like selectModelPage but when providerID is
 // non-empty, the "— other model —" flow skips the provider selection step
 // (the caller already chose one).
 func (m *configMenu) selectModelPageForProvider(title, current string, onSelected func(string), providerID string) {
+	m.selectModelPageForProviderFull(title, current, func(modelID, _ string) { onSelected(modelID) }, providerID)
+}
+
+func (m *configMenu) selectModelPageForProviderFull(title, current string, onSelected func(modelID, providerID string), providerID string) {
 	baseLen := len(m.history)
-	m.current = func() { m.selectModelPageForProvider(title, current, onSelected, providerID) }
-	items := m.configuredModelItems()
+	m.current = func() { m.selectModelPageForProviderFull(title, current, onSelected, providerID) }
+	items := configuredModelItemsFiltered(m.ctx.Config, "", false)
+	if len(items) == 0 {
+		items = append(items, tui.SelectorItem{
+			Value:       "",
+			Label:       "(no models configured)",
+			Description: "choose — other model —",
+		})
+	}
 	items = append(items, tui.SelectorItem{
 		Value:       "__other__",
 		Label:       "— other model —",
@@ -35,10 +54,10 @@ func (m *configMenu) selectModelPageForProvider(title, current string, onSelecte
 		}
 		if selected != "__other__" {
 			m.returnTo(baseLen)
-			onSelected(selected)
+			onSelected(selected, providerIDForModel(m.ctx.Config, selected))
 			return
 		}
-		m.open(func() { m.promptOtherModel(onSelected, baseLen, providerID) })
+		m.open(func() { m.promptOtherModelFull(onSelected, baseLen, providerID) })
 	})
 }
 
@@ -62,11 +81,11 @@ func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 	return items
 }
 
-func (m *configMenu) promptOtherModel(onSelected func(string), baseLen int, knownProviderID string) {
+func (m *configMenu) promptOtherModelFull(onSelected func(string, string), baseLen int, knownProviderID string) {
 	// If the caller already selected a provider (knownProviderID), skip the
 	// provider selection step and go straight to model resolution.
 	if knownProviderID != "" {
-		m.open(func() { m.resolveModel(knownProviderID, "", onSelected, baseLen) })
+		m.open(func() { m.resolveModelFull(knownProviderID, "", onSelected, baseLen) })
 		return
 	}
 	providers := configuredProviderItems(m.ctx.Config)
@@ -76,7 +95,7 @@ func (m *configMenu) promptOtherModel(onSelected func(string), baseLen int, know
 		return
 	}
 	if len(providers) == 1 {
-		m.open(func() { m.resolveModel(providers[0].Value, "", onSelected, baseLen) })
+		m.open(func() { m.resolveModelFull(providers[0].Value, "", onSelected, baseLen) })
 		return
 	}
 	m.ctx.SelectOption("Select provider:", providers, "", func(providerID string, ok bool) {
@@ -84,21 +103,21 @@ func (m *configMenu) promptOtherModel(onSelected func(string), baseLen int, know
 			m.back()
 			return
 		}
-		m.open(func() { m.resolveModel(providerID, "", onSelected, baseLen) })
+		m.open(func() { m.resolveModelFull(providerID, "", onSelected, baseLen) })
 	})
 }
 
 const modelCacheTTL = 5 * time.Minute
 
-func (m *configMenu) resolveModel(providerID, modelName string, onSelected func(string), baseLen int) {
+func (m *configMenu) resolveModelFull(providerID, modelName string, onSelected func(string, string), baseLen int) {
 	models := modelListForProvider(m.ctx, providerID)
 	if len(models) == 0 {
 		if modelName != "" {
 			m.returnTo(baseLen)
-			onSelected(modelName)
+			onSelected(modelName, providerID)
 			return
 		}
-		m.open(func() { m.promptCustomModel(onSelected, baseLen) })
+		m.open(func() { m.promptCustomModelFull(onSelected, baseLen, providerID) })
 		return
 	}
 	items := make([]tui.SelectorItem, 0, len(models)+1)
@@ -120,22 +139,24 @@ func (m *configMenu) resolveModel(providerID, modelName string, onSelected func(
 			return
 		}
 		if selected == "__custom__" {
-			m.open(func() { m.promptCustomModel(onSelected, baseLen) })
+			m.open(func() { m.promptCustomModelFull(onSelected, baseLen, providerID) })
 			return
 		}
 		m.returnTo(baseLen)
-		onSelected(selected)
+		onSelected(selected, providerID)
 	})
 }
 
-func (m *configMenu) promptCustomModel(onSelected func(string), baseLen int) {
+// promptCustomModelFull reports the provider chosen upstream in the flow so
+// even a free-typed model string keeps its provider binding (bugs.md Bug B).
+func (m *configMenu) promptCustomModelFull(onSelected func(string, string), baseLen int, providerID string) {
 	m.ctx.ShowInput("Model string:", "", func(value string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
 		m.returnTo(baseLen)
-		onSelected(value)
+		onSelected(value, providerID)
 	})
 }
 

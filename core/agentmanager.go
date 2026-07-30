@@ -1075,6 +1075,12 @@ func (am *AgentManager) SetMinorMode(mode string, enabled bool) error {
 	return nil
 }
 
+// MinorMode returns the active minor mode label ("" when none), e.g.
+// "companion" while companion mode is enabled.
+func (am *AgentManager) MinorMode() string {
+	return am.modeMgr.CurrentMinorMode()
+}
+
 // SetThinkingLevel sets the reasoning effort level, persists it, and queues
 // the change for the active agent session. The new level takes effect on the
 // next turn so the current turn is not interrupted.

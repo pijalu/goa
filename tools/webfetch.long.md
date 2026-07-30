@@ -7,7 +7,8 @@ Copyright (C) 2026 Pierre Poissinger
 Fetch a URL and convert the page to Markdown.
 
 Parameters:
-  url        (required) Absolute URL to fetch
+  url        (required) Absolute URL to fetch; goa://NAME fetches Goa's
+             embedded documentation instead (no network, no cache)
   action     (optional) fetch (default) or summarize
   start_line (optional) First line to return (1-indexed, default: 1)
   end_line   (optional) Last line to return (default: end)
@@ -15,3 +16,7 @@ Parameters:
   prompt     (optional) Steering prompt for summarize action
 
 Fetched pages are cached for the current session and can be read in ranges.
+
+Embedded docs (goa://ORCHESTRATOR, goa://CONFIGURATION, ...) are already
+Markdown: they are served directly with start/end/max_lines honored, and the
+summarize action does not apply to them (fetch returns the document).

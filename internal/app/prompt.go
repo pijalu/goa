@@ -275,7 +275,7 @@ func buildSelfDocSection() string {
 
 	var b strings.Builder
 	b.WriteString("<goa_documentation>\n")
-	b.WriteString("Read embedded docs via goa:// URLs.")
+	b.WriteString("Read embedded docs via goa:// URLs (read or webfetch tool).")
 	for _, d := range docList {
 		b.WriteByte(' ')
 		b.WriteString(d.Name)

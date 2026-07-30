@@ -672,8 +672,7 @@ func (m *configMenu) settingMultiAgent() {
 	m.current = m.settingMultiAgent
 	cfg := m.ctx.Config
 	items := []tui.SelectorItem{
-		{Value: "companion_model", Label: "Companion model", Description: cfg.MultiAgent.CompanionModel},
-		{Value: "companion_provider", Label: "Companion provider", Description: cfg.MultiAgent.CompanionProvider},
+		{Value: "companion_model", Label: "Companion model", Description: companionBindingSummary(cfg)},
 		{Value: "enabled", Label: "Multi-agent enabled", Description: boolLabel(cfg.MultiAgent.Enabled)},
 	}
 	m.ctx.SelectOption("Multi-agent settings:", items, "", func(selected string, ok bool) {
@@ -684,35 +683,42 @@ func (m *configMenu) settingMultiAgent() {
 		switch selected {
 		case "companion_model":
 			m.open(m.settingCompanionModel)
-		case "companion_provider":
-			m.open(m.settingCompanionProvider)
 		case "enabled":
 			m.settingMultiAgentEnabled()
 		}
 	})
 }
 
+// companionBindingSummary renders the companion provider+model binding for
+// the multi-agent settings row (bugs.md Bug B: the two are selected together
+// like /model — a model cannot be selected without its attached provider).
+func companionBindingSummary(cfg *config.Config) string {
+	model := cfg.MultiAgent.CompanionModel
+	provider := cfg.MultiAgent.CompanionProvider
+	switch {
+	case provider == "":
+		return model
+	case model == "":
+		return provider
+	default:
+		return provider + " / " + model
+	}
+}
+
+// settingCompanionModel picks the companion provider+model as ONE choice:
+// the selected model's provider is persisted alongside the model so the two
+// can never contradict (bugs.md Bug B).
 func (m *configMenu) settingCompanionModel() {
 	m.current = m.settingCompanionModel
-	m.selectModelPage("Select companion model:", m.ctx.Config.MultiAgent.CompanionModel, func(modelID string) {
+	m.selectModelPageFull("Select companion model:", m.ctx.Config.MultiAgent.CompanionModel, func(modelID, providerID string) {
+		// Provider first: the model binding is only meaningful with its
+		// provider in place.
+		if providerID != "" {
+			m.applySet("multi_agent.companion_provider", providerID)
+		}
 		if modelID != "" {
 			m.applySet("multi_agent.companion_model", modelID)
 		}
-	})
-}
-
-func (m *configMenu) settingCompanionProvider() {
-	m.current = m.settingCompanionProvider
-	items := configuredProviderItems(m.ctx.Config)
-	m.ctx.SelectOption("Select companion provider:", items, m.ctx.Config.MultiAgent.CompanionProvider, func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		if v != "" {
-			m.applySet("multi_agent.companion_provider", v)
-		}
-		m.back()
 	})
 }
 

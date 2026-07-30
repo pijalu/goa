@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pijalu/goa/docs"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/netutil"
@@ -86,7 +87,7 @@ func (t *WebFetchTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"url": map[string]any{
 					"type":        "string",
-					"description": "absolute URL (required)",
+					"description": "absolute URL (required); goa://NAME fetches Goa's embedded documentation",
 				},
 				"action": map[string]any{
 					"type":        "string",
@@ -145,6 +146,14 @@ func (t *WebFetchTool) ExecuteContext(ctx context.Context, input string) (string
 	p, err := t.parseParams(input)
 	if err != nil {
 		return "", err
+	}
+
+	// goa:// URLs resolve against Goa's embedded documentation (like the read
+	// tool) instead of the network: the system prompt steers the model to
+	// goa:// docs without naming a tool, so webfetch must serve them too
+	// instead of rejecting the scheme.
+	if docName, ok := docs.ParseGoaURL(p.URL); ok {
+		return t.goaDoc(p, docName)
 	}
 
 	if err := t.validateURL(p.URL); err != nil {
@@ -291,6 +300,64 @@ func (t *WebFetchTool) fetch(ctx context.Context, p webfetchParams) (string, err
 	return t.renderEntry(p.URL, []byte(markdown), p, meta), nil
 }
 
+// goaDoc serves an embedded documentation page for a goa:// URL. The docs
+// ship with the binary as ready-made Markdown, so no network fetch, HTML
+// conversion, or cache applies.
+func (t *WebFetchTool) goaDoc(p webfetchParams, name string) (string, error) {
+	switch p.Action {
+	case "", "fetch":
+	case "summarize":
+		return "", &internal.ToolError{
+			Tool: "webfetch", Type: "summarize_unsupported",
+			Detail:   fmt.Sprintf("Summarize is not supported for embedded doc %q", p.URL),
+			HintText: "Fetch returns the document directly — embedded docs are already Markdown.",
+		}
+	default:
+		return "", &internal.ToolError{
+			Tool: "webfetch", Type: "unknown_action",
+			Detail:   fmt.Sprintf("Unknown action: %s", p.Action),
+			HintText: "Use one of: fetch, summarize",
+		}
+	}
+
+	content, err := docs.Get(name)
+	if err != nil {
+		return "", &internal.ToolError{
+			Tool: "webfetch", Type: "doc_not_found",
+			Detail:   fmt.Sprintf("%v", err),
+			HintText: "Use /docs to list available documents; the read tool also accepts goa:// URLs.",
+		}
+	}
+	return renderGoaDocEntry(p.URL, content, p), nil
+}
+
+// renderGoaDocEntry renders an embedded doc like a fetch result, minus the
+// cache TTL: embedded docs are versioned with the binary, never fetched.
+func renderGoaDocEntry(rawURL, markdown string, p webfetchParams) string {
+	lines := splitLines(markdown)
+	total := len(lines)
+	start, end := clampLineRange(p.StartLine, p.EndLine, total, p.MaxLines)
+	selected := lines[start-1 : end]
+	if len(selected) > p.MaxLines {
+		selected = selected[:p.MaxLines]
+		end = start + p.MaxLines - 1
+	}
+
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "webfetch %s:%d:%d\n", rawURL, start, end)
+	for _, line := range selected {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+
+	remaining := total - end
+	if remaining < 0 {
+		remaining = 0
+	}
+	fmt.Fprintf(&buf, "(end — %d lines shown, %d remaining; embedded)\n", len(selected), remaining)
+	return buf.String()
+}
+
 func (t *WebFetchTool) summarize(ctx context.Context, p webfetchParams) (string, error) {
 	if !t.summaryEnabled() {
 		return "", &internal.ToolError{
@@ -390,6 +457,7 @@ func (t *WebFetchTool) Examples() []string {
 		`{"url": "https://example.com"}`,
 		`{"url": "https://example.com", "start_line": 1, "end_line": 50}`,
 		`{"url": "https://example.com", "action": "summarize"}`,
+		`{"url": "goa://ORCHESTRATOR"}`,
 	}
 }
 

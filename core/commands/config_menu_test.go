@@ -373,8 +373,13 @@ func TestConfigMenu_MultiAgentSubMenu(t *testing.T) {
 	if sr.title != "Multi-agent settings:" {
 		t.Fatalf("expected multi-agent menu, got %q", sr.title)
 	}
-	if len(sr.options) != 3 {
-		t.Fatalf("expected 3 multi-agent options, got %d", len(sr.options))
+	// bugs.md Bug B: companion provider+model is ONE row (selected together
+	// like /model); the separate companion_provider row is gone.
+	if len(sr.options) != 2 {
+		t.Fatalf("expected 2 multi-agent options, got %d", len(sr.options))
+	}
+	if sr.options[0].Value != "companion_model" || sr.options[1].Value != "enabled" {
+		t.Errorf("unexpected multi-agent rows: %q, %q", sr.options[0].Value, sr.options[1].Value)
 	}
 }
 
@@ -454,6 +459,59 @@ func TestConfiguredProviderItems_OnlyConfigured(t *testing.T) {
 	}
 	if items[0].Value != "local" {
 		t.Errorf("provider item = %q, want local", items[0].Value)
+	}
+}
+
+// TestConfigMenu_CompanionModelSetsProviderAndModel is bugs.md Bug B: the
+// companion model picker must bind provider+model atomically (like /model)
+// instead of exposing a separate provider row that can contradict the model.
+func TestConfigMenu_CompanionModelSetsProviderAndModel(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "opencode-go",
+		Providers: []config.ProviderConfig{
+			{ID: "opencode-go", Endpoint: "https://example.com/go"},
+			{ID: "zai", Endpoint: "https://example.com/zai"},
+		},
+		Models: []config.ModelConfig{
+			{ID: "glm", ProviderID: "zai", Model: "glm-5.2"},
+			{ID: "ds", ProviderID: "opencode-go", Model: "deepseek-v4-flash"},
+		},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+
+	_ = menu.showRoot()
+	sr.onSel("multi_agent", true)
+
+	// One combined row: no separate companion_provider row.
+	for _, it := range sr.options {
+		if it.Value == "companion_provider" {
+			t.Fatalf("multi-agent menu still exposes a separate provider row")
+		}
+	}
+
+	// The model picker shows each model's provider binding.
+	sr.onSel("companion_model", true)
+	if sr.title != "Select companion model:" {
+		t.Fatalf("expected companion model selector, got %q", sr.title)
+	}
+	providerShown := false
+	for _, it := range sr.options {
+		if it.Value == "glm" && strings.Contains(it.Description, "zai") {
+			providerShown = true
+		}
+	}
+	if !providerShown {
+		t.Errorf("companion picker does not show provider bindings, options: %+v", sr.options)
+	}
+
+	// Selecting a configured model sets BOTH companion keys.
+	sr.onSel("glm", true)
+	if cfg.MultiAgent.CompanionModel != "glm" {
+		t.Errorf("companion_model = %q, want glm", cfg.MultiAgent.CompanionModel)
+	}
+	if cfg.MultiAgent.CompanionProvider != "zai" {
+		t.Errorf("companion_provider = %q, want zai (bound from model selection)", cfg.MultiAgent.CompanionProvider)
 	}
 }
 

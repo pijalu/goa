@@ -144,6 +144,114 @@ func TestWebFetchInvalidURL(t *testing.T) {
 	}
 }
 
+// goaDocTestTool builds a webfetch tool whose fetcher fails the test if the
+// network is touched and whose cache is nil — embedded docs must need neither.
+func goaDocTestTool(t *testing.T) *WebFetchTool {
+	t.Helper()
+	return &WebFetchTool{
+		Fetcher: fetchFunc(func(ctx context.Context, url string) (*netutil.Response, error) {
+			t.Fatalf("fetcher must not be called for goa:// URLs (got %s)", url)
+			return nil, nil
+		}),
+		Config: WebFetchConfig{
+			MaxLinesDefault: 250,
+			MaxLinesHard:    4096,
+			AllowedSchemes:  []string{"https", "http"}, // goa:// must bypass this list
+		},
+	}
+}
+
+// TestWebFetchGoaDoc verifies that goa:// URLs resolve against Goa's embedded
+// documentation instead of the network. The system prompt steers the model to
+// goa:// docs without naming a tool, so webfetch must serve them like read
+// does — regressing this broke flows where the model fetched goa://ORCHESTRATOR.
+func TestWebFetchGoaDoc(t *testing.T) {
+	tool := goaDocTestTool(t)
+
+	out, err := tool.Execute(`{"url":"goa://ORCHESTRATOR"}`)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !strings.Contains(out, "webfetch goa://ORCHESTRATOR:1:") {
+		t.Errorf("missing result header, got: %.80s", out)
+	}
+	if !strings.Contains(out, "Orchestrator") {
+		t.Errorf("missing doc content, got: %.120s", out)
+	}
+	if !strings.Contains(out, "; embedded)") {
+		t.Errorf("missing embedded marker in footer, got: %.200s", out)
+	}
+}
+
+// TestWebFetchGoaDocVariants verifies the supported goa:// URL forms, matching
+// the read tool's accepted forms.
+func TestWebFetchGoaDocVariants(t *testing.T) {
+	tool := goaDocTestTool(t)
+	for _, u := range []string{
+		"goa://TOOLS",
+		"goa://TOOLS.md",
+		"goa://docs/TOOLS",
+		"goa://docs/TOOLS.md",
+		"goa://tools", // case-insensitive doc name
+	} {
+		out, err := tool.Execute(fmt.Sprintf(`{"url":%q}`, u))
+		if err != nil {
+			t.Errorf("%s: %v", u, err)
+			continue
+		}
+		if !strings.Contains(out, "Tool") {
+			t.Errorf("%s: missing doc content in output", u)
+		}
+	}
+}
+
+// TestWebFetchGoaDocLineRange verifies start/end line slicing works on
+// embedded docs exactly like on fetched pages.
+func TestWebFetchGoaDocLineRange(t *testing.T) {
+	tool := goaDocTestTool(t)
+
+	out, err := tool.Execute(`{"url":"goa://ORCHESTRATOR","start_line":5,"end_line":8}`)
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !strings.Contains(out, "webfetch goa://ORCHESTRATOR:5:8\n") {
+		t.Errorf("expected 5:8 slice header, got: %.80s", out)
+	}
+}
+
+// TestWebFetchGoaDocNotFound verifies an unknown goa:// doc fails with a
+// hint pointing at the doc list and the read tool.
+func TestWebFetchGoaDocNotFound(t *testing.T) {
+	tool := goaDocTestTool(t)
+
+	_, err := tool.Execute(`{"url":"goa://DOES_NOT_EXIST"}`)
+	if err == nil {
+		t.Fatal("expected error for unknown goa:// document")
+	}
+	if !strings.Contains(err.Error(), "documentation not found") {
+		t.Errorf("expected 'documentation not found', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "read") {
+		t.Errorf("expected hint mentioning the read tool, got: %v", err)
+	}
+}
+
+// TestWebFetchGoaDocActions verifies non-fetch actions on goa:// URLs fail
+// with clear, deliberate errors instead of confusing cache/network errors.
+func TestWebFetchGoaDocActions(t *testing.T) {
+	tool := goaDocTestTool(t)
+
+	_, err := tool.Execute(`{"url":"goa://TOOLS","action":"summarize"}`)
+	if err == nil || !strings.Contains(err.Error(), "not supported for embedded") {
+		t.Errorf("expected summarize_unsupported error, got: %v", err)
+	}
+
+	_, err = tool.Execute(`{"url":"goa://TOOLS","action":"bogus"}`)
+	if err == nil || !strings.Contains(err.Error(), "Unknown action") {
+		t.Errorf("expected unknown_action error, got: %v", err)
+	}
+}
+
 func TestWebFetchDefaultMaxLines(t *testing.T) {
 	dir := t.TempDir()
 	provider := &fakeSessionProvider{id: "session-abc"}

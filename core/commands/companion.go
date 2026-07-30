@@ -27,10 +27,7 @@ func (c *CompanionToggleCommand) LongHelp() string {
 }
 
 func (c *CompanionToggleCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	mode := multiagent.WorkflowInactive
-	if ctx.ForegroundOrchestrator != nil {
-		mode = ctx.ForegroundOrchestrator.Mode()
-	}
+	mode := companionEffectiveMode(ctx)
 	var opts []struct{ val, desc string }
 	switch mode {
 	case multiagent.WorkflowAgentDriven:
@@ -57,6 +54,24 @@ func (c *CompanionToggleCommand) CompleteArgs(ctx core.Context, prefix string) [
 		}
 	}
 	return comps
+}
+
+// companionEffectiveMode resolves the active companion mode from BOTH state
+// sources: the foreground orchestrator (when it reports a mode) and the agent
+// manager's minor mode, where /companion:on records enablement via
+// SetMinorMode. Reading only the orchestrator proposed ":on" while companion
+// was already on whenever the orchestrator was absent or had lost the mirror
+// after a session restore (bugs.md Bug C).
+func companionEffectiveMode(ctx core.Context) multiagent.WorkflowMode {
+	if ctx.ForegroundOrchestrator != nil {
+		if mode := ctx.ForegroundOrchestrator.Mode(); mode != multiagent.WorkflowInactive {
+			return mode
+		}
+	}
+	if ctx.AgentManager != nil && ctx.AgentManager.MinorMode() == "companion" {
+		return multiagent.WorkflowAgentDriven
+	}
+	return multiagent.WorkflowInactive
 }
 
 func (c *CompanionToggleCommand) Run(ctx core.Context, args []string) error {

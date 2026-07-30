@@ -47,6 +47,57 @@ Headless resume of a persisted run:
 goa --orchestrate <run-id>
 ```
 
+## Configuration
+
+Orchestration lives under the `orchestrator:` key of the [configuration
+cascade](CONFIGURATION.md). Write it to exactly one of:
+
+- **Project**: `.goa/config.yaml` (shared) or `.goa/config.local.yaml`
+  (machine-local) — affects only this project.
+- **Global**: `~/.goa/config.yaml` — default for every project.
+
+Edit the file and restart Goa to apply.
+
+### Roles are free-form names bound to a provider+model
+
+`orchestrator.roles` maps **role name → provider+model binding**. Role names
+are chosen by you: the `hub` topology requires and drives the role named
+`orchestrator` (planner/delegator); every other role (`coder`, `reviewer`,
+`tester`, ...) is a specialist the orchestrator can delegate to.
+
+`model` and `provider` must reference IDs Goa already knows: providers come
+from the `providers:` config or built-ins (see [PROVIDERS.md](PROVIDERS.md)),
+models from that provider's configured models (`models:` entries or the
+provider's registry). `/models` in the TUI lists what is actually configured;
+an unknown ID fails the run at start.
+
+Full example — planner/reviewer on one provider, coder on another:
+
+```yaml
+orchestrator:
+  roles:
+    orchestrator:                  # reserved name: hub planner/delegator
+      model: glm-5.2
+      provider: zai
+    reviewer:
+      model: glm-5.2
+      provider: zai
+      allowed_tools: [read, search, bash]
+    coder:
+      model: deepseek-v4-flash
+      provider: opencode-go
+      allowed_tools: [read, write, edit, bash]
+      context_window: 128000       # optional, tokens; 0 = model default
+      max_tokens: 64000            # optional compression threshold
+  pool:
+    max_total_agents: 4
+    max_agents_per_model:
+      glm-5.2: 2
+      deepseek-v4-flash: 2
+  defaults:
+    topology: hub                  # hub | fanout | pipeline
+```
+
 ## Topologies
 
 - **hub** — the `orchestrator` role is driven and given a `delegate` tool; it

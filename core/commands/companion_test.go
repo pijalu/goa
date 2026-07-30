@@ -46,6 +46,46 @@ func TestCompanionToggleCommand_CompleteArgs(t *testing.T) {
 	}
 }
 
+// TestCompanionToggleCommand_CompleteArgsWithoutOrchestrator is bugs.md Bug C:
+// with the orchestrator absent (or unmirrored after session restore),
+// completion must read the agent manager's minor mode — companion enabled via
+// /companion:agent must flip the offer from ":on" to ":off".
+func TestCompanionToggleCommand_CompleteArgsWithoutOrchestrator(t *testing.T) {
+	ctx := newCompanionTestContext(t)
+	cmd := &CompanionToggleCommand{}
+
+	if err := cmd.Run(ctx, []string{"agent"}); err != nil {
+		t.Fatalf("Run(agent): %v", err)
+	}
+
+	// Detach the orchestrator AFTER enabling: the agent manager still holds
+	// the companion minor mode (the reported session shape).
+	ctx.ForegroundOrchestrator = nil
+
+	vals := cmd.CompleteArgs(ctx, "")
+	if len(vals) != 2 || vals[0].Value != "off" || vals[1].Value != "framework" {
+		t.Errorf("nil-orchestrator agent-driven: got %v, want [off framework]", vals)
+	}
+}
+
+// TestCompanionToggleCommand_CompleteArgsUnmirroredOrchestrator covers the
+// session-restore shape: orchestrator present but back to inactive while the
+// agent manager still reports the companion minor mode.
+func TestCompanionToggleCommand_CompleteArgsUnmirroredOrchestrator(t *testing.T) {
+	ctx := newCompanionTestContext(t)
+	cmd := &CompanionToggleCommand{}
+
+	if err := cmd.Run(ctx, []string{"agent"}); err != nil {
+		t.Fatalf("Run(agent): %v", err)
+	}
+	ctx.ForegroundOrchestrator.SetMode(multiagent.WorkflowInactive) // restore lost the mirror
+
+	vals := cmd.CompleteArgs(ctx, "")
+	if len(vals) != 2 || vals[0].Value != "off" || vals[1].Value != "framework" {
+		t.Errorf("unmirrored orchestrator: got %v, want [off framework]", vals)
+	}
+}
+
 func TestCompanionToggleCommand_AgentEnablesReview(t *testing.T) {
 	ctx := newCompanionTestContext(t)
 	cmd := &CompanionToggleCommand{}

@@ -54,18 +54,26 @@ func companionThinkingLevel(subs *subsystems) string {
 }
 
 // companionModelDisplay returns the formatted companion model string.
+// The companion carries its OWN provider binding (MultiAgent.CompanionProvider),
+// not the active provider: resolving/prefixing against the active provider
+// rendered "(opencode-go) glm-5.2" for a zai-bound companion (bugs.md Bug B).
+// Configs without a companion provider keep the legacy active-provider display.
 func companionModelDisplay(subs *subsystems) string {
 	modelID := subs.cfg.MultiAgent.CompanionModel
 	if modelID == "" {
 		return ""
 	}
+	providerID := subs.cfg.MultiAgent.CompanionProvider
+	if providerID == "" {
+		providerID = subs.cfg.ActiveProvider
+	}
 	resolved := modelID
 	if subs.providerMgr != nil {
-		if pc, _ := subs.providerMgr.Active(); pc != nil {
+		if pc := subs.cfg.GetProviderByID(providerID); pc != nil {
 			if r := subs.providerMgr.ResolveModelName(*pc, modelID); r != "" {
 				resolved = r
 			}
 		}
 	}
-	return modelDisplay(subs.cfg.ActiveProvider, resolved)
+	return modelDisplay(providerID, resolved)
 }
