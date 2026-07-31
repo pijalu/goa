@@ -155,7 +155,11 @@ var modelDefs = []provider.Model{
 	},
 	{
 		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderDeepSeek,
-		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
+		// ContextWindow is 2^20, verified empirically: the API truncates at
+		// exactly total_tokens=1048576 (finish_reason=length) and rejects
+		// larger prompts. models.dev's decimal 1,000,000 is a rounded display
+		// value that would misreport 100% usage as 104.9%.
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 384000, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.00000014, Output: 0.00000028, CacheRead: 0.000000028, CacheWrite: 0},
 		ThinkingFormat: provider.ThinkingFormatChunkedReasoning,
 		ThinkingLevelMap: provider.ThinkingLevelMap{
@@ -171,7 +175,8 @@ var modelDefs = []provider.Model{
 	},
 	{
 		ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderDeepSeek,
-		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
+		// ContextWindow is 2^20 (see deepseek-v4-flash note).
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 384000, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.000000435, Output: 0.00000087, CacheRead: 0.00000003625, CacheWrite: 0},
 		ThinkingFormat: provider.ThinkingFormatChunkedReasoning,
 		ThinkingLevelMap: provider.ThinkingLevelMap{
@@ -488,7 +493,9 @@ var modelDefs = []provider.Model{
 	// ── OpenCode Zen ──
 	{
 		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderOpenCode,
-		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
+		// ContextWindow is 2^20 (see the DeepSeek provider entry for the
+		// empirical verification note).
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 384000, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.00000014, Output: 0.00000028, CacheRead: 0.0000028, CacheWrite: 0},
 		ThinkingFormat: provider.ThinkingFormatChunkedReasoning,
 		ThinkingLevelMap: provider.ThinkingLevelMap{
@@ -503,7 +510,9 @@ var modelDefs = []provider.Model{
 	// ── OpenCode Zen Go ──
 	{
 		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Api: provider.ApiOpenAICompletions, Provider: provider.ProviderOpenCodeGo,
-		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
+		// ContextWindow is 2^20 (see the DeepSeek provider entry for the
+		// empirical verification note).
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 384000, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.00000014, Output: 0.00000028, CacheRead: 0.0000028, CacheWrite: 0},
 		ThinkingFormat: provider.ThinkingFormatChunkedReasoning,
 		ThinkingLevelMap: provider.ThinkingLevelMap{

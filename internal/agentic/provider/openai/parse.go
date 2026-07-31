@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
 // parseChunk parses a single SSE data chunk from an OpenAI-compatible API.
@@ -279,7 +280,26 @@ func handleFinishReason(reason interface{}) []agentic.Message {
 	// "stop" = model finished normally  |  "tool_calls" = model issued tool calls
 	// "length" = max_tokens hit  |  "content_filter" = content was filtered
 	// In all cases, the provider stream for this assistant response is finished.
-	return []agentic.Message{{Type: agentic.End}}
+	// The raw reason rides along so the stream accumulator can map it to a
+	// precise StopReason instead of flattening every end to EndTurn.
+	return []agentic.Message{{Type: agentic.End, Metadata: map[string]string{"finish_reason": finishReason}}}
+}
+
+// mapFinishReason maps an OpenAI-style finish_reason string to the
+// provider-agnostic stop reason. Unknown or absent reasons degrade to
+// EndTurn. "length" matters most: window-edge truncation is the last warning
+// before a context_length_exceeded rejection on the next request.
+func mapFinishReason(reason string) provider.StopReason {
+	switch reason {
+	case "length":
+		return provider.StopReasonMaxTokens
+	case "tool_calls", "function_call":
+		return provider.StopReasonToolCall
+	case "content_filter":
+		return provider.StopReasonContentFiltered
+	default: // "stop", "end_turn", "", unknown
+		return provider.StopReasonEndTurn
+	}
 }
 
 func parseTimings(raw map[string]interface{}) *agentic.TokenTimings {

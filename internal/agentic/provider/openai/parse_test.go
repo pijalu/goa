@@ -84,6 +84,36 @@ func TestHandleFinishReason_KnownReasons(t *testing.T) {
 	}
 }
 
+// The raw finish_reason must ride along on the End message so the stream
+// accumulator can map it to a precise StopReason instead of flattening to
+// EndTurn (the agent's window-edge overflow guard keys off "length").
+func TestHandleFinishReason_CarriesRawReason(t *testing.T) {
+	msgs := handleFinishReason("length")
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 End message, got %d", len(msgs))
+	}
+	if got := msgs[0].Metadata["finish_reason"]; got != "length" {
+		t.Errorf("Metadata[finish_reason] = %q, want %q", got, "length")
+	}
+}
+
+func TestMapFinishReason(t *testing.T) {
+	cases := map[string]provider.StopReason{
+		"length":         provider.StopReasonMaxTokens,
+		"tool_calls":     provider.StopReasonToolCall,
+		"function_call":  provider.StopReasonToolCall,
+		"content_filter": provider.StopReasonContentFiltered,
+		"stop":           provider.StopReasonEndTurn,
+		"":               provider.StopReasonEndTurn,
+		"unknown-future": provider.StopReasonEndTurn,
+	}
+	for reason, want := range cases {
+		if got := mapFinishReason(reason); got != want {
+			t.Errorf("mapFinishReason(%q) = %v, want %v", reason, got, want)
+		}
+	}
+}
+
 // TestParseOpenAIStream_EndsWithoutFinishReason verifies that a provider which
 // emits content but never sends a finish_reason still terminates the stream.
 // This prevents consumers from blocking forever on models/servers that omit

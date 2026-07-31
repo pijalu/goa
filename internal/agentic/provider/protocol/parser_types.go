@@ -44,4 +44,9 @@ type parserMessage struct {
 	ToolCallID    string
 	ToolCallIndex int
 	Timings       *parserTimings
+	// FinishReason carries the raw provider finish_reason ("stop", "length",
+	// "tool_calls", ...) on parserEnd messages so the stream accumulator can
+	// map it to a schema.StopReason instead of flattening every end to
+	// EndTurn. The agent needs "length" to detect window-edge truncation.
+	FinishReason string
 }

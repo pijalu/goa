@@ -60,6 +60,8 @@ func (a *Agent) Compact(ctx context.Context) error {
 		{Type: Content, Role: User, Content: compactSummaryRequestPrompt},
 		{Type: Content, Role: Assistant, Content: summary},
 	}
+	// History was replaced wholesale: the recorded provider prompt is stale.
+	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 
 	a.emitEvent(OutputEvent{Type: EventCompact, Text: summary})
@@ -331,6 +333,11 @@ func (a *Agent) compressToolElision(force bool) {
 		}
 	}
 	a.elideToolMessages(boundary)
+	if boundary > 1 {
+		// Tool payloads were replaced in place: the recorded provider prompt
+		// no longer matches the conversation.
+		a.invalidateContextUsageLocked()
+	}
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "Applied tool_elision to messages before index %d", boundary)
 	}
@@ -379,6 +386,10 @@ func (a *Agent) compressSelective() {
 
 	removed := len(a.history) - len(newHistory)
 	a.history = newHistory
+	if removed > 0 {
+		// Messages were dropped: the recorded provider prompt is stale.
+		a.invalidateContextUsageLocked()
+	}
 
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "Applied selective compression: removed %d messages", removed)
@@ -454,6 +465,39 @@ func (a *Agent) checkSilentOverflow() {
 	})
 }
 
+// maybeCompressAfterLengthTruncation forces compression when the provider
+// truncated the round at the edge of the context window: finish_reason=length
+// with the reported total (gross prompt + completion) at ≥99% of the
+// effective window. That truncation is the last warning before the next
+// request is rejected with context_length_exceeded — a deepseek-v4 session
+// ended its penultimate round at exactly total_tokens=window (finish_reason
+// "length"), appended another tool result, and the next request came back
+// HTTP 400. A plain max_tokens output cap does NOT trigger this: the total
+// must actually be at the window.
+func (a *Agent) maybeCompressAfterLengthTruncation() {
+	a.mu.Lock()
+	stopReason := a.lastStopReason
+	total := a.lastGrossInputTokens + a.lastUsageOutputTokens
+	a.mu.Unlock()
+	if stopReason != provider.StopReasonMaxTokens {
+		return
+	}
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 || total < maxTokens*99/100 {
+		return
+	}
+	a.cfg.Logger.Log(Warn, "provider truncated output at the context window edge (%d/%d tokens, finish_reason=length); forcing compression before the next round",
+		total, maxTokens)
+	// Cheap strategies only touch tool payloads and cannot be trusted to free
+	// enough at the window edge; follow with selective turn removal, same as
+	// the overflow-recovery path.
+	a.compressHistoryWithStrategy(string(a.cfg.ContextCompression.Strategy), true)
+	a.mu.Lock()
+	a.compressSelective()
+	a.mu.Unlock()
+	a.emitContextStats()
+}
+
 // handleContextError checks if the error is a context-length error and, if
 // OnContextError is enabled, applies the configured compression strategy
 // to free context space.  Unlike compressToolElision (which only elides
@@ -493,25 +537,21 @@ func (a *Agent) handleContextError(err error) {
 	// mutation), so do not hold the lock across it here.
 	a.compressHistoryWithStrategy(string(strategy), true)
 
-	// If the configured strategy is tool_elision or micro and context is
-	// STILL near the hard ceiling, escalate to selective (remove old turns).
-	// This handles text-heavy conversations where eliding tool data leaves
-	// all user+assistant messages intact. The escalation bar sits 5 points
-	// below the hard ceiling so the retry goes out with real headroom
-	// (default: 95-5=90, matching the historical fixed 90%).
+	// Cheap strategies (tool_elision, micro) touch only tool payloads and can
+	// leave the context nearly full — the bulk is often assistant text,
+	// tool-call arguments and sheer message count. The provider just PROVED
+	// the request exceeds the window, so the local estimate must not veto
+	// escalation: it under-reads real usage (a deepseek-v4 session overflowed
+	// at 84% estimated / 100% actual, the 90% escalation gate never opened,
+	// and the retry failed identically). Always escalate to selective message
+	// removal so the retry goes out with real headroom.
 	if strategy == "" || strategy == CompressionToolElision || strategy == CompressionMicro {
-		stats := a.ContextStats()
-		maxTokens := a.effectiveMaxTokens()
-		escalation := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
-		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*escalation/100 {
-			if a.cfg.Logger != nil {
-				a.cfg.Logger.Log(Info, "Tool elision/micro freed insufficient space (%d/%d tokens) — escalating to selective",
-					stats.EstimatedTokens, maxTokens)
-			}
-			a.mu.Lock()
-			a.compressSelective()
-			a.mu.Unlock()
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "Provider rejected the request for context size — escalating to selective compression (strategy=%s)", strategy)
 		}
+		a.mu.Lock()
+		a.compressSelective()
+		a.mu.Unlock()
 	}
 }
 

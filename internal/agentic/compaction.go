@@ -65,14 +65,17 @@ func (a *Agent) microCompactForced(force bool) {
 	// prefix, flipping a hot cache into a full re-process on the next turn.
 	// When invoked proactively (not a manual /compress), defer the mutation
 	// unless the cache is presumed cold (inter-turn idle gap exceeded
-	// CacheMissThreshold) or usage is at the hard ceiling where skipping the
-	// mutation risks an overflow. force=true (explicit /compress) always
-	// mutates so a manual invocation always does visible work.
-	hardCeilingRatio := float64(a.cfg.ContextCompression.resolveThresholds().hard) / 100
-	if !force && contextRatio < hardCeilingRatio && !a.cacheAssumedCold() {
+	// CacheMissThreshold) or usage crossed the deferral ceiling, where
+	// skipping the mutation risks an overflow. force=true (explicit
+	// /compress) always mutates so a manual invocation always does visible
+	// work.
+	rt := a.cfg.ContextCompression.resolveThresholds()
+	deferCeilingRatio := float64(rt.deferralCeiling()) / 100
+	if !force && contextRatio < deferCeilingRatio && !a.cacheAssumedCold() {
 		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Debug, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%)",
-				cfg.CacheMissThreshold, contextRatio*100)
+			// Info, not Debug: this suppresses compression the user configured.
+			a.cfg.Logger.Log(Info, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%, ceiling=%d%%)",
+				cfg.CacheMissThreshold, contextRatio*100, rt.deferralCeiling())
 		}
 		a.mu.Unlock()
 		return
@@ -191,6 +194,11 @@ func (a *Agent) truncateToolResults(history []Message, keepIdx int, cfg MicroCom
 		}
 		msg.Content = cfg.TruncatedMarker
 		changed++
+	}
+	if changed > 0 {
+		// Tool payloads were replaced in place: the recorded provider prompt
+		// no longer matches the conversation.
+		a.invalidateContextUsageLocked()
 	}
 	return changed
 }

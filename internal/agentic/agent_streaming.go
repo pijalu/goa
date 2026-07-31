@@ -430,9 +430,17 @@ func (a *Agent) handleStreamDone(ctx context.Context, stream *provider.Assistant
 	// Capture provider Usage from the stream result.
 	// The usage chunk (stream_options.include_usage) is attached to
 	// the stream result via End() or UpdateResult().
-	if result := stream.Result(); result != nil && result.Usage != nil && !a.turnStatsEmitted {
+	if result := stream.Result(); result != nil {
 		a.mu.Lock()
-		a.providerUsage = result.Usage
+		if result.Usage != nil && !a.turnStatsEmitted {
+			a.providerUsage = result.Usage
+		}
+		if result.Usage != nil {
+			a.recordContextUsageLocked(result.Usage)
+		}
+		if result.StopReason != "" {
+			a.lastStopReason = result.StopReason
+		}
 		a.mu.Unlock()
 	}
 	a.recordGenDuration()
@@ -532,6 +540,11 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 // UI consumers (e.g. the status spinner) tear down turn state mid-turn, which
 // silently dropped the spinner after the first tool call.
 func (a *Agent) completeStreamTurn(ctx context.Context) bool {
+	// Window-edge truncation (finish_reason=length at ~100% of the window) is
+	// the last warning before a provider-side context rejection on the next
+	// request: compress before any continuation round goes out.
+	a.maybeCompressAfterLengthTruncation()
+
 	if a.tryAutoHealToolCalls() {
 		// fall through to tool execution below
 	}
@@ -658,9 +671,17 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 
 	// Extract provider Usage from the stream result (set by updateResultWithUsage
 	// after the usage chunk arrives from stream_options.include_usage).
-	if result := stream.Result(); result != nil && result.Usage != nil && !a.turnStatsEmitted {
+	if result := stream.Result(); result != nil {
 		a.mu.Lock()
-		a.providerUsage = result.Usage
+		if result.Usage != nil && !a.turnStatsEmitted {
+			a.providerUsage = result.Usage
+		}
+		if result.Usage != nil {
+			a.recordContextUsageLocked(result.Usage)
+		}
+		if result.StopReason != "" {
+			a.lastStopReason = result.StopReason
+		}
 		a.mu.Unlock()
 	}
 	a.recordGenDuration()
@@ -1170,6 +1191,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.consecutiveToolRounds = 0
 	a.toolRoundNudgeFired = false
 	a.autoContinueCount = 0
+	a.lastStopReason = ""
 	a.mu.Unlock()
 
 	if err := a.maybeCompress(ctx); err != nil {

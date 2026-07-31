@@ -95,8 +95,12 @@ func TestProactiveTier(t *testing.T) {
 		{"below soft hot cache does nothing", 40, false, tierNone},
 		{"soft tier when cache cold", 60, true, tierSoft},
 		{"soft tier defers while cache hot", 60, false, tierNone},
-		{"trigger tier when cache cold", 85, true, tierTrigger},
-		{"trigger tier defers while cache hot", 85, false, tierNone},
+		{"trigger tier when cache cold", 82, true, tierTrigger},
+		{"trigger tier defers while cache hot", 82, false, tierNone},
+		// deferralCeiling = hard(95) - 10 = 85: at/above it the cache gate
+		// no longer suppresses compression (overflow risk beats cache churn).
+		{"just below deferral ceiling still defers", 84, false, tierNone},
+		{"deferral ceiling bypasses hot cache", 85, false, tierTrigger},
 		{"hard ceiling bypasses hot cache", 96, false, tierTrigger},
 		{"hard ceiling runs when cold", 96, true, tierTrigger},
 		{"exactly soft boundary", 50, true, tierSoft},

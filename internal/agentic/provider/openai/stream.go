@@ -394,7 +394,7 @@ func (a *streamAccum) dispatchMessage(m agentic.Message) {
 	case m.Type == agentic.ToolCall:
 		a.handleToolCall(m)
 	case m.Type == agentic.End:
-		a.handleEndMessage()
+		a.handleEndMessage(m)
 	case m.Role == agentic.Assistant:
 		a.handleAssistantMessage(m)
 	}
@@ -412,8 +412,8 @@ func (a *streamAccum) handleTimingMessage(m agentic.Message) bool {
 	return false
 }
 
-func (a *streamAccum) handleEndMessage() {
-	sr := provider.StopReasonEndTurn
+func (a *streamAccum) handleEndMessage(m agentic.Message) {
+	sr := mapFinishReason(m.Metadata["finish_reason"])
 	a.pendingStopReason = &sr
 }
 

@@ -85,3 +85,68 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 		}
 	})
 }
+
+// The cache-hot deferral must stop protecting the cache near the window:
+// above the deferral ceiling (hard−10 = 85% with defaults), overflow risk
+// beats cache churn. Regression test for the deepseek-v4 incident, where a
+// permanently-hot cache (99.7% hit) suppressed every proactive compression
+// from the 50% trigger all the way to a provider-side rejection at 100%.
+func TestMicroCompaction_DeferralCeilingOverridesHotCache(t *testing.T) {
+	long := strings.Repeat("x", 5000) // ≈ 1519 est tokens incl. overhead
+	makeHistory := func() []Message {
+		return []Message{
+			{Type: Content, Role: System, Content: "sys"},
+			{Type: Content, Role: User, Content: "q1"},
+			{Type: Content, Role: ToolRole, Content: long, ToolCallID: "c1"},
+			{Type: Content, Role: Assistant, Content: "a1"},
+			{Type: Content, Role: User, Content: "q2"},
+			{Type: Content, Role: Assistant, Content: "a2"},
+		}
+	}
+	newMicroCfg := func(maxTokens int) Config {
+		return Config{
+			Model: testModel(provider.ApiOpenAICompletions),
+			ContextCompression: ContextCompressionConfig{
+				MaxTokens: maxTokens,
+				Strategy:  CompressionMicro,
+				MicroCompaction: MicroCompactionConfig{
+					KeepRecentMessages: 1,
+					MinContentTokens:   10,
+					CacheMissThreshold: time.Hour,
+					TruncatedMarker:    "[cleared]",
+					MinContextRatio:    0.5,
+				},
+			},
+		}
+	}
+
+	t.Run("above ceiling applies despite hot cache", func(t *testing.T) {
+		// ratio ≈ 1539/1700 = 90% — above the 85% deferral ceiling, below the
+		// 95% hard ceiling, with a turn that JUST finished (cache hot).
+		a := NewAgent(newMicroCfg(1700))
+		a.history = makeHistory()
+		a.lastTurnEnd = time.Now()
+
+		if err := a.maybeCompress(context.Background()); err != nil {
+			t.Fatalf("maybeCompress: %v", err)
+		}
+		if a.history[2].Content != "[cleared]" {
+			t.Errorf("micro compaction must apply above the deferral ceiling even with a hot cache; content=%q",
+				a.history[2].Content[:min(40, len(a.history[2].Content))])
+		}
+	})
+
+	t.Run("below ceiling still defers with hot cache", func(t *testing.T) {
+		// ratio ≈ 1539/1900 = 81% — below the 85% deferral ceiling.
+		a := NewAgent(newMicroCfg(1900))
+		a.history = makeHistory()
+		a.lastTurnEnd = time.Now()
+
+		if err := a.maybeCompress(context.Background()); err != nil {
+			t.Fatalf("maybeCompress: %v", err)
+		}
+		if a.history[2].Content != long {
+			t.Errorf("micro compaction must keep deferring below the deferral ceiling when the cache is hot")
+		}
+	})
+}

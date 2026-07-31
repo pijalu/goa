@@ -554,7 +554,7 @@ func (a *streamAccum) dispatchMessage(m parserMessage) {
 	case m.Type == parserToolCall:
 		a.handleToolCall(m)
 	case m.Type == parserEnd:
-		a.handleEndMessage()
+		a.handleEndMessage(m)
 	case m.Role == parserRoleAssistant:
 		a.handleAssistantMessage(m)
 	}
@@ -572,8 +572,8 @@ func (a *streamAccum) handleTimingMessage(m parserMessage) bool {
 	return false
 }
 
-func (a *streamAccum) handleEndMessage() {
-	sr := schema.StopReasonEndTurn
+func (a *streamAccum) handleEndMessage(m parserMessage) {
+	sr := mapOpenAIFinishReason(m.FinishReason)
 	a.pendingStopReason = &sr
 }
 
@@ -810,7 +810,25 @@ func handleFinishReason(reason any) []parserMessage {
 	if !ok || finishReason == "" {
 		return nil
 	}
-	return []parserMessage{{Type: parserEnd}}
+	return []parserMessage{{Type: parserEnd, FinishReason: finishReason}}
+}
+
+// mapOpenAIFinishReason maps an OpenAI-style finish_reason string to the
+// provider-agnostic stop reason. Unknown or absent reasons degrade to
+// EndTurn, preserving the historical flattening behavior for every reason
+// except the ones the agent acts on ("length" above all: window-edge
+// truncation is the last warning before a context_length_exceeded rejection).
+func mapOpenAIFinishReason(reason string) schema.StopReason {
+	switch reason {
+	case "length":
+		return schema.StopReasonMaxTokens
+	case "tool_calls", "function_call":
+		return schema.StopReasonToolCall
+	case "content_filter":
+		return schema.StopReasonContentFiltered
+	default: // "stop", "end_turn", "", unknown
+		return schema.StopReasonEndTurn
+	}
 }
 
 func parseRootFields(raw map[string]any) []parserMessage {

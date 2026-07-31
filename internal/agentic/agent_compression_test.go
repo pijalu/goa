@@ -19,10 +19,10 @@ func TestEstimateTokens(t *testing.T) {
 		expected int // approximate; tests heuristic bounds
 	}{
 		{"empty", "", 0},
-		{"ascii_short", "hello world", 2}, // 11 ascii / 4 ≈ 2
-		{"ascii_long", strings.Repeat("a", 100), 25},
+		{"ascii_short", "hello world", 3}, // 11 ascii × 10/33 ≈ 3
+		{"ascii_long", strings.Repeat("a", 100), 30},
 		{"cjk", "你好世界", 4},       // 4 CJK ≈ 4
-		{"mixed", "hello 你好", 3}, // 6 ascii/4 + 2 CJK ≈ 3
+		{"mixed", "hello 你好", 3}, // 6 ascii × 10/33 (=1) + 2 CJK ≈ 3
 	}
 
 	for _, tt := range tests {
@@ -352,12 +352,14 @@ func TestCompressHybrid(t *testing.T) {
 		},
 	})
 
-	// Build large history to exceed threshold
+	// Build large history to exceed threshold. Message sizes are chosen so
+	// usage after the selective stage drops below the 10% trigger: hybrid
+	// then stops before the summarize stage (which would need a live provider).
 	var history []Message
 	history = append(history, Message{Type: Content, Role: System, Content: "You are helpful."})
 	for i := 0; i < 20; i++ {
-		history = append(history, Message{Type: Content, Role: User, Content: strings.Repeat("a", 50)})
-		history = append(history, Message{Type: Content, Role: Assistant, Content: strings.Repeat("b", 50)})
+		history = append(history, Message{Type: Content, Role: User, Content: strings.Repeat("a", 20)})
+		history = append(history, Message{Type: Content, Role: Assistant, Content: strings.Repeat("b", 20)})
 	}
 	agent.SetHistory(history)
 

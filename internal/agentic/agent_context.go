@@ -75,6 +75,11 @@ func (a *Agent) enforceContextCeiling() {
 		tok[i] = messageTokenCount(&hist[i])
 		total += tok[i]
 	}
+	// Floor history occupancy at the provider-reported value: when the
+	// provider counts more than the chars-based estimate, the per-message
+	// costs are scaled proportionally so the cut below retains a tail that
+	// also fits the REAL window, not just the estimated one.
+	total = a.floorTokensAtProviderUsage(tok, total)
 	if total <= historyCeiling {
 		return
 	}
@@ -104,10 +109,28 @@ func (a *Agent) enforceContextCeiling() {
 
 	kept := append(hist[:1:1], hist[cut:]...)
 	a.history = kept
+	// History shrank: the recorded provider prompt no longer corresponds.
+	a.invalidateContextUsageLocked()
 
 	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > historyCeiling {
 		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history + fixed cost exceeds %d tokens", hardCeiling)
 	}
+}
+
+// floorTokensAtProviderUsage scales per-message token estimates up so their
+// sum matches the provider-reported occupancy when that is larger (see
+// estimateContextTokensLocked), and returns the corrected total. When the
+// estimate already meets or exceeds the provider figure the slice is left
+// untouched. The caller must hold a.mu.
+func (a *Agent) floorTokensAtProviderUsage(tok []int, total int) int {
+	floored := a.estimateContextTokensLocked() - a.fixedCostTokens()
+	if floored <= total || total == 0 {
+		return total
+	}
+	for i := range tok {
+		tok[i] = tok[i] * floored / total
+	}
+	return floored
 }
 
 // computeContextStatsForMax computes context stats using the supplied max
@@ -122,7 +145,7 @@ func (a *Agent) computeContextStatsForMax(maxTokens int) ContextStats {
 		}
 	}
 
-	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()
+	estimated := a.estimateContextTokensLocked()
 	usagePercent := 0
 	if maxTokens > 0 {
 		usagePercent = estimated * 100 / maxTokens
@@ -149,7 +172,7 @@ func (a *Agent) checkContextLimit() error {
 	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	a.mu.Lock()
-	estimated := estimateTokensFromHistory(a.history) + a.fixedCostTokens()
+	estimated := a.estimateContextTokensLocked()
 	a.mu.Unlock()
 	if estimated > hardCeiling {
 		return fmt.Errorf("context window full: estimated tokens exceed %d (%d%% of %d); compress or reset the conversation", hardCeiling, hardCeilingPercent, maxTokens)

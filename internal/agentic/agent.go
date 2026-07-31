@@ -142,6 +142,24 @@ type Agent struct {
 	// When set, emitTurnStats uses these real token counts instead of estimates.
 	providerUsage *provider.Usage
 
+	// lastGrossInputTokens is the provider-reported gross prompt size (uncached
+	// input + cache read/write) of the last completed request — the ground
+	// truth for context-window occupancy, unlike the chars-based estimate that
+	// historically under-read tool-heavy sessions by ~20%. lastUsageHistoryLen
+	// is len(history) at record time so the estimate for messages appended
+	// since can be added on top; lastUsageOutputTokens is the reported output
+	// size of that request (used by the length-truncation overflow signal).
+	// All three are invalidated whenever history is shrunk or replaced, since
+	// the recorded prompt no longer matches the conversation.
+	lastGrossInputTokens  int
+	lastUsageHistoryLen   int
+	lastUsageOutputTokens int
+
+	// lastStopReason is the stop reason of the most recently completed stream
+	// round (EndTurn fallback when the provider does not send one). Reset per
+	// turn in prepareTurn.
+	lastStopReason provider.StopReason
+
 	// steeringSource, when set, is polled between stream rounds (after a round's
 	// tool results are appended, before the next runStreamRound) so mid-turn
 	// steering is woven into the CURRENT turn instead of delivered as a late,
@@ -587,6 +605,9 @@ func (a *Agent) SetHistory(history []Message) {
 	}
 
 	a.history = history
+	// History was replaced wholesale (session restore): any recorded provider
+	// prompt size belongs to the previous conversation.
+	a.invalidateContextUsageLocked()
 }
 
 // SetModel replaces the active model for subsequent turns without
@@ -1179,6 +1200,7 @@ func (a *Agent) Clear() {
 	a.history = nil
 	a.queue = nil
 	a.processing = false
+	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 
 	a.emitEvent(OutputEvent{Type: EventClear})

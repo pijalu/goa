@@ -32,7 +32,7 @@ func lookupByPrefixCases() []lookupByPrefixCase {
 		{name: "Claude Sonnet 4 with variant suffix", modelName: "claude-sonnet-4-20250514-variant", wantCtx: 200000},
 		{name: "GPT-4o with date suffix", modelName: "gpt-4o-2024-11-20", wantCtx: 128000, wantProv: string(provider.ProviderOpenAI)},
 		{name: "GPT-4o-mini with date", modelName: "gpt-4o-mini-2024-07-18", wantCtx: 128000, wantProv: string(provider.ProviderOpenAI)},
-		{name: "DeepSeek V4 flash (now in registry)", modelName: "deepseek-v4-flash", wantCtx: 1000000, wantProv: string(provider.ProviderDeepSeek)},
+		{name: "DeepSeek V4 flash (now in registry)", modelName: "deepseek-v4-flash", wantCtx: 1048576, wantProv: string(provider.ProviderDeepSeek)},
 		{name: "DeepSeek Chat exact", modelName: "deepseek-chat", wantCtx: 128000, wantProv: string(provider.ProviderDeepSeek)},
 		{name: "DeepSeek Reasoner exact", modelName: "deepseek-reasoner", wantCtx: 128000, wantProv: string(provider.ProviderDeepSeek)},
 		{name: "Gemini Flash (generic prefix)", modelName: "gemini-2.5-flash-001", wantCtx: 1048576, wantProv: string(provider.ProviderGoogle)},
@@ -79,14 +79,14 @@ func TestLookupByPrefix_LongestMatchWins(t *testing.T) {
 }
 
 func TestLookupByPrefix_DeepSeekV4Exact(t *testing.T) {
-	// "deepseek-v4-flash" now matches the exact registry entry (128000 context),
+	// "deepseek-v4-flash" matches the exact registry entry (2^20 context),
 	// not the generic "deepseek-" prefix, because deepseek-v4-flash is in the model registry.
 	m := LookupByPrefix("deepseek-v4-flash")
 	if m == nil {
 		t.Fatal("LookupByPrefix returned nil")
 	}
-	if m.ContextWindow != 1000000 {
-		t.Errorf("Expected 1000000 context from exact deepseek-v4-flash entry, got %d", m.ContextWindow)
+	if m.ContextWindow != 1048576 {
+		t.Errorf("Expected 1048576 (2^20) context from exact deepseek-v4-flash entry, got %d", m.ContextWindow)
 	}
 }
 

@@ -110,6 +110,19 @@ type Usage struct {
 	Cost                float64 `json:"cost,omitempty"`
 }
 
+// TotalInputTokens returns the gross input token count the provider charged
+// against the model's context window: uncached input plus cache reads and
+// cache writes. Provider adapters report InputTokens NET of cache (for cost
+// accounting), so the gross figure — the number that determines how full the
+// context window actually is — is the sum. This is the ground truth for
+// context-window occupancy; never use the net InputTokens for that purpose.
+func (u *Usage) TotalInputTokens() int {
+	if u == nil {
+		return 0
+	}
+	return u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+}
+
 // ImageContent holds image data for content blocks.
 type ImageContent struct {
 	Data     string `json:"data"`      // Base64-encoded image data

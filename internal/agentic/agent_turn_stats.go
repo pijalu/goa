@@ -123,10 +123,21 @@ func findLastAssistant(hist []Message) *Message {
 	return nil
 }
 
+// messageTokenCount estimates the provider-side token cost of one message:
+// content + thinking + tool-call payloads, plus the structural overhead the
+// provider counts but raw text does not show — chat framing (role/template
+// tokens), tool_call ids and function names. Tool-result messages re-send
+// their tool_call_id, so that id is part of the wire cost too.
 func messageTokenCount(msg *Message) int {
-	total := estimateTokens(msg.Content) + estimateTokens(msg.Thinking)
+	total := messageOverheadTokens +
+		estimateTokens(msg.Content) +
+		estimateTokens(msg.Thinking) +
+		estimateTokens(msg.ToolCallID)
 	for _, tc := range msg.ToolCalls {
-		total += estimateTokens(tc.Arguments)
+		total += toolCallOverheadTokens +
+			estimateTokens(tc.ID) +
+			estimateTokens(tc.Name) +
+			estimateTokens(tc.Arguments)
 	}
 	return total
 }
@@ -137,11 +148,7 @@ func tokensBefore(hist []Message, assistant *Message) int {
 		if &hist[i] == assistant {
 			break
 		}
-		total += estimateTokens(hist[i].Content)
-		total += estimateTokens(hist[i].Thinking)
-		for _, tc := range hist[i].ToolCalls {
-			total += estimateTokens(tc.Arguments)
-		}
+		total += messageTokenCount(&hist[i])
 	}
 	return total
 }

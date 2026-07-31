@@ -55,6 +55,24 @@ func (t resolvedThresholds) escalationPercent() int {
 	return e
 }
 
+// deferralCeiling is the usage level above which cache-hot deferral is no
+// longer allowed. The cache gate exists to avoid churning a hot provider
+// prefix cache during cheap maintenance, but near the window the overflow
+// risk beats cache churn: a deepseek-v4 session stayed cache-hot (99.7% hit)
+// while deferrals suppressed every compression from the 50% trigger all the
+// way to a provider-side rejection at 100%. The ceiling sits 10 points below
+// the hard ceiling (never below the trigger, or deferral would be pointless).
+func (t resolvedThresholds) deferralCeiling() int {
+	c := t.hard - 10
+	if c < t.trigger {
+		c = t.trigger
+	}
+	if c < 1 {
+		c = 1
+	}
+	return c
+}
+
 // resolveThresholds folds the explicit Thresholds with the deprecated
 // ThresholdPercent alias and the documented defaults. The legacy alias wins
 // when both are set, so existing configs keep their exact behavior.
@@ -100,7 +118,9 @@ const (
 // Escalation rules:
 //   - usage >= hard → trigger tier, cache gate bypassed (overflow risk beats
 //     cache churn).
-//   - cache hot → defer everything (tierNone), regardless of level.
+//   - cache hot and usage < deferralCeiling → defer everything (tierNone).
+//   - cache hot and usage >= deferralCeiling → trigger tier (too close to
+//     the window to keep protecting the cache).
 //   - usage >= trigger → trigger tier.
 //   - usage >= soft (and soft enabled) → soft tier.
 func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) compressionTier {
@@ -108,6 +128,9 @@ func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) com
 		return tierTrigger
 	}
 	if !a.cacheAssumedColdForProactive() {
+		if usagePercent >= rt.deferralCeiling() {
+			return tierTrigger
+		}
 		if usagePercent >= rt.trigger {
 			a.logDeferral(usagePercent)
 		}
@@ -122,9 +145,13 @@ func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) com
 	return tierNone
 }
 
+// logDeferral records a cache-hot deferral at Info level: deferrals between
+// the trigger and the deferral ceiling suppress compression the user asked
+// for, so they must be visible in the default (info) log — a silent Debug
+// line once hid a whole session's worth of skipped compressions.
 func (a *Agent) logDeferral(usagePercent int) {
 	if a.cfg.Logger != nil {
-		a.cfg.Logger.Log(Debug, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", usagePercent)
+		a.cfg.Logger.Log(Info, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", usagePercent)
 	}
 }
 
