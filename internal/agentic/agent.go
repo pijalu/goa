@@ -440,6 +440,19 @@ type Config struct {
 
 	// SystemPrompt is the initial system message sent to the LLM.
 	SystemPrompt string
+	// StreamLoopDisabled, when non-nil and returning true, disables the
+	// streaming text loop detector (checkStreamLoop). It is queried per delta
+	// so session-level temp overrides (/config:temp:stream_loop_detection:off)
+	// and persisted config (execution.disable_stream_loop_detection) take
+	// effect mid-stream. Nil means detection is enabled.
+	StreamLoopDisabled func() bool
+	// StreamLoopMaxRepeats, when non-nil, returns the number of consecutive
+	// repeats of the same text block required before the streaming loop
+	// detector stops the turn (execution.stream_loop_max_repeats, queried per
+	// delta so runtime changes take effect mid-stream). Nil or values < 2
+	// mean the default of 5.
+	StreamLoopMaxRepeats func() int
+
 	// Logger is an optional leveled logger for debugging. If nil, logging is disabled.
 	Logger *Logger
 	// Tools is the list of tools available to the agent.

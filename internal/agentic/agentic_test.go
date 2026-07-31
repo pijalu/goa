@@ -306,7 +306,7 @@ func TestStreamHasRepeatedSuffix(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := streamHasRepeatedSuffix(tt.text, tt.window, tt.repeatsNeeded)
+			got := streamHasRepeatedSuffix(tt.text, tt.window, tt.repeatsNeeded, streamRepeatMismatchBudget(tt.window))
 			if got != tt.want {
 				t.Errorf("streamHasRepeatedSuffix(%q, %d, %d) = %v, want %v",
 					tt.text, tt.window, tt.repeatsNeeded, got, tt.want)
@@ -366,7 +366,7 @@ func TestStreamLoop_NonIdenticalCopies(t *testing.T) {
 	detectedAt := -1
 	for i, chunk := range copies {
 		buf.WriteString(chunk)
-		if streamLoopWouldDetect(buf.String()) {
+		if streamLoopWouldDetect(buf.String(), 3) {
 			detectedAt = i
 			break
 		}
@@ -391,7 +391,7 @@ func TestStreamLoop_NonIdenticalCopies(t *testing.T) {
 			end = len(full)
 		}
 		buf.WriteString(full[pos:end])
-		if streamLoopWouldDetect(buf.String()) {
+		if streamLoopWouldDetect(buf.String(), 3) {
 			detectedAt = pos
 			break
 		}
@@ -433,7 +433,7 @@ func TestStreamLoop_NoFalsePositiveOnSimilarSentences(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if streamLoopWouldDetect(tt.text) {
+			if streamLoopWouldDetect(tt.text, 5) {
 				t.Errorf("false positive loop detection on %q", tt.text)
 			}
 		})
@@ -441,9 +441,10 @@ func TestStreamLoop_NoFalsePositiveOnSimilarSentences(t *testing.T) {
 }
 
 // streamLoopWouldDetect reports whether checkStreamLoop would set
-// streamLoopDetected for the given buffer (exercises the production scan).
-func streamLoopWouldDetect(text string) bool {
-	_, _, ok := streamLoopScan(streamLoopNormalize(text))
+// streamLoopDetected for the given buffer (exercises the production scan)
+// with the given repeat threshold.
+func streamLoopWouldDetect(text string, maxRepeats int) bool {
+	_, _, ok := streamLoopScan(streamLoopNormalize(text), maxRepeats)
 	return ok
 }
 
@@ -458,8 +459,7 @@ func assertSingleWordRepeatNotDetected(t *testing.T) {
 	for window := minW; window <= maxW; window++ {
 		suffix := clean[len(clean)-window:]
 		if streamHasMultipleUniqueWords(suffix) {
-			repeats := streamLoopRepeatsNeeded(window)
-			if streamHasRepeatedSuffix(clean, window, repeats) {
+			if streamLoopMatchWindow(clean, window, 5) {
 				t.Errorf("single-word repeat should not trigger loop detection at window=%d, suffix=%q", window, suffix)
 			}
 		}
@@ -477,13 +477,12 @@ func assertMultiWordRepeatDetected(t *testing.T) {
 	}
 	found := false
 	for window := minW; window <= maxW; window++ {
-		repeats := streamLoopRepeatsNeeded(window)
-		if streamHasRepeatedSuffix(clean, window, repeats) {
-			suffix := clean[len(clean)-window:]
-			if streamHasMultipleUniqueWords(suffix) {
-				found = true
-				break
-			}
+		suffix := clean[len(clean)-window:]
+		if !streamHasMultipleUniqueWords(suffix) {
+			continue
+		}
+		if found = streamLoopMatchWindow(clean, window, 3); found {
+			break
 		}
 	}
 	if !found {

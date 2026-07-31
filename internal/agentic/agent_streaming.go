@@ -986,36 +986,85 @@ func (a *Agent) resetStreamRoundState() {
 //   - Only triggers on sufficiently large content
 //   - Requires the repeated pattern to span at least two unique words
 func (a *Agent) checkStreamLoop(text string) {
+	// Detection can be disabled per session (/config:temp:stream_loop_detection:off)
+	// or persistently (execution.disable_stream_loop_detection); checked per
+	// delta so a mid-stream toggle takes effect immediately.
+	if a.cfg.StreamLoopDisabled != nil && a.cfg.StreamLoopDisabled() {
+		return
+	}
 	// Normalize: strip punctuation, symbols, box-drawing chars, collapse spaces
 	clean := streamLoopNormalize(text)
-	if window, repeats, ok := streamLoopScan(clean); ok {
+	if window, repeats, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
 		a.streamLoopDetected = true
 		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte suffix repeated %d times", window, repeats)
 	}
 }
 
+// streamLoopMaxRepeats resolves the repeat threshold for the loop detector:
+// the user-configured value (execution.stream_loop_max_repeats via the live
+// loop detector) when set, otherwise the default of 5.
+func (a *Agent) streamLoopMaxRepeats() int {
+	const defaultMaxRepeats = 5
+	if a.cfg.StreamLoopMaxRepeats == nil {
+		return defaultMaxRepeats
+	}
+	if n := a.cfg.StreamLoopMaxRepeats(); n >= 2 {
+		return n
+	}
+	return defaultMaxRepeats
+}
+
 // streamLoopScan is the detection core of checkStreamLoop: it scans the
 // normalized buffer for a repeated suffix loop and reports the window and
-// repeat count when one is found. Kept separate from the Agent method so the
-// exact production scan can be exercised directly by tests.
-func streamLoopScan(clean string) (window, repeats int, ok bool) {
+// repeat count when one is found. maxRepeats is the number of consecutive
+// repeats required to call it a loop (user-configurable, default 5). Kept
+// separate from the Agent method so the exact production scan can be
+// exercised directly by tests.
+func streamLoopScan(clean string, maxRepeats int) (window, repeats int, ok bool) {
+	if maxRepeats < 2 {
+		maxRepeats = 2
+	}
 	minWindow, maxWindow := streamLoopWindowRange(clean)
 	if minWindow == 0 {
 		return 0, 0, false
 	}
 
 	for window = minWindow; window <= maxWindow; window++ {
-		repeatsNeeded := streamLoopRepeatsNeeded(window)
-		if streamHasRepeatedSuffix(clean, window, repeatsNeeded) {
-			// Verify the repeated pattern is more than a single word.
-			suffix := clean[len(clean)-window:]
-			if !streamHasMultipleUniqueWords(suffix) {
-				continue
-			}
-			return window, repeatsNeeded, true
+		// Verify the repeated pattern is more than a single word.
+		suffix := clean[len(clean)-window:]
+		if !streamHasMultipleUniqueWords(suffix) {
+			continue
+		}
+		if found := streamLoopMatchWindow(clean, window, maxRepeats); found {
+			return window, maxRepeats, true
 		}
 	}
 	return 0, 0, false
+}
+
+// streamLoopExactMinWindow is the smallest window for which two consecutive
+// byte-exact copies already count as a loop.
+const streamLoopExactMinWindow = 80
+
+// streamLoopMatchWindow reports whether the buffer ends in a repeated loop at
+// the given window size. maxRepeats is the user-configured count of
+// consecutive copies required (default 5).
+//
+// Policy, tuned by a false-positive incident (a debugging turn was killed
+// mid-analysis because the model pasted two near-identical SQL statements —
+// test 3.4 vs 3.5, same query shape, different constant — next to each other
+// and a fuzzy 2-copy rule called it a loop):
+//
+//   - A 2-copy threshold counts only long BYTE-EXACT duplication: no
+//     legitimate answer repeats the same 80+ byte block verbatim back to
+//     back, but two merely-similar paragraphs are analysis, not a loop.
+//   - 3+ copies confirm a loop even with small per-copy variations
+//     (re-wrapped, re-punctuated or separator-shifted copies).
+func streamLoopMatchWindow(clean string, window, maxRepeats int) bool {
+	if maxRepeats <= 2 {
+		return window >= streamLoopExactMinWindow && streamHasRepeatedSuffix(clean, window, 2, 0)
+	}
+	return streamHasRepeatedSuffix(clean, window, maxRepeats, streamRepeatMismatchBudget(window))
 }
 
 // streamLoopNormalize strips everything except letters, digits, and spaces,
@@ -1073,30 +1122,20 @@ func streamLoopWindowRange(text string) (min, max int) {
 	return minWindow, max
 }
 
-// streamLoopRepeatsNeeded returns how many consecutive occurrences of a
-// window-sized suffix are required before it is considered a loop. Shorter
-// windows need more repeats to avoid false positives from common phrases.
-func streamLoopRepeatsNeeded(window int) int {
-	if window >= 80 {
-		return 2
-	}
-	return 3
-}
-
 // streamHasRepeatedSuffix reports whether text ends with the same window-sized
-// substring repeated repeatsNeeded times consecutively. Comparison tolerates a
-// small number of differing bytes per block (see streamFuzzyBlockEqual): a
-// model stuck in a repetition loop rarely regenerates byte-identical copies —
-// line breaks and punctuation vary between iterations (e.g. a missing blank
-// line between two copies shifts every following window by one byte, which
-// defeats an exact match and let a 4x repeated paragraph stream to
-// completion, looking like screen corruption in the TUI).
-func streamHasRepeatedSuffix(text string, window, repeatsNeeded int) bool {
+// substring repeated repeatsNeeded times consecutively. Comparison tolerates
+// up to budget differing bytes per block (see streamFuzzyBlockEqual): a model
+// stuck in a repetition loop rarely regenerates byte-identical copies — line
+// breaks and punctuation vary between iterations (e.g. a missing blank line
+// between two copies shifts every following window by one byte, which defeats
+// an exact match and let a 4x repeated paragraph stream to completion,
+// looking like screen corruption in the TUI). Budget 0 requires byte-exact
+// copies.
+func streamHasRepeatedSuffix(text string, window, repeatsNeeded, budget int) bool {
 	if len(text) < window*repeatsNeeded {
 		return false
 	}
 	suffix := text[len(text)-window:]
-	budget := streamRepeatMismatchBudget(window)
 	for r := 1; r < repeatsNeeded; r++ {
 		block := text[len(text)-window*(r+1) : len(text)-window*r]
 		if !streamFuzzyBlockEqual(suffix, block, budget) {
