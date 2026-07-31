@@ -109,6 +109,11 @@ type ExecutionConfig struct {
 	// Temporary session-only overrides use /config:temp:* instead.
 	DisableThinkingLoopDetection *bool `yaml:"disable_thinking_loop_detection,omitempty"`
 	DisableToolLoopDetection     *bool `yaml:"disable_tool_loop_detection,omitempty"`
+	DisableStreamLoopDetection   *bool `yaml:"disable_stream_loop_detection,omitempty"`
+	// StreamLoopMaxRepeats is the number of consecutive repeats of the same
+	// text block required before the streaming loop detector stops the turn
+	// (0 = default 5). Higher values tolerate more deliberate repetition.
+	StreamLoopMaxRepeats int `yaml:"stream_loop_max_repeats,omitempty"`
 }
 
 // ProviderConfig configures a single LLM provider (endpoint + auth).

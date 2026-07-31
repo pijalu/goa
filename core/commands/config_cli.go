@@ -224,19 +224,38 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 	return nil
 }
 
-func syncRuntimeConfig(ctx core.Context, key, value string) error {
-	// Loop-detector overrides sync straight to the detector; they do not
-	// require a running agent, so handle them before the AgentManager guard.
+// syncLoopDetectorConfig applies loop-detector config keys straight to the
+// live detector; they do not require a running agent. It reports whether key
+// was a loop-detector key (handled, even when the detector is absent).
+func syncLoopDetectorConfig(ctx core.Context, key string) bool {
+	exec := ctx.Config.Execution
 	switch key {
 	case "execution.disable_thinking_loop_detection":
 		if ctx.LoopDetector != nil {
-			ctx.LoopDetector.SetPersistOverride("think", boolPtrValue(ctx.Config.Execution.DisableThinkingLoopDetection))
+			ctx.LoopDetector.SetPersistOverride("think", boolPtrValue(exec.DisableThinkingLoopDetection))
 		}
-		return nil
 	case "execution.disable_tool_loop_detection":
 		if ctx.LoopDetector != nil {
-			ctx.LoopDetector.SetPersistOverride("tool", boolPtrValue(ctx.Config.Execution.DisableToolLoopDetection))
+			ctx.LoopDetector.SetPersistOverride("tool", boolPtrValue(exec.DisableToolLoopDetection))
 		}
+	case "execution.disable_stream_loop_detection":
+		if ctx.LoopDetector != nil {
+			ctx.LoopDetector.SetPersistOverride("stream", boolPtrValue(exec.DisableStreamLoopDetection))
+		}
+	case "execution.stream_loop_max_repeats":
+		if ctx.LoopDetector != nil {
+			ctx.LoopDetector.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+func syncRuntimeConfig(ctx core.Context, key, value string) error {
+	// Loop-detector overrides sync straight to the detector; they do not
+	// require a running agent, so handle them before the AgentManager guard.
+	if syncLoopDetectorConfig(ctx, key) {
 		return nil
 	}
 	if ctx.AgentManager == nil {
@@ -302,10 +321,12 @@ func persistModeDefault(ctx core.Context, value string) error {
 //
 // Supported overrides:
 //
-//	/config:temp:think_loop_detection:off  — disable thinking-loop detection
-//	/config:temp:think_loop_detection:on   — enable thinking-loop detection
-//	/config:temp:tool_loop_detection:off   — disable tool-call loop detection
-//	/config:temp:tool_loop_detection:on    — enable tool-call loop detection
+//	/config:temp:think_loop_detection:off   — disable thinking-loop detection
+//	/config:temp:think_loop_detection:on    — enable thinking-loop detection
+//	/config:temp:tool_loop_detection:off    — disable tool-call loop detection
+//	/config:temp:tool_loop_detection:on     — enable tool-call loop detection
+//	/config:temp:stream_loop_detection:off  — disable stream-text loop detection
+//	/config:temp:stream_loop_detection:on   — enable stream-text loop detection
 func handleConfigTemp(ctx core.Context, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: /config:temp <setting> <on|off>")
@@ -328,8 +349,10 @@ func handleConfigTemp(ctx core.Context, args []string) error {
 		return applyTempOverride(ctx, "think", enabled)
 	case "tool_loop_detection":
 		return applyTempOverride(ctx, "tool", enabled)
+	case "stream_loop_detection":
+		return applyTempOverride(ctx, "stream", enabled)
 	default:
-		return fmt.Errorf("unknown temp setting: %q (use 'think_loop_detection' or 'tool_loop_detection')", setting)
+		return fmt.Errorf("unknown temp setting: %q (use 'think_loop_detection', 'tool_loop_detection' or 'stream_loop_detection')", setting)
 	}
 }
 
@@ -352,6 +375,9 @@ func applyTempOverride(ctx core.Context, kind string, enabled bool) error {
 	if kind == "tool" {
 		label = "tool-call loop detection"
 	}
+	if kind == "stream" {
+		label = "stream-text loop detection"
+	}
 	ctx.Flash(fmt.Sprintf("Temporary: %s %s (current session only). To persist across sessions: /config set execution.disable_%s_loop_detection %v",
 		label, state, tempKindToConfigInfix(kind), !enabled))
 	return nil
@@ -362,6 +388,9 @@ func applyTempOverride(ctx core.Context, kind string, enabled bool) error {
 func tempKindToConfigInfix(kind string) string {
 	if kind == "think" {
 		return "thinking"
+	}
+	if kind == "stream" {
+		return "stream"
 	}
 	return "tool"
 }
@@ -413,6 +442,8 @@ var configSetters = map[string]configSetter{
 	"execution.loop_interrupt":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
 	"execution.disable_thinking_loop_detection":      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
 	"execution.disable_tool_loop_detection":          setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
+	"execution.disable_stream_loop_detection":        setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
+	"execution.stream_loop_max_repeats":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
 	"execution.disable_tool_budget":                  setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
 	"skills.execution_mode":                          setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
 	"tools.bash.enable_complexity_analysis":          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),

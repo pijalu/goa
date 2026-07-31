@@ -180,6 +180,21 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		ThinkingStallStop: time.Duration(cfg.Execution.ThinkingStallStopSeconds) * time.Second,
 		ConfirmTool:       am.confirmTool,
 		HookEngine:        am.hookEngine,
+		// The streaming text loop detector lives in the agent, but its
+		// enable/disable state and repeat threshold are shared with the other
+		// loop detectors (temp + persist overrides) via the core loop detector.
+		StreamLoopDisabled: func() bool {
+			if am.loopDetector == nil {
+				return false
+			}
+			return am.loopDetector.Disabled("stream")
+		},
+		StreamLoopMaxRepeats: func() int {
+			if am.loopDetector == nil {
+				return 0
+			}
+			return am.loopDetector.StreamMaxRepeats()
+		},
 	}
 	compressionCfg := am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
 	if cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {

@@ -134,6 +134,12 @@ func (c *Config) validateLoopThresholds(ve *internal.ValidationError) {
 		ve.Add(fmt.Sprintf("execution.max_tool_repeat_consecutive (%d) must not exceed execution.max_tool_repeat_total (%d)",
 			c.Execution.MaxToolRepeatConsecutive, c.Execution.MaxToolRepeatTotal))
 	}
+	// Stream-loop repeat threshold must be a sane repeat count when set
+	// (0 means "use the default"); a single occurrence can never be a loop.
+	if c.Execution.StreamLoopMaxRepeats != 0 && c.Execution.StreamLoopMaxRepeats < 2 {
+		ve.Add(fmt.Sprintf("execution.stream_loop_max_repeats (%d) must be 0 (default) or >= 2",
+			c.Execution.StreamLoopMaxRepeats))
+	}
 }
 
 func (c *Config) validateAgenticProviders(ve *internal.ValidationError) {

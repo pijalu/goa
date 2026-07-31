@@ -551,7 +551,7 @@ func TestConfigMenu_LoopDetectionToggle(t *testing.T) {
 	if sr.title != "Loop detection settings:" {
 		t.Fatalf("expected loop detection menu, got %q", sr.title)
 	}
-	want := []string{"think_loop", "tool_loop", "thresholds"}
+	want := []string{"think_loop", "tool_loop", "stream_loop", "thresholds"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d loop detection items, got %d", len(want), len(sr.options))
 	}

@@ -157,6 +157,12 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	if src.DisableToolLoopDetection != nil {
 		dst.DisableToolLoopDetection = src.DisableToolLoopDetection
 	}
+	if src.DisableStreamLoopDetection != nil {
+		dst.DisableStreamLoopDetection = src.DisableStreamLoopDetection
+	}
+	if src.StreamLoopMaxRepeats != 0 {
+		dst.StreamLoopMaxRepeats = src.StreamLoopMaxRepeats
+	}
 }
 
 // mergeIntIfSet copies src into dst when src is non-zero.

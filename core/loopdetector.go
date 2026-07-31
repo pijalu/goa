@@ -97,18 +97,24 @@ type LoopDetector struct {
 	errorHistory []bool // last N tool results (true = error)
 	errorIdx     int
 
-	// tempThinkDisabled and tempToolDisabled are per-session temporary overrides
-	// that disable loop detection without modifying the persisted config.
-	// Set via /config:temp:think_loop_detection:off and
-	// /config:temp:tool_loop_detection:off slash commands.
-	tempThinkDisabled bool
-	tempToolDisabled  bool
+	// tempThinkDisabled, tempToolDisabled and tempStreamDisabled are
+	// per-session temporary overrides that disable loop detection without
+	// modifying the persisted config. Set via
+	// /config:temp:<think|tool|stream>_loop_detection:off slash commands.
+	tempThinkDisabled  bool
+	tempToolDisabled   bool
+	tempStreamDisabled bool
 
-	// persistThinkDisabled and persistToolDisabled come from the persisted
-	// config (execution.disable_thinking_loop_detection /
-	// disable_tool_loop_detection) and disable detection across sessions.
-	persistThinkDisabled bool
-	persistToolDisabled  bool
+	// persistThinkDisabled, persistToolDisabled and persistStreamDisabled
+	// come from the persisted config (execution.disable_<kind>_loop_detection)
+	// and disable detection across sessions.
+	persistThinkDisabled  bool
+	persistToolDisabled   bool
+	persistStreamDisabled bool
+
+	// maxStreamRepeats is the live repeat threshold for the streaming text
+	// loop detector (see LoopDetectorConfig.MaxStreamRepeats).
+	maxStreamRepeats int
 }
 
 // LoopDetectorConfig holds configurable parameters for the loop detector.
@@ -128,7 +134,21 @@ type LoopDetectorConfig struct {
 	// ToolDisabled disables tool-call loop detection entirely.
 	// Set via /config:temp:tool_loop_detection:off for session-level override.
 	ToolDisabled bool
+	// StreamDisabled disables the streaming text loop detector (repeated
+	// suffix in the assistant's own streamed output) entirely. Set via
+	// /config:temp:stream_loop_detection:off for session-level override.
+	StreamDisabled bool
+	// MaxStreamRepeats is the number of consecutive repeats of the same text
+	// block required before the streaming loop detector stops the turn
+	// (0 = default 5). From execution.stream_loop_max_repeats.
+	MaxStreamRepeats int
 }
+
+// defaultStreamLoopMaxRepeats is the built-in repeat threshold for the
+// streaming text loop detector. Five copies is far beyond any legitimate
+// repetition (quoting evidence, comparing similar snippets) while still
+// stopping a runaway loop after only a few hundred wasted tokens.
+const defaultStreamLoopMaxRepeats = 5
 
 // DefaultLoopDetectorConfig returns sensible defaults for the loop detector.
 func DefaultLoopDetectorConfig() LoopDetectorConfig {
@@ -137,6 +157,7 @@ func DefaultLoopDetectorConfig() LoopDetectorConfig {
 		LoopInterrupt:         10,
 		ThinkingLoopWarning:   4,
 		ThinkingLoopInterrupt: 6,
+		MaxStreamRepeats:      defaultStreamLoopMaxRepeats,
 	}
 }
 
@@ -169,6 +190,9 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 	if cfg.ThinkingLoopInterrupt <= 0 {
 		cfg.ThinkingLoopInterrupt = 6
 	}
+	if cfg.MaxStreamRepeats < 2 {
+		cfg.MaxStreamRepeats = defaultStreamLoopMaxRepeats
+	}
 	return &LoopDetector{
 		toolStreaks:             make(map[string]int),
 		errorHistory:            make([]bool, loopErrorHistorySize),
@@ -181,7 +205,29 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		thinkRecentCounts:       make(map[string]int),
 		persistThinkDisabled:    cfg.ThinkingDisabled,
 		persistToolDisabled:     cfg.ToolDisabled,
+		persistStreamDisabled:   cfg.StreamDisabled,
+		maxStreamRepeats:        cfg.MaxStreamRepeats,
 	}
+}
+
+// StreamMaxRepeats returns the live repeat threshold for the streaming text
+// loop detector.
+func (ld *LoopDetector) StreamMaxRepeats() int {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	return ld.maxStreamRepeats
+}
+
+// SetStreamMaxRepeats updates the live repeat threshold for the streaming
+// text loop detector. Values below 2 restore the default; called when
+// execution.stream_loop_max_repeats changes via /config set.
+func (ld *LoopDetector) SetStreamMaxRepeats(n int) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	if n < 2 {
+		n = defaultStreamLoopMaxRepeats
+	}
+	ld.maxStreamRepeats = n
 }
 
 // RecordToolCall records a tool call and checks for loop patterns.
@@ -365,6 +411,8 @@ func (ld *LoopDetector) SetTempOverride(kind string, disabled bool) {
 		ld.tempThinkDisabled = disabled
 	case "tool":
 		ld.tempToolDisabled = disabled
+	case "stream":
+		ld.tempStreamDisabled = disabled
 	}
 }
 
@@ -378,6 +426,8 @@ func (ld *LoopDetector) SetPersistOverride(kind string, disabled bool) {
 		ld.persistThinkDisabled = disabled
 	case "tool":
 		ld.persistToolDisabled = disabled
+	case "stream":
+		ld.persistStreamDisabled = disabled
 	}
 }
 
@@ -390,6 +440,8 @@ func (ld *LoopDetector) TempOverride(kind string) bool {
 		return ld.tempThinkDisabled
 	case "tool":
 		return ld.tempToolDisabled
+	case "stream":
+		return ld.tempStreamDisabled
 	}
 	return false
 }
@@ -404,6 +456,8 @@ func (ld *LoopDetector) Disabled(kind string) bool {
 		return ld.tempThinkDisabled || ld.persistThinkDisabled
 	case "tool":
 		return ld.tempToolDisabled || ld.persistToolDisabled
+	case "stream":
+		return ld.tempStreamDisabled || ld.persistStreamDisabled
 	}
 	return false
 }

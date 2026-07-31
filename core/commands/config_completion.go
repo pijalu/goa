@@ -33,6 +33,7 @@ func configTempCompletions(ctx core.Context, settingPrefix, valuePrefix string) 
 	settings := []struct{ val, desc, kind string }{
 		{"think_loop_detection", "thinking-loop detection", "think"},
 		{"tool_loop_detection", "tool-call loop detection", "tool"},
+		{"stream_loop_detection", "stream-text loop detection", "stream"},
 	}
 	var comps []core.ArgCompletion
 	for _, s := range settings {

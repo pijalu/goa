@@ -29,6 +29,13 @@ func TestSetConfigField_LoopDetectionDisable(t *testing.T) {
 	if cfg.Execution.DisableToolLoopDetection == nil || *cfg.Execution.DisableToolLoopDetection {
 		t.Error("DisableToolLoopDetection not set to false")
 	}
+
+	if err := setConfigField(cfg, []string{"execution", "disable_stream_loop_detection"}, "true"); err != nil {
+		t.Fatalf("set stream disable: %v", err)
+	}
+	if cfg.Execution.DisableStreamLoopDetection == nil || !*cfg.Execution.DisableStreamLoopDetection {
+		t.Error("DisableStreamLoopDetection not set to true")
+	}
 }
 
 // TestApplyConfigSet_LoopDetectionDisablesRuntime verifies that setting the
@@ -69,6 +76,97 @@ func TestApplyConfigSet_LoopDetectionDisablesRuntime(t *testing.T) {
 	}
 }
 
+// TestApplyConfigSet_StreamLoopDetectionDisablesRuntime verifies the stream
+// loop detection switch syncs to the live detector like the other kinds.
+func TestApplyConfigSet_StreamLoopDetectionDisablesRuntime(t *testing.T) {
+	ctx := newModeTestContext()
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	ctx.LoopDetector = ld
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	if ld.Disabled("stream") {
+		t.Fatal("precondition: stream detection should start enabled")
+	}
+	if err := applyConfigSet(ctx, "execution.disable_stream_loop_detection", "true"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	if !ld.Disabled("stream") {
+		t.Error("live detector not disabled after persistent set")
+	}
+	if ld.TempOverride("stream") {
+		t.Error("persistent disable must not set the session temp override")
+	}
+	if err := applyConfigSet(ctx, "execution.disable_stream_loop_detection", "false"); err != nil {
+		t.Fatalf("applyConfigSet re-enable: %v", err)
+	}
+	if ld.Disabled("stream") {
+		t.Error("live detector still disabled after re-enable")
+	}
+}
+
+// TestHandleConfigTemp_StreamLoopDetection verifies the
+// /config:temp:stream_loop_detection:on|off session override.
+func TestHandleConfigTemp_StreamLoopDetection(t *testing.T) {
+	ctx := newModeTestContext()
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	ctx.LoopDetector = ld
+
+	if err := handleConfigTemp(ctx, []string{"stream_loop_detection", "off"}); err != nil {
+		t.Fatalf("handleConfigTemp off: %v", err)
+	}
+	if !ld.TempOverride("stream") {
+		t.Error("temp override not set after stream_loop_detection:off")
+	}
+	if err := handleConfigTemp(ctx, []string{"stream_loop_detection", "on"}); err != nil {
+		t.Fatalf("handleConfigTemp on: %v", err)
+	}
+	if ld.TempOverride("stream") {
+		t.Error("temp override not cleared after stream_loop_detection:on")
+	}
+}
+
+// TestLoopDetectorStreamMaxRepeats verifies the stream-loop repeat threshold
+// defaults to 5 and follows live updates (0 or invalid restores the default).
+func TestLoopDetectorStreamMaxRepeats(t *testing.T) {
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	if got := ld.StreamMaxRepeats(); got != 5 {
+		t.Errorf("default StreamMaxRepeats = %d, want 5", got)
+	}
+	ld.SetStreamMaxRepeats(7)
+	if got := ld.StreamMaxRepeats(); got != 7 {
+		t.Errorf("StreamMaxRepeats = %d, want 7", got)
+	}
+	ld.SetStreamMaxRepeats(0)
+	if got := ld.StreamMaxRepeats(); got != 5 {
+		t.Errorf("StreamMaxRepeats after 0 = %d, want default 5", got)
+	}
+
+	// A zero config value also defaults to 5 at construction.
+	ld = core.NewLoopDetector(core.LoopDetectorConfig{})
+	if got := ld.StreamMaxRepeats(); got != 5 {
+		t.Errorf("zero-config StreamMaxRepeats = %d, want default 5", got)
+	}
+}
+
+// TestApplyConfigSet_StreamLoopMaxRepeats verifies /config set
+// execution.stream_loop_max_repeats syncs the live detector threshold.
+func TestApplyConfigSet_StreamLoopMaxRepeats(t *testing.T) {
+	ctx := newModeTestContext()
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	ctx.LoopDetector = ld
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	if err := applyConfigSet(ctx, "execution.stream_loop_max_repeats", "7"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	if got := ld.StreamMaxRepeats(); got != 7 {
+		t.Errorf("StreamMaxRepeats = %d, want 7 after config set", got)
+	}
+	if got := ctx.Config.Execution.StreamLoopMaxRepeats; got != 7 {
+		t.Errorf("config value = %d, want 7", got)
+	}
+}
+
 // TestLoopDetectorPersistOverride verifies persistent disable/enable behaviour
 // independent of the session temp override.
 func TestLoopDetectorPersistOverride(t *testing.T) {
@@ -95,6 +193,21 @@ func TestLoopDetectorPersistOverride(t *testing.T) {
 	ld.SetPersistOverride("tool", false)
 	if ld.Disabled("tool") {
 		t.Error("tool detection should be re-enabled after SetPersistOverride(false)")
+	}
+
+	// The stream kind behaves the same (persist + temp stack independently).
+	ld.SetPersistOverride("stream", true)
+	if !ld.Disabled("stream") {
+		t.Error("stream detection should be disabled after SetPersistOverride")
+	}
+	ld.SetTempOverride("stream", true)
+	ld.SetTempOverride("stream", false)
+	if !ld.Disabled("stream") {
+		t.Error("stream persistent disable must survive temp override toggling")
+	}
+	ld.SetPersistOverride("stream", false)
+	if ld.Disabled("stream") {
+		t.Error("stream detection should be re-enabled after SetPersistOverride(false)")
 	}
 }
 
@@ -126,5 +239,8 @@ func TestLoopDetectionConfigKey(t *testing.T) {
 	}
 	if got := loopDetectionConfigKey("tool"); got != "execution.disable_tool_loop_detection" {
 		t.Errorf("tool key = %q", got)
+	}
+	if got := loopDetectionConfigKey("stream"); got != "execution.disable_stream_loop_detection" {
+		t.Errorf("stream key = %q", got)
 	}
 }

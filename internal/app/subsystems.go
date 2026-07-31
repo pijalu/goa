@@ -370,6 +370,10 @@ func loopDetectorConfigFrom(cfg *config.Config) core.LoopDetectorConfig {
 	if cfg.Execution.DisableToolLoopDetection != nil && *cfg.Execution.DisableToolLoopDetection {
 		ldCfg.ToolDisabled = true
 	}
+	if cfg.Execution.DisableStreamLoopDetection != nil && *cfg.Execution.DisableStreamLoopDetection {
+		ldCfg.StreamDisabled = true
+	}
+	ldCfg.MaxStreamRepeats = cfg.Execution.StreamLoopMaxRepeats
 	return ldCfg
 }
 
