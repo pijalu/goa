@@ -110,10 +110,24 @@ type ExecutionConfig struct {
 	DisableThinkingLoopDetection *bool `yaml:"disable_thinking_loop_detection,omitempty"`
 	DisableToolLoopDetection     *bool `yaml:"disable_tool_loop_detection,omitempty"`
 	DisableStreamLoopDetection   *bool `yaml:"disable_stream_loop_detection,omitempty"`
+	// DisableThinkingStallDetection persistently disables the thinking-stall
+	// watchdog (the guard that stops the stream after an extended
+	// reasoning-only phase). This is NOT the stream loop detector: it never
+	// inspects the text for repetition. Same tri-state semantics as the
+	// loop-detection switches above.
+	DisableThinkingStallDetection *bool `yaml:"disable_thinking_stall_detection,omitempty"`
 	// StreamLoopMaxRepeats is the number of consecutive repeats of the same
 	// text block required before the streaming loop detector stops the turn
 	// (0 = default 5). Higher values tolerate more deliberate repetition.
 	StreamLoopMaxRepeats int `yaml:"stream_loop_max_repeats,omitempty"`
+	// StreamLoopMaxStrikes is the number of stream-loop detections after
+	// which the turn is stopped (0 = default 3). Earlier detections abandon
+	// the looped round, warn the model with an ephemeral hint, and re-stream.
+	StreamLoopMaxStrikes int `yaml:"stream_loop_max_strikes,omitempty"`
+	// StreamLoopResetAfter is the number of clean messages/tool calls (no
+	// loop detected) after which the stream-loop strike counter resets to
+	// zero (0 = default 10).
+	StreamLoopResetAfter int `yaml:"stream_loop_reset_after,omitempty"`
 }
 
 // ProviderConfig configures a single LLM provider (endpoint + auth).

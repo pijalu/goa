@@ -200,6 +200,15 @@ type Agent struct {
 	// thinkingStallWarned is set after the first stall warning is emitted
 	// so we don't flood the event stream.
 	thinkingStallWarned bool
+	// thinkingStalled is set by the thinking-stall watchdog when the model
+	// emits only reasoning tokens for longer than ThinkingStallStop. It is
+	// separate from streamLoopDetected: the two guards stop the stream for
+	// different reasons, are reported with different errors, and are
+	// disabled independently.
+	thinkingStalled bool
+	// thinkingStallElapsed records how long the thinking-only phase had
+	// lasted when the watchdog fired, for the error message and logs.
+	thinkingStallElapsed time.Duration
 
 	// bufferedToolCalls collects tool calls during streaming for concurrent
 	// execution after the stream ends, rather than executing one at a time.
@@ -284,6 +293,20 @@ type Agent struct {
 	// repeating the same substring within a single assistant block. This
 	// allows a fast stop before the response grows and wastes context.
 	streamLoopDetected bool
+
+	// streamLoopStrikes counts stream-loop detections since the last clean
+	// streak. Detections below StreamLoopMaxStrikes are soft: the looped
+	// round is abandoned, the model is warned with an ephemeral hint, and
+	// the turn continues with a fresh round. The strike at the limit stops
+	// the turn. Session-scoped: the counter resets only after
+	// StreamLoopResetAfter clean messages/tool calls, not between turns.
+	streamLoopStrikes int
+	// streamLoopCleanCount counts clean messages/tool calls since the last
+	// stream-loop strike.
+	streamLoopCleanCount int
+	// streamLoopStrikeThisRound marks the round in which a strike was
+	// registered, so the round itself is not counted as clean activity.
+	streamLoopStrikeThisRound bool
 
 	// loopStopped is set when a hard loop guardrail fires so subsequent turns
 	// are rejected instead of continuing the runaway exchange.
@@ -452,6 +475,16 @@ type Config struct {
 	// delta so runtime changes take effect mid-stream). Nil or values < 2
 	// mean the default of 5.
 	StreamLoopMaxRepeats func() int
+	// StreamLoopMaxStrikes is the number of stream-loop detections after
+	// which the turn is stopped (execution.stream_loop_max_strikes). Earlier
+	// detections are soft: the looped round is abandoned, the model is
+	// warned with an ephemeral hint, and the turn re-streams. Zero means
+	// the default of 3.
+	StreamLoopMaxStrikes int
+	// StreamLoopResetAfter is the number of clean messages/tool calls (no
+	// loop detected) after which the strike counter resets to zero
+	// (execution.stream_loop_reset_after). Zero means the default of 10.
+	StreamLoopResetAfter int
 
 	// Logger is an optional leveled logger for debugging. If nil, logging is disabled.
 	Logger *Logger
@@ -552,8 +585,15 @@ type Config struct {
 	// the default of 60s.
 	ThinkingStallWarn time.Duration
 	// ThinkingStallStop is the duration of pure thinking before the stream
-	// is interrupted. Zero means the default of 120s.
+	// is interrupted. Zero means the default of 300s.
 	ThinkingStallStop time.Duration
+	// ThinkingStallDisabled, when non-nil and returning true, disables the
+	// thinking-stall watchdog (both the warning and the stream stop). It is
+	// queried per delta so session-level temp overrides
+	// (/config:temp:thinking_stall_detection:off) and persisted config
+	// (execution.disable_thinking_stall_detection) take effect mid-stream.
+	// Nil means the watchdog is enabled.
+	ThinkingStallDisabled func() bool
 
 	// HookEngine executes user-defined lifecycle hooks (beforeTool, afterTool,
 	// sessionStart, sessionEnd). When nil, no hooks run.

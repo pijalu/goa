@@ -234,6 +234,8 @@ func TestStreamHasMultipleUniqueWords(t *testing.T) {
 		{"single char different", "a b", true},
 		{"digits same", "123 123 123", false},
 		{"digits different", "123 456", true},
+		{"window slice with partial words", "he the the the th", false},
+		{"slice with two real middle words", "he quick brown th", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,71 +247,75 @@ func TestStreamHasMultipleUniqueWords(t *testing.T) {
 	}
 }
 
-func TestStreamLoopWindowRange(t *testing.T) {
+// Short or empty buffers never trigger the scan, at any threshold: the
+// smallest period times the repeat count is the minimum evidence size.
+func TestStreamLoopScan_ShortTextNeverDetects(t *testing.T) {
+	texts := []string{
+		"",
+		"hello world",
+		"hello world hello world hello", // 29 < 20*2
+		"a",
+	}
+	for _, text := range texts {
+		for _, threshold := range []int{2, 3, 5} {
+			if streamLoopWouldDetect(text, threshold) {
+				t.Errorf("short text %q detected as loop at threshold %d", text, threshold)
+			}
+		}
+	}
+}
+
+// streamTailRepeats is the per-period matcher behind streamLoopScan: exact
+// repeats always count (except the 2-copy long-block rule), fuzzy repeats
+// count only for long periods and never for progressing enumerations.
+func TestStreamTailRepeats(t *testing.T) {
+	longBlock := "the quick brown fox jumps over the lazy dog while the diligent tester watches the suite"
+	if len(longBlock) < streamLoopExactMinPeriod {
+		t.Fatalf("fixture block is %d bytes, want >= %d", len(longBlock), streamLoopExactMinPeriod)
+	}
+	// Fuzzy fixtures: three period-60+ blocks with controlled differences.
+	base60 := "abcdefghij klmnop qrstuv wxyz01 23456789 abcdef ghijkl mnopqr"
+	if len(base60) < streamLoopFuzzyMinPeriod {
+		t.Fatalf("fixture base is %d bytes, want >= %d", len(base60), streamLoopFuzzyMinPeriod)
+	}
+	oneOff := func(s string, pos int, c byte) string {
+		b := []byte(s)
+		b[pos] = c
+		return string(b)
+	}
+	// Noise copies: each differs at a different position — no position is
+	// distinct across all copies, so this is repetition with noise.
+	noise2 := oneOff(base60, 10, 'X')
+	noise3 := oneOff(base60, 40, 'Y')
+	// Enumeration copies: position 10 walks 1 -> 2 -> 3 (a counter).
+	enum2 := oneOff(base60, 10, '2')
+	enum3 := oneOff(base60, 10, '3')
+	enum1 := oneOff(base60, 10, '1')
+
 	tests := []struct {
 		name   string
 		text   string
-		wantOk bool
-	}{
-		{"empty", "", false},
-		{"too short", "hello world", false},                                         // 11 < 40 (20*2)
-		{"just enough", "hello world hello world hello world hello", true},         // 45 chars
-		{"long text", "the quick brown fox jumps over the lazy dog " +
-			"the quick brown fox jumps over the lazy dog the quick", true},
-		{"very long", string(repeatString("hello ", 100)), true},                   // capped at 120
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assertWindowRange(t, tt.text, tt.wantOk)
-		})
-	}
-}
-
-func assertWindowRange(t *testing.T, text string, wantOk bool) {
-	t.Helper()
-	gotMin, gotMax := streamLoopWindowRange(text)
-	if !wantOk {
-		if gotMin != 0 || gotMax != 0 {
-			t.Errorf("streamLoopWindowRange() = (%d, %d), want (0, 0)", gotMin, gotMax)
-		}
-		return
-	}
-	if gotMin != 20 {
-		t.Errorf("streamLoopWindowRange() min = %d, want %d", gotMin, 20)
-	}
-	expectedMax := len(text) / 2
-	if expectedMax > 120 {
-		expectedMax = 120
-	}
-	if gotMax != expectedMax {
-		t.Errorf("streamLoopWindowRange() max = %d, want %d (len=%d/2=%d, capped=120)",
-			gotMax, expectedMax, len(text), len(text)/2)
-	}
-}
-
-func TestStreamHasRepeatedSuffix(t *testing.T) {
-	tests := []struct {
-		name          string
-		text          string
-		window        int
-		repeatsNeeded int
-		want          bool
+		period int
+		n      int
+		want   bool
 	}{
 		{"too short", "abc", 5, 3, false},
 		{"no repeat", "hello world how are you", 5, 2, false},
-		{"simple repeat", "abcabc", 3, 2, true},
-		{"triple repeat", "abcabcabc", 3, 3, true},
+		{"exact 2 copies below long-block floor", "abcabc", 3, 2, false},
+		{"exact 2 copies at long-block floor", longBlock + longBlock, len(longBlock), 2, true},
+		{"exact 3 copies below long-block floor", "abcabcabc", 3, 3, true},
 		{"not enough repeats", "abcabcx", 3, 3, false},
-		{"longer repeat", "thequickthequickthequick", 8, 3, true},
-		{"hello repeated twice", "hellohello", 5, 2, true},
+		{"longer exact repeat", "thequickthequickthequick", 8, 3, true},
 		{"no match due to change", "hello world goodbye", 5, 2, false},
+		{"fuzzy below fuzzy floor", base60[:30] + oneOff(base60, 10, 'X')[:30] + base60[:30], 30, 3, false},
+		{"fuzzy long period with per-copy noise", base60 + noise2 + noise3, len(base60), 3, true},
+		{"fuzzy long period with walking counter", enum1 + enum2 + enum3, len(base60), 3, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := streamHasRepeatedSuffix(tt.text, tt.window, tt.repeatsNeeded, streamRepeatMismatchBudget(tt.window))
-			if got != tt.want {
-				t.Errorf("streamHasRepeatedSuffix(%q, %d, %d) = %v, want %v",
-					tt.text, tt.window, tt.repeatsNeeded, got, tt.want)
+			if got := streamTailRepeats(tt.text, tt.period, tt.n); got != tt.want {
+				t.Errorf("streamTailRepeats(len=%d, period=%d, n=%d) = %v, want %v",
+					len(tt.text), tt.period, tt.n, got, tt.want)
 			}
 		})
 	}
@@ -322,9 +328,8 @@ func TestStreamLoopIntegration(t *testing.T) {
 		if clean != "a" {
 			t.Errorf("box drawing normalized to %q, want 'a'", clean)
 		}
-		minW, _ := streamLoopWindowRange(clean)
-		if minW != 0 {
-			t.Errorf("box drawing should not trigger window range, got minWindow=%d", minW)
+		if streamLoopWouldDetect(clean, 2) {
+			t.Error("box drawing should not trigger loop detection")
 		}
 	})
 
@@ -451,17 +456,9 @@ func streamLoopWouldDetect(text string, maxRepeats int) bool {
 func assertSingleWordRepeatNotDetected(t *testing.T) {
 	t.Helper()
 	text := "the the the the the the the the the the the the the the the the the the"
-	clean := streamLoopNormalize(text)
-	minW, maxW := streamLoopWindowRange(clean)
-	if minW == 0 {
-		t.Fatal("should have valid window range")
-	}
-	for window := minW; window <= maxW; window++ {
-		suffix := clean[len(clean)-window:]
-		if streamHasMultipleUniqueWords(suffix) {
-			if streamLoopMatchWindow(clean, window, 5) {
-				t.Errorf("single-word repeat should not trigger loop detection at window=%d, suffix=%q", window, suffix)
-			}
+	for _, threshold := range []int{2, 3, 5} {
+		if streamLoopWouldDetect(text, threshold) {
+			t.Errorf("single-word repeat should not trigger loop detection at threshold %d", threshold)
 		}
 	}
 }
@@ -470,22 +467,7 @@ func assertMultiWordRepeatDetected(t *testing.T) {
 	t.Helper()
 	text := "the quick brown the quick brown the quick brown the quick brown " +
 		"the quick brown the quick brown the quick brown the quick brown"
-	clean := streamLoopNormalize(text)
-	minW, maxW := streamLoopWindowRange(clean)
-	if minW == 0 {
-		t.Fatal("should have valid window range")
-	}
-	found := false
-	for window := minW; window <= maxW; window++ {
-		suffix := clean[len(clean)-window:]
-		if !streamHasMultipleUniqueWords(suffix) {
-			continue
-		}
-		if found = streamLoopMatchWindow(clean, window, 3); found {
-			break
-		}
-	}
-	if !found {
+	if !streamLoopWouldDetect(text, 3) {
 		t.Error("genuine multi-word loop should be detected")
 	}
 }

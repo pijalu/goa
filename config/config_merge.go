@@ -160,8 +160,17 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	if src.DisableStreamLoopDetection != nil {
 		dst.DisableStreamLoopDetection = src.DisableStreamLoopDetection
 	}
+	if src.DisableThinkingStallDetection != nil {
+		dst.DisableThinkingStallDetection = src.DisableThinkingStallDetection
+	}
 	if src.StreamLoopMaxRepeats != 0 {
 		dst.StreamLoopMaxRepeats = src.StreamLoopMaxRepeats
+	}
+	if src.StreamLoopMaxStrikes != 0 {
+		dst.StreamLoopMaxStrikes = src.StreamLoopMaxStrikes
+	}
+	if src.StreamLoopResetAfter != 0 {
+		dst.StreamLoopResetAfter = src.StreamLoopResetAfter
 	}
 }
 

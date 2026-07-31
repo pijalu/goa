@@ -242,6 +242,10 @@ func syncLoopDetectorConfig(ctx core.Context, key string) bool {
 		if ctx.LoopDetector != nil {
 			ctx.LoopDetector.SetPersistOverride("stream", boolPtrValue(exec.DisableStreamLoopDetection))
 		}
+	case "execution.disable_thinking_stall_detection":
+		if ctx.LoopDetector != nil {
+			ctx.LoopDetector.SetPersistOverride("stall", boolPtrValue(exec.DisableThinkingStallDetection))
+		}
 	case "execution.stream_loop_max_repeats":
 		if ctx.LoopDetector != nil {
 			ctx.LoopDetector.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
@@ -327,6 +331,8 @@ func persistModeDefault(ctx core.Context, value string) error {
 //	/config:temp:tool_loop_detection:on     — enable tool-call loop detection
 //	/config:temp:stream_loop_detection:off  — disable stream-text loop detection
 //	/config:temp:stream_loop_detection:on   — enable stream-text loop detection
+//	/config:temp:thinking_stall_detection:off — disable the thinking-stall watchdog
+//	/config:temp:thinking_stall_detection:on  — enable the thinking-stall watchdog
 func handleConfigTemp(ctx core.Context, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: /config:temp <setting> <on|off>")
@@ -351,8 +357,10 @@ func handleConfigTemp(ctx core.Context, args []string) error {
 		return applyTempOverride(ctx, "tool", enabled)
 	case "stream_loop_detection":
 		return applyTempOverride(ctx, "stream", enabled)
+	case "thinking_stall_detection":
+		return applyTempOverride(ctx, "stall", enabled)
 	default:
-		return fmt.Errorf("unknown temp setting: %q (use 'think_loop_detection', 'tool_loop_detection' or 'stream_loop_detection')", setting)
+		return fmt.Errorf("unknown temp setting: %q (use 'think_loop_detection', 'tool_loop_detection', 'stream_loop_detection' or 'thinking_stall_detection')", setting)
 	}
 }
 
@@ -443,7 +451,10 @@ var configSetters = map[string]configSetter{
 	"execution.disable_thinking_loop_detection":      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
 	"execution.disable_tool_loop_detection":          setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
 	"execution.disable_stream_loop_detection":        setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
+	"execution.disable_thinking_stall_detection":     setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingStallDetection }),
 	"execution.stream_loop_max_repeats":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
+	"execution.stream_loop_max_strikes":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
+	"execution.stream_loop_reset_after":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
 	"execution.disable_tool_budget":                  setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
 	"skills.execution_mode":                          setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
 	"tools.bash.enable_complexity_analysis":          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),

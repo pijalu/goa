@@ -195,6 +195,16 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 			}
 			return am.loopDetector.StreamMaxRepeats()
 		},
+		StreamLoopMaxStrikes: cfg.Execution.StreamLoopMaxStrikes,
+		StreamLoopResetAfter: cfg.Execution.StreamLoopResetAfter,
+		// The thinking-stall watchdog shares the temp + persist override
+		// machinery with the loop detectors, under its own "stall" kind.
+		ThinkingStallDisabled: func() bool {
+			if am.loopDetector == nil {
+				return false
+			}
+			return am.loopDetector.Disabled("stall")
+		},
 	}
 	compressionCfg := am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
 	if cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {

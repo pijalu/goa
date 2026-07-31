@@ -77,8 +77,11 @@ func IsGuardrailResult(s string) bool {
 const defaultThinkingStallWarn = 60 * time.Second
 
 // defaultThinkingStallStop is the default duration of pure thinking before the
-// stream is interrupted, used when Config.ThinkingStallStop is zero.
-const defaultThinkingStallStop = 120 * time.Second
+// stream is interrupted, used when Config.ThinkingStallStop is zero. Five
+// minutes accommodates high-effort reasoning models, which legitimately think
+// for several minutes on large contexts; provider output-token limits are the
+// backstop for truly unbounded reasoning.
+const defaultThinkingStallStop = 300 * time.Second
 
 // synthesizeAssistantBuffer creates an assistant message from accumulated buffers.
 func (a *Agent) synthesizeAssistantBuffer() Message {
@@ -459,6 +462,9 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 	for _, r := range realResults {
 		a.recordToolExecOutcome(r.Name, r.Err)
 	}
+	// Real tool executions count as clean activity toward resetting the
+	// stream-loop strike counter (no-op when no strike is outstanding).
+	a.noteStreamLoopCleanActivity(len(realResults))
 	a.appendToolResults(tcs, realResults)
 
 	a.contentBuf.Reset()

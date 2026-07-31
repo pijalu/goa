@@ -101,16 +101,21 @@ type LoopDetector struct {
 	// per-session temporary overrides that disable loop detection without
 	// modifying the persisted config. Set via
 	// /config:temp:<think|tool|stream>_loop_detection:off slash commands.
+	// tempStallDisabled does the same for the thinking-stall watchdog via
+	// /config:temp:thinking_stall_detection:off.
 	tempThinkDisabled  bool
 	tempToolDisabled   bool
 	tempStreamDisabled bool
+	tempStallDisabled  bool
 
 	// persistThinkDisabled, persistToolDisabled and persistStreamDisabled
 	// come from the persisted config (execution.disable_<kind>_loop_detection)
-	// and disable detection across sessions.
+	// and disable detection across sessions. persistStallDisabled comes from
+	// execution.disable_thinking_stall_detection.
 	persistThinkDisabled  bool
 	persistToolDisabled   bool
 	persistStreamDisabled bool
+	persistStallDisabled  bool
 
 	// maxStreamRepeats is the live repeat threshold for the streaming text
 	// loop detector (see LoopDetectorConfig.MaxStreamRepeats).
@@ -138,6 +143,11 @@ type LoopDetectorConfig struct {
 	// suffix in the assistant's own streamed output) entirely. Set via
 	// /config:temp:stream_loop_detection:off for session-level override.
 	StreamDisabled bool
+	// StallDisabled disables the thinking-stall watchdog (the guard that
+	// stops the stream after an extended reasoning-only phase) entirely.
+	// Set via /config:temp:thinking_stall_detection:off for session-level
+	// override.
+	StallDisabled bool
 	// MaxStreamRepeats is the number of consecutive repeats of the same text
 	// block required before the streaming loop detector stops the turn
 	// (0 = default 5). From execution.stream_loop_max_repeats.
@@ -206,6 +216,7 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		persistThinkDisabled:    cfg.ThinkingDisabled,
 		persistToolDisabled:     cfg.ToolDisabled,
 		persistStreamDisabled:   cfg.StreamDisabled,
+		persistStallDisabled:    cfg.StallDisabled,
 		maxStreamRepeats:        cfg.MaxStreamRepeats,
 	}
 }
@@ -413,6 +424,8 @@ func (ld *LoopDetector) SetTempOverride(kind string, disabled bool) {
 		ld.tempToolDisabled = disabled
 	case "stream":
 		ld.tempStreamDisabled = disabled
+	case "stall":
+		ld.tempStallDisabled = disabled
 	}
 }
 
@@ -428,6 +441,8 @@ func (ld *LoopDetector) SetPersistOverride(kind string, disabled bool) {
 		ld.persistToolDisabled = disabled
 	case "stream":
 		ld.persistStreamDisabled = disabled
+	case "stall":
+		ld.persistStallDisabled = disabled
 	}
 }
 
@@ -442,6 +457,8 @@ func (ld *LoopDetector) TempOverride(kind string) bool {
 		return ld.tempToolDisabled
 	case "stream":
 		return ld.tempStreamDisabled
+	case "stall":
+		return ld.tempStallDisabled
 	}
 	return false
 }
@@ -458,6 +475,8 @@ func (ld *LoopDetector) Disabled(kind string) bool {
 		return ld.tempToolDisabled || ld.persistToolDisabled
 	case "stream":
 		return ld.tempStreamDisabled || ld.persistStreamDisabled
+	case "stall":
+		return ld.tempStallDisabled || ld.persistStallDisabled
 	}
 	return false
 }

@@ -389,3 +389,37 @@ func TestLoopDetector_ThinkingLoop_VariedReasoningNoFalsePositive(t *testing.T) 
 		}
 	}
 }
+
+// The "stall" kind (thinking-stall watchdog) participates in the same
+// temp/persist override machinery as the loop detectors, independently of
+// the other kinds.
+func TestLoopDetector_StallKindOverrides(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	if ld.Disabled("stall") {
+		t.Fatal("stall watchdog should start enabled")
+	}
+
+	ld.SetTempOverride("stall", true)
+	if !ld.Disabled("stall") || !ld.TempOverride("stall") {
+		t.Error("temp override not reflected for stall kind")
+	}
+	// Other kinds are unaffected.
+	if ld.Disabled("stream") || ld.Disabled("think") || ld.Disabled("tool") {
+		t.Error("stall temp override leaked into another kind")
+	}
+
+	ld.SetTempOverride("stall", false)
+	ld.SetPersistOverride("stall", true)
+	if !ld.Disabled("stall") {
+		t.Error("persist override not reflected for stall kind")
+	}
+	if ld.TempOverride("stall") {
+		t.Error("TempOverride(stall) should be false when only the persist override is set")
+	}
+
+	// LoopDetectorConfig.StallDisabled seeds the persist override.
+	ld2 := NewLoopDetector(LoopDetectorConfig{StallDisabled: true})
+	if !ld2.Disabled("stall") {
+		t.Error("StallDisabled config seed not applied")
+	}
+}

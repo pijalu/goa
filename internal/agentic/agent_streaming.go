@@ -67,6 +67,7 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		a.mu.Lock()
 		a.consecutiveToolRounds = 0
 		a.mu.Unlock()
+		a.noteCleanStreamRound()
 		return true, nil
 	}
 
@@ -82,6 +83,7 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		}
 		return true, nil
 	}
+	a.noteCleanStreamRound()
 	return false, nil
 }
 
@@ -342,8 +344,21 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 // through unchecked, producing visible duplication in the message bubble.
 func (a *Agent) handleStreamEvent(ctx context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (done bool, toolCallsEncountered bool, err error) {
 	if a.streamLoopDetected {
-		a.cfg.Logger.Log(Warn, "Stopping stream because a loop was detected inside the assistant response")
-		return true, false, fmt.Errorf("stream loop detected: the assistant started repeating the same text; turn stopped to prevent runaway context usage")
+		a.streamLoopDetected = false // consumed here; per-round state resets before the next round
+		toolCallsEncountered, err := a.handleStreamLoopStrike(ctx)
+		return true, toolCallsEncountered, err
+	}
+	// The thinking-stall watchdog is a separate guard from the stream loop
+	// detector: it fires when the model emits only reasoning tokens for too
+	// long, never because of repeated text. It previously reused the
+	// streamLoopDetected flag and its "stream loop" error, so turns killed
+	// by the watchdog were misreported and could not be disabled via the
+	// stream-loop toggle. Report it under its own name; it is tuned and
+	// disabled independently (execution.thinking_stall_stop_seconds,
+	// execution.disable_thinking_stall_detection).
+	if a.thinkingStalled {
+		a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without content or tool calls", a.thinkingStallElapsed)
+		return true, false, fmt.Errorf("thinking stalled: the model produced only reasoning output for %v without reply text or tool calls; turn stopped (tune execution.thinking_stall_stop_seconds or disable via /config:temp:thinking_stall_detection:off)", a.thinkingStallElapsed.Round(time.Second))
 	}
 	if handler, ok := streamEventHandlers[event.Type]; ok {
 		return handler(a, ctx, stream, event)
@@ -430,21 +445,30 @@ func (a *Agent) handleStreamDone(ctx context.Context, stream *provider.Assistant
 	// Capture provider Usage from the stream result.
 	// The usage chunk (stream_options.include_usage) is attached to
 	// the stream result via End() or UpdateResult().
-	if result := stream.Result(); result != nil {
-		a.mu.Lock()
-		if result.Usage != nil && !a.turnStatsEmitted {
-			a.providerUsage = result.Usage
-		}
-		if result.Usage != nil {
-			a.recordContextUsageLocked(result.Usage)
-		}
-		if result.StopReason != "" {
-			a.lastStopReason = result.StopReason
-		}
-		a.mu.Unlock()
-	}
+	a.captureStreamResult(stream)
 	a.recordGenDuration()
 	return true, a.completeStreamTurn(ctx), nil
+}
+
+// captureStreamResult records provider Usage and StopReason from a finished
+// stream's result (the usage chunk arrives via stream_options.include_usage
+// and is attached through End() or UpdateResult()).
+func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream) {
+	result := stream.Result()
+	if result == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if result.Usage != nil && !a.turnStatsEmitted {
+		a.providerUsage = result.Usage
+	}
+	if result.Usage != nil {
+		a.recordContextUsageLocked(result.Usage)
+	}
+	if result.StopReason != "" {
+		a.lastStopReason = result.StopReason
+	}
 }
 
 func (a *Agent) handleStreamError(_ context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
@@ -650,6 +674,12 @@ func looksTruncated(content string) bool {
 
 // finishStreamTurn handles a stream that ended without an explicit EventDone.
 func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.AssistantMessageEventStream) (bool, error) {
+	// A loop detected by the very last delta has no following event to trip
+	// the dispatch-level check, so handle it here as well.
+	if a.streamLoopDetected {
+		a.streamLoopDetected = false
+		return a.handleStreamLoopStrike(ctx)
+	}
 	// If the stream terminated with an error, surface it before finalizing.
 	// Context-length errors are handled with compression; other errors are
 	// passed to handleStreamFailure for retry.
@@ -671,19 +701,7 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 
 	// Extract provider Usage from the stream result (set by updateResultWithUsage
 	// after the usage chunk arrives from stream_options.include_usage).
-	if result := stream.Result(); result != nil {
-		a.mu.Lock()
-		if result.Usage != nil && !a.turnStatsEmitted {
-			a.providerUsage = result.Usage
-		}
-		if result.Usage != nil {
-			a.recordContextUsageLocked(result.Usage)
-		}
-		if result.StopReason != "" {
-			a.lastStopReason = result.StopReason
-		}
-		a.mu.Unlock()
-	}
+	a.captureStreamResult(stream)
 	a.recordGenDuration()
 
 	// Empty-response guard: a clean stream end (2xx + [DONE]/EOF) that emitted
@@ -791,30 +809,37 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	a.thinkingBuf.WriteString(event.Delta)
 	a.checkStreamLoop(a.thinkingBuf.String())
 
-	// Track extended thinking without progress.
-	warnAfter := a.cfg.ThinkingStallWarn
-	if warnAfter <= 0 {
-		warnAfter = defaultThinkingStallWarn
-	}
-	stopAfter := a.cfg.ThinkingStallStop
-	if stopAfter <= 0 {
-		stopAfter = defaultThinkingStallStop
-	}
-	if a.thinkingStallStart.IsZero() {
-		a.thinkingStallStart = time.Now()
-	}
-	elapsed := time.Since(a.thinkingStallStart)
-	if elapsed > stopAfter {
-		a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without progress", elapsed)
-		a.streamLoopDetected = true
-		return
-	}
-	if elapsed > warnAfter && !a.thinkingStallWarned {
-		a.thinkingStallWarned = true
-		a.emitEvent(OutputEvent{
-			Type: EventProgress,
-			Text: "The agent has been thinking for over " + warnAfter.Round(time.Second).String() + " without producing output.",
-		})
+	// Track extended thinking without progress. This watchdog is independent
+	// from the stream loop detector and toggled separately
+	// (/config:temp:thinking_stall_detection:off or
+	// execution.disable_thinking_stall_detection); checked per delta so a
+	// mid-stream toggle takes effect immediately.
+	if stallDisabled := a.cfg.ThinkingStallDisabled != nil && a.cfg.ThinkingStallDisabled(); !stallDisabled {
+		warnAfter := a.cfg.ThinkingStallWarn
+		if warnAfter <= 0 {
+			warnAfter = defaultThinkingStallWarn
+		}
+		stopAfter := a.cfg.ThinkingStallStop
+		if stopAfter <= 0 {
+			stopAfter = defaultThinkingStallStop
+		}
+		if a.thinkingStallStart.IsZero() {
+			a.thinkingStallStart = time.Now()
+		}
+		elapsed := time.Since(a.thinkingStallStart)
+		if elapsed > stopAfter {
+			a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without progress", elapsed)
+			a.thinkingStalled = true
+			a.thinkingStallElapsed = elapsed
+			return
+		}
+		if elapsed > warnAfter && !a.thinkingStallWarned {
+			a.thinkingStallWarned = true
+			a.emitEvent(OutputEvent{
+				Type: EventProgress,
+				Text: "The agent has been thinking for over " + warnAfter.Round(time.Second).String() + " without producing output.",
+			})
+		}
 	}
 
 	// Strip tool-call XML from the visible thinking stream. Local
@@ -970,6 +995,9 @@ func (a *Agent) resetStreamRoundState() {
 	a.bufferedToolCalls = nil
 	a.bufferedToolCallCount = 0
 	a.streamLoopDetected = false
+	a.streamLoopStrikeThisRound = false
+	a.thinkingStalled = false
+	a.thinkingStallElapsed = 0
 	a.resetThinkingStall()
 	a.streamingToolCalls = nil
 	a.streamingToolCallsByIndex = nil
@@ -994,9 +1022,9 @@ func (a *Agent) checkStreamLoop(text string) {
 	}
 	// Normalize: strip punctuation, symbols, box-drawing chars, collapse spaces
 	clean := streamLoopNormalize(text)
-	if window, repeats, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
+	if period, repeats, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
 		a.streamLoopDetected = true
-		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte suffix repeated %d times", window, repeats)
+		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte period repeated %d times", period, repeats)
 	}
 }
 
@@ -1014,57 +1042,254 @@ func (a *Agent) streamLoopMaxRepeats() int {
 	return defaultMaxRepeats
 }
 
-// streamLoopScan is the detection core of checkStreamLoop: it scans the
-// normalized buffer for a repeated suffix loop and reports the window and
-// repeat count when one is found. maxRepeats is the number of consecutive
-// repeats required to call it a loop (user-configurable, default 5). Kept
+const (
+	// defaultStreamLoopMaxStrikes is the number of stream-loop detections
+	// after which the turn is stopped. Earlier detections are soft: the
+	// looped round is abandoned, the model is warned with an ephemeral
+	// hint, and the turn re-streams (execution.stream_loop_max_strikes).
+	defaultStreamLoopMaxStrikes = 3
+	// defaultStreamLoopResetAfter is the number of clean messages/tool
+	// calls (no loop detected) after which the strike counter resets to
+	// zero (execution.stream_loop_reset_after).
+	defaultStreamLoopResetAfter = 10
+)
+
+// effectiveStreamLoopMaxStrikes resolves the strike limit, defaulting to 3.
+func (a *Agent) effectiveStreamLoopMaxStrikes() int {
+	if a.cfg.StreamLoopMaxStrikes > 0 {
+		return a.cfg.StreamLoopMaxStrikes
+	}
+	return defaultStreamLoopMaxStrikes
+}
+
+// effectiveStreamLoopResetAfter resolves the clean-activity count that
+// resets the strike counter, defaulting to 10.
+func (a *Agent) effectiveStreamLoopResetAfter() int {
+	if a.cfg.StreamLoopResetAfter > 0 {
+		return a.cfg.StreamLoopResetAfter
+	}
+	return defaultStreamLoopResetAfter
+}
+
+// registerStreamLoopStrike records a stream-loop detection: the strike count
+// increments and the clean-activity counter restarts. Returns the strike
+// number (1-based).
+func (a *Agent) registerStreamLoopStrike() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.streamLoopStrikes++
+	a.streamLoopCleanCount = 0
+	a.streamLoopStrikeThisRound = true
+	return a.streamLoopStrikes
+}
+
+// noteStreamLoopCleanActivity records n clean messages/tool calls (no loop
+// detected) and resets the strike counter once the configured clean streak
+// (execution.stream_loop_reset_after, default 10) is reached.
+func (a *Agent) noteStreamLoopCleanActivity(n int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.streamLoopStrikes == 0 || n <= 0 {
+		return
+	}
+	a.streamLoopCleanCount += n
+	if a.streamLoopCleanCount >= a.effectiveStreamLoopResetAfter() {
+		a.cfg.Logger.Log(Info, "Stream-loop strike counter reset after %d clean messages/tool calls", a.streamLoopCleanCount)
+		a.streamLoopStrikes = 0
+		a.streamLoopCleanCount = 0
+	}
+}
+
+// noteCleanStreamRound counts a stream round that completed without a loop
+// strike as one clean message toward resetting the strike counter.
+func (a *Agent) noteCleanStreamRound() {
+	a.mu.Lock()
+	strike := a.streamLoopStrikeThisRound
+	a.mu.Unlock()
+	if strike {
+		return
+	}
+	a.noteStreamLoopCleanActivity(1)
+}
+
+// handleStreamLoopStrike applies the graduated stream-loop response: the
+// detections below the strike limit are soft (the looped round is abandoned,
+// the model is warned with an ephemeral hint, and the turn re-streams); the
+// detection at the limit stops the turn with an error. Reports whether the
+// turn continues (soft strike) or the terminal error (hard strike).
+func (a *Agent) handleStreamLoopStrike(ctx context.Context) (toolCallsEncountered bool, err error) {
+	strike := a.registerStreamLoopStrike()
+	maxStrikes := a.effectiveStreamLoopMaxStrikes()
+	if strike >= maxStrikes {
+		a.cfg.Logger.Log(Warn, "Stream loop strike %d/%d: the model kept repeating; stopping the turn", strike, maxStrikes)
+		return false, fmt.Errorf("stream loop detected: the assistant kept repeating the same text after %d warnings; turn stopped to prevent runaway context usage", strike-1)
+	}
+	a.cfg.Logger.Log(Warn, "Stream loop strike %d/%d: abandoning the looped round and warning the model", strike, maxStrikes)
+	return a.recoverFromStreamLoop(ctx, strike, maxStrikes), nil
+}
+
+// recoverFromStreamLoop handles a soft stream-loop strike: the looped round
+// is abandoned — its repetition-laden partial text is NOT committed to
+// history — the user is shown a warning, and an ephemeral hint tells the
+// model to continue without repeating, so the next round re-streams. When
+// the round already buffered complete tool calls, they run through the
+// normal execution path so the model keeps their results. Always reports
+// that the turn continues (a soft strike never ends the turn directly; the
+// tool-call path may still end it via the normal budget rules).
+func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes int) bool {
+	a.emitEvent(OutputEvent{
+		Type: EventContent,
+		Role: System,
+		Text: fmt.Sprintf("Stream loop detected (warning %d of %d) — the reply was cut off; the model was told to continue without repeating.", strike, maxStrikes),
+		// stream_retry retracts the orphaned in-progress assistant bubble:
+		// the looped partial text is discarded, not finalized, so without a
+		// retraction it would linger next to the re-streamed answer.
+		Metadata: map[string]string{"category": "system-notification", "stream_retry": "true"},
+	})
+	a.InjectEphemeralSystemMessage(
+		"[goa-system] Internal control note (never show or mention to the user): your previous output started " +
+			"repeating the same block of text over and over and was cut off. Do not repeat yourself. Continue the " +
+			"task now: move forward, keep the answer concise, and do not restate earlier text.")
+	if len(a.bufferedToolCalls) > 0 {
+		// Complete tool calls arrived before the loop started: execute them
+		// through the normal path so the model keeps their results. The
+		// ephemeral warning rides along in history for the next round.
+		return a.completeStreamTurn(ctx)
+	}
+	return true
+}
+
+// streamLoopScan is the detection core of checkStreamLoop: it reports whether
+// the normalized buffer ends in maxRepeats consecutive copies of the same
+// period-sized block, and if so returns the period and repeat count. Kept
 // separate from the Agent method so the exact production scan can be
 // exercised directly by tests.
-func streamLoopScan(clean string, maxRepeats int) (window, repeats int, ok bool) {
+//
+// Detection policy (rewritten after three opposite field failures — a false
+// positive on enumerated lists, a false negative on a long-period loop, and a
+// false positive on quoted near-identical evidence):
+//
+//   - The unit of detection is the PERIOD (previously "window", hard-capped
+//     at 120 bytes): the scan ranges from streamLoopMinPeriod up to
+//     len(clean)/maxRepeats, so a loop whose repeated unit is a whole
+//     paragraph — a real incident looped a ~230-byte unit 14 times,
+//     invisible to the 120-byte cap — is caught.
+//   - Byte-exact repeats always count (subject to the 2-copy long-block
+//     rule): no legitimate answer repeats the same 20+ byte block several
+//     times back to back.
+//   - Fuzzy repeats (small per-copy variations, re-wrapped or separator-
+//     shifted copies) count only for long periods AND only when the copies
+//     are not systematically progressing: an enumerated list such as
+//     "./testgen/select3 ./testgen/select4 …" differs from a loop precisely
+//     because some position (the counter) takes a different value in every
+//     block. Near-identical blocks with a walking counter are enumeration,
+//     not looping.
+func streamLoopScan(clean string, maxRepeats int) (period, repeats int, ok bool) {
 	if maxRepeats < 2 {
 		maxRepeats = 2
 	}
-	minWindow, maxWindow := streamLoopWindowRange(clean)
-	if minWindow == 0 {
+	if len(clean) < streamLoopMinPeriod*maxRepeats {
 		return 0, 0, false
 	}
-
-	for window = minWindow; window <= maxWindow; window++ {
-		// Verify the repeated pattern is more than a single word.
-		suffix := clean[len(clean)-window:]
-		if !streamHasMultipleUniqueWords(suffix) {
+	maxPeriod := len(clean) / maxRepeats
+	if maxPeriod > streamLoopMaxPeriod {
+		maxPeriod = streamLoopMaxPeriod
+	}
+	for period = streamLoopMinPeriod; period <= maxPeriod; period++ {
+		// Small periods must span more than a single word, or connector
+		// noise ("the the the the …") would trip the detector. Long periods
+		// skip the check: 60+ bytes of single-word repetition IS a loop, and
+		// skipping keeps the per-delta cost bounded.
+		if period < streamLoopFuzzyMinPeriod &&
+			!streamHasMultipleUniqueWords(clean[len(clean)-period:]) {
 			continue
 		}
-		if found := streamLoopMatchWindow(clean, window, maxRepeats); found {
-			return window, maxRepeats, true
+		if streamTailRepeats(clean, period, maxRepeats) {
+			return period, maxRepeats, true
 		}
 	}
 	return 0, 0, false
 }
 
-// streamLoopExactMinWindow is the smallest window for which two consecutive
-// byte-exact copies already count as a loop.
-const streamLoopExactMinWindow = 80
+const (
+	// streamLoopMinPeriod is the smallest repeated unit considered: shorter
+	// repeats are punctuation/connector noise, and a genuine micro-loop with
+	// a shorter unit also repeats at multiples of the unit, which qualify.
+	streamLoopMinPeriod = 20
+	// streamLoopFuzzyMinPeriod is the smallest period eligible for fuzzy
+	// (variation-tolerant) matching. Short near-repeats are where legitimate
+	// enumerated content lives (package paths, numbered items), so below
+	// this bound only byte-exact repetition counts.
+	streamLoopFuzzyMinPeriod = 60
+	// streamLoopExactMinPeriod is the smallest period for which two
+	// byte-exact copies already count as a loop (the most aggressive
+	// user-configured threshold).
+	streamLoopExactMinPeriod = 80
+	// streamLoopMaxPeriod bounds the scan and its per-delta cost. A loop
+	// with a longer period must emit over ~1 KB per copy; provider output
+	// limits fire before five such copies stream in practice.
+	streamLoopMaxPeriod = 1024
+)
 
-// streamLoopMatchWindow reports whether the buffer ends in a repeated loop at
-// the given window size. maxRepeats is the user-configured count of
-// consecutive copies required (default 5).
-//
-// Policy, tuned by a false-positive incident (a debugging turn was killed
-// mid-analysis because the model pasted two near-identical SQL statements —
-// test 3.4 vs 3.5, same query shape, different constant — next to each other
-// and a fuzzy 2-copy rule called it a loop):
-//
-//   - A 2-copy threshold counts only long BYTE-EXACT duplication: no
-//     legitimate answer repeats the same 80+ byte block verbatim back to
-//     back, but two merely-similar paragraphs are analysis, not a loop.
-//   - 3+ copies confirm a loop even with small per-copy variations
-//     (re-wrapped, re-punctuated or separator-shifted copies).
-func streamLoopMatchWindow(clean string, window, maxRepeats int) bool {
-	if maxRepeats <= 2 {
-		return window >= streamLoopExactMinWindow && streamHasRepeatedSuffix(clean, window, 2, 0)
+// streamTailRepeats reports whether the buffer ends with n consecutive copies
+// of the same period-sized block.
+func streamTailRepeats(clean string, period, n int) bool {
+	if len(clean) < period*n {
+		return false
 	}
-	return streamHasRepeatedSuffix(clean, window, maxRepeats, streamRepeatMismatchBudget(window))
+	// Exact phase: the n×period tail is periodic with this period.
+	tail := clean[len(clean)-period*n:]
+	exact := true
+	for i := period; i < len(tail); i++ {
+		if tail[i] != tail[i-period] {
+			exact = false
+			break
+		}
+	}
+	if exact {
+		// Two copies (the user-configured aggressive threshold) count only
+		// as long byte-exact duplication: two merely-similar paragraphs next
+		// to each other are analysis (quoted evidence), not a loop. Three or
+		// more exact copies always count.
+		return n > 2 || period >= streamLoopExactMinPeriod
+	}
+	if n == 2 || period < streamLoopFuzzyMinPeriod {
+		return false
+	}
+	// Fuzzy phase: the blocks must not be a progressing enumeration, and
+	// every consecutive pair must match within the mismatch budget.
+	blocks := make([]string, n)
+	for i := range blocks {
+		blocks[i] = tail[period*i : period*(i+1)]
+	}
+	if streamBlocksShowProgression(blocks) {
+		return false
+	}
+	for i := 0; i+1 < n; i++ {
+		if !streamFuzzyBlockEqual(blocks[i], blocks[i+1], streamRepeatMismatchBudget(period)) {
+			return false
+		}
+	}
+	return true
+}
+
+// streamBlocksShowProgression reports whether some byte position holds a
+// different value in EVERY block — the signature of an enumerated sequence
+// (counters, letters, indices: select3, select4, select5, …) rather than a
+// repeated block. Noise in a true loop is random per copy, so no position is
+// distinct across all copies. All blocks have equal length (period-sized
+// windows of the same buffer).
+func streamBlocksShowProgression(blocks []string) bool {
+	for q := 0; q < len(blocks[0]); q++ {
+		seen := make(map[byte]struct{}, len(blocks))
+		for _, b := range blocks {
+			seen[b[q]] = struct{}{}
+		}
+		if len(seen) == len(blocks) {
+			return true
+		}
+	}
+	return false
 }
 
 // streamLoopNormalize strips everything except letters, digits, and spaces,
@@ -1088,8 +1313,20 @@ func streamLoopNormalize(text string) string {
 
 // streamHasMultipleUniqueWords reports whether s contains at least two
 // *unique* words. This prevents single-word repetition like "the the the"
-// from triggering a false positive loop detection.
+// from triggering a false positive loop detection. Partial words at both
+// ends are dropped first: a period window can slice a word, which would
+// otherwise inflate the unique-word count with fragments ("he", "th").
 func streamHasMultipleUniqueWords(s string) bool {
+	// Trim partial words at both ends only when a middle word survives the
+	// trim (>= 2 spaces); a two-word window has no partials to drop.
+	if strings.Count(s, " ") >= 2 {
+		if i := strings.IndexByte(s, ' '); i >= 0 {
+			s = s[i+1:]
+		}
+		if i := strings.LastIndexByte(s, ' '); i > 0 {
+			s = s[:i]
+		}
+	}
 	words := strings.Fields(s)
 	if len(words) < 2 {
 		return false
@@ -1099,50 +1336,6 @@ func streamHasMultipleUniqueWords(s string) bool {
 		seen[w]++
 	}
 	return len(seen) >= 2
-}
-
-// streamLoopWindowRange returns the inclusive window-size range to scan for
-// streaming repetition. It returns (0, 0) when the text is too short or too
-// long to examine.
-func streamLoopWindowRange(text string) (min, max int) {
-	const (
-		minWindow = 20
-		maxWindow = 120
-	)
-	if len(text) < minWindow*2 {
-		return 0, 0
-	}
-	max = len(text) / 2
-	if max > maxWindow {
-		max = maxWindow
-	}
-	if max < minWindow {
-		return 0, 0
-	}
-	return minWindow, max
-}
-
-// streamHasRepeatedSuffix reports whether text ends with the same window-sized
-// substring repeated repeatsNeeded times consecutively. Comparison tolerates
-// up to budget differing bytes per block (see streamFuzzyBlockEqual): a model
-// stuck in a repetition loop rarely regenerates byte-identical copies — line
-// breaks and punctuation vary between iterations (e.g. a missing blank line
-// between two copies shifts every following window by one byte, which defeats
-// an exact match and let a 4x repeated paragraph stream to completion,
-// looking like screen corruption in the TUI). Budget 0 requires byte-exact
-// copies.
-func streamHasRepeatedSuffix(text string, window, repeatsNeeded, budget int) bool {
-	if len(text) < window*repeatsNeeded {
-		return false
-	}
-	suffix := text[len(text)-window:]
-	for r := 1; r < repeatsNeeded; r++ {
-		block := text[len(text)-window*(r+1) : len(text)-window*r]
-		if !streamFuzzyBlockEqual(suffix, block, budget) {
-			return false
-		}
-	}
-	return true
 }
 
 // streamRepeatMismatchBudget returns how many bytes may differ between two
@@ -1226,6 +1419,10 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.errStreak = 0
 	a.errStreakNudged = false
 	a.streamLoopDetected = false
+	// The strike counter itself is session-scoped (it decays only via clean
+	// activity, per execution.stream_loop_reset_after); only the per-round
+	// marker resets here.
+	a.streamLoopStrikeThisRound = false
 	a.overflowRecoveryAttempted = false
 	a.consecutiveToolRounds = 0
 	a.toolRoundNudgeFired = false

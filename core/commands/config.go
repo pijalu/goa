@@ -878,6 +878,7 @@ func (m *configMenu) settingLoopDetection() {
 		{Value: "think_loop", Label: "Thinking-loop detection", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "think")},
 		{Value: "tool_loop", Label: "Tool-loop detection", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "tool")},
 		{Value: "stream_loop", Label: "Stream-loop detection", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "stream")},
+		{Value: "thinking_stall", Label: "Thinking-stall watchdog", Description: loopDetectionStatusLabel(m.ctx.LoopDetector, "stall")},
 		{Value: "thresholds", Label: "Threshold settings", Description: "warn/stop/repeat limits"},
 	}
 	m.ctx.SelectOption("Loop detection settings:", items, "", func(selected string, ok bool) {
@@ -892,6 +893,8 @@ func (m *configMenu) settingLoopDetection() {
 			m.chooseLoopDetectionAction("tool")
 		case "stream_loop":
 			m.chooseLoopDetectionAction("stream")
+		case "thinking_stall":
+			m.chooseLoopDetectionAction("stall")
 		case "thresholds":
 			m.open(m.settingLoopThresholds)
 		}
@@ -921,6 +924,9 @@ func loopDetectionKindLabel(kind string) string {
 	if kind == "stream" {
 		return "stream-text loop detection"
 	}
+	if kind == "stall" {
+		return "thinking-stall watchdog"
+	}
 	return "tool-call loop detection"
 }
 
@@ -931,6 +937,9 @@ func loopDetectionConfigKey(kind string) string {
 	}
 	if kind == "stream" {
 		return "execution.disable_stream_loop_detection"
+	}
+	if kind == "stall" {
+		return "execution.disable_thinking_stall_detection"
 	}
 	return "execution.disable_tool_loop_detection"
 }
@@ -1003,6 +1012,8 @@ func (m *configMenu) settingLoopThresholds() {
 		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: intLabel(cfg.Execution.MaxToolCalls)},
 		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
 		{Value: "stream_repeats", Label: "Stream-loop stop repeats", Description: intLabel(cfg.Execution.StreamLoopMaxRepeats)},
+		{Value: "stream_strikes", Label: "Stream-loop stop strikes", Description: intLabel(cfg.Execution.StreamLoopMaxStrikes)},
+		{Value: "stream_reset_after", Label: "Stream-loop strike reset (clean msgs/tool calls)", Description: intLabel(cfg.Execution.StreamLoopResetAfter)},
 	}
 	m.ctx.SelectOption("Loop threshold settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -1037,6 +1048,8 @@ func (m *configMenu) handleLoopThresholdSetting(selected string) {
 		"max_tool_calls":          {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
 		"disable_tool_budget":     {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
 		"stream_repeats":          {key: "execution.stream_loop_max_repeats", prompt: "Stream-loop stop repeats (>=2):", intVal: &cfg.Execution.StreamLoopMaxRepeats},
+		"stream_strikes":          {key: "execution.stream_loop_max_strikes", prompt: "Stream-loop warnings before stop (>=1):", intVal: &cfg.Execution.StreamLoopMaxStrikes},
+		"stream_reset_after":      {key: "execution.stream_loop_reset_after", prompt: "Clean messages/tool calls to reset strikes (>=1):", intVal: &cfg.Execution.StreamLoopResetAfter},
 	}
 	f, ok := fields[selected]
 	if !ok {

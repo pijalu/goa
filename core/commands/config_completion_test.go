@@ -43,6 +43,7 @@ func TestConfigTempCompletions(t *testing.T) {
 	disabledCtx.LoopDetector.SetTempOverride("think", true)
 	disabledCtx.LoopDetector.SetTempOverride("tool", true)
 	disabledCtx.LoopDetector.SetTempOverride("stream", true)
+	disabledCtx.LoopDetector.SetTempOverride("stall", true)
 
 	cases := []struct {
 		name                       string
@@ -50,13 +51,13 @@ func TestConfigTempCompletions(t *testing.T) {
 		settingPrefix, valuePrefix string
 		want                       []string
 	}{
-		{"both enabled", enabledCtx, "", "", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off"}},
-		{"think enabled", enabledCtx, "think", "", []string{"temp:think_loop_detection:off"}},
-		{"value filter off", enabledCtx, "", "o", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off"}},
+		{"both enabled", enabledCtx, "", "", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off", "temp:thinking_stall_detection:off"}},
+		{"think enabled", enabledCtx, "think", "", []string{"temp:think_loop_detection:off", "temp:thinking_stall_detection:off"}},
+		{"value filter off", enabledCtx, "", "o", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off", "temp:thinking_stall_detection:off"}},
 		{"tool value of", enabledCtx, "tool", "of", []string{"temp:tool_loop_detection:off"}},
 		{"stream value of", enabledCtx, "stream", "of", []string{"temp:stream_loop_detection:off"}},
-		{"both disabled", disabledCtx, "", "", []string{"temp:think_loop_detection:on", "temp:tool_loop_detection:on", "temp:stream_loop_detection:on"}},
-		{"think disabled", disabledCtx, "think", "", []string{"temp:think_loop_detection:on"}},
+		{"both disabled", disabledCtx, "", "", []string{"temp:think_loop_detection:on", "temp:tool_loop_detection:on", "temp:stream_loop_detection:on", "temp:thinking_stall_detection:on"}},
+		{"think disabled", disabledCtx, "think", "", []string{"temp:think_loop_detection:on", "temp:thinking_stall_detection:on"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -76,13 +77,14 @@ func TestConfigTempArgCompletions(t *testing.T) {
 		prefix string
 		want   []string
 	}{
-		{"temp ", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off"}},
-		{"temp:think", []string{"temp:think_loop_detection:off"}},
+		{"temp ", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off", "temp:thinking_stall_detection:off"}},
+		{"temp:think", []string{"temp:think_loop_detection:off", "temp:thinking_stall_detection:off"}},
 		{"temp:think_loop_detection ", []string{"temp:think_loop_detection:off"}},
 		{"temp:think_loop_detection:of", []string{"temp:think_loop_detection:off"}},
 		{"temp:tool:of", []string{"temp:tool_loop_detection:off"}},
 		{"temp:stream", []string{"temp:stream_loop_detection:off"}},
-		{"te", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off"}},
+		{"temp:thinking_stall", []string{"temp:thinking_stall_detection:off"}},
+		{"te", []string{"temp:think_loop_detection:off", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off", "temp:thinking_stall_detection:off"}},
 	}
 	cmd := &ConfigCommand{}
 	for _, c := range cases {
@@ -102,8 +104,8 @@ func TestConfigTempArgCompletions_DisabledState(t *testing.T) {
 		prefix string
 		want   []string
 	}{
-		{"temp ", []string{"temp:think_loop_detection:on", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off"}},
-		{"temp:think", []string{"temp:think_loop_detection:on"}},
+		{"temp ", []string{"temp:think_loop_detection:on", "temp:tool_loop_detection:off", "temp:stream_loop_detection:off", "temp:thinking_stall_detection:off"}},
+		{"temp:think", []string{"temp:think_loop_detection:on", "temp:thinking_stall_detection:off"}},
 		{"temp:think_loop_detection:of", []string{}},
 	}
 	cmd := &ConfigCommand{}

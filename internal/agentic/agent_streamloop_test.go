@@ -5,8 +5,11 @@
 package agentic
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
@@ -76,7 +79,7 @@ func TestStreamLoop_FuzzyTripleLongBlockStillDetected(t *testing.T) {
 	para := "The project builds cleanly. Let me summarize every update I made to the handover document for the team:"
 	copies := []string{
 		para,
-		strings.Replace(para, "builds", "bullds", 1),   // 1-byte variation
+		strings.Replace(para, "builds", "bullds", 1),     // 1-byte variation
 		strings.Replace(para, "handover", "handovar", 1), // 1-byte variation
 	}
 	// Lead-in text mirrors real streamed answers and lets the window align to
@@ -97,6 +100,108 @@ func TestStreamLoop_FuzzyPairLongBlockNotDetected(t *testing.T) {
 		if streamLoopWouldDetect(text, threshold) {
 			t.Errorf("false positive at threshold %d: two similar long paragraphs detected as a loop", threshold)
 		}
+	}
+}
+
+// Regression test for the enumerated-list false positive (session export
+// 2026-07-31, goa-export-20260731-224934.zip): a planning turn was killed
+// because the model drafted a verifyCommand enumerating test packages —
+// ./testgen/select3/ ./testgen/select4/ … ./testgen/selectB/. After
+// normalization each ~15-byte item differs from the next only in the
+// incrementing digit/letter, and the fuzzy matcher called 5 adjacent
+// 30-byte windows a runaway loop. An enumerated sequence is not a loop:
+// every element differs systematically (a walking counter).
+const streamLoopFPEnumeration = "Goal 7: Tier 1 completion sweep objective: \"Complete Tier 1: fix all " +
+	"remaining Tier 1 packages not covered by earlier goals.\" verifyCommand: \"go test -tags testgen " +
+	"./testgen/select1/ ./testgen/select2/ ./testgen/insert/ ./testgen/delete/ ./testgen/update/ " +
+	"./testgen/null/ ./testgen/affinity/ ./testgen/expr/ ./testgen/types/ ./testgen/cast/ " +
+	"./testgen/between/ ./testgen/coalesce/ ./testgen/literal/ ./testgen/istrue/ ./testgen/numcast/ " +
+	"./testgen/subtype/ ./testgen/strict/ ./testgen/intpkey/ ./testgen/intreal/ ./testgen/nulls/ " +
+	"./testgen/select3/ ./testgen/select4/ ./testgen/select5/ ./testgen/select6/ ./testgen/select7/ " +
+	"./testgen/select8/ ./testgen/select9/ ./testgen/selectA/ ./testgen/selectB/ ./testgen/selectC/ " +
+	"./testgen/selectD/ ./testgen/selectE/ ./testgen/selectF/ ./testgen/selectG/ ./testgen/selectH/\""
+
+func TestStreamLoop_NoFalsePositiveOnEnumeratedLists(t *testing.T) {
+	for _, threshold := range []int{2, 3, 5} {
+		if streamLoopWouldDetect(streamLoopFPEnumeration, threshold) {
+			t.Errorf("false positive at threshold %d: enumerated package list detected as a loop", threshold)
+		}
+	}
+
+	// Stream the enumeration in token-sized fragments: no prefix of the
+	// buffer may trigger either (the incident fired mid-stream).
+	var buf strings.Builder
+	const fragSize = 9
+	for pos := 0; pos < len(streamLoopFPEnumeration); pos += fragSize {
+		end := pos + fragSize
+		if end > len(streamLoopFPEnumeration) {
+			end = len(streamLoopFPEnumeration)
+		}
+		buf.WriteString(streamLoopFPEnumeration[pos:end])
+		if streamLoopWouldDetect(buf.String(), 5) {
+			t.Fatalf("false positive mid-stream at byte %d of enumerated list", end)
+		}
+	}
+
+	// Additional enumeration shapes that must never count as loops.
+	moreEnumerations := []string{
+		"ports 8001 8002 8003 8004 8005 8006 8007 are all in use by the dev server",
+		"versions v1.2.0 v1.3.0 v1.4.0 v1.5.0 v1.6.0 v1.7.0 all fail the same test",
+		"rows row_a1 row_a2 row_a3 row_a4 row_a5 row_a6 row_a7 were skipped by the migration",
+	}
+	for _, text := range moreEnumerations {
+		for _, threshold := range []int{3, 5} {
+			if streamLoopWouldDetect(text, threshold) {
+				t.Errorf("false positive at threshold %d on enumeration %q", threshold, text)
+			}
+		}
+	}
+}
+
+// Regression test for the long-period false negative (same-day field
+// report): the model looped a ~230-byte paragraph 14 times and the detector
+// never fired because its window was hard-capped at 120 bytes — the loop's
+// period was longer than the cap. The scan must cover periods up to
+// len(buffer)/maxRepeats.
+const streamLoopLongPeriodUnit = "There are TWO parsers:\n" +
+	"1. internal/parse/parser.go — the go-lemon LALR(1) parser (primary)\n" +
+	"2. The recursive-descent parser in internal/sql/parser.go\n" +
+	"Let me look at internal/parse/parser.go line 83-112 to understand the flow — it seems there's a fallback to the RD parser (rdParser.Parse()):"
+
+func TestStreamLoop_LongPeriodLoopDetected(t *testing.T) {
+	// The incident unit is ~230 bytes after normalization — beyond the old
+	// 120-byte window cap.
+	if n := len(streamLoopNormalize(streamLoopLongPeriodUnit)); n <= 120 {
+		t.Fatalf("fixture unit is %d normalized bytes, want > 120 to reproduce the incident", n)
+	}
+
+	looped := "Intro. " + strings.Repeat(streamLoopLongPeriodUnit+"\n", 6)
+	if !streamLoopWouldDetect(looped, 5) {
+		t.Error("long-period loop not detected: ~230-byte unit repeated 6 times escaped the scan")
+	}
+
+	// Streamed in token-sized fragments, detection must fire before the
+	// seventh copy completes.
+	var buf strings.Builder
+	const fragSize = 9
+	detectedAt := -1
+	for pos := 0; pos < len(looped); pos += fragSize {
+		end := pos + fragSize
+		if end > len(looped) {
+			end = len(looped)
+		}
+		buf.WriteString(looped[pos:end])
+		if streamLoopWouldDetect(buf.String(), 5) {
+			detectedAt = end
+			break
+		}
+	}
+	if detectedAt < 0 {
+		t.Fatal("long-period loop not detected with token-sized deltas")
+	}
+	sixCopiesEnd := len("Intro. ") + 6*(len(streamLoopLongPeriodUnit)+1)
+	if detectedAt > sixCopiesEnd {
+		t.Errorf("loop detected too late: fired at byte %d, want by end of sixth copy (%d)", detectedAt, sixCopiesEnd)
 	}
 }
 
@@ -156,5 +261,261 @@ func TestCheckStreamLoop_MaxRepeatsHook(t *testing.T) {
 	a.checkStreamLoop(strings.Repeat(para+" ", 4))
 	if !a.streamLoopDetected {
 		t.Error("4 copies must trigger a reconfigured threshold of 3")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Graduated response: soft strikes warn the model and re-stream; only the
+// strike at the configured limit stops the turn. The counter resets after a
+// configurable number of clean messages/tool calls.
+// ---------------------------------------------------------------------------
+
+func TestStreamLoopStrike_DefaultsAndReset(t *testing.T) {
+	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
+	if got := a.effectiveStreamLoopMaxStrikes(); got != 3 {
+		t.Errorf("default max strikes = %d, want 3", got)
+	}
+	if got := a.effectiveStreamLoopResetAfter(); got != 10 {
+		t.Errorf("default reset-after = %d, want 10", got)
+	}
+
+	// Strikes accumulate and the clean counter restarts on each strike.
+	if s := a.registerStreamLoopStrike(); s != 1 {
+		t.Fatalf("first strike = %d, want 1", s)
+	}
+	a.noteStreamLoopCleanActivity(5)
+	if s := a.registerStreamLoopStrike(); s != 2 {
+		t.Fatalf("second strike = %d, want 2", s)
+	}
+
+	// 9 clean activities do not reach the default reset streak of 10.
+	a.noteStreamLoopCleanActivity(9)
+	if a.streamLoopStrikes != 2 {
+		t.Fatalf("strikes reset too early: clean=9, strikes=%d, want 2", a.streamLoopStrikes)
+	}
+	// The 10th clean message/tool call resets the counter.
+	a.noteStreamLoopCleanActivity(1)
+	if a.streamLoopStrikes != 0 || a.streamLoopCleanCount != 0 {
+		t.Errorf("strikes = %d after 10 clean activities, want 0 (clean=%d)", a.streamLoopStrikes, a.streamLoopCleanCount)
+	}
+
+	// Configured values override the defaults.
+	a2 := NewAgent(Config{
+		Model:                testModel(provider.ApiOpenAICompletions),
+		StreamLoopMaxStrikes: 5,
+		StreamLoopResetAfter: 3,
+	})
+	if got := a2.effectiveStreamLoopMaxStrikes(); got != 5 {
+		t.Errorf("configured max strikes = %d, want 5", got)
+	}
+	a2.registerStreamLoopStrike()
+	a2.noteStreamLoopCleanActivity(2)
+	if a2.streamLoopStrikes != 1 {
+		t.Fatalf("strikes reset too early with reset-after=3: strikes=%d", a2.streamLoopStrikes)
+	}
+	a2.noteStreamLoopCleanActivity(1)
+	if a2.streamLoopStrikes != 0 {
+		t.Errorf("strikes = %d after 3 clean activities (reset-after=3), want 0", a2.streamLoopStrikes)
+	}
+}
+
+// streamLoopStrikeUnit is a >20-byte repeated unit used by the integration
+// fixtures: five exact copies trip the detector at the default threshold.
+const streamLoopStrikeUnit = "The quick brown fox jumps over the lazy dog while the diligent tester watches the whole test suite fail"
+
+// loopingTextEvents emits the unit as consecutive deltas with no separator:
+// the buffer ends in exact period-sized copies, so the detector fires mid-stream.
+func loopingTextEvents(unit string, copies int) []provider.AssistantMessageEvent {
+	evts := make([]provider.AssistantMessageEvent, 0, copies)
+	for i := 0; i < copies; i++ {
+		evts = append(evts, provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: unit})
+	}
+	return evts
+}
+
+// runStrikeTurn drives a full turn against a scripted provider, collecting
+// the emitted content texts, and returns the turn error, the texts, and the
+// agent (for inspecting the strike counter after the turn).
+func runStrikeTurn(t *testing.T, p *scriptedStreamProvider, cfg Config) (error, []string, *Agent) {
+	t.Helper()
+	provider.RegisterApiProvider(p)
+	cfg.Model = provider.Model{
+		ID:         "strike-test",
+		Api:        p.API(),
+		Provider:   provider.ProviderCustom,
+		InputTypes: []string{"text"},
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = NewLogger(Error)
+	}
+	if cfg.SystemPrompt == "" {
+		cfg.SystemPrompt = "test"
+	}
+	agent := NewAgent(cfg)
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := agent.Run(ctx, "prompt")
+
+	var texts []string
+	for _, ev := range obs.Events() {
+		if ev.Type == EventContent && ev.Text != "" {
+			texts = append(texts, ev.Text)
+		}
+	}
+	return err, texts, agent
+}
+
+func newStrikeProvider(name string, steps ...scriptedStreamStep) *scriptedStreamProvider {
+	return &scriptedStreamProvider{
+		api:   provider.Api(fmt.Sprintf("%s-%d", name, testProviderCounter.Add(1))),
+		steps: steps,
+	}
+}
+
+// A looped round is abandoned, the model is warned, and the turn re-streams:
+// a model that recovers produces its answer and the turn ends without error.
+func TestStreamLoopStrike_WarnsThenRecovers(t *testing.T) {
+	p := newStrikeProvider("test-softstrike",
+		scriptedStreamStep{events: loopingTextEvents(streamLoopStrikeUnit, 6)},
+		scriptedStreamStep{events: []provider.AssistantMessageEvent{
+			{Type: provider.EventTextDelta, Delta: "All done — concise answer without repetition."},
+		}},
+	)
+	err, texts, agent := runStrikeTurn(t, p, Config{})
+	if err != nil {
+		t.Fatalf("turn failed after soft strike: %v", err)
+	}
+	if p.Calls() != 2 {
+		t.Errorf("provider calls = %d, want 2 (looped round + re-stream)", p.Calls())
+	}
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "Stream loop detected (warning 1 of 3)") {
+		t.Errorf("warning bubble missing from output; got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "All done") {
+		t.Errorf("re-streamed answer missing from output; got:\n%s", joined)
+	}
+	// One strike was registered; the single clean final round is not enough
+	// to reset it (default reset-after is 10).
+	if agent.streamLoopStrikes != 1 {
+		t.Errorf("strikes = %d after one soft strike and a clean round, want 1", agent.streamLoopStrikes)
+	}
+}
+
+// A model that keeps looping exhausts the warnings; the third detection
+// stops the turn with the loop error.
+func TestStreamLoopStrike_ThirdStrikeStopsTurn(t *testing.T) {
+	p := newStrikeProvider("test-hardstrike",
+		scriptedStreamStep{events: loopingTextEvents(streamLoopStrikeUnit, 6)},
+	)
+	err, texts, _ := runStrikeTurn(t, p, Config{})
+	if err == nil {
+		t.Fatal("turn succeeded despite the model looping on every round")
+	}
+	if !strings.Contains(err.Error(), "stream loop detected") {
+		t.Errorf("turn error = %v, want it to mention 'stream loop detected'", err)
+	}
+	if !strings.Contains(err.Error(), "after 2 warnings") {
+		t.Errorf("turn error = %v, want it to mention 'after 2 warnings'", err)
+	}
+	if p.Calls() != 3 {
+		t.Errorf("provider calls = %d, want 3 (2 soft strikes + 1 hard stop)", p.Calls())
+	}
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "Stream loop detected (warning 1 of 3)") ||
+		!strings.Contains(joined, "Stream loop detected (warning 2 of 3)") {
+		t.Errorf("expected both soft-strike warnings in output; got:\n%s", joined)
+	}
+}
+
+// StreamLoopMaxStrikes=1 restores the pre-feature behavior: the very first
+// detection stops the turn.
+func TestStreamLoopStrike_MaxStrikesOneStopsImmediately(t *testing.T) {
+	p := newStrikeProvider("test-onestrike",
+		scriptedStreamStep{events: loopingTextEvents(streamLoopStrikeUnit, 6)},
+	)
+	err, _, _ := runStrikeTurn(t, p, Config{StreamLoopMaxStrikes: 1})
+	if err == nil {
+		t.Fatal("turn succeeded despite maxStrikes=1 and a looping model")
+	}
+	if !strings.Contains(err.Error(), "stream loop detected") {
+		t.Errorf("turn error = %v, want it to mention 'stream loop detected'", err)
+	}
+	if p.Calls() != 1 {
+		t.Errorf("provider calls = %d, want 1 (immediate stop)", p.Calls())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Thinking-stall watchdog: a separate guard with its own flag, error message
+// and disable switch — it must never surface as "stream loop detected" and
+// must not be affected by the stream-loop toggle.
+// ---------------------------------------------------------------------------
+
+func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallStop: 50 * time.Millisecond,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+	// Simulate a model that has been emitting only reasoning tokens for far
+	// longer than the configured stop duration.
+	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "still reasoning"})
+
+	if !a.thinkingStalled {
+		t.Fatal("thinkingStalled not set after an over-long reasoning-only phase")
+	}
+	if a.streamLoopDetected {
+		t.Error("streamLoopDetected set by the thinking-stall watchdog — the guards must stay separate")
+	}
+
+	done, _, err := a.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "x"})
+	if !done || err == nil {
+		t.Fatalf("handleStreamEvent = (done=%v, err=%v), want done=true with a stall error", done, err)
+	}
+	if !strings.Contains(err.Error(), "thinking stalled") {
+		t.Errorf("stall error = %v, want it to mention 'thinking stalled'", err)
+	}
+	if strings.Contains(err.Error(), "stream loop detected") {
+		t.Errorf("stall error = %v, must NOT be misreported as a stream loop", err)
+	}
+}
+
+func TestThinkingStall_DisabledByHook(t *testing.T) {
+	disabled := true
+	a := NewAgent(Config{
+		Model:                 testModel(provider.ApiOpenAICompletions),
+		Logger:                NewLogger(Error),
+		ThinkingStallStop:     50 * time.Millisecond,
+		ThinkingStallDisabled: func() bool { return disabled },
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "still reasoning"})
+	if a.thinkingStalled {
+		t.Fatal("thinkingStalled set while the watchdog was disabled")
+	}
+
+	// Re-enable mid-stream: the same over-long phase must now stop.
+	disabled = false
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "more reasoning"})
+	if !a.thinkingStalled {
+		t.Error("thinkingStalled not set after re-enabling the watchdog")
 	}
 }

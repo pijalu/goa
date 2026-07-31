@@ -282,28 +282,47 @@ func TestHandleToolCallDelta_AnthropicStyleNilPartial(t *testing.T) {
 // flag was only checked in the else branch for unknown events, so repeated
 // text deltas streamed through unchecked — the loop detection was dead code
 // for the exact event type that carries the looped text.
+// The loop guard intercepts the event after a detection BEFORE the handler
+// dispatches it. With the graduated response (execution.stream_loop_max_strikes,
+// default 3) the first detections are soft: done=true with NO error — the
+// round is abandoned and the model is warned and re-streamed. The detection
+// at the strike limit returns the loop error.
 func TestHandleStreamEvent_StreamLoopDetected_StopsKnownEvents(t *testing.T) {
-	agent := NewAgent(Config{
-		SystemPrompt: "test",
-		Logger:       NewLogger(Error),
-	})
+	newDetectedAgent := func(cfg Config) *Agent {
+		if cfg.Logger == nil {
+			cfg.Logger = NewLogger(Error)
+		}
+		cfg.SystemPrompt = "test"
+		agent := NewAgent(cfg)
+		agent.streamLoopDetected = true // simulate a detection during a previous text delta
+		return agent
+	}
+	delta := provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "more repeated text"}
 
-	// Simulate: loop detected during a previous text delta.
-	agent.streamLoopDetected = true
+	// Soft strike (default limit): intercepted, no error, turn continues.
+	agent := newDetectedAgent(Config{})
+	done, toolCalls, err := agent.handleStreamEvent(context.Background(), nil, delta)
+	if !done {
+		t.Error("expected done=true when streamLoopDetected is set")
+	}
+	if err != nil {
+		t.Errorf("first detection must be a soft strike (no error), got: %v", err)
+	}
+	if !toolCalls {
+		t.Error("soft strike must report that the turn continues (re-stream)")
+	}
+	if agent.streamLoopStrikes != 1 {
+		t.Errorf("strikes = %d after first detection, want 1", agent.streamLoopStrikes)
+	}
 
-	// The next EventTextDelta must be intercepted by the loop guard BEFORE
-	// the handler dispatches it. If the bug is present, the handler runs and
-	// the event is processed normally (no error).
-	done, _, err := agent.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{
-		Type:  provider.EventTextDelta,
-		Delta: "more repeated text",
-	})
-
+	// Strike at the configured limit: intercepted with the loop error.
+	agent = newDetectedAgent(Config{StreamLoopMaxStrikes: 1})
+	done, _, err = agent.handleStreamEvent(context.Background(), nil, delta)
 	if !done {
 		t.Error("expected done=true when streamLoopDetected is set")
 	}
 	if err == nil {
-		t.Fatal("expected stream loop error, got nil")
+		t.Fatal("expected stream loop error at the strike limit, got nil")
 	}
 	if !strings.Contains(err.Error(), "stream loop detected") {
 		t.Errorf("expected 'stream loop detected' error, got: %v", err)

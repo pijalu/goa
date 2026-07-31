@@ -373,6 +373,9 @@ func loopDetectorConfigFrom(cfg *config.Config) core.LoopDetectorConfig {
 	if cfg.Execution.DisableStreamLoopDetection != nil && *cfg.Execution.DisableStreamLoopDetection {
 		ldCfg.StreamDisabled = true
 	}
+	if cfg.Execution.DisableThinkingStallDetection != nil && *cfg.Execution.DisableThinkingStallDetection {
+		ldCfg.StallDisabled = true
+	}
 	ldCfg.MaxStreamRepeats = cfg.Execution.StreamLoopMaxRepeats
 	return ldCfg
 }
