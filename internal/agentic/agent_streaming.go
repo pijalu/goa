@@ -332,13 +332,21 @@ func (a *Agent) consumeStream(ctx context.Context, stream *provider.AssistantMes
 
 // handleStreamEvent dispatches a single stream event. The returned done flag is
 // true when the stream has reached a terminal state (success or error).
+//
+// streamLoopDetected is checked BEFORE the handler dispatch. checkStreamLoop
+// (called inside handleTextDelta/handleThinkingDelta) sets the flag when the
+// model starts repeating the same text suffix within a single response.
+// Previously the flag was only consulted in the else branch (unknown event
+// types), which never carry the looped text deltas — so the detection was dead
+// code for the exact event types that needed it, and repeated text streamed
+// through unchecked, producing visible duplication in the message bubble.
 func (a *Agent) handleStreamEvent(ctx context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (done bool, toolCallsEncountered bool, err error) {
-	if handler, ok := streamEventHandlers[event.Type]; ok {
-		return handler(a, ctx, stream, event)
-	}
 	if a.streamLoopDetected {
 		a.cfg.Logger.Log(Warn, "Stopping stream because a loop was detected inside the assistant response")
 		return true, false, fmt.Errorf("stream loop detected: the assistant started repeating the same text; turn stopped to prevent runaway context usage")
+	}
+	if handler, ok := streamEventHandlers[event.Type]; ok {
+		return handler(a, ctx, stream, event)
 	}
 	return false, false, nil
 }

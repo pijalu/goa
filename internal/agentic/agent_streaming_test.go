@@ -6,6 +6,7 @@ package agentic
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -275,6 +276,72 @@ func TestHandleToolCallDelta_AnthropicStyleNilPartial(t *testing.T) {
 }
 
 // TestHandleToolCallDelta_NilPartialNoIndexIsDropped ensures a nil-Partial
+// TestHandleStreamEvent_StreamLoopDetected_StopsKnownEvents verifies that
+// streamLoopDetected (set by checkStreamLoop inside handleTextDelta) actually
+// stops the stream for known event types (EventTextDelta). Previously the
+// flag was only checked in the else branch for unknown events, so repeated
+// text deltas streamed through unchecked — the loop detection was dead code
+// for the exact event type that carries the looped text.
+func TestHandleStreamEvent_StreamLoopDetected_StopsKnownEvents(t *testing.T) {
+	agent := NewAgent(Config{
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+	})
+
+	// Simulate: loop detected during a previous text delta.
+	agent.streamLoopDetected = true
+
+	// The next EventTextDelta must be intercepted by the loop guard BEFORE
+	// the handler dispatches it. If the bug is present, the handler runs and
+	// the event is processed normally (no error).
+	done, _, err := agent.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{
+		Type:  provider.EventTextDelta,
+		Delta: "more repeated text",
+	})
+
+	if !done {
+		t.Error("expected done=true when streamLoopDetected is set")
+	}
+	if err == nil {
+		t.Fatal("expected stream loop error, got nil")
+	}
+	if !strings.Contains(err.Error(), "stream loop detected") {
+		t.Errorf("expected 'stream loop detected' error, got: %v", err)
+	}
+}
+
+// TestHandleStreamEvent_StreamLoopDetected_AllowsFirstDelta verifies the
+// normal (non-looping) path is unaffected: when streamLoopDetected is false,
+// a text delta is dispatched to its handler normally.
+func TestHandleStreamEvent_StreamLoopDetected_AllowsFirstDelta(t *testing.T) {
+	agent := NewAgent(Config{
+		SystemPrompt: "test",
+		Logger:       NewLogger(Error),
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+
+	done, _, err := agent.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{
+		Type:  provider.EventTextDelta,
+		Delta: "hello world",
+	})
+
+	if done {
+		t.Error("expected done=false for normal text delta")
+	}
+	if err != nil {
+		t.Errorf("expected no error for normal text delta, got: %v", err)
+	}
+
+	// Verify the delta was processed (emitted as EventContent).
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if len(obs.events) == 0 {
+		t.Error("expected at least one event for normal text delta")
+	}
+}
+
 // delta with no prior content_block_start (unknown index) is safely ignored
 // rather than panicking.
 func TestHandleToolCallDelta_NilPartialNoIndexIsDropped(t *testing.T) {

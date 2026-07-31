@@ -86,12 +86,19 @@ func (a *Agent) synthesizeAssistantBuffer() Message {
 	thinking := a.thinkingBuf.String()
 	// If content is empty but thinking was received (e.g., DeepSeek sends
 	// response in reasoning_content field with no content), promote thinking
-	// to content BUT keep the thinking field populated so the next provider
-	// request sends it back as reasoning_content. Without this, the model sees
-	// its own reasoning as regular content and attempts to continue, creating
-	// an infinite loop detected by the guardrail.
+	// to content so the model knows it has produced output and does not try
+	// to continue an unfinished response (which created an infinite loop
+	// detected by the guardrail).
+	//
+	// The thinking field is CLEARED on promotion. Keeping it populated would
+	// cause migrateMessage to emit BOTH a text block AND a thinking block with
+	// the same text. The OpenAI completions protocol then maps those to BOTH
+	// `content` and `reasoning_content` in the API request, so DeepSeek sees
+	// its reasoning echoed as regular content — which it re-produces, causing
+	// visible duplication in the message bubble.
 	if content == "" && thinking != "" {
 		content = thinking
+		thinking = ""
 	}
 	msg := Message{
 		Type:     Content,
