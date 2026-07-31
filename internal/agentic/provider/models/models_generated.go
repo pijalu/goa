@@ -1088,7 +1088,7 @@ func loadGeneratedModels() {
 		ID: "gpt-5.6-luna", Name: "GPT-5.6 Luna", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 1050000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000010000, Output: 0.0000060000, CacheRead: 0.0000001000, CacheWrite: 0.0000012500},
+		Cost:           provider.ModelPricing{Input: 0.0000002000, Output: 0.0000012000, CacheRead: 0.0000000200, CacheWrite: 0.0000002500},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -1102,7 +1102,7 @@ func loadGeneratedModels() {
 		ID: "gpt-5.6-terra", Name: "GPT-5.6 Terra", Api: provider.Api("openai-responses"), Provider: provider.Provider("openai"),
 		BaseURL:   "https://api.openai.com/v1",
 		Reasoning: true, ContextWindow: 1050000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000025000, Output: 0.0000150000, CacheRead: 0.0000002500, CacheWrite: 0.0000031250},
+		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000120000, CacheRead: 0.0000002000, CacheWrite: 0.0000025000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
