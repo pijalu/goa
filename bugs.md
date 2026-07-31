@@ -68,7 +68,7 @@ Key techniques (all in `e2e/lib.sh`):
 | Scenario | Result | Evidence |
 |---|---|---|
 | T1 orchestration (qwen/qwythos/gemma) | PASS 9/9 (+F1 note) | `/tmp/goa-e2e/run-t1e/` (2026-07-31 rerun, same script revision + binary as T2–T4; confirms the lib.sh hermetic-config change doesn't regress orchestration) — orchestrator=qwen, reviewer=qwythos, coder=gemma all correct; 5 distinct agents; 4 `delegate` calls; `run_finished`; resume continued the same run (no fork); artifact `answer.txt=BLUE`. Original evidence: `/tmp/goa-e2e/run-t1d/` (2026-07-30, 10/10) |
-| T2 companion (qwen+qwythos) | PASS 5/5 | `/tmp/goa-e2e/run-t2c/` (fresh binary, 2026-07-31) — T2a: real `request_review` tool call by qwen; qwythos review generated and delivered in-session as `[Message from companion]: Review complete: color.txt created correctly…` (sessions/*.jsonl); artifact `color.txt=GREEN`. T2b: framework companion reviewed the turn, visible in TUI stream; artifact `sky.txt=AZURE`. The 2026-07-30 T2a FAIL was a stale test binary (built 21:59, registration fix committed 22:29) — see F5 correction and Bug 7 |
+| T2 companion (qwen+qwythos) | PASS 5/5 | `/tmp/goa-e2e/run-t2d/` (2026-07-31, fixed script + fresh binary; results.tsv records `T2 PASS agent-driven + framework companion verified`) — T2a: real `request_review` tool call by qwen; qwythos review generated and delivered in-session as `[Message from companion]` (sessions/*.jsonl); artifact `color.txt=GREEN`. T2b: framework companion reviewed the turn, visible in TUI stream; artifact `sky.txt=AZURE`. The 2026-07-30 T2a FAIL was a stale test binary (built 21:59, registration fix committed 22:29) — see F5 correction and archived Bug 7. First fresh-binary rerun: `/tmp/goa-e2e/run-t2c/` (same evidence; ran with pre-Bug-7 assertions) |
 | T3 goals + companion | PASS 5/5 | `/tmp/goa-e2e/run-t3/` — artifact `done.txt=DONE`; goal "sparky.orca" lifecycle in goal-events.jsonl: `goal.create` → 3×`goal.update` → `status=complete` → `goal.clear`; 3 real `request_review` calls; qwythos review delivered in-session (`done.txt has been successfully created with the correct content`); exit 0 |
 | T4 orchestration + goals + companion | PASS 9/9 | `/tmp/goa-e2e/run-t4/` (ptydrive TUI `/orchestrate:new`) — role→model all correct (orchestrator=qwen, reviewer=qwythos, coder=gemma); 4 distinct agents spoke; orchestrator issued `delegate` calls; `run_finished ok=true`; run bound to goal "fair.puma" (`run_started.payload.goal_id`, `managedBy=orchestrator`); goal lifecycle `create → 8×update → clear` (terminal); artifact `orbit.txt=ORBIT`. T4.10 observation: companion idle during orchestration (hooks main-agent turns, not orchestration agents) |
 
@@ -138,8 +138,9 @@ e2e assertion bugs (7).
    already overrides the home-config `tools.enabled` false values for both
    registration and execution (probe-verified). lib.sh additionally made
    hermetic (emits `tools.enabled.*: true`).
-2. ~~**Run T2**~~ — DONE 2026-07-31: run-t2c PASS 5/5 (fresh binary +
-   corrected T2a.3 evidence assertion, see Bug 7).
+2. ~~**Run T2**~~ — DONE 2026-07-31: run-t2d PASS 5/5 (fresh binary +
+   corrected T2a.3 evidence assertion, archived Bug 7; results.tsv records
+   PASS). run-t2c was the first fresh-binary rerun (pre-Bug-7 assertions).
 3. ~~**Run T3**~~ — DONE 2026-07-31: run-t3 PASS 5/5 (goal lifecycle
    create→update→complete→clear, companion review delivered in-session,
    artifact DONE).
