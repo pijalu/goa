@@ -36,6 +36,10 @@ func main() {
 	fmt.Printf("registered tools (%d): %v\n", len(tools), tools)
 	fmt.Printf("request_review registered: %v\n", contains(tools, "request_review"))
 	fmt.Printf("delegate_to registered:    %v\n", contains(tools, "delegate_to"))
+
+	rrReg, rrOn, dtReg, dtOn := subs.ProbeAgentDrivenToolState()
+	fmt.Printf("request_review: registered=%v enabled=%v\n", rrReg, rrOn)
+	fmt.Printf("delegate_to:    registered=%v enabled=%v\n", dtReg, dtOn)
 }
 
 func contains(list []string, want string) bool {

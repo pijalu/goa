@@ -35,14 +35,23 @@ else
   fail "T2a.2 no request_review tool call in headless output"; fails=$((fails+1))
 fi
 
-# companion review evidence: an actual companion render block or persisted
-# companion history — again not prose matches.
-if grep -qE "^-- companion start" "$LOG"; then
+# companion review evidence (agent-driven path): the review is delivered to
+# the main agent as an in-session '[Message from companion]' user message —
+# that IS the inter-model conversation proof (strongest). Fallbacks: tool
+# result without the "no review output" marker (companion produced output),
+# the framework-only '-- companion start' render marker, or persisted
+# companion_history (not written by the agent-driven headless path).
+SESS=$(ls -t "$PROJ"/.goa/sessions/*.jsonl 2>/dev/null | head -1 || true)
+if [ -n "$SESS" ] && grep -q "Message from companion" "$SESS"; then
+  pass "T2a.3 companion review delivered to main agent (session evidence)"
+elif grep -q '"status":"review_complete"' "$LOG" && ! grep -q 'no review output' "$LOG"; then
+  pass "T2a.3 companion review completed with non-empty output"
+elif grep -qE "^-- companion start" "$LOG"; then
   pass "T2a.3 companion review block rendered in output"
 elif jq -e '.companion_history | length > 0' "$PROJ/.goa/state.json" >/dev/null 2>&1; then
   pass "T2a.3 companion history persisted in state.json"
 else
-  fail "T2a.3 no companion review evidence (output + state.json)"; fails=$((fails+1))
+  fail "T2a.3 no companion review evidence (session + output + state.json)"; fails=$((fails+1))
 fi
 
 # ---------- T2b framework-driven ----------

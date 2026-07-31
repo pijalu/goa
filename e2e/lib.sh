@@ -89,6 +89,12 @@ thinking_levels:
   companion: off
   planner: off
   coder: off
+tools:
+  enabled:
+    # Hermetic: never inherit these from the developer's home config, which
+    # may carry stale `false` values serialized from pre-Bug-6 defaults (F5).
+    request_review: true
+    delegate_to: true
 YAML
 }
 

@@ -55,9 +55,14 @@ if [ -n "$goal_id" ]; then
   pass "T4.6 run bound to goal $goal_id"
   if [ -f "$GEV" ] && grep -q "$goal_id" "$GEV"; then
     pass "T4.7 bound goal lifecycle present in goal-events.jsonl"
-    grep -E '"goal\.(complete|clear|block)"' "$GEV" >/dev/null \
-      && pass "T4.8 bound goal reached terminal event" \
-      || { fail "T4.8 bound goal has no terminal event"; fails=$((fails+1)); }
+    # Terminal state = goal.clear, or goal.update with a terminal status
+    # (core/goal has only create/update/clear event types).
+    if jq -e 'select(.type=="goal.clear")' "$GEV" >/dev/null 2>&1 \
+      || jq -e 'select(.type=="goal.update" and (.status=="complete" or .status=="blocked" or .status=="paused"))' "$GEV" >/dev/null 2>&1; then
+      pass "T4.8 bound goal reached terminal event"
+    else
+      fail "T4.8 bound goal has no terminal event"; fails=$((fails+1))
+    fi
   else
     fail "T4.7 bound goal $goal_id not found in goal-events.jsonl"; fails=$((fails+1))
   fi

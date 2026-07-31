@@ -45,11 +45,18 @@ captures, `results.tsv`) land under `$E2E_ROOT` (default
   (orchestrator=qwen, reviewer=qwythos, coder=gemma); ≥2 distinct agents must
   emit `agent_message` (real conversation); orchestrator must emit
   `agent_tool_call` (delegation); `run_finished` must exist.
-- **Companion**: companion exchange must appear in the headless output
-  (`request_review`) and/or `.goa/state.json` `companion_history`.
+- **Companion**: real `request_review` tool calls appear in the headless
+  output (`-- tool call request_review`); the review itself is delivered
+  in-session as a `[Message from companion]` user message — assert it in
+  `.goa/sessions/*.jsonl` (agent-driven headless neither renders
+  `-- companion start` nor persists `companion_history`; those two are
+  framework/TUI-only evidence).
 - **Goals**: `.goa/goals/goal-events.jsonl` must contain `goal.create` and a
-  terminal event; for T4 the orchestration's `run_started.payload.goal_id`
-  must be non-empty and tracked in the goal log.
+  terminal state — note `core/goal` has only THREE event types
+  (`goal.create`/`goal.update`/`goal.clear`); completion is a `goal.update`
+  carrying `"status":"complete"` (or blocked/paused), not a `goal.complete`
+  event. For T4 the orchestration's `run_started.payload.goal_id` must be
+  non-empty and tracked in the goal log.
 - **Artifacts**: the actual file the task asked for must exist with the
   expected content. Exit codes are advisory; artifacts decide.
 
@@ -72,6 +79,9 @@ captures, `results.tsv`) land under `$E2E_ROOT` (default
 4. **Fake projects** — `mk_fake_project` + `write_base_config` give each
    scenario an isolated `/tmp` project whose `.goa/config.yaml` pins
    provider/models/thinking to LM Studio (project config overrides home).
+   The config also pins `tools.enabled.request_review/delegate_to: true`
+   explicitly — never inherit these from the developer's home config, which
+   may carry stale `false` values serialized from old defaults (bugs.md F5).
 5. **Slow-model discipline** — warm up each model (JIT load) before runs;
    timeouts are generous (10–25m); prompts are tiny; thinking off.
 

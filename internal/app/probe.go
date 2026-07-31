@@ -26,3 +26,20 @@ func (s *subsystems) ProbeToolNames() []string {
 	}
 	return names
 }
+
+// ProbeAgentDrivenToolState reports whether the agent-driven companion tools
+// (request_review, delegate_to) are registered AND execution-enabled after
+// full subsystem wiring, including session-state restore. Registration makes
+// the tool visible to the model; Enabled gates execution (bugs.md F5).
+func (s *subsystems) ProbeAgentDrivenToolState() (rrRegistered, rrEnabled, dtRegistered, dtEnabled bool) {
+	if s == nil {
+		return false, false, false, false
+	}
+	if rrRegistered = s.requestReviewTool != nil; rrRegistered {
+		rrEnabled = s.requestReviewTool.Enabled
+	}
+	if dtRegistered = s.delegateTool != nil; dtRegistered {
+		dtEnabled = s.delegateTool.Enabled
+	}
+	return rrRegistered, rrEnabled, dtRegistered, dtEnabled
+}

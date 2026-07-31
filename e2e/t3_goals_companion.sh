@@ -37,8 +37,13 @@ if [ -f "$GEV" ]; then
   else
     fail "T3.3 no goal.create event"; fails=$((fails+1))
   fi
-  if grep -qE '"goal\.(complete|clear|block)"' "$GEV"; then
-    term=$(grep -oE '"goal\.(complete|clear|block)"' "$GEV" | tail -1)
+  # Terminal state = goal.clear event, or a goal.update patch carrying a
+  # terminal status (complete/blocked/paused). There is no goal.complete
+  # event type (core/goal/model.go: only create/update/clear exist).
+  if jq -e 'select(.type=="goal.clear")' "$GEV" >/dev/null 2>&1 \
+    || jq -e 'select(.type=="goal.update" and (.status=="complete" or .status=="blocked" or .status=="paused"))' "$GEV" >/dev/null 2>&1; then
+    term=$(jq -r 'select(.type=="goal.update") | .status // empty' "$GEV" | tail -1)
+    [ -n "$term" ] || term="goal.clear"
     pass "T3.4 goal reached terminal event: $term"
   else
     fail "T3.4 goal never reached a terminal event"; fails=$((fails+1))
@@ -47,7 +52,11 @@ else
   fail "T3.2 goal events log missing ($GEV)"; fails=$((fails+1))
 fi
 
+# companion evidence: real request_review call, framework render marker, an
+# in-session '[Message from companion]' delivery, or persisted history.
+SESS=$(ls -t "$PROJ"/.goa/sessions/*.jsonl 2>/dev/null | head -1 || true)
 if grep -qE "^-- tool call request_review" "$LOG" || grep -qE "^-- companion start" "$LOG" \
+  || { [ -n "$SESS" ] && grep -q "Message from companion" "$SESS"; } \
   || jq -e '.companion_history | length > 0' "$PROJ/.goa/state.json" >/dev/null 2>&1; then
   pass "T3.5 companion engaged during goal run"
 else

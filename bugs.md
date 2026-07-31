@@ -67,10 +67,10 @@ Key techniques (all in `e2e/lib.sh`):
 
 | Scenario | Result | Evidence |
 |---|---|---|
-| T1 orchestration (qwen/qwythos/gemma) | PASS 10/10 | `/tmp/goa-e2e/run-t1d/` — qwen issued 2 `delegate` calls (coder, reviewer); qwythos independently verified file content; `run_finished ok=true`; artifact `answer.txt=BLUE` |
-| T2 companion (qwen+qwythos) | T2a FAIL (2), T2b PASS | `/tmp/goa-e2e/run-t2b/` — T2a: file created but `request_review` tool not invoked by model — the home config (`~/.goa/config.yaml`) has `request_review: false, delegate_to: false` which overrides the (correct) embedded defaults. Tools ARE registered (probe confirms 13 tools) but `cfg.Tools.Enabled` returns false, so the model's instance-level `Enabled` flag gates execution. T2b framework-driven: artifact created, companion visible in TUI stream |
-| T3 goals + companion | _pending_ | |
-| T4 orchestration + goals + companion | _pending_ | |
+| T1 orchestration (qwen/qwythos/gemma) | PASS 9/9 (+F1 note) | `/tmp/goa-e2e/run-t1e/` (2026-07-31 rerun, same script revision + binary as T2–T4; confirms the lib.sh hermetic-config change doesn't regress orchestration) — orchestrator=qwen, reviewer=qwythos, coder=gemma all correct; 5 distinct agents; 4 `delegate` calls; `run_finished`; resume continued the same run (no fork); artifact `answer.txt=BLUE`. Original evidence: `/tmp/goa-e2e/run-t1d/` (2026-07-30, 10/10) |
+| T2 companion (qwen+qwythos) | PASS 5/5 | `/tmp/goa-e2e/run-t2c/` (fresh binary, 2026-07-31) — T2a: real `request_review` tool call by qwen; qwythos review generated and delivered in-session as `[Message from companion]: Review complete: color.txt created correctly…` (sessions/*.jsonl); artifact `color.txt=GREEN`. T2b: framework companion reviewed the turn, visible in TUI stream; artifact `sky.txt=AZURE`. The 2026-07-30 T2a FAIL was a stale test binary (built 21:59, registration fix committed 22:29) — see F5 correction and Bug 7 |
+| T3 goals + companion | PASS 5/5 | `/tmp/goa-e2e/run-t3/` — artifact `done.txt=DONE`; goal "sparky.orca" lifecycle in goal-events.jsonl: `goal.create` → 3×`goal.update` → `status=complete` → `goal.clear`; 3 real `request_review` calls; qwythos review delivered in-session (`done.txt has been successfully created with the correct content`); exit 0 |
+| T4 orchestration + goals + companion | PASS 9/9 | `/tmp/goa-e2e/run-t4/` (ptydrive TUI `/orchestrate:new`) — role→model all correct (orchestrator=qwen, reviewer=qwythos, coder=gemma); 4 distinct agents spoke; orchestrator issued `delegate` calls; `run_finished ok=true`; run bound to goal "fair.puma" (`run_started.payload.goal_id`, `managedBy=orchestrator`); goal lifecycle `create → 8×update → clear` (terminal); artifact `orbit.txt=ORBIT`. T4.10 observation: companion idle during orchestration (hooks main-agent turns, not orchestration agents) |
 
 ## Bugs Found & Fixed (this series)
 
@@ -177,6 +177,28 @@ Key techniques (all in `e2e/lib.sh`):
 - **Fix**: `sort.Strings` in `managedRoles()` → deterministic order.
 - **Tests**: `TestManagedRoles_Sorted`.
 
+### Bug 7 — e2e assertion bugs: nonexistent goal event types, wrong companion evidence location — FIXED (test infra)
+- **T3.4/T4.8 asserted `grep '"goal\.(complete|clear|block)"'` over
+  goal-events.jsonl — but `core/goal/model.go` defines only THREE event
+  types: `goal.create`, `goal.update`, `goal.clear`. A healthy completion
+  writes `{"type":"goal.update","status":"complete"}` → the grep fails on
+  success. Fix: jq assertions for `goal.clear` OR `goal.update` carrying a
+  terminal `status` (complete/blocked/paused) in `t3_goals_companion.sh`,
+  `t4_all.sh`.
+- **T2a.3 asserted companion evidence via `-- companion start` (a
+  framework-driven TUI render marker) or `companion_history` in state.json —
+  but the agent-driven path (`request_review` tool) delivers the review
+  in-session as a `[Message from companion]` user message and persists no
+  companion_history in headless. The review DID run and complete
+  (`{"status":"review_complete"}` with non-empty output) while the assertion
+  reported failure. Fix: primary evidence = `Message from companion` in
+  `.goa/sessions/*.jsonl`; fallbacks kept (`review_complete` w/o
+  "no review output", render marker, history). Same session-evidence check
+  added to T3.5.
+- **Validation**: updated assertions re-checked against the run-t2c
+  artifacts (T2a.3 passes with real session evidence); scripts pass
+  `bash -n`.
+
 ## Findings / Observations (not fixed this session)
 
 - **F1 (gap)**: headless `--orchestrate` runs bind no goal — the goal binder
@@ -196,41 +218,297 @@ Key techniques (all in `e2e/lib.sh`):
     a 3-agent hub run (2 delegations) ≈ 3–4 min end to end. First call per
     model pays JIT load (warm up first). LM Studio serializes GPU work, so
     interleaved multi-model runs queue rather than parallelize.
-  - **F5 (config override — home config)**: the user's home config
-    (`~/.goa/config.yaml`) has `delegate_to: false` and `request_review: false`,
-    which overrides the (correct) embedded defaults (`request_review: true,
-    delegate_to: true` from Bug 6 fix). While the tools ARE registered in the
-    tool registry (probe confirms 13 tools including `request_review` and
-    `delegate_to`), `cfg.Tools.Enabled.RequestReview` and
-    `cfg.Tools.Enabled.DelegateTo` return `false`, and `registerAgentDrivenTools`
-    uses these config booleans to set the tools' instance-level `Enabled` flag
-    (via `restoreSessionState`). The runtime then gates execution of disabled
-    tools with a clean "tool is disabled" rejection. This is why T2a.2 (real
-    `request_review` tool call) and T2a.3 (companion review evidence) fail: the
-    model can see the tool but cannot execute it. The test scripts in `lib.sh`
-    (`write_base_config`) do not emit a `tools.enabled` block, so the cascade
-    picks up the home config values. *Fix plan*: either (a) the e2e `lib.sh`
-    `write_base_config` should emit `tools.enabled.request_review: true,
-    tools.enabled.delegate_to: true` in its project config, or (b) the
-    `registerAgentDrivenTools` function should use the companion-active intent
-    (already present in the `companionActive` parameter) as the sole gate,
-    ignoring the config booleans when companion mode is active.
+  - **F5 (config override — home config) — RESOLVED 2026-07-31 (was: stale binary + wrong mechanism analysis)**: the user's home config
+    (`~/.goa/config.yaml` lines 271/275) has `delegate_to: false` and
+    `request_review: false` (serialized from pre-Bug-6 defaults), which wins
+    the cascade over the embedded defaults (`cfg.Tools.Enabled.*` = false in
+    e2e projects — probe confirms). **Correction of the earlier analysis**:
+    the claimed mechanism ("config booleans set the tools' instance-level
+    `Enabled` flag via `restoreSessionState`") does NOT exist in the code —
+    `Enabled` is driven solely by the `AgentDrivenGate` change callback, and
+    companion intent (`companionActive` from the seeded state) forces BOTH
+    registration (`registerAgentDrivenTools`, subsystems.go:938/943) and
+    execution-enablement (`SetMinorMode` → gate fires → `Enabled=true`).
+    Probe evidence (e2e/probe extended with
+    `ProbeAgentDrivenToolState`): with home config forcing
+    `Tools.Enabled.*=false`, a seeded-companion project still yields
+    `request_review: registered=true enabled=true` (same for delegate_to).
+    The 2026-07-30 T2a FAIL was a **stale test binary**: `/tmp/goa-e2e/goa`
+    was built 21:59, the registration fix committed 22:29; the rerun log
+    shows the pre-fix symptom (model: "I don't see a request_review tool").
+    Rerun with a fresh binary (run-t2c): model calls `request_review`,
+    qwythos review delivered → T2a PASS. **Residual hermeticity fix**:
+    e2e `lib.sh write_base_config` now emits
+    `tools.enabled.request_review: true, delegate_to: true` so fake projects
+    never silently inherit a developer's home config (portability).
+  - **F6 (observation)**: agent-driven `request_review` reviews are
+    delivered in-session (`[Message from companion]` user message,
+    multiagent/agent_driven_tools.go:185) but are NOT rendered in headless
+    `--plain` output and do NOT persist `companion_history` in state.json
+    (headless). Evidence lives in `.goa/sessions/*.jsonl` — e2e asserts it
+    there. Also: per-agent model identity in the companion path is not
+    separately logged (unlike orchestrator `agent_started.model`); the
+    companion model is pinned by `multi_agent.companion_model` config only.
 
 ## Remaining Work (for next session)
 
-1. **Fix T2a** — address F5 (home config override): update `e2e/lib.sh`
-   `write_base_config` to emit `tools.enabled.request_review: true` and
-   `tools.enabled.delegate_to: true`, OR change
-   `registerAgentDrivenTools` to gate on companion intent alone.
-2. **Run T2** — re-run `e2e/t2_companion.sh` after fix; validate T2a
-   assertions pass (request_review tool call + companion review evidence).
-3. **Run T3** — goals + companion: `e2e/t3_goals_companion.sh`. Validate
-   goal lifecycle (`goal-events.jsonl`) + companion coexistence + artifact.
-4. **Run T4** — orchestration + goals + companion: `e2e/t4_all.sh`
-   (ptydrive TUI). Validate role→model mapping, run_finished, goal binding
-   (goal_id in run_started), companion history, artifact.
-5. **Update bugs.md** — record T3/T4 results and any new issues found.
-6. **Archive** — when all 4 scenarios pass, move bug list to
-   `docs/archive/bugs.<date>.md`.
+1. ~~**Fix T2a**~~ — DONE 2026-07-31: root cause was a stale test binary
+   (built before the Bug 6 registration fix was committed); companion intent
+   already overrides the home-config `tools.enabled` false values for both
+   registration and execution (probe-verified). lib.sh additionally made
+   hermetic (emits `tools.enabled.*: true`).
+2. ~~**Run T2**~~ — DONE 2026-07-31: run-t2c PASS 5/5 (fresh binary +
+   corrected T2a.3 evidence assertion, see Bug 7).
+3. ~~**Run T3**~~ — DONE 2026-07-31: run-t3 PASS 5/5 (goal lifecycle
+   create→update→complete→clear, companion review delivered in-session,
+   artifact DONE).
+4. ~~**Run T4**~~ — DONE 2026-07-31: run-t4 PASS 9/9 (ptydrive TUI path;
+   role→model correct, run bound to goal "fair.puma", goal terminal,
+   companion idle-but-coexisting, artifact ORBIT).
+5. **Update bugs.md** — DONE 2026-07-31 (all four scenarios recorded with
+   evidence paths).
+6. ~~**T1 confirmation rerun**~~ — DONE 2026-07-31: run-t1e PASS 9/9 (+F1
+   note); all four scenarios now validated against the same script revision
+   and binary. (A full `run_all.sh` clean series remains optional.)
+7. **Archive** — all 4 scenarios PASS; move the e2e-series bug list to
+   `docs/archive/bugs.<date>.md` per guideline #4/#8.
+8. **Open bug (separate)** — goal tool result line should render the goal
+   short name, not the full objective (see "Other issues" →
+   "Goal tool result line floods the timeline…").
 
 ---
+# Other issues
+
+## Dead loop
+the model went into a dead loop but not loop guard did trigger:
+```
+Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the logical-operator handling:Now I understand the boundary regression precisely:
+ • Old tclBool("!working_64bit_int"): string non-empty → true → skip the test (passes trivially)
+ • New tclBool: ! prefix → !tclBool("working_64bit_int") = !true = false → test RUNS → hits a real engine bug
+ The !/&&/|| handling in tclBool changes skip-guard behavior across all 614 packages — too risky. The real fix for the corrupt OOM is
+ buildCmdCondExpr (generation-time). The tclBool safety net should be maximally conservative: only evaluate pure numeric comparisons, nothing
+ else. Let me revert the
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Error: context canceled                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Generation stopped by user.                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+*(none — all items fixed and archived to `docs/archive/bugs.2026-07-26.md`)*
+```
+
+## Goal tool result line floods the timeline with the full objective — should show the goal short name — OPEN
+
+- **Observed**: every `goal` tool result carrying a goal snapshot
+  (create / get / update_todo) renders the full objective, which floods the
+  timeline and truncates mid-word:
+  ```
+  ✓ ◆ Updated todo t2 → done
+  Goal active: Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser, complet
+  ```
+  Expected — the goal's short friendly name is used instead:
+  ```
+  ✓ ◆ Updated todo t2 → done
+  goal active: honest.zebra
+  ```
+- **Localization**: `tui/goal/tool_renderers.go`:
+  - `renderGoalSnapshotLine` (line ~222) builds
+    `"Goal %s: %s · %d turns · %s tokens · %s"` from
+    `goalSummaryJSON.Objective` — the raw, unbounded objective string.
+  - `goalSummaryJSON` (line ~166) does NOT decode the snapshot's `"name"`
+    field, even though the goal tool result carries it
+    (e.g. `"name":"honest.zebra"`).
+  - The prefer-name pattern already exists for queued goals:
+    `upcomingGoalJSON.Name` + `goalLabel()` (line ~300) — reuse it.
+- **Fix plan**: add `Name string \`json:"name"\`` to `goalSummaryJSON`; in
+  `renderGoalSnapshotLine` render the short name when non-empty, falling back
+  to a truncated objective (same rule as `goalLabel`). Keep the
+  turns/tokens/elapsed/todos stats suffix (useful signal) — only the
+  objective → short-name swap changes.
+- **Tests**: table-driven cases in `tui/goal/tool_renderers_test.go`:
+  snapshot with name → line shows `<status>: <name>` and NOT the objective;
+  snapshot without name → truncated-objective fallback; stats suffix intact.
+- **Validation**: `go test ./tui/goal -race`; then run a TUI session with a
+  long-objective goal, update a todo, and verify the timeline shows the
+  one-line short-name summary (guideline #5 — verify real terminal output).
