@@ -2219,6 +2219,13 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "deepseek/deepseek-v4-flash-0731", Name: "DeepSeek V4 Flash 0731", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
+		BaseURL:   "https://openrouter.ai/api/v1",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 384000, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000001400, Output: 0.0000002800, CacheRead: 0.0000000028, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "deepseek/deepseek-v4-pro", Name: "DeepSeek V4 Pro", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 384000, InputTypes: []string{"text"},
@@ -2527,13 +2534,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "mistralai/devstral-2512", Name: "Devstral 2", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
-		BaseURL:   "https://openrouter.ai/api/v1",
-		Reasoning: false, ContextWindow: 262144, MaxTokens: 262144, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000004000, Output: 0.0000020000, CacheRead: 0.0000000400, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "mistralai/ministral-14b-2512", Name: "Ministral 3 14B 2512", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: false, ContextWindow: 262144, MaxTokens: 262144, InputTypes: []string{"text", "image"},
@@ -2621,7 +2621,7 @@ func loadGeneratedModels() {
 		ID: "mistralai/mistral-small-3.2-24b-instruct", Name: "Mistral Small 3.2 24B", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: false, ContextWindow: 256000, MaxTokens: 16384, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000001000, Output: 0.0000003000, CacheRead: 0.0000000100, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000000750, Output: 0.0000002000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -2670,7 +2670,7 @@ func loadGeneratedModels() {
 		ID: "moonshotai/kimi-k2.6", Name: "Kimi K2.6", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 262144, MaxTokens: 262144, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000009500, Output: 0.0000040000, CacheRead: 0.0000001600, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000005890, Output: 0.0000024800, CacheRead: 0.0000000992, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -2905,13 +2905,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "openai/gpt-5.1-chat", Name: "GPT-5.1 Chat", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
-		BaseURL:   "https://openrouter.ai/api/v1",
-		Reasoning: false, ContextWindow: 128000, MaxTokens: 32000, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000012500, Output: 0.0000100000, CacheRead: 0.0000001300, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "openai/gpt-5.1-codex", Name: "GPT-5.1 Codex", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 400000, MaxTokens: 128000, InputTypes: []string{"text", "image"},
@@ -3090,7 +3083,7 @@ func loadGeneratedModels() {
 		ID: "openai/gpt-oss-20b", Name: "GPT OSS 20B", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 131072, MaxTokens: 131072, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000000300, Output: 0.0000001300, CacheRead: 0.0000000300, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000000300, Output: 0.0000001400, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -3258,7 +3251,7 @@ func loadGeneratedModels() {
 		ID: "qwen/qwen3-235b-a22b-thinking-2507", Name: "Qwen3 235B A22B Thinking 2507", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 262144, MaxTokens: 32768, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000003000, Output: 0.0000030000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000002300, Output: 0.0000023000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -3376,8 +3369,8 @@ func loadGeneratedModels() {
 	addModel(provider.Model{
 		ID: "qwen/qwen3-vl-30b-a3b-instruct", Name: "Qwen3 VL 30B A3B Instruct", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
-		Reasoning: false, ContextWindow: 262144, MaxTokens: 16384, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000001500, Output: 0.0000006000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
+		Reasoning: false, ContextWindow: 262144, MaxTokens: 32768, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000001300, Output: 0.0000005200, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -3509,14 +3502,14 @@ func loadGeneratedModels() {
 	addModel(provider.Model{
 		ID: "qwen/qwen3.7-max", Name: "Qwen3.7 Max", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
-		Reasoning: true, ContextWindow: 1000000, MaxTokens: 65536, InputTypes: []string{"text"},
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.0000014750, Output: 0.0000044250, CacheRead: 0.0000002950, CacheWrite: 0.0000018437},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
 		ID: "qwen/qwen3.7-plus", Name: "Qwen3.7 Plus", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
-		Reasoning: true, ContextWindow: 1000000, MaxTokens: 65536, InputTypes: []string{"text", "image"},
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000003200, Output: 0.0000012800, CacheRead: 0.0000000640, CacheWrite: 0.0000004000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
@@ -3713,7 +3706,7 @@ func loadGeneratedModels() {
 		ID: "z-ai/glm-5.2", Name: "GLM-5.2", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 128000, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000009660, Output: 0.0000030360, CacheRead: 0.0000001794, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000011200, Output: 0.0000035200, CacheRead: 0.0000002080, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
@@ -3948,13 +3941,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "glm-4.5-air", Name: "GLM-4.5-Air", Api: provider.Api("openai-completions"), Provider: provider.Provider("zai"),
-		BaseURL:   "https://api.z.ai/api/coding/paas/v4",
-		Reasoning: true, ContextWindow: 131072, MaxTokens: 98304, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000000000, Output: 0.0000000000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "glm-4.7", Name: "GLM-4.7", Api: provider.Api("openai-completions"), Provider: provider.Provider("zai"),
 		BaseURL:   "https://api.z.ai/api/coding/paas/v4",
 		Reasoning: true, ContextWindow: 204800, MaxTokens: 131072, InputTypes: []string{"text"},
@@ -3969,13 +3955,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "glm-5.1", Name: "GLM-5.1", Api: provider.Api("openai-completions"), Provider: provider.Provider("zai"),
-		BaseURL:   "https://api.z.ai/api/coding/paas/v4",
-		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000000000, Output: 0.0000000000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "glm-5.2", Name: "GLM-5.2", Api: provider.Api("openai-completions"), Provider: provider.Provider("zai"),
 		BaseURL:   "https://api.z.ai/api/coding/paas/v4",
 		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text"},
@@ -3983,9 +3962,9 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "glm-5v-turbo", Name: "GLM-5V-Turbo", Api: provider.Api("openai-completions"), Provider: provider.Provider("zai"),
+		ID: "glm-5.2-highspeed[1m]", Name: "GLM-5.2 Highspeed", Api: provider.Api("openai-completions"), Provider: provider.Provider("zai"),
 		BaseURL:   "https://api.z.ai/api/coding/paas/v4",
-		Reasoning: true, ContextWindow: 200000, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.0000000000, Output: 0.0000000000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
