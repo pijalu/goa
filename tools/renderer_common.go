@@ -84,7 +84,11 @@ func rInverse(text string) string {
 
 func themeHex(token string) string {
 	if Themer != nil {
-		return Themer.ColorHex(token)
+		if hex := Themer.ColorHex(token); hex != "" {
+			return hex
+		}
+		// Unknown token: fall through to the defaults so callers always get
+		// a usable color instead of an empty string.
 	}
 	// Fallbacks that match the dark theme.
 	switch token {

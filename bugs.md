@@ -539,7 +539,7 @@ Now I understand the boundary regression precisely:
   stream replay shows identical rendering; fix removes duplication (guideline
   #5 — verify real terminal output).
 
-## TestThemeHex_UnknownToken fails on main — OPEN
+## TestThemeHex_UnknownToken fails on main — FIXED (branch feature/recontext)
 
 - **Observed**: `go test ./tools/ -run TestThemeHex_UnknownToken -count=1`
   fails: `tool_highlight_test.go:90: expected default '#888888', got ""`.
@@ -551,3 +551,46 @@ Now I understand the boundary regression precisely:
 - **Fix plan**: find the resolution path for unknown tokens, restore the
   default-fallback; the test is the guard.
 - **Validation**: `go test ./tools/ -run TestThemeHex -race -count=1` green.
+- **Fix applied** (feature/recontext): `themeHex` now falls through to the
+  `#888888` default when the active Themer returns "" for an unknown token.
+  Root cause: the default was unreachable whenever Themer was set.
+
+## Stream-loop detector MISSED a real paraphrase loop (true positive) — OPEN
+
+- **Observed**: a genuine loop streamed ~90 copies of the same short intent
+  with per-copy paraphrase drift and was NOT caught:
+  ```
+  ... how processDB handles close:Let me check how widespread the reopen pattern is in Tier-1 tests and how processDB handles close:
+  Let me check the reopen pattern usage in Tier-1 and processDB's close handling:Let me check how widespread the sqlite3 db test.db pattern is:
+  Let me check how many Tier-1 tests use the reopen pattern:Let me check the reopen pattern in Tier-1 tests:Let me check processDB's close
+  handling and the reopen pattern usage:Let me check how processDB handles close:Let me check how many Tier-1 tests use the reopen pattern:
+  ... (≈90 copies, variants of "Let me check <reopen pattern / processDB close / Tier-1>")
+  ```
+  No long byte-exact block exists: each copy mutates wording/casing, so any
+  exact-only detector (per the simplified algorithm in the FP entry) will
+  miss this shape. This is the counter-example that constrains the rework.
+- **Why current detector missed it**: copies are short (~40–90 bytes) and
+  differ at MANY positions; `streamBlocksShowProgression` (position distinct
+  in every copy) likely classified the drift as enumeration, or the fuzzy
+  mismatch budget rejected a match — either way paraphrase drift defeats the
+  current block-alignment approach.
+- **Fix requirement (merges with the FP entry's rework)** — the detector
+  must distinguish by REPEAT COUNT and block length:
+  1. Long byte-exact block (≥ ~200 B) ≥ 3 copies (≥ 2 for ≥ 1 KB) → loop.
+  2. Short/near-identical unit (≥ ~30 B) with walking paraphrase edits →
+     loop ONLY at high copy count (e.g. ≥ 6–8 copies in the tail window) —
+     this sample (~90 copies) trips, while 3–4 similar paragraphs (Option
+     A/B/C analysis, the FP sample) do not.
+  3. Limited distance: small bounded gaps between copies allowed.
+  Suggested implementation: count occurrences of the most frequent tail
+  n-gram/line-unit (hash-based, no pairwise block alignment); apply
+  thresholds 1+2. This kills the fragile fuzzy/progression machinery AND
+  catches both field shapes.
+- **Tests** (`internal/agentic/agent_streamloop_test.go`):
+  - TP: the "Let me check …" excerpt (trimmed to ~10 copies) MUST trip.
+  - TP: prior dead-loop sample (long exact block ×5) MUST trip.
+  - FP: Option A/B/C excerpt (FP entry) must NOT trip.
+  - FP: enumerated lists, quoted near-identical evidence must NOT trip.
+- **Validation**: `go test ./internal/agentic -run StreamLoop -race -count=1`;
+  live LM Studio session: forced paraphrase loop caught, exploratory
+  reasoning unstopped (guideline #5).
