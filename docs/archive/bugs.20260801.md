@@ -413,3 +413,115 @@ Now I understand the boundary regression precisely:
 
 
 - **Status**: FIXED on branch feature/recontext (commit 5d34156): goalSummaryJSON decodes the snapshot's 'name' field; new summaryLabel prefers the friendly short name, falls back to the truncated objective (same rule as queued goals). Also fixed the same flood in renderGoalList's Active line. Tests: tui/goal/tool_renderers_test.go (TestGoalRenderer_SnapshotUsesShortName, TestGoalRenderer_ListActiveUsesShortName) — name shown, objective absent, stats suffix intact. Validated: go test ./tui/goal/ -race green.
+
+
+## Context compression not triggering at 92.9% (auto)
+
+- **Observed**: footer shows `CH99.1% TC:290 92.9%/262.1K (auto)` — context
+  at 92.9% of a 262.1K window, cache 99.1% hot, compression mode (auto), yet
+  no (micro) compression has fired. Expected: some micro compression well
+  before the wall.
+- **Second sample (2026-08-01) — worse**: compression still had not fired
+  PAST 100% of the window; the oversized request went out and the provider
+  hard-rejected it, pausing the goal:
+  ```
+  │ Error: 401 - k3-256k supports only 256K context. │
+  ◦ Goal paused by the system
+  Paused after provider authentication error
+  ↑545.5K ↓182.1K 19.6 tok/s CH99.0% TC:436 115.5%/262.1K (auto) c:1m-0  (kimi-code) k3-256k • high • [17%|14%]
+  ```
+  At 115.5%/262.1K with (auto), neither soft nor main compression fired
+  BEFORE the call; the overflow surfaced as a provider 401. The safety net
+  failed open: usage ≥ 100% must force compression (or block) BEFORE the
+  request is built — never send an oversized request. (`c:1m-0` in the
+  footer = compression counters: 1 micro-compact, 0 main compacts.)
+- **Root cause (confirmed)**: compression gates run ONCE per user turn
+  (`prepareTurn` → `maybeCompress` + `enforceContextCeiling`,
+  internal/agentic/agent_streaming.go:1438-1441), but
+  `processTurnWithStream` then loops `runStreamRound` per tool round — each
+  round appends assistant+tool messages and re-streams with NO compression
+  check between rounds. A long turn (TC:436) climbs past trigger → hard →
+  >100% unchecked until the provider rejects the request. The 92.9% sample:
+  the last turn-start check ran below 85% (deferralCeiling), the turn grew
+  mid-flight; the 115.5% sample proves no mid-turn gate exists.
+- **Design directive (user, 2026-08-01) — 3 layers / 3 thresholds**:
+  compression must be three independently configurable layers:
+  | Layer | Default level | Default strategy |
+  |-------|---------------|------------------|
+  | Soft | 80% | micro |
+  | Medium (trigger) | 90% | tool_elision |
+  | Hard / Error | 95% | hybrid |
+  The user can set each level from 10% to 95% in 5% increments and select
+  any strategy per layer (soft stays zero-LLM: micro/elision only). Footer
+  label must reflect what will actually fire (e.g. `auto+micro`).
+- **Design directive (user, 2026-08-01) — cache management configurable**:
+  the `/config` command must allow changing the cache-management behavior
+  (the prefix-cache gate that defers compression while the provider cache
+  is presumed hot: CacheMissThreshold, cache-hot deferral, deferralCeiling).
+  Configurable GLOBALLY with a PER-MODEL override — some models/providers
+  need specific rules (e.g. providers without a prefix cache, or local
+  models where cache-hot readings like CH99% are meaningless and the gate
+  should simply be off). Precedence: model-level > global > built-in
+  default. A per-model "cache gate: off" must be expressible (gate
+  disabled = compression never deferred for cache).
+- **Fix plan**:
+  1. Per-round gate: run `maybeCompress` + `enforceContextCeiling` in
+     `startStreamRound`'s round>0 branch so every API request is preceded by
+     a fresh compression check (covers tool rounds and error-retry re-streams).
+  2. Three-layer config: per-layer strategy selection with the defaults
+     above (SoftPercent default becomes 80 with micro; TriggerPercent 90
+     with tool_elision; HardPercent 95 with hybrid), levels validated to
+     10–95 in 5% steps; footer shows the effective tiers.
+- **Tests**: multi-round scripted turn where tool results push usage past
+  the trigger mid-turn; assert the stream AFTER the gate went out
+  compressed (elided payload absent), i.e. the test fails without the
+  per-round gate. Gate-decision tests at 80/85/90/93% cache hot/cold
+  (extend agent_compression_cache_gate_test.go). Layer-config validation
+  tests (5% steps, per-layer strategy).
+- **Validation**: `go test ./internal/agentic -race -count=1`; scripted
+  over-trigger session compresses before the wall; footer reflects reality.
+
+
+- **Status**: FIXED on branch feature/recontext.
+  - Root cause (per-round gap): commit 941cc55 — startStreamRound's round>0
+    branch now runs maybeCompress + enforceContextCeiling before every
+    re-stream; regression test TestAgent_CompressionGateBetweenRounds drives
+    an 8-round tool turn past the trigger and asserts the final request went
+    out elided (fails without the gate).
+  - 3-layer redesign: commit 6ef7ebb — soft (default 80%, micro),
+    trigger (90%, tool_elision), hard (95%, hybrid; new tierHard fires at the
+    emergency ceiling with cache gate bypassed); levels user-settable 10-95%
+    in 5% steps (0 = SDK default, soft -1 = disabled); per-layer strategies
+    configurable globally and per_model; cache gate on/off global and
+    per_model (off = never defer for hot cache); /config menu gained
+    Soft/Hard strategy pickers, cache-gate toggle, and 5%-step pickers.
+  - Footer label: commit c828c75 — "(auto+micro)" reflects the soft layer.
+  - Tests: TestResolveThresholdsStrategies, TestZeroLLMStrategy,
+    TestProactiveTier (incl. tierHard, DisableCacheGate, soft -1),
+    TestAgent_CompressionGateBetweenRounds, overlay merge test, config
+    validation cases, /config menu tests. go test ./internal/agentic
+    ./core/... ./config -race green.
+  - Live validation against LM Studio at >90% usage: pending user
+    confirmation (test-validated only).
+
+
+## Cache miss (CM) counter in stats and status bar
+
+- **Request (user, 2026-08-01)**: using stats reported by the model, show a
+  cache-miss "CM" counter next to the existing CH (cache hit) indicator:
+  in the stats display and in the status bar, e.g.
+  `... CH99.0% CM:3 TC:436 ...`. Only shown when non-zero (no noise when
+  the cache behaves).
+- **Notes**: CH today derives from provider usage (cached tokens vs input).
+  CM should count cache MISSES (requests where the cached-prefix share
+  dropped / cache was not used) — define from the same provider usage
+  stats; a miss is interesting only when the provider supports caching
+  (hide entirely when it does not).
+- **Tests**: footer/stats rendering with miss count 0 (hidden) and >0
+  (shown); provider without cache stats (hidden).
+
+- **Status**: FIXED on branch feature/recontext (commit c828c75): CM counts
+  cache busts (zero-cache-read requests after establishment; cold starts and
+  cache-less providers never count), rendered next to CH only when non-zero,
+  plus cm=N in the stats log line. Tests: TestHandleTokenStats_CacheMissCounter,
+  TestBuildFooterStatParts_CacheMiss. Validated: go test ./internal/app green.
