@@ -229,6 +229,25 @@ func TestSkillLinkedMode(t *testing.T) {
 	}
 }
 
+// TestEmbeddedSkillDescriptionCeiling is a build-time context guard: embedded
+// skill descriptions are listed in <available_skills> in every system prompt,
+// so each must stay ≤ 200 chars. Covers only embedded skills — user/project
+// skills are theirs to size (goa never refuses to run).
+func TestEmbeddedSkillDescriptionCeiling(t *testing.T) {
+	reg := NewSkillRegistry(nil)
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	const ceiling = 200
+	for _, s := range reg.List() {
+		if len(s.Description) > ceiling {
+			t.Errorf("embedded skill %q description = %d chars, ceiling %d — listed in every system prompt; keep it terse",
+				s.Name, len(s.Description), ceiling)
+		}
+	}
+}
+
 func TestSkillSuggestedSkills(t *testing.T) {
 	skill := &Skill{
 		Meta: SkillMeta{

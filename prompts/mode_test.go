@@ -55,3 +55,34 @@ func TestLoadMode_MissingGuardIsEmpty(t *testing.T) {
 		t.Errorf("expected coder guard to be empty, got %d rules", len(def.Guard.Rules))
 	}
 }
+
+// TestModeBodySizeCeiling is a build-time context guard: the active mode body
+// is the first section of every system prompt, so each embedded mode body
+// stays ≤ 3000 chars and carries no HTML comments (stripped at parse).
+func TestModeBodySizeCeiling(t *testing.T) {
+	r := NewRegistry(EmbeddedFS())
+	modes, err := r.ListModes()
+	if err != nil {
+		t.Fatalf("ListModes: %v", err)
+	}
+	if len(modes) == 0 {
+		t.Fatal("no embedded modes found")
+	}
+	const ceiling = 3000
+	for _, major := range modes {
+		def, err := r.LoadMode(major)
+		if err != nil {
+			t.Errorf("LoadMode(%q): %v", major, err)
+			continue
+		}
+		if len(def.Body) > ceiling {
+			t.Errorf("mode %q body = %d chars, ceiling %d — it heads every system prompt in that mode; keep it dense",
+				major, len(def.Body), ceiling)
+		}
+		for _, banned := range []string{"SPDX-License-Identifier", "<!--"} {
+			if strings.Contains(def.Body, banned) {
+				t.Errorf("mode %q body contains %q — comments must be stripped", major, banned)
+			}
+		}
+	}
+}
