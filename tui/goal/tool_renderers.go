@@ -164,12 +164,23 @@ func renderGoalSummary(output string) string {
 
 // goalSummaryJSON is the subset of core/goal.GoalSnapshot the summary needs.
 type goalSummaryJSON struct {
+	Name        string           `json:"name"` // friendly alias, e.g. "honest.zebra"
 	Objective   string           `json:"objective"`
 	Status      string           `json:"status"`
 	TurnsUsed   int              `json:"turnsUsed"`
 	TokensUsed  int              `json:"tokensUsed"`
 	WallClockMs int64            `json:"wallClockMs"`
 	Todos       []todoStatusJSON `json:"todos"`
+}
+
+// summaryLabel renders the goal's short friendly name when present, falling
+// back to a truncated objective — the timeline must never flood with the
+// raw, unbounded objective text (mirrors goalLabel for queued goals).
+func summaryLabel(g goalSummaryJSON) string {
+	if g.Name != "" {
+		return g.Name
+	}
+	return truncText(g.Objective, 40)
 }
 
 // todoStatusJSON carries only the todo status (for the done/total count).
@@ -220,7 +231,7 @@ func renderGoalSnapshotLine(raw, queued json.RawMessage, fallback string) string
 		return fallback
 	}
 	line := fmt.Sprintf("Goal %s: %s · %d turns · %s tokens · %s",
-		g.Status, g.Objective, g.TurnsUsed, formatTokens(g.TokensUsed), formatElapsed(g.WallClockMs))
+		g.Status, summaryLabel(g), g.TurnsUsed, formatTokens(g.TokensUsed), formatElapsed(g.WallClockMs))
 	if done, total := todoProgress(g.Todos); total > 0 {
 		line += fmt.Sprintf(" · todos %d/%d", done, total)
 	}
@@ -236,7 +247,7 @@ func renderGoalList(raw map[string]json.RawMessage) string {
 	if v, ok := raw["active"]; ok && string(v) != "null" {
 		var g goalSummaryJSON
 		if err := json.Unmarshal(v, &g); err == nil {
-			head = fmt.Sprintf("Active: %s (%s)", g.Objective, g.Status)
+			head = fmt.Sprintf("Active: %s (%s)", summaryLabel(g), g.Status)
 		}
 	}
 	if head == "" {

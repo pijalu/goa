@@ -222,3 +222,71 @@ func TestFormatElapsed(t *testing.T) {
 		t.Errorf("formatElapsed = %q", got)
 	}
 }
+
+// TestGoalRenderer_SnapshotUsesShortName guards the timeline-flooding fix
+// (bugs.md): a goal snapshot must render the friendly short name, never the
+// raw unbounded objective; the stats suffix stays intact.
+func TestGoalRenderer_SnapshotUsesShortName(t *testing.T) {
+	r := GoalRenderer{}
+	longObjective := "Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser, complete with every constraint rule"
+	tests := []struct {
+		name         string
+		payload      string
+		wantContains []string
+		wantMissing  []string
+	}{
+		{
+			name:    "named snapshot shows short name not objective",
+			payload: `{"goal":{"name":"honest.zebra","objective":"` + longObjective + `","status":"active","turnsUsed":3,"tokensUsed":1200,"wallClockMs":65000}}`,
+			wantContains: []string{
+				"honest.zebra",
+				"3 turns", "1.2k tokens", "1m05s",
+			},
+			wantMissing: []string{"Wire the go-lemon", "tcl.ParseCommands"},
+		},
+		{
+			name:    "unnamed snapshot falls back to truncated objective",
+			payload: `{"goal":{"objective":"` + longObjective + `","status":"active","turnsUsed":1,"tokensUsed":10,"wallClockMs":1000}}`,
+			wantContains: []string{
+				"Wire the go-lemon generated TCL parser", // truncated prefix
+				"…",
+			},
+			wantMissing: []string{"tcl.ParseCommands parser, complete"},
+		},
+		{
+			name:    "todo stats suffix intact with name",
+			payload: `{"goal":{"name":"fair.puma","objective":"` + longObjective + `","status":"active","turnsUsed":2,"tokensUsed":50,"wallClockMs":2000,"todos":[{"status":"done"},{"status":"pending"}]}}`,
+			wantContains: []string{"fair.puma", "todos 1/2"},
+			wantMissing:  []string{"Wire the go-lemon"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := r.RenderResult(tt.payload, tuirender.RenderContext{})
+			for _, want := range tt.wantContains {
+				if !strings.Contains(res, want) {
+					t.Errorf("result %q missing %q", res, want)
+				}
+			}
+			for _, banned := range tt.wantMissing {
+				if strings.Contains(res, banned) {
+					t.Errorf("result %q must not contain %q (objective flooding)", res, banned)
+				}
+			}
+		})
+	}
+}
+
+// TestGoalRenderer_ListActiveUsesShortName: the list head line had the same
+// objective-flooding bug.
+func TestGoalRenderer_ListActiveUsesShortName(t *testing.T) {
+	r := GoalRenderer{}
+	payload := `{"active":{"name":"kind.fox","objective":"Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser","status":"active"},"queued":[],"count":1}`
+	res := r.RenderResult(payload, tuirender.RenderContext{})
+	if !strings.Contains(res, "kind.fox") {
+		t.Errorf("result %q missing short name", res)
+	}
+	if strings.Contains(res, "Wire the go-lemon") {
+		t.Errorf("result %q must not contain the raw objective", res)
+	}
+}
