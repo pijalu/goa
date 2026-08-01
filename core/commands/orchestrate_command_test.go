@@ -15,6 +15,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/tui"
@@ -247,6 +248,51 @@ func TestOrchestrateCommand_ResumeRun(t *testing.T) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestOrchestrateCommand_ResumeRebindsGoal proves /orchestrate:resume re-binds
+// a goal-bound run to its existing goal instead of dropping the binding: the
+// runtime is goal-bound after resume and the adopted goal is driven to
+// completion (issue found during F1 localization — resume emitted a fresh
+// run_started without goal_id and ran goal-less).
+func TestOrchestrateCommand_ResumeRebindsGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	create := NewGoalBinder(mode)
+	goalID, err := create.CreateWithName("obj", "happy.hare", 0)
+	if err != nil {
+		t.Fatalf("CreateWithName: %v", err)
+	}
+
+	b := &fakeBuilder{}
+	rootDir := t.TempDir()
+	c := &OrchestrateCommand{Builder: b, Active: orchestrator.NewActiveRuntime(), RootDir: rootDir, GoalMode: mode}
+	ctx := testCtx(t)
+
+	store := orchestrator.NewFileEventStore(rootDir, "run-1")
+	_ = store.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, Payload: map[string]any{
+		"name": "happy.hare", "objective": "obj", "topology": "fanout", "goal_id": goalID,
+	}})
+
+	if err := c.Run(ctx, []string{"resume", "id=happy.hare"}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	rt := c.Active.Get()
+	if rt == nil {
+		t.Fatal("no active runtime after resume")
+	}
+	if !rt.GoalBound() {
+		t.Error("resumed run should re-bind the run's existing goal")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && c.Active.Get() != nil {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c.Active.Get() != nil {
+		t.Fatal("run did not finish")
+	}
+	if g := mode.GetGoal().Goal; g != nil {
+		t.Errorf("adopted goal should be cleared after successful run, got %+v", g)
 	}
 }
 

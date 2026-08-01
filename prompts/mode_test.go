@@ -56,6 +56,20 @@ func TestLoadMode_MissingGuardIsEmpty(t *testing.T) {
 	}
 }
 
+// TestLoadOrchestratePrompt_HubAntiFinalizeNudge is the F3 regression guard:
+// the hub orchestrator prompt must carry the explicit "do not finalize while
+// required sub-tasks remain" nudge (qwen3.5-9b showed a single-delegation bias,
+// closing out after the first specialist result on soft objectives).
+func TestLoadOrchestratePrompt_HubAntiFinalizeNudge(t *testing.T) {
+	prompt, err := LoadOrchestratePrompt("hub_orchestrator", "")
+	if err != nil {
+		t.Fatalf("LoadOrchestratePrompt(hub_orchestrator): %v", err)
+	}
+	if !strings.Contains(strings.ToLower(prompt), "do not finalize while required sub-tasks remain") {
+		t.Error("hub orchestrator prompt missing the anti-finalize nudge (F3)")
+	}
+}
+
 // TestModeBodySizeCeiling is a build-time context guard: the active mode body
 // is the first section of every system prompt, so each embedded mode body
 // stays ≤ 3000 chars and carries no HTML comments (stripped at parse).

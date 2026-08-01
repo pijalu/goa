@@ -82,6 +82,48 @@ func TestGoalBinder_EphemeralManagedGoal(t *testing.T) {
 	}
 }
 
+// TestGoalBinderForID_AdoptsExisting proves the resume-adopt binder binds to an
+// existing goal without creating/replacing it: Create* refuse, token accrual
+// and completion drive the same goal (issue found during F1 localization —
+// resume dropped goal binding and had no way to re-attach the original goal).
+func TestGoalBinderForID_AdoptsExisting(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	create := NewGoalBinder(mode)
+	id, err := create.CreateWithName("original", "orig.goal", 0)
+	if err != nil {
+		t.Fatalf("CreateWithName: %v", err)
+	}
+
+	adopt := NewGoalBinderForID(mode, id).(*goalModeBinder)
+	if !adopt.adopt {
+		t.Error("adopt binder not flagged")
+	}
+	// Create must not silently replace the adopted goal.
+	if _, err := adopt.Create("replacement", 0); err == nil {
+		t.Error("Create on adopt binder should refuse")
+	}
+	if _, err := adopt.CreateWithName("replacement", "r", 0); err == nil {
+		t.Error("CreateWithName on adopt binder should refuse")
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.GoalID != id {
+		t.Fatalf("adopted goal replaced: %+v", g)
+	}
+
+	// Accrual + completion drive the same goal.
+	if _, err := adopt.RecordTokens(10); err != nil {
+		t.Fatalf("RecordTokens: %v", err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.TokensUsed != 10 {
+		t.Errorf("tokens = %+v, want 10 on adopted goal", g)
+	}
+	if err := adopt.Complete("done"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if g := mode.GetGoal().Goal; g != nil {
+		t.Errorf("adopted managed goal should be cleared on complete, got %+v", g)
+	}
+}
+
 // TestOrchestrateCommand_GoalBinding end-to-end (fake builder + real GoalMode):
 // `/orchestrate new fanout goal <obj> <obj>` binds a goal; on run completion
 // the goal is marked complete.

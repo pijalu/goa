@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/commands"
+	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/orchestrator"
 )
 
@@ -299,5 +302,132 @@ func TestHeadless_TerminalOrchestrateCode(t *testing.T) {
 	h.setOrchErr(errors.New("boom"))
 	if code := h.terminalOrchestrateCode(); code != headlessExitOrchFailed {
 		t.Errorf("run error: code = %d, want %d", code, headlessExitOrchFailed)
+	}
+}
+
+// lastRunStartedGoalID returns the goal_id carried by the last run_started
+// event in the run's event log ("" when absent).
+func lastRunStartedGoalID(t *testing.T, rootDir, runID string) string {
+	t.Helper()
+	events, err := orchestrator.NewFileEventStore(rootDir, runID).Replay()
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	goalID := ""
+	for _, ev := range events {
+		if ev.Type == orchestrator.EventRunStarted {
+			if gid, _ := ev.Payload["goal_id"].(string); gid != "" {
+				goalID = gid
+			}
+		}
+	}
+	return goalID
+}
+
+// TestHeadless_OrchestrateBindsGoal is the F1 regression: headless
+// --orchestrate previously ran goal-less — startOrchestrate never called
+// SetGoalBinder/SetGoalID, so the resumed run_started carried no goal_id and
+// no goal lifecycle was driven. After the fix the run binds a fresh
+// orchestrator-managed goal: run_started carries goal_id, and the goal is
+// cleared on successful completion (the goal lifecycle is driven).
+func TestHeadless_OrchestrateBindsGoal(t *testing.T) {
+	dir := t.TempDir()
+	rootDir := filepath.Join(dir, ".goa", "orchestrator")
+	seed := orchestrator.NewFileEventStore(rootDir, "run-goal")
+	if err := seed.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, RunID: "run-goal",
+		Payload: map[string]any{"objective": "bind me", "topology": "fanout"}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seed.Close()
+
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	subs := &subsystems{
+		cfg:         &config.Config{},
+		projectDir:  dir,
+		orchActive:  orchestrator.NewActiveRuntime(),
+		goalManager: core.NewGoalManagerWithMode(dir, mode),
+	}
+	h := &HeadlessApp{subs: subs, opts: RuntimeOptions{Orchestrate: "run-goal"}, renderer: noopHeadlessRenderer{}}
+
+	rt := bareFanoutRuntime(t, nopAgentFactory)
+	got, err := h.startOrchestrate(context.Background(), "run-goal", fakeRuntimeBuilder{rt: rt})
+	if err != nil {
+		t.Fatalf("startOrchestrate: %v", err)
+	}
+	if !got.GoalBound() {
+		t.Error("resumed run should be goal-bound (F1: headless runs were goal-less)")
+	}
+
+	select {
+	case <-rt.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not finish")
+	}
+
+	// The resumed run_started must carry the bound goal id (the e2e contract:
+	// assert run_started.payload.goal_id).
+	if goalID := lastRunStartedGoalID(t, rootDir, "run-goal"); goalID == "" {
+		t.Error("resumed run_started carries no goal_id (F1: headless run stayed goal-less)")
+	}
+
+	// The bound goal was orchestrator-managed and is cleared on success.
+	if snap := mode.GetActiveGoal(); snap != nil {
+		t.Errorf("goal should be cleared after successful run, got %+v", snap)
+	}
+}
+
+// TestHeadless_OrchestrateResumeAdoptsExistingGoal proves resuming a
+// goal-bound run headless adopts the run's existing goal instead of replacing
+// it: the adopted goal id is preserved in run_started and the goal is driven to
+// completion (issue found during F1 localization — resume dropped goal binding).
+func TestHeadless_OrchestrateResumeAdoptsExistingGoal(t *testing.T) {
+	dir := t.TempDir()
+	rootDir := filepath.Join(dir, ".goa", "orchestrator")
+
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	gb := commands.NewGoalBinder(mode)
+	goalID, err := gb.CreateWithName("adopt me", "adopt.goal", 0)
+	if err != nil {
+		t.Fatalf("CreateWithName: %v", err)
+	}
+
+	seed := orchestrator.NewFileEventStore(rootDir, "run-adopt")
+	if err := seed.Append(orchestrator.Event{Type: orchestrator.EventRunStarted, RunID: "run-adopt",
+		Payload: map[string]any{"objective": "adopt me", "topology": "fanout", "goal_id": goalID}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	seed.Close()
+
+	subs := &subsystems{
+		cfg:         &config.Config{},
+		projectDir:  dir,
+		orchActive:  orchestrator.NewActiveRuntime(),
+		goalManager: core.NewGoalManagerWithMode(dir, mode),
+	}
+	h := &HeadlessApp{subs: subs, opts: RuntimeOptions{Orchestrate: "run-adopt"}, renderer: noopHeadlessRenderer{}}
+
+	rt := bareFanoutRuntime(t, nopAgentFactory)
+	got, err := h.startOrchestrate(context.Background(), "run-adopt", fakeRuntimeBuilder{rt: rt})
+	if err != nil {
+		t.Fatalf("startOrchestrate: %v", err)
+	}
+	if !got.GoalBound() {
+		t.Fatal("resumed run should be goal-bound")
+	}
+
+	select {
+	case <-rt.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not finish")
+	}
+
+	// run_started must carry the SAME goal id (adopted, not replaced).
+	if gotID := lastRunStartedGoalID(t, rootDir, "run-adopt"); gotID != goalID {
+		t.Errorf("run_started goal_id = %q, want adopted %q", gotID, goalID)
+	}
+
+	// The adopted (orchestrator-managed) goal is cleared on success.
+	if snap := mode.GetActiveGoal(); snap != nil {
+		t.Errorf("adopted goal should be cleared after successful run, got %+v", snap)
 	}
 }

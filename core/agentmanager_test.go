@@ -2007,3 +2007,69 @@ func TestRunAgentTurn_PostTurnHookSkippedOnPanic(t *testing.T) {
 		t.Error("post-turn hook fired after a panicking turn; want it skipped")
 	}
 }
+
+// TestAgentManager_PersistState_SavesCompanionHistory is the F6 regression:
+// the headless agent-driven companion path never wrote companion_history to
+// state.json because persistState was only triggered by mode changes. The
+// exported PersistState must persist the companion agent's history.
+func TestAgentManager_PersistState_SavesCompanionHistory(t *testing.T) {
+	dir := t.TempDir()
+	am := NewAgentManager(&config.Config{}, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	am.SetStateStore(NewStateStore(dir))
+
+	agent := agentic.NewAgent(agentic.Config{Model: agenticprovider.Model{ID: "comp-model"}})
+	am.SetCompanionAgent(agent)
+	agent.SetHistory([]agentic.Message{
+		{Type: agentic.Content, Role: agentic.User, Content: "review this"},
+	})
+
+	if err := am.PersistState(); err != nil {
+		t.Fatalf("PersistState: %v", err)
+	}
+	snap, err := NewStateStore(dir).Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(snap.CompanionHistory) == 0 {
+		t.Fatal("companion_history not persisted by PersistState (F6)")
+	}
+}
+
+// TestAgentManager_LogCompanionStarted_WritesModelMarker is the F6 regression:
+// the companion path had no per-agent model identity logged (unlike the
+// orchestrator's agent_started.model). LogCompanionStarted must write a
+// machine-checkable session-log marker carrying the companion model.
+func TestAgentManager_LogCompanionStarted_WritesModelMarker(t *testing.T) {
+	dir := t.TempDir()
+	am := NewAgentManager(&config.Config{}, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+
+	ss := NewSessionStore(dir)
+	sessionID := ss.StartSession()
+	am.sessionStore = ss
+
+	agent := agentic.NewAgent(agentic.Config{Model: agenticprovider.Model{ID: "comp-model", Provider: "lmstudio"}})
+	am.LogCompanionStarted(agent)
+
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	events, err := ss.LoadSession(sessionID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	for _, ev := range events {
+		if ev.Type != agentic.EventProgress {
+			continue
+		}
+		if ev.Metadata["event"] == "companion_started" {
+			if ev.Metadata["model"] != "comp-model" {
+				t.Errorf("companion_started model = %q, want comp-model", ev.Metadata["model"])
+			}
+			if ev.Metadata["provider"] != "lmstudio" {
+				t.Errorf("companion_started provider = %q, want lmstudio", ev.Metadata["provider"])
+			}
+			return
+		}
+	}
+	t.Fatal("no companion_started marker in session log (F6)")
+}

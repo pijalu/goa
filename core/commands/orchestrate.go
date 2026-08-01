@@ -392,11 +392,8 @@ func (c *OrchestrateCommand) doNew(ctx core.Context, in OrchestrateInput) error 
 	}
 
 	if c.GoalMode != nil {
-		goalID, err := c.bindGoal(rt, name, in.Objective)
-		if err != nil {
+		if err := BindGoalToRuntime(rt, c.GoalMode, in.Objective, name, ""); err != nil {
 			flashFmt(ctx, "Warning: goal bind failed (%v); running goal-less.\n", err)
-		} else {
-			rt.SetGoalID(goalID)
 		}
 	}
 
@@ -437,6 +434,15 @@ func (c *OrchestrateCommand) doResume(ctx core.Context, in OrchestrateInput) err
 	// Continue the same run (same run-id + event log) and skip roles that
 	// already finished, instead of re-running everything under a new id.
 	rt.Resume(store, snap)
+	// Re-bind the run's goal when it had one: resume otherwise emits a fresh
+	// run_started without goal_id and runs goal-less (no token accrual, the
+	// original goal is never completed/blocked). Adopt the existing goal rather
+	// than creating a replacement so its history is preserved.
+	if snap.GoalID != "" && c.GoalMode != nil {
+		if err := BindGoalToRuntime(rt, c.GoalMode, snap.Objective, snap.Name, snap.GoalID); err != nil {
+			flashFmt(ctx, "Warning: goal re-bind failed (%v); running goal-less.\n", err)
+		}
+	}
 	c.Active.Set(rt)
 	flashFmt(ctx, "Resuming %s: %s\n", snap.NameOrID(), snap.Objective)
 	c.launch(ctx, rt, snap.Objective)
@@ -549,14 +555,28 @@ func (c *OrchestrateCommand) listableRuns() ([]orchestrator.RunSummary, error) {
 	return orchestrator.ListRuns(c.RootDir)
 }
 
-func (c *OrchestrateCommand) bindGoal(rt *orchestrator.Runtime, name, objective string) (string, error) {
-	gb := NewGoalBinder(c.GoalMode)
-	goalID, err := gb.CreateWithName(objective, name, 0)
+// BindGoalToRuntime attaches a goal binder to a runtime for the given
+// objective. When goalID is non-empty (resuming a run that was already bound)
+// the existing goal is adopted without creating or replacing it; otherwise a
+// fresh goal managed by the orchestrator is created. A nil mode leaves the run
+// goal-less. Must be called before Run.
+func BindGoalToRuntime(rt *orchestrator.Runtime, mode *goal.GoalMode, objective, name, goalID string) error {
+	if mode == nil {
+		return nil
+	}
+	if goalID != "" {
+		rt.SetGoalBinder(NewGoalBinderForID(mode, goalID))
+		rt.SetGoalID(goalID)
+		return nil
+	}
+	gb := NewGoalBinder(mode)
+	id, err := gb.CreateWithName(objective, name, 0)
 	if err != nil {
-		return "", err
+		return err
 	}
 	rt.SetGoalBinder(gb)
-	return goalID, nil
+	rt.SetGoalID(id)
+	return nil
 }
 
 func (c *OrchestrateCommand) launch(ctx core.Context, rt *orchestrator.Runtime, objective string) {

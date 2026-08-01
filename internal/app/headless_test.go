@@ -469,3 +469,26 @@ func TestHeadlessApp_StatsAccumulation(t *testing.T) {
 		t.Errorf("turnCount = %d, want 1", app.turnCount)
 	}
 }
+
+// TestHeadlessApp_RendersCompanionMessage is the F6 regression: agent-driven
+// companion reviews are delivered as User-role content events ("[Message from
+// companion]: ...") and were previously swallowed, so headless --plain output
+// never showed the review. Regular user input (the initial prompt) must not be
+// re-rendered — it is rendered once at startup.
+func TestHeadlessApp_RendersCompanionMessage(t *testing.T) {
+	rr := &recordingRenderer{}
+	subs := &subsystems{cfg: &config.Config{}}
+	app := NewHeadlessApp(subs, RuntimeOptions{PromptArg: "hi"}, rr, autoConfirmStrategy{})
+
+	app.handleAgentEvent(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User,
+		Text: "[Message from companion]: Message from companion:\n```\nreview text\n```"})
+	// The initial prompt and any other regular user input must NOT render.
+	app.handleAgentEvent(&agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
+
+	if len(rr.calls) != 1 {
+		t.Fatalf("got %d renderer calls, want 1 (only the companion message): %v", len(rr.calls), rr.calls)
+	}
+	if !strings.HasPrefix(rr.calls[0], "UserPrompt:[Message from companion]") {
+		t.Errorf("call = %q, want UserPrompt with the companion message", rr.calls[0])
+	}
+}

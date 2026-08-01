@@ -396,6 +396,23 @@ func TestDeepMergeSkillsDisabled(t *testing.T) {
 	}
 }
 
+// TestDeepMergeSkillsEnabled verifies Skills.Enabled concatenates with dedup
+// across the config cascade (embedded → home → project → local).
+func TestDeepMergeSkillsEnabled(t *testing.T) {
+	base := &Config{Skills: SkillsConfig{Enabled: []string{"review"}}}
+	override := &Config{Skills: SkillsConfig{Enabled: []string{"refactor", "review"}}}
+	base.DeepMerge(override)
+	want := []string{"review", "refactor"}
+	if len(base.Skills.Enabled) != len(want) {
+		t.Fatalf("Skills.Enabled = %v, want %v", base.Skills.Enabled, want)
+	}
+	for i, name := range want {
+		if base.Skills.Enabled[i] != name {
+			t.Errorf("Skills.Enabled[%d] = %q, want %q", i, base.Skills.Enabled[i], name)
+		}
+	}
+}
+
 // TestDeepCopy verifies that DeepCopy creates an independent copy.
 func TestDeepCopy(t *testing.T) {
 	original := &Config{ActiveProvider: "openai", ActiveModel: "gpt-4o"}

@@ -567,11 +567,16 @@ type SkillsConfig struct {
 	Dirs          []string `yaml:"dirs"`
 	Embedded      bool     `yaml:"embedded"`
 	ExecutionMode string   `yaml:"execution_mode"` // "inline" (default) or "sub-agent"
-	// Disabled lists embedded skill names to turn off. Disabled skills are
-	// not registered, so they never appear in the system prompt listing, the
-	// skills banner, or the run_skill enum. File-based skills from dirs are
-	// unaffected (they are intentional user/project additions). Load-time
-	// only: the system prompt is not rebuilt mid-session.
+	// Enabled is an allowlist of skill names to load. When non-empty, only the
+	// listed skills are registered (from any source: embedded, file-based dirs,
+	// plugin dirs). Empty means all skills are eligible. Applies at load time;
+	// the system prompt is not rebuilt mid-session.
+	Enabled []string `yaml:"enabled,omitempty"`
+	// Disabled lists skill names to turn off (any source: embedded and
+	// file-based). Disabled skills are not registered, so they never appear in
+	// the system prompt listing, the skills banner, or the run_skill enum. A
+	// name in both Enabled and Disabled is disabled (explicit off wins).
+	// Load-time only: the system prompt is not rebuilt mid-session.
 	Disabled []string `yaml:"disabled,omitempty"`
 }
 

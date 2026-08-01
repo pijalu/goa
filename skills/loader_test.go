@@ -125,11 +125,11 @@ func TestSkillRegistryGetAndList(t *testing.T) {
 	}
 }
 
-// TestSkillRegistrySetDisabled verifies embedded skills can be disabled via
-// configuration: disabled built-ins are never registered (prompt listing,
-// banner, run_skill enum all read from this registry), while file-based
-// skills with the same name still load (they are intentional user additions
-// and win on name collision).
+// TestSkillRegistrySetDisabled verifies skills can be disabled via
+// configuration for ALL sources: disabled built-ins and disabled file-based
+// skills are never registered (prompt listing, banner, run_skill enum all read
+// from this registry). A disabled built-in can no longer be shadowed by a
+// same-named file skill — the explicit off wins.
 func TestSkillRegistrySetDisabled(t *testing.T) {
 	// Disabled embedded skill is gone.
 	reg := NewSkillRegistry(nil)
@@ -147,16 +147,19 @@ func TestSkillRegistrySetDisabled(t *testing.T) {
 		t.Error("Get('review') should succeed — not disabled")
 	}
 
-	// A file-based skill with the same name still loads (shadows disabled
-	// built-in): create one in a temp dir.
+	// A file-based skill with the same name as a disabled built-in is also
+	// disabled (disabled now gates file-based sources too); a differently-named
+	// file skill still loads.
 	dir := t.TempDir()
-	skillDir := filepath.Join(dir, "refactor")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	content := "---\nname: refactor\ndescription: user override\n---\nbody\n"
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"refactor", "test-gen"} {
+		skillDir := filepath.Join(dir, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := "---\nname: " + name + "\ndescription: user override\n---\nbody\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	reg2 := NewSkillRegistry([]string{dir})
 	reg2.SetEmbeddedFS(EmbeddedSkillsFS)
@@ -164,12 +167,72 @@ func TestSkillRegistrySetDisabled(t *testing.T) {
 	if err := reg2.LoadAll(); err != nil {
 		t.Fatalf("LoadAll: %v", err)
 	}
-	s, ok := reg2.Get("refactor")
+	if _, ok := reg2.Get("refactor"); ok {
+		t.Error("file-based 'refactor' should NOT load — disabled now gates file-based skills")
+	}
+	s, ok := reg2.Get("test-gen")
 	if !ok {
-		t.Fatal("file-based 'refactor' should load even though the embedded one is disabled")
+		t.Fatal("file-based 'test-gen' should load — not disabled")
 	}
 	if s.Meta.Description != "user override" {
 		t.Errorf("Description = %q, want user override", s.Meta.Description)
+	}
+}
+
+// TestSkillRegistrySetEnabled verifies the allowlist selects which skills load
+// from ALL sources: only listed skills are registered, unlisted embedded and
+// file-based skills are skipped.
+func TestSkillRegistrySetEnabled(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"refactor", "test-gen"} {
+		skillDir := filepath.Join(dir, name)
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := "---\nname: " + name + "\ndescription: file " + name + "\n---\nbody\n"
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reg := NewSkillRegistry([]string{dir})
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg.SetEnabled([]string{"review", "refactor"})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	// Listed embedded skill loads.
+	if _, ok := reg.Get("review"); !ok {
+		t.Error("Get('review') should succeed — listed in allowlist")
+	}
+	// Listed file-based skill loads (file-based 'refactor' wins the name).
+	if s, ok := reg.Get("refactor"); !ok || s.Meta.Description != "file refactor" {
+		t.Errorf("Get('refactor') = %+v, want the file-based copy", s)
+	}
+	// Unlisted embedded + file-based skills are excluded.
+	if _, ok := reg.Get("telegram"); ok {
+		t.Error("Get('telegram') should fail — not in allowlist")
+	}
+	if _, ok := reg.Get("test-gen"); ok {
+		t.Error("Get('test-gen') should fail — not in allowlist")
+	}
+}
+
+// TestSkillRegistryEnabledDisabledConflict pins the precedence: a name in both
+// lists is disabled (explicit off wins).
+func TestSkillRegistryEnabledDisabledConflict(t *testing.T) {
+	reg := NewSkillRegistry(nil)
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg.SetEnabled([]string{"refactor", "review"})
+	reg.SetDisabled([]string{"refactor"})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if _, ok := reg.Get("refactor"); ok {
+		t.Error("Get('refactor') should fail — in both lists, disabled wins")
+	}
+	if _, ok := reg.Get("review"); !ok {
+		t.Error("Get('review') should succeed — in allowlist, not disabled")
 	}
 }
 

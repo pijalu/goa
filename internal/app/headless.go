@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/orchestrator"
 	"github.com/pijalu/goa/internal"
@@ -226,6 +227,9 @@ func (h *HeadlessApp) RunWithContext(ctx context.Context) int {
 		h.renderer.Error(err.Error())
 		return headlessExitProviderError
 	}
+	// F6: persist session state (mode + companion history) when the headless
+	// session ends so agent-driven companion reviews survive in state.json.
+	defer h.persistSessionState()
 
 	dc := &doneCloser{done: make(chan struct{})}
 	go h.runAgentEventReader(ctx, dc)
@@ -343,6 +347,17 @@ func (h *HeadlessApp) startOrchestrate(ctx context.Context, runID string, builde
 	// Continue the same run (same run-id + event log) and skip roles that
 	// already finished, instead of forking a new run under a new id.
 	rt.Resume(store, snap)
+	// F1: headless runs were goal-less — the goal binder was only wired in the
+	// TUI /orchestrate:new path. Bind a goal now (a fresh orchestrator-managed
+	// goal when the run has none; adopt the run's existing goal on resume of a
+	// goal-bound run) so run_started carries goal_id and the goal lifecycle
+	// (complete/block) is driven. A bind failure degrades to goal-less with a
+	// warning, mirroring the TUI path.
+	if h.subs.goalManager != nil {
+		if err := commands.BindGoalToRuntime(rt, h.subs.goalManager.Mode, snap.Objective, snap.Name, snap.GoalID); err != nil {
+			h.renderer.Error(fmt.Sprintf("Warning: goal bind failed (%v); running goal-less.", err))
+		}
+	}
 	h.subs.orchActive.Set(rt)
 	h.renderer.UserPrompt(fmt.Sprintf("Resuming orchestration [%s]: %s", cfg.Defaults.Topology, snap.Objective))
 	go h.forwardOrchEvents(rt)
@@ -357,6 +372,14 @@ func (h *HeadlessApp) setOrchErr(err error) {
 	h.orchErrMu.Lock()
 	h.orchErr = err
 	h.orchErrMu.Unlock()
+}
+
+// persistSessionState flushes session state (mode, agent-driven flag,
+// companion history) to state.json at the end of a headless session.
+func (h *HeadlessApp) persistSessionState() {
+	if h.subs.agentMgr != nil {
+		_ = h.subs.agentMgr.PersistState()
+	}
 }
 
 // terminalOrchestrateCode maps a recorded orchestration failure to the
@@ -677,6 +700,12 @@ func (h *HeadlessApp) handleAgentEvent(ev *agentic.OutputEvent) {
 
 func (h *HeadlessApp) handleContentEvent(ev *agentic.OutputEvent) {
 	if ev.Role == agentic.User || ev.Role == agentic.System {
+		// F6: agent-injected messages (companion reviews delivered via the
+		// agent bus) arrive as User-role content events and were previously
+		// swallowed, so headless --plain output never showed the review. The
+		// initial prompt is rendered separately at startup; only bus-delivered
+		// messages (formatted "[Message from <agent>]: ...") are rendered here.
+		h.renderAgentBusMessage(ev)
 		return
 	}
 	switch ev.State {
@@ -704,6 +733,27 @@ func (h *HeadlessApp) handleContentEvent(ev *agentic.OutputEvent) {
 		h.renderer.AssistantChunk(ev.Text)
 		h.stream.text.WriteString(ev.Text)
 	}
+}
+
+// isAgentBusMessage reports whether a User-role content event is an
+// agent-injected bus message ("[Message from <agent>]: ..."), e.g. a companion
+// review delivered via sendToMain (multiagent/agent_driven_tools.go).
+func isAgentBusMessage(ev *agentic.OutputEvent) bool {
+	return ev.Role == agentic.User && strings.HasPrefix(ev.Text, "[Message from ")
+}
+
+// renderAgentBusMessage renders a bus-delivered agent message (companion
+// review) in headless --plain output, ending any in-flight stream first.
+// Non-bus User/System events (e.g. the initial prompt, rendered at startup)
+// are a no-op.
+func (h *HeadlessApp) renderAgentBusMessage(ev *agentic.OutputEvent) {
+	if !isAgentBusMessage(ev) {
+		return
+	}
+	if h.stream.active() {
+		h.endStream()
+	}
+	h.renderer.UserPrompt(ev.Text)
 }
 
 func (h *HeadlessApp) handleToolCallEvent(ev *agentic.OutputEvent) {

@@ -331,6 +331,8 @@ func (c *Config) mergeSkills(other *Config) {
 	if other.Skills.ExecutionMode != "" {
 		c.Skills.ExecutionMode = other.Skills.ExecutionMode
 	}
+	c.Skills.Enabled = append(c.Skills.Enabled, other.Skills.Enabled...)
+	c.Skills.Enabled = uniqueStrings(c.Skills.Enabled)
 	c.Skills.Disabled = append(c.Skills.Disabled, other.Skills.Disabled...)
 	c.Skills.Disabled = uniqueStrings(c.Skills.Disabled)
 }

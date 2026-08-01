@@ -139,6 +139,7 @@ type SkillRegistry struct {
 	embedFS      fs.FS        // optional embedded filesystem for built-in skills
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
 	disabled     map[string]bool
+	enabled      map[string]bool // non-nil → allowlist; only listed skills load
 	homeDir      string // home dir path for source labeling ("home")
 	projectDir   string // project dir path for source labeling ("project")
 }
@@ -158,19 +159,47 @@ func (r *SkillRegistry) SetEmbeddedFS(efs fs.FS) {
 	r.embedFS = efs
 }
 
-// SetDisabled marks embedded skill names as disabled: they are skipped during
-// LoadAll, so they never reach the system prompt listing, the skills banner,
-// or the run_skill enum. File-based skills are unaffected (dirs are scanned
-// after the embedded FS and win on name collision — a user skill may always
-// shadow a disabled built-in). Must be called before LoadAll.
+// SetDisabled marks skill names as disabled for ALL sources (embedded and
+// file-based): they are skipped during LoadAll, so they never reach the system
+// prompt listing, the skills banner, or the run_skill enum. A name in both
+// Enabled and Disabled is disabled (explicit off wins). Must be called before
+// LoadAll.
 func (r *SkillRegistry) SetDisabled(names []string) {
 	if len(names) == 0 {
 		return
 	}
-	r.disabled = make(map[string]bool, len(names))
+	if r.disabled == nil {
+		r.disabled = make(map[string]bool, len(names))
+	}
 	for _, n := range names {
 		r.disabled[n] = true
 	}
+}
+
+// SetEnabled installs an allowlist of skill names for ALL sources (embedded
+// and file-based): when non-empty, only the listed skills are registered
+// during LoadAll. Empty means all skills are eligible. Must be called before
+// LoadAll.
+func (r *SkillRegistry) SetEnabled(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	r.enabled = make(map[string]bool, len(names))
+	for _, n := range names {
+		r.enabled[n] = true
+	}
+}
+
+// allowed reports whether a skill with the given name may be loaded:
+// not disabled, and (no allowlist OR listed in the allowlist).
+func (r *SkillRegistry) allowed(name string) bool {
+	if r.disabled[name] {
+		return false
+	}
+	if len(r.enabled) == 0 {
+		return true
+	}
+	return r.enabled[name]
 }
 
 // SetHomeDir records the home directory path so skills loaded from it
@@ -242,7 +271,7 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		if name == "." {
 			return nil
 		}
-		if r.disabled[name] {
+		if !r.allowed(name) {
 			return nil
 		}
 		data, err := fs.ReadFile(r.embedFS, path)
@@ -279,6 +308,9 @@ func (r *SkillRegistry) scanEmbeddedSubSkills(parentName, parentPath string) {
 		if err != nil {
 			continue
 		}
+		if !r.allowed(entry.Name()) {
+			continue
+		}
 		skill := parseSkill(entry.Name(), string(data), "embedded", "skills/"+skillPath)
 		if skill != nil {
 			r.subSkills[parentName] = append(r.subSkills[parentName], skill)
@@ -301,6 +333,9 @@ func (r *SkillRegistry) scanDir(dir, source string) error {
 			continue
 		}
 		name := entry.Name()
+		if !r.allowed(name) {
+			continue
+		}
 		if !r.isTrusted(name, skillPath, source) {
 			continue
 		}
@@ -332,6 +367,9 @@ func (r *SkillRegistry) scanSubSkills(dir, parentName, source string) {
 			continue
 		}
 		name := entry.Name()
+		if !r.allowed(name) {
+			continue
+		}
 		if !r.isTrusted(name, skillPath, source) {
 			continue
 		}

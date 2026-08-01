@@ -1137,6 +1137,46 @@ func (am *AgentManager) persistState() error {
 	return ss.Save(snap)
 }
 
+// PersistState saves the current session state (mode, agent-driven flag,
+// companion history) to the state store. It is a no-op when no store is wired.
+// Exported so the headless flow can persist after a session ends (F6: the
+// agent-driven companion path previously never wrote companion_history).
+func (am *AgentManager) PersistState() error {
+	return am.persistState()
+}
+
+// LogCompanionStarted records the companion agent's model identity when the
+// companion is created (F6): the orchestrator logs agent_started.model, but
+// the companion path had no equivalent and the companion model was pinned by
+// config only. The identity is written to the session log as a
+// machine-checkable EventProgress marker (metadata event=companion_started,
+// model, provider), dispatched as a "companion_started" lifecycle event for
+// plugin consumers, and logged at Info.
+func (am *AgentManager) LogCompanionStarted(agent *agentic.Agent) {
+	if agent == nil {
+		return
+	}
+	mdl := agent.Model()
+	if am.logger != nil {
+		am.logger.Log(agentic.Info, "companion started: model=%s provider=%s", mdl.ID, string(mdl.Provider))
+	}
+	am.dispatchLifecycle("companion_started", map[string]any{
+		"model":    mdl.ID,
+		"provider": string(mdl.Provider),
+	})
+	if am.sessionStore != nil {
+		am.sessionStore.WriteEvent(agentic.OutputEvent{
+			Type: agentic.EventProgress,
+			Text: "",
+			Metadata: map[string]string{
+				"event":    "companion_started",
+				"model":    mdl.ID,
+				"provider": string(mdl.Provider),
+			},
+		})
+	}
+}
+
 func (am *AgentManager) emitInternalEvent(ev agentic.OutputEvent) {
 	if am.forwardInternalEvents {
 		am.events <- ev

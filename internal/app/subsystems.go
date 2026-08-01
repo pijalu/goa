@@ -841,6 +841,7 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	skillRegistry.SetDisabled(cfg.Skills.Disabled)
+	skillRegistry.SetEnabled(cfg.Skills.Enabled)
 	if err := skillRegistry.LoadAll(); err != nil {
 		log.Printf("Warning: failed to load skills: %v\n", err)
 	} else if n := len(skillRegistry.List()); n > 0 {
@@ -1067,6 +1068,9 @@ func wireCompanionCreation(pool *multiagent.AgentPool, agentMgr *core.AgentManag
 		}
 		agentMgr.SetCompanionAgent(agent)
 		restoreCompanionHistory(agent, snap.CompanionHistory)
+		// F6: log the companion model identity (the orchestrator logs
+		// agent_started.model; the companion path had no equivalent).
+		agentMgr.LogCompanionStarted(agent)
 	}
 }
 

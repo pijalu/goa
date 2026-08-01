@@ -5,6 +5,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/pijalu/goa/core/goal"
@@ -17,6 +18,7 @@ import (
 type goalModeBinder struct {
 	mode   *goal.GoalMode
 	goalID string
+	adopt  bool // true: bound to an existing goal; Create* must not replace it
 }
 
 // NewGoalBinder wraps a GoalMode as an orchestrator.GoalBinder. Create starts
@@ -26,11 +28,26 @@ func NewGoalBinder(mode *goal.GoalMode) orchestrator.GoalBinder {
 	return &goalModeBinder{mode: mode}
 }
 
+// NewGoalBinderForID wraps an existing goal id as an orchestrator.GoalBinder
+// without creating or replacing a goal. Used when resuming a run that was
+// already bound to a goal: token accrual and the lifecycle (complete/block)
+// continue against that same goal. Create/CreateWithName return an error so an
+// adopted binder can never silently replace the run's goal.
+func NewGoalBinderForID(mode *goal.GoalMode, goalID string) orchestrator.GoalBinder {
+	return &goalModeBinder{mode: mode, goalID: goalID, adopt: true}
+}
+
 func (b *goalModeBinder) Create(objective string, tokenBudget int) (string, error) {
+	if b.adopt {
+		return "", errors.New("goal binder is bound to an existing goal; cannot create")
+	}
 	return b.CreateWithName(objective, "", tokenBudget)
 }
 
 func (b *goalModeBinder) CreateWithName(objective, name string, tokenBudget int) (string, error) {
+	if b.adopt {
+		return "", errors.New("goal binder is bound to an existing goal; cannot create")
+	}
 	if b.mode == nil {
 		return "", fmt.Errorf("goal mode unavailable")
 	}
