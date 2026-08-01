@@ -706,7 +706,7 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	if sr.title != "Compression settings:" {
 		t.Fatalf("title = %q, want Compression settings:", sr.title)
 	}
-	want := []string{"strategy", "soft", "threshold", "hard", "max_tokens", "enabled", "on_context_error"}
+	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard", "cache_gate", "max_tokens", "enabled", "on_context_error"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d compression items, got %d", len(want), len(sr.options))
 	}
@@ -765,8 +765,9 @@ func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 }
 
 // TestConfigMenu_CompressionThresholdOptions verifies the trigger threshold menu
-// offers every percentage in 10% increments from 10% to 100% (bugs.md Issue 1),
-// and that selecting a non-preset value like 30 persists it.
+// offers the SDK default plus every level from 10% to 95% in 5% increments
+// (the user-settable range per the 3-layer directive), and that selecting a
+// non-preset value like 30 persists it.
 func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
@@ -783,17 +784,20 @@ func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 	if sr.title != "Trigger threshold (% of max tokens):" {
 		t.Fatalf("title = %q", sr.title)
 	}
-	// Expect 10,20,...,100 in order.
-	if len(sr.options) != 10 {
-		t.Fatalf("expected 10 threshold options (10..100 step 10), got %d", len(sr.options))
+	// Expect "0" (default) then 10,15,...,95 in order.
+	if len(sr.options) != 19 {
+		t.Fatalf("expected 19 threshold options (default + 10..95 step 5), got %d", len(sr.options))
 	}
-	for i, opt := range sr.options {
-		want := fmt.Sprintf("%d", (i+1)*10)
+	if sr.options[0].Value != "0" {
+		t.Errorf("option[0].Value = %q, want \"0\" (default)", sr.options[0].Value)
+	}
+	for i, opt := range sr.options[1:] {
+		want := fmt.Sprintf("%d", 10+i*5)
 		if opt.Value != want {
-			t.Errorf("option[%d].Value = %q, want %q", i, opt.Value, want)
+			t.Errorf("option[%d].Value = %q, want %q", i+1, opt.Value, want)
 		}
 		if opt.Label != want+"%" {
-			t.Errorf("option[%d].Label = %q, want %q", i, opt.Label, want+"%")
+			t.Errorf("option[%d].Label = %q, want %q", i+1, opt.Label, want+"%")
 		}
 	}
 	// Selecting a non-preset value (30) must persist it.
@@ -832,7 +836,7 @@ func TestConfigMenu_CompressionHardChange(t *testing.T) {
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
 	sr.onSel("hard", true)
-	if sr.title != "Hard ceiling (emergency: bypass cache, escalate, refuse new turns):" {
+	if sr.title != "Hard ceiling (emergency: bypass cache, hard-layer strategy fires):" {
 		t.Fatalf("title = %q", sr.title)
 	}
 	sr.onSel("90", true)

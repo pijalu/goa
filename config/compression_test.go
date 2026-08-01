@@ -130,15 +130,76 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 				Enabled:    true,
 				Thresholds: CompressionThresholdsConfig{HardPercent: 101},
 			},
-			wantErr: "hard_percent: must be 0-100",
+			wantErr: "hard_percent: must be 10-95 in 5% increments",
 		},
 		{
-			name: "negative rejected",
+			name: "soft disable (-1) accepted",
 			cfg: ContextCompressionConfig{
 				Enabled:    true,
 				Thresholds: CompressionThresholdsConfig{SoftPercent: -1},
 			},
-			wantErr: "soft_percent: must be 0-100",
+		},
+		{
+			name: "soft negative below -1 rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:    true,
+				Thresholds: CompressionThresholdsConfig{SoftPercent: -2},
+			},
+			wantErr: "soft_percent: must be 10-95 in 5% increments",
+		},
+		{
+			name: "non 5-step increment rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:    true,
+				Thresholds: CompressionThresholdsConfig{TriggerPercent: 42},
+			},
+			wantErr: "trigger_percent: must be 10-95 in 5% increments",
+		},
+		{
+			name: "level below 10 rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:    true,
+				Thresholds: CompressionThresholdsConfig{SoftPercent: 5},
+			},
+			wantErr: "soft_percent: must be 10-95 in 5% increments",
+		},
+		{
+			name: "valid per-layer strategies accepted",
+			cfg: ContextCompressionConfig{
+				Enabled:    true,
+				Strategies: CompressionLayerStrategiesConfig{Soft: "micro", Trigger: "tool_elision", Hard: "hybrid"},
+			},
+		},
+		{
+			name: "soft layer LLM strategy rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:    true,
+				Strategies: CompressionLayerStrategiesConfig{Soft: "summarize"},
+			},
+			wantErr: "soft layer must be zero-LLM",
+		},
+		{
+			name: "unknown layer strategy rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:    true,
+				Strategies: CompressionLayerStrategiesConfig{Hard: "bogus"},
+			},
+			wantErr: `strategies.hard: unknown strategy "bogus"`,
+		},
+		{
+			name: "cache gate values accepted",
+			cfg: ContextCompressionConfig{
+				Enabled:   true,
+				CacheGate: "off",
+			},
+		},
+		{
+			name: "invalid cache gate rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:   true,
+				CacheGate: "maybe",
+			},
+			wantErr: `cache_gate: must be "on" or "off"`,
 		},
 		{
 			name: "unknown per-model key rejected",

@@ -26,14 +26,14 @@ func TestResolveThresholds(t *testing.T) {
 		{
 			name:        "zero config reproduces legacy defaults",
 			cfg:         ContextCompressionConfig{},
-			wantSoft:    0,
+			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
 			wantTrigger: 90, // legacy SDK fallback
 			wantHard:    95,
 		},
 		{
 			name:        "legacy ThresholdPercent maps to trigger",
 			cfg:         ContextCompressionConfig{ThresholdPercent: 80},
-			wantSoft:    0,
+			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
 			wantTrigger: 80,
 			wantHard:    95,
 		},
@@ -43,7 +43,7 @@ func TestResolveThresholds(t *testing.T) {
 				ThresholdPercent: 70,
 				Thresholds:       CompressionThresholds{TriggerPercent: 85},
 			},
-			wantSoft:    0,
+			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
 			wantTrigger: 70, // legacy alias wins when both set (backwards compat)
 			wantHard:    95,
 		},
@@ -59,7 +59,7 @@ func TestResolveThresholds(t *testing.T) {
 		{
 			name:        "hard percent explicit",
 			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{HardPercent: 88}},
-			wantSoft:    0,
+			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
 			wantTrigger: 90,
 			wantHard:    88,
 		},
@@ -101,11 +101,11 @@ func TestProactiveTier(t *testing.T) {
 		// no longer suppresses compression (overflow risk beats cache churn).
 		{"just below deferral ceiling still defers", 84, false, tierNone},
 		{"deferral ceiling bypasses hot cache", 85, false, tierTrigger},
-		{"hard ceiling bypasses hot cache", 96, false, tierTrigger},
-		{"hard ceiling runs when cold", 96, true, tierTrigger},
+		{"hard ceiling bypasses hot cache", 96, false, tierHard},
+		{"hard ceiling runs when cold", 96, true, tierHard},
 		{"exactly soft boundary", 50, true, tierSoft},
 		{"exactly trigger boundary", 80, true, tierTrigger},
-		{"exactly hard boundary", 95, false, tierTrigger},
+		{"exactly hard boundary", 95, false, tierHard},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,8 +125,10 @@ func TestProactiveTier(t *testing.T) {
 	}
 }
 
-func TestProactiveTier_SoftDisabledWhenZero(t *testing.T) {
-	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: 0, TriggerPercent: 80, HardPercent: 95}}.resolveThresholds()
+func TestProactiveTier_SoftDisabledWhenNegative(t *testing.T) {
+	// SoftPercent -1 disables the soft layer entirely: usage in the soft band
+	// does nothing even with a cold cache.
+	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: 80, HardPercent: 95}}.resolveThresholds()
 	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache
 	a.mu.Lock()
@@ -137,24 +139,104 @@ func TestProactiveTier_SoftDisabledWhenZero(t *testing.T) {
 	}
 }
 
-// --- Soft strategy mapping ---
+// --- Soft-layer strategy validation ---
 
-func TestSoftStrategy(t *testing.T) {
+func TestZeroLLMStrategy(t *testing.T) {
 	tests := []struct {
 		configured CompressionStrategy
 		want       CompressionStrategy
 	}{
 		{CompressionToolElision, CompressionToolElision},
-		{CompressionSummarize, CompressionMicro}, // never LLM at soft tier
+		{CompressionSummarize, CompressionMicro}, // never LLM at soft layer
 		{CompressionHybrid, CompressionMicro},
 		{CompressionSelective, CompressionMicro}, // too destructive for early maintenance
 		{CompressionMicro, CompressionMicro},
-		{"", CompressionToolElision},
+		{"", CompressionMicro}, // empty → fallback (micro per the 3-layer defaults)
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.configured), func(t *testing.T) {
-			if got := softStrategy(tt.configured); got != tt.want {
-				t.Errorf("softStrategy(%q) = %q, want %q", tt.configured, got, tt.want)
+			if got := zeroLLMStrategy(tt.configured, CompressionMicro); got != tt.want {
+				t.Errorf("zeroLLMStrategy(%q) = %q, want %q", tt.configured, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- Per-layer strategy resolution ---
+
+func TestResolveThresholdsStrategies(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         ContextCompressionConfig
+		wantSoft    CompressionStrategy
+		wantTrigger CompressionStrategy
+		wantHard    CompressionStrategy
+		wantSoftPct int // -1 = expect the DefaultSoftPercent fallback
+	}{
+		{
+			name:        "defaults: micro / tool_elision / hybrid, soft at 80",
+			cfg:         ContextCompressionConfig{},
+			wantSoft:    CompressionMicro,
+			wantTrigger: CompressionToolElision,
+			wantHard:    CompressionHybrid,
+			wantSoftPct: -1,
+		},
+		{
+			name:        "legacy Strategy maps to the trigger layer",
+			cfg:         ContextCompressionConfig{Strategy: CompressionSummarize},
+			wantSoft:    CompressionMicro,
+			wantTrigger: CompressionSummarize,
+			wantHard:    CompressionHybrid,
+			wantSoftPct: -1,
+		},
+		{
+			name: "explicit per-layer strategies win over legacy Strategy",
+			cfg: ContextCompressionConfig{
+				Strategy:   CompressionSummarize,
+				Strategies: CompressionLayerStrategies{Soft: CompressionToolElision, Trigger: CompressionSelective, Hard: CompressionSummarize},
+			},
+			wantSoft:    CompressionToolElision,
+			wantTrigger: CompressionSelective,
+			wantHard:    CompressionSummarize,
+			wantSoftPct: -1,
+		},
+		{
+			name: "soft layer degrades LLM strategies to micro",
+			cfg: ContextCompressionConfig{
+				Strategies: CompressionLayerStrategies{Soft: CompressionSummarize},
+			},
+			wantSoft:    CompressionMicro,
+			wantTrigger: CompressionToolElision,
+			wantHard:    CompressionHybrid,
+			wantSoftPct: -1,
+		},
+		{
+			name:        "negative soft percent disables the layer",
+			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1}},
+			wantSoft:    CompressionMicro,
+			wantTrigger: CompressionToolElision,
+			wantHard:    CompressionHybrid,
+			wantSoftPct: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := tt.cfg.resolveThresholds()
+			if rt.softStrategy != tt.wantSoft {
+				t.Errorf("softStrategy = %q, want %q", rt.softStrategy, tt.wantSoft)
+			}
+			if rt.triggerStrategy != tt.wantTrigger {
+				t.Errorf("triggerStrategy = %q, want %q", rt.triggerStrategy, tt.wantTrigger)
+			}
+			if rt.hardStrategy != tt.wantHard {
+				t.Errorf("hardStrategy = %q, want %q", rt.hardStrategy, tt.wantHard)
+			}
+			wantPct := tt.wantSoftPct
+			if wantPct < 0 {
+				wantPct = DefaultSoftPercent
+			}
+			if rt.soft != wantPct {
+				t.Errorf("soft percent = %d, want %d", rt.soft, wantPct)
 			}
 		})
 	}
@@ -361,5 +443,32 @@ func TestEnforceContextCeiling_RespectsConfiguredHardPercent(t *testing.T) {
 	a.enforceContextCeiling()
 	if len(a.history) >= 11 {
 		t.Errorf("enforceContextCeiling did not enforce hard=15%%: len = %d, want < 11", len(a.history))
+	}
+}
+
+// TestProactiveTier_DisableCacheGate: with the cache gate off (models without
+// a meaningful prefix cache), a hot cache never defers compression — the
+// trigger fires immediately at the trigger level.
+func TestProactiveTier_DisableCacheGate(t *testing.T) {
+	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{TriggerPercent: 80, HardPercent: 95}}.resolveThresholds()
+	a := NewAgent(Config{
+		Model:              testModel(provider.ApiOpenAICompletions),
+		ContextCompression: ContextCompressionConfig{DisableCacheGate: true},
+	})
+	a.lastTurnEnd = time.Now() // hot cache — would normally defer
+	a.mu.Lock()
+	got := a.proactiveTierLocked(82, rt)
+	a.mu.Unlock()
+	if got != tierTrigger {
+		t.Errorf("cache gate off: proactiveTierLocked(82, hot) = %v, want tierTrigger (no deferral)", got)
+	}
+	// Sanity: same setup with the gate on defers.
+	b := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
+	b.lastTurnEnd = time.Now()
+	b.mu.Lock()
+	gotOn := b.proactiveTierLocked(82, rt)
+	b.mu.Unlock()
+	if gotOn != tierNone {
+		t.Errorf("cache gate on: proactiveTierLocked(82, hot) = %v, want tierNone (deferred)", gotOn)
 	}
 }

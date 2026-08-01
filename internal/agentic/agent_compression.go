@@ -166,41 +166,44 @@ func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrat
 }
 
 // maybeCompress checks context usage and triggers compression if needed.
-// The escalation tier (soft/trigger/none) is selected from the configured
-// thresholds and the cache gate; the soft tier runs only zero-LLM strategies.
+// The escalation layer (soft/trigger/hard/none) is selected from the
+// configured thresholds and the cache gate; each layer runs its own resolved
+// strategy (the soft layer only zero-LLM strategies).
 func (a *Agent) maybeCompress(ctx context.Context) error {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
 		return nil
 	}
 
-	cfg := a.cfg.ContextCompression
-	strategy := cfg.Strategy
-	if strategy == "" {
-		strategy = CompressionToolElision
-	}
+	rt := a.cfg.ContextCompression.resolveThresholds()
 
-	if strategy == CompressionMicro {
-		// Micro compaction uses its own internal threshold checks.
+	// Legacy whole-strategy micro: micro compaction self-manages its internal
+	// thresholds, so skip the tier gate except at the emergency ceiling.
+	stats := a.ContextStats()
+	if rt.triggerStrategy == CompressionMicro && stats.UsagePercent < rt.hard {
 		return a.compressAndReport(ctx)
 	}
 
-	tier := a.proactiveTier(cfg.resolveThresholds(), maxTokens)
+	tier := a.proactiveTier(rt, maxTokens)
 	switch tier {
+	case tierHard:
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "Hard-layer context compression: %d%% usage (%d / %d tokens)",
+				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
+		}
+		return a.compressAndReportWith(ctx, rt.hardStrategy)
 	case tierTrigger:
 		if a.cfg.Logger != nil {
-			stats := a.ContextStats()
 			a.cfg.Logger.Log(Info, "Context compression triggered: %d%% usage (%d / %d tokens)",
 				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
 		}
-		return a.compressAndReport(ctx)
+		return a.compressAndReportWith(ctx, rt.triggerStrategy)
 	case tierSoft:
 		if a.cfg.Logger != nil {
-			stats := a.ContextStats()
 			a.cfg.Logger.Log(Info, "Soft-tier context maintenance: %d%% usage (%d / %d tokens)",
 				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
 		}
-		return a.compressSoftAndReport(ctx)
+		return a.compressSoftAndReport(ctx, rt.softStrategy)
 	default:
 		return nil
 	}
@@ -208,7 +211,12 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 
 // compressAndReport applies the configured strategy and emits fresh stats.
 func (a *Agent) compressAndReport(ctx context.Context) error {
-	if err := a.compressHistory(ctx); err != nil {
+	return a.compressAndReportWith(ctx, a.cfg.ContextCompression.Strategy)
+}
+
+// compressAndReportWith applies the given strategy and emits fresh stats.
+func (a *Agent) compressAndReportWith(ctx context.Context, strategy CompressionStrategy) error {
+	if err := a.compressHistoryWith(ctx, strategy, false); err != nil {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Error, "Context compression failed: %v", err)
 		}
@@ -218,11 +226,10 @@ func (a *Agent) compressAndReport(ctx context.Context) error {
 	return nil
 }
 
-// compressSoftAndReport applies the soft-tier (zero-LLM) strategy derived
-// from the configured one and emits fresh stats. It never calls the LLM and
-// never drops messages.
-func (a *Agent) compressSoftAndReport(ctx context.Context) error {
-	if err := a.compressHistoryWith(ctx, softStrategy(a.cfg.ContextCompression.Strategy), false); err != nil {
+// compressSoftAndReport applies the soft-layer (zero-LLM) strategy and emits
+// fresh stats. It never calls the LLM and never drops messages.
+func (a *Agent) compressSoftAndReport(ctx context.Context, strategy CompressionStrategy) error {
+	if err := a.compressHistoryWith(ctx, strategy, false); err != nil {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Error, "Soft-tier context compression failed: %v", err)
 		}

@@ -407,7 +407,8 @@ func TestMaybeCompress_Triggers(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           500,
 			ThresholdPercent:    10,
-			Strategy:            CompressionSelective, // selective actually removes messages
+			Strategy:            CompressionSelective,
+			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: these tests exercise trigger mechanics offline // selective actually removes messages
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -448,6 +449,7 @@ func TestMaybeCompress_FallsBackToModelWindow(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			ThresholdPercent:    10,
 			Strategy:            CompressionSelective,
+			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: these tests exercise trigger mechanics offline
 			PreserveRecentTurns: 1,
 		},
 	})

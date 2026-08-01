@@ -434,6 +434,19 @@ type ContextCompressionConfig struct {
 	// emergency ceiling (hard). See CompressionThresholds.
 	Thresholds CompressionThresholds
 
+	// Strategies selects the compression strategy per escalation layer
+	// (soft/trigger/hard). See CompressionLayerStrategies. The legacy
+	// Strategy field maps to the trigger layer when Strategies.Trigger is
+	// unset.
+	Strategies CompressionLayerStrategies
+
+	// DisableCacheGate turns the prefix-cache gate off entirely: proactive
+	// compression is then never deferred for a presumed-hot provider cache.
+	// For models/providers without a prefix cache (or whose cache readings
+	// are meaningless) the gate only suppresses compression. Default: false
+	// (gate on).
+	DisableCacheGate bool
+
 	// OnContextError triggers compression when the LLM returns a
 	// context-length / token-limit error. Default: true.
 	OnContextError bool

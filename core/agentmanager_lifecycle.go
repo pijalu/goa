@@ -240,8 +240,21 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		Thresholds:          am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger),
 		OnContextError:      cfg.ContextCompression.OnContextError,
 		Strategy:            compressionStrategy(ov.strategy),
+		Strategies:          agenticLayerStrategies(ov.strategies),
+		DisableCacheGate:    ov.cacheGate == "off",
 		PreserveRecentTurns: ov.preserveRecentTurns,
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
+	}
+}
+
+// agenticLayerStrategies maps the config layer strategies to the SDK type;
+// empty fields stay empty so the SDK defaults (micro/elision-or-legacy/hybrid)
+// apply.
+func agenticLayerStrategies(s config.CompressionLayerStrategiesConfig) agentic.CompressionLayerStrategies {
+	return agentic.CompressionLayerStrategies{
+		Soft:    agentic.CompressionStrategy(s.Soft),
+		Trigger: agentic.CompressionStrategy(s.Trigger),
+		Hard:    agentic.CompressionStrategy(s.Hard),
 	}
 }
 
@@ -252,6 +265,8 @@ type compressionOverlay struct {
 	strategy            string
 	preserveRecentTurns int
 	thresholds          config.CompressionThresholdsConfig
+	strategies          config.CompressionLayerStrategiesConfig
+	cacheGate           string
 	legacyTrigger       int
 }
 
@@ -265,6 +280,8 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 		strategy:            cc.Strategy,
 		preserveRecentTurns: cc.PreserveRecentTurns,
 		thresholds:          cc.Thresholds,
+		strategies:          cc.Strategies,
+		cacheGate:           cc.CacheGate,
 		legacyTrigger:       cc.ThresholdPercent,
 	}
 	if modelID == "" {
@@ -294,6 +311,18 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 	}
 	if o.Thresholds.HardPercent != 0 {
 		ov.thresholds.HardPercent = o.Thresholds.HardPercent
+	}
+	if o.Strategies.Soft != "" {
+		ov.strategies.Soft = o.Strategies.Soft
+	}
+	if o.Strategies.Trigger != "" {
+		ov.strategies.Trigger = o.Strategies.Trigger
+	}
+	if o.Strategies.Hard != "" {
+		ov.strategies.Hard = o.Strategies.Hard
+	}
+	if o.CacheGate != "" {
+		ov.cacheGate = o.CacheGate
 	}
 	return ov
 }

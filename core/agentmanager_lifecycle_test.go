@@ -285,3 +285,48 @@ func swapStateStore(am *AgentManager, ss *StateStore) {
 	_ = am.GetInputHistory()
 	_ = am.SetInputHistory([]string{"a", "b"})
 }
+
+// TestOverlayCompressionForModel_StrategiesAndCacheGate verifies per-model
+// overrides of the 3-layer strategies and the cache gate merge over the
+// global section, with inheritance for unset fields (bugs.md compression
+// directive: cache management configurable globally and per model).
+func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
+	cc := config.ContextCompressionConfig{
+		Enabled:   true,
+		CacheGate: "on",
+		Strategies: config.CompressionLayerStrategiesConfig{
+			Soft:    "micro",
+			Trigger: "tool_elision",
+			Hard:    "hybrid",
+		},
+		PerModel: map[string]config.ModelCompressionOverride{
+			"local-model": {CacheGate: "off", Strategies: config.CompressionLayerStrategiesConfig{Trigger: "selective"}},
+		},
+	}
+
+	// Per-model override: cache gate off + trigger selective; other fields inherit.
+	ov := overlayCompressionForModel(cc, "local-model")
+	if ov.cacheGate != "off" {
+		t.Errorf("cacheGate = %q, want off (per-model override)", ov.cacheGate)
+	}
+	if ov.strategies.Trigger != "selective" {
+		t.Errorf("trigger strategy = %q, want selective (per-model override)", ov.strategies.Trigger)
+	}
+	if ov.strategies.Soft != "micro" || ov.strategies.Hard != "hybrid" {
+		t.Errorf("soft/hard = %q/%q, want micro/hybrid (inherited)", ov.strategies.Soft, ov.strategies.Hard)
+	}
+
+	// No override: global values.
+	ov2 := overlayCompressionForModel(cc, "other-model")
+	if ov2.cacheGate != "on" || ov2.strategies.Trigger != "tool_elision" {
+		t.Errorf("no-override overlay = gate %q trigger %q, want on/tool_elision (global)", ov2.cacheGate, ov2.strategies.Trigger)
+	}
+
+	// The agentic mapping: per-layer strategies map to the SDK type; the
+	// DisableCacheGate flag derives from the resolved cache gate in
+	// buildCompressionConfig (DisableCacheGate: ov.cacheGate == "off").
+	ag := agenticLayerStrategies(ov.strategies)
+	if ag.Trigger != agentic.CompressionSelective {
+		t.Errorf("agentic trigger = %q, want selective", ag.Trigger)
+	}
+}

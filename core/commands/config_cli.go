@@ -444,6 +444,10 @@ var configSetters = map[string]configSetter{
 	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
 	"context_compression.thresholds.trigger_percent": setTriggerPercentClearLegacy,
 	"context_compression.thresholds.hard_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
+	"context_compression.strategies.soft":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }, true),
+	"context_compression.strategies.trigger":         setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }, false),
+	"context_compression.strategies.hard":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }, false),
+	"context_compression.cache_gate":                 setCacheGate,
 	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
 	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
 	"execution.loop_warning":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
@@ -603,6 +607,37 @@ func setCompressionStrategy(cfg *config.Config, value string) error {
 		return nil
 	}
 	return fmt.Errorf("context_compression.strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+}
+
+// setLayerStrategy validates and sets one per-layer compression strategy
+// (strategies.soft|trigger|hard). The soft layer is zero-LLM only
+// (micro|tool_elision); anything else is rejected at the CLI layer too.
+func setLayerStrategy(field func(cfg *config.Config) *string, soft bool) func(cfg *config.Config, value string) error {
+	return func(cfg *config.Config, value string) error {
+		v := strings.ToLower(value)
+		switch v {
+		case "", "tool_elision", "micro":
+			// valid for every layer
+		case "selective", "summarize", "hybrid":
+			if soft {
+				return fmt.Errorf("soft layer strategy must be zero-LLM (micro or tool_elision)")
+			}
+		default:
+			return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+		}
+		*field(cfg) = v
+		return nil
+	}
+}
+
+// setCacheGate validates and sets the prefix-cache gate toggle ("on"|"off").
+func setCacheGate(cfg *config.Config, value string) error {
+	switch strings.ToLower(value) {
+	case "", "on", "off":
+		cfg.ContextCompression.CacheGate = strings.ToLower(value)
+		return nil
+	}
+	return fmt.Errorf("context_compression.cache_gate must be \"on\" or \"off\"")
 }
 
 // setTriggerPercentClearLegacy sets the tiered trigger_percent AND clears the

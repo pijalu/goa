@@ -6,21 +6,21 @@ package agentic
 
 // CompressionThresholds defines the fill levels — percent of the effective
 // context window — at which compression behavior escalates. All fields are
-// optional; zero means "use the default" (soft: disabled).
+// optional; zero means "use the default" (soft: 80, trigger: 90, hard: 95).
 //
-// The three tiers, from lowest to highest:
+// The three layers, from lowest to highest:
 //
-//   - SoftPercent: early, cheap maintenance. At/above it, zero-LLM strategies
-//     (micro compaction, tool elision) may run, and only when the provider
-//     prefix cache is presumed cold. Never blocks, never calls the LLM.
-//     0 disables the soft tier (default).
-//   - TriggerPercent: the configured compression strategy fires. This is the
-//     main trigger, equivalent to the legacy ThresholdPercent.
-//   - HardPercent: emergency ceiling. Cache gates are bypassed, cheap
-//     strategies escalate to selective, the ceiling enforcer drops oldest
-//     messages, and new turns are refused above it.
+//   - SoftPercent: early, cheap maintenance. At/above it, the soft-layer
+//     strategy (zero-LLM only: micro compaction or tool elision) runs, and
+//     only when the provider prefix cache is presumed cold. Never blocks,
+//     never calls the LLM. 0 = default 80; negative disables the layer.
+//   - TriggerPercent: the trigger-layer (medium) strategy fires. This is
+//     the main trigger, equivalent to the legacy ThresholdPercent.
+//   - HardPercent: emergency ceiling. Cache gates are bypassed and the
+//     hard-layer strategy (default hybrid) fires; the ceiling enforcer
+//     drops oldest messages as a last resort.
 type CompressionThresholds struct {
-	// SoftPercent is the early-maintenance level. 0 = disabled (default).
+	// SoftPercent is the early-maintenance level. 0 = default 80, negative = disabled.
 	SoftPercent int
 	// TriggerPercent is the main strategy trigger. 0 = default 90.
 	TriggerPercent int
@@ -28,19 +28,38 @@ type CompressionThresholds struct {
 	HardPercent int
 }
 
+// CompressionLayerStrategies selects the compression strategy per escalation
+// layer. Zero fields use the defaults (soft: micro, trigger: tool_elision —
+// or the legacy Strategy field when set — hard: hybrid). The soft layer is
+// restricted to zero-LLM strategies; anything else degrades to micro.
+type CompressionLayerStrategies struct {
+	// Soft is the early-maintenance strategy (micro|tool_elision; default micro).
+	Soft CompressionStrategy
+	// Trigger is the main strategy (default: legacy Strategy, else tool_elision).
+	Trigger CompressionStrategy
+	// Hard is the emergency strategy fired at the hard ceiling (default hybrid).
+	Hard CompressionStrategy
+}
+
 // Default threshold values. DefaultTriggerPercent preserves the historical
 // SDK fallback; the app's embedded config sets an explicit 80.
 const (
+	DefaultSoftPercent    = 80
 	DefaultTriggerPercent = 90
 	DefaultHardPercent    = 95
 )
 
 // resolvedThresholds is the fully-defaulted view of CompressionThresholds
-// used by every gate (proactive, micro, silent-overflow, ceiling, limit).
+// used by every gate (proactive, micro, silent-overflow, ceiling, limit),
+// with the per-layer strategies resolved alongside the levels.
 type resolvedThresholds struct {
 	soft    int
 	trigger int
 	hard    int
+
+	softStrategy    CompressionStrategy
+	triggerStrategy CompressionStrategy
+	hardStrategy    CompressionStrategy
 }
 
 // escalationPercent is the usage level above which cheap strategies (elision,
@@ -74,8 +93,8 @@ func (t resolvedThresholds) deferralCeiling() int {
 }
 
 // resolveThresholds folds the explicit Thresholds with the deprecated
-// ThresholdPercent alias and the documented defaults. The legacy alias wins
-// when both are set, so existing configs keep their exact behavior.
+// ThresholdPercent alias and the documented defaults, and resolves the
+// per-layer strategies (legacy Strategy maps to the trigger layer).
 func (c ContextCompressionConfig) resolveThresholds() resolvedThresholds {
 	t := resolvedThresholds{
 		soft:    c.Thresholds.SoftPercent,
@@ -87,16 +106,47 @@ func (c ContextCompressionConfig) resolveThresholds() resolvedThresholds {
 	if c.ThresholdPercent > 0 {
 		t.trigger = c.ThresholdPercent
 	}
+	if t.soft == 0 {
+		t.soft = DefaultSoftPercent
+	} else if t.soft < 0 {
+		t.soft = 0 // negative disables the soft layer
+	}
 	if t.trigger <= 0 {
 		t.trigger = DefaultTriggerPercent
 	}
 	if t.hard <= 0 {
 		t.hard = DefaultHardPercent
 	}
-	if t.soft < 0 {
-		t.soft = 0
+
+	// Layer strategies: explicit per-layer fields win; the legacy single
+	// Strategy maps to the trigger layer; the soft layer is zero-LLM only.
+	t.softStrategy = zeroLLMStrategy(c.Strategies.Soft, CompressionMicro)
+	t.triggerStrategy = c.Strategies.Trigger
+	if t.triggerStrategy == "" {
+		t.triggerStrategy = c.Strategy
+	}
+	if t.triggerStrategy == "" {
+		t.triggerStrategy = CompressionToolElision
+	}
+	t.hardStrategy = c.Strategies.Hard
+	if t.hardStrategy == "" {
+		t.hardStrategy = CompressionHybrid
 	}
 	return t
+}
+
+// zeroLLMStrategy validates a soft-layer strategy: only strategies that
+// never call the LLM and never drop messages are allowed; anything else
+// (including empty) falls back to the provided default.
+func zeroLLMStrategy(s, fallback CompressionStrategy) CompressionStrategy {
+	switch s {
+	case CompressionToolElision, CompressionMicro:
+		return s
+	case "":
+		return fallback
+	default:
+		return CompressionMicro
+	}
 }
 
 // compressionTier is the escalation level selected for this turn.
@@ -105,10 +155,12 @@ type compressionTier int
 const (
 	// tierNone: usage below all actionable levels, or deferred for cache.
 	tierNone compressionTier = iota
-	// tierSoft: early maintenance — cheap zero-LLM strategies only.
+	// tierSoft: early maintenance — the zero-LLM soft-layer strategy.
 	tierSoft
-	// tierTrigger: the configured strategy fires.
+	// tierTrigger: the trigger-layer (medium) strategy fires.
 	tierTrigger
+	// tierHard: emergency — the hard-layer strategy fires, cache gate bypassed.
+	tierHard
 )
 
 // proactiveTierLocked selects the compression tier for the current turn given
@@ -116,7 +168,7 @@ const (
 // (cacheAssumedColdForProactive reads lastTurnEnd).
 //
 // Escalation rules:
-//   - usage >= hard → trigger tier, cache gate bypassed (overflow risk beats
+//   - usage >= hard → hard tier, cache gate bypassed (overflow risk beats
 //     cache churn).
 //   - cache hot and usage < deferralCeiling → defer everything (tierNone).
 //   - cache hot and usage >= deferralCeiling → trigger tier (too close to
@@ -125,9 +177,9 @@ const (
 //   - usage >= soft (and soft enabled) → soft tier.
 func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) compressionTier {
 	if usagePercent >= rt.hard {
-		return tierTrigger
+		return tierHard
 	}
-	if !a.cacheAssumedColdForProactive() {
+	if !a.cfg.ContextCompression.DisableCacheGate && !a.cacheAssumedColdForProactive() {
 		if usagePercent >= rt.deferralCeiling() {
 			return tierTrigger
 		}
@@ -152,21 +204,5 @@ func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) com
 func (a *Agent) logDeferral(usagePercent int) {
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "proactive compression deferred: provider cache presumed hot (usage=%d%%)", usagePercent)
-	}
-}
-
-// softStrategy maps the configured strategy to the zero-LLM strategy allowed
-// at the soft tier. Tool elision passes through; micro stays micro; anything
-// else (summarize, hybrid, selective — LLM-costly or destructive) degrades to
-// micro compaction so early maintenance never calls the LLM and never drops
-// messages.
-func softStrategy(configured CompressionStrategy) CompressionStrategy {
-	switch configured {
-	case CompressionToolElision, "":
-		return CompressionToolElision
-	case CompressionMicro:
-		return CompressionMicro
-	default:
-		return CompressionMicro
 	}
 }

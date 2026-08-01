@@ -963,9 +963,15 @@ type ContextCompressionConfig struct {
 	// ThresholdPercent wins (backwards compatibility).
 	ThresholdPercent    int                                 `yaml:"threshold_percent"`
 	Thresholds          CompressionThresholdsConfig         `yaml:"thresholds,omitempty"`
+	Strategies          CompressionLayerStrategiesConfig    `yaml:"strategies,omitempty"`
 	PerModel            map[string]ModelCompressionOverride `yaml:"per_model,omitempty"`
 	OnContextError      bool                                `yaml:"on_context_error"`
 	Strategy            string                              `yaml:"strategy"`
+	// CacheGate controls the prefix-cache gate that defers proactive
+	// compression while the provider cache is presumed hot: "on" (default)
+	// or "off". Per-model overrides win over the global value. Turn it off
+	// for models/providers without a meaningful prefix cache.
+	CacheGate           string                              `yaml:"cache_gate,omitempty"`
 	PreserveRecentTurns int                                 `yaml:"preserve_recent_turns"`
 	MicroCompaction     MicroCompactionSettings             `yaml:"micro_compaction,omitempty"`
 }
@@ -982,15 +988,26 @@ type CompressionThresholdsConfig struct {
 	HardPercent int `yaml:"hard_percent,omitempty"`
 }
 
+// CompressionLayerStrategiesConfig holds the per-layer compression strategies.
+// Empty fields inherit (from the global section for per-model overrides, from
+// the SDK defaults otherwise: soft=micro, trigger=tool_elision, hard=hybrid).
+type CompressionLayerStrategiesConfig struct {
+	Soft    string `yaml:"soft,omitempty"`
+	Trigger string `yaml:"trigger,omitempty"`
+	Hard    string `yaml:"hard,omitempty"`
+}
+
 // ModelCompressionOverride overrides selected compression settings for one
 // model, keyed by models[].id under context_compression.per_model. Zero
 // fields inherit the global context_compression values.
 type ModelCompressionOverride struct {
-	MaxTokens           int                         `yaml:"max_tokens,omitempty"`
-	ThresholdPercent    int                         `yaml:"threshold_percent,omitempty"` // Deprecated alias for Thresholds.TriggerPercent.
-	Thresholds          CompressionThresholdsConfig `yaml:"thresholds,omitempty"`
-	Strategy            string                      `yaml:"strategy,omitempty"`
-	PreserveRecentTurns int                         `yaml:"preserve_recent_turns,omitempty"`
+	MaxTokens           int                              `yaml:"max_tokens,omitempty"`
+	ThresholdPercent    int                              `yaml:"threshold_percent,omitempty"` // Deprecated alias for Thresholds.TriggerPercent.
+	Thresholds          CompressionThresholdsConfig      `yaml:"thresholds,omitempty"`
+	Strategies          CompressionLayerStrategiesConfig `yaml:"strategies,omitempty"`
+	Strategy            string                           `yaml:"strategy,omitempty"`
+	CacheGate           string                           `yaml:"cache_gate,omitempty"`
+	PreserveRecentTurns int                              `yaml:"preserve_recent_turns,omitempty"`
 }
 
 // MicroCompactionSettings holds micro-specific config overrides.

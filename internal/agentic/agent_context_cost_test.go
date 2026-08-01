@@ -65,6 +65,7 @@ func TestMaybeCompress_FiresDueToFixedCost(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           1000,
 			Strategy:            CompressionSelective,
+			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: test exercises trigger mechanics offline
 			ThresholdPercent:    90,
 			PreserveRecentTurns: 1,
 		},
