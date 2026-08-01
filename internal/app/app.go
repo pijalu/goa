@@ -31,6 +31,10 @@ import (
 type App struct {
 	subs *subsystems
 
+	// streamCapture, when enabled via --capture-stream, records the exact
+	// agent stream flow as JSONL (nil when disabled or open failed).
+	streamCapture *streamCapture
+
 	// streamCtx tracks the currently active streaming block (thinking or
 	// assistant content). It is owned by the event-forwarder goroutine.
 	stream streamState
@@ -122,6 +126,15 @@ func New(subs *subsystems) *App {
 	a := &App{subs: subs}
 	subs.sessionUsageFn = a.sessionUsageSnapshot
 	wireSwarmTool(a)
+	if path := subs.cfg.Logging.CaptureStream; path != "" {
+		capture, err := newStreamCapture(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "goa: --capture-stream disabled: %v\n", err)
+		} else {
+			a.streamCapture = capture
+			fmt.Fprintf(os.Stderr, "goa: capturing agent stream flow to %s\n", path)
+		}
+	}
 	return a
 }
 

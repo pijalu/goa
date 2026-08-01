@@ -1174,6 +1174,9 @@ type LoggingConfig struct {
 	TraceKeys   bool   `yaml:"trace_keys"`
 	TerminalLog string `yaml:"terminal_log"`
 	RenderTrace string `yaml:"render_trace"`
+	// CaptureStream enables the agent stream capture: the exact stream flow
+	// is written as JSONL to this path for replay/diagnosis (--capture-stream).
+	CaptureStream string `yaml:"capture_stream"`
 }
 
 // Validate checks the config for semantic correctness.

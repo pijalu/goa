@@ -82,6 +82,9 @@ type sessionStats struct {
 }
 
 func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
+	if a.streamCapture != nil {
+		a.streamCapture.record(ev)
+	}
 	switch ev.Type {
 	case agentic.EventContent:
 		a.handleStreamContent(ev)

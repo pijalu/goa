@@ -675,3 +675,31 @@ func TestThinkingStall_DisabledByHook(t *testing.T) {
 		t.Error("thinkingStalled not set after re-enabling the watchdog")
 	}
 }
+
+// TestStreamLoop_TUIRepetitionSampleDetected is the exact flood from the
+// bugs.md "TUI shows unexpected repetition on normal messages" entry: the
+// model repeated one accusation with walking casing/punctuation variants
+// ("is never called —" / "is NEVER called!" / "is NEVER CALLED."). After
+// case folding and punctuation stripping the copies are byte-exact, so the
+// chain detector must fire — this class previously reached the TUI
+// unchecked.
+func TestStreamLoop_TUIRepetitionSampleDetected(t *testing.T) {
+	unit := "isIgnoreableConflict is never called — the error comes from a different path. Let me find all callers of checkConstraints:"
+	variants := []string{
+		"isIgnoreableConflict is never called — the error comes from a different path. Let me find all callers of checkConstraints:",
+		"isIgnoreableConflict is NEVER called! The error must come from a different path. Let me find all callers of checkConstraints:",
+		"isIgnoreableConflict is NEVER CALLED. The error must come from a different path. Let me find all callers of checkConstraints:",
+		"isIgnoreableConflict is never called — the error comes from a different path. Let me find all callers of checkConstraints:",
+		"isIgnoreableConflict is NEVER CALLED! The error must come from a different path. Let me find all callers of checkConstraints:",
+		"isIgnoreableConflict is NEVER called. The error must come from a different path. Let me find all callers of checkConstraints:",
+	}
+	var b strings.Builder
+	b.WriteString("Wait — the insert (4,1) goes through execInsert → insertRow. insertRow line 116: checkConstraints → error → isIgnoreableConflict (debug would print). But NO debug print — so either: ")
+	for _, v := range variants {
+		b.WriteString(v)
+	}
+	_ = unit
+	if !streamLoopWouldDetect(b.String(), 3) {
+		t.Error("TUI repetition sample (casing/punctuation variants of one accusation) must trip the detector")
+	}
+}

@@ -610,6 +610,9 @@ func (c *Config) mergeLogging(other *Config) {
 	if other.Logging.RenderTrace != "" {
 		c.Logging.RenderTrace = other.Logging.RenderTrace
 	}
+	if other.Logging.CaptureStream != "" {
+		c.Logging.CaptureStream = other.Logging.CaptureStream
+	}
 	c.Logging.TraceKeys = c.Logging.TraceKeys || other.Logging.TraceKeys
 }
 

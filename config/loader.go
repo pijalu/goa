@@ -443,6 +443,11 @@ var scalarCLIAppliers = map[string]func(*Config, string){
 			cfg.Logging.RenderTrace = value
 		}
 	},
+	"capture_stream": func(cfg *Config, value string) {
+		if value != "" {
+			cfg.Logging.CaptureStream = value
+		}
+	},
 }
 
 func (cl *CascadeLoader) applyProviderCLIOverrides(cfg *Config) {
