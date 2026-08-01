@@ -157,6 +157,15 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 	if round > 0 {
 		a.cfg.Logger.Log(Info, "Re-streaming after tool call (round %d)", round)
 		a.emitEvent(OutputEvent{Type: EventProgress, Text: "Sending request..."})
+		// Per-round compression gate: prepareTurn gates once per user turn,
+		// but a long tool-call turn can climb past the trigger/hard ceiling
+		// between rounds — a TC:436 session sailed past 100% unchecked until
+		// the provider rejected the request (bugs.md compression entry).
+		// Re-check before every re-stream so no request leaves oversized.
+		if err := a.maybeCompress(ctx); err != nil {
+			a.cfg.Logger.Log(Error, "per-round compression failed: %v", err)
+		}
+		a.enforceContextCeiling()
 		a.mu.Lock()
 		a.resetStreamRoundState()
 		a.mu.Unlock()
