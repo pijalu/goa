@@ -47,8 +47,8 @@ type LoopDetector struct {
 	// at 10). So the detector tracks, per distinct call, the CURRENT streak:
 	// any different call resets every streak. Only an unbroken run of
 	// identical calls can reach the thresholds.
-	toolStreaks           map[string]int // key: toolName+hash(input) → current consecutive streak
-	lastToolKey           string          // key of the most recent call ("" = none)
+	toolStreaks            map[string]int // key: toolName+hash(input) → current consecutive streak
+	lastToolKey            string         // key of the most recent call ("" = none)
 	loopWarningThreshold   int            // same tool call streak before warning
 	loopInterruptThreshold int            // same tool call streak before interrupt
 
@@ -58,10 +58,10 @@ type LoopDetector struct {
 	// bullets or separators do not false-positive. Code blocks and tool call
 	// blocks are stripped before processing. thinkMaxRepeat tracks the highest
 	// count seen for any single line in the current turn.
-	thinkPending          string
-	thinkLineCounts       map[string]int
-	thinkMaxRepeat        int
-	thinkWarningThreshold int
+	thinkPending            string
+	thinkLineCounts         map[string]int
+	thinkMaxRepeat          int
+	thinkWarningThreshold   int
 	thinkInterruptThreshold int
 	// thinkInCodeBlock tracks whether the accumulated thinking stream is
 	// currently inside a ```-fenced code block. Fences span many lines, so the
@@ -239,6 +239,21 @@ func (ld *LoopDetector) SetStreamMaxRepeats(n int) {
 		n = defaultStreamLoopMaxRepeats
 	}
 	ld.maxStreamRepeats = n
+}
+
+// SetLoopThresholds updates the live tool-loop warning/interrupt thresholds.
+// Non-positive values are ignored: a zero threshold would trip on the first
+// recorded call, so it is never a legitimate configuration. Called when
+// execution.loop_warning / execution.loop_interrupt change via /config set.
+func (ld *LoopDetector) SetLoopThresholds(warning, interrupt int) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	if warning > 0 {
+		ld.loopWarningThreshold = warning
+	}
+	if interrupt > 0 {
+		ld.loopInterruptThreshold = interrupt
+	}
 }
 
 // RecordToolCall records a tool call and checks for loop patterns.

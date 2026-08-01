@@ -170,3 +170,52 @@ func TestRegisterSkillRunner_RegistersForBothModes(t *testing.T) {
 		t.Errorf("inline mode: expected SkillRunnerTool with Inline=true, got %T", inlineTool)
 	}
 }
+
+// TestLoopDetectorConfigFrom_AppliesConfigThresholds verifies the persisted
+// loop thresholds (execution.loop_warning / execution.loop_interrupt) actually
+// reach the runtime loop-detector configuration. Regression: loopDetectorConfigFrom
+// previously started from DefaultLoopDetectorConfig and never applied the config
+// values, so the settings had no effect on the live detector.
+func TestLoopDetectorConfigFrom_AppliesConfigThresholds(t *testing.T) {
+	cfg := &config.Config{
+		Execution: config.ExecutionConfig{
+			LoopWarning:          4,
+			LoopInterrupt:        9,
+			StreamLoopMaxRepeats: 6,
+		},
+	}
+	ldCfg := loopDetectorConfigFrom(cfg)
+	if ldCfg.LoopWarning != 4 {
+		t.Errorf("LoopWarning = %d, want 4", ldCfg.LoopWarning)
+	}
+	if ldCfg.LoopInterrupt != 9 {
+		t.Errorf("LoopInterrupt = %d, want 9", ldCfg.LoopInterrupt)
+	}
+	if ldCfg.MaxStreamRepeats != 6 {
+		t.Errorf("MaxStreamRepeats = %d, want 6", ldCfg.MaxStreamRepeats)
+	}
+}
+
+// TestLoopDetectorConfigFrom_ZeroKeepsBuiltinDefault verifies zero (unset)
+// thresholds keep the built-in defaults instead of collapsing the detector to
+// first-call trips (a zero threshold would warn/interrupt on the very first
+// recorded tool call).
+func TestLoopDetectorConfigFrom_ZeroKeepsBuiltinDefault(t *testing.T) {
+	builtin := core.DefaultLoopDetectorConfig()
+
+	zeroCfg := loopDetectorConfigFrom(&config.Config{})
+	if zeroCfg.LoopWarning != builtin.LoopWarning {
+		t.Errorf("zero-config LoopWarning = %d, want builtin %d", zeroCfg.LoopWarning, builtin.LoopWarning)
+	}
+	if zeroCfg.LoopInterrupt != builtin.LoopInterrupt {
+		t.Errorf("zero-config LoopInterrupt = %d, want builtin %d", zeroCfg.LoopInterrupt, builtin.LoopInterrupt)
+	}
+
+	nilCfg := loopDetectorConfigFrom(nil)
+	if nilCfg.LoopWarning != builtin.LoopWarning {
+		t.Errorf("nil-config LoopWarning = %d, want builtin %d", nilCfg.LoopWarning, builtin.LoopWarning)
+	}
+	if nilCfg.LoopInterrupt != builtin.LoopInterrupt {
+		t.Errorf("nil-config LoopInterrupt = %d, want builtin %d", nilCfg.LoopInterrupt, builtin.LoopInterrupt)
+	}
+}

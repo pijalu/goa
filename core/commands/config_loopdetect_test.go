@@ -244,3 +244,43 @@ func TestLoopDetectionConfigKey(t *testing.T) {
 		t.Errorf("stream key = %q", got)
 	}
 }
+
+// TestApplyConfigSet_LoopThresholdsSyncRuntime verifies /config set
+// execution.loop_warning / execution.loop_interrupt updates the live tool-loop
+// detector thresholds immediately (mirrors the stream_loop_max_repeats sync).
+func TestApplyConfigSet_LoopThresholdsSyncRuntime(t *testing.T) {
+	ctx := newModeTestContext()
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	ctx.LoopDetector = ld
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	if err := applyConfigSet(ctx, "execution.loop_warning", "4"); err != nil {
+		t.Fatalf("applyConfigSet loop_warning: %v", err)
+	}
+	if got := ctx.Config.Execution.LoopWarning; got != 4 {
+		t.Errorf("config LoopWarning = %d, want 4", got)
+	}
+	// The live detector must warn on the 4th identical call, not the 7th.
+	for i := 0; i < 3; i++ {
+		if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != core.LoopOK {
+			t.Fatalf("call %d: got %v, want LoopOK", i+1, lvl)
+		}
+	}
+	if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != core.LoopWarning {
+		t.Errorf("call 4: got %v, want LoopWarning after live threshold update", lvl)
+	}
+
+	if err := applyConfigSet(ctx, "execution.loop_interrupt", "6"); err != nil {
+		t.Fatalf("applyConfigSet loop_interrupt: %v", err)
+	}
+	if got := ctx.Config.Execution.LoopInterrupt; got != 6 {
+		t.Errorf("config LoopInterrupt = %d, want 6", got)
+	}
+	// Continuing the streak: call 5 warns, call 6 interrupts.
+	if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != core.LoopWarning {
+		t.Errorf("call 5: got %v, want LoopWarning", lvl)
+	}
+	if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != core.LoopInterrupt {
+		t.Errorf("call 6: got %v, want LoopInterrupt after live threshold update", lvl)
+	}
+}

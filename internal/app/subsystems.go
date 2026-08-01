@@ -55,32 +55,32 @@ import (
 
 // subsystems bundles all initialized subsystems for clean return from InitSubsystems.
 type subsystems struct {
-	cfg               *config.Config
-	loader            *config.CascadeLoader
-	worktreeMgr       *internal.WorktreeManager
-	memStore          *memory.MemoryStore
-	sessionStore      *core.SessionStore
-	skillRegistry     *skills.SkillRegistry
-	promptReg         *prompts.Registry
-	providerMgr       *provider.ProviderManager
-	modelValidator    *provider.ModelValidator
-	agentMgr          *core.AgentManager
-	execCtrl          *core.ExecutionController
-	cmdRouter         *core.CommandRouter
-	docEngine         *core.DocEngine
-	modeRegistry      *core.ModeRegistry
-	toolRegistry      *tools.ToolRegistry
-	ptyMgr            *internal.PTYManager
-	pipelineRunner    *multiagent.PipelineRunner
-	foregroundOrch    *multiagent.ForegroundOrchestrator
-	workflowReg       *multiagent.WorkflowRegistry
-	agentPool         *multiagent.AgentPool
-	events            *event.Bus
-	goaTool           *core.GoaCommandTool // retained so /tools:goa:on can re-register at runtime
-	swarmState        *swarm.State         // retained so /tools:agent_swarm:on can rebuild the tool
-	taskBus           *tasks.Bus           // retained so /tools:agent:on can rebuild the tool
-	projectDir        string
-	inputEditor       *tui.Editor // the input line, set after buildTUI
+	cfg            *config.Config
+	loader         *config.CascadeLoader
+	worktreeMgr    *internal.WorktreeManager
+	memStore       *memory.MemoryStore
+	sessionStore   *core.SessionStore
+	skillRegistry  *skills.SkillRegistry
+	promptReg      *prompts.Registry
+	providerMgr    *provider.ProviderManager
+	modelValidator *provider.ModelValidator
+	agentMgr       *core.AgentManager
+	execCtrl       *core.ExecutionController
+	cmdRouter      *core.CommandRouter
+	docEngine      *core.DocEngine
+	modeRegistry   *core.ModeRegistry
+	toolRegistry   *tools.ToolRegistry
+	ptyMgr         *internal.PTYManager
+	pipelineRunner *multiagent.PipelineRunner
+	foregroundOrch *multiagent.ForegroundOrchestrator
+	workflowReg    *multiagent.WorkflowRegistry
+	agentPool      *multiagent.AgentPool
+	events         *event.Bus
+	goaTool        *core.GoaCommandTool // retained so /tools:goa:on can re-register at runtime
+	swarmState     *swarm.State         // retained so /tools:agent_swarm:on can rebuild the tool
+	taskBus        *tasks.Bus           // retained so /tools:agent:on can rebuild the tool
+	projectDir     string
+	inputEditor    *tui.Editor // the input line, set after buildTUI
 	// cmdCompleter backs the editor's /command completion. Retained so plugin
 	// commands (e.g. /quota), registered by the async plugin load after the
 	// TUI is built, can be pushed into the live completer.
@@ -103,16 +103,16 @@ type subsystems struct {
 	noPlugins  bool // --no-plugins: skip plugin load entirely
 	// sessionUsageFn supplies cumulative token stats to plugins (goa.sessionUsage).
 	// Wired in New() once the App (which owns the counters) exists.
-	sessionUsageFn  func() map[string]any
-	runWizard       bool // set when /setup command requests wizard
+	sessionUsageFn func() map[string]any
+	runWizard      bool // set when /setup command requests wizard
 
 	// TUI components (set after InitSubsystems)
-	chat          *tui.ChatViewport
-	goalBubble    *goaltui.Bubble
+	chat           *tui.ChatViewport
+	goalBubble     *goaltui.Bubble
 	steeringChrome *tui.SteeringChrome
-	footer        *tui.Footer
-	tuiEngine     *tui.TUI
-	bgPanel       *bgpanel.Panel
+	footer         *tui.Footer
+	tuiEngine      *tui.TUI
+	bgPanel        *bgpanel.Panel
 
 	// Logger for structured stats output
 	logger    *agentic.Logger
@@ -363,6 +363,15 @@ func loopDetectorConfigFrom(cfg *config.Config) core.LoopDetectorConfig {
 	ldCfg := core.DefaultLoopDetectorConfig()
 	if cfg == nil {
 		return ldCfg
+	}
+	// The persisted loop thresholds drive the live tool-loop detector.
+	// Non-positive values keep the built-in default: a zero threshold would
+	// trip on the first recorded call, so it is never a valid threshold.
+	if cfg.Execution.LoopWarning > 0 {
+		ldCfg.LoopWarning = cfg.Execution.LoopWarning
+	}
+	if cfg.Execution.LoopInterrupt > 0 {
+		ldCfg.LoopInterrupt = cfg.Execution.LoopInterrupt
 	}
 	if cfg.Execution.DisableThinkingLoopDetection != nil && *cfg.Execution.DisableThinkingLoopDetection {
 		ldCfg.ThinkingDisabled = true

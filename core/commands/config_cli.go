@@ -246,6 +246,10 @@ func syncLoopDetectorConfig(ctx core.Context, key string) bool {
 		if ctx.LoopDetector != nil {
 			ctx.LoopDetector.SetPersistOverride("stall", boolPtrValue(exec.DisableThinkingStallDetection))
 		}
+	case "execution.loop_warning", "execution.loop_interrupt":
+		if ctx.LoopDetector != nil {
+			ctx.LoopDetector.SetLoopThresholds(exec.LoopWarning, exec.LoopInterrupt)
+		}
 	case "execution.stream_loop_max_repeats":
 		if ctx.LoopDetector != nil {
 			ctx.LoopDetector.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)

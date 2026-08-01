@@ -423,3 +423,42 @@ func TestLoopDetector_StallKindOverrides(t *testing.T) {
 		t.Error("StallDisabled config seed not applied")
 	}
 }
+
+// TestLoopDetectorSetLoopThresholds verifies the live tool-loop thresholds can
+// be updated at runtime and that non-positive values are ignored (a zero
+// threshold would trip on the first recorded call).
+func TestLoopDetectorSetLoopThresholds(t *testing.T) {
+	ld := NewLoopDetector(DefaultLoopDetectorConfig())
+	ld.SetLoopThresholds(4, 9)
+
+	// Calls 1-3 stay below the warning threshold.
+	for i := 0; i < 3; i++ {
+		if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != LoopOK {
+			t.Fatalf("call %d: got %v, want LoopOK", i+1, lvl)
+		}
+	}
+	// Call 4 reaches the new warning threshold.
+	if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != LoopWarning {
+		t.Errorf("call 4: got %v, want LoopWarning", lvl)
+	}
+	// Call 9 reaches the new interrupt threshold.
+	for i := 5; i < 9; i++ {
+		if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != LoopWarning {
+			t.Fatalf("call %d: got %v, want LoopWarning", i, lvl)
+		}
+	}
+	if lvl := ld.RecordToolCall("read", `{"path":"x"}`); lvl != LoopInterrupt {
+		t.Errorf("call 9: got %v, want LoopInterrupt", lvl)
+	}
+
+	// Non-positive values are ignored: the thresholds stay 4/9. A different
+	// call resets the streak, and a single fresh call must still be OK (a
+	// collapsed zero threshold would trip immediately).
+	ld.SetLoopThresholds(0, 0)
+	if lvl := ld.RecordToolCall("read", `{"path":"y"}`); lvl != LoopOK {
+		t.Errorf("after non-positive set, fresh streak: got %v, want LoopOK (thresholds unchanged)", lvl)
+	}
+	if lvl := ld.RecordToolCall("read", `{"path":"y"}`); lvl != LoopOK {
+		t.Errorf("fresh streak call 2: got %v, want LoopOK (warning threshold still 4)", lvl)
+	}
+}
