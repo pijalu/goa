@@ -39,18 +39,18 @@ action:
   - paused: set aside. Req reason. NEVER to ask "continue?"; any progress possible→keep
     working; need input→blocked.
 - get: current goal (objective,criterion,status,budgets+remaining,todos,terminal
-  reason/expectation if paused/blocked); {"goal": null} if none.
+  reason/expectation); {"goal": null} if none.
 - set_budget: hard limit. Req value(>0)+unit(turns|tokens|milliseconds|seconds|minutes|
   hours). Only explicit user runtime limit ("stop after 20 turns"); never invent;
   compound→1 unit ("2h3m"→value:123,unit:"minutes"). Unreasonable→refuse+tell user.
 - add_todo: add task. Req todoTitle. Multi-step→decompose into ordered todos up front
   (resurfaces each turn). Todos LINKED: blank at goal start, contained, closed w/ goal;
-  never escape to other goal/session list.
+  never escape.
 - update_todo: set todo status. Req todoId, todoStatus(pending|in_progress|done); mark
   done as completed. Completing goal w/ open items→reminder: schedule follow-up goal for
   remaining work.
 
-Active goal w/o update keeps running: continue prompt each turn. Stall watchdog tracks
-measurable progress (todo transitions, workspace changes): no-progress turn→challenge;
-continued stall→auto-block for user direction. Each turn must show visible progress — or
-end goal explicitly.
+Active goal w/o update keeps running (continue prompt each turn). Stall watchdog: no
+measurable progress (todo transitions, workspace changes)→challenge; continued
+stall→auto-block for user direction. Each turn must show visible progress — or end
+explicitly.
