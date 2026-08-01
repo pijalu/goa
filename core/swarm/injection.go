@@ -4,7 +4,11 @@
 
 package swarm
 
-import _ "embed"
+import (
+	_ "embed"
+
+	"github.com/pijalu/goa/internal/embeddoc"
+)
 
 // enterReminder is injected into the system prompt while swarm mode is active
 // for a manual/task trigger. Ported from kimi-code
@@ -12,7 +16,7 @@ import _ "embed"
 // omits this reminder because the model is already calling agent_swarm.
 //
 //go:embed enter_reminder.md
-var enterReminder string
+var enterReminderRaw string
 
 // exitReminder is injected once when swarm mode ends after a manual/task
 // trigger, so the model does not keep applying the swarm workflow to ordinary
@@ -20,7 +24,14 @@ var enterReminder string
 // (packages/agent-core/src/agent/swarm/exit-reminder.md).
 //
 //go:embed exit_reminder.md
-var exitReminder string
+var exitReminderRaw string
+
+// Reminders are system-prompt injections: SPDX license headers are stripped
+// once at init so they never consume LLM context.
+var (
+	enterReminder = string(embeddoc.StripHTMLComments([]byte(enterReminderRaw)))
+	exitReminder  = string(embeddoc.StripHTMLComments([]byte(exitReminderRaw)))
+)
 
 // EnterReminder returns the swarm-mode enter reminder text. It is the text the
 // reminder provider prepends to the system prompt each turn while swarm mode

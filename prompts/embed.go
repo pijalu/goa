@@ -20,6 +20,13 @@ import (
 //go:embed *.md mode/*/*.md pair/*.md task/*.md pipeline/*.md tools/*.md orchestrate/*.md plan/*.md
 var embeddedFS embed.FS
 
+// stripLicense removes leading HTML comment blocks (SPDX headers) from prompt
+// text: prompts are model-facing and license blocks must not consume LLM
+// context.
+func stripLicense(data []byte) string {
+	return string(embeddoc.StripHTMLComments(data))
+}
+
 // LoadPipelinePrompt returns the stage prompt for a pipeline.
 func LoadPipelinePrompt(pipelineID, stageID string) (string, error) {
 	path := filepath.Join("pipelines", pipelineID, stageID+".md")
@@ -27,7 +34,7 @@ func LoadPipelinePrompt(pipelineID, stageID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("pipeline prompt %s/%s not found: %w", pipelineID, stageID, err)
 	}
-	return string(data), nil
+	return stripLicense(data), nil
 }
 
 // LoadTelegramPrompt returns the telegram talk style prompt.
@@ -36,7 +43,7 @@ func LoadTelegramPrompt() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("telegram prompt not found: %w", err)
 	}
-	return string(data), nil
+	return stripLicense(data), nil
 }
 
 // LoadAgentDrivenPrompt returns the system prompt additions for agent-driven
@@ -46,7 +53,7 @@ func LoadAgentDrivenPrompt() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("agent driven prompt not found: %w", err)
 	}
-	return string(data), nil
+	return stripLicense(data), nil
 }
 
 // LoadOrchestratePrompt returns an orchestrator prompt template by name. If
@@ -57,14 +64,14 @@ func LoadOrchestratePrompt(name, userPromptDir string) (string, error) {
 	if userPromptDir != "" {
 		userPath := filepath.Join(userPromptDir, path)
 		if data, err := os.ReadFile(userPath); err == nil {
-			return string(data), nil
+			return stripLicense(data), nil
 		}
 	}
 	data, err := embeddedFS.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("orchestrate prompt %s not found: %w", name, err)
 	}
-	return string(data), nil
+	return stripLicense(data), nil
 }
 
 // LoadCompanionReviewEnabledPrompt returns the system prompt addition used
@@ -102,14 +109,14 @@ func LoadPlanPrompt(userPromptDir string) (string, error) {
 	if userPromptDir != "" {
 		userPath := filepath.Join(userPromptDir, path)
 		if data, err := os.ReadFile(userPath); err == nil {
-			return string(data), nil
+			return stripLicense(data), nil
 		}
 	}
 	data, err := embeddedFS.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("plan prompt not found: %w", err)
 	}
-	return string(data), nil
+	return stripLicense(data), nil
 }
 
 // EmbeddedFS returns the embedded filesystem for use by Registry.

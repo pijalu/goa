@@ -69,6 +69,26 @@ func TestGet_KnownDoc(t *testing.T) {
 	}
 }
 
+// TestGet_StripsComments guards the model-facing doc path (read/webfetch
+// goa:// URLs): embedded docs carry SPDX headers on disk, but comments must
+// never reach the LLM context.
+func TestGet_StripsComments(t *testing.T) {
+	for _, name := range []string{"SKILLS", "TOOLS", "TUI", "SETUP"} {
+		content, err := Get(name)
+		if err != nil {
+			t.Fatalf("Get(%s) failed: %v", name, err)
+		}
+		for _, banned := range []string{"SPDX-License-Identifier", "Copyright (C)", "<!--"} {
+			if strings.Contains(content, banned) {
+				t.Errorf("Get(%s) contains %q — comments must be stripped", name, banned)
+			}
+		}
+		if content == "" {
+			t.Errorf("Get(%s) returned empty content after stripping", name)
+		}
+	}
+}
+
 func TestGet_CaseInsensitive(t *testing.T) {
 	content, err := Get("skills")
 	if err != nil {

@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
 //go:embed *.md
@@ -56,7 +58,9 @@ func List() ([]DocInfo, error) {
 }
 
 // Get returns the content of a documentation file by name (without .md).
-// Returns an error if the file is not found.
+// Returns an error if the file is not found. Leading license-header comments
+// are stripped: docs are served to the LLM via goa:// URLs and must not carry
+// SPDX blocks into its context.
 func Get(name string) (string, error) {
 	path := name + ".md"
 	data, err := embeddedDocs.ReadFile(path)
@@ -67,13 +71,13 @@ func Get(name string) (string, error) {
 			if strings.EqualFold(entry.Name(), path) {
 				data, err = embeddedDocs.ReadFile(entry.Name())
 				if err == nil {
-					return string(data), nil
+					return string(embeddoc.StripHTMLComments(data)), nil
 				}
 			}
 		}
 		return "", fmt.Errorf("documentation not found: %s (try /docs to list available)", name)
 	}
-	return string(data), nil
+	return string(embeddoc.StripHTMLComments(data)), nil
 }
 
 // ReadDoc reads a documentation file by full filename (e.g., "ARCHITECTURE.md").

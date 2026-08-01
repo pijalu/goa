@@ -88,6 +88,7 @@ Compression rules applied everywhere:
 
 - **S1 — SPDX must never reach the model.** Leak inventory: (a) `internal/context.go:findContextFile` injects AGENTS.md raw into `<project_context>` — live start-prompt leak; (b) `docs/docs.go:Get` serves raw embedded docs to read/webfetch `goa://`; (c) `tools/common/docloader.go:ReadDoc` serves raw .short.md/.long.md via DocEngine (reachable by model through the `goa` command tool). Already clean: mode definitions (embeddoc strips), goal.md (fixed in Phase 1 via `prompts/goal/descriptions.go`), skills (SPDX is inside YAML frontmatter `#` comments, never sent). Fix: strip leading HTML comment blocks at each single-point loader + guard test asserting "SPDX-License-Identifier" absent from all model-facing producers.
 - **S2 — Config enable/disable for embedded skills.** `skills.disabled: [names]` in config; disabled embedded skills are not registered (thus absent from `<available_skills>`, `/skills` banner, and the `run_skill` enum). Load-time only — no mid-session re-filtering once the system prompt is sent. Internal consumers (e.g. dream) keep working: if a skill the app needs is disabled, that feature degrades gracefully (documented).
+- **S3 — Startup prompt-size display.** On new session / first start / reload, the startup banner shows the assembled prompt context size: system prompt chars (+ est. tokens) and tool-schema chars (+ est. tokens). Implemented in `startAgentSession` (the single session-start path); informational only, never blocking.
 
 ## 3. Task breakdown
 
@@ -112,6 +113,11 @@ Compression rules applied everywhere:
 - [ ] 1c.2 Filter at skill-registry load: disabled embedded skills not registered → absent from prompt listing, banner, run_skill enum.
 - [ ] 1c.3 Tests: disabled skill not listed/registered; default keeps all.
 
+### Phase 1d — S3: startup prompt-size display
+- [ ] 1d.1 In `startAgentSession`, compute system prompt size + total tool-schema JSON size (chars + est. tokens at 4 chars/tok) and add a `⟡` startup banner line.
+- [ ] 1d.2 Verify it fires on first start, new session, and reload (all go through `startAgentSession`).
+- [ ] 1d.3 Test: banner line format via existing prompt_test fixtures.
+
 ### Phase 2 — T3/T4/T5: tool Schema descriptions
 - [ ] 2.1 `tools/python.go`: compress description; keep: gpython, Py3.4 subset, jail-confined, prefer-over-bash-python3 guidance, stdlib boundary.
 - [ ] 2.2 `tools/lsp.go`: compress; keep: 4 ops, multi-language, prefer-over-grep-for-symbols.
@@ -134,8 +140,9 @@ Compression rules applied everywhere:
 - [ ] 5.3 Re-run prompt tests.
 
 ### Phase 6 — Guard test (Hard Rule 3: every fix needs a test that would have caught it)
-- [ ] 6.1 Commit `internal/app/prompt_size_test.go` with hard ceilings: goal description ≤ 2,500 chars; each tool description ≤ 500 chars (goal excepted); each skill description ≤ 200 chars; each mode body ≤ 3,000 chars; total default-tool schema JSON ≤ 22 KB. Fails on future bloat.
-- [ ] 6.2 Test style follows repo patterns (table-driven, <100ms).
+- [ ] 6.1 **Build-time check only** (`go test`): hard ceilings over *embedded* assets — goal description ≤ 3,600 chars; each tool description ≤ 500 chars (goal excepted); each *built-in* skill description ≤ 200 chars (embedded FS only, never user/project dirs); each mode body ≤ 3,000 chars; total default-tool schema JSON ≤ 22 KB. Fails CI on future bloat.
+- [ ] 6.2 **No runtime enforcement**: goa must never stop working because context grew — users can add skills that bloat context by design; the existing runtime `systemPromptBudget` already degrades gracefully (drops low-priority sections, never errors). Do not add runtime rejection.
+- [ ] 6.3 Test style follows repo patterns (table-driven, <100ms).
 
 ### Phase 7 — Verification gate (repo standard)
 - [ ] 7.1 `go vet ./...`

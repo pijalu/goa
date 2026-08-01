@@ -12,6 +12,33 @@ import (
 //go:embed testdata/*.md
 var testFS embed.FS
 
+func TestStripHTMLComments(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no comments", "hello\nworld", "hello\nworld"},
+		{"leading SPDX block", "<!--\nSPDX-License-Identifier: GPL-3.0-or-later\n-->\n\n# Title\nbody", "# Title\nbody"},
+		{"multiple leading comments", "<!-- a -->\n<!-- b -->\ntext", "text"},
+		{"mid-document comment", "before\n<!-- note -->\nafter", "before\n\nafter"},
+		{"inline comment", "a <!-- hidden --> b", "a  b"},
+		{"multi-line comment keeps line structure", "start <!-- one\ntwo\nthree --> end", "start \n\n end"},
+		{"unterminated drops to EOF", "keep <!-- never closed\ngone\ngone", "keep"},
+		{"fenced code preserved", "text\n```html\n<!-- in code -->\n```\nafter", "text\n```html\n<!-- in code -->\n```\nafter"},
+		{"tilde fence preserved", "~~~\n<!-- in code -->\n~~~\n<!-- real -->", "~~~\n<!-- in code -->\n~~~"},
+		{"comment after closed fence", "```\ncode\n```\n<!-- trailing -->\nend", "```\ncode\n```\n\nend"},
+		{"fence with language then comment", "```go\n// <!-- not a comment -->\n```\nvisible <!-- gone -->", "```go\n// <!-- not a comment -->\n```\nvisible"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(StripHTMLComments([]byte(tt.input))); got != tt.want {
+				t.Errorf("StripHTMLComments(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadText(t *testing.T) {
 	tests := []struct {
 		name     string

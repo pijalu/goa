@@ -11,13 +11,22 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
 // ContextFile represents a loaded AGENTS.md or CLAUDE.md document.
 type ContextFile struct {
 	Path    string // absolute path to the file
-	Content string // raw file content
+	Content string // file content with any leading license header stripped
 	Source  string // "home" (~/.goa/AGENTS.md) or "project" (ancestor walk)
+}
+
+// stripLicenseHeader removes HTML comment blocks (e.g. SPDX license headers)
+// from context file content: it is injected into the system prompt and
+// comments must not consume LLM context.
+func stripLicenseHeader(data []byte) string {
+	return string(embeddoc.StripHTMLComments(data))
 }
 
 // LoadProjectContextFiles walks ancestor directories from projectDir up to the
@@ -87,7 +96,7 @@ func findContextFile(dir string) *ContextFile {
 			absPath, _ := filepath.Abs(path)
 			return &ContextFile{
 				Path:    absPath,
-				Content: string(data),
+				Content: stripLicenseHeader(data),
 			}
 		}
 	}

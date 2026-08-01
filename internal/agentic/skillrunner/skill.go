@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
 // Skill represents a loaded skill from a SKILL.md file.
@@ -131,5 +133,7 @@ func parseJSONListField(frontmatter map[string]string, key string) ([]string, er
 
 func extractInstructions(lines []string, closeIdx int) string {
 	instructions := strings.Join(lines[closeIdx+1:], "\n")
-	return strings.TrimSpace(instructions)
+	// Instructions are injected into sub-agent prompts: HTML comments must
+	// not consume LLM context.
+	return string(embeddoc.StripHTMLComments([]byte(instructions)))
 }

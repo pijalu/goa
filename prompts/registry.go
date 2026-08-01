@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
 // Registry resolves prompts from user directories or embedded defaults.
@@ -31,17 +33,20 @@ func NewRegistry(embedded fs.FS, userDirs ...string) *Registry {
 //  1. User project dir: .goa/prompts/{name}.md
 //  2. User home dir:    ~/.goa/prompts/{name}.md
 //  3. Embedded default: prompts/{name}.md
+//
+// Leading HTML comment blocks (SPDX license headers) are stripped: prompt
+// text is model-facing and must not carry license blocks into LLM context.
 func (r *Registry) Load(name string) (string, error) {
 	for _, dir := range r.userDirs {
 		path := filepath.Join(dir, name+".md")
 		if data, err := os.ReadFile(path); err == nil {
-			return string(data), nil
+			return string(embeddoc.StripHTMLComments(data)), nil
 		}
 	}
 	if r.embedded != nil {
 		path := name + ".md"
 		if data, err := fs.ReadFile(r.embedded, path); err == nil {
-			return string(data), nil
+			return string(embeddoc.StripHTMLComments(data)), nil
 		}
 	}
 	return "", fmt.Errorf("prompt %q not found", name)

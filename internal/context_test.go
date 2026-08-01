@@ -7,6 +7,7 @@ package internal
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,34 @@ func TestFindContextFile_AGENTSMD(t *testing.T) {
 	}
 	if cf.Path != path {
 		t.Errorf("Path = %q, want %q", cf.Path, path)
+	}
+}
+
+// TestFindContextFile_StripsComments guards the system-prompt leak fix:
+// context files are injected into every prompt, so HTML comments (license
+// headers or otherwise) must never reach the model.
+func TestFindContextFile_StripsComments(t *testing.T) {
+	dir := t.TempDir()
+	raw := "<!--\nSPDX-License-Identifier: GPL-3.0-or-later\n\nCopyright (C) 2026 X\n-->\n\n# Project Instructions\n\nBe careful.\n<!-- trailing note -->\n"
+	path := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cf, err := FindContextFile(dir)
+	if err != nil {
+		t.Fatalf("FindContextFile: %v", err)
+	}
+	if cf == nil {
+		t.Fatal("FindContextFile returned nil")
+	}
+	for _, banned := range []string{"SPDX-License-Identifier", "Copyright (C)", "<!--", "trailing note"} {
+		if strings.Contains(cf.Content, banned) {
+			t.Errorf("Content contains %q — comments must be stripped, got %q", banned, cf.Content)
+		}
+	}
+	if !strings.Contains(cf.Content, "# Project Instructions") {
+		t.Errorf("Content lost real text, got %q", cf.Content)
 	}
 }
 

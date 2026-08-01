@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
 // SkillMeta holds the parsed metadata from a skill's frontmatter.
@@ -370,6 +372,10 @@ func parseSkill(name, content, source, filePath string) *Skill {
 			}
 		}
 	}
+
+	// Skill bodies are model-facing (inline expansion, sub-agent prompts):
+	// HTML comments must not consume LLM context.
+	body = string(embeddoc.StripHTMLComments([]byte(body)))
 
 	return &Skill{
 		Meta:     meta,

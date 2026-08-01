@@ -5,6 +5,7 @@
 package prompts
 
 import (
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -21,6 +22,32 @@ func TestRegistry_Load_Embedded(t *testing.T) {
 	}
 	if got != "hello {{.Name}}" {
 		t.Errorf("expected raw template, got %q", got)
+	}
+}
+
+// TestRegistry_Load_StripsComments guards the single point serving all
+// model-facing prompts (modes, pipeline, task, companion, available_skills
+// template, …): no embedded prompt may carry HTML comments into LLM context.
+func TestRegistry_Load_StripsComments(t *testing.T) {
+	reg := NewRegistry(EmbeddedFS())
+	names, err := reg.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("no embedded prompts found")
+	}
+	for _, name := range names {
+		text, err := reg.Load(name)
+		if err != nil {
+			t.Errorf("Load(%q): %v", name, err)
+			continue
+		}
+		for _, banned := range []string{"SPDX-License-Identifier", "<!--"} {
+			if strings.Contains(text, banned) {
+				t.Errorf("prompt %q contains %q — comments must be stripped", name, banned)
+			}
+		}
 	}
 }
 
