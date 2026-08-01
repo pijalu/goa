@@ -1,6 +1,6 @@
 ---
 name: go-debug
-description: Debug Go code using the Delve (dlv) debugger to inspect runtime behavior, trace execution flow, and diagnose issues by stepping through code rather than reading source. Use when investigating reproducible bugs, unexpected state, goroutine behavior, or when source code analysis is insufficient.
+description: Debug Go with Delve (dlv): inspect runtime state, step through execution instead of reading source. Use for reproducible bugs, goroutine/state issues.
 ---
 
 # Go Debug with Delve

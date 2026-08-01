@@ -1,6 +1,6 @@
 ---
 name: qa-e2e
-description: Run the end-to-end QA test suite against Goa. Builds Goa, runs it against a local LM, and validates normal requests, file creation, error handling, session context, multi-step reasoning, and tool usage. Reports pass/fail for each scenario. Usable as a regression detector.
+description: Run Goa's e2e QA suite against a local LM; per-scenario pass/fail report. Use as regression detector.
 inline: false
 ---
 

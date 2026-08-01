@@ -1,6 +1,6 @@
 ---
 name: golang-check
-description: Run Go static analysis and complexity checks — cognitive complexity (gocognit), cyclomatic complexity (gocyclo), and staticcheck (go vet on steroids). Use before committing, after large refactors, or when CI fails lint/analysis checks.
+description: Run Go static analysis + complexity checks (gocognit, gocyclo, staticcheck). Use before committing, after refactors, or on CI lint failures.
 ---
 
 # Go Static Analysis & Complexity Checks

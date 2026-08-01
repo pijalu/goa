@@ -1,6 +1,6 @@
 ---
 name: tui-test
-description: Test Goa's TUI behavior without a real terminal by driving an agentic event sequence through the app layer and inspecting a Filmstrip of structured, ANSI-free UI states. Use when debugging or regressing anything in the status spinner, tool widgets, chat viewport, streaming/stream-state wiring, footer activity, or any event→UI behavior. Do NOT attempt to assert on raw ANSI/escape sequences or spin up a live model.
+description: Test Goa TUI headlessly: drive agentic events, assert Filmstrip UI states (no raw ANSI, no live model). Use for any event→UI regression.
 ---
 
 # Testing TUI behavior without a terminal
