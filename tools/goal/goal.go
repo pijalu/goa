@@ -120,7 +120,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				"objectives": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "create: add several goals at once. Each becomes a goal; the first starts active if no goal is active, the rest queue.",
+					"description": "create: add several goals at once; first starts active if none is, rest queue.",
 				},
 				"goalId": map[string]any{
 					"type":        "string",
@@ -134,7 +134,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				"priority": map[string]any{
 					"type":        "string",
 					"enum":        []string{"front"},
-					"description": "create: when \"front\", insert the goal at the FRONT of the queue (promoted next) instead of appending. Use to push an execution goal ahead of the goal it unblocks.",
+					"description": "create: \"front\" = insert at queue FRONT (promoted next) instead of appending; pushes an execution goal ahead of the one it unblocks.",
 				},
 				"completionCriterion": map[string]any{
 					"type":        "string",
@@ -142,7 +142,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"verifyCommand": map[string]any{
 					"type":        "string",
-					"description": "create: optional machine-checkable done-condition (e.g. \"go test ./...\"). The done-gate executes it when you confirm completion: exit 0 closes the goal, non-zero keeps it active with the output. Prefer it over prose criteria whenever a command can check the work.",
+					"description": "create: machine-checkable done-condition (e.g. \"go test ./...\"). Done-gate runs it after confirmed completion: exit0=close, else stay active w/ output. Prefer over prose criterion when checkable by command.",
 				},
 				"replace": map[string]any{
 					"type":        "boolean",
@@ -150,7 +150,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"freshContext": map[string]any{
 					"type":        "boolean",
-					"description": "create: run this goal's continuation turns on a clean context (objective + handoff only) instead of reusing the current conversation. History is preserved in the transcript but not sent to the agent for this goal. Default: the configured goals.fresh_context (default true = clean context). Set false to keep the current conversation context.",
+					"description": "create: run continuation turns on clean context (objective+handoff only), not the current conversation; history kept in transcript, not sent to the agent. Default: goals.fresh_context config (true). false = keep current context.",
 				},
 				"status": map[string]any{
 					"type":        "string",

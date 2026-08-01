@@ -59,13 +59,7 @@ func lspErr(errType, format string, args ...any) *internal.ToolError {
 func (t *LSPTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name: "lsp",
-		Description: "Query the language server for precise code navigation: " +
-			"go-to-definition, find-references, hover docs, and document symbols. " +
-			"Works for every language with a configured server (Go/gopls, " +
-			"Python/pyright, TypeScript, Rust, and more — the manager selects " +
-			"the right server per file). Use this instead of guessing locations " +
-			"from grep when you need exact symbol definitions or all references " +
-			"to a symbol.",
+		Description: "Language-server navigation: definition|references|hover|symbols. Any configured language (Go/gopls, Python/pyright, TS, Rust…); server auto-selected per file. Prefer over grep for exact symbol defs/refs.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -76,7 +70,7 @@ func (t *LSPTool) Schema() agentic.ToolSchema {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Source file path (relative to project root or absolute); any language with a language server works",
+					"description": "source file path (relative to project root or absolute)",
 				},
 				"line": map[string]any{
 					"type":        "integer",

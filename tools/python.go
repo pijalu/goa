@@ -63,7 +63,7 @@ type pythonInput struct {
 func (t *PythonTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "python",
-		Description: "Execute Python code in an embedded gpython interpreter (Python 3.4 subset; bytes/file/tuple sequence ops supported; f-strings via shim). Prefer this over bash python3 for multi-line scripts, file transforms, and JSON/re processing — it is jail-confined to the project and needs no python3 install. Use bash python3 only for subprocess, pipes, or stdlib modules beyond os/re/json/collections/base64/hashlib/datetime/itertools/urllib/random/math/string/glob.",
+		Description: "Execute Python in embedded gpython (Py3.4 subset; f-strings via shim). Jail-confined to project, no python3 install — prefer over bash python3 for multi-line scripts, file transforms, JSON/re. bash python3 only for subprocess, pipes, or stdlib beyond os/re/json/collections/base64/hashlib/datetime/itertools/urllib/random/math/string/glob.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
