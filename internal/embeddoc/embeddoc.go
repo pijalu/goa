@@ -106,10 +106,7 @@ func StripLeadingComment(data []byte) []byte {
 // verbatim, because comment-like text there is literal code, not a comment.
 // An unterminated comment drops everything to EOF. The result is trimmed.
 func StripHTMLComments(data []byte) []byte {
-	var out bytes.Buffer
-	inFence := false
-	inComment := false
-	var fence []byte
+	s := &commentStripper{}
 	for len(data) > 0 {
 		var line []byte
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
@@ -117,51 +114,68 @@ func StripHTMLComments(data []byte) []byte {
 		} else {
 			line, data = data, nil
 		}
-		body := bytes.TrimSuffix(line, []byte("\n"))
-		hasNL := len(body) < len(line)
-		trimmed := bytes.TrimSpace(body)
-		if inFence {
-			out.Write(line)
-			if fr := fenceRun(trimmed); fr != nil && fr[0] == fence[0] && len(fr) >= len(fence) {
-				inFence = false
-			}
-			continue
-		}
-		if fr := fenceRun(trimmed); fr != nil && !inComment {
-			inFence = true
-			fence = fr
-			out.Write(line)
-			continue
-		}
-		// Outside fences: drop every HTML comment block (may span lines).
-		var kept []byte
-		content := body
-		for len(content) > 0 {
-			if inComment {
-				end := bytes.Index(content, []byte("-->"))
-				if end < 0 {
-					content = nil
-					break
-				}
-				content = content[end+3:]
-				inComment = false
-				continue
-			}
-			start := bytes.Index(content, []byte("<!--"))
-			if start < 0 {
-				kept = append(kept, content...)
-				break
-			}
-			kept = append(kept, content[:start]...)
-			content = content[start+4:]
-			inComment = true
-		}
-		out.Write(kept)
-		if hasNL {
-			out.WriteByte('\n')
-		}
+		s.processLine(line)
 	}
-	return bytes.TrimSpace(out.Bytes())
+	return bytes.TrimSpace(s.out.Bytes())
+}
+
+// commentStripper holds the line-walking state for StripHTMLComments:
+// fenced-code tracking and multi-line comment tracking.
+type commentStripper struct {
+	out       bytes.Buffer
+	inFence   bool
+	inComment bool
+	fence     []byte
+}
+
+// processLine handles one input line (with its trailing newline, if any):
+// fenced lines pass through verbatim; other lines go through comment removal.
+func (s *commentStripper) processLine(line []byte) {
+	body := bytes.TrimSuffix(line, []byte("\n"))
+	trimmed := bytes.TrimSpace(body)
+	switch {
+	case s.inFence:
+		s.out.Write(line)
+		if fr := fenceRun(trimmed); fr != nil && fr[0] == s.fence[0] && len(fr) >= len(s.fence) {
+			s.inFence = false
+		}
+	case !s.inComment && fenceRun(trimmed) != nil:
+		s.inFence, s.fence = true, fenceRun(trimmed)
+		s.out.Write(line)
+	default:
+		s.writeStripped(body, len(body) < len(line))
+	}
+}
+
+// writeStripped writes one non-fence line with every HTML comment block
+// removed, tracking comments that span lines via s.inComment. hasNL reports
+// whether the original line ended with a newline, which is preserved so
+// comment removal never merges lines.
+func (s *commentStripper) writeStripped(body []byte, hasNL bool) {
+	var kept []byte
+	for len(body) > 0 {
+		if s.inComment {
+			end := bytes.Index(body, []byte("-->"))
+			if end < 0 {
+				break // unterminated comment: drop to EOF
+			}
+			body = body[end+3:]
+			s.inComment = false
+			continue
+		}
+		start := bytes.Index(body, []byte("<!--"))
+		if start < 0 {
+			kept = append(kept, body...)
+			break
+		}
+		kept = append(kept, body[:start]...)
+		body = body[start+4:]
+		s.inComment = true
+	}
+	s.out.Write(kept)
+	if hasNL {
+		s.out.WriteByte('\n')
+	}
 }
 
 // fenceRun returns the fence marker (``` or ~~~, 3+ chars) when the trimmed

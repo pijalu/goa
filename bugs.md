@@ -538,3 +538,16 @@ Now I understand the boundary regression precisely:
 - **Validation**: reproduce with the same prompt class on LM Studio; captured
   stream replay shows identical rendering; fix removes duplication (guideline
   #5 — verify real terminal output).
+
+## TestThemeHex_UnknownToken fails on main — OPEN
+
+- **Observed**: `go test ./tools/ -run TestThemeHex_UnknownToken -count=1`
+  fails: `tool_highlight_test.go:90: expected default '#888888', got ""`.
+  Reproduces on main (verified via `git stash`), unrelated to feature/recontext.
+- **Localization**: `tools/tool_highlight_test.go:90` — theme hex lookup for an
+  unknown token should return the default `#888888` but returns empty string;
+  likely a regression in the theme token resolution (`tui/` theme or
+  `tools/tool_highlight.go`) after a theme refactor.
+- **Fix plan**: find the resolution path for unknown tokens, restore the
+  default-fallback; the test is the guard.
+- **Validation**: `go test ./tools/ -run TestThemeHex -race -count=1` green.
