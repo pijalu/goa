@@ -835,6 +835,10 @@ type TUIConfig struct {
 	Transparency   TransparencyConfig    `yaml:"transparency"`
 	ModeLine       ModeLineSegmentConfig `yaml:"modeline,omitempty"`
 	Spinner        string                `yaml:"spinner"`
+	// SpinnerLocation selects where the busy spinner renders: "chat" (default,
+	// in-chat "⬣ Sending request..." line) or "statusbar" (suppress the chat
+	// line; the animated frame shows only next to the model in the footer).
+	SpinnerLocation string `yaml:"spinner_location,omitempty"`
 	// AnimatedTitle animates the terminal window title with the spinner while
 	// the agent is working. Default false (bugs.md 2026-07-21: keep the static
 	// hexagon title during activities); set to true to opt in.

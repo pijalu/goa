@@ -223,12 +223,27 @@ func (a *App) stopBackgroundProcesses() {
 	}
 }
 
+// spinnerLocation returns the configured busy-spinner placement: "chat"
+// (default, in-chat status line) or "statusbar" (footer-only busy frame).
+func spinnerLocation(cfg *config.Config) string {
+	if cfg != nil && cfg.TUI.SpinnerLocation == "statusbar" {
+		return "statusbar"
+	}
+	return "chat"
+}
+
 func (a *App) assembleEngine(engine *tui.TUI, header *tui.Header, chat *tui.ChatViewport, agentContent *orchpanel.AgentContent, agentTabBar *orchpanel.AgentTabBar, statusBar *tui.StatusMsg, goalBubble *goaltui.Bubble, steeringChrome *tui.SteeringChrome, bgPanel *bgpanel.Panel, inp *tui.Editor, footer *tui.Footer) {
 	_ = agentContent
 	_ = agentTabBar
 	engine.AddChild(header)
 	engine.AddChild(chat)
-	engine.AddChild(statusBar)
+	// In "statusbar" spinner-location mode the busy spinner renders only next
+	// to the model in the footer: the in-chat status line stays out of the
+	// timeline/scrollback. The StatusMsg still runs (Show/Clear/tick drive the
+	// shared spinner frame the footer busy indicator consumes).
+	if spinnerLocation(a.subs.cfg) != "statusbar" {
+		engine.AddChild(statusBar)
+	}
 	engine.AddChild(goalBubble)
 	engine.AddChild(steeringChrome)
 	engine.AddChild(bgPanel)

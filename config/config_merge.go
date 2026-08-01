@@ -514,6 +514,9 @@ func (c *Config) mergeTUI(other *Config) {
 	if other.TUI.Spinner != "" {
 		c.TUI.Spinner = other.TUI.Spinner
 	}
+	if other.TUI.SpinnerLocation != "" {
+		c.TUI.SpinnerLocation = other.TUI.SpinnerLocation
+	}
 	mergeToolDisplay(&c.TUI.Tools, &other.TUI.Tools)
 	mergeHistoryConfig(&c.TUI.History, &other.TUI.History)
 	mergeFontStyles(&c.TUI.FontStyles, &other.TUI.FontStyles)

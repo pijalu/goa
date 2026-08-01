@@ -182,6 +182,7 @@ func (m *configMenu) showRoot() error {
 		{Value: "compression", Label: "Compression", Description: compressionLabel(cfg)},
 		{Value: "theme", Label: "Theme", Description: cfg.TUI.Theme},
 		{Value: "spinner", Label: "Spinner", Description: spinnerLabel(cfg)},
+		{Value: "spinner_location", Label: "Spinner location", Description: spinnerLocationMenuLabel(cfg)},
 		{Value: "thinking_level", Label: "Thinking level", Description: string(cfg.GetThinkingLevel("main_agent"))},
 		{Value: "thinking_blocks", Label: "Thinking blocks", Description: thinkingBlocksLabel(cfg)},
 		{Value: "show_thinking", Label: "Show thinking", Description: boolLabel(cfg.TUI.Transparency.ShowThinking)},
@@ -223,6 +224,7 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"compression":     (*configMenu).openCompression,
 		"theme":           (*configMenu).openTheme,
 		"spinner":         (*configMenu).openSpinner,
+		"spinner_location": (*configMenu).openSpinnerLocation,
 		"thinking_level":  (*configMenu).openThinkingLevel,
 		"thinking_blocks": (*configMenu).toggleThinkingBlocks,
 		"show_thinking":   (*configMenu).toggleShowThinking,
@@ -555,6 +557,39 @@ func (m *configMenu) settingTheme() {
 		m.applySet("tui.theme", v)
 		m.back()
 	})
+}
+
+// openSpinnerLocation opens the spinner-location (chat|statusbar) picker.
+func (m *configMenu) openSpinnerLocation() { m.open(m.settingSpinnerLocation) }
+
+// settingSpinnerLocation lets the user pick where the busy spinner renders:
+// the in-chat status line (default) or the status bar next to the model.
+func (m *configMenu) settingSpinnerLocation() {
+	m.current = m.settingSpinnerLocation
+	items := []tui.SelectorItem{
+		{Value: "chat", Label: "chat", Description: "in-chat \"Sending request...\" spinner line (default)"},
+		{Value: "statusbar", Label: "statusbar", Description: "animated frame next to the model in the status bar only"},
+	}
+	current := m.ctx.Config.TUI.SpinnerLocation
+	if current == "" {
+		current = "chat"
+	}
+	m.ctx.SelectOption("Spinner location:", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("tui.spinner_location", v)
+		m.back()
+	})
+}
+
+// spinnerLocationMenuLabel returns the menu description for spinner_location.
+func spinnerLocationMenuLabel(cfg *config.Config) string {
+	if cfg.TUI.SpinnerLocation == "statusbar" {
+		return "statusbar"
+	}
+	return "chat (default)"
 }
 
 func (m *configMenu) settingSpinner() {

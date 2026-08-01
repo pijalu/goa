@@ -431,6 +431,7 @@ var configSetters = map[string]configSetter{
 	"execution.max_consecutive_tool_rounds":          setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxConsecutiveToolRounds }),
 	"tui.theme":                                      setString(func(cfg *config.Config) *string { return &cfg.TUI.Theme }),
 	"tui.spinner":                                    setSpinnerName,
+	"tui.spinner_location":                           setSpinnerLocation,
 	"tui.transparency.show_thinking":                 setBool(func(cfg *config.Config) *bool { return &cfg.TUI.Transparency.ShowThinking }),
 	"tui.transparency.thinking_collapsed":            setThinkingCollapsed,
 	"logging.level":                                  setString(func(cfg *config.Config) *string { return &cfg.Logging.Level }),
@@ -585,8 +586,16 @@ func setExecutionMode(cfg *config.Config, value string) error {
 	return fmt.Errorf("execution.mode must be yolo, solo, confirm, or review")
 }
 
-// setCompressionStrategy validates and applies a context_compression.strategy
-// value. Allowed values mirror agentic.CompressionStrategy.
+// setSpinnerLocation validates and sets tui.spinner_location (chat|statusbar).
+func setSpinnerLocation(cfg *config.Config, value string) error {
+	switch value {
+	case "", "chat", "statusbar":
+		cfg.TUI.SpinnerLocation = value
+		return nil
+	}
+	return fmt.Errorf("tui.spinner_location must be chat or statusbar (got %q)", value)
+}
+
 // setSpinnerName validates and sets tui.spinner config value.
 func setSpinnerName(cfg *config.Config, value string) error {
 	if value == "" || value == "none" {

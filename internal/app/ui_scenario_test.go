@@ -45,6 +45,14 @@ type uiScenario struct {
 // and returns a harness ready to receive events via apply.
 func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 	tb.Helper()
+	return newUIScenarioCfg(tb, w, h, nil)
+}
+
+// newUIScenarioCfg is newUIScenario with an explicit TUI config override
+// (nil = the default scenario config). The in-chat status line is assembled
+// with the same production rule as assembleEngine: spinnerLocation decides.
+func newUIScenarioCfg(tb testing.TB, w, h int, tuiCfg *config.TUIConfig) *uiScenario {
+	tb.Helper()
 	// Deterministic animated spinner so frame/visibility assertions are stable.
 	_, def := spinner.Default()
 	tui.SetSpinner(def)
@@ -69,7 +77,17 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 	engine.AddChild(header)
 	engine.AddChild(chat)
 	engine.AddChild(pending)
-	engine.AddChild(statusBar)
+	cfg := &config.Config{
+		TUI: config.TUIConfig{Transparency: config.TransparencyConfig{ShowThinking: true}},
+	}
+	if tuiCfg != nil {
+		cfg.TUI = *tuiCfg
+	}
+	// Same production rule as assembleEngine: the in-chat status line is only
+	// added when the spinner location is "chat" (statusbar = footer-only).
+	if spinnerLocation(cfg) != "statusbar" {
+		engine.AddChild(statusBar)
+	}
 	engine.AddChild(goal)
 	engine.AddChild(steering)
 	engine.AddChild(inp)
@@ -82,9 +100,7 @@ func newUIScenario(tb testing.TB, w, h int) *uiScenario {
 	inp.SetTUI(engine)
 
 	subs := testSubsystems()
-	subs.cfg = &config.Config{
-		TUI: config.TUIConfig{Transparency: config.TransparencyConfig{ShowThinking: true}},
-	}
+	subs.cfg = cfg
 	subs.tuiEngine = engine
 	subs.chat = chat
 	subs.statusMsg = statusBar
