@@ -601,6 +601,7 @@ func (q *fakeQueue) insert(input goal.UpcomingGoalInput, front bool) ([]goal.Upc
 		CompletionCriterion: input.CompletionCriterion,
 		VerifyCommand:       input.VerifyCommand,
 		FreshContext:        input.FreshContext,
+		Handoff:             input.Handoff,
 	}
 	if front {
 		q.goals = append([]goal.UpcomingGoal{item}, q.goals...)
@@ -810,5 +811,147 @@ func TestGoalTool_Enqueue_FreshContextDefaultOn(t *testing.T) {
 	}
 	if len(queue.goals) != 1 || !queue.goals[0].FreshContext {
 		t.Errorf("expected queued goal to carry FreshContext=true by default, got %+v", queue.goals)
+	}
+}
+
+// TestGoalTool_SchemaHandover verifies the goal tool exposes the first-class
+// `handover` create param with the structured-content hint (spec section 4:
+// the description must tell the model that a handover is what makes clean
+// context sufficient).
+func TestGoalTool_SchemaHandover(t *testing.T) {
+	tool := newGoalTool(goal.NewGoalMode(nil, nil, nil, nil), nil)
+	s := tool.Schema()
+	props, _ := s.Schema["properties"].(map[string]any)
+	handover, ok := props["handover"].(map[string]any)
+	if !ok {
+		t.Fatal("schema missing handover property")
+	}
+	if handover["type"] != "string" {
+		t.Errorf("handover type = %v, want string", handover["type"])
+	}
+	desc, _ := handover["description"].(string)
+	if !strings.Contains(desc, "clean context sufficient") || !strings.Contains(desc, "untrusted") {
+		t.Errorf("handover description missing clean-context hint: %q", desc)
+	}
+	if !strings.Contains(s.Description, "handover") {
+		t.Error("goal tool description must mention the handover param")
+	}
+}
+
+// TestGoalTool_CreateHandover verifies the caller's explicit `handover` param
+// lands on the active goal and is exposed by get and the create result
+// (spec: round-trip get/create expose the stored handover).
+func TestGoalTool_CreateHandover(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	out, err := tool.Execute(`{"action":"create","objective":"successor","handover":"State: shipped. Next: verify."}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"handover":"State: shipped. Next: verify."`) {
+		t.Errorf("create result must expose the handover: %q", out)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.Handoff == nil || *g.Handoff != "State: shipped. Next: verify." {
+		t.Errorf("active goal handover = %+v", g.Handoff)
+	}
+	getOut, err := tool.Execute(`{"action":"get"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(getOut, `"handover":"State: shipped. Next: verify."`) {
+		t.Errorf("get result must expose the stored handover: %q", getOut)
+	}
+	// The surface key is handover, never handoff.
+	if strings.Contains(getOut, `"handoff"`) {
+		t.Errorf("get result must use the handover surface: %q", getOut)
+	}
+}
+
+// TestGoalTool_CreateHandover_Queued verifies a queued create carries the
+// explicit handover into the durable queue and list exposes it.
+func TestGoalTool_CreateHandover_Queued(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := tool.Execute(`{"action":"create","objective":"first"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"create","objective":"second","handover":"queued continuity note"}`); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := q.Read()
+	if len(read) != 1 || read[0].Handoff == nil || *read[0].Handoff != "queued continuity note" {
+		t.Errorf("queued goal handover = %+v", read)
+	}
+	out, err := tool.Execute(`{"action":"list"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"handover":"queued continuity note"`) {
+		t.Errorf("list must expose the queued handover: %q", out)
+	}
+}
+
+// TestGoalTool_CreateHandover_Cap verifies over-long handover is rejected
+// through the tool surface with a clear error.
+func TestGoalTool_CreateHandover_Cap(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	big := strings.Repeat("h", goal.MaxHandoverLength+1)
+	if _, err := tool.Execute(`{"action":"create","objective":"x","handover":"` + big + `"}`); err == nil {
+		t.Fatal("expected cap error for over-long handover")
+	}
+}
+
+// TestGoalTool_PostponeCarriesHandover verifies postpone carries the active
+// goal's stored handover forward into the queue (fixes the tools/goal gap:
+// previously the demoted goal lost its handover).
+func TestGoalTool_PostponeCarriesHandover(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := tool.Execute(`{"action":"create","objective":"active goal","handover":"carry me"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"postpone"}`); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := q.Read()
+	if len(read) != 1 || read[0].Handoff == nil || *read[0].Handoff != "carry me" {
+		t.Errorf("postponed goal must carry its handover: %+v", read)
+	}
+}
+
+// TestGoalTool_PromoteCarriesHandover verifies promote carries handovers both
+// ways: the promoted queued goal's stored handover becomes the new active
+// goal's handover, and the demoted current goal keeps its own stored handover
+// at the front of the queue.
+func TestGoalTool_PromoteCarriesHandover(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	// Active goal with its own handover.
+	if _, err := tool.Execute(`{"action":"create","objective":"current","handover":"current handover"}`); err != nil {
+		t.Fatal(err)
+	}
+	// Queued goal with its own handover.
+	if _, err := tool.Execute(`{"action":"create","objective":"queued","handover":"queued handover"}`); err != nil {
+		t.Fatal(err)
+	}
+	read, _ := q.Read()
+	if len(read) != 1 {
+		t.Fatalf("queue = %+v", read)
+	}
+	if _, err := tool.Execute(`{"action":"promote","goalId":"` + read[0].ID + `"}`); err != nil {
+		t.Fatal(err)
+	}
+	// Promoted goal is active with its stored handover.
+	if g := mode.GetActiveGoal(); g == nil || g.Handoff == nil || *g.Handoff != "queued handover" {
+		t.Errorf("promoted active handover = %+v", g.Handoff)
+	}
+	// Demoted current goal waits at the front of the queue with ITS handover.
+	read, _ = q.Read()
+	if len(read) != 1 || read[0].Objective != "current" || read[0].Handoff == nil || *read[0].Handoff != "current handover" {
+		t.Errorf("demoted goal must keep its handover: %+v", read)
 	}
 }

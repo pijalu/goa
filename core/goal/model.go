@@ -9,7 +9,10 @@
 // session keeps exactly one current goal, rebuilt from an ordered event log.
 package goal
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // GoalStatus is the lifecycle state of a goal.
 type GoalStatus string
@@ -63,9 +66,11 @@ type GoalSnapshot struct {
 	// confirms completion, instead of trusting the evidence prose alone.
 	VerifyCommand *string          `json:"verifyCommand,omitempty"`
 	FreshContext  bool             `json:"freshContext,omitempty"`
-	// Handoff carries a note from a predecessor goal (its completion
-	// evidence) into this goal's reminder. Nil for stand-alone goals.
-	Handoff *string          `json:"handoff,omitempty"`
+	// Handover carries a continuity note from a predecessor goal (its
+	// completion evidence, or explicit text the creator attached) into this
+	// goal's reminder. Nil for stand-alone goals. Untrusted data, never
+	// instructions — the model sees it inside an <untrusted_handover> block.
+	Handoff *string          `json:"handover,omitempty"`
 	Todos   []GoalTodoItem   `json:"todos,omitempty"`
 	Status              GoalStatus       `json:"status"`
 	TurnsUsed           int              `json:"turnsUsed"`
@@ -92,8 +97,12 @@ type UpcomingGoal struct {
 	CompletionCriterion *string   `json:"completionCriterion,omitempty"` // carried into the goal on promotion
 	VerifyCommand       *string   `json:"verifyCommand,omitempty"`       // carried into the goal on promotion
 	FreshContext        bool      `json:"freshContext,omitempty"`        // run on a clean context when promoted
-	CreatedAt           time.Time `json:"createdAt"`
-	UpdatedAt           time.Time `json:"updatedAt"`
+	// Handover is the continuity note stored with the queued goal. It is
+	// carried into the goal on promotion (postpone/promote/auto-promotion)
+	// unless the caller supplies an explicit handover at that moment.
+	Handoff   *string   `json:"handover,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // UpcomingGoalInput carries the fields needed to enqueue a goal. Using a
@@ -103,6 +112,9 @@ type UpcomingGoalInput struct {
 	CompletionCriterion *string
 	VerifyCommand       *string
 	FreshContext        bool
+	// Handover is the continuity note to store with the queued goal (carried
+	// into the goal when it is promoted). Free text, untrusted data.
+	Handoff *string
 }
 
 // GoalChangeKind describes the kind of change for UI rendering.
@@ -216,7 +228,7 @@ type GoalEventRecord struct {
 	Objective           *string `json:"objective,omitempty"`
 	CompletionCriterion *string `json:"completionCriterion,omitempty"`
 	VerifyCommand       *string `json:"verifyCommand,omitempty"`
-	Handoff             *string `json:"handoff,omitempty"`
+	Handoff             *string `json:"handover,omitempty"`
 	FreshContext        *bool   `json:"freshContext,omitempty"`
 
 	// goal.update fields (patches)
@@ -229,4 +241,24 @@ type GoalEventRecord struct {
 	TokensUsed   *int              `json:"tokensUsed,omitempty"`
 	WallClockMs  *int64            `json:"wallClockMs,omitempty"`
 	BudgetLimits *GoalBudgetLimits `json:"budgetLimits,omitempty"`
+}
+
+// UnmarshalJSON decodes a goal event record, accepting both the current
+// "handover" key and the legacy "handoff" key written before the surface
+// rename, so persisted event logs from older sessions keep their continuity
+// note on replay (backwards compatible, additive).
+func (r *GoalEventRecord) UnmarshalJSON(data []byte) error {
+	type recordAlias GoalEventRecord
+	var aux struct {
+		recordAlias
+		LegacyHandoff *string `json:"handoff"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*r = GoalEventRecord(aux.recordAlias)
+	if r.Handoff == nil {
+		r.Handoff = aux.LegacyHandoff
+	}
+	return nil
 }

@@ -15,14 +15,17 @@ action:
   FRONT=promoted next; jump execution goal ahead of one it unblocks), verifyCommand (shell
   cmd run after confirmed completion: exit0=pass else reject w/ output tail; set when
   done-condition machine-checkable — tests/build/lint; keep passing; repeated
-  fails→auto-block for review). Create only on explicit user request for autonomous work
-  or host intake prompt — never greetings/questions/vague requests w/o verifiable end
-  state (ask for missing criterion first).
+  fails→auto-block for review), handover (free-text continuity note: State+evidence,
+  Decisions, Next steps, Risks, Carried limits — budget/verifyCommand/criterion; handover,
+  not prior conversation, is the contract between goals; max 4096 chars). Create only on
+  explicit user request for autonomous work or host intake prompt — never
+  greetings/questions/vague requests w/o verifiable end state (ask for missing criterion
+  first).
 - list: active+queued (id,name,objective,status).
 - cancel: rm queued. Req goalId (ID|friendly name).
 - reorder: move queued. Req goalId, direction(up|down).
 - postpone: ACTIVE→queue BACK, start next queued (keeps objective/criterion/verifyCmd/ctx
-  mode); urgent work first w/o abandoning. Empty queue→parks till promote.
+  mode/handover); urgent work first w/o abandoning. Empty queue→parks till promote.
 - promote: queued→active NOW. Req goalId. Current→queue FRONT, resumes right after.
 - update: set status:
   - active: resume paused/blocked on any "continue/proceed" user phrasing — immediately,
@@ -39,7 +42,7 @@ action:
   - paused: set aside. Req reason. NEVER to ask "continue?"; any progress possible→keep
     working; need input→blocked.
 - get: current goal (objective,criterion,status,budgets+remaining,todos,terminal
-  reason/expectation); {"goal": null} if none.
+  reason/expectation,handover); {"goal": null} if none.
 - set_budget: hard limit. Req value(>0)+unit(turns|tokens|milliseconds|seconds|minutes|
   hours). Only explicit user runtime limit ("stop after 20 turns"); never invent;
   compound→1 unit ("2h3m"→value:123,unit:"minutes"). Unreasonable→refuse+tell user.

@@ -17,6 +17,10 @@ import (
 
 const maxObjectiveLength = 4000
 
+// MaxHandoverLength caps the handover continuity note (free text, untrusted
+// data). Inputs longer than this are rejected at create/enqueue time.
+const MaxHandoverLength = 4096
+
 func generateGoalID() string {
 	return internal.PrefixedHexID("goal", 8)
 }
@@ -253,7 +257,10 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 
 	completionCriterion := normalizeCompletionCriterion(input.CompletionCriterion)
 	verifyCommand := NormalizeOptionalText(input.VerifyCommand)
-	handoff := NormalizeOptionalText(input.Handoff)
+	handoff, err := NormalizeHandover(input.Handoff)
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
 	now := time.Now()
 	nowMs := now.UnixMilli()
 	name := strings.TrimSpace(input.Name)
@@ -919,6 +926,18 @@ func NormalizeOptionalText(value *string) *string {
 		return nil
 	}
 	return &trimmed
+}
+
+// NormalizeHandover trims a handover note and enforces the MaxHandoverLength
+// cap. Blank maps to nil (no handover); over-long input is rejected with an
+// error rather than silently truncated, so callers (goal create, queue enqueue)
+// surface the violation to the model.
+func NormalizeHandover(value *string) (*string, error) {
+	v := NormalizeOptionalText(value)
+	if v != nil && len(*v) > MaxHandoverLength {
+		return nil, fmt.Errorf("goal handover cannot exceed %d characters", MaxHandoverLength)
+	}
+	return v, nil
 }
 
 func ptrStatus(s GoalStatus) *GoalStatus {

@@ -124,6 +124,10 @@ func (s *GoalQueueStore) insertGoal(input goal.UpcomingGoalInput, front bool) ([
 	if err != nil {
 		return nil, err
 	}
+	handoff, err := goal.NormalizeHandover(input.Handoff)
+	if err != nil {
+		return nil, err
+	}
 	name := internal.FriendlyNameUnique(s.namesLocked(goals))
 	now := time.Now()
 	item := goal.UpcomingGoal{
@@ -133,6 +137,7 @@ func (s *GoalQueueStore) insertGoal(input goal.UpcomingGoalInput, front bool) ([
 		CompletionCriterion: goal.NormalizeOptionalText(input.CompletionCriterion),
 		VerifyCommand:       goal.NormalizeOptionalText(input.VerifyCommand),
 		FreshContext:        input.FreshContext,
+		Handoff:             handoff,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}

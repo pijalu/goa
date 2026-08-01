@@ -104,9 +104,11 @@ type App struct {
 
 	// goalCompletionHandoff stashes the terminal reason (completion evidence)
 	// of the goal that just completed so the next auto-promoted queued goal
-	// inherits it as its Handoff note. Written by handleGoalUpdate on a
-	// completion change, consumed (and cleared) by promoteNextQueuedGoal.
-	// Both run on the single event-forwarder goroutine.
+	// inherits it as its handover note (a queued goal's own stored handover
+	// wins over this stash — explicit caller handover takes precedence).
+	// Written by handleGoalUpdate on a completion change, consumed (and
+	// cleared) by promoteNextQueuedGoal. Both run on the single
+	// event-forwarder goroutine.
 	goalCompletionHandoff *string
 
 	approvalStateFields

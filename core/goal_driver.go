@@ -76,7 +76,7 @@ type AgentRunner interface {
 // FreshAgentRunner is an optional extension of AgentRunner. When the active
 // goal carries the fresh-context flag (bugs.md: per-goal clean-context), the
 // driver routes its continuation turns through RunFresh so they execute on a
-// clean context (objective + handoff only) instead of the full conversation.
+// clean context (objective + handover only) instead of the full conversation.
 // History is preserved by the implementation and restored when the goal ends.
 type FreshAgentRunner interface {
 	AgentRunner

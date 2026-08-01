@@ -5,7 +5,9 @@
 package core
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/core/goal"
@@ -239,5 +241,48 @@ func TestGoalQueueStore_FreshContext(t *testing.T) {
 	}
 	if !read[1].FreshContext {
 		t.Error("goal[1] FreshContext = false, want true")
+	}
+}
+
+// TestGoalQueueStore_Handover verifies a queued goal carries its handover
+// continuity note through Append/persist/Read (durable across restart) and
+// enforces the cap at enqueue time.
+func TestGoalQueueStore_Handover(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "q.json")
+	store := NewGoalQueueStore(path)
+	handover := "State: done. Next: verify."
+	blank := "   "
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "with handover", Handoff: &handover}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "blank handover", Handoff: &blank}); err != nil {
+		t.Fatal(err)
+	}
+	// Re-read from disk to prove durability (survives restart).
+	read, err := NewGoalQueueStore(path).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 2 {
+		t.Fatalf("read = %d goals, want 2", len(read))
+	}
+	if read[0].Handoff == nil || *read[0].Handoff != handover {
+		t.Errorf("goal[0] handover = %v, want %q", read[0].Handoff, handover)
+	}
+	if read[1].Handoff != nil {
+		t.Errorf("blank handover must normalize to nil, got %q", *read[1].Handoff)
+	}
+	// The persisted file uses the handover surface key.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"handover": "State: done. Next: verify."`) {
+		t.Errorf("queue file must persist the handover key: %s", data)
+	}
+	// Over-long handover is rejected at enqueue.
+	tooLong := strings.Repeat("z", goal.MaxHandoverLength+1)
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: "too long", Handoff: &tooLong}); err == nil {
+		t.Error("expected cap error for over-long handover")
 	}
 }

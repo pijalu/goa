@@ -477,7 +477,7 @@ type GoalsConfig struct {
 	// Nil = default (enabled); explicit false falls back to plain blocking.
 	AutoUnblock *bool `yaml:"auto_unblock,omitempty"`
 	// FreshContext selects the default context mode for newly created goals:
-	// true (default) starts each goal on a clean context (objective + handoff
+	// true (default) starts each goal on a clean context (objective + handover
 	// only); false reuses the current conversation so its context survives
 	// into the goal. The model-facing goal tool and /goal:new follow this
 	// default unless overridden per goal (freshContext arg, /goal:new:fresh,

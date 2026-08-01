@@ -955,10 +955,16 @@ func (a *App) promoteNextQueuedGoal() {
 	if err != nil || removed == nil {
 		return
 	}
-	// Consume the stashed completion handoff (if any) into the promoted
+	// Consume the stashed completion handover (if any) into the promoted
 	// goal; the queue carries criterion + verify command forward itself.
+	// Explicit caller handover wins: a handover stored on the queued goal
+	// (set by its creator) takes precedence over the predecessor's terminal
+	// evidence; otherwise the predecessor's TerminalReason is inherited.
 	handoff := a.goalCompletionHandoff
 	a.goalCompletionHandoff = nil
+	if removed.Handoff != nil {
+		handoff = removed.Handoff
+	}
 	if _, err := a.subs.goalManager.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:           removed.Objective,
 		Name:                removed.Name,

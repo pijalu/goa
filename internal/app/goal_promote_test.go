@@ -89,3 +89,90 @@ func TestHandleGoalUpdate_ClearPromotesQueuedGoalAndStartsDriver(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestHandleGoalUpdate_CompletionStashesTerminalReason verifies the
+// completion→auto-promotion handover path (spec section 2, existing behavior):
+// a GoalChangeCompletion event stashes the completed goal's TerminalReason so
+// the next auto-promoted queued goal inherits it as its handover.
+func TestHandleGoalUpdate_CompletionStashesTerminalReason(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mgr := core.NewGoalManagerWithMode("", mode)
+	reason := "completed: all tests pass (evidence: go test exit 0)"
+	snap := &goal.GoalSnapshot{Objective: "done", Status: goal.GoalDone, TerminalReason: &reason}
+
+	a := &App{}
+	a.subs = &subsystems{
+		chat:        tui.NewChatViewport(),
+		goalManager: mgr,
+	}
+
+	a.handleGoalUpdate(&event.GoalUpdate{
+		Snapshot: snap,
+		Change:   &goal.GoalChange{Kind: goal.GoalChangeCompletion},
+	})
+	if a.goalCompletionHandoff == nil || *a.goalCompletionHandoff != reason {
+		t.Fatalf("completion evidence not stashed for auto-promotion: %+v", a.goalCompletionHandoff)
+	}
+}
+
+// TestPromoteNextQueuedGoal_InheritsTerminalReason verifies an auto-promoted
+// queued goal (with no stored handover) inherits the predecessor's
+// TerminalReason as its handover — the completion-evidence behavior the spec
+// must preserve.
+func TestPromoteNextQueuedGoal_InheritsTerminalReason(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mgr := core.NewGoalManagerWithMode("", mode)
+	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective"}); err != nil {
+		t.Fatalf("append queued goal: %v", err)
+	}
+
+	a := &App{}
+	a.subs = &subsystems{
+		chat:        tui.NewChatViewport(),
+		goalManager: mgr,
+	}
+	reason := "completed: all tests pass (evidence: go test exit 0)"
+	a.goalCompletionHandoff = &reason
+
+	a.promoteNextQueuedGoal()
+
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("promoted goal not active")
+	}
+	if g.Handoff == nil || *g.Handoff != reason {
+		t.Fatalf("promoted goal must inherit predecessor TerminalReason as handover, got %+v", g.Handoff)
+	}
+}
+
+// TestPromoteNextQueuedGoal_StoredHandoverWins verifies the explicit-caller
+// rule: a queued goal with its own stored handover keeps it on auto-promotion
+// instead of overwriting it with the predecessor's terminal evidence.
+func TestPromoteNextQueuedGoal_StoredHandoverWins(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mgr := core.NewGoalManagerWithMode("", mode)
+	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	explicit := "explicit handover from creator"
+	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective", Handoff: &explicit}); err != nil {
+		t.Fatalf("append queued goal: %v", err)
+	}
+
+	a := &App{}
+	a.subs = &subsystems{
+		chat:        tui.NewChatViewport(),
+		goalManager: mgr,
+	}
+	reason := "predecessor completion evidence"
+	a.goalCompletionHandoff = &reason
+
+	a.promoteNextQueuedGoal()
+
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("promoted goal not active")
+	}
+	if g.Handoff == nil || *g.Handoff != explicit {
+		t.Fatalf("stored handover must win over predecessor evidence, got %+v", g.Handoff)
+	}
+}
