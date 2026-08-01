@@ -569,3 +569,57 @@ Now I understand the boundary regression precisely:
   #5 — verify real terminal output).
 
 
+## Option: move the busy spinner from in-chat line to the status bar — RESOLVED (tui.spinner_location option, commit ea33f83)
+
+- **Resolution**: implemented as specced with one simplification — the footer busy indicator already existed (`FormatModelPart` renders the selected spinner's animated frame next to the model when busy), so the change is: config `tui.spinner_location: chat|statusbar` (default chat) + `assembleEngine` skips the `StatusMsg` engine child in statusbar mode (the component still ticks, feeding the shared frame the footer consumes). Non-busy status bubbles (⟡ errors/infos) are a separate path, unchanged.
+- **Tests**: `TestSpinnerLocation` helper table (nil/unset/statusbar/unknown→chat fail-safe) + `TestFilmstrip_SpinnerLocation` driving request events in both modes (status line "⬡ Processing…" present in chat mode, suppressed in statusbar mode, shared spinner frame still live) + `/config` menu root test updated for the new entry.
+- **Validation**: `go vet` + `go test` internal/app + core/commands + config + tui all green. Live TUI check in both modes is the manual follow-up (guideline #5).
+
+- **Request**: add an option to switch the in-chat spinner line
+  ("⬣ Sending request...") to a simple animated spinner in the status bar
+  (footer), next to the model, e.g.:
+  ```
+  ⬣ (kimi-code) k3-256k • high • [7%|10%]
+  ```
+  The animation must use the user's selected spinner style
+  (`internal/spinner/spinners.json` + spinner selection), just rendered in
+  the footer instead of the chat timeline. Benefits: chat timeline stays
+  clean (no transient spinner lines in scrollback/export), busy state is
+  visible at a fixed location.
+- **Localization**:
+  - In-chat spinner: `internal/app/stats.go` (`a.subs.statusMsg.Show("Sending
+    request...")`, label at ~line 680), `internal/app/submithandler.go:456`,
+    `internal/app/toolcall_footer.go:81` — all drive `subs.statusMsg`.
+  - Footer/status bar: `tui/footer.go` (`Footer`, `FooterData` with Model,
+    Provider, ThinkingLevel, context %, `SetModelBusy`) — a spinner frame
+    field would be added to `FooterData` and rendered left of the provider/
+    model block.
+  - Spinner styles/selection: `internal/spinner/spinner.go` +
+    `spinners.json` (frame sets already user-selectable).
+  - Config surface: new setting e.g. `tui.spinner_location: chat|statusbar`
+    (default `chat` = current behavior), exposed via `/config` like the other
+    TUI options.
+- **Fix plan**:
+  1. Config: add `tui.spinner_location` (enum chat|statusbar, default chat),
+     merged/cascaded like other settings + `/config` entry.
+  2. Footer: add `BusySpinner string` (current frame) to `FooterData`; render
+     it as an animated prefix next to the provider/model when busy; frame
+     advances on the existing spinner tick (reuse the statusMsg tick source
+     so both paths share timing).
+  3. App: when `statusbar` mode, suppress the in-chat `statusMsg.Show` busy
+     line and instead push spinner frames to the footer; keep in-chat for
+     non-busy status messages (errors, infos) unchanged.
+  4. Keep behavior identical for `chat` mode (default) — no visual change.
+- **Tests**:
+  - `tui/footer_test.go`: busy + spinner frame set → footer line contains the
+    frame next to the model; not busy → no frame.
+  - Filmstrip test (tui-test skill pattern): drive request events in both
+    modes — `statusbar` mode shows no "Sending request..." chat line, footer
+    carries the spinner; `chat` mode unchanged.
+  - Config: default = chat; `/config` set/get round-trip for
+    `tui.spinner_location`.
+- **Validation**: `go test ./tui/... ./internal/app/... -race`; then live TUI
+  session in both modes, watching the real terminal (guideline #5): in
+  statusbar mode the footer animates "⬣ (provider) model • …" while the chat
+  shows no spinner line; switching mode via /config takes effect on the next
+  request.
