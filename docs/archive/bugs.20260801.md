@@ -525,3 +525,47 @@ Now I understand the boundary regression precisely:
   cache-less providers never count), rendered next to CH only when non-zero,
   plus cm=N in the stats log line. Tests: TestHandleTokenStats_CacheMissCounter,
   TestBuildFooterStatParts_CacheMiss. Validated: go test ./internal/app green.
+## TUI shows unexpected repetition on normal (non-thinking) messages — RESOLVED (model-origin paraphrase loop; capture option added)
+
+- **Resolution**: review verdict — the repetition is **model-origin**, not a TUI double-draw: the repeated blocks carry casing/punctuation *variants* ("is never called" / "is NEVER called" / "is NEVER CALLED!") which only a model produces; a TUI duplication would be byte-identical. The sample is the same missed-paraphrase class fixed by the stream-loop detector rework (archived above); regression test `TestStreamLoop_TUIRepetitionSampleDetected` feeds this exact text to the production scan and it trips (internal/agentic/agent_streamloop_test.go).
+- **Capture option (entry's diagnostic fallback)**: `--capture-stream <path>` CLI flag (config `logging.capture_stream`) records the exact agent stream flow as unbuffered JSONL at the agent-output boundary (internal/app/stream_capture.go, commit 386a235) — every output event (ts/type/state/delta/text/tool fields) for replay/diff of model-origin vs TUI-origin in future reports.
+- **Tests**: detector sample test + stream_capture writer tests (record shape, ordering, open-failure).
+- **Validation**: `go vet` + `go test` internal/app + internal/agentic green; gocognit/gocyclo clean. Live replay of a captured session is the manual follow-up.
+
+- **Observed**: assistant message text renders with near-identical sentences
+  repeated back to back, with small casing/punctuation variations:
+  ```
+  ... Let me search for all callers of checkConstraints.isIgnoreableConflict is never called — the error comes from a different path.
+  Let me find all callers of checkConstraints:isIgnoreableConflict is NEVER called! The error must come from a different path. Let me find all
+  callers of checkConstraints:isIgnoreableConflict is NEVER CALLED. The error must come from a different path. Let me find all callers of
+  checkConstraints:isIgnoreableConflict is NEVER called — ... (repeats ~7× with casing variations)
+  ```
+  Two candidate root causes, must be distinguished before fixing:
+  (a) TUI/stream-accumulation bug: stream deltas are appended twice or a
+      re-render overlaps prior text (model output is actually clean).
+  (b) Genuine model loop with per-copy variations that the stream-loop
+      detector misses (see the "Stream-loop detector false positive" entry —
+      the detector rework must ALSO still catch this true-positive shape).
+- **Localization pointers**:
+  - Stream delta → chat path: `internal/app/stats.go` (delta handling),
+    `tui/` chat viewport append logic; note `tui/user_message_double_draw_test.go`
+    exists — double-draw bugs have happened in this area before.
+  - Detector side: `internal/agentic/agent_streaming.go` `streamLoopScan`
+    (the repeated unit above is ~120 bytes with per-copy casing edits).
+- **Investigation plan**:
+  1. Review the streaming TUI code end to end (delta accumulation, buffer
+     flush on tool-call boundaries, viewport append vs. re-render) for a
+     duplication path.
+  2. If the root cause cannot be found by review: add a **stream capture**
+     option (command line, e.g. `goa --capture-stream <file>`) that records
+     the exact inbound provider stream (raw deltas with event sequence) to a
+     log file, plus a replay path (e.g. `--replay-stream <file>` feeding the
+     recorded deltas through the TUI headlessly) so the exact flow can be
+     replayed and bisected deterministically.
+- **Tests**: once root cause is known — regression test at the failing layer
+  (filmstrip test for TUI duplication; streamloop test if detector-side).
+- **Validation**: reproduce with the same prompt class on LM Studio; captured
+  stream replay shows identical rendering; fix removes duplication (guideline
+  #5 — verify real terminal output).
+
+
