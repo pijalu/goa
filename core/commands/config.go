@@ -216,27 +216,27 @@ func (m *configMenu) showSubMenu(selected string) {
 
 func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 	return map[string]func(*configMenu){
-		"profile":         (*configMenu).openMajorMode,
-		"model":           (*configMenu).openActiveModel,
-		"provider":        (*configMenu).openProvider,
-		"models":          (*configMenu).openModels,
-		"mode":            (*configMenu).openExecutionMode,
-		"compression":     (*configMenu).openCompression,
-		"theme":           (*configMenu).openTheme,
-		"spinner":         (*configMenu).openSpinner,
+		"profile":          (*configMenu).openMajorMode,
+		"model":            (*configMenu).openActiveModel,
+		"provider":         (*configMenu).openProvider,
+		"models":           (*configMenu).openModels,
+		"mode":             (*configMenu).openExecutionMode,
+		"compression":      (*configMenu).openCompression,
+		"theme":            (*configMenu).openTheme,
+		"spinner":          (*configMenu).openSpinner,
 		"spinner_location": (*configMenu).openSpinnerLocation,
-		"thinking_level":  (*configMenu).openThinkingLevel,
-		"thinking_blocks": (*configMenu).toggleThinkingBlocks,
-		"show_thinking":   (*configMenu).toggleShowThinking,
-		"multi_agent":     (*configMenu).openMultiAgent,
-		"orchestrator":    (*configMenu).openOrchestrator,
-		"tools":           (*configMenu).openTools,
-		"bash":            (*configMenu).openBash,
-		"mcp":             (*configMenu).openMCP,
-		"sandbox":         (*configMenu).openSandbox,
-		"loop_detection":  (*configMenu).openLoopDetection,
-		"skills":          (*configMenu).openSkills,
-		"goals":           (*configMenu).openGoalsRetention,
+		"thinking_level":   (*configMenu).openThinkingLevel,
+		"thinking_blocks":  (*configMenu).toggleThinkingBlocks,
+		"show_thinking":    (*configMenu).toggleShowThinking,
+		"multi_agent":      (*configMenu).openMultiAgent,
+		"orchestrator":     (*configMenu).openOrchestrator,
+		"tools":            (*configMenu).openTools,
+		"bash":             (*configMenu).openBash,
+		"mcp":              (*configMenu).openMCP,
+		"sandbox":          (*configMenu).openSandbox,
+		"loop_detection":   (*configMenu).openLoopDetection,
+		"skills":           (*configMenu).openSkills,
+		"goals":            (*configMenu).openGoalsRetention,
 	}
 }
 
@@ -1034,21 +1034,24 @@ func (m *configMenu) applyLoopDetectionAction(kind, action string) {
 	m.settingLoopDetection()
 }
 
-
 // settingLoopThresholds is the /config → Loop detection → Thresholds sub-menu.
 func (m *configMenu) settingLoopThresholds() {
 	m.current = m.settingLoopThresholds
 	cfg := m.ctx.Config
+	// Zero means "use the default"; the numbers below are the effective
+	// defaults (embedded configs/default.yaml for the tool-loop thresholds,
+	// the runtime defaults documented on config.ExecutionConfig for the
+	// stream_loop_* fields).
 	items := []tui.SelectorItem{
-		{Value: "loop_warning", Label: "Loop warning threshold", Description: intLabel(cfg.Execution.LoopWarning)},
-		{Value: "loop_interrupt", Label: "Loop interrupt threshold", Description: intLabel(cfg.Execution.LoopInterrupt)},
-		{Value: "tool_repeat_total", Label: "Max tool repeats (total)", Description: intLabel(cfg.Execution.MaxToolRepeatTotal)},
-		{Value: "tool_repeat_consecutive", Label: "Max tool repeats (consecutive)", Description: intLabel(cfg.Execution.MaxToolRepeatConsecutive)},
-		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: intLabel(cfg.Execution.MaxToolCalls)},
+		{Value: "loop_warning", Label: "Loop warning threshold", Description: thresholdLabel(cfg.Execution.LoopWarning, 3)},
+		{Value: "loop_interrupt", Label: "Loop interrupt threshold", Description: thresholdLabel(cfg.Execution.LoopInterrupt, 5)},
+		{Value: "tool_repeat_total", Label: "Max tool repeats (total)", Description: disabledThresholdLabel(cfg.Execution.MaxToolRepeatTotal)},
+		{Value: "tool_repeat_consecutive", Label: "Max tool repeats (consecutive)", Description: thresholdLabel(cfg.Execution.MaxToolRepeatConsecutive, 2)},
+		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: thresholdLabel(cfg.Execution.MaxToolCalls, 3)},
 		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
-		{Value: "stream_repeats", Label: "Stream-loop stop repeats", Description: intLabel(cfg.Execution.StreamLoopMaxRepeats)},
-		{Value: "stream_strikes", Label: "Stream-loop stop strikes", Description: intLabel(cfg.Execution.StreamLoopMaxStrikes)},
-		{Value: "stream_reset_after", Label: "Stream-loop strike reset (clean msgs/tool calls)", Description: intLabel(cfg.Execution.StreamLoopResetAfter)},
+		{Value: "stream_repeats", Label: "Stream-loop stop repeats", Description: thresholdLabel(cfg.Execution.StreamLoopMaxRepeats, 5)},
+		{Value: "stream_strikes", Label: "Stream-loop stop strikes", Description: thresholdLabel(cfg.Execution.StreamLoopMaxStrikes, 3)},
+		{Value: "stream_reset_after", Label: "Stream-loop strike reset (clean msgs/tool calls)", Description: thresholdLabel(cfg.Execution.StreamLoopResetAfter, 10)},
 	}
 	m.ctx.SelectOption("Loop threshold settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -1062,6 +1065,26 @@ func (m *configMenu) settingLoopThresholds() {
 func intLabel(v int) string {
 	if v <= 0 {
 		return "default"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+// thresholdLabel renders an int loop threshold for the menu. Zero means "use
+// the default", so the effective value used is shown with a "(default)"
+// annotation instead of the bare word "default".
+func thresholdLabel(v, def int) string {
+	if v <= 0 {
+		return fmt.Sprintf("%d (default)", def)
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+// disabledThresholdLabel renders an int guard value that is OFF at zero (e.g.
+// execution.max_tool_repeat_total): zero disables the guard rather than
+// falling back to a default, so "off" is shown instead of "default".
+func disabledThresholdLabel(v int) string {
+	if v <= 0 {
+		return "off"
 	}
 	return fmt.Sprintf("%d", v)
 }

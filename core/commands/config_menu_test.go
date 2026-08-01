@@ -995,3 +995,122 @@ func TestMultiAgentLabel_CompanionModeShowsOn(t *testing.T) {
 		t.Errorf("multiAgentLabel(framework) = %q, want on", got)
 	}
 }
+
+// TestConfigMenu_LoopThresholdsShowEffectiveValues verifies the Loop detection
+// → Thresholds menu shows the effective value used (with a "(default)"
+// annotation) instead of the bare word "default" when the config value is 0.
+func TestConfigMenu_LoopThresholdsShowEffectiveValues(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("loop_detection", true)
+	sr.onSel("thresholds", true)
+
+	if sr.title != "Loop threshold settings:" {
+		t.Fatalf("title = %q, want Loop threshold settings:", sr.title)
+	}
+	want := map[string]string{
+		"loop_warning":            "3 (default)",
+		"loop_interrupt":          "5 (default)",
+		"tool_repeat_total":       "off",
+		"tool_repeat_consecutive": "2 (default)",
+		"max_tool_calls":          "3 (default)",
+		"disable_tool_budget":     "off",
+		"stream_repeats":          "5 (default)",
+		"stream_strikes":          "3 (default)",
+		"stream_reset_after":      "10 (default)",
+	}
+	if len(sr.options) != len(want) {
+		t.Fatalf("expected %d threshold options, got %d", len(want), len(sr.options))
+	}
+	for _, opt := range sr.options {
+		got, ok := want[opt.Value]
+		if !ok {
+			t.Errorf("unexpected option %q", opt.Value)
+			continue
+		}
+		if opt.Description != got {
+			t.Errorf("option %q description = %q, want %q", opt.Value, opt.Description, got)
+		}
+	}
+}
+
+// TestConfigMenu_LoopThresholdsShowConfiguredValues verifies explicitly
+// configured thresholds are shown verbatim.
+func TestConfigMenu_LoopThresholdsShowConfiguredValues(t *testing.T) {
+	cfg := &config.Config{
+		Execution: config.ExecutionConfig{
+			LoopWarning:              7,
+			LoopInterrupt:            9,
+			MaxToolRepeatTotal:       12,
+			MaxToolRepeatConsecutive: 4,
+			MaxToolCalls:             15,
+			StreamLoopMaxRepeats:     8,
+			StreamLoopMaxStrikes:     6,
+			StreamLoopResetAfter:     20,
+		},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("loop_detection", true)
+	sr.onSel("thresholds", true)
+
+	want := map[string]string{
+		"loop_warning":            "7",
+		"loop_interrupt":          "9",
+		"tool_repeat_total":       "12",
+		"tool_repeat_consecutive": "4",
+		"max_tool_calls":          "15",
+		"stream_repeats":          "8",
+		"stream_strikes":          "6",
+		"stream_reset_after":      "20",
+	}
+	for _, opt := range sr.options {
+		if got, ok := want[opt.Value]; ok && opt.Description != got {
+			t.Errorf("option %q description = %q, want %q", opt.Value, opt.Description, got)
+		}
+	}
+}
+
+func TestThresholdLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		v    int
+		def  int
+		want string
+	}{
+		{name: "unset uses default", v: 0, def: 5, want: "5 (default)"},
+		{name: "negative uses default", v: -1, def: 3, want: "3 (default)"},
+		{name: "configured value", v: 8, def: 5, want: "8"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := thresholdLabel(tt.v, tt.def); got != tt.want {
+				t.Errorf("thresholdLabel(%d, %d) = %q, want %q", tt.v, tt.def, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDisabledThresholdLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		v    int
+		want string
+	}{
+		{name: "zero means off", v: 0, want: "off"},
+		{name: "negative means off", v: -3, want: "off"},
+		{name: "configured value", v: 12, want: "12"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := disabledThresholdLabel(tt.v); got != tt.want {
+				t.Errorf("disabledThresholdLabel(%d) = %q, want %q", tt.v, got, tt.want)
+			}
+		})
+	}
+}
