@@ -1108,37 +1108,6 @@ func (m *configMenu) handleLoopThresholdSetting(selected string) {
 	})
 }
 
-// settingSkills is the /config → Skills sub-menu.
-func (m *configMenu) settingSkills() {
-	m.current = m.settingSkills
-	items := []tui.SelectorItem{
-	{Value: "execution_mode", Label: "Execution mode", Description: m.ctx.Config.Skills.ExecutionMode},
-	}
-	m.ctx.SelectOption("Skills settings:", items, "", func(selected string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.handleSkillsSetting(selected)
-	})
-}
-
-func (m *configMenu) handleSkillsSetting(selected string) {
-	switch selected {
-	case "execution_mode":
-		items := []tui.SelectorItem{
-			{Value: "inline", Label: "inline", Description: "Run skills inline in the conversation"},
-			{Value: "subagent", Label: "sub-agent", Description: "Delegate skills to sub-agents"},
-		}
-		m.ctx.SelectOption("Skill execution mode:", items, m.ctx.Config.Skills.ExecutionMode, func(v string, ok bool) {
-			if ok && v != "" {
-				m.applySet("skills.execution_mode", v)
-			}
-			m.settingSkills()
-		})
-	}
-}
-
 // applySet invokes applyConfigSet and lets it surface errors to the user via
 // the output buffer. The return value is always nil in practice, so we do not
 // propagate it inside async callbacks.

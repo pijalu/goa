@@ -110,6 +110,9 @@ type SkillSummary struct {
 	Category         string
 	FilePath         string
 	RequiresSubAgent bool
+	// Source is the origin of the skill: "embedded" for compiled-in skills,
+	// "file" for skills loaded from a directory (home/project/plugin dirs).
+	Source string
 }
 
 const (
@@ -386,6 +389,27 @@ func (r *SkillRegistry) Get(name string) (*Skill, bool) {
 	return s, ok
 }
 
+// SourceOf reports the origin of a skill by name, scanning candidate
+// locations (embedded FS + configured dirs) WITHOUT the enabled/disabled gate
+// so disabled skills are still found. It is used to route skill toggles to
+// the right config layer (embedded → global/home, file → project). Returns
+// ("embedded", true) for compiled-in skills, ("file", true) for directory
+// skills, and ("", false) when the name matches no discoverable skill.
+func (r *SkillRegistry) SourceOf(name string) (string, bool) {
+	if r.embedFS != nil {
+		path := filepath.Join(name, "SKILL.md")
+		if _, err := fs.Stat(r.embedFS, path); err == nil {
+			return "embedded", true
+		}
+	}
+	for _, dir := range r.dirs {
+		if _, err := os.Stat(filepath.Join(dir, name, "SKILL.md")); err == nil {
+			return "file", true
+		}
+	}
+	return "", false
+}
+
 // List returns summaries of all registered skills.
 func (r *SkillRegistry) List() []SkillSummary {
 	var summaries []SkillSummary
@@ -397,6 +421,7 @@ func (r *SkillRegistry) List() []SkillSummary {
 			Category:         categoryOrDefault(s.Meta.Category),
 			FilePath:         s.FilePath,
 			RequiresSubAgent: r.hasAnySubSkill(s.Meta.Name),
+			Source:           s.Source,
 		})
 	}
 	return summaries

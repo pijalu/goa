@@ -577,8 +577,21 @@ func TestUpdateCompletionsWithParams(t *testing.T) {
 
 func TestSkillSubcommandCompletions_Empty(t *testing.T) {
 	comps := skillSubcommandCompletions("")
-	if len(comps) != 2 {
-		t.Fatalf("expected 2 completions, got %d", len(comps))
+	if len(comps) != 4 {
+		t.Fatalf("expected 4 completions, got %d", len(comps))
+	}
+}
+
+func TestSkillSubcommandCompletions_IncludesEnableDisable(t *testing.T) {
+	comps := skillSubcommandCompletions("")
+	want := map[string]bool{"run": false, "show": false, "enable": false, "disable": false}
+	for _, c := range comps {
+		want[c.Value] = true
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("missing subcommand completion %q in %+v", name, comps)
+		}
 	}
 }
 

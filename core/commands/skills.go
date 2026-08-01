@@ -29,22 +29,33 @@ func (c *SkillsCommand) LongHelp() string {
 func (c *SkillsCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
 	parts := strings.Split(prefix, ":")
 
-	// Level 1: propose subcommands (run, show)
+	// Level 1: propose subcommands (run, show, enable, disable)
 	if len(parts) <= 1 {
 		return skillSubcommandCompletions(parts[0])
 	}
 
-	// Level 2+: propose skill names for run:/show:
-	if parts[0] == "run" || parts[0] == "show" {
+	// Level 2+: propose skill names for run:/show:/enable:/disable:
+	switch parts[0] {
+	case "run", "show":
 		return skillNameCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
+	case "enable":
+		return skillEnableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
+	case "disable":
+		return skillDisableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
 	}
 	return nil
 }
 
-// skillSubcommandCompletions proposes the run/show subcommands for completion.
+// skillSubcommandCompletions proposes the run/show/enable/disable subcommands
+// for completion.
 func skillSubcommandCompletions(prefix string) []core.ArgCompletion {
 	var comps []core.ArgCompletion
-	subcmds := []struct{ val, desc string }{{"run", "execute a skill"}, {"show", "show skill details"}}
+	subcmds := []struct{ val, desc string }{
+		{"run", "execute a skill"},
+		{"show", "show skill details"},
+		{"enable", "enable a disabled skill"},
+		{"disable", "disable an enabled skill"},
+	}
 	for _, v := range subcmds {
 		if prefix == "" || strings.HasPrefix(v.val, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: v.val, Description: v.desc})
@@ -53,13 +64,60 @@ func skillSubcommandCompletions(prefix string) []core.ArgCompletion {
 	return comps
 }
 
+// skillEnableCompletions proposes disabled skills for /skill:enable. Disabled
+// skills are not loaded in the registry, so candidates come from the config's
+// disabled list.
+func skillEnableCompletions(subcmd, searchPrefix string, ctx core.Context) []core.ArgCompletion {
+	var names []string
+	if ctx.Config != nil {
+		names = append(names, ctx.Config.Skills.Disabled...)
+	}
+	return skillNameCompletionsFromNames(subcmd, searchPrefix, names, ctx.SkillRegistry)
+}
+
+// skillDisableCompletions proposes enabled skills for /skill:disable.
+func skillDisableCompletions(subcmd, searchPrefix string, ctx core.Context) []core.ArgCompletion {
+	return skillNameCompletionsFiltered(subcmd, searchPrefix, ctx.SkillRegistry, func(s skills.SkillSummary) bool {
+		return ctx.Config == nil || skillEnabled(ctx.Config, s.Name)
+	})
+}
+
+// skillNameCompletionsFromNames builds completions for the given candidate
+// names (used when the candidates are not loaded in the registry, e.g.
+// disabled skills).
+func skillNameCompletionsFromNames(subcmd, searchPrefix string, names []string, reg core.SkillRegistry) []core.ArgCompletion {
+	var comps []core.ArgCompletion
+	for _, name := range names {
+		if searchPrefix != "" && !strings.HasPrefix(name, searchPrefix) {
+			continue
+		}
+		desc := ""
+		if reg != nil {
+			if skill, ok := reg.Get(name); ok {
+				desc = skill.Meta.Description
+			}
+		}
+		comps = append(comps, core.ArgCompletion{Value: subcmd + ":" + name, Description: desc})
+	}
+	return comps
+}
+
 // skillNameCompletions proposes skill names matching the search prefix.
 func skillNameCompletions(subcmd, searchPrefix string, reg core.SkillRegistry) []core.ArgCompletion {
+	return skillNameCompletionsFiltered(subcmd, searchPrefix, reg, nil)
+}
+
+// skillNameCompletionsFiltered proposes skill names matching the search prefix
+// and the include predicate (nil includes all).
+func skillNameCompletionsFiltered(subcmd, searchPrefix string, reg core.SkillRegistry, include func(skills.SkillSummary) bool) []core.ArgCompletion {
 	if reg == nil {
 		return nil
 	}
 	var comps []core.ArgCompletion
 	for _, s := range reg.List() {
+		if include != nil && !include(s) {
+			continue
+		}
 		if searchPrefix != "" && !strings.HasPrefix(s.Name, searchPrefix) {
 			continue
 		}
@@ -84,9 +142,75 @@ func (c *SkillsCommand) Run(ctx core.Context, args []string) error {
 		return runSkill(ctx, ctx.SkillRegistry, ctx.SubmitToAgent, args[1:])
 	case "show":
 		return showSkill(ctx, ctx.SkillRegistry, args[1:])
+	case "enable":
+		return enableSkill(ctx, args[1:])
+	case "disable":
+		return disableSkill(ctx, args[1:])
 	default:
-		return fmt.Errorf("unknown skill subcommand: %s (use 'run' or 'show')", args[0])
+		return fmt.Errorf("unknown skill subcommand: %s (use 'run', 'show', 'enable', or 'disable')", args[0])
 	}
+}
+
+// enableSkill enables a skill and persists the change: embedded skills are
+// global (home config), other loaded skills are per-project (project config).
+func enableSkill(ctx core.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: /skill:enable <name>")
+	}
+	name := args[0]
+	// A disabled skill is not loaded in the registry; verify it exists
+	// somewhere so a typo does not silently write config.
+	if !skillExistsSomewhere(ctx, name) {
+		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
+		return nil
+	}
+	if ctx.Config != nil && skillEnabled(ctx.Config, name) {
+		writeFmt(ctx, "Skill %s is already enabled.\n", name)
+		return nil
+	}
+	if err := setSkillEnabledState(ctx, name, true); err != nil {
+		return err
+	}
+	writeFmt(ctx, "Enabled skill %s.\n", name)
+	return nil
+}
+
+// disableSkill disables a skill and persists the change: embedded skills are
+// global (home config), other loaded skills are per-project (project config).
+func disableSkill(ctx core.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: /skill:disable <name>")
+	}
+	name := args[0]
+	if !skillExistsSomewhere(ctx, name) {
+		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
+		return nil
+	}
+	if ctx.Config != nil && !skillEnabled(ctx.Config, name) {
+		writeFmt(ctx, "Skill %s is already disabled.\n", name)
+		return nil
+	}
+	if err := setSkillEnabledState(ctx, name, false); err != nil {
+		return err
+	}
+	writeFmt(ctx, "Disabled skill %s.\n", name)
+	return nil
+}
+
+// skillExistsSomewhere reports whether the named skill is loaded or
+// discoverable (disabled skills are not loaded but still exist on disk).
+func skillExistsSomewhere(ctx core.Context, name string) bool {
+	if ctx.SkillRegistry == nil {
+		return false
+	}
+	if _, ok := ctx.SkillRegistry.Get(name); ok {
+		return true
+	}
+	if reg, ok := ctx.SkillRegistry.(*skills.SkillRegistry); ok {
+		_, ok := reg.SourceOf(name)
+		return ok
+	}
+	return false
 }
 
 // listSkills displays all available skills.

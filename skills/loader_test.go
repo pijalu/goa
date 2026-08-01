@@ -125,6 +125,72 @@ func TestSkillRegistryGetAndList(t *testing.T) {
 	}
 }
 
+// TestSkillRegistrySourceOf verifies SourceOf resolves the origin of a skill
+// even when the skill is disabled (not loaded but still discoverable on disk).
+func TestSkillRegistrySourceOf(t *testing.T) {
+	reg := NewSkillRegistry(nil)
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if src, ok := reg.SourceOf("refactor"); !ok || src != "embedded" {
+		t.Errorf("SourceOf(refactor) = %q, %v; want embedded, true", src, ok)
+	}
+	if src, ok := reg.SourceOf("nonexistent"); ok {
+		t.Errorf("SourceOf(nonexistent) = %q, %v; want '', false", src, ok)
+	}
+
+	// File-based skill in a temp dir.
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "local-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: local-skill\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg2 := NewSkillRegistry([]string{dir})
+	reg2.SetEmbeddedFS(EmbeddedSkillsFS)
+	if err := reg2.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if src, ok := reg2.SourceOf("local-skill"); !ok || src != "file" {
+		t.Errorf("SourceOf(local-skill) = %q, %v; want file, true", src, ok)
+	}
+
+	// SourceOf still finds a DISABLED skill: it is not loaded but on disk.
+	reg3 := NewSkillRegistry([]string{dir})
+	reg3.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg3.SetDisabled([]string{"local-skill"})
+	if err := reg3.LoadAll(); err != nil {
+		t.Fatalf("LoadAll with disabled: %v", err)
+	}
+	if _, ok := reg3.Get("local-skill"); ok {
+		t.Fatal("disabled skill should not be loaded")
+	}
+	if src, ok := reg3.SourceOf("local-skill"); !ok || src != "file" {
+		t.Errorf("SourceOf(disabled local-skill) = %q, %v; want file, true", src, ok)
+	}
+	if src, ok := reg3.SourceOf("refactor"); !ok || src != "embedded" {
+		t.Errorf("SourceOf(refactor) = %q, %v; want embedded, true", src, ok)
+	}
+}
+
+// TestSkillRegistryListSource verifies List summaries carry the skill origin
+// so callers can separate embedded (global) from file-based (local) skills.
+func TestSkillRegistryListSource(t *testing.T) {
+	reg := NewSkillRegistry(nil)
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, s := range reg.List() {
+		if s.Source != "embedded" {
+			t.Errorf("skill %s Source = %q, want embedded", s.Name, s.Source)
+		}
+	}
+}
+
 // TestSkillRegistrySetDisabled verifies skills can be disabled via
 // configuration for ALL sources: disabled built-ins and disabled file-based
 // skills are never registered (prompt listing, banner, run_skill enum all read

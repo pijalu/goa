@@ -257,6 +257,7 @@ func (f *fakeSkillRegistry) List() []skills.SkillSummary {
 			Name:        s.Meta.Name,
 			Description: s.Meta.Description,
 			Inline:      s.Meta.Inline,
+			Source:      s.Source,
 		})
 	}
 	return out
