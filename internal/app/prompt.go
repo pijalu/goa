@@ -5,6 +5,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -293,6 +294,32 @@ Prefer dedicated tools over bash.
 </tool_usage>`
 }
 
+// promptContextBanner formats the startup info-bubble line reporting the
+// fixed per-request context cost: system prompt size plus the total tool
+// schema size (the JSON sent with every request), each with an estimated
+// token count (4 chars/token, matching systemPromptBudget).
+func promptContextBanner(systemPrompt string, agenticTools []agentic.Tool) string {
+	toolBytes := 0
+	for _, t := range agenticTools {
+		toolBytes += toolSchemaBytes(t)
+	}
+	const charsPerToken = 4
+	return fmt.Sprintf("⟡ Prompt context: system %d chars (~%d tok) + %d tools %d chars (~%d tok)",
+		len(systemPrompt), len(systemPrompt)/charsPerToken,
+		len(agenticTools), toolBytes, toolBytes/charsPerToken)
+}
+
+// toolSchemaBytes returns the serialized size of a tool's schema as sent to
+// the provider. Unmarshalable schemas count as zero (never happens with
+// built-in tools).
+func toolSchemaBytes(t agentic.Tool) int {
+	b, err := json.Marshal(t.Schema())
+	if err != nil {
+		return 0
+	}
+	return len(b)
+}
+
 // showStartupBanner displays startup information in the chat viewport:
 // what context file was loaded (if any) and how many skills are available.
 func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
@@ -421,6 +448,11 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 		subs.tuiEngine.RequestRender()
 		return
 	}
+
+	// Prompt-size info bubble (same style as the context/skills banners):
+	// report the assembled context cost of every request — system prompt +
+	// tool schemas — so bloat is visible at each session start/reload.
+	chat.AddSystemMessage(promptContextBanner(systemPrompt, agenticTools))
 
 	// Wire main agent into the foreground orchestrator
 	if subs.foregroundOrch != nil {

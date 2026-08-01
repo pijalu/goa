@@ -5,6 +5,8 @@
 package app
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/memory"
 	"github.com/pijalu/goa/prompts"
@@ -30,6 +33,27 @@ func newTestSubsystems(dir string) *subsystems {
 		modeRegistry:  modeReg,
 		skillRegistry: skills.NewSkillRegistry(nil),
 		promptReg:     promptReg,
+	}
+}
+
+// TestPromptContextBanner verifies the startup info-bubble format reporting
+// per-request context cost (system prompt + tool schemas, chars + est.
+// tokens). The banner is the user's window into prompt bloat at every
+// session start/reload.
+func TestPromptContextBanner(t *testing.T) {
+	systemPrompt := strings.Repeat("a", 800)
+	tools := []agentic.Tool{&mockTool{name: "one"}, &mockTool{name: "two"}}
+	one, err := json.Marshal(agentic.ToolSchema{Name: "one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolBytes := 2 * len(one)
+
+	got := promptContextBanner(systemPrompt, tools)
+	want := fmt.Sprintf("⟡ Prompt context: system 800 chars (~200 tok) + 2 tools %d chars (~%d tok)",
+		toolBytes, toolBytes/4)
+	if got != want {
+		t.Errorf("promptContextBanner = %q, want %q", got, want)
 	}
 }
 
