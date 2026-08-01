@@ -94,8 +94,8 @@ Compression rules applied everywhere:
 
 ### Phase 0 — Baseline & branch (no code changes)
 - [x] 0.1 Create branch `feature/recontext`.
-- [ ] 0.2 Write a measurement test `internal/app/prompt_size_test.go` (permanent, see Phase 6) capturing: mode-body sizes, assembled system prompt size for a fixture subsystem, per-tool schema JSON sizes, skill description sizes. Record before-numbers in the plan/test output.
-- [ ] 0.3 Build a fresh binary and dump the real system prompt (`/prompt` command exists — `core/commands/transparency.go:161`) to cross-check the source-tree estimate.
+- [x] 0.2 Baseline recorded via throwaway measurement (later formalized as the Phase 6 guard tests).
+- [x] 0.3 SKIPPED with rationale: unit-level measurement reproduces buildSystemPrompt deterministically; the stale-binary question does not affect source-tree changes.
 
 ### Phase 1 — T1: compress `prompts/goal/goal.md` (biggest win, highest care)
 - [x] 1.1 Rewrite goal.md dense/telegraphic: 6,822 → 3,421 chars effective (49.9%); all 23 behavioral rules preserved.
@@ -103,57 +103,57 @@ Compression rules applied everywhere:
 - [x] 1.3 Tests green: prompts, tools/goal, core, internal/agentic.
 
 ### Phase 1b — S1: SPDX-never-seen-by-model
-- [ ] 1b.1 `internal/context.go:findContextFile` — strip leading HTML comment block(s) from context file Content (fixes live system-prompt leak).
-- [ ] 1b.2 `docs/docs.go:Get` — strip leading comment before serving.
-- [ ] 1b.3 `tools/common/docloader.go:ReadDoc` — strip leading comment.
-- [ ] 1b.4 Guard tests: context strip fixture; docs.Get no-SPDX; ReadDoc no-SPDX; broad "no SPDX in any mode body / tool description / goal description / assembled system prompt" test.
+- [x] 1b.1 `internal/context.go:findContextFile` — strip leading HTML comment block(s) from context file Content (fixes live system-prompt leak).
+- [x] 1b.2 `docs/docs.go:Get` — strip leading comment before serving.
+- [x] 1b.3 `tools/common/docloader.go:ReadDoc` — strip leading comment.
+- [x] 1b.4 Guard tests: context strip fixture; docs.Get no-SPDX; ReadDoc no-SPDX; broad "no SPDX in any mode body / tool description / goal description / assembled system prompt" test.
 
 ### Phase 1c — S2: config enable/disable for embedded skills
-- [ ] 1c.1 Add `skills.disabled: []string` to config (default empty; document in docs/SKILLS.md if exists).
-- [ ] 1c.2 Filter at skill-registry load: disabled embedded skills not registered → absent from prompt listing, banner, run_skill enum.
-- [ ] 1c.3 Tests: disabled skill not listed/registered; default keeps all.
+- [x] 1c.1 Add `skills.disabled: []string` to config (default empty; document in docs/SKILLS.md if exists).
+- [x] 1c.2 Filter at skill-registry load: disabled embedded skills not registered → absent from prompt listing, banner, run_skill enum.
+- [x] 1c.3 Tests: disabled skill not listed/registered; default keeps all.
 
 ### Phase 1d — S3: startup prompt-size display
-- [ ] 1d.1 In `startAgentSession`, compute system prompt size + total tool-schema JSON size (chars + est. tokens at 4 chars/tok) and add a `⟡` startup banner line.
-- [ ] 1d.2 Verify it fires on first start, new session, and reload (all go through `startAgentSession`).
-- [ ] 1d.3 Test: banner line format via existing prompt_test fixtures.
+- [x] 1d.1 In `startAgentSession`, compute system prompt size + total tool-schema JSON size (chars + est. tokens at 4 chars/tok) and add a `⟡` startup banner line.
+- [x] 1d.2 Verify it fires on first start, new session, and reload (all go through `startAgentSession`).
+- [x] 1d.3 Test: banner line format via existing prompt_test fixtures.
 
 ### Phase 2 — T3/T4/T5: tool Schema descriptions
-- [ ] 2.1 `tools/python.go`: compress description; keep: gpython, Py3.4 subset, jail-confined, prefer-over-bash-python3 guidance, stdlib boundary.
-- [ ] 2.2 `tools/lsp.go`: compress; keep: 4 ops, multi-language, prefer-over-grep-for-symbols.
-- [ ] 2.3 Trim verbose param descriptions in editfile/search/ask_user/pty_exec/bgexec/webfetch/task_outcome (keep enum semantics and behavioral notes like edit's `operation` meanings and bash's cwd note untouched).
-- [ ] 2.4 `go test ./tools/...` + `core/commands/docs_test.go` (short-doc coupling check).
+- [x] 2.1 `tools/python.go`: compress description; keep: gpython, Py3.4 subset, jail-confined, prefer-over-bash-python3 guidance, stdlib boundary.
+- [x] 2.2 `tools/lsp.go`: compress; keep: 4 ops, multi-language, prefer-over-grep-for-symbols.
+- [x] 2.3 Trim verbose param descriptions in editfile/search/ask_user/pty_exec/bgexec/webfetch/task_outcome (keep enum semantics and behavioral notes like edit's `operation` meanings and bash's cwd note untouched).
+- [x] 2.4 `go test ./tools/...` + `core/commands/docs_test.go` (short-doc coupling check).
 
 ### Phase 3 — T2: skill descriptions
-- [ ] 3.1 Shorten `description:` frontmatter in tui-test, go-debug, golang-check, qa-e2e SKILL.md files to ≤ ~150 chars, keeping trigger keywords ("TUI", "dlv", "gocognit/gocyclo/staticcheck", "QA e2e"); move "Use when…" detail into the skill body where not already present.
-- [ ] 3.2 Quick pass over built-in `skills/*/SKILL.md` descriptions (already ≤ 90 chars; only trim outliers).
-- [ ] 3.3 `go test ./skills/...` and verify `/skills` banner rendering unchanged.
+- [x] 3.1 Shorten `description:` frontmatter in tui-test, go-debug, golang-check, qa-e2e SKILL.md files to ≤ ~150 chars, keeping trigger keywords ("TUI", "dlv", "gocognit/gocyclo/staticcheck", "QA e2e"); move "Use when…" detail into the skill body where not already present.
+- [x] 3.2 Quick pass over built-in `skills/*/SKILL.md` descriptions (already ≤ 90 chars; only trim outliers).
+- [x] 3.3 `go test ./skills/...` and verify `/skills` banner rendering unchanged.
 
 ### Phase 4 — T6: mode bodies
-- [ ] 4.1 Compress `coding-posture/definition.md` (keep all 4 Always rules, core loop, all 11 modes with their discriminating rule each — one line each).
-- [ ] 4.2 Same pass on `coder`, `planner`, `reviewer` definitions.
-- [ ] 4.3 `go test ./prompts/... ./core/...` (mode registry tests).
+- [x] 4.1 Compress `coding-posture/definition.md` (keep all 4 Always rules, core loop, all 11 modes with their discriminating rule each — one line each).
+- [x] 4.2 Same pass on `coder`, `planner`, `reviewer` definitions.
+- [x] 4.3 `go test ./prompts/... ./core/...` (mode registry tests).
 
 ### Phase 5 — T7/T8: project context + self-doc
-- [ ] 5.1 Trim `AGENTS.md` redundancies (merge duplicated testing/complexity lines; keep all 6 Hard Rules, module/architecture facts, coverage targets, conventions).
-- [ ] 5.2 Micro-trim `buildSelfDocSection` wording.
-- [ ] 5.3 Re-run prompt tests.
+- [x] 5.1 Trim `AGENTS.md` redundancies (merge duplicated testing/complexity lines; keep all 6 Hard Rules, module/architecture facts, coverage targets, conventions).
+- [x] 5.2 Micro-trim `buildSelfDocSection` wording.
+- [x] 5.3 Re-run prompt tests.
 
 ### Phase 6 — Guard test (Hard Rule 3: every fix needs a test that would have caught it)
-- [ ] 6.1 **Build-time check only** (`go test`): hard ceilings over *embedded* assets — goal description ≤ 3,600 chars; each tool description ≤ 500 chars (goal excepted); each *built-in* skill description ≤ 200 chars (embedded FS only, never user/project dirs); each mode body ≤ 3,000 chars; total default-tool schema JSON ≤ 22 KB. Fails CI on future bloat.
-- [ ] 6.2 **No runtime enforcement**: goa must never stop working because context grew — users can add skills that bloat context by design; the existing runtime `systemPromptBudget` already degrades gracefully (drops low-priority sections, never errors). Do not add runtime rejection.
-- [ ] 6.3 Test style follows repo patterns (table-driven, <100ms).
+- [x] 6.1 **Build-time check only** (`go test`): hard ceilings over *embedded* assets — goal description ≤ 3,600 chars; each tool description ≤ 500 chars (goal excepted); each *built-in* skill description ≤ 200 chars (embedded FS only, never user/project dirs); each mode body ≤ 3,000 chars; total default-tool schema JSON ≤ 22 KB. Fails CI on future bloat.
+- [x] 6.2 **No runtime enforcement**: goa must never stop working because context grew — users can add skills that bloat context by design; the existing runtime `systemPromptBudget` already degrades gracefully (drops low-priority sections, never errors). Do not add runtime rejection.
+- [x] 6.3 Test style follows repo patterns (table-driven, <100ms).
 
 ### Phase 7 — Verification gate (repo standard)
-- [ ] 7.1 `go vet ./...`
-- [ ] 7.2 `go test -count=1 -race -cover ./...`
-- [ ] 7.3 `gocognit -over 15` + `gocyclo -over 12` (no Go logic changes expected, but run anyway)
-- [ ] 7.4 Build fresh binary; dump `/prompt`; produce before/after table (system prompt, tool schemas, total tokens).
-- [ ] 7.5 Optional: `qa-e2e` skill smoke run against local LM to confirm no behavioral regression in tool usage.
+- [x] 7.1 `go vet ./...`
+- [x] 7.2 `go test -count=1 -race -cover ./...`
+- [x] 7.3 `gocognit -over 15` + `gocyclo -over 12` (no Go logic changes expected, but run anyway)
+- [x] 7.4 Build fresh binary; dump `/prompt`; produce before/after table (system prompt, tool schemas, total tokens).
+- [x] 7.5 Optional: `qa-e2e` skill smoke run against local LM to confirm no behavioral regression in tool usage.
 
 ### Phase 8 — Commit(s)
-- [ ] 8.1 Conventional commits, one per phase group: `refactor(prompts): compress goal tool description`, `refactor(tools): trim schema descriptions`, `refactor(skills): shorten skill descriptions`, `refactor(prompts): compress mode + project context`, `test(app): add prompt-size guard ceilings`.
-- [ ] 8.2 Update this plan's checkboxes; summary PR-style comment with before/after numbers.
+- [x] 8.1 Conventional commits, one per phase group: `refactor(prompts): compress goal tool description`, `refactor(tools): trim schema descriptions`, `refactor(skills): shorten skill descriptions`, `refactor(prompts): compress mode + project context`, `test(app): add prompt-size guard ceilings`.
+- [x] 8.2 Update this plan's checkboxes; summary PR-style comment with before/after numbers.
 
 ## 4. Explicit non-goals (unless you say otherwise)
 
@@ -172,8 +172,26 @@ Compression rules applied everywhere:
 | Hidden test coupling to exact strings | Grep for assertions before each edit; docs_test.go already identified. |
 | Size regressions later | Phase 6 guard test with hard ceilings. |
 
-## 6. Success criteria
+## 6. Success criteria — FINAL RESULTS (feature/recontext)
 
-- Fixed per-request overhead reduced ≥ 20% (~8,400 → ≤ ~6,600 tokens) with zero dropped rules.
-- All gates green: vet, race+cover tests, gocognit/gocyclo.
-- Guard test prevents regression.
+| Metric | Before | After | Delta |
+|--------|-------:|------:|------:|
+| Tool schemas (default set incl. goal) | 22,770 B | 18,897 B | **−17.0%** |
+| System prompt (this project) | 8,826 chars | 7,809 chars | **−11.5%** |
+| **Total fixed overhead/request** | **31,596 (~7,900 tok)** | **26,706 (~6,675 tok)** | **−15.5% (−1,225 tok)** |
+| goal tool description | 6,822 | 3,421 | −49.9% |
+| Longest skill description | 416 | 150 | −64% |
+| SPDX/MD comments in model-facing text | 5 leak paths | 0 (fence-aware strip + guards) | −100% |
+
+The ≥20% estimate was optimistic: mode bodies and AGENTS.md proved already
+lean (~300 chars combined). Dominant wins delivered: goal.md −50%, all
+comment leaks eliminated, tool schemas −17%, skills −700 chars/request.
+
+Delivered beyond the original scope: S1 (comment stripping everywhere +
+fence-aware embeddoc.StripHTMLComments), S2 (`skills.disabled` config),
+S3 (startup `⟡ Prompt context:` info bubble), build-time size-ceiling guards
+(no runtime enforcement), themeHex default-fallback fix (pre-existing main
+failure), bugs.md triage entries for the follow-up bugs goal.
+
+- All gates green: `go vet ./...`, full `go test -count=1 -race -cover ./...`,
+  gocognit/gocyclo within budget on new code (commentStripper split).
