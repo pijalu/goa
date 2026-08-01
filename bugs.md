@@ -594,3 +594,44 @@ Now I understand the boundary regression precisely:
 - **Validation**: `go test ./internal/agentic -run StreamLoop -race -count=1`;
   live LM Studio session: forced paraphrase loop caught, exploratory
   reasoning unstopped (guideline #5).
+
+## Context compression not triggering at 92.9% (auto) — OPEN
+
+- **Observed**: footer shows `CH99.1% TC:290 92.9%/262.1K (auto)` — context
+  at 92.9% of a 262.1K window, cache 99.1% hot, compression mode (auto), yet
+  no (micro) compression has fired. Expected: some micro compression well
+  before the wall.
+- **Hypotheses to review** (in order):
+  1. **Soft tier disabled by default**: `CompressionThresholds.SoftPercent`
+     defaults to 0 = disabled (`internal/agentic/compression_thresholds.go`),
+     so zero-LLM micro maintenance (micro compaction, tool elision) can NEVER
+     fire unless explicitly configured. "(auto)" in the footer
+     (`internal/app/stats.go:1062`) labels only the main strategy — it tells
+     the user nothing about the soft tier being off. Likely the primary
+     issue: user-visible expectation of "micro compression in auto mode"
+     vs. soft tier defaulting off.
+  2. **Main trigger not firing above its level**: trigger default 90 (app
+     embedded config sets 80). At 92.9% it MUST have fired unless: the cache
+     gate deferred it — but `deferralCeiling()` (hard 95 − 10 = 85) forbids
+     deferral above 85%, and CH99.1% shows the cache-hot condition that
+     previously suppressed compression up to a provider rejection (the exact
+     incident documented in `deferralCeiling`'s comment). Verify
+     `proactiveTierLocked` + `cacheAssumedColdForProactive` honor the ceiling
+     for THIS provider, and that usage% used by the gate matches the footer's
+     92.9% (same accounting: after local-window re-detection on k3-256k,
+     `maybeRefreshContextWindow` may shift MaxTokens mid-session).
+  3. **Trigger only evaluated at turn boundaries**: compression gates run
+     pre-turn/post-turn; a long single turn can climb past the trigger
+     unchecked. Confirm where the gate is invoked in the streaming loop.
+- **Fix plan**: reproduce with a scripted session driving usage past the
+  trigger (small window, verbose tool output), instrument/log each gate
+  decision (soft/trigger/cache-deferral); fix per finding: enable a sane
+  soft-tier default in (auto) mode OR fix the deferral/usage accounting;
+  make the footer label reflect what will actually fire (e.g. show
+  `auto+micro` vs `auto`).
+- **Tests**: gate-decision tests at 80/85/90/93% with cache hot and cold,
+  asserting micro fires at soft, main fires at trigger, and no deferral past
+  deferralCeiling (some exist: agent_compression_cache_gate_test.go — extend
+  to the 92.9% + cache-hot + auto case).
+- **Validation**: scripted over-trigger session compresses before the wall;
+  footer reflects reality (guideline #5).
