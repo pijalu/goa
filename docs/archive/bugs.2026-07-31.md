@@ -7,10 +7,12 @@ Copyright (C) 2026 Pierre Poissinger
 # Bug/Feature Tracking — Archive 2026-07-31
 
 E2E Feature Validation Series (LM Studio) — all bugs found and fixed during
-the T1–T4 validation runs on fake projects under /tmp. Approach + results:
-`bugs.md` (repo root), `e2e/README.md`, `.agents/PLAN-e2e-feature-validation.md`.
+the T1–T4 validation runs on fake projects under /tmp. The full series record
+(approach, results, findings, remaining work) is archived in this file below
+(moved from bugs.md 2026-08-01). Also see `e2e/README.md` and
+`.agents/PLAN-e2e-feature-validation.md`.
 Every entry below was fixed, covered by tests, and validated by the e2e
-scenario reruns (evidence paths in each entry and in bugs.md Test Results).
+scenario reruns (evidence paths in each entry and in the series record).
 
 ### Bug 1 — headless `--orchestrate` exits instantly, killing the run (race) — FIXED
 - **Repro**: seed a run (see approach), `goa --orchestrate <run-id> --yes --timeout 20m`.
@@ -136,3 +138,163 @@ scenario reruns (evidence paths in each entry and in bugs.md Test Results).
 - **Validation**: updated assertions re-checked against the run-t2c
   artifacts (T2a.3 passes with real session evidence); scripts pass
   `bash -n`.
+
+---
+
+# E2E Feature Validation Series — full record (approach, results, findings, remaining work)
+
+Moved from bugs.md 2026-08-01 when all findings were fixed/closed and remaining work completed.
+
+# E2E Feature Validation Series (LM Studio, 2026-07-30)
+
+## Test Approach — how to run (reusable)
+
+Full method: `e2e/README.md`. Plan: `.agents/PLAN-e2e-feature-validation.md`.
+
+1. Prereqs: LM Studio at `http://localhost:1234/v1` with models
+   `qwen/qwen3.5-9b` (orchestrator/main), `qwythos-9b-v2` (reviewer/companion),
+   `google/gemma-4-e4b` (coder). `jq`, `python3`, Go.
+2. Run everything (build, model warmup, T1–T4, summary):
+   `e2e/run_all.sh` — artifacts land in `/tmp/goa-e2e/run-<ts>/`
+   (`/tmp/goa-e2e/last` symlink). Expect 1h+ on local models.
+3. Single scenario: `E2E_ROOT=/tmp/goa-e2e/tX bash e2e/tN_*.sh`.
+
+Key techniques (all in `e2e/lib.sh`):
+- **Fake projects**: per-scenario `/tmp/goa-e2e/*/proj-*` with project-level
+  `.goa/config.yaml` pinning provider lmstudio + 3 models (thinking off),
+  `.goa/state.json` seeds, and isolated `.goa/orchestrator|goals` state.
+- **Seeded headless orchestration**: `goa --orchestrate <run-id>` only
+  *resumes*; seeding `.goa/orchestrator/<run-id>/events.jsonl` with one
+  `run_started` event makes the resume path drive a full run headless.
+- **Seeded companion**: `.goa/state.json` with
+  `minor_mode=companion, agent_driven_enabled=true` restores agent-driven
+  companion at startup. Framework mode (`/companion:framework`) is
+  in-memory-only → driven via `e2e/ptydrive` (Go PTY driver; waits on file
+  conditions, not ANSI scraping).
+- **Machine-checked validation**: `jq` over `events.jsonl` (role→model
+  mapping, ≥2 distinct agents messaging, orchestrator `delegate` tool calls,
+  `run_finished`), goal lifecycle over `.goa/goals/goal-events.jsonl`,
+  companion over output + `.goa/state.json` `companion_history`, plus real
+  task artifacts (file contents). Exit codes are advisory only.
+- **Slow-model discipline**: warmup each model first (JIT load), timeouts
+  10–25m, tiny prompts, thinking off. Slowness is expected, not failure.
+
+## Test Results
+
+| Scenario | Result | Evidence |
+|---|---|---|
+| T1 orchestration (qwen/qwythos/gemma) | PASS 9/9 (+F1 note) | `/tmp/goa-e2e/run-t1e/` (2026-07-31 rerun, same script revision + binary as T2–T4; confirms the lib.sh hermetic-config change doesn't regress orchestration) — orchestrator=qwen, reviewer=qwythos, coder=gemma all correct; 5 distinct agents; 4 `delegate` calls; `run_finished`; resume continued the same run (no fork); artifact `answer.txt=BLUE`. Original evidence: `/tmp/goa-e2e/run-t1d/` (2026-07-30, 10/10) |
+| T2 companion (qwen+qwythos) | PASS 5/5 | `/tmp/goa-e2e/run-t2d/` (2026-07-31, fixed script + fresh binary; results.tsv records `T2 PASS agent-driven + framework companion verified`) — T2a: real `request_review` tool call by qwen; qwythos review generated and delivered in-session as `[Message from companion]` (sessions/*.jsonl); artifact `color.txt=GREEN`. T2b: framework companion reviewed the turn, visible in TUI stream; artifact `sky.txt=AZURE`. The 2026-07-30 T2a FAIL was a stale test binary (built 21:59, registration fix committed 22:29) — see F5 correction and archived Bug 7. First fresh-binary rerun: `/tmp/goa-e2e/run-t2c/` (same evidence; ran with pre-Bug-7 assertions) |
+| T3 goals + companion | PASS 5/5 | `/tmp/goa-e2e/run-t3/` — artifact `done.txt=DONE`; goal "sparky.orca" lifecycle in goal-events.jsonl: `goal.create` → 3×`goal.update` → `status=complete` → `goal.clear`; 3 real `request_review` calls; qwythos review delivered in-session (`done.txt has been successfully created with the correct content`); exit 0 |
+| T4 orchestration + goals + companion | PASS 9/9 | `/tmp/goa-e2e/run-t4/` (ptydrive TUI `/orchestrate:new`) — role→model all correct (orchestrator=qwen, reviewer=qwythos, coder=gemma); 4 distinct agents spoke; orchestrator issued `delegate` calls; `run_finished ok=true`; run bound to goal "fair.puma" (`run_started.payload.goal_id`, `managedBy=orchestrator`); goal lifecycle `create → 8×update → clear` (terminal); artifact `orbit.txt=ORBIT`. T4.10 observation: companion idle during orchestration (hooks main-agent turns, not orchestration agents) |
+
+## Bugs Found & Fixed (this series)
+
+All 7 bugs fixed, test-covered, validated by scenario reruns, and **archived
+to `docs/archive/bugs.2026-07-31.md`** (2026-07-31): headless orchestrate
+race/exit-0-swallow (1, 3), resume-fork (2), hub continuation amnesia (4),
+pipeline role-order nondeterminism (5), agent-driven tool registration (6),
+e2e assertion bugs (7).
+
+## Findings / Observations (not fixed this session)
+
+- **F1 (gap) — FIXED 2026-08-01**: headless `--orchestrate` runs bind no
+  goal — the goal binder was only wired in the TUI `/orchestrate:new` path
+  (`core/commands/orchestrate.go rt.SetGoalBinder`). Headless orchestration
+  was therefore goal-less; T4 exercises goal binding via the TUI path.
+  *Fix*: `startOrchestrate` now binds a goal whenever a goal manager is
+  available — a fresh orchestrator-managed goal (`NewGoalBinder`,
+  `ManagedBy: orchestrator`) when the run has none, or adoption of the run's
+  existing goal on resume (`NewGoalBinderForID`, which refuses to
+  create/replace). The TUI `doResume` was also fixed to re-bind a goal-bound
+  run's existing goal (resume previously dropped the binding). `run_started`
+  now carries `goal_id` (e2e assertion target). Tests:
+  `TestHeadless_OrchestrateBindsGoal`, `TestHeadless_OrchestrateResumeAdoptsExistingGoal`,
+  `TestOrchestrateCommand_ResumeRebindsGoal`, `TestGoalBinderForID_AdoptsExisting`.
+- **F3 (model behavior) — FIXED 2026-08-01**: qwen3.5-9b (thinking off) as
+  hub orchestrator has single-delegation bias: given a soft objective it
+  delegates once (coder) and closes out. With the Bug 4 fix + explicit
+  multi-step instructions it completes the full coder→reviewer chain.
+  *Fix*: `prompts/orchestrate/hub_orchestrator.md` now carries the explicit
+  nudge "Do not finalize while required sub-tasks remain" in both the how-to
+  step 6 and the rules (the continuation prompt already had an equivalent).
+  Guard: `TestLoadOrchestratePrompt_HubAntiFinalizeNudge`.
+- **F4 (environment note) — non-code, documented 2026-08-01**: local model
+  throughput on this machine:
+    qwen ~1.4 tok/s, qwythos ~1.7, gemma ~3.3; ~5.4K-token Goa system prompt;
+    a 3-agent hub run (2 delegations) ≈ 3–4 min end to end. First call per
+    model pays JIT load (warm up first). LM Studio serializes GPU work, so
+    interleaved multi-model runs queue rather than parallelize.
+    (Hardware/throughput observation — no code change; kept as archive
+    reference for future e2e timeout tuning.)
+  - **F5 (config override — home config) — RESOLVED 2026-07-31 (was: stale binary + wrong mechanism analysis)**: the user's home config
+    (`~/.goa/config.yaml` lines 271/275) has `delegate_to: false` and
+    `request_review: false` (serialized from pre-Bug-6 defaults), which wins
+    the cascade over the embedded defaults (`cfg.Tools.Enabled.*` = false in
+    e2e projects — probe confirms). **Correction of the earlier analysis**:
+    the claimed mechanism ("config booleans set the tools' instance-level
+    `Enabled` flag via `restoreSessionState`") does NOT exist in the code —
+    `Enabled` is driven solely by the `AgentDrivenGate` change callback, and
+    companion intent (`companionActive` from the seeded state) forces BOTH
+    registration (`registerAgentDrivenTools`, subsystems.go:938/943) and
+    execution-enablement (`SetMinorMode` → gate fires → `Enabled=true`).
+    Probe evidence (e2e/probe extended with
+    `ProbeAgentDrivenToolState`): with home config forcing
+    `Tools.Enabled.*=false`, a seeded-companion project still yields
+    `request_review: registered=true enabled=true` (same for delegate_to).
+    The 2026-07-30 T2a FAIL was a **stale test binary**: `/tmp/goa-e2e/goa`
+    was built 21:59, the registration fix committed 22:29; the rerun log
+    shows the pre-fix symptom (model: "I don't see a request_review tool").
+    Rerun with a fresh binary (run-t2c): model calls `request_review`,
+    qwythos review delivered → T2a PASS. **Residual hermeticity fix**:
+    e2e `lib.sh write_base_config` now emits
+    `tools.enabled.request_review: true, delegate_to: true` so fake projects
+    never silently inherit a developer's home config (portability).
+  - **F6 (observation) — FIXED 2026-08-01**: agent-driven `request_review`
+    reviews are delivered in-session (`[Message from companion]` user message,
+    multiagent/agent_driven_tools.go:185) but are NOT rendered in headless
+    `--plain` output and do NOT persist `companion_history` in state.json
+    (headless). Evidence lives in `.goa/sessions/*.jsonl` — e2e asserts it
+    there. Also: per-agent model identity in the companion path is not
+    separately logged (unlike orchestrator `agent_started.model`); the
+    companion model is pinned by `multi_agent.companion_model` config only.
+    *Fix*: (1) headless `handleContentEvent` now renders User-role content
+    events prefixed `[Message from ` (bus-delivered companion reviews);
+    (2) new exported `AgentManager.PersistState` + headless
+    `persistSessionState` defer writes `companion_history` to state.json at
+    session end; (3) new `AgentManager.LogCompanionStarted` writes a
+    `companion_started` session-log marker (metadata model/provider), logs at
+    Info, and dispatches a `companion_started` lifecycle event. Tests:
+    `TestHeadlessApp_RendersCompanionMessage`,
+    `TestAgentManager_PersistState_SavesCompanionHistory`,
+    `TestAgentManager_LogCompanionStarted_WritesModelMarker`.
+
+## Remaining Work (for next session)
+
+1. ~~**Fix T2a**~~ — DONE 2026-07-31: root cause was a stale test binary
+   (built before the Bug 6 registration fix was committed); companion intent
+   already overrides the home-config `tools.enabled` false values for both
+   registration and execution (probe-verified). lib.sh additionally made
+   hermetic (emits `tools.enabled.*: true`).
+2. ~~**Run T2**~~ — DONE 2026-07-31: run-t2d PASS 5/5 (fresh binary +
+   corrected T2a.3 evidence assertion, archived Bug 7; results.tsv records
+   PASS). run-t2c was the first fresh-binary rerun (pre-Bug-7 assertions).
+3. ~~**Run T3**~~ — DONE 2026-07-31: run-t3 PASS 5/5 (goal lifecycle
+   create→update→complete→clear, companion review delivered in-session,
+   artifact DONE).
+4. ~~**Run T4**~~ — DONE 2026-07-31: run-t4 PASS 9/9 (ptydrive TUI path;
+   role→model correct, run bound to goal "fair.puma", goal terminal,
+   companion idle-but-coexisting, artifact ORBIT).
+5. **Update bugs.md** — DONE 2026-07-31 (all four scenarios recorded with
+   evidence paths).
+6. ~~**T1 confirmation rerun**~~ — DONE 2026-07-31: run-t1e PASS 9/9 (+F1
+   note); all four scenarios now validated against the same script revision
+   and binary. (A full `run_all.sh` clean series remains optional.)
+7. ~~**Archive**~~ — DONE 2026-07-31: closed e2e-series bugs moved to
+   `docs/archive/bugs.2026-07-31.md`; approach/results/findings remain here.
+8. ~~**Open bug (separate)** — goal tool result line should render the goal
+    short name, not the full objective~~ — DONE 2026-08-01: fixed in commit
+    5d34156 (goalSummaryJSON decodes 'name'; summaryLabel prefers the short
+    name); archived to `docs/archive/bugs.20260801.md`.
+
+---

@@ -338,7 +338,7 @@ Now I understand the boundary regression precisely:
 
 ---
 
-## Goal tool result line floods the timeline with the full objective — should show the goal short name — OPEN
+## Goal tool result line floods the timeline with the full objective — should show the goal short name — FIXED (commit 5d34156)
 
 - **Observed**: every `goal` tool result carrying a goal snapshot
   (create / get / update_todo) renders the full objective, which floods the
@@ -374,45 +374,6 @@ Now I understand the boundary regression precisely:
   one-line short-name summary (guideline #5 — verify real terminal output).
 
 **Status**: FIXED 2026-08-01 (commit 5d34156) — goalSummaryJSON decodes 'name'; summaryLabel prefers the friendly short name (fallback: truncated objective) in snapshot + list Active lines; stats suffix unchanged. Table-driven tests cover named/unnamed/todos/list.
-
-
-## Goal tool result line floods the timeline with the full objective — should show the goal short name
-
-- **Observed**: every `goal` tool result carrying a goal snapshot
-  (create / get / update_todo) renders the full objective, which floods the
-  timeline and truncates mid-word:
-  ```
-  ✓ ◆ Updated todo t2 → done
-  Goal active: Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser, complet
-  ```
-  Expected — the goal's short friendly name is used instead:
-  ```
-  ✓ ◆ Updated todo t2 → done
-  goal active: honest.zebra
-  ```
-- **Localization**: `tui/goal/tool_renderers.go`:
-  - `renderGoalSnapshotLine` (line ~222) builds
-    `"Goal %s: %s · %d turns · %s tokens · %s"` from
-    `goalSummaryJSON.Objective` — the raw, unbounded objective string.
-  - `goalSummaryJSON` (line ~166) does NOT decode the snapshot's `"name"`
-    field, even though the goal tool result carries it
-    (e.g. `"name":"honest.zebra"`).
-  - The prefer-name pattern already exists for queued goals:
-    `upcomingGoalJSON.Name` + `goalLabel()` (line ~300) — reuse it.
-- **Fix plan**: add `Name string \`json:"name"\`` to `goalSummaryJSON`; in
-  `renderGoalSnapshotLine` render the short name when non-empty, falling back
-  to a truncated objective (same rule as `goalLabel`). Keep the
-  turns/tokens/elapsed/todos stats suffix (useful signal) — only the
-  objective → short-name swap changes.
-- **Tests**: table-driven cases in `tui/goal/tool_renderers_test.go`:
-  snapshot with name → line shows `<status>: <name>` and NOT the objective;
-  snapshot without name → truncated-objective fallback; stats suffix intact.
-- **Validation**: `go test ./tui/goal -race`; then run a TUI session with a
-  long-objective goal, update a todo, and verify the timeline shows the
-  one-line short-name summary (guideline #5 — verify real terminal output).
-
-
-- **Status**: FIXED on branch feature/recontext (commit 5d34156): goalSummaryJSON decodes the snapshot's 'name' field; new summaryLabel prefers the friendly short name, falls back to the truncated objective (same rule as queued goals). Also fixed the same flood in renderGoalList's Active line. Tests: tui/goal/tool_renderers_test.go (TestGoalRenderer_SnapshotUsesShortName, TestGoalRenderer_ListActiveUsesShortName) — name shown, objective absent, stats suffix intact. Validated: go test ./tui/goal/ -race green.
 
 
 ## Context compression not triggering at 92.9% (auto)
@@ -623,3 +584,50 @@ Now I understand the boundary regression precisely:
   statusbar mode the footer animates "⬣ (provider) model • …" while the chat
   shows no spinner line; switching mode via /config takes effect on the next
   request.
+
+---
+
+## Skills config: select which embedded + startup (file-based) skills are enabled/disabled — FIXED 2026-08-01
+
+- **Request**: `skills` config must allow selecting which embedded skills are
+  enabled/disabled, and the same selection must also apply to skills found
+  during startup (file-based skills from `~/.agents/skills/`, `.agents/skills/`,
+  `.goa/skills/`, configured `skills.dirs`, plugin dirs).
+- **Current state**: `skills.disabled: [names]` exists (commit c0bf90d) but is
+  embedded-only — `SkillRegistry.SetDisabled` gates `scanEmbeddedFS` only;
+  `scanDir` (file-based) is explicitly unaffected, so a disabled built-in can
+  be shadowed by a same-named file skill and file skills can never be disabled.
+  There is no allowlist (`skills.enabled`) to select which skills are active.
+- **Localization**:
+  - `skills/loader.go`: `SetDisabled` (line ~166), `scanEmbeddedFS` gate
+    (line ~245), `scanDir` (line ~289, no gate), `scanSubSkills`/`scanEmbeddedSubSkills`.
+  - `config/config.go` `SkillsConfig` (line ~566): `Disabled []string` only.
+  - `config/config_merge.go` (~line 328): `Disabled` merged; no `Enabled`.
+  - Wiring: `internal/app/subsystems.go` `newSkillRegistry` (~line 843),
+    `internal/app/app.go` (~line 616), `internal/app/helpers.go` (~line 70).
+- **Fix plan**:
+  1. Add `Enabled []string \`yaml:"enabled,omitempty"\`` to `SkillsConfig`
+     (allowlist; empty = all enabled) + cascade merge with dedup.
+  2. `skills/loader.go`: add `SetEnabled(names)`; gate BOTH `scanEmbeddedFS`
+     and `scanDir` (and sub-skill scans) on disabled ∩ enabled — a skill loads
+     iff not disabled AND (enabled list empty OR in enabled list). `disabled`
+     wins over `enabled` on conflict.
+  3. Wire `SetEnabled(cfg.Skills.Enabled)` next to `SetDisabled` at the three
+     call sites.
+- **Tests**:
+  - `skills/loader_test.go`: enabled allowlist keeps only listed embedded
+    skills; disabled now filters file-based skills; conflict (both lists) →
+    disabled wins; sub-skills of a disabled parent not loaded.
+  - `config/config_merge_test.go`: `Skills.Enabled` deep-merge with dedup
+    (mirror of the existing `Disabled` merge test).
+- **Validation**: `go test ./skills ./config ./internal/app -race`; then
+  `go vet`, `staticcheck`, `gocognit`, `gocyclo` (guideline #6, separate runs);
+  live check: enable only one skill in a project config and confirm the skills
+  banner lists only it (guideline #5).
+
+**Status**: FIXED 2026-08-01 — `skills.enabled` allowlist added (empty = all);
+`skills.disabled` now gates ALL sources (embedded + file-based + sub-skills);
+disabled wins over enabled on conflict; wired at all three registry build
+sites (subsystems/app/helpers). Tests: `TestSkillRegistrySetEnabled`,
+`TestSkillRegistryEnabledDisabledConflict`, updated
+`TestSkillRegistrySetDisabled` (file-based now gated), `TestDeepMergeSkillsEnabled`.
