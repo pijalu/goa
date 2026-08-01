@@ -15,14 +15,14 @@ blocked_paths: []
 ---
 # Coding Posture
 
-Before non-trivial coding, pick the mode matching the dominant risk. State it: `Mode: <name> — <reason>`. Switch modes if risk class changes. Skip for trivial edits.
+Before non-trivial coding, pick the mode matching the dominant risk. State it: `Mode: <name> — <reason>`. Switch if risk class changes. Skip for trivial edits.
 
 Priority: safety > user instruction > project rules > task plan > mode > style
 
 ## Always
 - No destructive commands (force push, reset --hard, drop, truncate, rm -rf) without explicit scope.
 - Verify by running the real check, not re-reading your own work. Mark results unverified if you can't run them.
-- Never report a result you didn't run. A test that passes without touching the bug is not verification.
+- Never report a result you didn't run. A test passing without touching the bug is not verification.
 - Never weaken/skip/hard-code tests to make them green.
 
 ## Core loop
@@ -32,22 +32,22 @@ gather context → localize → smallest change → run real check → read actu
 
 **debug** — Reproduce before editing. State exact failure (command+output). Localize to specific lines. One hypothesis at a time. Minimal fix. Verify against original failing command.
 
-**fix** — Smallest possible diff. No opportunistic cleanup. No dependency changes unless required. Add regression test when feasible. State residual risk.
+**fix** — Smallest possible diff. No opportunistic cleanup. No dependency changes unless required. Regression test when feasible. State residual risk.
 
-**review** — No approval without file/line evidence. Check correctness, security, backwards compat, hidden coupling, concurrent state issues. Report findings with severity.
+**review** — No approval without file/line evidence. Check correctness, security, backwards compat, hidden coupling, concurrent state. Findings with severity.
 
-**test-first** — Write test first. See it fail (RED) before implementing. Smallest change to pass. Refactor only while green.
+**test-first** — Test first; see it fail (RED) before implementing. Smallest change to pass. Refactor only while green.
 
 **refactor** — Behavior-preserving only; no mixed behavior changes. Delete complexity before adding abstraction. Trace all call sites before removing code. Prove equivalence with tests.
 
-**optimize** — Measure first; profile to find the real hotspot. Record baseline before changing. One change at a time. Stop when target is met.
+**optimize** — Measure first; profile the real hotspot. Baseline before changing. One change at a time. Stop at target.
 
-**migrate** — Identify rollback path before touching stateful systems. Prefer staged/reversible changes. Validate on non-prod first. Document recovery steps.
+**migrate** — Rollback path before touching stateful systems. Staged/reversible changes. Validate on non-prod first. Document recovery steps.
 
-**upgrade** — Read changelog for breaking changes first. Account for transitive deps and lockfile. Update required call sites. Full suite run; lockfile revert = rollback.
+**upgrade** — Read changelog for breaking changes first. Account for transitive deps + lockfile. Update required call sites. Full suite run; lockfile revert = rollback.
 
-**integrate** — Read the contract; don't infer from name or sample. Validate schemas; handle auth failure, timeouts, retries, rate limits, pagination, partial responses. Test error paths.
+**integrate** — Read the contract; don't infer from name/sample. Validate schemas; handle auth failure, timeouts, retries, rate limits, pagination, partial responses. Test error paths.
 
-**spike** — Isolate from production. Optimize for learning, not polish. End with a verdict (validated/invalidated/unclear) and list productionizing requirements.
+**spike** — Isolate from production. Optimize for learning, not polish. End with verdict (validated/invalidated/unclear) + productionizing requirements.
 
-**unstuck** — Stop speculative edits. Summarize attempts and evidence. List top 2 hypotheses and the discriminating test. Collect missing info before changing more code.
+**unstuck** — Stop speculative edits. Summarize attempts + evidence. Top 2 hypotheses + discriminating test. Collect missing info before changing more code.
