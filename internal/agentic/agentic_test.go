@@ -206,6 +206,7 @@ func TestStreamLoopNormalize(t *testing.T) {
 		{"leading/trailing spaces trimmed", "  hello world  ", "hello world"},
 		{"newlines and tabs become spaces", "hello\nworld\tfoo", "hello world foo"},
 		{"mixed unicode letters", "café résumé", "café résumé"},
+		{"case folded", "Hello WORLD Café", "hello world café"},
 		{"symbols stripped", "@#$%^&*()_+-=[]{}|;':\",./<>?" + "`~", ""},
 	}
 	for _, tt := range tests {
@@ -218,37 +219,6 @@ func TestStreamLoopNormalize(t *testing.T) {
 	}
 }
 
-func TestStreamHasMultipleUniqueWords(t *testing.T) {
-	tests := []struct {
-		name string
-		text string
-		want bool
-	}{
-		{"empty", "", false},
-		{"single word", "hello", false},
-		{"same word repeated", "the the the the", false},
-		{"same word twice", "hello hello", false},
-		{"two different words", "hello world", true},
-		{"multiple words some repeat", "the quick the quick", true},
-		{"multiple unique words", "the quick brown fox", true},
-		{"single char different", "a b", true},
-		{"digits same", "123 123 123", false},
-		{"digits different", "123 456", true},
-		{"window slice with partial words", "he the the the th", false},
-		{"slice with two real middle words", "he quick brown th", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := streamHasMultipleUniqueWords(tt.text)
-			if got != tt.want {
-				t.Errorf("streamHasMultipleUniqueWords(%q) = %v, want %v", tt.text, got, tt.want)
-			}
-		})
-	}
-}
-
-// Short or empty buffers never trigger the scan, at any threshold: the
-// smallest period times the repeat count is the minimum evidence size.
 func TestStreamLoopScan_ShortTextNeverDetects(t *testing.T) {
 	texts := []string{
 		"",
@@ -262,62 +232,6 @@ func TestStreamLoopScan_ShortTextNeverDetects(t *testing.T) {
 				t.Errorf("short text %q detected as loop at threshold %d", text, threshold)
 			}
 		}
-	}
-}
-
-// streamTailRepeats is the per-period matcher behind streamLoopScan: exact
-// repeats always count (except the 2-copy long-block rule), fuzzy repeats
-// count only for long periods and never for progressing enumerations.
-func TestStreamTailRepeats(t *testing.T) {
-	longBlock := "the quick brown fox jumps over the lazy dog while the diligent tester watches the suite"
-	if len(longBlock) < streamLoopExactMinPeriod {
-		t.Fatalf("fixture block is %d bytes, want >= %d", len(longBlock), streamLoopExactMinPeriod)
-	}
-	// Fuzzy fixtures: three period-60+ blocks with controlled differences.
-	base60 := "abcdefghij klmnop qrstuv wxyz01 23456789 abcdef ghijkl mnopqr"
-	if len(base60) < streamLoopFuzzyMinPeriod {
-		t.Fatalf("fixture base is %d bytes, want >= %d", len(base60), streamLoopFuzzyMinPeriod)
-	}
-	oneOff := func(s string, pos int, c byte) string {
-		b := []byte(s)
-		b[pos] = c
-		return string(b)
-	}
-	// Noise copies: each differs at a different position — no position is
-	// distinct across all copies, so this is repetition with noise.
-	noise2 := oneOff(base60, 10, 'X')
-	noise3 := oneOff(base60, 40, 'Y')
-	// Enumeration copies: position 10 walks 1 -> 2 -> 3 (a counter).
-	enum2 := oneOff(base60, 10, '2')
-	enum3 := oneOff(base60, 10, '3')
-	enum1 := oneOff(base60, 10, '1')
-
-	tests := []struct {
-		name   string
-		text   string
-		period int
-		n      int
-		want   bool
-	}{
-		{"too short", "abc", 5, 3, false},
-		{"no repeat", "hello world how are you", 5, 2, false},
-		{"exact 2 copies below long-block floor", "abcabc", 3, 2, false},
-		{"exact 2 copies at long-block floor", longBlock + longBlock, len(longBlock), 2, true},
-		{"exact 3 copies below long-block floor", "abcabcabc", 3, 3, true},
-		{"not enough repeats", "abcabcx", 3, 3, false},
-		{"longer exact repeat", "thequickthequickthequick", 8, 3, true},
-		{"no match due to change", "hello world goodbye", 5, 2, false},
-		{"fuzzy below fuzzy floor", base60[:30] + oneOff(base60, 10, 'X')[:30] + base60[:30], 30, 3, false},
-		{"fuzzy long period with per-copy noise", base60 + noise2 + noise3, len(base60), 3, true},
-		{"fuzzy long period with walking counter", enum1 + enum2 + enum3, len(base60), 3, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := streamTailRepeats(tt.text, tt.period, tt.n); got != tt.want {
-				t.Errorf("streamTailRepeats(len=%d, period=%d, n=%d) = %v, want %v",
-					len(tt.text), tt.period, tt.n, got, tt.want)
-			}
-		})
 	}
 }
 

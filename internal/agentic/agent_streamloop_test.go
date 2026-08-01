@@ -28,6 +28,155 @@ const streamLoopFPEvidence = "So the failure at line 196 is the \"3.5\" query (a
 	"3.4: a = 4 AND b BETWEEN 20 AND 80 -- Matches 80 rows\n AND\n c BETWEEN 150 AND 160 -- Matches 10 rows\n" +
 	"3.5: `a = 5 AND b BETWEEN 20 AND 80 -- Matches 1 row\n AND\n c BETWEEN 150 AND 160 -- Matches 10 rows"
 
+// Field fixtures for the count-based detector rework (bugs.md 2026-08-01):
+// a false positive on exploratory Option A/B/C thinking, and a false negative
+// on a ~90-copy paraphrase loop.
+
+// streamLoopFPOptions is the exploratory-thinking excerpt that produced the
+// false positive: parallel-phrased, semantically distinct options with ZERO
+// repeated blocks. It must never trip the detector.
+const streamLoopFPOptions = "The Prepare path parses SQL and returns statements. To store the ORIGINAL SQL text, I need to carry it to execCreateTable. Options:\n" +
+	"Option A: Add a field to sql.CreateTableStmt like RawSQL string — the LALR parser could capture the raw text IF it knows the input. The LALR parser's ParseSQL has the input string. I could capture the raw statement text... but the parse happens per-token; capturing the raw span of the CREATE statement requires position tracking.\n" +
+	"Hmm — actually! The tokens have Pos. The parser processes the input with tok.Next(). For a CREATE TABLE statement, I could record the input position of the first token (CREATE) and the last token (RParen/SEMI) — but the rule handlers don't have direct access to the full input...\n" +
+	"Actually ParseSQL DOES have the input and the parser state. Let me look at whether there's a simpler way.\n" +
+	"Option B: In the ENGINE's Prepare, split the raw SQL by statements (using parse to find boundaries) and attach the raw text to each statement. That's the \"carry raw SQL\" approach: after parse.ParseSQL(sqlStr), map statements back to their raw text. But statements don't carry positions either...\n" +
+	"Wait — actually, ParseSQL's stmts are collected at ecmd rules. Could I ALSO capture the raw text per statement? The parser has access to the input via... hmm, the Parser doesn't hold the input. ParseSQL does.\n" +
+	"Option C: The pragmatic one — implement the constraint rules in the LALR parser. It's more code but self-contained. Actually, let me reconsider: what does buildCreateTableSQL need to produce? It serializes CREATE TABLE name (cols). The cols come from s.Columns ([]ColumnDef)."
+
+// streamLoopTPParaphrase is the missed real loop: the same short intent
+// re-paraphrased every copy (~90 in the incident, trimmed here). No long
+// byte-exact block exists — detection requires the shingle-coverage path.
+const streamLoopTPParaphrase = "No test.db cleanup in the preamble. Let me check how widespread the sqlite3 db test.db reopen pattern is in Tier-1, and how processDB handles close:" +
+	"Let me check how widespread the reopen pattern is in Tier-1 tests and how processDB handles close:" +
+	"Let me check the reopen pattern usage in Tier-1 and processDB's close handling:" +
+	"Let me check how widespread the sqlite3 db test.db pattern is:" +
+	"Let me check how many Tier-1 tests use the reopen pattern:" +
+	"Let me check the reopen pattern in Tier-1 tests:" +
+	"Let me check processDB's close handling and the reopen pattern usage:" +
+	"Let me check how processDB handles close:" +
+	"Let me check how many Tier-1 tests use the reopen pattern:" +
+	"Let me check the reopen usage in Tier-1 tests:" +
+	"Let me check processDB's \"close\" handling:" +
+	"Let me check how many Tier-1 tests reopen db:" +
+	"Let me check the reopen pattern:" +
+	"Let me check how processDB handles close:" +
+	"Let me check the reopen pattern in Tier-1 tests:" +
+	"Let me check how processDB handles close and Tier-1 usage:" +
+	"Let me check the reopen pattern:"
+
+// TestStreamLoop_NoFalsePositiveOnExploratoryOptions is the FP regression
+// from the field (bugs.md): Option A/B/C analysis must never trip.
+func TestStreamLoop_NoFalsePositiveOnExploratoryOptions(t *testing.T) {
+	if streamLoopWouldDetect(streamLoopFPOptions, 3) {
+		t.Error("false positive: exploratory Option A/B/C analysis detected as a loop")
+	}
+	// No prefix may trip either (the detector runs per delta).
+	var buf strings.Builder
+	const fragSize = 9
+	for pos := 0; pos < len(streamLoopFPOptions); pos += fragSize {
+		end := pos + fragSize
+		if end > len(streamLoopFPOptions) {
+			end = len(streamLoopFPOptions)
+		}
+		buf.WriteString(streamLoopFPOptions[pos:end])
+		if streamLoopWouldDetect(buf.String(), 3) {
+			t.Fatalf("false positive mid-stream at byte %d of exploratory options", end)
+		}
+	}
+}
+
+// TestStreamLoop_ParaphraseLoopDetected is the TP regression from the field
+// (bugs.md): a high-count paraphrase loop MUST trip, even mid-stream.
+func TestStreamLoop_ParaphraseLoopDetected(t *testing.T) {
+	if !streamLoopWouldDetect(streamLoopTPParaphrase, 3) {
+		t.Error("paraphrase loop not detected: ~13 drifting copies of the same intent")
+	}
+	// It must not trip on the first few copies (analysis), but must trip by
+	// the time the paraphrase storm is underway.
+	var buf strings.Builder
+	firstTrip := -1
+	const fragSize = 31
+	for pos := 0; pos < len(streamLoopTPParaphrase); pos += fragSize {
+		end := pos + fragSize
+		if end > len(streamLoopTPParaphrase) {
+			end = len(streamLoopTPParaphrase)
+		}
+		buf.WriteString(streamLoopTPParaphrase[pos:end])
+		if streamLoopWouldDetect(buf.String(), 3) {
+			firstTrip = end
+			break
+		}
+	}
+	if firstTrip < 0 {
+		t.Fatal("paraphrase loop never detected mid-stream")
+	}
+	t.Logf("paraphrase loop first detected at byte %d of %d", firstTrip, len(streamLoopTPParaphrase))
+}
+
+// TestStreamLoop_ExactChainRules covers Detector A: byte-exact repeats.
+func TestStreamLoop_ExactChainRules(t *testing.T) {
+	// Varied-word blocks: no internal self-similarity, so Detector B has no
+	// opinion on pairs and Detector A's exact-chain rules decide alone.
+	block200 := ("the parser processes each token in sequence while the engine evaluates constraints " +
+		"and the planner rewrites the query tree into an execution pipeline over indexed storage " +
+		"layers with buffered iterators and spill files across remote shards")[:200]
+	block1k := block200 + " — second stanza with different vocabulary: " + strings.Repeat("mango telescope verdict umbrella glacier walnut ", 20)
+	block1k = block1k[:1024]
+
+	t.Run("three exact 200-byte copies trip", func(t *testing.T) {
+		text := "lead in. " + block200 + block200 + block200
+		if !streamLoopWouldDetect(text, 3) {
+			t.Error("3x byte-exact 200-byte block not detected")
+		}
+	})
+	t.Run("two exact 200-byte copies do not trip", func(t *testing.T) {
+		text := "lead in. " + block200 + block200
+		if streamLoopWouldDetect(text, 3) {
+			t.Error("2x 200-byte block must not trip (needs 3 copies)")
+		}
+	})
+	t.Run("two exact 1KB copies trip", func(t *testing.T) {
+		text := "lead in. " + block1k + block1k
+		if !streamLoopWouldDetect(text, 3) {
+			t.Error("2x byte-exact 1KB block not detected (long-block rule)")
+		}
+	})
+	t.Run("exact copies with small interlude trip", func(t *testing.T) {
+		junk := " wait a moment here "
+		text := "lead in. " + block200 + junk + block200 + junk + block200
+		if !streamLoopWouldDetect(text, 3) {
+			t.Error("exact copies separated by small interludes not detected")
+		}
+	})
+	t.Run("connector noise does not trip", func(t *testing.T) {
+		text := strings.Repeat("the ", 30)
+		if streamLoopWouldDetect(text, 3) {
+			t.Error("single-word connector noise must not trip")
+		}
+	})
+}
+
+// TestStreamLoop_NoFalsePositiveOnTopicalRepetition: repeating one TERM is
+// topical emphasis, not a loop — coverage and distinct-hot-shingle guards.
+func TestStreamLoop_NoFalsePositiveOnTopicalRepetition(t *testing.T) {
+	// Ten genuinely different sentences that each mention the goal tool once.
+	sentences := []string{
+		"The goal tool returned an error on the first attempt.",
+		"Debugging took a while because the goal tool output was truncated.",
+		"After lunch I wired the goal tool into the regression harness.",
+		"Nobody reviewed what the goal tool printed yesterday.",
+		"Our docs explain when the goal tool should be preferred.",
+		"A timeout made the goal tool look broken, but it was the network.",
+		"She benchmarked the goal tool against three alternatives.",
+		"Next sprint we might retire the goal tool entirely.",
+		"The migration guide mentions the goal tool only once.",
+		"Finally, the goal tool succeeded after the config fix.",
+	}
+	if streamLoopWouldDetect(strings.Join(sentences, " "), 3) {
+		t.Error("false positive: topical repetition of one term detected as a loop")
+	}
+}
+
 func TestStreamLoop_NoFalsePositiveOnQuotedEvidence(t *testing.T) {
 	if streamLoopWouldDetect(streamLoopFPEvidence, 5) {
 		t.Error("false positive: two near-identical quoted SQL statements detected as a loop")
@@ -58,8 +207,8 @@ func TestStreamLoop_ThresholdControlsDetection(t *testing.T) {
 	if streamLoopWouldDetect(twoCopies, 5) {
 		t.Error("2 copies must not trigger the default threshold of 5")
 	}
-	if !streamLoopWouldDetect(twoCopies, 2) {
-		t.Error("2 copies must trigger a user-configured threshold of 2")
+	if streamLoopWouldDetect(twoCopies, 2) {
+		t.Error("2 sub-kilobyte copies must not trigger even at threshold 2: quoted-evidence protection — pairs only count at ≥ 1 KB")
 	}
 
 	fourCopies := "Intro sentence. " + strings.Repeat(para+" ", 4)
@@ -73,20 +222,27 @@ func TestStreamLoop_ThresholdControlsDetection(t *testing.T) {
 }
 
 // Three fuzzy copies of a long paragraph (small same-length variations, so no
-// two adjacent copies are byte-exact) confirm a loop — the count, not the
-// similarity, is the evidence.
-func TestStreamLoop_FuzzyTripleLongBlockStillDetected(t *testing.T) {
+// two adjacent copies are byte-exact) must NOT trip: three similar paragraphs
+// can be analysis (the Option A/B/C false positive, bugs.md 2026-08-01) — the
+// copy count, not the similarity, is the evidence. When the family keeps
+// growing, Detector B's shingle coverage confirms the loop.
+func TestStreamLoop_FuzzyCopiesNeedHighCount(t *testing.T) {
 	para := "The project builds cleanly. Let me summarize every update I made to the handover document for the team:"
-	copies := []string{
+	fuzz := []string{
 		para,
-		strings.Replace(para, "builds", "bullds", 1),     // 1-byte variation
-		strings.Replace(para, "handover", "handovar", 1), // 1-byte variation
+		strings.Replace(para, "builds", "bullds", 1),      // 1-byte variation
+		strings.Replace(para, "handover", "handovar", 1),  // 1-byte variation
+		strings.Replace(para, "summarize", "sumarize", 1), // 1-byte variation
+		strings.Replace(para, "team", "teem", 1),
+		strings.Replace(para, "cleanly", "cleanli", 1),
 	}
-	// Lead-in text mirrors real streamed answers and lets the window align to
-	// copy boundaries (3 bare copies alone are one byte short of 3 windows).
-	text := "Analyzing the failure now. " + strings.Join(copies, "\n\n")
+	text := "Analyzing the failure now. " + strings.Join(fuzz[:3], "\n\n")
+	if streamLoopWouldDetect(text, 3) {
+		t.Error("false positive: three fuzzy paragraphs detected as a loop (analysis territory)")
+	}
+	text = "Analyzing the failure now. " + strings.Join(fuzz, "\n\n")
 	if !streamLoopWouldDetect(text, 3) {
-		t.Error("fuzzy 3x long-block loop not detected")
+		t.Error("six drifting copies of the same paragraph not detected")
 	}
 }
 

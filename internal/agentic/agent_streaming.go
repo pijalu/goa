@@ -1160,148 +1160,236 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 }
 
 // streamLoopScan is the detection core of checkStreamLoop: it reports whether
-// the normalized buffer ends in maxRepeats consecutive copies of the same
-// period-sized block, and if so returns the period and repeat count. Kept
-// separate from the Agent method so the exact production scan can be
-// exercised directly by tests.
+// the normalized buffer ends in a repeated unit, and if so returns the unit
+// size and repeat count. Kept separate from the Agent method so the exact
+// production scan can be exercised directly by tests.
 //
-// Detection policy (rewritten after three opposite field failures — a false
-// positive on enumerated lists, a false negative on a long-period loop, and a
-// false positive on quoted near-identical evidence):
+// Detection policy (count-based rewrite after field failures in BOTH
+// directions — a false positive on exploratory Option A/B/C analysis and a
+// false negative on a ~90-copy paraphrase loop; see bugs.md 2026-08-01):
 //
-//   - The unit of detection is the PERIOD (previously "window", hard-capped
-//     at 120 bytes): the scan ranges from streamLoopMinPeriod up to
-//     len(clean)/maxRepeats, so a loop whose repeated unit is a whole
-//     paragraph — a real incident looped a ~230-byte unit 14 times,
-//     invisible to the 120-byte cap — is caught.
-//   - Byte-exact repeats always count (subject to the 2-copy long-block
-//     rule): no legitimate answer repeats the same 20+ byte block several
-//     times back to back.
-//   - Fuzzy repeats (small per-copy variations, re-wrapped or separator-
-//     shifted copies) count only for long periods AND only when the copies
-//     are not systematically progressing: an enumerated list such as
-//     "./testgen/select3 ./testgen/select4 …" differs from a loop precisely
-//     because some position (the counter) takes a different value in every
-//     block. Near-identical blocks with a walking counter are enumeration,
-//     not looping.
+//   - Detector A (exact chain): the trailing unit of length P
+//     (P ≥ streamLoopExactMinPeriod) is a loop when it repeats BYTE-EXACT
+//     ≥ maxRepeats times (≥ 2 for P ≥ streamLoopLongPeriod), allowing ≤
+//     streamLoopMaxGap interlude bytes between copies. No fuzzy matching, no
+//     progression analysis: exploratory paragraphs never repeat 60+ exact
+//     bytes, and connector noise ("the the the …") lives below the floor.
+//   - Detector B (paraphrase coverage): a loop whose copies drift in wording
+//     has no exact unit, but its words are almost all inside a handful of
+//     repeated shingles. Fire when ≥ streamLoopMinHotShingles distinct
+//     shingles are "hot" (≥ streamLoopShingleHot occurrences) AND they cover
+//     ≥ streamLoopMinCoverage of the tail words. A 3–4 paragraph Option
+//     A/B/C analysis has almost no hot shingles; repeating one TERM has too
+//     few hot shingles; enumerated lists have unique shingles.
+//   - Only the trailing streamLoopTailWindow bytes are scanned, bounding the
+//     per-delta cost.
 func streamLoopScan(clean string, maxRepeats int) (period, repeats int, ok bool) {
 	if maxRepeats < 2 {
 		maxRepeats = 2
 	}
-	if len(clean) < streamLoopMinPeriod*maxRepeats {
+	tail := clean
+	if len(tail) > streamLoopTailWindow {
+		tail = tail[len(tail)-streamLoopTailWindow:]
+	}
+	if uniqueWordCount(tail) < 3 {
+		// A tail of one or two unique words ("the the the …", "ok ok …") is
+		// connector noise, not repeated content; the loop detectors need at
+		// least three distinct words to have an opinion.
 		return 0, 0, false
 	}
-	maxPeriod := len(clean) / maxRepeats
-	if maxPeriod > streamLoopMaxPeriod {
-		maxPeriod = streamLoopMaxPeriod
+	if period, repeats, ok := streamExactChain(tail, maxRepeats); ok {
+		return period, repeats, true
 	}
-	for period = streamLoopMinPeriod; period <= maxPeriod; period++ {
-		// Small periods must span more than a single word, or connector
-		// noise ("the the the the …") would trip the detector. Long periods
-		// skip the check: 60+ bytes of single-word repetition IS a loop, and
-		// skipping keeps the per-delta cost bounded.
-		if period < streamLoopFuzzyMinPeriod &&
-			!streamHasMultipleUniqueWords(clean[len(clean)-period:]) {
+	return streamParaphraseLoop(tail, maxRepeats)
+}
+
+// uniqueWordCount counts distinct space-separated words in s, stopping early
+// at 3 (only the <3 case matters to the caller).
+func uniqueWordCount(s string) int {
+	seen := make(map[string]struct{}, 8)
+	for _, w := range strings.Fields(s) {
+		seen[w] = struct{}{}
+		if len(seen) >= 3 {
+			break
+		}
+	}
+	return len(seen)
+}
+
+const (
+	// streamLoopExactMinPeriod is the smallest repeated unit Detector A
+	// considers: shorter exact repeats are punctuation/connector noise. All
+	// field false positives were NON-exact, so exact-only matching is safe
+	// at this floor; a genuine micro-loop with a shorter unit also repeats
+	// at a multiple of the unit, which qualifies.
+	streamLoopExactMinPeriod = 60
+	// streamLoopLongPeriod is the unit size from which two byte-exact copies
+	// already count as a loop: nobody legitimately repeats a kilobyte twice.
+	streamLoopLongPeriod = 1024
+	// streamLoopMaxGap bounds the interlude allowed between chained copies
+	// so "repeat with a one-line interjection" loops still trip.
+	streamLoopMaxGap = 64
+	// streamLoopTailWindow bounds the scanned tail (and per-delta cost).
+	streamLoopTailWindow = 4096
+	// streamLoopSmallPeriod is the smallest period scanned at all; below it
+	// only connector noise lives ("the the the …").
+	streamLoopSmallPeriod = 8
+	// streamLoopShingleWords is the shingle size for Detector B.
+	streamLoopShingleWords = 3
+	// streamLoopShingleHot is the base occurrence count making a shingle
+	// "hot" (raised to the configured maxRepeats when that is higher).
+	streamLoopShingleHot = 4
+	// streamLoopMinHotShingles is the number of distinct hot shingles a
+	// paraphrase loop must have: a couple of repeated terms is topical
+	// emphasis, not a loop.
+	streamLoopMinHotShingles = 4
+	// streamLoopMinWords is the tail word floor for Detector B.
+	streamLoopMinWords = 80
+	// streamLoopMinCoverage is the fraction of tail words that must sit
+	// inside hot shingles: paraphrase loops are dominated by their template,
+	// while topical repetition keeps repeated fragments a small minority.
+	streamLoopMinCoverage = 0.4
+)
+
+// streamExactChain implements Detector A: for each candidate period, chain
+// byte-exact copies of the trailing unit backward through the tail.
+//
+// Required copy count (certainty rises with unit size and count):
+//   - P ≥ streamLoopLongPeriod: 2 copies (nobody repeats a kilobyte twice)
+//   - streamLoopExactMinPeriod ≤ P < long: max(maxRepeats, 3) — a pair of
+//     sub-kilobyte quotes is evidence, not a loop, at any knob setting
+//   - streamLoopSmallPeriod ≤ P < exactMin: max(maxRepeats, 8) — micro-loops
+//     need overwhelming count
+func streamExactChain(tail string, maxRepeats int) (period, repeats int, ok bool) {
+	for p := streamLoopSmallPeriod; p <= len(tail)/2; p++ {
+		required, gap, skip := chainRules(tail, p, maxRepeats)
+		if skip {
 			continue
 		}
-		if streamTailRepeats(clean, period, maxRepeats) {
-			return period, maxRepeats, true
+		if n := chainCopies(tail, p, gap); n >= required {
+			return p, n, true
 		}
 	}
 	return 0, 0, false
 }
 
-const (
-	// streamLoopMinPeriod is the smallest repeated unit considered: shorter
-	// repeats are punctuation/connector noise, and a genuine micro-loop with
-	// a shorter unit also repeats at multiples of the unit, which qualify.
-	streamLoopMinPeriod = 20
-	// streamLoopFuzzyMinPeriod is the smallest period eligible for fuzzy
-	// (variation-tolerant) matching. Short near-repeats are where legitimate
-	// enumerated content lives (package paths, numbered items), so below
-	// this bound only byte-exact repetition counts.
-	streamLoopFuzzyMinPeriod = 60
-	// streamLoopExactMinPeriod is the smallest period for which two
-	// byte-exact copies already count as a loop (the most aggressive
-	// user-configured threshold).
-	streamLoopExactMinPeriod = 80
-	// streamLoopMaxPeriod bounds the scan and its per-delta cost. A loop
-	// with a longer period must emit over ~1 KB per copy; provider output
-	// limits fire before five such copies stream in practice.
-	streamLoopMaxPeriod = 1024
-)
-
-// streamTailRepeats reports whether the buffer ends with n consecutive copies
-// of the same period-sized block.
-func streamTailRepeats(clean string, period, n int) bool {
-	if len(clean) < period*n {
-		return false
-	}
-	// Exact phase: the n×period tail is periodic with this period.
-	tail := clean[len(clean)-period*n:]
-	exact := true
-	for i := period; i < len(tail); i++ {
-		if tail[i] != tail[i-period] {
-			exact = false
-			break
+// chainRules returns the required copy count and interlude gap for a
+// candidate period, and whether the period must be skipped entirely.
+func chainRules(tail string, p, maxRepeats int) (required, gap int, skip bool) {
+	switch {
+	case p >= streamLoopLongPeriod:
+		return 2, streamLoopMaxGap, false
+	case p >= streamLoopExactMinPeriod:
+		if maxRepeats < 3 {
+			maxRepeats = 3
 		}
-	}
-	if exact {
-		// Two copies (the user-configured aggressive threshold) count only
-		// as long byte-exact duplication: two merely-similar paragraphs next
-		// to each other are analysis (quoted evidence), not a loop. Three or
-		// more exact copies always count.
-		return n > 2 || period >= streamLoopExactMinPeriod
-	}
-	if n == 2 || period < streamLoopFuzzyMinPeriod {
-		return false
-	}
-	// Fuzzy phase: the blocks must not be a progressing enumeration, and
-	// every consecutive pair must match within the mismatch budget.
-	blocks := make([]string, n)
-	for i := range blocks {
-		blocks[i] = tail[period*i : period*(i+1)]
-	}
-	if streamBlocksShowProgression(blocks) {
-		return false
-	}
-	for i := 0; i+1 < n; i++ {
-		if !streamFuzzyBlockEqual(blocks[i], blocks[i+1], streamRepeatMismatchBudget(period)) {
-			return false
+		return maxRepeats, streamLoopMaxGap, false
+	default:
+		// Micro-units must be real word content: word fragments ("reopen pa"
+		// riding a repeated term) are not loops.
+		if len(strings.Fields(tail[len(tail)-p:])) < 3 {
+			return 0, 0, true
 		}
+		if maxRepeats < 8 {
+			maxRepeats = 8
+		}
+		// Tight chaining only: scattered occurrences are topical, not loops.
+		return maxRepeats, p / 2, false
 	}
-	return true
 }
 
-// streamBlocksShowProgression reports whether some byte position holds a
-// different value in EVERY block — the signature of an enumerated sequence
-// (counters, letters, indices: select3, select4, select5, …) rather than a
-// repeated block. Noise in a true loop is random per copy, so no position is
-// distinct across all copies. All blocks have equal length (period-sized
-// windows of the same buffer).
-func streamBlocksShowProgression(blocks []string) bool {
-	for q := 0; q < len(blocks[0]); q++ {
-		seen := make(map[byte]struct{}, len(blocks))
-		for _, b := range blocks {
-			seen[b[q]] = struct{}{}
+// chainCopies counts how many byte-exact copies of the trailing p-byte unit
+// chain backward through the tail, allowing up to gap interlude bytes
+// between copies.
+func chainCopies(tail string, p, gap int) int {
+	unit := tail[len(tail)-p:]
+	n, pos := 1, len(tail)-p
+	for {
+		lo := pos - p - gap
+		if lo < 0 {
+			lo = 0
 		}
-		if len(seen) == len(blocks) {
-			return true
+		idx := strings.LastIndex(tail[lo:pos], unit)
+		if idx < 0 {
+			return n
+		}
+		n++
+		pos = lo + idx
+	}
+}
+
+// streamParaphraseLoop implements Detector B: count word shingles in the
+// tail and fire when enough distinct shingles are hot and they cover most of
+// the tail words. The hot threshold tracks the configured repeat tolerance
+// (never below streamLoopShingleHot), so a high maxRepeats knob also raises
+// the paraphrase bar.
+func streamParaphraseLoop(tail string, maxRepeats int) (period, repeats int, ok bool) {
+	words := strings.Fields(tail)
+	if len(words) < streamLoopMinWords {
+		return 0, 0, false
+	}
+	hot := max(streamLoopShingleHot, maxRepeats)
+	n := streamLoopShingleWords
+	counts := shingleCounts(words, n)
+	if hotShingleKeys(counts, hot) < streamLoopMinHotShingles {
+		return 0, 0, false
+	}
+	coveredN := shingleCoveredWords(words, counts, hot, n)
+	if float64(coveredN)/float64(len(words)) < streamLoopMinCoverage {
+		return 0, 0, false
+	}
+	return n, coveredN / n, true
+}
+
+// shingleCounts counts overlapping n-word shingles over words.
+func shingleCounts(words []string, n int) map[string]int {
+	counts := make(map[string]int, len(words))
+	for i := 0; i+n <= len(words); i++ {
+		counts[strings.Join(words[i:i+n], " ")]++
+	}
+	return counts
+}
+
+// hotShingleKeys counts distinct shingles occurring at least hot times.
+func hotShingleKeys(counts map[string]int, hot int) int {
+	hotKeys := 0
+	for _, c := range counts {
+		if c >= hot {
+			hotKeys++
 		}
 	}
-	return false
+	return hotKeys
+}
+
+// shingleCoveredWords counts word positions covered by any hot shingle.
+func shingleCoveredWords(words []string, counts map[string]int, hot, n int) int {
+	covered := make([]bool, len(words))
+	coveredN := 0
+	for i := 0; i+n <= len(words); i++ {
+		if counts[strings.Join(words[i:i+n], " ")] < hot {
+			continue
+		}
+		for j := i; j < i+n; j++ {
+			if !covered[j] {
+				covered[j] = true
+				coveredN++
+			}
+		}
+	}
+	return coveredN
 }
 
 // streamLoopNormalize strips everything except letters, digits, and spaces,
-// then collapses runs of spaces. This prevents punctuation, symbols, and
-// box-drawing characters from causing false positive loop detections.
+// folds case, then collapses runs of spaces. This prevents punctuation,
+// symbols, box-drawing characters, and casing drift from causing false
+// positive (or false negative) loop detections.
 func streamLoopNormalize(text string) string {
 	var b strings.Builder
 	b.Grow(len(text) / 2)
 	prevSpace := false
 	for _, r := range text {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
+			b.WriteRune(unicode.ToLower(r))
 			prevSpace = false
 		} else if unicode.IsSpace(r) && !prevSpace {
 			b.WriteRune(' ')
@@ -1310,89 +1398,6 @@ func streamLoopNormalize(text string) string {
 	}
 	return strings.TrimSpace(b.String())
 }
-
-// streamHasMultipleUniqueWords reports whether s contains at least two
-// *unique* words. This prevents single-word repetition like "the the the"
-// from triggering a false positive loop detection. Partial words at both
-// ends are dropped first: a period window can slice a word, which would
-// otherwise inflate the unique-word count with fragments ("he", "th").
-func streamHasMultipleUniqueWords(s string) bool {
-	// Trim partial words at both ends only when a middle word survives the
-	// trim (>= 2 spaces); a two-word window has no partials to drop.
-	if strings.Count(s, " ") >= 2 {
-		if i := strings.IndexByte(s, ' '); i >= 0 {
-			s = s[i+1:]
-		}
-		if i := strings.LastIndexByte(s, ' '); i > 0 {
-			s = s[:i]
-		}
-	}
-	words := strings.Fields(s)
-	if len(words) < 2 {
-		return false
-	}
-	seen := make(map[string]int, len(words))
-	for _, w := range words {
-		seen[w]++
-	}
-	return len(seen) >= 2
-}
-
-// streamRepeatMismatchBudget returns how many bytes may differ between two
-// window-sized blocks while still counting as a repetition: one eighth of the
-// window, so a looped sentence with re-wrapped or re-punctuated copies still
-// matches. Small windows get budget 0 (exact match) so the helper's behaviour
-// on tiny repeats is unchanged.
-func streamRepeatMismatchBudget(window int) int {
-	return window / 8
-}
-
-// streamFuzzyBlockEqual compares equal-length blocks a and b, allowing up to
-// budget mismatching positions. After a mismatch it tries to resync by
-// skipping one byte on either side (at most two skips per pair), so a single
-// inserted or dropped byte — a missing/extra separator between two looped
-// copies — does not misalign the whole comparison. Genuinely different blocks
-// exceed the budget quickly and fail fast.
-func streamFuzzyBlockEqual(a, b string, budget int) bool {
-	mismatches, skips, i, j := 0, 0, 0, 0
-	for i < len(a) && j < len(b) {
-		if a[i] == b[j] {
-			i++
-			j++
-			continue
-		}
-		mismatches++
-		if mismatches > budget {
-			return false
-		}
-		switch {
-		case skips < 2 && i+1 < len(a) && a[i+1] == b[j]:
-			i++
-			skips++
-		case skips < 2 && j+1 < len(b) && b[j+1] == a[i]:
-			j++
-			skips++
-		default:
-			i++
-			j++
-		}
-	}
-	// Bytes left unpaired on either side count as mismatches.
-	mismatches += (len(a) - i) + (len(b) - j)
-	return mismatches <= budget
-}
-
-// emitBudgetToolSkipped emits the TUI events (tool call + tool result) for a
-// tool call that was rejected because the per-turn budget was exceeded, WITHOUT
-// executing the tool. The result text instructs the model to answer from what
-// it has already gathered.
-//
-// History is NOT mutated here. The call is buffered and the assistant message
-// + budget result are appended once, together with all sibling calls, in
-// executeBufferedToolCalls. Mutating history here would produce two assistant
-// messages for a single turn and corrupt the tool_calls/tool_results pairing
-// (breaks strict OpenAI-style providers such as DeepSeek).
-
 func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.StreamOptions, provider.Context) {
 	a.mu.Lock()
 	a.turnToolCalls = make(map[string]int)
