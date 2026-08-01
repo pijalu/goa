@@ -680,7 +680,7 @@ func TestFormatContextUsage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatContextUsage(tc.estimate, tc.max, false, "")
+			got := formatContextUsage(tc.estimate, tc.max)
 			if !strings.Contains(got, tc.wantSub) {
 				t.Errorf("formatContextUsage(%d,%d) = %q, want substring %q", tc.estimate, tc.max, got, tc.wantSub)
 			}

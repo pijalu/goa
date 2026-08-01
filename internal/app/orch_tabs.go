@@ -124,7 +124,6 @@ func formatOrchAgentLine(r orchpanel.AgentEnhancedRow) string {
 		ToolCalls:       r.ToolCalls,
 		ContextEstimate: r.ContextEstimate,
 		ContextMax:      r.ContextMax,
-		ContextAutoMax:  r.ContextAutoMax,
 	}
 	active := r.Status == "running"
 	busy := active

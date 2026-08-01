@@ -52,7 +52,6 @@ type App struct {
 	tokenCacheWriteTotal int
 	tokenCacheMisses     int
 	tokenSessionMax      int
-	tokenSessionMaxAuto  bool
 	tokenSessionEstimate int
 
 	// Last-turn tracking.

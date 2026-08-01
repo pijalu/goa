@@ -93,8 +93,11 @@ func TestFormatOrchAgentLine_RendersContextAndActiveColor(t *testing.T) {
 	if !strings.HasPrefix(stripped, "Coder: ") {
 		t.Errorf("expected title-cased role prefix, got %q", stripped)
 	}
-	if !strings.Contains(stripped, "1.0M (auto)") {
-		t.Errorf("expected context usage with auto flag, got %q", stripped)
+	if !strings.Contains(stripped, "1.0M") {
+		t.Errorf("expected context usage, got %q", stripped)
+	}
+	if strings.Contains(stripped, "(auto)") || strings.Contains(stripped, "(auto+") {
+		t.Errorf("context usage must not carry the (auto...) suffix, got %q", stripped)
 	}
 	if !strings.Contains(stripped, "google") || !strings.Contains(stripped, "gemma") {
 		t.Errorf("expected provider/model, got %q", stripped)

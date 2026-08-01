@@ -68,10 +68,6 @@ type sessionStats struct {
 	SpeedTokPerSec  float64 // last turn output tok/s
 	ContextEstimate int
 	ContextMax      int
-	ContextAutoMax  bool // true when ContextMax was inferred from model metadata
-	// CompressionLabel is the compact suffix naming the soft compression
-	// layer that will fire ("+micro"/"+elision"), empty when off.
-	CompressionLabel string
 	CostUSD         float64
 	ShowCost        bool
 	ToolCalls       int
@@ -137,7 +133,6 @@ func (a *App) clearStats() {
 	a.lastTurnCacheRead = 0
 	a.lastTurnCacheWrite = 0
 	a.tokenSessionMax = 0
-	a.tokenSessionMaxAuto = false
 	a.tokenSessionEstimate = 0
 	a.lastTurnSpeed = 0
 	a.turnCount = 0
@@ -746,7 +741,6 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	// Extract context window usage
 	if ev.ContextStats != nil {
 		a.tokenSessionMax = ev.ContextStats.MaxTokens
-		a.tokenSessionMaxAuto = ev.ContextStats.AutoMax
 		a.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
 	}
 
@@ -826,7 +820,6 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 		SpeedTokPerSec:  a.lastTurnSpeed,
 		ContextEstimate: a.tokenSessionEstimate,
 		ContextMax:      a.tokenSessionMax,
-		ContextAutoMax:  a.tokenSessionMaxAuto,
 		ToolCalls:       a.toolCallsTotal,
 		ToolCallLevel:   a.toolCallWarningLevel,
 	}
@@ -834,32 +827,7 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
 	st.CacheMisses = a.tokenCacheMisses
-	st.CompressionLabel = compressionLayerLabel(a.subs.cfg.ContextCompression)
 	return st
-}
-
-// compressionLayerLabel returns the compact footer suffix naming the soft
-// compression layer that will fire ("+micro", "+elision"), or "" when
-// compression or the soft layer is off. The trigger/hard layers are visible
-// through their counters; the soft layer was the invisible one in the
-// "expected micro, got nothing" bug (bugs.md compression entry).
-func compressionLayerLabel(cc config.ContextCompressionConfig) string {
-	if !cc.Enabled {
-		return ""
-	}
-	if cc.Thresholds.SoftPercent < 0 {
-		return ""
-	}
-	name := cc.Strategies.Soft
-	if name == "" {
-		name = "micro"
-	}
-	switch name {
-	case "tool_elision":
-		return "+elision"
-	default:
-		return "+micro"
-	}
 }
 
 // applyPricing computes cost and pricing-related visibility flags for the
@@ -1094,7 +1062,7 @@ func buildFooterStatParts(s sessionStats) []string {
 		parts = append(parts, fmt.Sprintf("$%.4f", s.CostUSD))
 	}
 	if s.ContextMax > 0 {
-		parts = append(parts, formatContextUsage(s.ContextEstimate, s.ContextMax, s.ContextAutoMax, s.CompressionLabel))
+		parts = append(parts, formatContextUsage(s.ContextEstimate, s.ContextMax))
 	}
 	// Show compression counters when non-zero.
 	if s.MicroCompacts > 0 || s.Compacts > 0 {
@@ -1103,21 +1071,16 @@ func buildFooterStatParts(s sessionStats) []string {
 	return parts
 }
 
-func formatContextUsage(estimate, max int, autoMax bool, compressionLabel string) string {
+// formatContextUsage renders context usage as "52.3%/128k". The
+// auto-detected-window and soft-compression-layer parenthetical ("(auto+micro)")
+// was removed from the status bar as noise (user request); ContextAutoMax is
+// still tracked for other surfaces.
+func formatContextUsage(estimate, max int) string {
 	if max <= 0 {
 		return "?"
 	}
 	pct := float64(estimate) / float64(max) * 100
 	value := fmt.Sprintf("%.1f%%/%s", pct, formatTokenCount(max))
-	// Footer label reflects what actually fires: the auto-detected window and
-	// the soft compression layer (bugs.md compression directive, e.g.
-	// "(auto+micro)").
-	switch {
-	case autoMax:
-		value += " (auto" + compressionLabel + ")"
-	case compressionLabel != "":
-		value += " (" + compressionLabel[1:] + ")"
-	}
 	color := tui.TheTheme.ColorHex("status_bar_fg")
 	switch {
 	case pct > 90:

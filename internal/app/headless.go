@@ -157,7 +157,6 @@ type HeadlessApp struct {
 	tokenCacheReadTotal  int
 	tokenCacheWriteTotal int
 	tokenSessionMax      int
-	tokenSessionMaxAuto  bool
 	tokenSessionEstimate int
 	lastTurnPromptN      int
 	lastTurnPredictedN   int
@@ -828,7 +827,6 @@ func (h *HeadlessApp) handleStatsEvent(ev *agentic.OutputEvent) {
 	}
 	if ev.ContextStats != nil {
 		h.tokenSessionMax = ev.ContextStats.MaxTokens
-		h.tokenSessionMaxAuto = ev.ContextStats.AutoMax
 		h.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
 	}
 }
@@ -865,7 +863,6 @@ func (h *HeadlessApp) buildStatsLocked() sessionStats {
 		SpeedTokPerSec:  h.lastTurnSpeed,
 		ContextEstimate: h.tokenSessionEstimate,
 		ContextMax:      h.tokenSessionMax,
-		ContextAutoMax:  h.tokenSessionMaxAuto,
 		ToolCalls:       h.toolCallsTotal,
 		MicroCompacts:   h.microCompacts,
 		Compacts:        h.compacts,
