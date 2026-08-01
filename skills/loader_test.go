@@ -125,6 +125,54 @@ func TestSkillRegistryGetAndList(t *testing.T) {
 	}
 }
 
+// TestSkillRegistrySetDisabled verifies embedded skills can be disabled via
+// configuration: disabled built-ins are never registered (prompt listing,
+// banner, run_skill enum all read from this registry), while file-based
+// skills with the same name still load (they are intentional user additions
+// and win on name collision).
+func TestSkillRegistrySetDisabled(t *testing.T) {
+	// Disabled embedded skill is gone.
+	reg := NewSkillRegistry(nil)
+	reg.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg.SetDisabled([]string{"refactor", "telegram"})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	for _, name := range []string{"refactor", "telegram"} {
+		if _, ok := reg.Get(name); ok {
+			t.Errorf("Get(%q) should fail — skill is disabled", name)
+		}
+	}
+	if _, ok := reg.Get("review"); !ok {
+		t.Error("Get('review') should succeed — not disabled")
+	}
+
+	// A file-based skill with the same name still loads (shadows disabled
+	// built-in): create one in a temp dir.
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "refactor")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: refactor\ndescription: user override\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg2 := NewSkillRegistry([]string{dir})
+	reg2.SetEmbeddedFS(EmbeddedSkillsFS)
+	reg2.SetDisabled([]string{"refactor"})
+	if err := reg2.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	s, ok := reg2.Get("refactor")
+	if !ok {
+		t.Fatal("file-based 'refactor' should load even though the embedded one is disabled")
+	}
+	if s.Meta.Description != "user override" {
+		t.Errorf("Description = %q, want user override", s.Meta.Description)
+	}
+}
+
 // TestSkillRegistryIsInline verifies inline skill detection.
 func TestSkillRegistryIsInline(t *testing.T) {
 	reg := NewSkillRegistry(nil)

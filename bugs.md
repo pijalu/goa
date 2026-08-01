@@ -500,3 +500,41 @@ Now I understand the boundary regression precisely:
   statusbar mode the footer animates "⬣ (provider) model • …" while the chat
   shows no spinner line; switching mode via /config takes effect on the next
   request.
+
+## TUI shows unexpected repetition on normal (non-thinking) messages — OPEN
+
+- **Observed**: assistant message text renders with near-identical sentences
+  repeated back to back, with small casing/punctuation variations:
+  ```
+  ... Let me search for all callers of checkConstraints.isIgnoreableConflict is never called — the error comes from a different path.
+  Let me find all callers of checkConstraints:isIgnoreableConflict is NEVER called! The error must come from a different path. Let me find all
+  callers of checkConstraints:isIgnoreableConflict is NEVER CALLED. The error must come from a different path. Let me find all callers of
+  checkConstraints:isIgnoreableConflict is NEVER called — ... (repeats ~7× with casing variations)
+  ```
+  Two candidate root causes, must be distinguished before fixing:
+  (a) TUI/stream-accumulation bug: stream deltas are appended twice or a
+      re-render overlaps prior text (model output is actually clean).
+  (b) Genuine model loop with per-copy variations that the stream-loop
+      detector misses (see the "Stream-loop detector false positive" entry —
+      the detector rework must ALSO still catch this true-positive shape).
+- **Localization pointers**:
+  - Stream delta → chat path: `internal/app/stats.go` (delta handling),
+    `tui/` chat viewport append logic; note `tui/user_message_double_draw_test.go`
+    exists — double-draw bugs have happened in this area before.
+  - Detector side: `internal/agentic/agent_streaming.go` `streamLoopScan`
+    (the repeated unit above is ~120 bytes with per-copy casing edits).
+- **Investigation plan**:
+  1. Review the streaming TUI code end to end (delta accumulation, buffer
+     flush on tool-call boundaries, viewport append vs. re-render) for a
+     duplication path.
+  2. If the root cause cannot be found by review: add a **stream capture**
+     option (command line, e.g. `goa --capture-stream <file>`) that records
+     the exact inbound provider stream (raw deltas with event sequence) to a
+     log file, plus a replay path (e.g. `--replay-stream <file>` feeding the
+     recorded deltas through the TUI headlessly) so the exact flow can be
+     replayed and bisected deterministically.
+- **Tests**: once root cause is known — regression test at the failing layer
+  (filmstrip test for TUI duplication; streamloop test if detector-side).
+- **Validation**: reproduce with the same prompt class on LM Studio; captured
+  stream replay shows identical rendering; fix removes duplication (guideline
+  #5 — verify real terminal output).

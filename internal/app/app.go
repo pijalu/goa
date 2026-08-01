@@ -599,6 +599,7 @@ func (a *App) reloadSkills() {
 	reg := skills.NewSkillRegistry(skillDirs)
 	reg.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	reg.SetTrustChecker(newSkillTrustChecker(trustMgr))
+	reg.SetDisabled(cfg.Skills.Disabled)
 	if err := reg.LoadAll(); err != nil {
 		log.Printf("Warning: failed to reload skills after trust: %v\n", err)
 		return

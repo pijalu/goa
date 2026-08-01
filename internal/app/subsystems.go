@@ -840,6 +840,7 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	skillRegistry := skills.NewSkillRegistry(skillDirs)
 	skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
+	skillRegistry.SetDisabled(cfg.Skills.Disabled)
 	if err := skillRegistry.LoadAll(); err != nil {
 		log.Printf("Warning: failed to load skills: %v\n", err)
 	} else if n := len(skillRegistry.List()); n > 0 {

@@ -67,6 +67,7 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 	h.subs.skillRegistry = skills.NewSkillRegistry(skillDirs)
 	h.subs.skillRegistry.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	h.subs.skillRegistry.SetTrustChecker(newSkillTrustChecker(h.subs.trustMgr))
+	h.subs.skillRegistry.SetDisabled(h.subs.cfg.Skills.Disabled)
 	if err := h.subs.skillRegistry.LoadAll(); err != nil {
 		return 0, fmt.Errorf("reload skills: %w", err)
 	}

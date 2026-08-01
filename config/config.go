@@ -567,6 +567,12 @@ type SkillsConfig struct {
 	Dirs          []string `yaml:"dirs"`
 	Embedded      bool     `yaml:"embedded"`
 	ExecutionMode string   `yaml:"execution_mode"` // "inline" (default) or "sub-agent"
+	// Disabled lists embedded skill names to turn off. Disabled skills are
+	// not registered, so they never appear in the system prompt listing, the
+	// skills banner, or the run_skill enum. File-based skills from dirs are
+	// unaffected (they are intentional user/project additions). Load-time
+	// only: the system prompt is not rebuilt mid-session.
+	Disabled []string `yaml:"disabled,omitempty"`
 }
 
 // ToolsConfig holds tool-specific sub-configurations.

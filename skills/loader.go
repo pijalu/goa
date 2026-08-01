@@ -138,8 +138,9 @@ type SkillRegistry struct {
 	dirs         []string
 	embedFS      fs.FS        // optional embedded filesystem for built-in skills
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
-	homeDir      string       // home dir path for source labeling ("home")
-	projectDir   string       // project dir path for source labeling ("project")
+	disabled     map[string]bool
+	homeDir      string // home dir path for source labeling ("home")
+	projectDir   string // project dir path for source labeling ("project")
 }
 
 // NewSkillRegistry creates a registry that scans the given directories.
@@ -155,6 +156,21 @@ func NewSkillRegistry(dirs []string) *SkillRegistry {
 // Skills are discovered by walking the FS for */SKILL.md entries.
 func (r *SkillRegistry) SetEmbeddedFS(efs fs.FS) {
 	r.embedFS = efs
+}
+
+// SetDisabled marks embedded skill names as disabled: they are skipped during
+// LoadAll, so they never reach the system prompt listing, the skills banner,
+// or the run_skill enum. File-based skills are unaffected (dirs are scanned
+// after the embedded FS and win on name collision — a user skill may always
+// shadow a disabled built-in). Must be called before LoadAll.
+func (r *SkillRegistry) SetDisabled(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	r.disabled = make(map[string]bool, len(names))
+	for _, n := range names {
+		r.disabled[n] = true
+	}
 }
 
 // SetHomeDir records the home directory path so skills loaded from it
@@ -224,6 +240,9 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		// path is <name>/SKILL.md
 		name := filepath.Dir(path)
 		if name == "." {
+			return nil
+		}
+		if r.disabled[name] {
 			return nil
 		}
 		data, err := fs.ReadFile(r.embedFS, path)

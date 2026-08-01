@@ -331,6 +331,8 @@ func (c *Config) mergeSkills(other *Config) {
 	if other.Skills.ExecutionMode != "" {
 		c.Skills.ExecutionMode = other.Skills.ExecutionMode
 	}
+	c.Skills.Disabled = append(c.Skills.Disabled, other.Skills.Disabled...)
+	c.Skills.Disabled = uniqueStrings(c.Skills.Disabled)
 }
 
 // mergeMCP merges MCP server definitions. Servers are keyed by name; a server
