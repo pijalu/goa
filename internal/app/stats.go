@@ -64,10 +64,14 @@ type sessionStats struct {
 	PredictedN      int
 	CacheReadTotal  int
 	CacheWriteTotal int
+	CacheMisses     int // cache-bust count: zero-cache-read requests after the cache was established
 	SpeedTokPerSec  float64 // last turn output tok/s
 	ContextEstimate int
 	ContextMax      int
 	ContextAutoMax  bool // true when ContextMax was inferred from model metadata
+	// CompressionLabel is the compact suffix naming the soft compression
+	// layer that will fire ("+micro"/"+elision"), empty when off.
+	CompressionLabel string
 	CostUSD         float64
 	ShowCost        bool
 	ToolCalls       int
@@ -124,6 +128,7 @@ func (a *App) clearStats() {
 	a.tokenPredictedTotal = 0
 	a.tokenCacheReadTotal = 0
 	a.tokenCacheWriteTotal = 0
+	a.tokenCacheMisses = 0
 	a.lastTurnPromptN = 0
 	a.lastTurnPredictedN = 0
 	a.lastTurnCacheRead = 0
@@ -531,10 +536,14 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	tokenTotalPredicted := a.tokenPredictedTotal
 	tokenCacheRead := a.tokenCacheReadTotal
 	tokenCacheWrite := a.tokenCacheWriteTotal
+	cacheMisses := a.tokenCacheMisses
 	a.statsMu.Unlock()
 
 	line := fmt.Sprintf("[stats] turn %d: in=%d out=%d speed=%.1f ctx=%.1f%%/%d",
 		turn, promptN, predictedN, speed, ctxPct, ctxMax)
+	if cacheMisses > 0 {
+		line += fmt.Sprintf(" cm=%d", cacheMisses)
+	}
 
 	if modelCfg != nil && modelCfg.Pricing != nil {
 		cost := computeCost(tokenTotalPrompt, tokenTotalPredicted, tokenCacheRead, tokenCacheWrite, modelCfg.Pricing)
@@ -715,6 +724,14 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		a.lastTurnCacheWrite = ev.Timings.CacheWriteTokens
 		a.tokenCacheReadTotal += ev.Timings.CacheReadTokens
 		a.tokenCacheWriteTotal += ev.Timings.CacheWriteTokens
+		// Count cache busts: a request with zero cache reads AFTER the cache
+		// was established (a previous request read from cache). The first
+		// request(s) of a session are cold by nature and not counted; a
+		// provider reporting no cache stats never establishes, so the
+		// counter stays hidden there.
+		if ev.Timings.CacheReadTokens == 0 && a.tokenCacheReadTotal > 0 {
+			a.tokenCacheMisses++
+		}
 
 		// Capture last-turn output speed
 		a.lastTurnSpeed = ev.Timings.PredictedPerSecond
@@ -813,7 +830,33 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	applyPricing(&st, a.subs.cfg, a.subs.cfg.ActiveModel)
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
+	st.CacheMisses = a.tokenCacheMisses
+	st.CompressionLabel = compressionLayerLabel(a.subs.cfg.ContextCompression)
 	return st
+}
+
+// compressionLayerLabel returns the compact footer suffix naming the soft
+// compression layer that will fire ("+micro", "+elision"), or "" when
+// compression or the soft layer is off. The trigger/hard layers are visible
+// through their counters; the soft layer was the invisible one in the
+// "expected micro, got nothing" bug (bugs.md compression entry).
+func compressionLayerLabel(cc config.ContextCompressionConfig) string {
+	if !cc.Enabled {
+		return ""
+	}
+	if cc.Thresholds.SoftPercent < 0 {
+		return ""
+	}
+	name := cc.Strategies.Soft
+	if name == "" {
+		name = "micro"
+	}
+	switch name {
+	case "tool_elision":
+		return "+elision"
+	default:
+		return "+micro"
+	}
 }
 
 // applyPricing computes cost and pricing-related visibility flags for the
@@ -1036,6 +1079,11 @@ func buildFooterStatParts(s sessionStats) []string {
 		pct := metrics.CacheHitPct(s.CacheReadTotal, s.CacheWriteTotal, s.PromptN)
 		parts = append(parts, formatCacheHitPart(pct, s.PrevCacheHitPct))
 	}
+	// Cache-miss counter, next to CH and only when non-zero (a miss means the
+	// established cache was bypassed — compression, TTL expiry, prefix churn).
+	if s.CacheMisses > 0 {
+		parts = append(parts, formatCacheMissPart(s.CacheMisses))
+	}
 	if s.ToolCalls > 0 {
 		parts = append(parts, formatToolCallPart(s.ToolCalls, s.ToolCallLevel))
 	}
@@ -1043,7 +1091,7 @@ func buildFooterStatParts(s sessionStats) []string {
 		parts = append(parts, fmt.Sprintf("$%.4f", s.CostUSD))
 	}
 	if s.ContextMax > 0 {
-		parts = append(parts, formatContextUsage(s.ContextEstimate, s.ContextMax, s.ContextAutoMax))
+		parts = append(parts, formatContextUsage(s.ContextEstimate, s.ContextMax, s.ContextAutoMax, s.CompressionLabel))
 	}
 	// Show compression counters when non-zero.
 	if s.MicroCompacts > 0 || s.Compacts > 0 {
@@ -1052,14 +1100,20 @@ func buildFooterStatParts(s sessionStats) []string {
 	return parts
 }
 
-func formatContextUsage(estimate, max int, autoMax bool) string {
+func formatContextUsage(estimate, max int, autoMax bool, compressionLabel string) string {
 	if max <= 0 {
 		return "?"
 	}
 	pct := float64(estimate) / float64(max) * 100
 	value := fmt.Sprintf("%.1f%%/%s", pct, formatTokenCount(max))
-	if autoMax {
-		value += " (auto)"
+	// Footer label reflects what actually fires: the auto-detected window and
+	// the soft compression layer (bugs.md compression directive, e.g.
+	// "(auto+micro)").
+	switch {
+	case autoMax:
+		value += " (auto" + compressionLabel + ")"
+	case compressionLabel != "":
+		value += " (" + compressionLabel[1:] + ")"
 	}
 	color := tui.TheTheme.ColorHex("status_bar_fg")
 	switch {
@@ -1094,6 +1148,13 @@ func formatCacheHitPart(pct, prevPct float64) string {
 	}
 
 	return ansi.Fg(colorHex) + fmt.Sprintf("CH%.1f%%", pct) + ansi.Reset
+}
+
+// formatCacheMissPart renders the cache-miss counter in warning orange:
+// misses mean the established prefix cache was bypassed, so they are always
+// worth noticing (and hidden at zero).
+func formatCacheMissPart(misses int) string {
+	return ansi.Fg("#d29922") + fmt.Sprintf("CM:%d", misses) + ansi.Reset
 }
 
 // formatToolCallPart renders the TC:N display with color coding:

@@ -46,6 +46,7 @@ type App struct {
 	tokenPredictedTotal  int
 	tokenCacheReadTotal  int
 	tokenCacheWriteTotal int
+	tokenCacheMisses     int
 	tokenSessionMax      int
 	tokenSessionMaxAuto  bool
 	tokenSessionEstimate int
