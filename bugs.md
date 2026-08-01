@@ -162,41 +162,6 @@ e2e assertion bugs (7).
 # Other issues
 
 
-## Goal tool result line floods the timeline with the full objective — should show the goal short name — OPEN
-
-- **Observed**: every `goal` tool result carrying a goal snapshot
-  (create / get / update_todo) renders the full objective, which floods the
-  timeline and truncates mid-word:
-  ```
-  ✓ ◆ Updated todo t2 → done
-  Goal active: Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser, complet
-  ```
-  Expected — the goal's short friendly name is used instead:
-  ```
-  ✓ ◆ Updated todo t2 → done
-  goal active: honest.zebra
-  ```
-- **Localization**: `tui/goal/tool_renderers.go`:
-  - `renderGoalSnapshotLine` (line ~222) builds
-    `"Goal %s: %s · %d turns · %s tokens · %s"` from
-    `goalSummaryJSON.Objective` — the raw, unbounded objective string.
-  - `goalSummaryJSON` (line ~166) does NOT decode the snapshot's `"name"`
-    field, even though the goal tool result carries it
-    (e.g. `"name":"honest.zebra"`).
-  - The prefer-name pattern already exists for queued goals:
-    `upcomingGoalJSON.Name` + `goalLabel()` (line ~300) — reuse it.
-- **Fix plan**: add `Name string \`json:"name"\`` to `goalSummaryJSON`; in
-  `renderGoalSnapshotLine` render the short name when non-empty, falling back
-  to a truncated objective (same rule as `goalLabel`). Keep the
-  turns/tokens/elapsed/todos stats suffix (useful signal) — only the
-  objective → short-name swap changes.
-- **Tests**: table-driven cases in `tui/goal/tool_renderers_test.go`:
-  snapshot with name → line shows `<status>: <name>` and NOT the objective;
-  snapshot without name → truncated-objective fallback; stats suffix intact.
-- **Validation**: `go test ./tui/goal -race`; then run a TUI session with a
-  long-objective goal, update a todo, and verify the timeline shows the
-  one-line short-name summary (guideline #5 — verify real terminal output).
-
 
 ## Option: move the busy spinner from in-chat line to the status bar — OPEN
 
@@ -296,6 +261,21 @@ e2e assertion bugs (7).
   at 92.9% of a 262.1K window, cache 99.1% hot, compression mode (auto), yet
   no (micro) compression has fired. Expected: some micro compression well
   before the wall.
+- **Second sample (2026-08-01) — worse**: compression still had not fired
+  PAST 100% of the window; the oversized request went out and the provider
+  hard-rejected it, pausing the goal:
+  ```
+  │ Error: 401 - k3-256k supports only 256K context. │
+  ◦ Goal paused by the system
+  Paused after provider authentication error
+  ↑545.5K ↓182.1K 19.6 tok/s CH99.0% TC:436 115.5%/262.1K (auto) c:1m-0  (kimi-code) k3-256k • high • [17%|14%]
+  ```
+  At 115.5%/262.1K with (auto), neither soft nor main compression fired
+  BEFORE the call; the overflow surfaced as a provider 401. The safety net
+  failed open: usage ≥ 100% must force compression (or block) BEFORE the
+  request is built — never send an oversized request. `c:1m-0` in the
+  footer hints a compression countdown/state field — check what it tracks
+  and whether it was stuck at 0.
 - **Hypotheses to review** (in order):
   1. **Soft tier disabled by default**: `CompressionThresholds.SoftPercent`
      defaults to 0 = disabled (`internal/agentic/compression_thresholds.go`),

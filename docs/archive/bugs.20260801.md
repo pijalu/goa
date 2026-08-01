@@ -335,3 +335,81 @@ Now I understand the boundary regression precisely:
 
 
 **Status**: FIXED 2026-08-01 (commit 304c9ee) — same rework. The paraphrase-loop fixture (13 drifting copies) trips via Detector B (hot shingles + coverage), incl. mid-stream. Note: the ~10-copy trim needed the incident's heavier tail (16 copies) — copy count IS the signal by design.
+
+---
+
+## Goal tool result line floods the timeline with the full objective — should show the goal short name — OPEN
+
+- **Observed**: every `goal` tool result carrying a goal snapshot
+  (create / get / update_todo) renders the full objective, which floods the
+  timeline and truncates mid-word:
+  ```
+  ✓ ◆ Updated todo t2 → done
+  Goal active: Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser, complet
+  ```
+  Expected — the goal's short friendly name is used instead:
+  ```
+  ✓ ◆ Updated todo t2 → done
+  goal active: honest.zebra
+  ```
+- **Localization**: `tui/goal/tool_renderers.go`:
+  - `renderGoalSnapshotLine` (line ~222) builds
+    `"Goal %s: %s · %d turns · %s tokens · %s"` from
+    `goalSummaryJSON.Objective` — the raw, unbounded objective string.
+  - `goalSummaryJSON` (line ~166) does NOT decode the snapshot's `"name"`
+    field, even though the goal tool result carries it
+    (e.g. `"name":"honest.zebra"`).
+  - The prefer-name pattern already exists for queued goals:
+    `upcomingGoalJSON.Name` + `goalLabel()` (line ~300) — reuse it.
+- **Fix plan**: add `Name string \`json:"name"\`` to `goalSummaryJSON`; in
+  `renderGoalSnapshotLine` render the short name when non-empty, falling back
+  to a truncated objective (same rule as `goalLabel`). Keep the
+  turns/tokens/elapsed/todos stats suffix (useful signal) — only the
+  objective → short-name swap changes.
+- **Tests**: table-driven cases in `tui/goal/tool_renderers_test.go`:
+  snapshot with name → line shows `<status>: <name>` and NOT the objective;
+  snapshot without name → truncated-objective fallback; stats suffix intact.
+- **Validation**: `go test ./tui/goal -race`; then run a TUI session with a
+  long-objective goal, update a todo, and verify the timeline shows the
+  one-line short-name summary (guideline #5 — verify real terminal output).
+
+**Status**: FIXED 2026-08-01 (commit 5d34156) — goalSummaryJSON decodes 'name'; summaryLabel prefers the friendly short name (fallback: truncated objective) in snapshot + list Active lines; stats suffix unchanged. Table-driven tests cover named/unnamed/todos/list.
+
+
+## Goal tool result line floods the timeline with the full objective — should show the goal short name
+
+- **Observed**: every `goal` tool result carrying a goal snapshot
+  (create / get / update_todo) renders the full objective, which floods the
+  timeline and truncates mid-word:
+  ```
+  ✓ ◆ Updated todo t2 → done
+  Goal active: Wire the go-lemon generated TCL parser into tcl2go as a drop-in replacement for the hand-written tcl.ParseCommands parser, complet
+  ```
+  Expected — the goal's short friendly name is used instead:
+  ```
+  ✓ ◆ Updated todo t2 → done
+  goal active: honest.zebra
+  ```
+- **Localization**: `tui/goal/tool_renderers.go`:
+  - `renderGoalSnapshotLine` (line ~222) builds
+    `"Goal %s: %s · %d turns · %s tokens · %s"` from
+    `goalSummaryJSON.Objective` — the raw, unbounded objective string.
+  - `goalSummaryJSON` (line ~166) does NOT decode the snapshot's `"name"`
+    field, even though the goal tool result carries it
+    (e.g. `"name":"honest.zebra"`).
+  - The prefer-name pattern already exists for queued goals:
+    `upcomingGoalJSON.Name` + `goalLabel()` (line ~300) — reuse it.
+- **Fix plan**: add `Name string \`json:"name"\`` to `goalSummaryJSON`; in
+  `renderGoalSnapshotLine` render the short name when non-empty, falling back
+  to a truncated objective (same rule as `goalLabel`). Keep the
+  turns/tokens/elapsed/todos stats suffix (useful signal) — only the
+  objective → short-name swap changes.
+- **Tests**: table-driven cases in `tui/goal/tool_renderers_test.go`:
+  snapshot with name → line shows `<status>: <name>` and NOT the objective;
+  snapshot without name → truncated-objective fallback; stats suffix intact.
+- **Validation**: `go test ./tui/goal -race`; then run a TUI session with a
+  long-objective goal, update a todo, and verify the timeline shows the
+  one-line short-name summary (guideline #5 — verify real terminal output).
+
+
+- **Status**: FIXED on branch feature/recontext (commit 5d34156): goalSummaryJSON decodes the snapshot's 'name' field; new summaryLabel prefers the friendly short name, falls back to the truncated objective (same rule as queued goals). Also fixed the same flood in renderGoalList's Active line. Tests: tui/goal/tool_renderers_test.go (TestGoalRenderer_SnapshotUsesShortName, TestGoalRenderer_ListActiveUsesShortName) — name shown, objective absent, stats suffix intact. Validated: go test ./tui/goal/ -race green.
