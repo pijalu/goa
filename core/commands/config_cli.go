@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -455,24 +456,33 @@ var configSetters = map[string]configSetter{
 	"context_compression.cache_gate":                 setCacheGate,
 	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
 	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
-	"execution.loop_warning":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
-	"execution.loop_interrupt":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
-	"execution.disable_thinking_loop_detection":      setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
-	"execution.disable_tool_loop_detection":          setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
-	"execution.disable_stream_loop_detection":        setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
-	"execution.disable_thinking_stall_detection":     setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingStallDetection }),
-	"execution.stream_loop_max_repeats":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
-	"execution.stream_loop_max_strikes":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
-	"execution.stream_loop_reset_after":              setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
-	"execution.disable_tool_budget":                  setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
-	"skills.execution_mode":                          setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
-	"tools.bash.enable_complexity_analysis":          setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
-	"tools.bash.warn_file_edits":                     setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.Bash.WarnFileEdits }),
-	"tools.bash.jail":                                setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
-	"tools.bash.max_complexity_score":                setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
-	"tools.terminal.sandbox.enabled":                 setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
-	"tools.enabled.goal":                             setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
-	"tools.enabled.lsp":                              setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.LSP }),
+	"context_compression.preserve_recent_turns":      setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.PreserveRecentTurns }, 0, 100),
+	// Micro compaction knobs: no hidden configuration keys — the micro own
+	// gates (usage ratio, cold-cache threshold) change runtime behavior and
+	// must be visible/settable like every other compression knob.
+	"context_compression.micro_compaction.keep_recent_messages": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.MicroCompaction.KeepRecentMessages }, 0, 1000),
+	"context_compression.micro_compaction.min_content_tokens":   setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.MicroCompaction.MinContentTokens }, 0, 1000000),
+	"context_compression.micro_compaction.min_context_ratio":    setMicroMinContextRatio,
+	"context_compression.micro_compaction.cache_miss_threshold": setMicroCacheMissThreshold,
+	"context_compression.micro_compaction.truncated_marker":     setString(func(cfg *config.Config) *string { return &cfg.ContextCompression.MicroCompaction.TruncatedMarker }),
+	"execution.loop_warning":                                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
+	"execution.loop_interrupt":                                  setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
+	"execution.disable_thinking_loop_detection":                 setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
+	"execution.disable_tool_loop_detection":                     setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableToolLoopDetection }),
+	"execution.disable_stream_loop_detection":                   setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
+	"execution.disable_thinking_stall_detection":                setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingStallDetection }),
+	"execution.stream_loop_max_repeats":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
+	"execution.stream_loop_max_strikes":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
+	"execution.stream_loop_reset_after":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
+	"execution.disable_tool_budget":                             setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),
+	"skills.execution_mode":                                     setString(func(cfg *config.Config) *string { return &cfg.Skills.ExecutionMode }),
+	"tools.bash.enable_complexity_analysis":                     setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.EnableComplexityAnalysis }),
+	"tools.bash.warn_file_edits":                                setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Tools.Bash.WarnFileEdits }),
+	"tools.bash.jail":                                           setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Bash.Jail }),
+	"tools.bash.max_complexity_score":                           setInt(func(cfg *config.Config) *int { return &cfg.Tools.Bash.MaxComplexityScore }),
+	"tools.terminal.sandbox.enabled":                            setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Terminal.Sandbox.Enabled }),
+	"tools.enabled.goal":                                        setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.Goal }),
+	"tools.enabled.lsp":                                         setBool(func(cfg *config.Config) *bool { return &cfg.Tools.Enabled.LSP }),
 }
 
 func setActiveMajor(cfg *config.Config, value string) error {
@@ -651,6 +661,37 @@ func setCacheGate(cfg *config.Config, value string) error {
 		return nil
 	}
 	return fmt.Errorf("context_compression.cache_gate must be \"on\" or \"off\"")
+}
+
+// setMicroMinContextRatio validates the micro-compaction usage gate: 0 (or
+// empty) clears to the SDK default (0.5); anything else must be a ratio in
+// (0, 1].
+func setMicroMinContextRatio(cfg *config.Config, value string) error {
+	if value == "" || value == "0" {
+		cfg.ContextCompression.MicroCompaction.MinContextRatio = 0
+		return nil
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil || f <= 0 || f > 1 {
+		return fmt.Errorf("context_compression.micro_compaction.min_context_ratio must be 0 (default) or a ratio in (0, 1], got %q", value)
+	}
+	cfg.ContextCompression.MicroCompaction.MinContextRatio = f
+	return nil
+}
+
+// setMicroCacheMissThreshold validates the micro-compaction cold-cache gate
+// as a Go duration ("15m", "1h"); empty clears to the SDK default (1h) and
+// "0" disables the cache protection (cache always presumed cold).
+func setMicroCacheMissThreshold(cfg *config.Config, value string) error {
+	if value == "" {
+		cfg.ContextCompression.MicroCompaction.CacheMissThreshold = ""
+		return nil
+	}
+	if _, err := time.ParseDuration(value); err != nil {
+		return fmt.Errorf("context_compression.micro_compaction.cache_miss_threshold must be a duration (e.g. 15m, 1h), got %q", value)
+	}
+	cfg.ContextCompression.MicroCompaction.CacheMissThreshold = value
+	return nil
 }
 
 // setTriggerPercentClearLegacy sets the tiered trigger_percent AND clears the

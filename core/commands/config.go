@@ -537,9 +537,8 @@ func (m *configMenu) settingExecutionMode() {
 	})
 }
 
-// settingCompression is the /config → Compression sub-menu. It exposes the
-// strategy, trigger threshold, and max-tokens so the user can tune context
-// compression without editing YAML by hand.
+// toggleBoolLabel returns the string representation of the opposite bool,
+// for toggle-style menu entries.
 func toggleBoolLabel(v bool) string {
 	if v {
 		return "false"

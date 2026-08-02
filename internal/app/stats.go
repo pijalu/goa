@@ -64,7 +64,7 @@ type sessionStats struct {
 	PredictedN      int
 	CacheReadTotal  int
 	CacheWriteTotal int
-	CacheMisses     int // cache-bust count: zero-cache-read requests after the cache was established
+	CacheMisses     int     // cache-bust count: zero-cache-read requests after the cache was established
 	SpeedTokPerSec  float64 // last turn output tok/s
 	ContextEstimate int
 	ContextMax      int
@@ -708,6 +708,13 @@ func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {
 	subs.tuiEngine.RequestRender()
 }
 
+// cacheBustDropToleranceTokens is the wobble absorbed before a drop in cache
+// reads counts as a cache bust: providers report cached tokens at block
+// granularity (e.g. 256-token blocks on kimi), so tiny dips between requests
+// are reporting noise, not invalidation. Real busts (compaction truncation,
+// TTL expiry) collapse reads by orders of magnitude more.
+const cacheBustDropToleranceTokens = 1024
+
 func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	a.statsMu.Lock()
 	// Extract token counts from timings
@@ -718,16 +725,25 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		a.tokenPredictedTotal += ev.Timings.PredictedN
 
 		// Track cache tokens
+		prevCacheRead := a.lastTurnCacheRead
 		a.lastTurnCacheRead = ev.Timings.CacheReadTokens
 		a.lastTurnCacheWrite = ev.Timings.CacheWriteTokens
 		a.tokenCacheReadTotal += ev.Timings.CacheReadTokens
 		a.tokenCacheWriteTotal += ev.Timings.CacheWriteTokens
-		// Count cache busts: a request with zero cache reads AFTER the cache
-		// was established (a previous request read from cache). The first
-		// request(s) of a session are cold by nature and not counted; a
-		// provider reporting no cache stats never establishes, so the
-		// counter stays hidden there.
-		if ev.Timings.CacheReadTokens == 0 && a.tokenCacheReadTotal > 0 {
+		// Count cache busts two ways:
+		//  1. Zero cache reads AFTER the cache was established (provider TTL
+		//     expiry reports 0). The first request(s) of a session are cold by
+		//     nature and not counted; a provider reporting no cache stats
+		//     never establishes, so the counter stays hidden there.
+		//  2. A significant DROP in cache reads: in an append-only
+		//     conversation the cached prefix grows monotonically, so a
+		//     collapse means the prefix was invalidated — e.g. in-place
+		//     history mutation (micro compaction) leaves a PARTIAL hit
+		//     (5,376 of ~113k tokens in the 2026-08-02 session export),
+		//     which the zero-read rule never catches. A tolerance absorbs
+		//     block-quantization wobble in provider reporting.
+		if (ev.Timings.CacheReadTokens == 0 && a.tokenCacheReadTotal > 0) ||
+			(prevCacheRead > 0 && ev.Timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead) {
 			a.tokenCacheMisses++
 		}
 

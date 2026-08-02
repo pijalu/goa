@@ -706,7 +706,7 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	if sr.title != "Compression settings:" {
 		t.Fatalf("title = %q, want Compression settings:", sr.title)
 	}
-	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard", "cache_gate", "max_tokens", "enabled", "on_context_error"}
+	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard", "cache_gate", "max_tokens", "preserve_recent_turns", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d compression items, got %d", len(want), len(sr.options))
 	}

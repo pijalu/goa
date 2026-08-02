@@ -26,32 +26,43 @@ func (m *configMenu) settingCompression() {
 		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "95% (default)")},
 		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
 		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
+		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg)},
+		{Value: "micro_min_context_ratio", Label: "Micro: min context ratio (own gate)", Description: microMinContextRatioLabel(cfg)},
+		{Value: "micro_cache_miss_threshold", Label: "Micro: cache-miss threshold (cold-cache gate)", Description: microCacheMissThresholdLabel(cfg)},
+		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg)},
+		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg)},
+		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg)},
 		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.Enabled)},
 		{Value: "on_context_error", Label: "Compress on context error", Description: boolLabel(cfg.ContextCompression.OnContextError)},
+	}
+	openers := map[string]func(){
+		"strategy":                   m.settingCompressionStrategy,
+		"soft_strategy":              m.settingCompressionSoftStrategy,
+		"hard_strategy":              m.settingCompressionHardStrategy,
+		"soft":                       m.settingCompressionSoft,
+		"threshold":                  m.settingCompressionThreshold,
+		"hard":                       m.settingCompressionHard,
+		"max_tokens":                 m.settingCompressionMaxTokens,
+		"preserve_recent_turns":      m.settingCompressionPreserveRecentTurns,
+		"micro_min_context_ratio":    m.settingCompressionMicroRatio,
+		"micro_cache_miss_threshold": m.settingCompressionMicroCacheMissThreshold,
+		"micro_keep_recent_messages": m.settingCompressionMicroKeepRecent,
+		"micro_min_content_tokens":   m.settingCompressionMicroMinContent,
+		"micro_truncated_marker":     m.settingCompressionMicroMarker,
 	}
 	m.ctx.SelectOption("Compression settings:", items, "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
+		if open, found := openers[selected]; found {
+			m.open(open)
+			return
+		}
 		switch selected {
-		case "strategy":
-			m.open(m.settingCompressionStrategy)
-		case "soft_strategy":
-			m.open(m.settingCompressionSoftStrategy)
-		case "hard_strategy":
-			m.open(m.settingCompressionHardStrategy)
 		case "cache_gate":
 			m.applySet("context_compression.cache_gate", toggleCacheGateValue(cfg.ContextCompression.CacheGate))
 			m.settingCompression()
-		case "soft":
-			m.open(m.settingCompressionSoft)
-		case "threshold":
-			m.open(m.settingCompressionThreshold)
-		case "hard":
-			m.open(m.settingCompressionHard)
-		case "max_tokens":
-			m.open(m.settingCompressionMaxTokens)
 		case "enabled":
 			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.Enabled))
 			m.settingCompression()
@@ -236,6 +247,193 @@ func (m *configMenu) settingCompressionMaxTokens() {
 	})
 }
 
+// settingCompressionPreserveRecentTurns exposes preserve_recent_turns (used
+// by the selective and hybrid strategies). 0 = SDK default (2 turns).
+func (m *configMenu) settingCompressionPreserveRecentTurns() {
+	m.current = m.settingCompressionPreserveRecentTurns
+	items := []tui.SelectorItem{
+		{Value: "0", Label: "default (2)", Description: "SDK fallback"},
+	}
+	for _, n := range []int{2, 4, 6, 8, 10, 20} {
+		items = append(items, tui.SelectorItem{Value: fmt.Sprintf("%d", n), Label: fmt.Sprintf("%d", n)})
+	}
+	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.PreserveRecentTurns)
+	m.ctx.SelectOption("Turns preserved from compression (0 = default):", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.preserve_recent_turns", v)
+		m.back()
+	})
+}
+
+// settingCompressionMicroRatio exposes the micro compaction's OWN usage gate
+// (min_context_ratio): proactive micro compaction only runs at/above this
+// fill level. This is the gate that fired in the 2026-08-02 cache-bust
+// session — it must be visible (no hidden configuration keys).
+func (m *configMenu) settingCompressionMicroRatio() {
+	m.current = m.settingCompressionMicroRatio
+	items := []tui.SelectorItem{
+		{Value: "0", Label: "default (50%)", Description: "SDK default"},
+	}
+	for pct := 30; pct <= 90; pct += 10 {
+		items = append(items, tui.SelectorItem{
+			Value: fmt.Sprintf("%g", float64(pct)/100),
+			Label: fmt.Sprintf("%d%%", pct),
+		})
+	}
+	current := "0"
+	if r := m.ctx.Config.ContextCompression.MicroCompaction.MinContextRatio; r > 0 {
+		current = fmt.Sprintf("%g", r)
+	}
+	m.ctx.SelectOption("Micro compaction min context ratio (0 = default):", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.micro_compaction.min_context_ratio", v)
+		m.back()
+	})
+}
+
+// settingCompressionMicroCacheMissThreshold exposes the micro cold-cache
+// gate: in-place truncation is deferred while the provider cache is presumed
+// hot, i.e. until the agent has been idle at least this long.
+func (m *configMenu) settingCompressionMicroCacheMissThreshold() {
+	m.current = m.settingCompressionMicroCacheMissThreshold
+	items := []tui.SelectorItem{
+		{Value: "1h", Label: "1h (default)", Description: "SDK default"},
+		{Value: "5m", Label: "5m", Description: "aggressive: compact after short idles"},
+		{Value: "15m", Label: "15m", Description: ""},
+		{Value: "30m", Label: "30m", Description: ""},
+		{Value: "2h", Label: "2h", Description: ""},
+		{Value: "4h", Label: "4h", Description: "conservative: protect the cache longer"},
+		{Value: "0", Label: "off", Description: "no cache protection: always compact at the ratio gate"},
+	}
+	current := m.ctx.Config.ContextCompression.MicroCompaction.CacheMissThreshold
+	if current == "" {
+		current = "1h"
+	}
+	m.ctx.SelectOption("Idle time before micro compaction may mutate a hot cache:", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.micro_compaction.cache_miss_threshold", v)
+		m.back()
+	})
+}
+
+// settingCompressionMicroKeepRecent exposes keep_recent_messages: the N most
+// recent messages micro compaction never truncates.
+func (m *configMenu) settingCompressionMicroKeepRecent() {
+	m.current = m.settingCompressionMicroKeepRecent
+	items := []tui.SelectorItem{
+		{Value: "0", Label: "default (20)", Description: "SDK default"},
+	}
+	for _, n := range []int{10, 20, 30, 50, 100} {
+		items = append(items, tui.SelectorItem{Value: fmt.Sprintf("%d", n), Label: fmt.Sprintf("%d", n)})
+	}
+	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.MicroCompaction.KeepRecentMessages)
+	m.ctx.SelectOption("Recent messages micro compaction never touches (0 = default):", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.micro_compaction.keep_recent_messages", v)
+		m.back()
+	})
+}
+
+// settingCompressionMicroMinContent exposes min_content_tokens: tool results
+// smaller than this are left intact by micro compaction.
+func (m *configMenu) settingCompressionMicroMinContent() {
+	m.current = m.settingCompressionMicroMinContent
+	items := []tui.SelectorItem{
+		{Value: "0", Label: "default (100)", Description: "SDK default"},
+	}
+	for _, n := range []int{50, 100, 250, 500, 1000, 5000} {
+		items = append(items, tui.SelectorItem{Value: fmt.Sprintf("%d", n), Label: fmt.Sprintf("%d", n)})
+	}
+	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.MicroCompaction.MinContentTokens)
+	m.ctx.SelectOption("Minimum tool-result size to truncate, in tokens (0 = default):", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.micro_compaction.min_content_tokens", v)
+		m.back()
+	})
+}
+
+// settingCompressionMicroMarker exposes truncated_marker — the replacement
+// text for cleared tool results. Free-form, so it uses the input line.
+func (m *configMenu) settingCompressionMicroMarker() {
+	m.current = m.settingCompressionMicroMarker
+	current := m.ctx.Config.ContextCompression.MicroCompaction.TruncatedMarker
+	m.ctx.ShowInput("Truncation marker (empty = default):", current, func(value string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.micro_compaction.truncated_marker", value)
+		m.back()
+	})
+}
+
+// preserveRecentTurnsLabel renders preserve_recent_turns for the menu.
+func preserveRecentTurnsLabel(cfg *config.Config) string {
+	if v := cfg.ContextCompression.PreserveRecentTurns; v > 0 {
+		return fmt.Sprintf("%d", v)
+	}
+	return "2 (default)"
+}
+
+// microMinContextRatioLabel renders the micro usage gate as a percentage.
+func microMinContextRatioLabel(cfg *config.Config) string {
+	if r := cfg.ContextCompression.MicroCompaction.MinContextRatio; r > 0 {
+		return fmt.Sprintf("%.0f%%", r*100)
+	}
+	return "50% (default)"
+}
+
+// microCacheMissThresholdLabel renders the micro cold-cache gate.
+func microCacheMissThresholdLabel(cfg *config.Config) string {
+	switch v := cfg.ContextCompression.MicroCompaction.CacheMissThreshold; v {
+	case "":
+		return "1h (default)"
+	case "0":
+		return "off"
+	default:
+		return v
+	}
+}
+
+// microKeepRecentLabel renders keep_recent_messages for the menu.
+func microKeepRecentLabel(cfg *config.Config) string {
+	if v := cfg.ContextCompression.MicroCompaction.KeepRecentMessages; v > 0 {
+		return fmt.Sprintf("%d", v)
+	}
+	return "20 (default)"
+}
+
+// microMinContentTokensLabel renders min_content_tokens for the menu.
+func microMinContentTokensLabel(cfg *config.Config) string {
+	if v := cfg.ContextCompression.MicroCompaction.MinContentTokens; v > 0 {
+		return fmt.Sprintf("%d", v)
+	}
+	return "100 (default)"
+}
+
+// microTruncatedMarkerLabel renders the truncation marker for the menu.
+func microTruncatedMarkerLabel(cfg *config.Config) string {
+	if v := cfg.ContextCompression.MicroCompaction.TruncatedMarker; v != "" {
+		return v
+	}
+	return "[Old tool result content cleared] (default)"
+}
+
 // compressionLabel returns a one-line summary for the root /config menu.
 func compressionLabel(cfg *config.Config) string {
 	if !cfg.ContextCompression.Enabled {
@@ -289,6 +487,3 @@ func maxTokensLabel(v int) string {
 	}
 	return fmt.Sprintf("%d", v)
 }
-
-// toggleBoolLabel returns the string representation of the opposite bool,
-// for toggle-style menu entries.

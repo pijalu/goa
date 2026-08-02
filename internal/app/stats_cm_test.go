@@ -53,6 +53,46 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 	})
 }
 
+// TestHandleTokenStats_CacheMissPartialBust is the regression test for the
+// session-export finding (bugs.md): an in-place history mutation (micro
+// compaction truncating old tool results) invalidates the provider's cached
+// prefix, but the next request still reads the small unmutated head from
+// cache (5,376 of ~113k tokens) — the zero-read rule never fires, so the CM
+// counter under-reported (showed 1 for a session with two busts). In an
+// append-only conversation cache reads grow monotonically, so any
+// significant DROP is a bust. A small tolerance absorbs block-quantization
+// wobble in provider reporting.
+func TestHandleTokenStats_CacheMissPartialBust(t *testing.T) {
+	feed := func(a *App, cacheRead int) {
+		a.handleTokenStats(&agentic.OutputEvent{
+			Timings: &agentic.TokenTimings{CacheReadTokens: cacheRead},
+		})
+	}
+
+	t.Run("partial bust after compaction counts", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 113408) // hot steady state
+		feed(a, 5376)   // bust 1: compaction truncated the prefix (partial hit)
+		feed(a, 56320)  // re-warm at shrunk size — no miss
+		feed(a, 68096)  // growth — no miss
+		feed(a, 0)      // bust 2: provider TTL expiry after idle gap
+		feed(a, 70144)  // re-warm — no miss
+		if a.tokenCacheMisses != 2 {
+			t.Errorf("tokenCacheMisses = %d, want 2 (partial bust + TTL expiry)", a.tokenCacheMisses)
+		}
+	})
+
+	t.Run("small dips within tolerance are not busts", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 113408)
+		feed(a, 112500) // dip of 908 tokens < tolerance — quantization wobble
+		feed(a, 113900) // growth resumes
+		if a.tokenCacheMisses != 0 {
+			t.Errorf("tokenCacheMisses = %d, want 0 (dip within tolerance)", a.tokenCacheMisses)
+		}
+	})
+}
+
 // TestBuildFooterStatParts_CacheMiss verifies CM renders next to CH only
 // when non-zero.
 func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
