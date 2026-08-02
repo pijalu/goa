@@ -175,6 +175,13 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "deepseek-ai/DeepSeek-V4-Flash-0731-TEE", Name: "DeepSeek V4 Flash 0731 TEE", Api: provider.Api("openai-completions"), Provider: provider.Provider("chutes"),
+		BaseURL:   "https://llm.chutes.ai/v1",
+		Reasoning: true, ContextWindow: 1048576, MaxTokens: 131072, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000001400, Output: 0.0000002800, CacheRead: 0.0000000700, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "google/gemma-4-31B-turbo-TEE", Name: "gemma 4 31B turbo TEE", Api: provider.Api("openai-completions"), Provider: provider.Provider("chutes"),
 		BaseURL:   "https://llm.chutes.ai/v1",
 		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
@@ -805,6 +812,13 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "voxtral-small-latest", Name: "Voxtral Small (latest)", Api: provider.Api("mistral-conversations"), Provider: provider.Provider("mistral"),
+		BaseURL:   "https://api.mistral.ai",
+		Reasoning: false, ContextWindow: 32000, MaxTokens: 32000, InputTypes: []string{"text"},
+		Cost:           provider.ModelPricing{Input: 0.0000001000, Output: 0.0000003000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "kimi-k2-0711-preview", Name: "Kimi K2 0711", Api: provider.Api("openai-completions"), Provider: provider.Provider("kimi"),
 		BaseURL:   "https://api.moonshot.ai/v1",
 		Reasoning: false, ContextWindow: 131072, MaxTokens: 16384, InputTypes: []string{"text"},
@@ -1239,7 +1253,7 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Api: provider.Api("openai-completions"), Provider: provider.Provider("opencode"),
+		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash 0731", Api: provider.Api("openai-completions"), Provider: provider.Provider("opencode"),
 		BaseURL:   "https://opencode.ai/zen/v1",
 		Reasoning: true, ContextWindow: 1000000, MaxTokens: 384000, InputTypes: []string{"text"},
 		Cost:           provider.ModelPricing{Input: 0.0000001400, Output: 0.0000002800, CacheRead: 0.0000000280, CacheWrite: 0.0000000000},
