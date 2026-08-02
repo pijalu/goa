@@ -144,11 +144,16 @@ func (a *App) maybeSteerOrchestrator(engine *tui.TUI, chat *tui.ChatViewport, te
 }
 
 // maybeSteerAgent buffers user input as steering while the main agent is
-// running. The queued input is injected as a follow-up user message when the
-// current turn completes. Returns true if the input was consumed as steering.
+// busy — a manager-owned user turn OR an externally driven turn such as a
+// goal continuation (the goal driver runs agent.Run directly, so IsRunning
+// alone misses it and the text would bypass the steering queue: no bubble, no
+// mid-turn weaving, and possible loss if the in-flight turn errored). The
+// queued input is woven into the current turn by the agent's between-round
+// drain, or dispatched as a follow-up user message when the turn completes.
+// Returns true if the input was consumed as steering.
 func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
 	subs := a.subs
-	if subs.agentMgr == nil || !subs.agentMgr.IsRunning() {
+	if subs.agentMgr == nil || !subs.agentMgr.IsBusy() {
 		return false
 	}
 	if sq := subs.agentMgr.SteeringQueue(); sq != nil {

@@ -695,7 +695,15 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 	if agent == nil {
 		return fmt.Errorf("no active agent session")
 	}
-	return agent.Run(ctx, input)
+	err := agent.Run(ctx, input)
+	// Goal continuation turns bypass runAgentTurn, so its end-of-turn
+	// leftover-steering flush never runs for them: steering typed during this
+	// turn's final round would stay queued (bubble stuck) until some unrelated
+	// future turn. Dispatch it as the follow-up user turn here; the drive
+	// loop's next iteration then sees the agent busy (ErrAgentBusy) and the
+	// steering turn's post-turn hook re-starts the drive.
+	r.agentMgr.DispatchPendingSteering()
+	return err
 }
 
 // RunFresh implements core.FreshAgentRunner for goals carrying the
@@ -726,7 +734,11 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 		r.agentMgr.ResetConversationID()
 		r.agentMgr.InjectSystemMessage("⟡ Context reset: this goal is running on a clean context. The prior conversation is preserved in the transcript but is not sent to the agent for this goal.")
 	}
-	return agent.Run(ctx, input)
+	err := agent.Run(ctx, input)
+	// Same leftover-steering dispatch as Run (see there): fresh-context goal
+	// turns bypass runAgentTurn's flush just like ordinary goal turns.
+	r.agentMgr.DispatchPendingSteering()
+	return err
 }
 
 func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) {

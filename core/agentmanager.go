@@ -268,7 +268,15 @@ func (am *AgentManager) SendUserInputWithImages(input string, images []string) e
 
 	am.turnRecorder.ResetTurn(time.Now())
 
-	if alreadyRunning {
+	// Queue as steering whenever the agent cannot start a user turn right now:
+	// a manager-owned turn is in flight (alreadyRunning) OR an externally
+	// driven turn owns the agent (e.g. a goal continuation turn — the goal
+	// driver calls agent.Run directly, so alreadyRunning stays false while
+	// the agent is processing). Without the IsProcessing half, such input
+	// spawned a phantom runAgentTurn that returned instantly on the agent's
+	// internal queue — never woven mid-turn, and stranded if the in-flight
+	// turn errored or was cancelled.
+	if alreadyRunning || (agent != nil && agent.IsProcessing()) {
 		am.steering.Append(input)
 		return nil
 	}
@@ -509,6 +517,52 @@ func (am *AgentManager) CurrentAgent() *agentic.Agent {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	return am.activeAgent
+}
+
+// IsBusy reports whether the agent is unavailable for a new user turn: either
+// a manager-owned turn is in flight (IsRunning) or the agent is executing an
+// externally driven turn — e.g. a goal continuation turn from GoalDriver,
+// which calls agent.Run directly and never flips am.running. Steering routing
+// must use IsBusy: gating on IsRunning alone let user input typed during goal
+// turns bypass the steering queue entirely (dispatched as a phantom normal
+// message into the agent's internal queue, never woven mid-turn, and stranded
+// there if the in-flight turn errored or was cancelled).
+func (am *AgentManager) IsBusy() bool {
+	am.mu.Lock()
+	running := am.running
+	agent := am.activeAgent
+	am.mu.Unlock()
+	if running {
+		return true
+	}
+	return agent != nil && agent.IsProcessing()
+}
+
+// DispatchPendingSteering dispatches steering left over from a turn that did
+// not pass through runAgentTurn — externally driven goal continuation turns
+// (agentManagerRunner). Two buffers must drain: pendingSteering, where the
+// finalizeTurn observer (EventEnd fires for goal turns too) stashes leftover
+// steering, and the live steering queue, which catches anything appended
+// after EventEnd. Without this dispatch the stashed text sits in
+// pendingSteering until some unrelated future user turn (or forever) and the
+// pending bubble never clears. Emits SteeringInjected so the UI clears the
+// bubble and renders the consumed text. No-op when both buffers are empty.
+func (am *AgentManager) DispatchPendingSteering() {
+	am.mu.Lock()
+	stashed := am.pendingSteering
+	am.pendingSteering = ""
+	am.mu.Unlock()
+
+	pending := am.steering.Flush()
+	if stashed != "" {
+		pending = append([]string{stashed}, pending...)
+	}
+	if len(pending) == 0 {
+		return
+	}
+	text := strings.Join(pending, "\n\n")
+	am.emitSteeringInjected(text)
+	_ = am.SendUserInput(text)
 }
 
 // IsRunning reports whether a user turn is currently in progress.

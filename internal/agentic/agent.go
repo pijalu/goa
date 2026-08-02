@@ -752,6 +752,17 @@ func (a *Agent) SetSteeringSource(s SteeringSource) {
 	a.steeringSource = s
 }
 
+// IsProcessing reports whether the agent is currently executing a turn
+// (including draining its internal queue between turns). The AgentManager
+// uses it to report busy state for externally driven turns — e.g. goal
+// continuation turns from GoalDriver, which call agent.Run directly and never
+// flip the manager's running flag.
+func (a *Agent) IsProcessing() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.processing
+}
+
 // drainSteeringIntoHistory appends any pending steering messages to history as
 // user messages at the current tail. Called between stream rounds: after the
 // previous round's assistant/tool messages are appended and before the next
