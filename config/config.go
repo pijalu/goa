@@ -240,6 +240,12 @@ type ModelConfig struct {
 
 	// Cache configures whether cache read/write/hit columns are shown.
 	Cache *CacheConfig `yaml:"cache,omitempty"`
+
+	// Ephemeral marks memory-only model entries, such as the scratch model
+	// created to carry model-scalar CLI overrides when no configured model
+	// resolves. Ephemeral entries are never persisted to config files and
+	// are hidden from model pickers and completions.
+	Ephemeral bool `yaml:"-"`
 }
 
 // PricingConfig sets per-token costs for a model, in USD per million tokens.
@@ -1118,9 +1124,12 @@ func (c *Config) GetActiveProviderConfig() *ProviderConfig {
 // GetActiveModelConfig returns the active model config.
 //
 // If ActiveModel is set, that model is returned. Otherwise it falls back to
-// the first model whose ProviderID matches the active provider. When no
-// ActiveModel is set and multiple models match the active provider, the call
-// returns an error so callers cannot silently use an arbitrary model.
+// the first model (in configuration order) whose ProviderID matches the
+// active provider — when several models match, resolution is deterministic
+// rather than an error, so a config without an explicit active_model stays
+// usable. An error is returned only when no model can be resolved at all:
+// no active provider, an explicit ActiveModel that does not exist, or no
+// model bound to the active provider.
 func (c *Config) GetActiveModelConfig() (ModelConfig, error) {
 	if c.ActiveModel != "" {
 		if m := c.GetModelByID(c.ActiveModel); m != nil {
@@ -1133,19 +1142,12 @@ func (c *Config) GetActiveModelConfig() (ModelConfig, error) {
 		return ModelConfig{}, fmt.Errorf("no active provider configured")
 	}
 
-	var match *ModelConfig
 	for i := range c.Models {
 		if c.Models[i].ProviderID == p.ID {
-			if match != nil {
-				return ModelConfig{}, fmt.Errorf("ambiguous active model: multiple models match provider %q; set active_model explicitly", p.ID)
-			}
-			match = &c.Models[i]
+			return c.Models[i], nil
 		}
 	}
-	if match == nil {
-		return ModelConfig{}, fmt.Errorf("no model found for provider %q", p.ID)
-	}
-	return *match, nil
+	return ModelConfig{}, fmt.Errorf("no model found for provider %q", p.ID)
 }
 
 // DefaultCompressForProvider reports whether tool output compression should

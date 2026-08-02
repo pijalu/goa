@@ -1021,6 +1021,17 @@ func TestConfig_GetActiveModelConfig(t *testing.T) {
 	if got.ID != "m1" {
 		t.Errorf("GetActiveModelConfig() fallback = %+v, want m1", got)
 	}
+
+	// Ambiguous: multiple models match the active provider without
+	// active_model — resolution is deterministic: first in config order.
+	cfg.Models = append(cfg.Models, ModelConfig{ID: "m2", ProviderID: "x", Model: "gpt-4o-mini"})
+	got, err = cfg.GetActiveModelConfig()
+	if err != nil {
+		t.Fatalf("GetActiveModelConfig() ambiguous error: %v", err)
+	}
+	if got.ID != "m1" {
+		t.Errorf("GetActiveModelConfig() ambiguous = %q, want first match %q", got.ID, "m1")
+	}
 }
 
 func TestConfig_GetActiveModelConfig_Errors(t *testing.T) {
@@ -1034,19 +1045,6 @@ func TestConfig_GetActiveModelConfig_Errors(t *testing.T) {
 	cfg = &Config{ActiveModel: "missing", Providers: []ProviderConfig{{ID: "x"}}}
 	if _, err := cfg.GetActiveModelConfig(); err == nil {
 		t.Error("expected error when active_model is not found")
-	}
-
-	// Ambiguous: multiple models match the active provider without active_model
-	cfg = &Config{
-		ActiveProvider: "x",
-		Providers:      []ProviderConfig{{ID: "x"}},
-		Models: []ModelConfig{
-			{ID: "m1", ProviderID: "x"},
-			{ID: "m2", ProviderID: "x"},
-		},
-	}
-	if _, err := cfg.GetActiveModelConfig(); err == nil {
-		t.Error("expected error when multiple models match provider")
 	}
 
 	// No model for provider

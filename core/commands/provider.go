@@ -95,7 +95,7 @@ func isModelForProvider(cfg *config.Config, modelID, providerID string) bool {
 
 func firstModelForProvider(cfg *config.Config, providerID string) *config.ModelConfig {
 	for _, m := range cfg.Models {
-		if m.ProviderID == providerID {
+		if m.ProviderID == providerID && !m.Ephemeral {
 			return &m
 		}
 	}

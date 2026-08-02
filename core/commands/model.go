@@ -54,6 +54,9 @@ func (c *ModelCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgC
 	}
 	var comps []core.ArgCompletion
 	for _, m := range ctx.Config.Models {
+		if m.Ephemeral {
+			continue
+		}
 		if prefix != "" && !strings.HasPrefix(m.ID, prefix) {
 			continue
 		}
@@ -546,6 +549,9 @@ func configuredModelItemsFiltered(cfg *config.Config, activeModel string, active
 	var items []tui.SelectorItem
 	providerID := cfg.ActiveProvider
 	for _, m := range cfg.Models {
+		if m.Ephemeral {
+			continue
+		}
 		if activeProviderOnly && m.ProviderID != providerID {
 			continue
 		}

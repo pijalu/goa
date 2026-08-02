@@ -64,6 +64,9 @@ func (m *configMenu) selectModelPageForProviderFull(title, current string, onSel
 func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 	var items []tui.SelectorItem
 	for _, mod := range m.ctx.Config.Models {
+		if mod.Ephemeral {
+			continue
+		}
 		items = append(items, tui.SelectorItem{
 			Value:       mod.ID,
 			Label:       mod.ID,

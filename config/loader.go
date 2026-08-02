@@ -463,16 +463,50 @@ func (cl *CascadeLoader) applyProviderCLIOverrides(cfg *Config) {
 	}
 }
 
+// cliOverrideModelID is the ID of the ephemeral scratch model created to
+// carry model-scalar CLI overrides when no configured model resolves.
+const cliOverrideModelID = "cli-override"
+
+// modelScalarCLIFlags are the CLI override keys applied onto the active
+// model. When none of them is set there is nothing to apply and the model
+// list must be left untouched.
+var modelScalarCLIFlags = []string{"temperature", "max_tokens", "reasoning", "thinking_level"}
+
 func (cl *CascadeLoader) applyModelCLIOverrides(cfg *Config) {
+	if !cl.hasModelScalarOverrides() {
+		return
+	}
 	m, err := cfg.GetActiveModelConfig()
 	if err != nil {
-		m = ModelConfig{ID: "cli-override"}
+		// No configured model resolves: carry the CLI overrides on a
+		// memory-only scratch model bound to the active provider so they
+		// still apply for this session. The entry is ephemeral — never
+		// persisted and hidden from pickers — so it cannot leak a bogus
+		// model into config files (previously this upserted a persistent,
+		// provider-less "cli-override" entry on every unresolvable launch).
+		p := cfg.GetActiveProviderConfig()
+		if p == nil {
+			return
+		}
+		m = ModelConfig{ID: cliOverrideModelID, ProviderID: p.ID, Model: p.DefaultModel, Ephemeral: true}
 	}
 	if m.ID == "" {
-		m.ID = "cli-override"
+		m.ID = cliOverrideModelID
+		m.Ephemeral = true
 	}
 	cl.applyModelScalars(&m)
 	upsertModelConfig(cfg, m)
+}
+
+// hasModelScalarOverrides reports whether any model-scalar CLI override
+// (temperature, max_tokens, reasoning, thinking_level) is set.
+func (cl *CascadeLoader) hasModelScalarOverrides() bool {
+	for _, key := range modelScalarCLIFlags {
+		if v, ok := cl.cliOverrides[key]; ok && v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (cl *CascadeLoader) applyModelScalars(m *ModelConfig) {
@@ -741,6 +775,7 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 	saveCfg := merged.DeepCopy()
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
+	saveCfg.Models = persistableModels(saveCfg.Models)
 
 	data, err := yaml.Marshal(saveCfg)
 	if err != nil {
@@ -753,6 +788,18 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 	return nil
 }
 
+// persistableModels strips ephemeral (memory-only) model entries so they
+// are never written to config files.
+func persistableModels(models []ModelConfig) []ModelConfig {
+	out := make([]ModelConfig, 0, len(models))
+	for _, m := range models {
+		if !m.Ephemeral {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (cl *CascadeLoader) Save(cfg *Config) error {
 	configDir := filepath.Join(cl.homeDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -763,6 +810,7 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 	saveCfg := cfg.DeepCopy()
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
+	saveCfg.Models = persistableModels(saveCfg.Models)
 
 	data, err := yaml.Marshal(saveCfg)
 	if err != nil {
@@ -803,7 +851,7 @@ func (cl *CascadeLoader) SaveHomeProvidersAndModels(cfg *Config) error {
 	homeCfg.ActiveProvider = cfg.ActiveProvider
 	homeCfg.ActiveModel = cfg.ActiveModel
 	homeCfg.Providers = cfg.Providers
-	homeCfg.Models = cfg.Models
+	homeCfg.Models = persistableModels(cfg.Models)
 
 	saveCfg := homeCfg.DeepCopy()
 	saveCfg.FirstRun = false
@@ -846,7 +894,7 @@ func (cl *CascadeLoader) SaveProjectProvidersAndModels(cfg *Config) error {
 	projectCfg.ActiveProvider = cfg.ActiveProvider
 	projectCfg.ActiveModel = cfg.ActiveModel
 	projectCfg.Providers = cfg.Providers
-	projectCfg.Models = cfg.Models
+	projectCfg.Models = persistableModels(cfg.Models)
 
 	saveCfg := projectCfg.DeepCopy()
 	saveCfg.FirstRun = false
