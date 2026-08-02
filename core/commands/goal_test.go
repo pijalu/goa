@@ -32,6 +32,12 @@ func TestGoalCommand_parseArgs(t *testing.T) {
 		{args: []string{"pause"}, want: "pause"},
 		{args: []string{"resume"}, want: "resume"},
 		{args: []string{"cancel"}, want: "cancel"},
+		// /goal:cancel scope variants — bare and :current cancel the active
+		// goal, :all additionally wipes the queue, anything else is a hint.
+		{args: []string{"cancel", "current"}, want: "cancel"},
+		{args: []string{"cancel", "all"}, want: "cancel-all"},
+		{args: []string{"cancel", "ALL"}, want: "cancel-all"},
+		{args: []string{"cancel", "bogus"}, want: "error"},
 		{args: []string{"manage"}, want: "manage"},
 		// /goal:new — bare and with text
 		{args: []string{"new"}, want: "create-interactive"},
@@ -141,6 +147,154 @@ func TestGoalCommand_Cancel(t *testing.T) {
 	}
 	if mode.GetGoal().Goal != nil {
 		t.Error("goal should be nil after cancel")
+	}
+}
+
+// /goal:cancel:current is an explicit alias for the bare /goal:cancel.
+func TestGoalCommand_CancelCurrent(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	cmd.Run(ctx, []string{"fix tests"})
+	if err := cmd.Run(ctx, []string{"cancel", "current"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("goal should be nil after /goal:cancel:current")
+	}
+}
+
+// A cancel with queued goals must tell the user the successor waits paused —
+// it is promoted but never auto-started.
+func TestGoalCommand_Cancel_NotesPausedSuccessor(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	cmd.Run(ctx, []string{"first"})
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"cancel"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+	if !strings.Contains(out, "Goal cancelled.") {
+		t.Errorf("cancel output = %q", out)
+	}
+	if !strings.Contains(out, "paused") {
+		t.Errorf("cancel with queued goals must mention the paused successor: %q", out)
+	}
+	// The queue still holds the successor: promotion is the app's job, and it
+	// is PAUSED — the command must not have consumed it.
+	queued, _ := queue.Read()
+	if len(queued) != 1 || queued[0].Objective != "second" {
+		t.Errorf("queue after cancel = %+v", queued)
+	}
+}
+
+// /goal:cancel:all discards the active goal AND wipes the queue. The queue is
+// cleared first so the async successor promotion no-ops.
+func TestGoalCommand_CancelAll(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	cmd.Run(ctx, []string{"first"})
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "third"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Run(ctx, []string{"cancel", "all"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("goal should be nil after /goal:cancel:all")
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 0 {
+		t.Errorf("queue should be empty after /goal:cancel:all, got %+v", queued)
+	}
+	out := ctx.OutputBuffer.String()
+	if !strings.Contains(out, "2 queued goal(s) cleared") {
+		t.Errorf("cancel-all output = %q", out)
+	}
+}
+
+// /goal:cancel:all with no active goal still clears the queue.
+func TestGoalCommand_CancelAll_QueueOnly(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"cancel", "all"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 0 {
+		t.Errorf("queue should be empty, got %+v", queued)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "Cleared 1 queued goal(s).") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+// /goal:cancel:all with neither an active goal nor queued goals errors.
+func TestGoalCommand_CancelAll_NothingToCancel(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"cancel", "all"}); err == nil {
+		t.Fatal("expected error when there is nothing to cancel")
+	}
+}
+
+// CompleteArgs must offer the nested /goal:cancel:<scope> variants once the
+// user typed "cancel:", and keep the top-level behavior for plain prefixes.
+func TestGoalCommand_CompleteArgs_CancelScopes(t *testing.T) {
+	cmd := &GoalCommand{}
+	ctx := testContext()
+
+	// Level-2: /goal:cancel:<tab> lists both scopes, fully spelled out.
+	vals := cmd.CompleteArgs(ctx, "cancel:")
+	if len(vals) != 2 {
+		t.Fatalf("CompleteArgs(cancel:) = %+v, want 2 entries", vals)
+	}
+	if vals[0].Value != "cancel:current" || vals[1].Value != "cancel:all" {
+		t.Errorf("cancel scope values = %+v", vals)
+	}
+
+	// Prefix filtering at the nested level.
+	vals = cmd.CompleteArgs(ctx, "cancel:a")
+	if len(vals) != 1 || vals[0].Value != "cancel:all" {
+		t.Errorf("CompleteArgs(cancel:a) = %+v, want cancel:all only", vals)
+	}
+	vals = cmd.CompleteArgs(ctx, "cancel:cu")
+	if len(vals) != 1 || vals[0].Value != "cancel:current" {
+		t.Errorf("CompleteArgs(cancel:cu) = %+v, want cancel:current only", vals)
+	}
+
+	// Unknown scope → nothing.
+	if vals := cmd.CompleteArgs(ctx, "cancel:zzz"); len(vals) != 0 {
+		t.Errorf("CompleteArgs(cancel:zzz) = %+v, want none", vals)
+	}
+
+	// Top-level behavior is untouched: /goal:can still completes "cancel".
+	vals = cmd.CompleteArgs(ctx, "can")
+	if len(vals) != 1 || vals[0].Value != "cancel" {
+		t.Errorf("CompleteArgs(can) = %+v, want cancel", vals)
 	}
 }
 

@@ -23,7 +23,9 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:list                  List active + queued goals in order, with full objectives (markdown)
   /goal:pause                 Pause the active goal
   /goal:resume                Resume a paused or blocked goal
-  /goal:cancel                Discard the current goal
+  /goal:cancel                Discard the current goal (next queued goal is promoted paused, never auto-started)
+  /goal:cancel:current        Same as /goal:cancel
+  /goal:cancel:all            Discard the current goal AND clear every queued goal
 
 Each goal gets a friendly alias (e.g. "happy.fox") shown in status and the
 queue manager. Creating a goal while one is already active asks whether the

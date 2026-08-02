@@ -176,3 +176,112 @@ func TestPromoteNextQueuedGoal_StoredHandoverWins(t *testing.T) {
 		t.Fatalf("stored handover must win over predecessor evidence, got %+v", g.Handoff)
 	}
 }
+
+// clearChange builds a goal-cleared change with the cancelling actor, as
+// CancelGoal emits on the clear event.
+func clearChange(actor goal.GoalActor) *goal.GoalChange {
+	return &goal.GoalChange{Kind: goal.GoalChangeClear, Actor: &actor}
+}
+
+// TestCancelClearPausesPromotion pins the successor policy: only explicit
+// user/model cancels park the next goal; completion clears (no change) and
+// runtime framework clears (postpone, unblock, orchestrator) keep driving.
+func TestCancelClearPausesPromotion(t *testing.T) {
+	user := goal.GoalActorUser
+	cases := []struct {
+		name   string
+		change *goal.GoalChange
+		want   bool
+	}{
+		{"completion clear (no change)", nil, false},
+		{"user cancel pauses", clearChange(goal.GoalActorUser), true},
+		{"model cancel pauses", clearChange(goal.GoalActorModel), true},
+		{"runtime cancel keeps driving", clearChange(goal.GoalActorRuntime), false},
+		{"system cancel keeps driving", clearChange(goal.GoalActorSystem), false},
+		{"lifecycle change is not a clear", &goal.GoalChange{Kind: goal.GoalChangeLifecycle, Actor: &user}, false},
+	}
+	for _, tc := range cases {
+		if got := cancelClearPausesPromotion(tc.change); got != tc.want {
+			t.Errorf("%s: cancelClearPausesPromotion = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// newCancelPolicyTestApp builds the minimal app wiring shared by the
+// clear-policy tests: a queue with one queued goal, a recording runner, and
+// the drive machinery the promotion touches.
+func newCancelPolicyTestApp(t *testing.T) (*App, *goal.GoalMode, *promoteRecordingRunner) {
+	t.Helper()
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mgr := core.NewGoalManagerWithMode("", mode)
+	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	if _, err := mgr.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "queued objective"}); err != nil {
+		t.Fatalf("append queued goal: %v", err)
+	}
+	runner := &promoteRecordingRunner{mode: mode}
+	a := &App{}
+	a.subs = &subsystems{
+		chat:        tui.NewChatViewport(),
+		goalManager: mgr,
+		goalDriver:  &core.GoalDriver{Mode: mode, Agent: runner},
+	}
+	return a, mode, runner
+}
+
+// A USER cancel must NOT start the next goal: the queue head is promoted but
+// parked PAUSED, and no continuation turn launches.
+func TestHandleGoalUpdate_UserCancelClearPromotesPaused(t *testing.T) {
+	a, mode, runner := newCancelPolicyTestApp(t)
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil, Change: clearChange(goal.GoalActorUser)})
+
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("queue head should be promoted after a cancel")
+	}
+	if g.Status != goal.GoalPaused {
+		t.Fatalf("promoted goal status = %q, want paused", g.Status)
+	}
+	if g.Objective != "queued objective" {
+		t.Fatalf("promoted objective = %q, want queued objective", g.Objective)
+	}
+	if runs := runner.runs(); len(runs) != 0 {
+		t.Fatalf("cancel launched %d continuation turns, want 0", len(runs))
+	}
+}
+
+// A MODEL cancel (goal tool) likewise parks the successor paused.
+func TestHandleGoalUpdate_ModelCancelClearPromotesPaused(t *testing.T) {
+	a, mode, runner := newCancelPolicyTestApp(t)
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil, Change: clearChange(goal.GoalActorModel)})
+
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalPaused {
+		t.Fatalf("promoted goal = %+v, want paused", g)
+	}
+	if runs := runner.runs(); len(runs) != 0 {
+		t.Fatalf("model cancel launched %d continuation turns, want 0", len(runs))
+	}
+}
+
+// A RUNTIME clear (postpone, auto-unblock, orchestrator cleanup) is framework
+// scheduling machinery: the queue head promotes ACTIVE and drives on, exactly
+// as after a completion.
+func TestHandleGoalUpdate_RuntimeCancelClearStartsNext(t *testing.T) {
+	a, mode, runner := newCancelPolicyTestApp(t)
+
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil, Change: clearChange(goal.GoalActorRuntime)})
+
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalActive {
+		t.Fatalf("promoted goal = %+v, want active", g)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(runner.runs()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("runtime clear did not start the promoted goal")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

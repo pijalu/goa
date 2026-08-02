@@ -903,7 +903,11 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 	}
 
 	if update.Snapshot == nil && a.subs.goalManager != nil {
-		a.promoteNextQueuedGoal()
+		if cancelClearPausesPromotion(update.Change) {
+			a.promoteQueuedGoalPaused()
+		} else {
+			a.promoteNextQueuedGoal()
+		}
 	}
 }
 
@@ -944,7 +948,36 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	}
 }
 
+// cancelClearPausesPromotion reports whether the clear event comes from an
+// explicit user/model cancel: such clears must NOT auto-start the queued
+// successor — it is promoted PAUSED instead. A completion clear carries no
+// change (start the next goal, the queue drains autonomously), and runtime
+// framework clears (postpone, unblock flow, orchestrator cleanup) are
+// scheduling machinery that likewise keeps driving.
+func cancelClearPausesPromotion(change *goal.GoalChange) bool {
+	if change == nil || change.Kind != goal.GoalChangeClear || change.Actor == nil {
+		return false
+	}
+	return *change.Actor == goal.GoalActorUser || *change.Actor == goal.GoalActorModel
+}
+
+// promoteNextQueuedGoal removes the head of the goal queue and activates it.
+// Fired by the goal-cleared event (completion or cancel), so the queue drains
+// across completions without any model round-trip. Runs on the
+// event-forwarder goroutine; the queue store serializes concurrent access.
 func (a *App) promoteNextQueuedGoal() {
+	a.promoteQueuedGoal(false)
+}
+
+// promoteQueuedGoalPaused promotes the queue head like promoteNextQueuedGoal
+// but leaves it PAUSED and never kicks the driver: the previous goal was
+// cancelled, so autonomous work stops until the user resumes explicitly
+// (/goal:resume).
+func (a *App) promoteQueuedGoalPaused() {
+	a.promoteQueuedGoal(true)
+}
+
+func (a *App) promoteQueuedGoal(paused bool) {
 	queue, err := a.subs.goalManager.Queue.Read()
 	if err != nil || len(queue) == 0 {
 		a.goalCompletionHandoff = nil
@@ -976,6 +1009,10 @@ func (a *App) promoteNextQueuedGoal() {
 		_, _ = a.subs.goalManager.Queue.Restore(*removed)
 		return
 	}
+	if paused {
+		a.pausePromotedGoal(*removed)
+		return
+	}
 	a.subs.chat.AddSystemMessage(fmt.Sprintf("[goal] auto-promoted queued goal: %s", removed.Objective))
 	// The promotion runs on the event-forwarder goroutine, after the clear
 	// event crossed the async bus: the post-turn hook and the previous drive
@@ -986,6 +1023,22 @@ func (a *App) promoteNextQueuedGoal() {
 	if a.subs.goalDriver != nil {
 		a.subs.goalDriver.Start(context.Background())
 	}
+}
+
+// pausePromotedGoal parks a just-promoted queued goal in the paused state:
+// the previous goal was cancelled, so the successor waits for the user to
+// resume it explicitly. The runtime actor marks this as a framework pause,
+// not a user pause. On pause failure the goal is restored to the queue so it
+// is never silently lost.
+func (a *App) pausePromotedGoal(removed goal.UpcomingGoal) {
+	reason := "Previous goal was cancelled — /goal:resume to start this goal"
+	if _, err := a.subs.goalManager.Mode.PauseGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime); err != nil {
+		_, _ = a.subs.goalManager.Queue.Restore(removed)
+		return
+	}
+	a.subs.chat.AddSystemMessage(fmt.Sprintf(
+		"[goal] queued goal promoted paused (a cancel never auto-starts the next goal — /goal:resume to start): %s",
+		removed.Objective))
 }
 
 // showPanicError displays a rendering panic in the chat and creates an export

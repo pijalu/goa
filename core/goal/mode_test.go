@@ -115,6 +115,71 @@ func TestCancelGoal(t *testing.T) {
 	}
 }
 
+// clearCapturePublisher records the change carried by each goal update so a
+// test can inspect what the clear event (nil snapshot) published.
+type clearCapturePublisher struct {
+	snaps   []*GoalSnapshot
+	changes []*GoalChange
+}
+
+func (p *clearCapturePublisher) Publish(snap *GoalSnapshot, change *GoalChange) {
+	p.snaps = append(p.snaps, snap)
+	p.changes = append(p.changes, change)
+}
+
+// A cancel must mark its clear event as GoalChangeClear with the cancelling
+// actor: consumers use it to park the queued successor PAUSED instead of
+// auto-starting it. A completion clear carries NO change (drains the queue).
+func TestCancelGoal_ClearEventCarriesActor(t *testing.T) {
+	pub := &clearCapturePublisher{}
+	mode := NewGoalMode(&testStore{}, pub, nil, nil)
+	mode.CreateGoal(CreateGoalInput{Objective: "first"}, GoalActorUser)
+	if _, err := mode.CancelGoal(GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+
+	var clearChange *GoalChange
+	for i, snap := range pub.snaps {
+		if snap == nil {
+			clearChange = pub.changes[i]
+		}
+	}
+	if clearChange == nil {
+		t.Fatal("cancel clear event carried no change")
+	}
+	if clearChange.Kind != GoalChangeClear {
+		t.Errorf("clear change kind = %q, want %q", clearChange.Kind, GoalChangeClear)
+	}
+	if clearChange.Actor == nil || *clearChange.Actor != GoalActorUser {
+		t.Errorf("clear change actor = %+v, want user", clearChange.Actor)
+	}
+}
+
+// The completion clear keeps the legacy contract: no change on the clear
+// event, so hosts auto-start the queued successor (queue drains on complete).
+func TestMarkComplete_ClearEventCarriesNoChange(t *testing.T) {
+	pub := &clearCapturePublisher{}
+	mode := NewGoalMode(&testStore{}, pub, nil, nil)
+	mode.CreateGoal(CreateGoalInput{Objective: "first"}, GoalActorUser)
+	reason := "done"
+	if _, err := mode.MarkComplete(GoalReasonInput{Reason: &reason}, GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawClear bool
+	for i, snap := range pub.snaps {
+		if snap == nil {
+			sawClear = true
+			if pub.changes[i] != nil {
+				t.Errorf("completion clear event must carry no change, got %+v", pub.changes[i])
+			}
+		}
+	}
+	if !sawClear {
+		t.Fatal("no clear event published after completion")
+	}
+}
+
 func TestPauseResumeNoGoal(t *testing.T) {
 	mode := NewGoalMode(&testStore{}, nil, nil, nil)
 	reason := "x"

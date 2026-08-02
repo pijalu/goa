@@ -36,7 +36,7 @@ A goal needs a verifiable end state. If your request is vague, the model will as
 
 - Only the **active** goal consumes continuation turns, budget, and tokens.
 - `complete` is the only terminal status; the goal record is cleared after the completion event is emitted.
-- `cancel` (`/goal:cancel`) discards the goal at any status without a completion event.
+- `cancel` (`/goal:cancel`) discards the goal at any status without a completion event. Unlike a completion, a cancel **never auto-starts the next goal**: the queue head is promoted **paused** and waits for an explicit `/goal:resume` (framework transitions such as `postpone` and auto-unblock still start the successor).
 
 Control commands:
 
@@ -44,7 +44,9 @@ Control commands:
 /goal:status   # show current goal
 /goal:pause    # pause active goal
 /goal:resume   # resume paused/blocked goal
-/goal:cancel   # discard current goal
+/goal:cancel   # discard current goal (next queued goal promotes paused)
+/goal:cancel:current   # same as /goal:cancel
+/goal:cancel:all       # discard current goal AND clear every queued goal
 /goal:replace <objective>   # ask confirmation then abandon current goal
 /goal:log      # show recent goal event records
 /goal:verify   # run the recorded verify command now

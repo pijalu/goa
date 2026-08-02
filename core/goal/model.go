@@ -56,28 +56,28 @@ type GoalBudgetReport struct {
 // GoalSnapshot is the public, computed projection of internal goal state.
 // WallClockMs always includes the live in-flight interval.
 type GoalSnapshot struct {
-	GoalID              string           `json:"goalId,omitempty"`
-	Name                string           `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
-	ManagedBy           string           `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
-	Objective           string           `json:"objective"`
-	CompletionCriterion *string          `json:"completionCriterion,omitempty"`
+	GoalID              string  `json:"goalId,omitempty"`
+	Name                string  `json:"name,omitempty"`      // friendly alias, e.g. "happy.fox"
+	ManagedBy           string  `json:"managedBy,omitempty"` // e.g. "orchestrator" or empty
+	Objective           string  `json:"objective"`
+	CompletionCriterion *string `json:"completionCriterion,omitempty"`
 	// VerifyCommand is an optional machine-checkable done-condition: when
 	// set, the done-gate executes it (exit 0 = verified) after the model
 	// confirms completion, instead of trusting the evidence prose alone.
-	VerifyCommand *string          `json:"verifyCommand,omitempty"`
-	FreshContext  bool             `json:"freshContext,omitempty"`
+	VerifyCommand *string `json:"verifyCommand,omitempty"`
+	FreshContext  bool    `json:"freshContext,omitempty"`
 	// Handover carries a continuity note from a predecessor goal (its
 	// completion evidence, or explicit text the creator attached) into this
 	// goal's reminder. Nil for stand-alone goals. Untrusted data, never
 	// instructions — the model sees it inside an <untrusted_handover> block.
-	Handoff *string          `json:"handover,omitempty"`
-	Todos   []GoalTodoItem   `json:"todos,omitempty"`
-	Status              GoalStatus       `json:"status"`
-	TurnsUsed           int              `json:"turnsUsed"`
-	TokensUsed          int              `json:"tokensUsed"`
-	WallClockMs         int64            `json:"wallClockMs"`
-	Budget              GoalBudgetReport `json:"budget"`
-	TerminalReason      *string          `json:"terminalReason,omitempty"`
+	Handoff        *string          `json:"handover,omitempty"`
+	Todos          []GoalTodoItem   `json:"todos,omitempty"`
+	Status         GoalStatus       `json:"status"`
+	TurnsUsed      int              `json:"turnsUsed"`
+	TokensUsed     int              `json:"tokensUsed"`
+	WallClockMs    int64            `json:"wallClockMs"`
+	Budget         GoalBudgetReport `json:"budget"`
+	TerminalReason *string          `json:"terminalReason,omitempty"`
 	// TerminalExpectation records what a blocked goal needs in order to
 	// resume (model-provided). Nil for active/completed goals.
 	TerminalExpectation *string `json:"terminalExpectation,omitempty"`
@@ -90,13 +90,13 @@ type GoalToolResult struct {
 
 // UpcomingGoal is a queued goal waiting to become active.
 type UpcomingGoal struct {
-	ID                  string    `json:"id"`
-	Name                string    `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
-	ManagedBy           string    `json:"managedBy,omitempty"`
-	Objective           string    `json:"objective"`
-	CompletionCriterion *string   `json:"completionCriterion,omitempty"` // carried into the goal on promotion
-	VerifyCommand       *string   `json:"verifyCommand,omitempty"`       // carried into the goal on promotion
-	FreshContext        bool      `json:"freshContext,omitempty"`        // run on a clean context when promoted
+	ID                  string  `json:"id"`
+	Name                string  `json:"name,omitempty"` // friendly alias, e.g. "happy.fox"
+	ManagedBy           string  `json:"managedBy,omitempty"`
+	Objective           string  `json:"objective"`
+	CompletionCriterion *string `json:"completionCriterion,omitempty"` // carried into the goal on promotion
+	VerifyCommand       *string `json:"verifyCommand,omitempty"`       // carried into the goal on promotion
+	FreshContext        bool    `json:"freshContext,omitempty"`        // run on a clean context when promoted
 	// Handover is the continuity note stored with the queued goal. It is
 	// carried into the goal on promotion (postpone/promote/auto-promotion)
 	// unless the caller supplies an explicit handover at that moment.
@@ -123,6 +123,15 @@ type GoalChangeKind string
 const (
 	GoalChangeLifecycle  GoalChangeKind = "lifecycle"
 	GoalChangeCompletion GoalChangeKind = "completion"
+	// GoalChangeClear marks a goal.clear event that comes from an explicit
+	// CancelGoal: the change rides on the clear event (nil snapshot) so
+	// consumers can tell "cancelled" apart from "completed" — a completion
+	// clear carries NO change, and a cancel clear carries the cancelling
+	// actor. The actor decides the successor policy: a user/model cancel
+	// promotes the queued successor PAUSED (it must not auto-start), while
+	// runtime/framework clears (postpone, unblock, orchestrator) keep the
+	// start-the-next-goal behavior.
+	GoalChangeClear GoalChangeKind = "clear"
 )
 
 // GoalChange describes what changed on a goal.updated event.

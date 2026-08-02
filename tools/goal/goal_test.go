@@ -623,6 +623,12 @@ func (q *fakeQueue) Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, 
 	return q.goals, nil, fmt.Errorf("queued goal %q not found", id)
 }
 
+func (q *fakeQueue) Clear() ([]goal.UpcomingGoal, error) {
+	cleared := q.goals
+	q.goals = nil
+	return cleared, nil
+}
+
 func (q *fakeQueue) Move(id, direction string) ([]goal.UpcomingGoal, error) {
 	for i, g := range q.goals {
 		if g.ID == id {
@@ -743,6 +749,123 @@ func TestGoalTool_ListCancelReorder(t *testing.T) {
 	read, _ = q.Read()
 	if len(read) != 1 || read[0].Objective != "g3" {
 		t.Errorf("after cancel, queue = %+v", read)
+	}
+}
+
+// newCancelSeededTool builds a tool with one ACTIVE goal and two queued
+// (g2→q1, g3→q2) — the fixture shared by the cancel current/all tests.
+func newCancelSeededTool(t *testing.T) (*GoalTool, *goal.GoalMode, *fakeQueue) {
+	t.Helper()
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := tool.Execute(`{"action":"create","objectives":["g1","g2","g3"]}`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return tool, mode, q
+}
+
+// TestGoalTool_CancelCancelsActiveGoal: cancel with NO goalId targets the
+// ACTIVE goal (mirrors /goal:cancel) and stops the turn; the message warns
+// that a queued successor is promoted PAUSED, never auto-started.
+func TestGoalTool_CancelCancelsActiveGoal(t *testing.T) {
+	tool, mode, q := newCancelSeededTool(t)
+
+	res, err := tool.ExecuteWithResult(`{"action":"cancel"}`)
+	if err != nil {
+		t.Fatalf("cancel without goalId: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("active goal should be gone after cancel")
+	}
+	if !res.StopTurn {
+		t.Error("cancelling the active goal must stop the turn")
+	}
+	if !strings.Contains(res.Output, "PAUSED") {
+		t.Errorf("output must warn the successor promotes paused: %q", res.Output)
+	}
+	if !strings.Contains(res.Output, "g1") {
+		t.Errorf("output must name the cancelled goal: %q", res.Output)
+	}
+	// The queue itself is untouched.
+	if read, _ := q.Read(); len(read) != 2 {
+		t.Errorf("queue = %+v", read)
+	}
+}
+
+// TestGoalTool_CancelCurrentToken: goalId "current" is the explicit form of
+// the bare cancel (and is case-insensitive).
+func TestGoalTool_CancelCurrentToken(t *testing.T) {
+	tool, mode, _ := newCancelSeededTool(t)
+
+	res, err := tool.ExecuteWithResult(`{"action":"cancel","goalId":"Current"}`)
+	if err != nil {
+		t.Fatalf("cancel current: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("active goal should be gone after cancel current")
+	}
+	if !res.StopTurn {
+		t.Error("cancel current must stop the turn")
+	}
+}
+
+// TestGoalTool_CancelAllWipesQueueAndGoal: goalId "all" clears every queued
+// goal AND cancels the active goal.
+func TestGoalTool_CancelAllWipesQueueAndGoal(t *testing.T) {
+	tool, mode, q := newCancelSeededTool(t)
+
+	res, err := tool.ExecuteWithResult(`{"action":"cancel","goalId":"all"}`)
+	if err != nil {
+		t.Fatalf("cancel all: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("active goal should be gone after cancel all")
+	}
+	if read, _ := q.Read(); len(read) != 0 {
+		t.Errorf("queue should be empty after cancel all: %+v", read)
+	}
+	if !res.StopTurn {
+		t.Error("cancel all with an active goal must stop the turn")
+	}
+	if !strings.Contains(res.Output, `"queueCleared":2`) {
+		t.Errorf("output must report the cleared queue: %q", res.Output)
+	}
+}
+
+// TestGoalTool_CancelAllQueueOnly: with no active goal, "all" still wipes the
+// queue — and does not stop the turn (nothing was running).
+func TestGoalTool_CancelAllQueueOnly(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := q.AppendGoal(goal.UpcomingGoalInput{Objective: "queued"}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := tool.ExecuteWithResult(`{"action":"cancel","goalId":"all"}`)
+	if err != nil {
+		t.Fatalf("cancel all: %v", err)
+	}
+	if read, _ := q.Read(); len(read) != 0 {
+		t.Errorf("queue should be empty: %+v", read)
+	}
+	if res.StopTurn {
+		t.Error("no active goal existed — the turn must not stop")
+	}
+	if !strings.Contains(res.Output, `"queueCleared":1`) {
+		t.Errorf("output = %q", res.Output)
+	}
+}
+
+// TestGoalTool_CancelNoActiveGoal: cancel with no goalId and no active goal
+// is a tool error.
+func TestGoalTool_CancelNoActiveGoal(t *testing.T) {
+	tool := &GoalTool{Mode: goal.NewGoalMode(nil, nil, nil, nil), Queue: &fakeQueue{}}
+	if _, err := tool.Execute(`{"action":"cancel"}`); err == nil {
+		t.Fatal("expected error when no active goal to cancel")
+	} else if !strings.Contains(err.Error(), "no active goal to cancel") {
+		t.Errorf("error = %v", err)
 	}
 }
 

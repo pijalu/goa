@@ -76,15 +76,16 @@ func (c *GoalCommand) LongHelp() string {
 // goalDispatch maps a parsed kind to its handler. Table-driven to keep Run
 // under the cyclomatic-complexity budget.
 var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error{
-	"status":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showStatus(ctx) },
-	"current":  func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showCurrent(ctx) },
-	"list":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showList(ctx) },
-	"pause":    func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.pause(ctx) },
-	"resume":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.resume(ctx) },
-	"cancel":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancel(ctx) },
-	"manage":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showQueueManager(ctx) },
-	"log":      func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showEventLog(ctx) },
-	"verify":   func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.runVerify(ctx) },
+	"status":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showStatus(ctx) },
+	"current":    func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showCurrent(ctx) },
+	"list":       func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showList(ctx) },
+	"pause":      func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.pause(ctx) },
+	"resume":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.resume(ctx) },
+	"cancel":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancel(ctx) },
+	"cancel-all": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancelAll(ctx) },
+	"manage":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showQueueManager(ctx) },
+	"log":        func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showEventLog(ctx) },
+	"verify":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.runVerify(ctx) },
 	"next-add": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
 		return c.queueNext(ctx, p.objective, c.resolveFresh(p.contextMode))
 	},
@@ -142,9 +143,13 @@ func (c *GoalCommand) parseArgs(args []string) parsedGoalArgs {
 type subcommandMode int
 
 const (
-	subNone     subcommandMode = iota // status/pause/resume/cancel/manage
+	subNone     subcommandMode = iota // status/pause/resume/manage
 	subOptional                       // new/next/replace: bare → interactive, with text → action
 	subRequired                       // reorder: requires a mapping arg
+	// subScope maps an optional scope token via scopeKinds ("" is the bare
+	// form); unknown tokens emit errorHint as a hint. Used by /goal:cancel
+	// for its :current/:all variants.
+	subScope
 )
 
 // goalSubcommandKinds maps each subcommand keyword to its parse behavior and
@@ -155,20 +160,24 @@ var goalSubcommandKinds = map[string]struct {
 	kind      string // kind when text is present
 	bareKind  string // kind when no text (subOptional)
 	errorHint string // non-empty → emit this usage hint when text missing
+	// scopeKinds (subScope only): allowed scope tokens (lowercased) → kind;
+	// the "" key is the bare form.
+	scopeKinds map[string]string
 }{
 	"status":  {mode: subNone, kind: "status"},
 	"current": {mode: subNone, kind: "current"},
 	"list":    {mode: subNone, kind: "list"},
 	"pause":   {mode: subNone, kind: "pause"},
 	"resume":  {mode: subNone, kind: "resume"},
-	"cancel":  {mode: subNone, kind: "cancel"},
-	"manage":  {mode: subNone, kind: "manage"},
-	"log":     {mode: subNone, kind: "log"},
-	"verify":  {mode: subNone, kind: "verify"},
-	"new":     {mode: subOptional, kind: "create", bareKind: "create-interactive"},
-	"next":    {mode: subOptional, kind: "next-add", bareKind: "next-interactive"},
-	"replace": {mode: subOptional, kind: "replace", bareKind: "replace-interactive"},
-	"reorder": {mode: subRequired, kind: "reorder", errorHint: "usage: /goal:reorder <mapping> (e.g. 1B,2C,3A)"},
+	"cancel": {mode: subScope, errorHint: "usage: /goal:cancel[:current|all]",
+		scopeKinds: map[string]string{"": "cancel", "current": "cancel", "all": "cancel-all"}},
+	"manage":   {mode: subNone, kind: "manage"},
+	"log":      {mode: subNone, kind: "log"},
+	"verify":   {mode: subNone, kind: "verify"},
+	"new":      {mode: subOptional, kind: "create", bareKind: "create-interactive"},
+	"next":     {mode: subOptional, kind: "next-add", bareKind: "next-interactive"},
+	"replace":  {mode: subOptional, kind: "replace", bareKind: "replace-interactive"},
+	"reorder":  {mode: subRequired, kind: "reorder", errorHint: "usage: /goal:reorder <mapping> (e.g. 1B,2C,3A)"},
 	"settings": {mode: subNone, kind: "settings"},
 }
 
@@ -188,6 +197,14 @@ func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
 			return parsedGoalArgs{kind: "error", message: spec.errorHint, severity: "hint"}
 		}
 		return parsedGoalArgs{kind: spec.kind, objective: text}
+	case subScope:
+		// Optional scope token (/goal:cancel, /goal:cancel:current,
+		// /goal:cancel:all); anything else is a usage hint, not an objective.
+		kind, ok := spec.scopeKinds[strings.ToLower(text)]
+		if !ok {
+			return parsedGoalArgs{kind: "error", message: spec.errorHint, severity: "hint"}
+		}
+		return parsedGoalArgs{kind: kind}
 	default: // subOptional
 		// /goal:new:fresh <text> and /goal:new:reuse <text> (also :next:) carry
 		// a leading context-mode token that overrides the configured default.
@@ -406,12 +423,23 @@ func (c *GoalCommand) resume(ctx core.Context) error {
 	return nil
 }
 
+// cancel implements /goal:cancel (and /goal:cancel:current): discard the
+// current goal. The clear event promotes the queued successor PAUSED — a
+// cancel never auto-starts the next goal; the user resumes it explicitly.
 func (c *GoalCommand) cancel(ctx core.Context) error {
 	if err := c.rejectIfManaged("cancel"); err != nil {
 		return err
 	}
 	if c.Mode.GetGoal().Goal == nil {
 		return fmt.Errorf("no current goal to cancel")
+	}
+	// Snapshot the queue BEFORE the cancel: the successor promotion happens
+	// asynchronously once the clear event crosses the bus.
+	queued := 0
+	if c.Queue != nil {
+		if q, err := c.Queue.Read(); err == nil {
+			queued = len(q)
+		}
 	}
 	_, err := c.Mode.CancelGoal(goal.GoalActorUser)
 	if err != nil {
@@ -429,6 +457,42 @@ func (c *GoalCommand) cancel(ctx core.Context) error {
 		c.Driver.Stop()
 	}
 	writeStr(ctx, "Goal cancelled.\n")
+	if queued > 0 {
+		writeStr(ctx, "The next queued goal is promoted paused — /goal:resume to start it.\n")
+	}
+	return nil
+}
+
+// cancelAll implements /goal:cancel:all: discard the current goal AND clear
+// every queued goal. The queue is cleared FIRST: queue operations emit no
+// goal events, so the clear event's successor promotion (async, on the
+// event-forwarder goroutine) then finds an empty queue and stays a no-op.
+func (c *GoalCommand) cancelAll(ctx core.Context) error {
+	if err := c.rejectIfManaged("cancel"); err != nil {
+		return err
+	}
+	cleared := 0
+	if c.Queue != nil {
+		goals, err := c.Queue.Clear()
+		if err != nil {
+			return err
+		}
+		cleared = len(goals)
+	}
+	if c.Mode.GetGoal().Goal == nil {
+		if cleared == 0 {
+			return fmt.Errorf("nothing to cancel: no current goal and the queue is empty")
+		}
+		writeFmt(ctx, "Cleared %d queued goal(s).\n", cleared)
+		return nil
+	}
+	if _, err := c.Mode.CancelGoal(goal.GoalActorUser); err != nil {
+		return err
+	}
+	if c.Driver != nil {
+		c.Driver.Stop()
+	}
+	writeFmt(ctx, "Goal cancelled; %d queued goal(s) cleared.\n", cleared)
 	return nil
 }
 
@@ -906,19 +970,59 @@ var goalSubcommands = []struct {
 	{"settings", "toggle goal settings (auto-unblock)"},
 	{"pause", "pause the active goal"},
 	{"resume", "resume a paused goal"},
-	{"cancel", "discard the current goal"},
+	{"cancel", "discard the current goal (next queued promotes paused)"},
+}
+
+// goalCancelScopes is the nested /goal:cancel:<scope> list offered once the
+// user typed "cancel:" (level-2 completion).
+var goalCancelScopes = []struct {
+	value string
+	desc  string
+}{
+	{"current", "discard the current goal (queued goals stay)"},
+	{"all", "discard the current goal and clear the queue"},
 }
 
 // CompleteArgs implements core.ArgCompleter, providing /goal:<tab> completion
 // for subcommand keywords. The router passes the raw text after "goal" as
-// prefix (e.g. "ne" for /goal:ne).
+// prefix (e.g. "ne" for /goal:ne); a prefix containing ":" (e.g. "cancel:a"
+// for /goal:cancel:a) is completed at the nested scope level.
 func (c *GoalCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if sub, rest, nested := splitGoalCompletionPrefix(prefix); nested && sub == "cancel" {
+		return cancelScopeCompletions(rest)
+	}
 	var comps []core.ArgCompletion
 	for _, sc := range goalSubcommands {
 		if prefix == "" || strings.HasPrefix(sc.value, prefix) {
 			comps = append(comps, core.ArgCompletion{
 				Value:       sc.value,
+				Description: sc.desc,
+			})
+		}
+	}
+	return comps
+}
+
+// splitGoalCompletionPrefix splits a nested completion prefix: "cancel:a" →
+// ("cancel", "a", true); "can" → ("can", "", false).
+func splitGoalCompletionPrefix(prefix string) (sub, rest string, nested bool) {
+	idx := strings.Index(prefix, ":")
+	if idx < 0 {
+		return prefix, "", false
+	}
+	return prefix[:idx], prefix[idx+1:], true
+}
+
+// cancelScopeCompletions returns the /goal:cancel:<scope> completions whose
+// scope starts with rest, with values fully spelled out ("cancel:current")
+// so the completer prefixes them into /goal:cancel:current.
+func cancelScopeCompletions(rest string) []core.ArgCompletion {
+	var comps []core.ArgCompletion
+	for _, sc := range goalCancelScopes {
+		if rest == "" || strings.HasPrefix(sc.value, rest) {
+			comps = append(comps, core.ArgCompletion{
+				Value:       "cancel:" + sc.value,
 				Description: sc.desc,
 			})
 		}

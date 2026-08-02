@@ -60,6 +60,10 @@ type GoalQueue interface {
 	// Used by the auto-unblock flow and the model's push-in-front create.
 	PrependGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error)
 	Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingGoal, error)
+	// Clear removes every queued goal (cancel "all"). Queue operations emit
+	// no goal events, so clearing before cancelling the active goal keeps
+	// the clear event's successor promotion a no-op.
+	Clear() ([]goal.UpcomingGoal, error)
 	Move(id, direction string) ([]goal.UpcomingGoal, error)
 	// Restore puts a removed goal back at the front of the queue. Used to
 	// roll back a promote when the follow-up activation fails.
@@ -78,16 +82,16 @@ type goalArgs struct {
 	// FreshContext is a tri-state per-create override: nil = use the
 	// configured default (goals.fresh_context, default true = clean context);
 	// explicit true/false wins for this goal.
-	FreshContext        *bool    `json:"freshContext,omitempty"`
+	FreshContext *bool `json:"freshContext,omitempty"`
 	// Handover is an optional continuity note for the successor goal (free
 	// text, untrusted data). On `create` it becomes the new goal's handover;
 	// the next goal's reminder shows it inside an <untrusted_handover> block.
 	Handover string `json:"handover,omitempty"`
-	Status              string   `json:"status,omitempty"`
+	Status   string `json:"status,omitempty"`
 	// Terminal-answer contract (update): reason justifies the transition;
 	// expectation states what unblocks a blocked goal.
-	Reason      string `json:"reason,omitempty"`
-	Expectation string `json:"expectation,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
+	Expectation string   `json:"expectation,omitempty"`
 	Value       *float64 `json:"value,omitempty"`
 	Unit        string   `json:"unit,omitempty"`
 	// Goal list management (todo-like): target a goal by id/name and reorder.
@@ -128,7 +132,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"goalId": map[string]any{
 					"type":        "string",
-					"description": "cancel/reorder: the queued goal's ID or friendly name to act on.",
+					"description": "cancel: target — omitted or \"current\" cancels the ACTIVE goal (a queued successor is promoted PAUSED, never auto-started), \"all\" also wipes the queue, otherwise the queued goal's ID or friendly name. reorder: the queued goal's ID or friendly name to act on.",
 				},
 				"direction": map[string]any{
 					"type":        "string",
@@ -457,16 +461,63 @@ func (t *GoalTool) handleList() (agentic.ToolResult, error) {
 	return agentic.ToolResult{Output: string(out)}, nil
 }
 
-// handleCancel removes a queued goal by ID or friendly name.
+// handleCancel deletes goal(s). goalId empty or "current" cancels the ACTIVE
+// goal (the host promotes the queued successor PAUSED — a cancel never
+// auto-starts the next goal); "all" additionally wipes the queue; any other
+// value removes a queued goal by ID or friendly name.
 func (t *GoalTool) handleCancel(args goalArgs) (agentic.ToolResult, error) {
-	if args.GoalID == "" {
-		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
-			fmt.Errorf("action \"cancel\" requires \"goalId\" (queued goal ID or name)"))
+	switch strings.ToLower(strings.TrimSpace(args.GoalID)) {
+	case "", "current":
+		return t.cancelActive(false)
+	case "all":
+		return t.cancelActive(true)
+	default:
+		return t.cancelQueued(args.GoalID)
 	}
+}
+
+// cancelActive cancels the ACTIVE goal. With wipeQueue the queued goals are
+// removed first: queue operations emit no goal events, so the clear event's
+// successor promotion then finds an empty queue and stays a no-op (the same
+// ordering /goal:cancel:all uses).
+func (t *GoalTool) cancelActive(wipeQueue bool) (agentic.ToolResult, error) {
+	cleared := 0
+	if wipeQueue && t.Queue != nil {
+		goals, err := t.Queue.Clear()
+		if err != nil {
+			return agentic.ToolResult{}, goalToolErr("goal", "cancel_failed", err)
+		}
+		cleared = len(goals)
+	}
+	if t.Mode.GetGoal().Goal == nil {
+		if wipeQueue && cleared > 0 {
+			out, _ := json.Marshal(map[string]any{"cancelled": nil, "queueCleared": cleared})
+			return agentic.ToolResult{Output: string(out)}, nil
+		}
+		return agentic.ToolResult{}, goalToolErr("goal", "cancel_failed",
+			fmt.Errorf("no active goal to cancel"))
+	}
+	cancelled, err := t.Mode.CancelGoal(goal.GoalActorModel)
+	if err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "cancel_failed", err)
+	}
+	payload := map[string]any{"cancelled": goal.ForModel(cancelled)}
+	if wipeQueue {
+		payload["queueCleared"] = cleared
+	}
+	out, _ := json.Marshal(payload)
+	return agentic.ToolResult{
+		Output:   string(out) + "\nActive goal cancelled. A queued successor is promoted PAUSED — it does NOT auto-start; the user resumes it explicitly.",
+		StopTurn: true,
+	}, nil
+}
+
+// cancelQueued removes a queued goal by ID or friendly name.
+func (t *GoalTool) cancelQueued(idOrName string) (agentic.ToolResult, error) {
 	if t.Queue == nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "cancel_failed", fmt.Errorf("no goal queue available"))
 	}
-	id, err := t.resolveQueuedID(args.GoalID)
+	id, err := t.resolveQueuedID(idOrName)
 	if err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "cancel_failed", err)
 	}
@@ -524,7 +575,12 @@ func (t *GoalTool) handlePostpone(args goalArgs) (agentic.ToolResult, error) {
 	}); err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "postpone_failed", err)
 	}
-	if _, err := t.Mode.CancelGoal(goal.GoalActorModel); err != nil {
+	// Runtime actor: a postpone is a framework RESCHEDULE, not a user/model
+	// cancellation — the goal survives at the back of the queue. The actor
+	// matters: the host applies the successor policy from the clear event's
+	// actor, and only runtime/framework clears keep the start-the-next-goal
+	// behavior a postpone promises (mirrors the unblock flow below).
+	if _, err := t.Mode.CancelGoal(goal.GoalActorRuntime); err != nil {
 		return agentic.ToolResult{}, goalToolErr("goal", "postpone_failed", err)
 	}
 	out, _ := json.Marshal(map[string]any{"postponed": goal.ForModel(*snap), "position": "back"})
@@ -618,9 +674,9 @@ func (t *GoalTool) handleUpdate(ctx context.Context, args goalArgs) (agentic.Too
 			fmt.Errorf("action \"update\" requires \"status\" (active|complete|paused|blocked)"))
 	}
 	handlers := map[string]func(goalArgs) (agentic.ToolResult, error){
-		"active":   t.updateActive,
-		"paused":   t.updatePaused,
-		"blocked":  t.updateBlocked,
+		"active":  t.updateActive,
+		"paused":  t.updatePaused,
+		"blocked": t.updateBlocked,
 	}
 	if args.Status == "complete" {
 		res, err := t.updateComplete(ctx, args)

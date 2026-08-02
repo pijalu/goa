@@ -402,7 +402,15 @@ func (m *GoalMode) cancelGoalLocked(actor GoalActor) (GoalSnapshot, error) {
 		return GoalSnapshot{}, err
 	}
 	snapshot := m.toSnapshot(state)
-	m.clearInternal(actor, emitOption{Emit: true, Track: true})
+	// The clear event carries a GoalChangeClear with the cancelling actor so
+	// consumers can apply the successor policy: a user/model cancel promotes
+	// the queued successor PAUSED (never auto-started), while runtime
+	// framework transitions (postpone, unblock, orchestrator cleanup) keep
+	// draining the queue. A completion clear emits no change at all.
+	m.clearInternal(actor, emitOption{Emit: true, Track: true, Change: &GoalChange{
+		Kind:  GoalChangeClear,
+		Actor: &actor,
+	}})
 	if actor == GoalActorUser && m.reminderFn != nil {
 		m.reminderFn(BuildCancellationReminder())
 	}
@@ -785,7 +793,7 @@ func (m *GoalMode) clearInternal(actor GoalActor, opts ...emitOption) {
 	}
 	m.state = nil
 	if opt.Emit {
-		m.emitGoalUpdated(nil, nil)
+		m.emitGoalUpdated(nil, opt.Change)
 	}
 	m.appendGoalUpdateRecord(GoalEventRecord{
 		Type:      GoalEventClear,
@@ -801,6 +809,10 @@ func (m *GoalMode) clearInternal(actor GoalActor, opts ...emitOption) {
 type emitOption struct {
 	Emit  bool
 	Track bool
+	// Change, when set, rides on the clear event (nil snapshot). CancelGoal
+	// uses it to distinguish an explicit cancel from a completion clear
+	// (which carries no change) — see GoalChangeClear.
+	Change *GoalChange
 }
 
 func (m *GoalMode) appendStatusUpdate(state *goalStage, actor GoalActor, input GoalReasonInput) {

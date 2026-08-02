@@ -74,6 +74,33 @@ func TestGoalQueueStore_RemoveNotFound(t *testing.T) {
 	}
 }
 
+func TestGoalQueueStore_Clear(t *testing.T) {
+	store := NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	store.Append("A")
+	store.Append("B")
+
+	cleared, err := store.Clear()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleared) != 2 || cleared[0].Objective != "A" || cleared[1].Objective != "B" {
+		t.Errorf("cleared = %+v, want [A B] in queue order", cleared)
+	}
+	read, err := store.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 0 {
+		t.Errorf("queue should be empty after Clear, got %+v", read)
+	}
+
+	// Clearing an already-empty queue is a no-op, not an error.
+	cleared, err = store.Clear()
+	if err != nil || len(cleared) != 0 {
+		t.Errorf("second Clear = %+v, %v; want empty, nil", cleared, err)
+	}
+}
+
 // TestGoalQueueStore_RemoveAliasing guards against CORE-BUG-1: a previous
 // implementation reused the source backing array (goals[:0]) for the filtered
 // slice and returned a pointer into it, so the returned *removed pointed at

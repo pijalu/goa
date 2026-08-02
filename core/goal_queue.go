@@ -212,6 +212,28 @@ func (s *GoalQueueStore) Remove(id string) ([]goal.UpcomingGoal, *goal.UpcomingG
 	return filtered, &removed, nil
 }
 
+// Clear removes every queued goal and returns them in queue order. Used by
+// the cancel-all flows (/goal:cancel:all and the goal tool's cancel "all").
+// Queue operations emit no goal events, so clearing before cancelling the
+// active goal guarantees the clear event's successor promotion finds an
+// empty queue and stays a no-op.
+func (s *GoalQueueStore) Clear() ([]goal.UpcomingGoal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	goals, err := s.readLocked()
+	if err != nil {
+		return nil, err
+	}
+	if len(goals) == 0 {
+		return nil, nil
+	}
+	if err := s.writeLocked(nil); err != nil {
+		return nil, err
+	}
+	return goals, nil
+}
+
 // Move shifts a goal up or down by one position.
 func (s *GoalQueueStore) Move(id string, direction string) ([]goal.UpcomingGoal, error) {
 	s.mu.Lock()
