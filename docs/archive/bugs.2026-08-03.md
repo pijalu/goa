@@ -15,6 +15,15 @@ Quality gates at archive time (run separately per guideline 6):
 (verified via stash diff); `go test -count=1 -race -cover ./...` green
 (exit 0).
 
+Follow-up (same date): `stripVerbosePattern` (added by 33d8104 for
+re.VERBOSE) measured gocyclo 16 over the budget of 12 — refactored
+behavior-preservingly into `isVerboseSpace` + `skipVerboseComment` helpers
+(0e842d0). Gates re-run separately after the refactor: `go vet ./...`
+clean; `staticcheck ./...` / `gocognit -over 15 .` / `gocyclo -over 12 .`
+report only pre-existing findings (e.g. `parseTwoArgs` from 7616ce0,
+`hasStalled` from 5c7a698, `compressHistory` from 3b7ab2b);
+`go test -count=1 -race -cover ./...` green (exit 0, 80 packages ok).
+
 ---
 
 ## python tool `re` module missing DOTALL / MULTILINE / VERBOSE flags — FIXED 2026-08-03
