@@ -706,6 +706,16 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 	return err
 }
 
+// ResetLoopStop clears the runaway-loop latch on the active agent. The goal
+// driver calls this (via optional interface) when resuming a goal paused by
+// the loop guardrail, pairing the latch reset with its varied recovery
+// prompt (bugs.md runaway-loop bricking).
+func (r *agentManagerRunner) ResetLoopStop() {
+	if agent := r.agentMgr.CurrentAgent(); agent != nil {
+		agent.ResetLoopStop()
+	}
+}
+
 // RunFresh implements core.FreshAgentRunner for goals carrying the
 // clean-context flag. On the first continuation turn (begin=true) it clears the
 // agent's live context to a clean one (system prompt only) and renders a

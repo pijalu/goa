@@ -339,6 +339,15 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	am.mu.Lock()
 	am.loopStopReason = ""
 	am.mu.Unlock()
+	// A genuine new user turn resets the agent's runaway-loop latch and
+	// repeat counters: the guardrail stops a runaway exchange, never the
+	// session (bugs.md runaway-loop bricking). Goal continuation turns
+	// bypass runAgentTurn and keep their guardrail state so cross-turn
+	// driver loops still latch. Optional interface: test runners need not
+	// implement it.
+	if lr, ok := runner.(interface{ ResetLoopStop() }); ok {
+		lr.ResetLoopStop()
+	}
 	// Defense in depth: a turn that ends without EventEnd (loop-detector
 	// interrupt, user Escape, stream error) skips finalizeTurn and would leak
 	// its thinking-repeat counters into this turn, instantly re-triggering the

@@ -61,6 +61,12 @@ type App struct {
 	lastTurnCacheWrite int
 	lastTurnSpeed      float64
 	turnCount          int
+	// turnStatsSeen records whether any EventTokenStats arrived since the
+	// last turn end. Turns that never reached the LLM (latch errors,
+	// connection failures) log a distinct "no LLM call" line instead of
+	// re-logging the previous turn's byte-identical stale numbers
+	// (bugs.md runaway-loop identical-stats anomaly).
+	turnStatsSeen bool
 
 	// usageStore records per-turn token usage to the global SQLite DB for
 	// /usage. Lazily opened on first recorded turn; nil until then.

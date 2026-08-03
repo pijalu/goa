@@ -339,8 +339,13 @@ type Agent struct {
 	streamLoopStrikeThisRound bool
 
 	// loopStopped is set when a hard loop guardrail fires so subsequent turns
-	// are rejected instead of continuing the runaway exchange.
+	// are rejected instead of continuing the runaway exchange. The latch is
+	// cleared by ResetLoopStop (genuine new user input / goal resume) and
+	// auto-expires after loopStopCooldown — a guardrail must never
+	// permanently brick a session (bugs.md runaway-loop bricking).
 	loopStopped bool
+	// loopStoppedAt records when the latch was set, for cooldown expiry.
+	loopStoppedAt time.Time
 
 	// bufferedToolCallCount is the number of tool calls buffered during the
 	// current stream. It is reset once the batch is executed so the TUI can
@@ -1192,8 +1197,8 @@ func (a *Agent) processTurn(ctx context.Context) error {
 	if a.cfg.Model.ID == "" && a.cfg.Model.Api == "" {
 		return fmt.Errorf("no model configured: set Config.Model")
 	}
-	if a.loopStopped {
-		return fmt.Errorf("session stopped due to a runaway loop; please review the conversation and retry")
+	if err := a.checkLoopStopped(); err != nil {
+		return err
 	}
 	if err := a.processTurnWithStream(ctx); err != nil {
 		return err
@@ -1201,15 +1206,69 @@ func (a *Agent) processTurn(ctx context.Context) error {
 	return a.checkProgressLoop()
 }
 
+// loopStopCooldown is how long the runaway-loop latch rejects new turns
+// before auto-expiring. A guardrail stops a runaway exchange, never the
+// session: genuine recovery paths (ResetLoopStop on new user input or goal
+// resume) clear it immediately, and this backstop covers driven paths that
+// bypass both (bugs.md runaway-loop bricking).
+const loopStopCooldown = 10 * time.Minute
+
+// checkLoopStopped enforces the runaway-loop latch at turn start. The latch
+// auto-expires after loopStopCooldown so no session stays bricked forever.
+func (a *Agent) checkLoopStopped() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.loopStopped {
+		return nil
+	}
+	if time.Since(a.loopStoppedAt) >= loopStopCooldown {
+		a.cfg.Logger.Log(Info, "Loop guardrail: session stop latch auto-expired after %s", loopStopCooldown)
+		a.clearLoopStopLocked()
+		return nil
+	}
+	return fmt.Errorf("session stopped due to a runaway loop; please review the conversation and retry")
+}
+
+// ResetLoopStop clears the runaway-loop latch and repeat counters. It is
+// called when a genuine new user message starts a turn (human input, or a
+// goal resumed after a runaway pause with a varied recovery prompt): the
+// pause/interrupt was the guardrail's stop, and the new input is a deliberate
+// attempt to recover — the session must be allowed to proceed (bugs.md).
+func (a *Agent) ResetLoopStop() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.loopStopped || a.assistantRepeatCount > 0 {
+		a.cfg.Logger.Log(Info, "Loop guardrail: state reset by new user input (latched=%v, repeats=%d)", a.loopStopped, a.assistantRepeatCount)
+	}
+	a.clearLoopStopLocked()
+}
+
+// clearLoopStopLocked resets all runaway-loop guardrail state. Caller must
+// hold a.mu.
+func (a *Agent) clearLoopStopLocked() {
+	a.loopStopped = false
+	a.loopStoppedAt = time.Time{}
+	a.assistantRepeatCount = 0
+	a.lastAssistantHash = ""
+}
+
 // checkProgressLoop detects runaway conversations where the assistant repeats
 // the same meaningful message across consecutive turns without progress.
 // On the first repeat it injects a warning hint; on the second repeat it
 // stops the session with a clear error.
+//
+// The strike only counts when this turn produced a NEW assistant message:
+// when the last assistant message predates turnStartHistoryLen (stream
+// error, retry, pause), comparing the stale message against itself would
+// score a false strike with zero actual repetition (bugs.md).
 func (a *Agent) checkProgressLoop() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	msg := a.lastAssistantMessage()
+	idx, msg := a.lastAssistantMessageLocked()
+	if idx < 0 || idx < a.turnStartHistoryLen {
+		return nil
+	}
 	if !a.isMeaningfulAssistantMessage(msg) {
 		return nil
 	}
@@ -1231,17 +1290,20 @@ func (a *Agent) checkProgressLoop() error {
 	}
 
 	a.loopStopped = true
+	a.loopStoppedAt = time.Now()
 	return fmt.Errorf("runaway loop detected: the assistant repeated the same response %d consecutive times without progress; session stopped", a.assistantRepeatCount+1)
 }
 
-// lastAssistantMessage returns the most recent assistant message in history.
-func (a *Agent) lastAssistantMessage() Message {
+// lastAssistantMessageLocked returns the index and value of the most recent
+// assistant message in history, or (-1, Message{}) when there is none.
+// Caller must hold a.mu.
+func (a *Agent) lastAssistantMessageLocked() (int, Message) {
 	for i := len(a.history) - 1; i >= 0; i-- {
 		if a.history[i].Role == Assistant {
-			return a.history[i]
+			return i, a.history[i]
 		}
 	}
-	return Message{}
+	return -1, Message{}
 }
 
 // isMeaningfulAssistantMessage reports whether a message should participate in
@@ -1309,6 +1371,7 @@ func (a *Agent) Clear() {
 	a.processing = false
 	a.lastRoundActivity = time.Time{}
 	a.lastCacheReadTokens = 0
+	a.clearLoopStopLocked()
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 

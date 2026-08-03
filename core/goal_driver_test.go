@@ -502,3 +502,125 @@ func TestGoalDriver_BusyThenRecovers(t *testing.T) {
 		t.Error("goal still active after completing turn")
 	}
 }
+
+// runawayScriptAgent scripts per-Run behavior for the runaway-pause recovery
+// tests: the first Run fails with a runaway-loop error, subsequent Runs
+// succeed (optionally completing the goal). It records every prompt and
+// implements ResetLoopStop to verify the driver clears the agent latch on
+// the recovery turn.
+type runawayScriptAgent struct {
+	mode       *goal.GoalMode
+	failFirst  bool
+	completeOn int // when >0, MarkComplete on this 1-based Run
+	prompts    []string
+	resetCalls int
+}
+
+func (a *runawayScriptAgent) Run(ctx context.Context, prompt string) error {
+	a.prompts = append(a.prompts, prompt)
+	run := len(a.prompts)
+	if a.failFirst && run == 1 {
+		return errors.New("runaway loop detected: the assistant repeated the same response 3 consecutive times without progress; session stopped")
+	}
+	if a.completeOn > 0 && run == a.completeOn {
+		_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	}
+	return nil
+}
+
+func (a *runawayScriptAgent) ResetLoopStop() { a.resetCalls++ }
+
+// TestGoalDriver_RunawayResumeUsesRecoveryPrompt is the regression test for
+// bugs.md "pause/resume re-enters the same loop": after the runaway-loop
+// guardrail pauses the goal, the first continuation after resume must NOT be
+// the byte-identical ContinuationPrompt, and the agent's loop latch must be
+// reset so the turn is not rejected outright.
+func TestGoalDriver_RunawayResumeUsesRecoveryPrompt(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "loop then recover"}, goal.GoalActorUser); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	agent := &runawayScriptAgent{mode: mode, failFirst: true, completeOn: 2}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	// First drive: the runaway error pauses the goal.
+	if err := driver.Drive(context.Background()); err == nil {
+		t.Fatal("Drive returned nil, want the runaway-loop error")
+	}
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalPaused {
+		t.Fatalf("goal status = %v, want paused", g)
+	}
+
+	// User resumes the goal; the driver runs the recovery turn.
+	if _, err := mode.ResumeGoal(goal.GoalReasonInput{}, goal.GoalActorUser); err != nil {
+		t.Fatalf("ResumeGoal: %v", err)
+	}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatalf("recovery Drive: %v", err)
+	}
+
+	if len(agent.prompts) != 2 {
+		t.Fatalf("prompts = %v, want exactly 2 runs", agent.prompts)
+	}
+	if agent.prompts[0] != ContinuationPrompt {
+		t.Errorf("first prompt was not the continuation prompt")
+	}
+	if agent.prompts[1] != RunawayRecoveryPrompt {
+		t.Errorf("post-runaway prompt = %q, want RunawayRecoveryPrompt", agent.prompts[1])
+	}
+	if agent.resetCalls != 1 {
+		t.Errorf("ResetLoopStop called %d times, want 1", agent.resetCalls)
+	}
+}
+
+// TestGoalDriver_NonRunawayPauseKeepsContinuationPrompt is the control: a
+// pause for any other reason (e.g. rate limit) resumes with the ordinary
+// byte-identical ContinuationPrompt and does not touch the loop latch.
+func TestGoalDriver_NonRunawayPauseKeepsContinuationPrompt(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "pause for other reason"}, goal.GoalActorUser); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	agent := &rateLimitScriptAgent{mode: mode}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	if err := driver.Drive(context.Background()); err == nil {
+		t.Fatal("Drive returned nil, want the rate-limit error")
+	}
+	if _, err := mode.ResumeGoal(goal.GoalReasonInput{}, goal.GoalActorUser); err != nil {
+		t.Fatalf("ResumeGoal: %v", err)
+	}
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatalf("recovery Drive: %v", err)
+	}
+
+	if len(agent.prompts) != 2 {
+		t.Fatalf("prompts = %v, want exactly 2 runs", agent.prompts)
+	}
+	if agent.prompts[1] != ContinuationPrompt {
+		t.Errorf("post-rate-limit prompt = %q, want ContinuationPrompt", agent.prompts[1])
+	}
+	if agent.resetCalls != 0 {
+		t.Errorf("ResetLoopStop called %d times, want 0", agent.resetCalls)
+	}
+}
+
+// rateLimitScriptAgent fails the first Run with a rate-limit error and
+// completes the goal on the second.
+type rateLimitScriptAgent struct {
+	mode       *goal.GoalMode
+	prompts    []string
+	resetCalls int
+}
+
+func (a *rateLimitScriptAgent) Run(ctx context.Context, prompt string) error {
+	a.prompts = append(a.prompts, prompt)
+	if len(a.prompts) == 1 {
+		return errors.New("provider rate limit exceeded")
+	}
+	_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
+	return nil
+}
+
+func (a *rateLimitScriptAgent) ResetLoopStop() { a.resetCalls++ }

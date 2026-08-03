@@ -2073,3 +2073,35 @@ func TestAgentManager_LogCompanionStarted_WritesModelMarker(t *testing.T) {
 	}
 	t.Fatal("no companion_started marker in session log (F6)")
 }
+
+// loopResetRunner tracks ResetLoopStop calls; used to verify that a genuine
+// new user turn clears the agent's runaway-loop latch (bugs.md runaway-loop
+// bricking) while runners without the optional interface are left alone.
+type loopResetRunner struct {
+	resetCalls int
+}
+
+func (r *loopResetRunner) Run(ctx context.Context, input string) error { return nil }
+
+func (r *loopResetRunner) RunWithImages(ctx context.Context, input string, images []string) error {
+	return nil
+}
+
+func (r *loopResetRunner) ResetLoopStop() { r.resetCalls++ }
+
+// TestAgentManager_UserTurnResetsLoopStop verifies runAgentTurn resets the
+// agent's runaway-loop latch on a genuine new user turn.
+func TestAgentManager_UserTurnResetsLoopStop(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runner := &loopResetRunner{}
+	am.runAgentTurn(ctx, cancel, 1, runner, "hello", nil)
+
+	if runner.resetCalls != 1 {
+		t.Fatalf("ResetLoopStop called %d times, want 1", runner.resetCalls)
+	}
+}

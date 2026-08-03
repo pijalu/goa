@@ -474,7 +474,7 @@ If new items are added, restart the process.
     gates + archive.
 ---
 
-## Runaway-loop guardrail bricks the session: `loopStopped` never resets, pause/resume re-enters the same loop — OPEN
+## Runaway-loop guardrail bricks the session: `loopStopped` never resets, pause/resume re-enters the same loop — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (2026-08-03, exports goa-export-20260803-112430.zip and
   ...-112729.zip, frigolite goal-mode session, deepseek-v4-flash-free):
@@ -539,6 +539,46 @@ If new items are added, restart the process.
   2. Interactive: force a loop (stub provider), hit the latch, then send a
      fresh prompt in the same session — it must recover without restart.
   3. Quality gates per guideline 6, run separately.
+- **Resolution** (2026-08-03): implemented fix-plan items 1, 2 and 4; item 3
+  resolved by investigation + the stats-log annotation below.
+  - **Latch recovery (item 1)**: `agent.go` — new `loopStoppedAt` field and
+    `loopStopCooldown` (10 min); `checkLoopStopped` auto-expires the latch
+    so no session stays bricked forever. New exported `Agent.ResetLoopStop`
+    clears latch + repeat counters; it is called for every genuine new user
+    turn in `core/agentmanager.go runAgentTurn` (optional interface, human
+    input) and by the goal driver for runaway resumes. `Agent.Clear` also
+    resets guardrail state. Goal continuation turns keep guardrail state, so
+    cross-turn driver loops still latch.
+  - **False-strike gate (item 2)**: `checkProgressLoop` now skips the check
+    when the last assistant message predates `turnStartHistoryLen` (set by
+    `prepareTurn` at turn start) — a turn that produced no NEW assistant
+    message (stream error, retry, pause) can no longer score a strike
+    against itself.
+  - **Identical-stats anomaly (item 3)**: investigation concluded the
+    byte-identical `[stats] turn 7..12` lines were error turns re-logging
+    turn 6's stale `lastTurn*` values — each latched turn never reached the
+    LLM, so no new EventTokenStats arrived. No evidence of in-turn duplicate
+    EventTokenStats delivery. Fix: `internal/app/stats.go` tracks
+    `turnStatsSeen`; stats-less turns log `[stats] turn N: no LLM call (no
+    token stats this turn)` instead of misleading identical numbers.
+  - **Driver side (item 4)**: `core/goal_driver.go` — new
+    `RunawayRecoveryPrompt` and `PauseRunawayLoop` const; the driver marks a
+    goal paused for runaway (`runawayPausedFor`) and the first continuation
+    after resume swaps the byte-identical ContinuationPrompt for the varied
+    recovery prompt AND calls `ResetLoopStop` via optional interface
+    (`agentManagerRunner.ResetLoopStop` in `internal/app/subsystems.go`
+    delegates to the active agent). Non-runaway pauses are unaffected.
+  - Regression tests: `internal/agentic/agent_loop_guardrail_test.go`
+    (latch recovery via ResetLoopStop incl. no-provider-call-while-latched,
+    cooldown auto-expiry, stale-message strike gate, Clear reset);
+    `core/goal_driver_test.go` (runaway resume → recovery prompt + latch
+    reset; rate-limit control keeps ContinuationPrompt);
+    `core/agentmanager_test.go` (user turn resets latch);
+    `internal/app/app_test.go` (stats-less turn annotated; flag lifecycle).
+  - Validation: `go test ./internal/agentic/ ./core/ -count=1 -race` green;
+    `go test ./internal/app/ -count=1 -race` green. Interactive step 2
+    covered by the scripted-provider regression tests. Gates per guideline 6
+    run at archive time. Awaiting archive.
 
 ---
 

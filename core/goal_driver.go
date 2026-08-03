@@ -55,7 +55,20 @@ const (
 	PauseRequestError = "Paused after provider request error"
 	PauseModelConfig  = "Paused after model configuration error"
 	PauseRuntimeError = "Paused after runtime error"
+	PauseRunawayLoop  = "Paused after detecting a runaway response loop"
 )
+
+// RunawayRecoveryPrompt replaces the byte-identical ContinuationPrompt for
+// the first turn after a goal resumes from a runaway-loop pause. Resuming
+// into the same prompt would deterministically re-enter the conditions that
+// tripped the guardrail (bugs.md runaway-loop bricking); the varied prompt
+// forces a diagnosis and a different approach instead.
+const RunawayRecoveryPrompt = `The previous goal turn was stopped by a runaway-loop guardrail: the same
+response repeated across consecutive turns without progress. Do NOT repeat
+your previous reply. In one or two sentences, diagnose why progress stalled,
+then take a concrete DIFFERENT action toward the active goal: use another
+tool, gather new evidence, or — if the goal genuinely cannot advance — call
+goal with action "update", status "blocked" with reason+expectation.`
 
 // ErrAgentBusy is returned by an AgentRunner when the agent is busy with
 // another turn. It is a clean stop for the drive loop — NOT an error: the
@@ -117,6 +130,15 @@ type GoalDriver struct {
 	lastFP          string
 	stale           int
 	stallChallenges int
+
+	// runawayPausedFor records the goal ID whose last turn was paused by
+	// the runaway-loop guardrail. The first continuation after that resume
+	// swaps the byte-identical ContinuationPrompt for RunawayRecoveryPrompt
+	// and resets the agent's loop latch, so pause → resume cannot blindly
+	// re-enter the conditions that tripped the guardrail (bugs.md).
+	// Written by handleTurnError, consumed by runTurn — both run on the
+	// single Drive loop goroutine, so no extra locking is needed.
+	runawayPausedFor string
 }
 
 // stallChallengeLimit is the number of unanswered stall challenges after
@@ -199,7 +221,12 @@ func (d *GoalDriver) handleTurnError(err error) error {
 		return nil
 	}
 	reason := mapDriverError(err)
-	d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime)
+	paused, _ := d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime)
+	if reason == PauseRunawayLoop && paused != nil {
+		// Mark the goal so the next continuation after resume swaps in the
+		// varied recovery prompt and resets the agent's loop latch.
+		d.runawayPausedFor = paused.GoalID
+	}
 	return err
 }
 
@@ -242,16 +269,34 @@ func (d *GoalDriver) checkStall(current *goal.GoalSnapshot) {
 // a visible boundary. Default goals (and runners without fresh support) use
 // the ordinary Run path against the current conversation.
 func (d *GoalDriver) runTurn(ctx context.Context, active *goal.GoalSnapshot) error {
+	prompt := d.turnPrompt(active)
 	if active.FreshContext {
 		if fr, ok := d.Agent.(FreshAgentRunner); ok {
 			begin := d.freshBegunFor != active.GoalID
 			d.freshBegunFor = active.GoalID
-			return fr.RunFresh(ctx, ContinuationPrompt, begin)
+			return fr.RunFresh(ctx, prompt, begin)
 		}
 	}
 	// Any non-fresh turn (or a different goal) resets the begin tracker.
 	d.freshBegunFor = ""
-	return d.Agent.Run(ctx, ContinuationPrompt)
+	return d.Agent.Run(ctx, prompt)
+}
+
+// turnPrompt picks the continuation prompt for this turn. The first turn
+// after a runaway-loop pause gets the varied RunawayRecoveryPrompt and the
+// agent's loop latch is reset — resuming with the byte-identical
+// ContinuationPrompt would deterministically re-enter the conditions that
+// tripped the guardrail, and the still-latched agent would reject the turn
+// outright (bugs.md runaway-loop bricking).
+func (d *GoalDriver) turnPrompt(active *goal.GoalSnapshot) string {
+	if d.runawayPausedFor == "" || d.runawayPausedFor != active.GoalID {
+		return ContinuationPrompt
+	}
+	d.runawayPausedFor = ""
+	if lr, ok := d.Agent.(interface{ ResetLoopStop() }); ok {
+		lr.ResetLoopStop()
+	}
+	return RunawayRecoveryPrompt
 }
 
 // Start begins autonomous driving in a background goroutine if an agent and an
@@ -296,7 +341,7 @@ var driverErrorRules = []struct {
 	{PauseConnError, []string{"connection"}},
 	{PauseAPIError, []string{"api error"}},
 	{PauseModelConfig, []string{"model config", "not configured"}},
-	{"Paused after detecting a runaway response loop", []string{"runaway loop", "stream loop"}},
+	{PauseRunawayLoop, []string{"runaway loop", "stream loop"}},
 }
 
 func mapDriverError(err error) string {

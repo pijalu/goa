@@ -772,6 +772,7 @@ func TestLogTurnStats_UsesPerTurnCounts(t *testing.T) {
 	app.tokenSessionMax = 10000
 	app.tokenSessionEstimate = 150
 	app.turnCount = 1
+	app.turnStatsSeen = true // simulate a turn that emitted token stats
 
 	logger := agentic.NewLogger(agentic.Info)
 	logPath := filepath.Join(t.TempDir(), "stats.log")
@@ -961,5 +962,85 @@ func TestSetupEventHandlers_DoneNotClosedBeforeEngineStop(t *testing.T) {
 	case <-done:
 		t.Fatal("done channel closed before engine.Stop()")
 	default:
+	}
+}
+
+// TestLogTurnStats_NoStatsTurnAnnotated is the regression test for the
+// identical-stats anomaly (bugs.md runaway-loop entry): turns that never
+// reached the LLM (guardrail latch, connection error) must log a distinct
+// "no LLM call" line instead of re-logging the previous turn's stale,
+// byte-identical token counts.
+func TestLogTurnStats_NoStatsTurnAnnotated(t *testing.T) {
+	app := New(testSubsystems())
+	app.turnCount = 7
+	// turnStatsSeen deliberately false: no EventTokenStats arrived this turn.
+
+	logger := agentic.NewLogger(agentic.Info)
+	logPath := filepath.Join(t.TempDir(), "stats.log")
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	logger.SetOutput(logFile)
+	app.subs.logger = logger
+
+	app.logTurnStats(&agentic.OutputEvent{Type: agentic.EventEnd})
+	logFile.Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	content := string(data)
+	want := "[stats] turn 7: no LLM call (no token stats this turn)"
+	if !strings.Contains(content, want) {
+		t.Errorf("log line mismatch\nwant substring: %q\ngot: %q", want, content)
+	}
+}
+
+// TestLogTurnStats_StatsSeenResetsAfterTurnEnd verifies the per-turn stats
+// flag lifecycle: a turn WITH token stats logs the normal line and the flag
+// resets, so the following stats-less turn is annotated instead of re-logging
+// identical numbers.
+func TestLogTurnStats_StatsSeenResetsAfterTurnEnd(t *testing.T) {
+	app := New(testSubsystems())
+	app.tokenSessionMax = 10000
+	app.turnCount = 1
+
+	logger := agentic.NewLogger(agentic.Info)
+	logPath := filepath.Join(t.TempDir(), "stats.log")
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	logger.SetOutput(logFile)
+	app.subs.logger = logger
+	defer logFile.Close()
+
+	// Turn 1: stats arrive, then the turn ends.
+	app.handleTokenStats(&agentic.OutputEvent{
+		Type:    agentic.EventTokenStats,
+		Timings: &agentic.TokenTimings{PromptN: 100, PredictedN: 50},
+	})
+	app.logTurnStats(&agentic.OutputEvent{Type: agentic.EventEnd})
+
+	// Turn 2: no stats arrive (e.g. latched guardrail turn).
+	app.turnCount = 2
+	app.logTurnStats(&agentic.OutputEvent{Type: agentic.EventEnd})
+	logFile.Close()
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[stats] turn 1: in=100 out=50") {
+		t.Errorf("turn 1 line missing normal stats: %q", content)
+	}
+	if !strings.Contains(content, "[stats] turn 2: no LLM call") {
+		t.Errorf("turn 2 line should be annotated as stats-less, got: %q", content)
+	}
+	if strings.Count(content, "in=100 out=50") > 1 {
+		t.Errorf("stale stats re-logged for the stats-less turn: %q", content)
 	}
 }

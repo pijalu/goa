@@ -136,6 +136,7 @@ func (a *App) clearStats() {
 	a.tokenSessionEstimate = 0
 	a.lastTurnSpeed = 0
 	a.turnCount = 0
+	a.turnStatsSeen = false
 	a.microCompacts = 0
 	a.compacts = 0
 	a.toolCallsTotal = 0
@@ -535,7 +536,19 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	tokenCacheRead := a.tokenCacheReadTotal
 	tokenCacheWrite := a.tokenCacheWriteTotal
 	cacheMisses := a.tokenCacheMisses
+	statsSeen := a.turnStatsSeen
+	a.turnStatsSeen = false // next turn starts with no stats observed
 	a.statsMu.Unlock()
+
+	// A turn that never reached the LLM (guardrail latch, connection error,
+	// early rejection) emits no EventTokenStats; re-logging the previous
+	// turn's stale numbers produced byte-identical [stats] lines across
+	// consecutive turns that looked like impossible zero-progress repeats
+	// (bugs.md runaway-loop identical-stats anomaly). Say what happened.
+	if !statsSeen {
+		a.subs.logger.Log(agentic.Info, fmt.Sprintf("[stats] turn %d: no LLM call (no token stats this turn)", turn))
+		return
+	}
 
 	line := fmt.Sprintf("[stats] turn %d: in=%d out=%d speed=%.1f ctx=%.1f%%/%d",
 		turn, promptN, predictedN, speed, ctxPct, ctxMax)
@@ -719,6 +732,7 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	a.statsMu.Lock()
 	// Extract token counts from timings
 	if ev.Timings != nil {
+		a.turnStatsSeen = true
 		a.lastTurnPromptN = ev.Timings.PromptN
 		a.lastTurnPredictedN = ev.Timings.PredictedN
 		a.tokenPromptTotal += ev.Timings.PromptN
