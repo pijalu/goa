@@ -703,3 +703,77 @@ func TestStreamLoop_TUIRepetitionSampleDetected(t *testing.T) {
 		t.Error("TUI repetition sample (casing/punctuation variants of one accusation) must trip the detector")
 	}
 }
+
+// TestStreamLoop_NoFalsePositiveOnStructuredHeaders is the false-positive
+// validation for the runaway-loop visibility bug (bugs.md 2026-08-03): a
+// long structured report whose sections share markdown headers and table
+// separators — but whose per-section content is genuinely varied — is
+// legitimate near-repetition, not a loop, and must never trip the detector
+// (neither the byte-exact chain nor the shingle-coverage path).
+func TestStreamLoop_NoFalsePositiveOnStructuredHeaders(t *testing.T) {
+	// Varied per-section analysis lines: shared headers, distinct content.
+	analysis := []string{
+		"The tokenizer now accepts nested brackets, which fixed the precedence regression seen in the previous pass.",
+		"Coverage dipped slightly because the new guard clause short-circuits before the metrics hook runs.",
+		"A flaky timing assertion was replaced with a fake clock, so the scheduler tests are deterministic again.",
+		"The exporter batch size was raised after profiling showed the flush dominated total runtime.",
+		"Retry backoff now caps at thirty seconds; longer waits hid genuine outages in staging last week.",
+		"Index compaction moved off the request path, removing the p99 latency spike under write bursts.",
+		"The schema migrator gained a dry-run mode so reviewers can inspect the plan before applying it.",
+		"Connection pooling was reconfigured to match the database's actual max_connections setting.",
+		"A bounds check in the ring buffer prevented the overwrite that corrupted metrics every few hours.",
+		"The cache key now includes the locale, fixing the wrong-language snippets served to some users.",
+		"Log sampling was tuned to keep error traces while dropping routine health-check chatter.",
+		"The rollout finished without incident; error rates stayed flat across all twelve availability zones.",
+	}
+	var b strings.Builder
+	for i, line := range analysis {
+		fmt.Fprintf(&b, "## Test Results — Iteration %d\n", i+1)
+		b.WriteString("| Metric | Value |\n| --- | --- |\n")
+		fmt.Fprintf(&b, "| coverage | %d.%d%% |\n| duration | %dms |\n\n", 75+i, i, 90+i*13)
+		b.WriteString(line + "\n\n")
+	}
+	text := b.String()
+	if streamLoopWouldDetect(text, 5) {
+		t.Error("false positive: structured report with repeated headers detected as a loop")
+	}
+	// No prefix may trip either (the detector runs per delta).
+	var buf strings.Builder
+	const fragSize = 31
+	for pos := 0; pos < len(text); pos += fragSize {
+		end := pos + fragSize
+		if end > len(text) {
+			end = len(text)
+		}
+		buf.WriteString(text[pos:end])
+		if streamLoopWouldDetect(buf.String(), 5) {
+			t.Fatalf("false positive mid-stream at byte %d of structured report", end)
+		}
+	}
+}
+
+// TestExactChainSample covers the evidence window extraction: a sample
+// starting on a word boundary is returned as-is; a mid-word cut (Detector A
+// fires at the smallest qualifying period) snaps back to the nearest space,
+// bounded by streamLoopSampleSnap, so the displayed repeat reads as full
+// words.
+func TestExactChainSample(t *testing.T) {
+	tests := []struct {
+		name   string
+		tail   string
+		period int
+		want   string
+	}{
+		{"word boundary unchanged", "the quick brown", 5, "brown"},
+		{"mid-word snaps to previous space", "see sentence repeats", 14, "sentence repeats"},
+		{"no space within snap window keeps start", "aaaaaaaaaaaaaaaaaaaa b", 2, " b"},
+		{"whole tail", "whole", 5, "whole"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exactChainSample(tt.tail, tt.period); got != tt.want {
+				t.Errorf("exactChainSample(%q, %d) = %q, want %q", tt.tail, tt.period, got, tt.want)
+			}
+		})
+	}
+}

@@ -324,6 +324,14 @@ type Agent struct {
 	// allows a fast stop before the response grows and wastes context.
 	streamLoopDetected bool
 
+	// streamLoopSample holds the repeated sequence captured by
+	// checkStreamLoop when the detector fired (one exact repeat unit for the
+	// exact-chain detector, the scanned tail for the paraphrase detector;
+	// normalized text) so the strike warning/stop messages can show WHAT was
+	// judged a loop (bugs.md runaway-loop visibility). Reset per round
+	// alongside streamLoopDetected.
+	streamLoopSample string
+
 	// streamLoopStrikes counts stream-loop detections since the last clean
 	// streak. Detections below StreamLoopMaxStrikes are soft: the looped
 	// round is abandoned, the model is warned with an ephemeral hint, and
@@ -346,6 +354,10 @@ type Agent struct {
 	loopStopped bool
 	// loopStoppedAt records when the latch was set, for cooldown expiry.
 	loopStoppedAt time.Time
+	// loopStoppedSample retains the elided repeated sequence that tripped the
+	// guardrail so the latched-turn error keeps showing what was judged a
+	// loop. Cleared with the rest of the latch state.
+	loopStoppedSample string
 
 	// bufferedToolCallCount is the number of tool calls buffered during the
 	// current stream. It is reset once the batch is executed so the TUI can
@@ -1226,7 +1238,7 @@ func (a *Agent) checkLoopStopped() error {
 		a.clearLoopStopLocked()
 		return nil
 	}
-	return fmt.Errorf("session stopped due to a runaway loop; please review the conversation and retry")
+	return fmt.Errorf("session stopped due to a runaway loop%s; please review the conversation and retry", loopEvidenceSuffix(a.loopStoppedSample))
 }
 
 // ResetLoopStop clears the runaway-loop latch and repeat counters. It is
@@ -1248,50 +1260,75 @@ func (a *Agent) ResetLoopStop() {
 func (a *Agent) clearLoopStopLocked() {
 	a.loopStopped = false
 	a.loopStoppedAt = time.Time{}
+	a.loopStoppedSample = ""
 	a.assistantRepeatCount = 0
 	a.lastAssistantHash = ""
 }
 
 // checkProgressLoop detects runaway conversations where the assistant repeats
 // the same meaningful message across consecutive turns without progress.
-// On the first repeat it injects a warning hint; on the second repeat it
-// stops the session with a clear error.
+// On the first repeat it injects a warning hint AND surfaces a visible TUI
+// warning naming the repeated response; on the second repeat it stops the
+// session with an error carrying the same evidence (bugs.md runaway-loop
+// visibility: the user must be able to judge whether the loop was real).
 //
 // The strike only counts when this turn produced a NEW assistant message:
 // when the last assistant message predates turnStartHistoryLen (stream
 // error, retry, pause), comparing the stale message against itself would
 // score a false strike with zero actual repetition (bugs.md).
 func (a *Agent) checkProgressLoop() error {
+	warnSample, err := a.scanProgressLoop()
+	if warnSample != "" {
+		// Emitted after scanProgressLoop released a.mu (emitEvent locks it).
+		a.emitEvent(OutputEvent{
+			Type: EventContent,
+			Role: System,
+			Text: fmt.Sprintf("Runaway-loop warning: the assistant repeated the same response as the previous turn%s; if it repeats again the session stops.", loopEvidenceSuffix(warnSample)),
+			Metadata: map[string]string{
+				"category": "system-notification",
+			},
+		})
+	}
+	return err
+}
+
+// scanProgressLoop evaluates the repeat counters under a.mu. It returns the
+// repeated-response sample when the first strike applies (the caller emits
+// the visible warning — emitEvent takes a.mu, so it must run unlocked), or
+// the terminal guardrail error when the latch trips.
+func (a *Agent) scanProgressLoop() (warnSample string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	idx, msg := a.lastAssistantMessageLocked()
 	if idx < 0 || idx < a.turnStartHistoryLen {
-		return nil
+		return "", nil
 	}
 	if !a.isMeaningfulAssistantMessage(msg) {
-		return nil
+		return "", nil
 	}
 
 	hash := a.hashAssistantMessage(msg)
 	if hash != a.lastAssistantHash {
 		a.lastAssistantHash = hash
 		a.assistantRepeatCount = 0
-		return nil
+		return "", nil
 	}
 
 	a.assistantRepeatCount++
 	a.cfg.Logger.Log(Warn, "Loop guardrail: assistant message repeated %d time(s)", a.assistantRepeatCount)
 
+	sample := progressLoopSample(msg)
 	if a.assistantRepeatCount == 1 {
 		hint := "[goa-system] Your last response was identical to the previous one. Progress has stalled. Change your approach: use a tool, produce different output, or stop and explain the blocker. Repeating the same text will end the session."
 		a.history = append(a.history, Message{Type: Content, Role: System, Content: hint})
-		return nil
+		return sample, nil
 	}
 
 	a.loopStopped = true
 	a.loopStoppedAt = time.Now()
-	return fmt.Errorf("runaway loop detected: the assistant repeated the same response %d consecutive times without progress; session stopped", a.assistantRepeatCount+1)
+	a.loopStoppedSample = elideLoopSample(sample)
+	return "", fmt.Errorf("runaway loop detected: the assistant repeated the same response %d consecutive times without progress%s; session stopped", a.assistantRepeatCount+1, loopEvidenceSuffix(sample))
 }
 
 // lastAssistantMessageLocked returns the index and value of the most recent

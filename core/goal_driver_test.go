@@ -520,7 +520,7 @@ func (a *runawayScriptAgent) Run(ctx context.Context, prompt string) error {
 	a.prompts = append(a.prompts, prompt)
 	run := len(a.prompts)
 	if a.failFirst && run == 1 {
-		return errors.New("runaway loop detected: the assistant repeated the same response 3 consecutive times without progress; session stopped")
+		return errors.New(`runaway loop detected: the assistant repeated the same response 3 consecutive times without progress (repeated: "the looped response"); session stopped`)
 	}
 	if a.completeOn > 0 && run == a.completeOn {
 		_, _ = a.mode.MarkComplete(goal.GoalReasonInput{}, goal.GoalActorModel)
@@ -529,6 +529,36 @@ func (a *runawayScriptAgent) Run(ctx context.Context, prompt string) error {
 }
 
 func (a *runawayScriptAgent) ResetLoopStop() { a.resetCalls++ }
+
+// TestGoalDriver_RunawayPauseReasonShowsRepeatedSequence is the regression
+// test for bugs.md "TUI stop omits the repeated sequence": when the
+// guardrail stops a goal turn, the stored pause reason must carry the
+// guardrail's (elided) repeated sequence so the stop surface and the goal
+// events log show WHAT was judged a loop — not just the generic category.
+func TestGoalDriver_RunawayPauseReasonShowsRepeatedSequence(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "loop until paused"}, goal.GoalActorUser); err != nil {
+		t.Fatalf("CreateGoal: %v", err)
+	}
+	agent := &runawayScriptAgent{mode: mode, failFirst: true}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	if err := driver.Drive(context.Background()); err == nil {
+		t.Fatal("Drive returned nil, want the runaway-loop error")
+	}
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalPaused {
+		t.Fatalf("goal status = %v, want paused", g.Status)
+	}
+	if g.TerminalReason == nil {
+		t.Fatal("pause reason not stored")
+	}
+	for _, want := range []string{PauseRunawayLoop, "consecutive times", `(repeated: "the looped response")`} {
+		if !strings.Contains(*g.TerminalReason, want) {
+			t.Errorf("pause reason missing %q: %q", want, *g.TerminalReason)
+		}
+	}
+}
 
 // TestGoalDriver_RunawayResumeUsesRecoveryPrompt is the regression test for
 // bugs.md "pause/resume re-enters the same loop": after the runaway-loop

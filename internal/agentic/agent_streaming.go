@@ -1044,6 +1044,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.bufferedToolCalls = nil
 	a.bufferedToolCallCount = 0
 	a.streamLoopDetected = false
+	a.streamLoopSample = ""
 	a.streamLoopStrikeThisRound = false
 	a.thinkingStalled = false
 	a.thinkingStallElapsed = 0
@@ -1071,8 +1072,12 @@ func (a *Agent) checkStreamLoop(text string) {
 	}
 	// Normalize: strip punctuation, symbols, box-drawing chars, collapse spaces
 	clean := streamLoopNormalize(text)
-	if period, repeats, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
+	if period, repeats, sample, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
 		a.streamLoopDetected = true
+		// Keep the repeated sequence as evidence so the strike warning/stop
+		// messages can show WHAT was judged a loop (bugs.md runaway-loop
+		// visibility).
+		a.streamLoopSample = sample
 		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte period repeated %d times", period, repeats)
 	}
 }
@@ -1171,7 +1176,7 @@ func (a *Agent) handleStreamLoopStrike(ctx context.Context) (toolCallsEncountere
 	maxStrikes := a.effectiveStreamLoopMaxStrikes()
 	if strike >= maxStrikes {
 		a.cfg.Logger.Log(Warn, "Stream loop strike %d/%d: the model kept repeating; stopping the turn", strike, maxStrikes)
-		return false, fmt.Errorf("stream loop detected: the assistant kept repeating the same text after %d warnings; turn stopped to prevent runaway context usage", strike-1)
+		return false, fmt.Errorf("stream loop detected: the assistant kept repeating the same text after %d warnings%s; turn stopped to prevent runaway context usage", strike-1, loopEvidenceSuffix(a.streamLoopSample))
 	}
 	a.cfg.Logger.Log(Warn, "Stream loop strike %d/%d: abandoning the looped round and warning the model", strike, maxStrikes)
 	return a.recoverFromStreamLoop(ctx, strike, maxStrikes), nil
@@ -1189,7 +1194,7 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 	a.emitEvent(OutputEvent{
 		Type: EventContent,
 		Role: System,
-		Text: fmt.Sprintf("Stream loop detected (warning %d of %d) — the reply was cut off; the model was told to continue without repeating.", strike, maxStrikes),
+		Text: fmt.Sprintf("Stream loop detected (warning %d of %d) — the reply was cut off%s; the model was told to continue without repeating.", strike, maxStrikes, loopEvidenceSuffix(a.streamLoopSample)),
 		// stream_retry retracts the orphaned in-progress assistant bubble:
 		// the looped partial text is discarded, not finalized, so without a
 		// retraction it would linger next to the re-streamed answer.
@@ -1232,7 +1237,12 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 //     few hot shingles; enumerated lists have unique shingles.
 //   - Only the trailing streamLoopTailWindow bytes are scanned, bounding the
 //     per-delta cost.
-func streamLoopScan(clean string, maxRepeats int) (period, repeats int, ok bool) {
+//
+// The returned sample is the repeated sequence evidence surfaced in
+// warning/stop messages (bugs.md runaway-loop visibility): for Detector A it
+// is one byte-exact repeat unit; for Detector B — a paraphrase loop has no
+// exact unit — it is the scanned tail, which the hot shingles dominate.
+func streamLoopScan(clean string, maxRepeats int) (period, repeats int, sample string, ok bool) {
 	if maxRepeats < 2 {
 		maxRepeats = 2
 	}
@@ -1244,12 +1254,15 @@ func streamLoopScan(clean string, maxRepeats int) (period, repeats int, ok bool)
 		// A tail of one or two unique words ("the the the …", "ok ok …") is
 		// connector noise, not repeated content; the loop detectors need at
 		// least three distinct words to have an opinion.
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 	if period, repeats, ok := streamExactChain(tail, maxRepeats); ok {
-		return period, repeats, true
+		return period, repeats, exactChainSample(tail, period), true
 	}
-	return streamParaphraseLoop(tail, maxRepeats)
+	if period, repeats, ok := streamParaphraseLoop(tail, maxRepeats); ok {
+		return period, repeats, tail, true
+	}
+	return 0, 0, "", false
 }
 
 // uniqueWordCount counts distinct space-separated words in s, stopping early
@@ -1280,6 +1293,10 @@ const (
 	streamLoopMaxGap = 64
 	// streamLoopTailWindow bounds the scanned tail (and per-delta cost).
 	streamLoopTailWindow = 4096
+	// streamLoopSampleSnap bounds how far exactChainSample looks backward
+	// for a word boundary when the minimal firing period cut the repeated
+	// unit mid-word.
+	streamLoopSampleSnap = 20
 	// streamLoopSmallPeriod is the smallest period scanned at all; below it
 	// only connector noise lives ("the the the …").
 	streamLoopSmallPeriod = 8
@@ -1299,6 +1316,27 @@ const (
 	// while topical repetition keeps repeated fragments a small minority.
 	streamLoopMinCoverage = 0.4
 )
+
+// exactChainSample extracts Detector A's repeated unit — the trailing
+// period bytes of the tail — as display evidence. Detector A fires at the
+// smallest qualifying period, which can cut the true repeated unit mid-word
+// ("entence repeats…"); when the window does not start on a word boundary,
+// the start snaps backward to the nearest space (bounded by
+// streamLoopSampleSnap) so the rendered evidence reads as full words.
+func exactChainSample(tail string, period int) string {
+	start := len(tail) - period
+	if start <= 0 || tail[start-1] == ' ' {
+		return tail[start:]
+	}
+	lo := start - streamLoopSampleSnap
+	if lo < 0 {
+		lo = 0
+	}
+	if sp := strings.LastIndexByte(tail[lo:start], ' '); sp >= 0 {
+		start = lo + sp + 1
+	}
+	return tail[start:]
+}
 
 // streamExactChain implements Detector A: for each candidate period, chain
 // byte-exact copies of the trailing unit backward through the tail.

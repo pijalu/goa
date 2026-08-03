@@ -221,7 +221,15 @@ func (d *GoalDriver) handleTurnError(err error) error {
 		return nil
 	}
 	reason := mapDriverError(err)
-	paused, _ := d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime)
+	pauseReason := reason
+	if reason == PauseRunawayLoop {
+		// The guardrail error carries the (elided) repeated sequence; keep it
+		// in the stored pause reason so the TUI stop surface and the goal
+		// events log show WHAT was judged a loop (bugs.md runaway-loop
+		// visibility).
+		pauseReason = reason + ": " + err.Error()
+	}
+	paused, _ := d.Mode.PauseActiveGoal(goal.GoalReasonInput{Reason: &pauseReason}, goal.GoalActorRuntime)
 	if reason == PauseRunawayLoop && paused != nil {
 		// Mark the goal so the next continuation after resume swaps in the
 		// varied recovery prompt and resets the agent's loop latch.
