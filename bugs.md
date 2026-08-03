@@ -68,3 +68,95 @@ If new items are added, restart the process.
   5. Validate with guideline 6 checks run separately; verify the rendered
      TUI warning interactively per guideline 5.
 
+---
+
+## Goal management command: execution-order list, +/- reorder, confirmed delete, add rows — OPEN
+
+- **Observed** (2026-08-03): the goal management selector (`/goal:manage`,
+  `showQueueManager` in `core/commands/goal.go`) does not match the desired
+  workflow:
+  1. It lists only QUEUED goals — the active goal is absent, so the list
+     is not the execution order.
+  2. Reordering is a two-step flow: Enter on a goal, then pick "Move up"
+     / "Move down" from a second selector (`promptQueueAction`). There
+     are no direct hotkeys.
+  3. Deletion fires on the '-' key (and on Delete/Backspace via the
+     selector's generic `handleDelete`) with NO confirmation — the goal
+     is removed immediately and the manager reopens.
+  4. There is no way to add a goal from the manager. Worse, '+' emits
+     the selector's generic `__add__` sentinel, which `showQueueManager`
+     does not handle: it falls through to `promptQueueAction("__add__")`,
+     whose actions then fail with "queued goal … not found".
+- **Requested behavior**:
+  1. The list shows the goals in EXECUTION ORDER: the active goal first
+     (marked), then the queued goals in run order.
+  2. '+' moves the highlighted goal UP one position and '-' moves it
+     DOWN one position, directly (no submenu). This repurposes '-' from
+     delete to move-down.
+  3. Deletion happens via Delete/Backspace and asks for confirmation
+     before removing the goal.
+  4. The list contains sentinel rows `-- add at start --` (first row)
+     and `-- add at end --` (last row); selecting one opens the
+     create-goal flow inserting the new goal in front / behind in the
+     execution order.
+- **Relevant code**:
+  - `core/commands/goal.go`: `showQueueManager` (item build,
+    `__delete__` / `__done__` handling, reopen loop),
+    `promptQueueAction` (two-step move/delete menu), `promptFirstOrLast`,
+    `promptCreateInteractive`, `showList` (already renders active +
+    queued in execution order).
+  - `tui/selector.go`: `handlePrintable` ('+' → `__add__`, '-' →
+    `__delete__`+value — global for all pickers), `handleDelete`
+    (Delete/Backspace → `__delete__`+value), `isSelectorSentinel`
+    (exact-match sentinel rows are non-deletable: `__add__`,
+    `__custom__`), footer-hint rendering.
+  - Queue primitives: `core.GoalQueue` `Move(id, "up"|"down")`,
+    `Remove(id)`, `Read` (wired via `goalManager.Queue` in
+    `internal/app/subsystems.go`).
+- **Open design decisions** (resolve during implementation):
+  - The selector's '+', '-', Delete/Backspace bindings are GLOBAL (used
+    by the /provider and /model pickers, where '-' must keep meaning
+    delete). Make the bindings/emits configurable per selector instance
+    (or add explicit move-up/move-down emits) with the current behavior
+    as the default, and update the footer hints accordingly.
+  - Active goal: displayed (item 1) but not movable; deleting it routes
+    through the existing cancel/confirm path or is rejected with a
+    flash.
+  - `-- add at start --` when a goal is active: insert at the front of
+    the queue (runs next) — never silently replace the running goal;
+    replacement keeps going through the existing replace-confirm flow.
+    When no goal is active, it starts the new goal immediately.
+  - New sentinel values (e.g. `__add_first__` / `__add_last__`) must be
+    registered in `isSelectorSentinel` so they are neither deletable nor
+    movable.
+- **Plan**:
+  1. Selector: per-instance keybinding/emit configuration for move-up
+     ('+'), move-down ('-'), delete (Delete/Backspace) and the add rows;
+     defaults keep today's behavior so the /provider and /model pickers
+     are unaffected. Footer hints reflect the active bindings.
+     `-- add at start --` / `-- add at end --` render as sentinel action
+     rows (non-deletable, non-movable).
+  2. Manager list: build items as `-- add at start --`, the active goal
+     (marked `[active]`, if any), the queued goals in order,
+     `-- add at end --`, `Done`.
+  3. Reorder: '+'/'-' emits call `Queue.Move(id, "up"|"down")` and reopen
+     the manager keeping the cursor on the moved goal; the active goal
+     and sentinel rows are not movable.
+  4. Delete: a Delete/Backspace emit opens a confirmation selector
+     ("Delete goal <name>?" Yes/No); only Yes calls `Queue.Remove` (or
+     cancels the active goal via the existing confirm path); No returns
+     to the manager. Remove the '-' delete path from the manager.
+  5. Add rows: `-- add at start --` / `-- add at end --` open
+     `promptCreateInteractive` with front/behind placement per the design
+     decisions above; handle the generic `__add__` emit so it no longer
+     reaches `promptQueueAction`.
+  6. Tests: table-driven selector tests (move-up/down emits, Delete and
+     Backspace-with-empty-search delete emits, sentinel rows immune,
+     default bindings unchanged); goal-command tests for list order,
+     cursor-stable reorder, confirmed delete (Yes/No), add-row routing;
+     regression tests that the /provider and /model pickers keep
+     '+' = add and '-' = delete.
+  7. Validation: run the guideline-6 checks separately; verify the
+     manager interactively per guideline 5 (execution order shown,
+     +/- moves with stable cursor, delete asks for confirmation, add
+     rows create goals front/behind).
