@@ -257,6 +257,10 @@ func mergeCompat(c *CompatFlags, o CompatFlags) {
 	setIfNonEmpty(&c.ReasoningKey, o.ReasoningKey)
 	setIfNonEmpty(&c.ImageURLScheme, o.ImageURLScheme)
 	mergeMapAny(c.ThinkingExtraBody, o.ThinkingExtraBody)
+	// Plain bool with no tri-state: an override can only turn the
+	// requirement ON (OR semantics), never explicitly clear it (bugs.md
+	// thinking-mode 400: user variant overrides for DeepSeek-class models).
+	c.RequiresReasoningContentOnAssistantMessages = c.RequiresReasoningContentOnAssistantMessages || o.RequiresReasoningContentOnAssistantMessages
 }
 
 func mergeAuth(a *AuthConfig, o AuthConfig) {

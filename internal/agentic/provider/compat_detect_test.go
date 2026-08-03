@@ -311,3 +311,32 @@ func TestDetectOpenAICompat_SupportsCacheRetention(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectOpenAICompat_DeepSeekModelViaProxy is the regression test for
+// bugs.md thinking-mode 400: a DeepSeek model proxied under another provider
+// (opencode zen) must inherit RequiresReasoningContentOnAssistantMessages
+// even though the provider/URL fingerprint knows nothing about DeepSeek.
+func TestDetectOpenAICompat_DeepSeekModelViaProxy(t *testing.T) {
+	compat := DetectOpenAICompat(Model{
+		ID:       "deepseek-v4-flash-free",
+		Provider: Provider("opencode"),
+		BaseURL:  "https://opencode.ai/zen",
+	})
+	if !*compat.RequiresReasoningContentOnAssistantMessages {
+		t.Error("expected RequiresReasoningContentOnAssistantMessages=true for proxied deepseek model")
+	}
+}
+
+// TestDetectOpenAICompat_NonDeepSeekProxyUnaffected is the control: a
+// non-deepseek model id on the same proxy must NOT inherit the flag, and
+// endpoint-keyed behavior stays as before.
+func TestDetectOpenAICompat_NonDeepSeekProxyUnaffected(t *testing.T) {
+	compat := DetectOpenAICompat(Model{
+		ID:       "gpt-5.2",
+		Provider: Provider("opencode"),
+		BaseURL:  "https://opencode.ai/zen",
+	})
+	if *compat.RequiresReasoningContentOnAssistantMessages {
+		t.Error("non-deepseek model must not require reasoning_content passback")
+	}
+}

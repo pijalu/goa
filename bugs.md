@@ -707,7 +707,7 @@ If new items are added, restart the process.
 
 ---
 
-## Thinking-mode 400: `reasoning_content` not passed back for provider-proxied DeepSeek models (opencode zen) — OPEN
+## Thinking-mode 400: `reasoning_content` not passed back for provider-proxied DeepSeek models (opencode zen) — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (2026-08-03, export goa-export-20260803-113756.zip, provider
   opencode/zen, model deepseek-v4-flash-free • high):
@@ -756,6 +756,48 @@ If new items are added, restart the process.
   2. Interactive: opencode + deepseek-v4-flash-free • high, run 3+ turns
      with thinking visible — no 400.
   3. Quality gates per guideline 6, run separately.
+- **Resolution** (2026-08-03): fix-plan item 2 investigation first —
+  `provider/stream.go` prefers `protocol.ForAPI` whenever a protocol is
+  registered (openai-completions is), so **protocol/openai_completions.go
+  serves opencode**; the legacy openai/ package (convert.go, driven by
+  compat_detect.go) is only the fallback for un-migrated APIs. That
+  reframed the gap: the embedded `schema/variants/opencode.json` ALREADY
+  sets `requires_reasoning_content_on_assistant_messages: true`, but
+  `resolveOpenAICompat` (protocol path) never copied the profile field into
+  the serializer compat — the flag was dropped between variant and
+  serializer.
+  - **Primary fix** (`protocol/openai_completions.go`):
+    `resolveOpenAICompat` now copies
+    `profile.Compat.RequiresReasoningContentOnAssistantMessages` — the
+    opencode variant (and any user variant) takes effect on the protocol
+    path.
+  - **Fix-plan item 1** (`compat_detect.go`, legacy/fallback path):
+    `DetectOpenAICompat` now also matches the MODEL id (case-insensitive
+    substring "deepseek") so proxied DeepSeek variants inherit the flag;
+    provider/URL matching kept. Verified the same gap for the other
+    fingerprint flags: isZai/isMoonshot/etc. drive ENDPOINT behaviors
+    (max_tokens field, store, developer role, strict mode, cache) and
+    correctly do NOT match on model id.
+  - **Override path** (`schema/resolver.go` `mergeCompat`): the field is
+    now merged with OR semantics so user-defined variant overrides can
+    express the requirement (plain bool — no explicit clear).
+  - Fix-plan item 3 (400-message retry with the flag forced) deliberately
+    not implemented: detection + propagation now cover the observed case
+    and the recorded-usage auto-detect precedent does not exist for this
+    flag on the protocol path; a speculative retry adds request-replay
+    risk. Documented here as a considered-and-deferred option.
+  - Regression tests: `protocol/openai_completions_test.go` (flag
+    propagation profile→compat; serialization pins — thinking always
+    serializes as reasoning_content, flag injects empty key on plain
+    assistant messages, key absent without flag; embedded opencode variant
+    resolves with the requirement for deepseek-v4-flash-free);
+    `compat_detect_test.go` (proxied deepseek model inherits the flag;
+    non-deepseek proxy model control); `schema/schema_test.go`
+    (mergeCompat OR semantics).
+  - Validation: `go test ./internal/agentic/provider/... -count=1 -race`
+    green; `go vet`/`gocognit`/`gocyclo` clean on non-test code.
+    Interactive step 2 not re-run (no live opencode key in CI); covered by
+    the serialization pins above. Awaiting archive.
 
 ---
 

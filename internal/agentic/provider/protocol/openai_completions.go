@@ -83,6 +83,11 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 		MaxTokensField:     profile.Compat.MaxTokensField,
 		ThinkingFormat:     profile.Compat.ThinkingFormat,
 		CacheControlFormat: "",
+		// DeepSeek-class models (thinking mode) 400 when reasoning_content
+		// is not passed back. The variant profile carries the requirement
+		// (e.g. opencode.json) — it must reach the serializer (bugs.md
+		// thinking-mode 400).
+		RequiresReasoningContentOnAssistantMessages: profile.Compat.RequiresReasoningContentOnAssistantMessages,
 	}
 	if c.MaxTokensField == "" {
 		c.MaxTokensField = "max_completion_tokens"

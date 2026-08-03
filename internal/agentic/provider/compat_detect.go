@@ -84,6 +84,16 @@ func matchesProviderOrURL(providerName, baseURL string, patterns ...string) bool
 func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 	fp := fingerprintProvider(model.Provider, model.BaseURL)
 
+	// DeepSeek's reasoning_content passback requirement is a MODEL
+	// serialization contract, not an endpoint property: a DeepSeek model
+	// proxied under another provider (e.g. opencode zen's
+	// deepseek-v4-flash-free) must inherit the flag even when the
+	// provider/URL fingerprint says nothing about DeepSeek (bugs.md
+	// thinking-mode 400). Endpoint-keyed flags (isZai, isMoonshot, ...)
+	// deliberately do NOT match on model id — max_tokens field, store
+	// support, developer role etc. depend on the serving endpoint.
+	isDeepSeekModel := strings.Contains(strings.ToLower(model.ID), "deepseek")
+
 	cacheControlFormat := ""
 	if fp.isOpenRouter || fp.isLMStudio || fp.isOllama || (fp.def != nil && fp.def.Compat.AnthropicCacheControl) {
 		cacheControlFormat = "anthropic"
@@ -103,7 +113,7 @@ func DetectOpenAICompat(model Model) OpenAICompletionsCompat {
 		RequiresToolResultName:                      boolPtr(false),
 		RequiresAssistantAfterToolResult:            boolPtr(false),
 		RequiresThinkingAsText:                      boolPtr(false),
-		RequiresReasoningContentOnAssistantMessages: boolPtr(fp.isDeepSeek),
+		RequiresReasoningContentOnAssistantMessages: boolPtr(fp.isDeepSeek || isDeepSeekModel),
 		ThinkingFormat:                              strPtr(fp.detectThinkingFormat()),
 		ZaiToolStream:                               boolPtr(false),
 		SupportsStrictMode:                          boolPtr(fp.supportsStrictMode()),
