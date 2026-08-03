@@ -133,11 +133,18 @@ func TestAgent_CompressionGateBetweenRounds(t *testing.T) {
 	}
 	// Usage crosses the 50% trigger around round 5-6; the per-round gate must
 	// elide the oldest tool results, so the final request carries the elision
-	// placeholder and FEWER payload chars than the peak pre-gate request.
+	// evidence and FEWER payload chars than the peak pre-gate request. Elided
+	// call/result pairs are now serialized as a plain-text assistant note
+	// (bugs.md: "[elided]" placeholder imitation + summarize 400), so the
+	// observable marker is the note, not the dropped "[tool result elided]".
 	last := contextText(ctxs[len(ctxs)-1])
-	if !strings.Contains(last, "[tool result elided]") {
-		t.Errorf("final request missing the elision placeholder; " +
+	if !strings.Contains(last, "[earlier call to huge_tool elided]") {
+		t.Errorf("final request missing the elision note; " +
 			"the per-round compression gate did not run before re-streaming")
+	}
+	if strings.Contains(last, "[elided]") {
+		t.Errorf("final request still carries the raw [elided] placeholder; " +
+			"elided tool calls must serialize as text notes")
 	}
 	xAt := func(i int) int {
 		return strings.Count(contextText(ctxs[i]), "x")

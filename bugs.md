@@ -277,7 +277,7 @@ If new items are added, restart the process.
 
 ---
 
-## Model imitates the `[elided]` tool-call placeholder: 10 invalid tool calls in one session — OPEN
+## Model imitates the `[elided]` tool-call placeholder: 10 invalid tool calls in one session — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (same export goa-export-20260803-094337.zip): 10 `tool_call`
   events carry the literal arguments `{"arguments": "[elided]"}`
@@ -312,6 +312,29 @@ If new items are added, restart the process.
   2. Interactive: run a session past the trigger, then inspect the next
      request's debug log (`Provider context`) for placeholder-free calls.
   3. Quality gates as above, run separately.
+  - **Resolution** (2026-08-03, goal minty.dog): fix-plan option 1, shared with
+    the /compress:summarize entry — elided tool calls are converted at
+    serialization time (provider-bound path); history keeps the `[elided]`
+    marker (now `elidedToolCallArguments`, agent_compression.go) untouched.
+    `migrateMessage` (agent_migrate.go) skips tool calls whose arguments carry
+    the marker and folds a plain-text note into the assistant text block
+    (`[earlier call to bash elided]` / `[earlier calls to bash, edit elided]`
+    via `elidedToolCallNote`), so no invocable-call exemplar remains;
+    `migrateMessages` drops ToolRole results whose call ID is in the
+    snapshot-wide elided set (`elidedToolCallIDs`), keeping call/result pairing
+    consistent even when the elision boundary straddles a pair.
+    `buildProviderHistory` (agent_streaming.go) now routes through
+    `migrateMessages` instead of per-message `migrateMessage` so the drop
+    applies on the normal request path too. Regression tests
+    (agent_compression_test.go): `TestBuildProviderHistoryElidedCallsBecomeNotes`
+    (no `[elided]` args, notes present, straddle results dropped, in-history
+    marker preserved), `TestMigrateMessagesElidedArgumentsValidJSON`,
+    `TestMigrateMessagesDropsElidedPairs` (parallel calls, plural note),
+    `TestSummarizeHistoryWithElidedPairs` (stub provider). The per-round gate
+    test's elision signal was updated to the note
+    (`agent_compression_roundgate_test.go`); its payload-cap guardrail is
+    unchanged. `go test ./internal/agentic/ -count=1 -race` green; full
+    `-race -cover ./...` suite green. Awaiting final quality gates + archive.
 
 ---
 
@@ -461,7 +484,7 @@ If new items are added, restart the process.
 
 ---
 
-## /compress:summarize rejected by provider: elided tool-call arguments are not valid JSON — OPEN
+## /compress:summarize rejected by provider: elided tool-call arguments are not valid JSON — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (2026-08-03, export goa-export-20260803-112729.zip): the user
   ran `/compress` (11:26:36, `strategy= force=true` →
@@ -511,6 +534,21 @@ If new items are added, restart the process.
   2. Interactive: `/compress` then `/compress:summarize` against
      deepseek-v4-flash-free on opencode — both must succeed.
   3. Quality gates per guideline 6, run separately.
+  - **Resolution** (2026-08-03, goal minty.dog): fix-plan option 1, shared with
+    the "[elided] placeholder imitation" entry (same root cause, same code —
+    see its Resolution for the full mechanism). summarizeHistory ships the
+    snapshot through `migrateMessages`, so elided calls now arrive as text
+    notes with their results dropped: every outbound `function.arguments` is
+    valid JSON and no orphan tool_result remains, on the exact failing shape
+    (no `tools` array). Diagnosability addition per the entry:
+    `logElidedSnapshotCount` (agent_compression.go) logs the count of elided
+    tool-call blocks in the snapshot before the summarize stream starts, so
+    future 400s are diagnosable from agent.log alone. Regression:
+    `TestMigrateMessagesElidedArgumentsValidJSON` (parses every outbound
+    arguments string) and `TestSummarizeHistoryWithElidedPairs` (stub provider
+    records the request: no `[elided]` arguments, consistent pairing, elision
+    note present). `go test ./internal/agentic/ -count=1 -race` green; full
+    `-race -cover ./...` suite green. Awaiting final quality gates + archive.
 
 ---
 
@@ -606,14 +644,15 @@ If new items are added, restart the process.
 
 ---
 
-## Session status 2026-08-03 (mid-fix, goal kind.marten)
+## Session status 2026-08-03 (mid-fix, goals kind.marten → minty.dog)
 
 - FIXED (pending final gates + archive): re flags (DOTALL/MULTILINE/VERBOSE);
-  enumerate(start=) kwarg + json.dumps(indent=int).
-- OPEN (scheduled): micro-compaction first-turn gate (analysis done, fix not
-  applied); tool_elision cache-bust loop (CM:13); [elided] placeholder
-  imitation; runaway-loop guardrail bricking; summarize-400; re.finditer;
-  reasoning_content detection.
+  enumerate(start=) kwarg + json.dumps(indent=int); micro-compaction
+  first-turn gate (cacheWarmObserved); [elided] placeholder imitation;
+  summarize-400 (shared fix: elided calls serialize as text notes, results
+  dropped, pairing consistent).
+- OPEN (scheduled): tool_elision cache-bust loop (CM:13); runaway-loop
+  guardrail bricking; re.finditer; reasoning_content detection.
 - Working tree carries the fixes above plus `go.mod` replace →
   /Users/muaddib/dev/gpython (drop after fork release b042729).
 - Evidence: exports under /Users/muaddib/dev/frigolite/.goa/exports/

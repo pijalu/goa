@@ -18,6 +18,14 @@ import (
 // and ends on an assistant turn so the next user input alternates correctly.
 const compactSummaryRequestPrompt = "Summarize our conversation so far, preserving key facts, decisions, and context."
 
+// elidedToolCallArguments is the in-history marker written by elideToolMessages
+// into the arguments of elided assistant tool calls. It is NOT valid JSON and
+// must never reach a provider: migrateMessage converts elided calls to a
+// plain-text note during provider-bound serialization (bugs.md: models imitate
+// the placeholder as call arguments, and strict providers 400 requests whose
+// function.arguments are not valid JSON — which broke /compress:summarize).
+const elidedToolCallArguments = "[elided]"
+
 func (a *Agent) Compact(ctx context.Context) error {
 	a.mu.Lock()
 	empty := len(a.history) == 0
@@ -101,6 +109,11 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 	if len(msgs) == 0 {
 		return "", nil
 	}
+
+	// Diagnosability: elided tool calls in the snapshot used to reach the
+	// provider verbatim and 400 the summarize request (invalid JSON
+	// function.arguments). migrateMessages now serializes them as text notes.
+	a.logElidedSnapshotCount(msgs)
 
 	// Use the stream-based path for summarization
 	pCtx := provider.Context{
@@ -350,6 +363,18 @@ func (a *Agent) compressToolElision(force bool) {
 	}
 }
 
+// logElidedSnapshotCount logs how many elided tool-call blocks a
+// provider-bound snapshot carries, so future summarize-request rejections
+// are diagnosable from agent.log alone.
+func (a *Agent) logElidedSnapshotCount(msgs []Message) {
+	if a.cfg.Logger == nil {
+		return
+	}
+	if n := countElidedToolCalls(msgs); n > 0 {
+		a.cfg.Logger.Log(Info, "summarizeHistory: snapshot carries %d elided tool-call block(s), serialized as text notes", n)
+	}
+}
+
 func computeElisionBoundary(histLen, preserve int) int {
 	boundary := histLen - preserve*3
 	if boundary < 1 {
@@ -365,7 +390,7 @@ func (a *Agent) elideToolMessages(boundary int) {
 		case Assistant:
 			if len(msg.ToolCalls) > 0 {
 				for j := range msg.ToolCalls {
-					msg.ToolCalls[j].Arguments = "[elided]"
+					msg.ToolCalls[j].Arguments = elidedToolCallArguments
 				}
 			}
 		case ToolRole:

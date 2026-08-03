@@ -1630,7 +1630,7 @@ func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 func (a *Agent) buildProviderHistory() []provider.Message {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	msgs := make([]provider.Message, 0, len(a.history))
+	internal := make([]Message, 0, len(a.history))
 	for i, m := range a.history {
 		// Skip only the initial system prompt message; the provider context
 		// carries it separately via SystemPrompt. Later system messages (for
@@ -1638,9 +1638,13 @@ func (a *Agent) buildProviderHistory() []provider.Message {
 		if i == 0 && a.cfg.SystemPrompt != "" && m.Role == System {
 			continue
 		}
-		msgs = append(msgs, migrateMessage(m))
+		internal = append(internal, m)
 	}
-	return msgs
+	// Route through migrateMessages (not per-message migrateMessage) so elided
+	// tool calls are converted to text notes WITH their matching tool results
+	// dropped — per-message conversion alone would orphan the results and
+	// break call/result pairing on strict providers.
+	return migrateMessages(internal)
 }
 
 func (a *Agent) buildSystemPrompt() string {
