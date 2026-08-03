@@ -424,3 +424,59 @@ print(m.span(1))
 		}
 	}
 }
+
+// TestReFlagsDotallMultilineVerbose is the regression test for the session
+// failure (2026-08-02 export): re.DOTALL / re.S / re.M / re.X raised
+// AttributeError: 'module' has no attribute 'DOTALL'.
+func TestReFlagsDotallMultilineVerbose(t *testing.T) {
+	code := `
+import re
+
+# 1. flag constants exist (was AttributeError)
+print("flags:", re.DOTALL == re.S, re.MULTILINE == re.M, re.VERBOSE == re.X)
+
+# 2. DOTALL: dot matches newline
+m = re.search(r'a.b', 'a\nb', re.DOTALL)
+print("dotall:", m is not None and m.group(0) == 'a\nb')
+m2 = re.search(r'a.b', 'a\nb')
+print("nodotall:", m2 is None)
+
+# 3. MULTILINE: ^ matches after newline
+f = re.findall(r'^b', 'a\nb', re.MULTILINE)
+print("multiline:", f == ['b'])
+
+# 4. combined S | I
+m3 = re.search(r'A.B', 'a\nb', re.S | re.I)
+print("combined:", m3 is not None)
+
+# 5. VERBOSE: whitespace and comments stripped outside classes
+p = re.compile(r"""
+    var\ yyRuleInfoNRhs  # the rule table
+    \ =\ \[\]int\{       # literal assignment
+    (.*?)                # capture body
+    \n\}
+""", re.VERBOSE)
+m4 = p.search('var yyRuleInfoNRhs = []int{1, 2,\n}')
+print("verbose:", m4 is not None and m4.group(1) == '1, 2,')
+
+# 5b. whitespace and # are kept inside character classes
+m5 = re.search(r'[ #]+', ' #x', re.X)
+print("verbose_class:", m5 is not None and m5.group(0) == ' #')
+
+# 5c. escaped space is kept
+m6 = re.search(r'a\ b', 'a b', re.X)
+print("verbose_escaped:", m6 is not None)
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	for _, want := range []string{
+		"flags: True", "dotall: True", "nodotall: True", "multiline: True",
+		"combined: True", "verbose: True", "verbose_class: True", "verbose_escaped: True",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got: %s", want, out)
+		}
+	}
+}

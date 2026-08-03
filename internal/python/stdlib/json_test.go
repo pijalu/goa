@@ -81,6 +81,35 @@ print(s)
 	}
 }
 
+// TestJsonDumpsIntIndent covers CPython's int indent form (number of spaces):
+// positive ints indent, zero/negative give newlines only, bool acts as int
+// (CPython: bool is a subclass of int). Regression test for
+// "TypeError: 'dumps() indent must be str or None, not int".
+// repr() is printed so newlines arrive as literal \n text (escaping-safe).
+func TestJsonDumpsIntIndent(t *testing.T) {
+	code := `
+import json
+print(repr(json.dumps({"a": 1}, indent=2)))
+print(repr(json.dumps({"a": 1}, indent=0)))
+print(json.dumps({"a": 1}, indent=-1) == json.dumps({"a": 1}, indent=0))
+print(repr(json.dumps({"a": 1}, indent=True)))
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	for _, want := range []string{
+		`'{\n  "a": 1\n}'`, // indent=2: two spaces
+		`'{\n"a": 1\n}'`,   // indent=0: newlines only
+		"True",             // indent=-1 ≡ indent=0
+		`'{\n "a": 1\n}'`,  // indent=True: one space
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got: %s", want, out)
+		}
+	}
+}
+
 func TestJsonRoundTrip(t *testing.T) {
 	code := `
 import json

@@ -6,18 +6,19 @@ package stdlib
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/pijalu/gpython/py"
 
 	"github.com/pijalu/goa/internal/python/compat"
 )
 
-// Flag constants for the re module. Only IGNORECASE is supported in the first pass.
+// Flag constants for the re module.
 const (
 	reFlagIgnoreCase = 1 << iota
-	_                // reserved for re.M (MULTILINE)
-	_                // reserved for re.S (DOTALL)
-	_                // reserved for re.X (VERBOSE)
+	reFlagMultiline
+	reFlagDotAll
+	reFlagVerbose
 )
 
 // Pattern is a compiled regular expression.
@@ -81,8 +82,9 @@ those found in Python's built-in re module. It is backed by Go's RE2
 engine, which means it does not support lookahead, lookbehind, or
 backreferences.
 
-Supported flags: I, IGNORECASE
-Unsupported in the first pass: M (MULTILINE), S (DOTALL), X (VERBOSE).`,
+Supported flags: I/IGNORECASE, M/MULTILINE, S/DOTALL, X/VERBOSE.
+VERBOSE is implemented by stripping unescaped whitespace and comments
+outside character classes before handing the pattern to RE2.`,
 		},
 		Methods: []*py.Method{
 			py.MustNewMethod("compile", reCompile, 0, `compile(pattern, flags=0) -> Pattern
@@ -115,6 +117,12 @@ Escape all non-alphanumeric characters in pattern.`),
 		Globals: py.StringDict{
 			"I":          py.Int(reFlagIgnoreCase),
 			"IGNORECASE": py.Int(reFlagIgnoreCase),
+			"M":          py.Int(reFlagMultiline),
+			"MULTILINE":  py.Int(reFlagMultiline),
+			"S":          py.Int(reFlagDotAll),
+			"DOTALL":     py.Int(reFlagDotAll),
+			"X":          py.Int(reFlagVerbose),
+			"VERBOSE":    py.Int(reFlagVerbose),
 		},
 	})
 
@@ -511,15 +519,70 @@ func compileFromObjects(patternObj, flagsObj py.Object, fn string) (*Pattern, er
 
 // compileRegexp compiles a pattern string with the given flags.
 func compileRegexp(pat string, flags int) (*Pattern, error) {
-	expr := pat
-	if flags&reFlagIgnoreCase != 0 {
-		expr = "(?i)" + expr
+	orig := pat
+	if flags&reFlagVerbose != 0 {
+		pat = stripVerbosePattern(pat)
 	}
-	re, err := regexp.Compile(expr)
+	var prefix strings.Builder
+	if flags&(reFlagIgnoreCase|reFlagDotAll|reFlagMultiline) != 0 {
+		prefix.WriteString("(?")
+		if flags&reFlagIgnoreCase != 0 {
+			prefix.WriteByte('i')
+		}
+		if flags&reFlagDotAll != 0 {
+			prefix.WriteByte('s')
+		}
+		if flags&reFlagMultiline != 0 {
+			prefix.WriteByte('m')
+		}
+		prefix.WriteString(")")
+	}
+	re, err := regexp.Compile(prefix.String() + pat)
 	if err != nil {
 		return nil, py.ExceptionNewf(py.ValueError, "compile() failed: %v", err)
 	}
-	return &Pattern{re: re, pattern: pat, flags: flags}, nil
+	return &Pattern{re: re, pattern: orig, flags: flags}, nil
+}
+
+// stripVerbosePattern implements re.VERBOSE on RE2 (which has no (?x)):
+// unescaped whitespace and #-to-end-of-line comments are removed everywhere
+// except inside character classes. Escaped characters are always kept
+// verbatim, so `\ ` and `\#` stay literal.
+func stripVerbosePattern(pat string) string {
+	var b strings.Builder
+	b.Grow(len(pat))
+	inClass := false
+	escaped := false
+	for i := 0; i < len(pat); i++ {
+		c := pat[i]
+		if escaped {
+			b.WriteByte(c)
+			escaped = false
+			continue
+		}
+		switch {
+		case c == '\\':
+			b.WriteByte(c)
+			escaped = true
+		case inClass:
+			b.WriteByte(c)
+			if c == ']' {
+				inClass = false
+			}
+		case c == '[':
+			b.WriteByte(c)
+			inClass = true
+		case c == '#':
+			for i+1 < len(pat) && pat[i+1] != '\n' {
+				i++
+			}
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f':
+			// drop unescaped whitespace
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }
 
 // toPattern converts a py.Object to a *Pattern. If the object is a string, it

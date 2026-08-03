@@ -6,6 +6,7 @@ package stdlib
 
 import (
 	gojson "encoding/json"
+	"strings"
 
 	"github.com/pijalu/gpython/py"
 
@@ -69,15 +70,19 @@ func jsonDumps(self py.Object, args py.Tuple, kwargs py.StringDict) (py.Object, 
 // dumpsToString serializes obj to a JSON string, honoring the optional
 // `indent` keyword (shared by dumps and dump).
 func dumpsToString(obj py.Object, kwargs py.StringDict) (string, error) {
-	// Parse optional indent keyword
+	// Parse optional indent keyword. CPython accepts str (used verbatim),
+	// int (number of spaces; <=0 gives newlines only) and bool (acts as int,
+	// since Python bool subclasses int).
 	indent := ""
+	indented := false
 	if kwargs != nil {
 		if v, ok := kwargs["indent"]; ok && v != py.None {
-			indentStr, err := compat.AsString(v, "dumps")
+			s, err := indentValue(v)
 			if err != nil {
-				return "", py.ExceptionNewf(py.TypeError, "dumps() indent must be str or None, not %s", v.Type().Name)
+				return "", err
 			}
-			indent = indentStr
+			indent = s
+			indented = true
 		}
 	}
 
@@ -87,9 +92,10 @@ func dumpsToString(obj py.Object, kwargs py.StringDict) (string, error) {
 		return "", py.ExceptionNewf(py.TypeError, "dumps() failed: %v", err)
 	}
 
-	// Serialize to JSON
+	// Serialize to JSON. MarshalIndent with an empty indent string still
+	// emits newlines (CPython indent=0 semantics).
 	var b []byte
-	if indent != "" {
+	if indented {
 		b, err = gojson.MarshalIndent(goVal, "", indent)
 	} else {
 		b, err = gojson.Marshal(goVal)
@@ -98,6 +104,24 @@ func dumpsToString(obj py.Object, kwargs py.StringDict) (string, error) {
 		return "", py.ExceptionNewf(py.ValueError, "dumps() failed: %v", err)
 	}
 	return string(b), nil
+}
+
+// indentValue converts the indent keyword to the indent string: str values
+// are used verbatim; int/bool values become that many spaces (clamped at 0).
+// Any other type is a TypeError, matching CPython's "indent must be str, int
+// or None".
+func indentValue(v py.Object) (string, error) {
+	if s, err := compat.AsString(v, "dumps"); err == nil {
+		return s, nil
+	}
+	n, err := compat.AsInt(v, "dumps")
+	if err != nil {
+		return "", py.ExceptionNewf(py.TypeError, "dumps() indent must be str, int or None, not %s", v.Type().Name)
+	}
+	if n < 0 {
+		n = 0
+	}
+	return strings.Repeat(" ", int(n)), nil
 }
 
 func jsonLoad(self py.Object, args py.Tuple) (py.Object, error) {

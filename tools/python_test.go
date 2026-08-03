@@ -41,6 +41,35 @@ func TestPythonTool_Execute_Print(t *testing.T) {
 	}
 }
 
+// TestPythonTool_Execute_EnumerateStartKwarg replays the session failure from
+// goa-export-20260803-095438.zip: enumerate(iterable, start=N) with start as
+// a keyword raised "enumerate() does not take keyword arguments" (gpython
+// UnpackTuple rejected all kwargs; fixed in the pijalu/gpython fork).
+func TestPythonTool_Execute_EnumerateStartKwarg(t *testing.T) {
+	tool := &PythonTool{}
+	code := "for i, line in enumerate(['a', 'b'], start=5):\n    print(i, line)"
+	out, err := tool.Execute(fmt.Sprintf(`{"code": %q}`, code))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "5 a") || !strings.Contains(out, "6 b") {
+		t.Errorf("output = %q, want enumerated pairs starting at 5", out)
+	}
+}
+
+// TestPythonTool_Execute_JsonIntIndent replays the session failure:
+// json.dumps(obj, indent=2) raised "indent must be str or None, not int".
+func TestPythonTool_Execute_JsonIntIndent(t *testing.T) {
+	tool := &PythonTool{}
+	out, err := tool.Execute(`{"code": "import json\nprint(json.dumps({'a': 1}, indent=2))"}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "\n  \"a\": 1") {
+		t.Errorf("output = %q, want two-space indented JSON", out)
+	}
+}
+
 func TestPythonTool_Execute_Computation(t *testing.T) {
 	tool := &PythonTool{}
 	out, err := tool.Execute(`{"code": "print(sum(range(10)))"}`)
