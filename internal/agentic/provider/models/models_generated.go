@@ -1911,6 +1911,13 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
+		ID: "qwen3.8-max", Name: "Qwen3.8 Max", Api: provider.Api("openai-completions"), Provider: provider.Provider("opencode-go"),
+		BaseURL:   "https://opencode.ai/zen/go/v1",
+		Reasoning: true, ContextWindow: 1000000, MaxTokens: 131072, InputTypes: []string{"text", "image"},
+		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000060000, CacheRead: 0.0000002500, CacheWrite: 0.0000025000},
+		ThinkingFormat: provider.ThinkingFormatNone,
+	})
+	addModel(provider.Model{
 		ID: "ai21/jamba-large-1.7", Name: "Jamba Large 1.7", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: false, ContextWindow: 256000, MaxTokens: 4096, InputTypes: []string{"text"},
@@ -3713,7 +3720,7 @@ func loadGeneratedModels() {
 		ID: "z-ai/glm-5.2", Name: "GLM-5.2", Api: provider.Api("openai-completions"), Provider: provider.Provider("openrouter"),
 		BaseURL:   "https://openrouter.ai/api/v1",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 131072, InputTypes: []string{"text"},
-		Cost:           provider.ModelPricing{Input: 0.0000004186, Output: 0.0000013156, CacheRead: 0.0000000777, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000002842, Output: 0.0000008932, CacheRead: 0.0000000528, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
