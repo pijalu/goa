@@ -7,6 +7,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -281,6 +282,115 @@ func TestHandleGoalUpdate_RuntimeCancelClearStartsNext(t *testing.T) {
 	for len(runner.runs()) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("runtime clear did not start the promoted goal")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestHandleGoalUpdate_CompletionStashesPauseFlag verifies the completion
+// event carries the /goal:pause:next one-shot into the app stash, alongside
+// the completion-evidence handoff.
+func TestHandleGoalUpdate_CompletionStashesPauseFlag(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mgr := core.NewGoalManagerWithMode("", mode)
+	a := &App{}
+	a.subs = &subsystems{
+		chat:        tui.NewChatViewport(),
+		goalManager: mgr,
+	}
+
+	a.handleGoalUpdate(&event.GoalUpdate{
+		Snapshot: &goal.GoalSnapshot{Objective: "done", Status: goal.GoalDone, PauseAfterComplete: true},
+		Change:   &goal.GoalChange{Kind: goal.GoalChangeCompletion},
+	})
+	if !a.goalPauseOnComplete {
+		t.Fatal("completion with PauseAfterComplete did not arm the pause-on-complete stash")
+	}
+
+	// An unarmed completion rewrites the stash to false (no leak across goals).
+	a.handleGoalUpdate(&event.GoalUpdate{
+		Snapshot: &goal.GoalSnapshot{Objective: "done", Status: goal.GoalDone},
+		Change:   &goal.GoalChange{Kind: goal.GoalChangeCompletion},
+	})
+	if a.goalPauseOnComplete {
+		t.Fatal("unarmed completion must reset the pause-on-complete stash")
+	}
+}
+
+// A completion with /goal:pause:next armed must NOT auto-start the next goal:
+// the queue head is promoted but parked PAUSED (with a reason naming the
+// armed one-shot), and no continuation turn launches — the user reviews the
+// completion evidence, then /goal:resume.
+func TestHandleGoalUpdate_PauseOnCompletePromotesPaused(t *testing.T) {
+	a, mode, runner := newCancelPolicyTestApp(t)
+
+	// The armed completion event, then its clear (markCompleteLocked emits
+	// both, in this order, with no change on the clear).
+	a.handleGoalUpdate(&event.GoalUpdate{
+		Snapshot: &goal.GoalSnapshot{Objective: "done", Status: goal.GoalDone, PauseAfterComplete: true},
+		Change:   &goal.GoalChange{Kind: goal.GoalChangeCompletion},
+	})
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("queue head should be promoted after a completion")
+	}
+	if g.Status != goal.GoalPaused {
+		t.Fatalf("promoted goal status = %q, want paused", g.Status)
+	}
+	if g.Objective != "queued objective" {
+		t.Fatalf("promoted objective = %q, want queued objective", g.Objective)
+	}
+	if g.TerminalReason == nil || !strings.Contains(*g.TerminalReason, "pause-after-completion") {
+		t.Fatalf("pause reason = %v, want one naming the armed one-shot", g.TerminalReason)
+	}
+	if runs := runner.runs(); len(runs) != 0 {
+		t.Fatalf("pause-on-complete launched %d continuation turns, want 0", len(runs))
+	}
+}
+
+// The one-shot must not leak: after an armed completion parked the successor,
+// a later UNARMED completion auto-starts its successor as usual.
+func TestHandleGoalUpdate_PauseOnCompleteDoesNotLeak(t *testing.T) {
+	a, mode, runner := newCancelPolicyTestApp(t)
+
+	armed := &goal.GoalSnapshot{Objective: "done", Status: goal.GoalDone, PauseAfterComplete: true}
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: armed, Change: &goal.GoalChange{Kind: goal.GoalChangeCompletion}})
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+	if g := mode.GetGoal().Goal; g == nil || g.Status != goal.GoalPaused {
+		t.Fatalf("armed completion: promoted goal = %+v, want paused", g)
+	}
+
+	// Queue a second goal and complete the (paused) promoted one UNARMED:
+	// the stash was consumed by the first clear, so this successor starts.
+	if _, err := a.subs.goalManager.Queue.AppendGoal(goal.UpcomingGoalInput{Objective: "second objective"}); err != nil {
+		t.Fatalf("append second goal: %v", err)
+	}
+	// The synthetic events bypass the real mode: clear the paused goal the
+	// way a completing goal would (markCompleteLocked empties the mode
+	// before its clear event reaches this consumer), or the second
+	// promotion's CreateGoal would refuse to replace it.
+	if _, err := mode.CancelGoal(goal.GoalActorUser); err != nil {
+		t.Fatalf("clear paused goal: %v", err)
+	}
+	a.handleGoalUpdate(&event.GoalUpdate{
+		Snapshot: &goal.GoalSnapshot{Objective: "done", Status: goal.GoalDone},
+		Change:   &goal.GoalChange{Kind: goal.GoalChangeCompletion},
+	})
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+
+	g := mode.GetGoal().Goal
+	if g == nil || g.Status != goal.GoalActive {
+		t.Fatalf("unarmed completion: promoted goal = %+v, want active", g)
+	}
+	if g.Objective != "second objective" {
+		t.Fatalf("promoted objective = %q, want second objective", g.Objective)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(runner.runs()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("unarmed completion did not start the promoted goal (stale one-shot leak)")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

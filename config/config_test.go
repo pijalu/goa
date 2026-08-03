@@ -1494,3 +1494,70 @@ func TestGoalsVerifyTimeoutOr(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// TestGetThinkingLevel_MainAgentPrefersModelLevel verifies the main-agent
+// thinking-level resolution order: the active model's own thinking_level wins
+// over the global thinking_levels.main_agent, which wins over the default.
+// Per-model values are where runtime thinking-level changes are saved, so
+// they must shadow the global default for each model to keep its own level.
+func TestGetThinkingLevel_MainAgentPrefersModelLevel(t *testing.T) {
+	newCfg := func() *Config {
+		return &Config{
+			ActiveProvider: "p1",
+			Providers:      []ProviderConfig{{ID: "p1"}},
+			ActiveModel:    "deepseek",
+			Models: []ModelConfig{
+				{ID: "deepseek", ProviderID: "p1", ThinkingLevel: "high"},
+				{ID: "kimi", ProviderID: "p1", ThinkingLevel: "low"},
+			},
+			ThinkingLevels: ThinkingLevelConfig{MainAgent: "medium", Default: "minimal"},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		mutate      func(cfg *Config)
+		activeModel string
+		want        internal.ThinkingLevel
+	}{
+		{
+			name:        "model level wins over main_agent",
+			activeModel: "deepseek",
+			want:        internal.ThinkingLevelHigh,
+		},
+		{
+			name:        "other model keeps its own level",
+			activeModel: "kimi",
+			want:        internal.ThinkingLevelLow,
+		},
+		{
+			name: "model without level falls back to main_agent",
+			mutate: func(cfg *Config) {
+				cfg.GetModelByID("deepseek").ThinkingLevel = ""
+			},
+			activeModel: "deepseek",
+			want:        internal.ThinkingLevelMedium,
+		},
+		{
+			name: "no model level and no main_agent falls back to default",
+			mutate: func(cfg *Config) {
+				cfg.GetModelByID("deepseek").ThinkingLevel = ""
+				cfg.ThinkingLevels.MainAgent = ""
+			},
+			activeModel: "deepseek",
+			want:        internal.ThinkingLevelMinimal,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newCfg()
+			if tt.mutate != nil {
+				tt.mutate(cfg)
+			}
+			cfg.ActiveModel = tt.activeModel
+			if got := cfg.GetThinkingLevel("main_agent"); got != tt.want {
+				t.Errorf("GetThinkingLevel(main_agent) = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

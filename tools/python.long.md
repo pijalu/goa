@@ -36,7 +36,7 @@ Available under standard names:
 | `os.mkdir`, `os.makedirs(exist_ok=...)`, `os.remove`/`os.unlink`, `os.rmdir`, `os.removedirs` | |
 | `os.path.join/exists/isfile/isdir/getsize/abspath/basename/dirname/splitext/split/relpath/normpath/isabs` | |
 | `os.environ`, `os.getenv(name, default=None)`, `os.getpid()`, `os.sep`, `os.name` | |
-| `open(file, mode="r")` | built-in, jail-confined; supports `read`/`write`/`close` and `with` |
+| `open(file, mode="r", encoding=None, errors=None)` | built-in, jail-confined; supports `read`/`write`/`close` and `with`; `errors="replace"`/`"ignore"` handle non-UTF-8 bytes on text reads |
 
 Example — the idiom that previously failed (`os.walk` + `os.path.join` +
 `os.stat(...).st_size`):

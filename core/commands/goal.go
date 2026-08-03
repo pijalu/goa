@@ -80,6 +80,10 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 	"current":    func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showCurrent(ctx) },
 	"list":       func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showList(ctx) },
 	"pause":      func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.pause(ctx) },
+	"pause-next": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.setPauseNext(ctx, true) },
+	"pause-next-off": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error {
+		return c.setPauseNext(ctx, false)
+	},
 	"resume":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.resume(ctx) },
 	"cancel":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancel(ctx) },
 	"cancel-all": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.cancelAll(ctx) },
@@ -173,8 +177,12 @@ var goalSubcommandKinds = map[string]struct {
 	"status":  {mode: subNone, kind: "status"},
 	"current": {mode: subNone, kind: "current"},
 	"list":    {mode: subNone, kind: "list"},
-	"pause":   {mode: subNone, kind: "pause"},
-	"resume":  {mode: subNone, kind: "resume"},
+	"pause": {mode: subScope, errorHint: "usage: /goal:pause[:current|next|next:off]",
+		scopeKinds: map[string]string{
+			"": "pause", "current": "pause",
+			"next": "pause-next", "next off": "pause-next-off",
+		}},
+	"resume": {mode: subNone, kind: "resume"},
 	"cancel": {mode: subScope, errorHint: "usage: /goal:cancel[:current|all]",
 		scopeKinds: map[string]string{"": "cancel", "current": "cancel", "all": "cancel-all"}},
 	"manage":   {mode: subNone, kind: "manage"},
@@ -318,6 +326,9 @@ func (c *GoalCommand) showStatus(ctx core.Context) error {
 	writeFmt(ctx, "Turns: %d\n", g.TurnsUsed)
 	writeFmt(ctx, "Tokens: %s\n", goal.FormatTokens(g.TokensUsed))
 	writeFmt(ctx, "Elapsed: %s\n", goal.FormatElapsed(g.WallClockMs))
+	if g.PauseAfterComplete {
+		writeStr(ctx, "Pause after completion: armed (next queued goal promotes paused)\n")
+	}
 	return nil
 }
 
@@ -351,6 +362,9 @@ func (c *GoalCommand) showCurrent(ctx core.Context) error {
 	}
 	if g.CompletionCriterion != nil || g.VerifyCommand != nil {
 		sb.WriteString("\n")
+	}
+	if g.PauseAfterComplete {
+		sb.WriteString("- Pause after completion: armed (`/goal:pause:next:off` to disarm)\n\n")
 	}
 	writeGoalTodos(&sb, g.Todos)
 	writeStr(ctx, sb.String())
@@ -518,6 +532,9 @@ func writeCurrentGoalListEntry(sb *strings.Builder, order int, g *goal.GoalSnaps
 	}
 	meta := fmt.Sprintf("status %s · turns %d · %s tokens · %s · context %s",
 		g.Status, g.TurnsUsed, goal.FormatTokens(g.TokensUsed), goal.FormatElapsed(g.WallClockMs), contextRunLabel(g.FreshContext))
+	if g.PauseAfterComplete {
+		meta += " · pause-after-complete armed"
+	}
 	if budget := formatGoalBudget(g); budget != "" {
 		meta += " · " + budget
 	}
@@ -558,6 +575,39 @@ func (c *GoalCommand) pause(ctx core.Context) error {
 		return err
 	}
 	writeStr(ctx, "Goal paused.\n")
+	return nil
+}
+
+// setPauseNext implements /goal:pause:next (arm) and /goal:pause:next:off
+// (disarm): the pause-after-completion one-shot on the current goal. The goal
+// keeps running; when it completes, the queued successor is promoted PAUSED
+// instead of auto-started, so the user can review the completion evidence
+// before the queue drains on (/goal:resume starts it). The flag is durable
+// (patched into the goal event log) and dies with the goal.
+func (c *GoalCommand) setPauseNext(ctx core.Context, armed bool) error {
+	if err := c.rejectIfManaged("pause"); err != nil {
+		return err
+	}
+	g := c.Mode.GetGoal().Goal
+	if g == nil {
+		return fmt.Errorf("no current goal")
+	}
+	if g.PauseAfterComplete == armed {
+		if armed {
+			writeStr(ctx, "Pause after completion is already armed — the next queued goal will be promoted paused when this goal completes.\n")
+		} else {
+			writeStr(ctx, "Pause after completion is not armed.\n")
+		}
+		return nil
+	}
+	if _, err := c.Mode.SetPauseAfterComplete(armed, goal.GoalActorUser); err != nil {
+		return err
+	}
+	if armed {
+		writeStr(ctx, "Pause after completion armed: this goal keeps running; when it completes, the next queued goal is promoted paused — /goal:resume to start it (/goal:pause:next:off to disarm).\n")
+	} else {
+		writeStr(ctx, "Pause after completion disarmed: the next queued goal auto-starts when this goal completes.\n")
+	}
 	return nil
 }
 
@@ -1345,7 +1395,7 @@ var goalSubcommands = []struct {
 	{"log", "show recent goal event records"},
 	{"verify", "run the recorded verify command now"},
 	{"settings", "toggle goal settings (auto-unblock)"},
-	{"pause", "pause the active goal"},
+	{"pause", "pause the active goal (:next to pause after completion)"},
 	{"resume", "resume a paused goal"},
 	{"cancel", "discard the current goal (next queued promotes paused)"},
 }
@@ -1358,6 +1408,17 @@ var goalCancelScopes = []struct {
 }{
 	{"current", "discard the current goal (queued goals stay)"},
 	{"all", "discard the current goal and clear the queue"},
+}
+
+// goalPauseScopes is the nested /goal:pause:<scope> list offered once the
+// user typed "pause:" (level-2 completion).
+var goalPauseScopes = []struct {
+	value string
+	desc  string
+}{
+	{"current", "pause the active goal now"},
+	{"next", "pause after the active goal completes (successor promotes paused)"},
+	{"next:off", "disarm the pause-after-completion one-shot"},
 }
 
 // goalNextOptions is the nested /goal:next:<option> list offered once the
@@ -1382,6 +1443,8 @@ func (c *GoalCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCo
 		switch sub {
 		case "cancel":
 			return cancelScopeCompletions(rest)
+		case "pause":
+			return pauseScopeCompletions(rest)
 		case "next":
 			return nextOptionCompletions(rest)
 		}
@@ -1417,6 +1480,22 @@ func cancelScopeCompletions(rest string) []core.ArgCompletion {
 		if rest == "" || strings.HasPrefix(sc.value, rest) {
 			comps = append(comps, core.ArgCompletion{
 				Value:       "cancel:" + sc.value,
+				Description: sc.desc,
+			})
+		}
+	}
+	return comps
+}
+
+// pauseScopeCompletions returns the /goal:pause:<scope> completions whose
+// scope starts with rest, with values fully spelled out ("pause:next") so
+// the completer prefixes them into /goal:pause:next.
+func pauseScopeCompletions(rest string) []core.ArgCompletion {
+	var comps []core.ArgCompletion
+	for _, sc := range goalPauseScopes {
+		if rest == "" || strings.HasPrefix(sc.value, rest) {
+			comps = append(comps, core.ArgCompletion{
+				Value:       "pause:" + sc.value,
 				Description: sc.desc,
 			})
 		}

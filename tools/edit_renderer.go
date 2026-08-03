@@ -51,6 +51,9 @@ func (r *EditFileRenderer) RenderCall(args map[string]any, ctx tuirender.RenderC
 // user sees the edit's scope as it arrives: line counts for the old and new
 // content, or the operation name when the full content is not yet available.
 func (r *EditFileRenderer) RenderPartial(args map[string]any, ctx tuirender.RenderContext) string {
+	if edits, ok := args["edits"].([]any); ok && len(edits) > 0 {
+		return rMuted(fmt.Sprintf("  %d edits", len(edits)))
+	}
 	oldStr := stringArg(args, "old_string")
 	newStr := stringArg(args, "new_string")
 	op := stringArg(args, "operation")

@@ -1759,6 +1759,215 @@ func TestAgentManager_SetThinkingLevel_WithoutSession_DoesNotQueue(t *testing.T)
 	}
 }
 
+// recordingConfigSaver implements config.ConfigSaver for tests: it records
+// home/project providers+models save calls and can inject an error.
+type recordingConfigSaver struct {
+	homeSaves    int
+	projectSaves int
+	err          error
+}
+
+func (f *recordingConfigSaver) Save(cfg *config.Config) error { return f.err }
+func (f *recordingConfigSaver) SaveProjectConfig(cfg *config.Config) error {
+	return f.err
+}
+func (f *recordingConfigSaver) SaveHomeProvidersAndModels(cfg *config.Config) error {
+	f.homeSaves++
+	return f.err
+}
+func (f *recordingConfigSaver) SaveProjectProvidersAndModels(cfg *config.Config) error {
+	f.projectSaves++
+	return f.err
+}
+func (f *recordingConfigSaver) SaveHomeField(path []string, value any) error    { return f.err }
+func (f *recordingConfigSaver) SaveProjectField(path []string, value any) error { return f.err }
+func (f *recordingConfigSaver) SaveProjectFieldValue(path []string, value any) error {
+	return f.err
+}
+func (f *recordingConfigSaver) SaveHomeFieldValue(path []string, value any) error {
+	return f.err
+}
+func (f *recordingConfigSaver) DeleteProjectField(path []string) error { return f.err }
+func (f *recordingConfigSaver) DeleteHomeField(path []string) error    { return f.err }
+func (f *recordingConfigSaver) Reload() (*config.Config, error)        { return nil, f.err }
+
+// thinkingLevelTestConfig returns a config with two configured models so
+// per-model thinking-level behavior can be exercised.
+func thinkingLevelTestConfig() *config.Config {
+	return &config.Config{
+		ActiveModel: "deepseek",
+		Models: []config.ModelConfig{
+			{ID: "deepseek", ProviderID: "p1", Model: "deepseek-chat"},
+			{ID: "kimi", ProviderID: "p1", Model: "kimi-k2"},
+		},
+	}
+}
+
+// TestAgentManager_SetThinkingLevel_SavesAtModelLevel verifies that changing
+// the thinking level records it on the active model's config entry (and
+// persists it) without touching other models: changing deepseek must not
+// change kimi.
+func TestAgentManager_SetThinkingLevel_SavesAtModelLevel(t *testing.T) {
+	cfg := thinkingLevelTestConfig()
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	am := NewAgentManager(cfg, nil, nil, sessionState, event.MakeBus(10, 10, 10, 10), "")
+	saver := &recordingConfigSaver{}
+	am.SetConfigSaver(saver)
+
+	if err := am.SetThinkingLevel("high"); err != nil {
+		t.Fatalf("SetThinkingLevel: %v", err)
+	}
+
+	if got := cfg.GetModelByID("deepseek").ThinkingLevel; got != "high" {
+		t.Errorf("deepseek thinking level = %q, want high", got)
+	}
+	if got := cfg.GetModelByID("kimi").ThinkingLevel; got != "" {
+		t.Errorf("kimi thinking level = %q, want untouched empty", got)
+	}
+	if saver.homeSaves != 1 {
+		t.Errorf("home saves = %d, want 1", saver.homeSaves)
+	}
+	if saver.projectSaves != 0 {
+		t.Errorf("project saves = %d, want 0 (auto_save_model off)", saver.projectSaves)
+	}
+
+	// Resolving the level for kimi must not see deepseek's saved level.
+	cfg.ActiveModel = "kimi"
+	if got := cfg.GetThinkingLevel("main_agent"); got == "high" {
+		t.Errorf("kimi resolved deepseek's level: got %q", got)
+	}
+}
+
+// TestAgentManager_SetThinkingLevel_SaveError verifies a persistence failure
+// is surfaced to the caller.
+func TestAgentManager_SetThinkingLevel_SaveError(t *testing.T) {
+	cfg := thinkingLevelTestConfig()
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	am.SetConfigSaver(&recordingConfigSaver{err: fmt.Errorf("disk full")})
+
+	if err := am.SetThinkingLevel("high"); err == nil {
+		t.Fatal("expected error when saving model thinking level fails")
+	}
+}
+
+// TestAgentManager_SetThinkingLevel_UnconfiguredModel verifies changing the
+// level with a model that is not in the config's model list stays session-only.
+func TestAgentManager_SetThinkingLevel_UnconfiguredModel(t *testing.T) {
+	cfg := &config.Config{ActiveModel: "custom-remote"}
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	saver := &recordingConfigSaver{}
+	am.SetConfigSaver(saver)
+
+	if err := am.SetThinkingLevel("low"); err != nil {
+		t.Fatalf("SetThinkingLevel: %v", err)
+	}
+	if got := am.GetThinkingLevel(); got != "low" {
+		t.Errorf("session level = %q, want low", got)
+	}
+	if saver.homeSaves != 0 {
+		t.Errorf("home saves = %d, want 0 for unconfigured model", saver.homeSaves)
+	}
+}
+
+// TestAgentManager_SetThinkingLevel_AutoSaveModel verifies the project config
+// is also updated when execution.auto_save_model is enabled.
+func TestAgentManager_SetThinkingLevel_AutoSaveModel(t *testing.T) {
+	cfg := thinkingLevelTestConfig()
+	cfg.Execution.AutoSaveModel = true
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	saver := &recordingConfigSaver{}
+	am.SetConfigSaver(saver)
+
+	if err := am.SetThinkingLevel("low"); err != nil {
+		t.Fatalf("SetThinkingLevel: %v", err)
+	}
+	if saver.projectSaves != 1 {
+		t.Errorf("project saves = %d, want 1 (auto_save_model on)", saver.projectSaves)
+	}
+}
+
+// TestAgentManager_RestoreThinkingLevel_DoesNotSaveToModel verifies the
+// startup restore path updates the session level but never writes the model
+// config entry or disk.
+func TestAgentManager_RestoreThinkingLevel_DoesNotSaveToModel(t *testing.T) {
+	cfg := thinkingLevelTestConfig()
+	am := NewAgentManager(cfg, nil, nil, nil, event.MakeBus(10, 10, 10, 10), "")
+	saver := &recordingConfigSaver{}
+	am.SetConfigSaver(saver)
+
+	if err := am.RestoreThinkingLevel("xhigh"); err != nil {
+		t.Fatalf("RestoreThinkingLevel: %v", err)
+	}
+	if got := am.GetThinkingLevel(); got != "xhigh" {
+		t.Errorf("session level = %q, want xhigh", got)
+	}
+	if got := cfg.GetModelByID("deepseek").ThinkingLevel; got != "" {
+		t.Errorf("restore wrote model config entry: %q", got)
+	}
+	if saver.homeSaves != 0 || saver.projectSaves != 0 {
+		t.Errorf("restore persisted: home=%d project=%d, want 0", saver.homeSaves, saver.projectSaves)
+	}
+}
+
+// TestAgentManager_SetModel_RestoresModelThinkingLevel verifies switching
+// models restores each model's own saved thinking level: a level set while on
+// deepseek must not follow the session onto kimi, and switching back to
+// deepseek must bring its saved level back.
+func TestAgentManager_SetModel_RestoresModelThinkingLevel(t *testing.T) {
+	cfg := thinkingLevelTestConfig()
+	cfg.GetModelByID("kimi").ThinkingLevel = "low"
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	am := NewAgentManager(cfg, nil, nil, sessionState, tuiEvents, "")
+
+	newTestModel := func(id string) agenticprovider.Model {
+		return agenticprovider.Model{
+			ID:         id,
+			Api:        agenticprovider.ApiOpenAICompletions,
+			Provider:   agenticprovider.ProviderLMStudio,
+			BaseURL:    "http://localhost:1234/v1/chat/completions",
+			InputTypes: []string{"text"},
+		}
+	}
+	opts := agenticprovider.StreamOptions{MaxTokens: 256}
+	if _, err := am.StartSession(newTestModel("deepseek-chat"), opts, "sys", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	// Change deepseek's level; it is saved on the deepseek config entry.
+	if err := am.SetThinkingLevel("high"); err != nil {
+		t.Fatalf("SetThinkingLevel: %v", err)
+	}
+	am.applyPendingThinkingLevel()
+
+	// Switch to kimi (callers update cfg.ActiveModel before SetModel).
+	cfg.ActiveModel = "kimi"
+	am.SetModel(newTestModel("kimi-k2"))
+	if got := am.GetThinkingLevel(); got != "low" {
+		t.Errorf("after switch to kimi: session level = %q, want kimi's saved low", got)
+	}
+	am.applyPendingThinkingLevel()
+	if got := am.activeAgent.ReasoningEffort(); got != agentic.ReasoningEffort("low") {
+		t.Errorf("agent effort after kimi switch = %q, want low", got)
+	}
+
+	// Switch back to deepseek: its saved level must be restored.
+	cfg.ActiveModel = "deepseek"
+	am.SetModel(newTestModel("deepseek-chat"))
+	if got := am.GetThinkingLevel(); got != "high" {
+		t.Errorf("after switch back to deepseek: session level = %q, want saved high", got)
+	}
+	am.applyPendingThinkingLevel()
+	if got := am.activeAgent.ReasoningEffort(); got != agentic.ReasoningEffort("high") {
+		t.Errorf("agent effort after deepseek switch = %q, want high", got)
+	}
+
+	// The model switch itself must not write config entries.
+	if got := cfg.GetModelByID("kimi").ThinkingLevel; got != "low" {
+		t.Errorf("kimi entry = %q, want low (unchanged by switches)", got)
+	}
+}
+
 // TestAgentManager_SetDisableToolBudget verifies the session-level toggle.
 func TestAgentManager_SetDisableToolBudget(t *testing.T) {
 	cfg := &config.Config{}

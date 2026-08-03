@@ -2,6 +2,8 @@
 
 package agentic
 
+import "github.com/pijalu/goa/internal/agentic/provider"
+
 func (a *Agent) emitEvent(event OutputEvent) {
 	a.mu.Lock()
 	entries := make([]observerEntry, len(a.observers))
@@ -101,4 +103,16 @@ func (a *Agent) emitStatelessEvents(msg Message) {
 	if msg.PromptProgress != nil {
 		a.emitEvent(OutputEvent{Type: EventProgress, PromptProgress: msg.PromptProgress, Metadata: msg.Metadata})
 	}
+}
+
+// EmitContextReset notifies observers that the live context was reset in
+// place to a cold start (fresh-context goal begin). Session-level stats must
+// survive; per-conversation detector baselines re-arm (see EventContextReset).
+func (a *Agent) EmitContextReset() {
+	// Re-arm provider cache-miss forensics too: the conversation id normally
+	// rotates with a fresh context (ResetConversationID), but when no session
+	// store is bound it does not — without this re-arm the new conversation's
+	// cold start would be reported as a bust against the old cache.
+	provider.ResetCacheForensicsBaseline()
+	a.emitEvent(OutputEvent{Type: EventContextReset})
 }

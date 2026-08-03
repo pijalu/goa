@@ -86,8 +86,9 @@ type AgentManager struct {
 	cfg            *config.Config
 	activeAgent    *agentic.Agent
 	events         chan agentic.OutputEvent
-	sessionStore   *SessionStore // event recording store
-	stateStore     *StateStore   // persisted mode state store
+	sessionStore   *SessionStore      // event recording store
+	stateStore     *StateStore        // persisted mode state store
+	configSaver    config.ConfigSaver // persists per-model thinking level to the home config
 	loopDetector   *LoopDetector
 	eventsOut      *event.Bus
 	logger         *agentic.Logger
@@ -801,16 +802,39 @@ func (am *AgentManager) InjectSystemMessage(content string) error {
 // the context compression configuration so the new model's context window and
 // any per-model compression overrides are used for ceiling/compaction
 // decisions.
+//
+// It also restores the thinking level saved for the new model (per-model
+// thinking_level, falling back to the global thinking_levels defaults), so
+// changing one model's level never leaks onto another. Callers must update
+// cfg.ActiveModel before invoking SetModel — the level is resolved from the
+// config's active model.
 func (am *AgentManager) SetModel(mdl agenticprovider.Model) {
 	am.mu.Lock()
-	defer am.mu.Unlock()
 	if am.activeAgent == nil {
+		am.mu.Unlock()
 		return
 	}
 	am.activeAgent.SetModel(mdl)
 	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow)
 	if compressionCfg.MaxTokens > 0 || am.hasCompressionOverride(mdl.ID) {
 		am.activeAgent.SetContextCompression(compressionCfg)
+	}
+	am.mu.Unlock()
+	am.syncThinkingLevelForActiveModel()
+}
+
+// syncThinkingLevelForActiveModel re-resolves the thinking level for the
+// config's active model and applies it to the session (mode state, queued
+// agent change, persisted snapshot, footer event). Unlike SetThinkingLevel
+// it does not write the model config entry — the value comes FROM the
+// config, so saving it back would be a no-op write.
+func (am *AgentManager) syncThinkingLevelForActiveModel() {
+	if am.cfg == nil {
+		return
+	}
+	level := string(am.cfg.GetThinkingLevel("main_agent"))
+	if err := am.applySessionThinkingLevel(level); err != nil && am.logger != nil {
+		am.logger.Log(agentic.Warn, "failed to persist thinking level after model switch: %v", err)
 	}
 }
 
@@ -931,6 +955,15 @@ func (am *AgentManager) SetStateStore(ss *StateStore) {
 	am.stateStore = ss
 	am.mu.Unlock()
 	am.modeMgr.SetStateStore(ss)
+}
+
+// SetConfigSaver sets the saver used to persist per-model thinking-level
+// changes to the configuration cascade. When nil, thinking-level changes are
+// still applied to the in-memory model config but not written to disk.
+func (am *AgentManager) SetConfigSaver(saver config.ConfigSaver) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.configSaver = saver
 }
 
 // foregroundOrchestrator returns the current foreground orchestrator snapshot
@@ -1147,13 +1180,70 @@ func (am *AgentManager) MinorMode() string {
 // SetThinkingLevel sets the reasoning effort level, persists it, and queues
 // the change for the active agent session. The new level takes effect on the
 // next turn so the current turn is not interrupted.
+//
+// The level is saved at model level: it is recorded on the active model's
+// config entry (and written to the config cascade when a ConfigSaver is
+// wired), so each model keeps its own thinking level and switching models
+// does not leak one model's level onto another (see SetModel).
 func (am *AgentManager) SetThinkingLevel(level string) error {
+	if err := am.applySessionThinkingLevel(level); err != nil {
+		return err
+	}
+	return am.saveModelThinkingLevel(level)
+}
+
+// RestoreThinkingLevel sets the session thinking level without saving it to
+// the active model's config entry. Used at startup to restore the persisted
+// session/config value: re-saving it could stamp a stale snapshot value onto
+// a model the user never changed.
+func (am *AgentManager) RestoreThinkingLevel(level string) error {
+	return am.applySessionThinkingLevel(level)
+}
+
+// applySessionThinkingLevel updates the session thinking level: mode state,
+// queued change for the active agent, persisted snapshot, and footer event.
+func (am *AgentManager) applySessionThinkingLevel(level string) error {
 	am.modeMgr.SetThinkingLevel(level)
 	am.queueThinkingLevel(level)
 	if err := am.persistState(); err != nil {
 		return fmt.Errorf("failed to save thinking level: %w", err)
 	}
 	am.emitThinkingLevel(level)
+	return nil
+}
+
+// saveModelThinkingLevel records the level on the active model's config entry
+// and persists the models section so the per-model level survives restarts.
+// It is a no-op when the active model is not a configured model (e.g. a
+// custom/remote name); the in-memory update still applies when the model is
+// found but no ConfigSaver is wired.
+func (am *AgentManager) saveModelThinkingLevel(level string) error {
+	am.mu.Lock()
+	cfg := am.cfg
+	saver := am.configSaver
+	am.mu.Unlock()
+	if cfg == nil || cfg.ActiveModel == "" {
+		return nil
+	}
+	mdl := cfg.GetModelByID(cfg.ActiveModel)
+	if mdl == nil {
+		return nil
+	}
+	mdl.ThinkingLevel = level
+	if saver == nil {
+		return nil
+	}
+	if err := saver.SaveHomeProvidersAndModels(cfg); err != nil {
+		return fmt.Errorf("failed to save model thinking level: %w", err)
+	}
+	// Mirror the model-change save policy: when auto_save_model is set, also
+	// persist to the project config so the per-model level survives restarts
+	// even when the project config defines its own models.
+	if cfg.Execution.AutoSaveModel {
+		if err := saver.SaveProjectProvidersAndModels(cfg); err != nil {
+			return fmt.Errorf("failed to save model thinking level to project: %w", err)
+		}
+	}
 	return nil
 }
 

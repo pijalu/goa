@@ -51,6 +51,13 @@ type App struct {
 	tokenCacheReadTotal  int
 	tokenCacheWriteTotal int
 	tokenCacheMisses     int
+	// cacheReadEstablished tracks whether the CURRENT conversation has proven
+	// a warm provider cache (any positive cache read). Unlike
+	// tokenCacheReadTotal — a session total feeding the CH display that must
+	// survive mid-session context resets — this flag re-arms on
+	// EventContextReset so a fresh-context goal's cold start is not counted
+	// as a cache bust.
+	cacheReadEstablished bool
 	tokenSessionMax      int
 	tokenSessionEstimate int
 
@@ -115,6 +122,15 @@ type App struct {
 	// cleared) by promoteNextQueuedGoal. Both run on the single
 	// event-forwarder goroutine.
 	goalCompletionHandoff *string
+
+	// goalPauseOnComplete stashes the completed goal's PauseAfterComplete
+	// one-shot (/goal:pause:next): the completion clear then promotes the
+	// queued successor PAUSED instead of auto-starting it, so the user can
+	// review the completion evidence before the queue drains on. Written by
+	// handleGoalUpdate on a completion change, consumed (and cleared) when
+	// the matching clear event arrives. Both run on the single
+	// event-forwarder goroutine.
+	goalPauseOnComplete bool
 
 	approvalStateFields
 }

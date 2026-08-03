@@ -1412,6 +1412,10 @@ func (a *Agent) Clear() {
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 
+	// Re-arm provider cache-miss forensics: the post-clear cold start must
+	// not be reported as a bust against the cleared conversation's cache.
+	provider.ResetCacheForensicsBaseline()
+
 	a.emitEvent(OutputEvent{Type: EventClear})
 }
 

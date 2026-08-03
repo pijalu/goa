@@ -23,6 +23,11 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:current               Show the current goal in full: objective, criterion, verify command, todos
   /goal:list                  List active + queued goals in order, with full objectives (markdown)
   /goal:pause                 Pause the active goal
+  /goal:pause:current         Same as /goal:pause
+  /goal:pause:next            Keep running, but when the goal completes the next
+                              queued goal is promoted paused (never auto-started) —
+                              review the completion, then /goal:resume
+  /goal:pause:next:off        Disarm the pause-after-completion one-shot
   /goal:resume                Resume a paused or blocked goal
   /goal:cancel                Discard the current goal (next queued goal is promoted paused, never auto-started)
   /goal:cancel:current        Same as /goal:cancel

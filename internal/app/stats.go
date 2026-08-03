@@ -96,15 +96,26 @@ func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
 		a.handleToolStart(ev)
 	case agentic.EventToolProgress:
 		a.handleToolProgress(ev)
-	case agentic.EventTokenStats, agentic.EventContextStats:
-		a.handleTokenStats(ev)
-	case agentic.EventCompact:
-		a.recordCompact(ev.Text)
+	case agentic.EventProgress:
+		a.handleProgressEvent(ev)
+	default:
+		a.handleAgentStatsEvent(ev)
+	}
+}
+
+// handleAgentStatsEvent routes the stats/lifecycle branch of
+// handleAgentOutputEvent: token/context stats, compaction bookkeeping, and
+// the clear/reset signals that re-arm or wipe session counters. Extracted so
+// the event switch stays within the gocyclo budget as cases grow.
+func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
+	switch ev.Type {
 	case agentic.EventClear:
 		a.clearStats()
 		a.handleTokenStats(ev)
-	case agentic.EventProgress:
-		a.handleProgressEvent(ev)
+	case agentic.EventContextReset:
+		a.resetCacheBustBaseline()
+	case agentic.EventCompact:
+		a.recordCompact(ev.Text)
 	default:
 		a.handleTokenStats(ev)
 	}
@@ -128,6 +139,7 @@ func (a *App) clearStats() {
 	a.tokenCacheReadTotal = 0
 	a.tokenCacheWriteTotal = 0
 	a.tokenCacheMisses = 0
+	a.cacheReadEstablished = false
 	a.lastTurnPromptN = 0
 	a.lastTurnPredictedN = 0
 	a.lastTurnCacheRead = 0
@@ -142,6 +154,19 @@ func (a *App) clearStats() {
 	a.toolCallsTotal = 0
 	a.toolCallWarningLevel = ToolCallNormal
 	a.prevCacheHitPct = 0
+}
+
+// resetCacheBustBaseline re-arms the cache-bust detector after an in-place
+// context reset (EventContextReset — a fresh-context goal begin): subsequent
+// token stats belong to a NEW conversation on a fresh provider cache key,
+// whose cold start (zero or tiny cache reads) is not a bust. Unlike
+// clearStats (user /clear), session totals (CH/CW) and the CM counter itself
+// survive — only the per-conversation detector baseline resets.
+func (a *App) resetCacheBustBaseline() {
+	a.statsMu.Lock()
+	defer a.statsMu.Unlock()
+	a.lastTurnCacheRead = 0
+	a.cacheReadEstablished = false
 }
 
 func (a *App) handleProgressEvent(ev *agentic.OutputEvent) {
@@ -746,9 +771,14 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		a.tokenCacheWriteTotal += ev.Timings.CacheWriteTokens
 		// Count cache busts two ways:
 		//  1. Zero cache reads AFTER the cache was established (provider TTL
-		//     expiry reports 0). The first request(s) of a session are cold by
-		//     nature and not counted; a provider reporting no cache stats
-		//     never establishes, so the counter stays hidden there.
+		//     expiry reports 0). The first request(s) of a session — or of a
+		//     fresh-context conversation (EventContextReset re-arms
+		//     cacheReadEstablished) — are cold by nature and not counted; a
+		//     provider reporting no cache stats never establishes, so the
+		//     counter stays hidden there. Establishment is tracked in
+		//     cacheReadEstablished rather than tokenCacheReadTotal because
+		//     the total is a session-level CH figure that must survive
+		//     mid-session context resets.
 		//  2. A significant DROP in cache reads: in an append-only
 		//     conversation the cached prefix grows monotonically, so a
 		//     collapse means the prefix was invalidated — e.g. in-place
@@ -756,7 +786,10 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		//     (5,376 of ~113k tokens in the 2026-08-02 session export),
 		//     which the zero-read rule never catches. A tolerance absorbs
 		//     block-quantization wobble in provider reporting.
-		if (ev.Timings.CacheReadTokens == 0 && a.tokenCacheReadTotal > 0) ||
+		if ev.Timings.CacheReadTokens > 0 {
+			a.cacheReadEstablished = true
+		}
+		if (ev.Timings.CacheReadTokens == 0 && a.cacheReadEstablished) ||
 			(prevCacheRead > 0 && ev.Timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead) {
 			a.tokenCacheMisses++
 		}

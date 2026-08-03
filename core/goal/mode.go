@@ -203,6 +203,9 @@ func (m *GoalMode) RestoreUpdate(record GoalEventRecord) {
 	if record.BudgetLimits != nil {
 		state.budgetLimits = *record.BudgetLimits
 	}
+	if record.PauseAfterComplete != nil {
+		state.pauseAfterComplete = *record.PauseAfterComplete
+	}
 	if record.Todos != nil {
 		state.todos = append([]GoalTodoItem(nil), record.Todos...)
 	}
@@ -732,6 +735,29 @@ func (m *GoalMode) IncrementTurn() (*GoalSnapshot, error) {
 	return &snap, nil
 }
 
+// SetPauseAfterComplete arms (or disarms) the /goal:pause:next one-shot: an
+// armed goal promotes its queued successor PAUSED on completion instead of
+// auto-starting it. The flag is durable (patched into the event log) so it
+// survives a session restart; it dies with the goal.
+func (m *GoalMode) SetPauseAfterComplete(armed bool, actor GoalActor) (GoalSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, err := m.requireState()
+	if err != nil {
+		return GoalSnapshot{}, err
+	}
+	state.pauseAfterComplete = armed
+	m.persistState(state, persistOptions{})
+	a := string(actor)
+	m.appendGoalUpdateRecord(GoalEventRecord{
+		Type:               GoalEventUpdate,
+		Timestamp:          time.Now(),
+		PauseAfterComplete: &armed,
+		Actor:              &a,
+	})
+	return m.toSnapshot(state), nil
+}
+
 // SetBudgetLimits updates budget limits (merged, not replaced).
 func (m *GoalMode) SetBudgetLimits(limits GoalBudgetLimits, actor GoalActor) (GoalSnapshot, error) {
 	m.mu.Lock()
@@ -869,6 +895,7 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 		CompletionCriterion: state.completionCriterion,
 		VerifyCommand:       state.verifyCommand,
 		FreshContext:        state.freshContext,
+		PauseAfterComplete:  state.pauseAfterComplete,
 		Handoff:             state.handoff,
 		Todos:               append([]GoalTodoItem(nil), state.todos...),
 		Status:              state.status,

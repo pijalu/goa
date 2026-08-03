@@ -898,15 +898,29 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 				// Stash the completion evidence so the next auto-promoted
 				// queued goal inherits it as its Handoff note.
 				a.goalCompletionHandoff = update.Snapshot.TerminalReason
+				// Stash the /goal:pause:next one-shot: the completion clear
+				// (next event) then promotes the successor PAUSED instead of
+				// auto-starting it.
+				a.goalPauseOnComplete = update.Snapshot.PauseAfterComplete
 			}
 		}
 	}
 
-	if update.Snapshot == nil && a.subs.goalManager != nil {
-		if cancelClearPausesPromotion(update.Change) {
-			a.promoteQueuedGoalPaused()
-		} else {
-			a.promoteNextQueuedGoal()
+	if update.Snapshot == nil {
+		// Consume the pause-on-complete stash with the clear event it belongs
+		// to: markCompleteLocked emits the completion and its clear together,
+		// so a cancel or runtime clear never observes a stale flag.
+		pauseOnComplete := a.goalPauseOnComplete
+		a.goalPauseOnComplete = false
+		if a.subs.goalManager != nil {
+			switch {
+			case cancelClearPausesPromotion(update.Change):
+				a.promoteQueuedGoalPaused(promotePauseCancel)
+			case pauseOnComplete:
+				a.promoteQueuedGoalPaused(promotePauseComplete)
+			default:
+				a.promoteNextQueuedGoal()
+			}
 		}
 	}
 }
@@ -966,18 +980,53 @@ func cancelClearPausesPromotion(change *goal.GoalChange) bool {
 // across completions without any model round-trip. Runs on the
 // event-forwarder goroutine; the queue store serializes concurrent access.
 func (a *App) promoteNextQueuedGoal() {
-	a.promoteQueuedGoal(false)
+	a.promoteQueuedGoal(nil)
+}
+
+// promotePauseCause identifies why a promoted queued goal is parked PAUSED:
+// an explicit user/model cancel, or a completion with the /goal:pause:next
+// one-shot armed. The pause reason recorded on the goal and the system chat
+// message differ per cause.
+type promotePauseCause int
+
+const (
+	// promotePauseCancel parks the successor after an explicit cancel.
+	promotePauseCancel promotePauseCause = iota
+	// promotePauseComplete parks the successor after a pause-armed completion.
+	promotePauseComplete
+)
+
+// pauseReason is the terminal reason recorded on the parked goal.
+func (c promotePauseCause) pauseReason() string {
+	if c == promotePauseComplete {
+		return "Previous goal completed with pause-after-completion armed (/goal:pause:next) — /goal:resume to start this goal"
+	}
+	return "Previous goal was cancelled — /goal:resume to start this goal"
+}
+
+// chatMessage renders the system chat line explaining the parked promotion.
+func (c promotePauseCause) chatMessage(objective string) string {
+	if c == promotePauseComplete {
+		return fmt.Sprintf(
+			"[goal] pause-after-completion armed (/goal:pause:next) — queued goal promoted paused (/goal:resume to start): %s",
+			objective)
+	}
+	return fmt.Sprintf(
+		"[goal] queued goal promoted paused (a cancel never auto-starts the next goal — /goal:resume to start): %s",
+		objective)
 }
 
 // promoteQueuedGoalPaused promotes the queue head like promoteNextQueuedGoal
-// but leaves it PAUSED and never kicks the driver: the previous goal was
-// cancelled, so autonomous work stops until the user resumes explicitly
-// (/goal:resume).
-func (a *App) promoteQueuedGoalPaused() {
-	a.promoteQueuedGoal(true)
+// but leaves it PAUSED and never kicks the driver: autonomous work stops
+// until the user resumes explicitly (/goal:resume).
+func (a *App) promoteQueuedGoalPaused(cause promotePauseCause) {
+	a.promoteQueuedGoal(&cause)
 }
 
-func (a *App) promoteQueuedGoal(paused bool) {
+// promoteQueuedGoal removes the head of the goal queue and activates it.
+// pauseCause nil auto-starts the promoted goal; non-nil parks it PAUSED with
+// the cause-specific reason and message.
+func (a *App) promoteQueuedGoal(pauseCause *promotePauseCause) {
 	queue, err := a.subs.goalManager.Queue.Read()
 	if err != nil || len(queue) == 0 {
 		a.goalCompletionHandoff = nil
@@ -1009,8 +1058,8 @@ func (a *App) promoteQueuedGoal(paused bool) {
 		_, _ = a.subs.goalManager.Queue.Restore(*removed)
 		return
 	}
-	if paused {
-		a.pausePromotedGoal(*removed)
+	if pauseCause != nil {
+		a.pausePromotedGoal(*removed, *pauseCause)
 		return
 	}
 	a.subs.chat.AddSystemMessage(fmt.Sprintf("[goal] auto-promoted queued goal: %s", removed.Objective))
@@ -1026,19 +1075,16 @@ func (a *App) promoteQueuedGoal(paused bool) {
 }
 
 // pausePromotedGoal parks a just-promoted queued goal in the paused state:
-// the previous goal was cancelled, so the successor waits for the user to
-// resume it explicitly. The runtime actor marks this as a framework pause,
-// not a user pause. On pause failure the goal is restored to the queue so it
-// is never silently lost.
-func (a *App) pausePromotedGoal(removed goal.UpcomingGoal) {
-	reason := "Previous goal was cancelled — /goal:resume to start this goal"
+// the successor waits for the user to resume it explicitly. The runtime actor
+// marks this as a framework pause, not a user pause. On pause failure the
+// goal is restored to the queue so it is never silently lost.
+func (a *App) pausePromotedGoal(removed goal.UpcomingGoal, cause promotePauseCause) {
+	reason := cause.pauseReason()
 	if _, err := a.subs.goalManager.Mode.PauseGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorRuntime); err != nil {
 		_, _ = a.subs.goalManager.Queue.Restore(removed)
 		return
 	}
-	a.subs.chat.AddSystemMessage(fmt.Sprintf(
-		"[goal] queued goal promoted paused (a cancel never auto-starts the next goal — /goal:resume to start): %s",
-		removed.Objective))
+	a.subs.chat.AddSystemMessage(cause.chatMessage(removed.Objective))
 }
 
 // showPanicError displays a rendering panic in the chat and creates an export

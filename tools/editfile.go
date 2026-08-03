@@ -115,25 +115,81 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 					"description": "preserve (default)|normalize|as-is",
 					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
+			"edits": map[string]any{
+				"type": "array",
+				"description": "batch of edits applied in order against the same file, atomically (all or nothing) in a single write. " +
+					"Each element takes the same fields as a single edit (operation/old_string/new_string, or operation + start_line/end_line/pattern/occurrence/new_content/indent_mode). " +
+					"Edits see the result of the previous ones, so line numbers in later edits refer to the already-edited content.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"operation": map[string]any{
+							"type":        "string",
+							"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
+							"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+						},
+						"old_string": map[string]any{
+							"type":        "string",
+							"description": "text to match (with new_string)",
+						},
+						"new_string": map[string]any{
+							"type":        "string",
+							"description": "replacement text",
+						},
+						"start_line": map[string]any{
+							"type":        "integer",
+							"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
+						},
+						"end_line": map[string]any{
+							"type":        "integer",
+							"description": "end line (1-indexed, for replace_lines/delete_lines)",
+						},
+						"pattern": map[string]any{
+							"type":        "string",
+							"description": "regex for replace_pattern/insert_after/insert_before",
+						},
+						"pattern_flags": map[string]any{
+							"type":        "string",
+							"description": "regex flags (e.g. 'i')",
+						},
+						"occurrence": map[string]any{
+							"type":        "integer",
+							"description": "occurrence for replace_pattern (default: 1)",
+						},
+						"new_content": map[string]any{
+							"type":        "string",
+							"description": "replacement content for replace_lines/insert_after/insert_before",
+						},
+						"indent_mode": map[string]any{
+							"type":        "string",
+							"description": "preserve (default)|normalize|as-is",
+							"enum":        []string{"preserve", "normalize", "as-is"},
+						},
+					},
+				},
+			},
 			},
 			"required": []string{"path"},
 		},
 	}
 }
 
-// editFileParams holds the parsed input for EditFileTool.
+// editFileParams holds the parsed input for EditFileTool. It describes both a
+// single edit (flat fields) and a batch of edits (Edits); a batch element uses
+// the same fields, minus Path and Edits (nested batches are not supported).
 type editFileParams struct {
-	Path         string `json:"path"`
-	Operation    string `json:"operation"`
-	OldString    string `json:"old_string"`
-	NewString    string `json:"new_string"`
-	StartLine    int    `json:"start_line"`
-	EndLine      int    `json:"end_line"`
-	Pattern      string `json:"pattern"`
-	PatternFlags string `json:"pattern_flags"`
-	Occurrence   int    `json:"occurrence"`
-	NewContent   string `json:"new_content"`
-	IndentMode   string `json:"indent_mode"`
+	Path         string           `json:"path"`
+	Operation    string           `json:"operation"`
+	OldString    string           `json:"old_string"`
+	NewString    string           `json:"new_string"`
+	StartLine    int              `json:"start_line"`
+	EndLine      int              `json:"end_line"`
+	Pattern      string           `json:"pattern"`
+	PatternFlags string           `json:"pattern_flags"`
+	Occurrence   int              `json:"occurrence"`
+	NewContent   string           `json:"new_content"`
+	IndentMode   string           `json:"indent_mode"`
+	Edits        []editFileParams `json:"edits"`
 }
 
 func (t *EditFileTool) Execute(input string) (string, error) {
@@ -152,6 +208,13 @@ func (t *EditFileTool) Execute(input string) (string, error) {
 	resolvedPath, originalPath, err := ResolveFileToolPath(t.WorktreeMgr, p.Path)
 	if err != nil {
 		return "", t.errProtected(p.Path)
+	}
+
+	// A batch of edits takes precedence over the flat fields: all edits apply
+	// in order against the in-memory content and the file is written once,
+	// so a failing edit leaves the file untouched.
+	if len(p.Edits) > 0 {
+		return t.executeMulti(resolvedPath, originalPath, p)
 	}
 
 	// The schema advertises `operation: "replace"` as a convenience alias for
@@ -177,7 +240,7 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", errMissingParam()
 	}
 
-	lines, targetPath, fuzzyNote, err := t.readLines(resolvedPath, originalPath)
+	lines, targetPath, fuzzyNote, _, err := t.readLines(resolvedPath, originalPath)
 	if err != nil {
 		return "", err
 	}
@@ -209,19 +272,10 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		return "", wrapEditOpError(opErr, p.Path, string(op))
 	}
 
-	if t.BackupStager != nil {
-		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
+	diagBlock, writeErr := t.writeEditResult(targetPath, p.Path, strings.Join(result, "\n"))
+	if writeErr != nil {
+		return "", writeErr
 	}
-
-	output := strings.Join(result, "\n")
-	if err := os.WriteFile(targetPath, []byte(output), 0644); err != nil {
-		return "", t.errWrite(p.Path, err)
-	}
-
-	if t.FileChangeNotifier != nil {
-		t.FileChangeNotifier(targetPath)
-	}
-	diagBlock := t.notifyLSP(context.Background(), targetPath)
 
 	// Generate unified diff for the change so the renderer can display it.
 	diff := generateUnifiedDiff(lines, result)
@@ -245,6 +299,187 @@ func (t *EditFileTool) editByOperation(resolvedPath, originalPath string, p edit
 		resultMsg += diagBlock
 	}
 	return resultMsg, nil
+}
+
+// executeMulti applies a batch of edits to one file atomically: every edit is
+// applied in order against the in-memory content (each edit sees the result of
+// the previous ones), and the file is written exactly once at the end. If any
+// edit fails, nothing is written and the error identifies the failing edit.
+func (t *EditFileTool) executeMulti(resolvedPath, originalPath string, p editFileParams) (string, error) {
+	originalLines, targetPath, fuzzyNote, trailingNL, err := t.readLines(resolvedPath, originalPath)
+	if err != nil {
+		return "", err
+	}
+
+	lines := originalLines
+	var matchTypes []MatchType
+	for i, e := range p.Edits {
+		newLines, mt, opErr := t.applySingleEdit(lines, e)
+		if opErr != nil {
+			// lines still holds the content at the point of failure; the
+			// wrapper uses it for the line-match diagnostic.
+			return "", t.wrapMultiEditError(opErr, p.Path, i, len(p.Edits), e, lines)
+		}
+		lines = newLines
+		if mt != "" {
+			matchTypes = append(matchTypes, mt)
+		}
+	}
+
+	// Preserve the file's trailing newline: splitLines drops the final empty
+	// element, so a verbatim join would silently strip it.
+	output := strings.Join(lines, "\n")
+	if trailingNL && output != "" && !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+	diagBlock, writeErr := t.writeEditResult(targetPath, p.Path, output)
+	if writeErr != nil {
+		return "", writeErr
+	}
+
+	// One diff from the original content to the final content: the renderer
+	// shows the net effect of the whole batch.
+	diff := generateUnifiedDiff(originalLines, lines)
+	resultMsg := fmt.Sprintf("[edit: %s] %d edits applied\n%s", p.Path, len(p.Edits), diff)
+	if mt := combinedMatchDesc(matchTypes); mt != "" {
+		resultMsg = fmt.Sprintf("[edit: %s] %d edits applied — match: %s\n%s", p.Path, len(p.Edits), mt, diff)
+	}
+	if fuzzyNote != "" {
+		resultMsg = fuzzyNote + "\n" + resultMsg
+	}
+	if diagBlock != "" {
+		resultMsg += diagBlock
+	}
+	return resultMsg, nil
+}
+
+// applySingleEdit applies one edit command to the in-memory content and
+// returns the resulting lines. For a search/replace it also reports the match
+// type; line/pattern operations report an empty match type.
+func (t *EditFileTool) applySingleEdit(lines []string, e editFileParams) ([]string, MatchType, error) {
+	// Classic search/replace (or the "replace" alias) works on the joined text
+	// so the fuzzy matcher sees exactly what the single-edit path sees.
+	if e.Operation == string(OpReplace) || e.OldString != "" {
+		if e.OldString == "" {
+			return nil, "", &internal.ToolError{
+				Tool: "edit", Type: "missing_parameter",
+				Detail:   "operation 'replace' requires 'old_string' and 'new_string'",
+				HintText: "Provide the text to search for in 'old_string' and the replacement in 'new_string'.",
+			}
+		}
+		res, err := fuzzyEdit(strings.Join(lines, "\n"), e.OldString, e.NewString, t.AllowFuzz)
+		if err != nil {
+			return nil, "", err
+		}
+		return splitLines(res.NewContent), res.MatchType, nil
+	}
+
+	op := EditOperation(e.Operation)
+	if op == "" {
+		return nil, "", errMissingParam()
+	}
+	content, _, err := resolveOpContent(op, e)
+	if err != nil {
+		return nil, "", err
+	}
+	ep := editParams{
+		startLine:    e.StartLine,
+		endLine:      e.EndLine,
+		pattern:      e.Pattern,
+		patternFlags: e.PatternFlags,
+		occurrence:   e.Occurrence,
+		newLines:     splitLines(content),
+		indentMode:   IndentMode(defaultStr(e.IndentMode, string(IndentPreserve))),
+	}
+	result, _, err := t.runOp(lines, op, ep)
+	return result, "", err
+}
+
+// wrapMultiEditError annotates a batch failure with the 1-indexed position of
+// the failing edit and stresses the atomicity guarantee: no partial edit was
+// persisted. content is the in-memory content at the point of failure (with
+// the earlier edits already applied); it powers the same line-match diagnostic
+// the single-edit search/replace path attaches to not-found errors.
+func (t *EditFileTool) wrapMultiEditError(err error, path string, idx, batchSize int, e editFileParams, content []string) error {
+	desc := e.Operation
+	if desc == "" && e.OldString != "" {
+		desc = string(OpReplace)
+	}
+	if desc == "" {
+		desc = "(missing operation)"
+	}
+	prefix := fmt.Sprintf("edit %d/%d (%s)", idx+1, batchSize, desc)
+
+	var te *internal.ToolError
+	switch {
+	case errors.Is(err, ErrAmbiguous), errors.Is(err, ErrNotFound),
+		errors.Is(err, ErrNoChange), errors.Is(err, ErrEmptyOldStr):
+		// fuzzyEdit sentinel errors get the same rich mapping as the
+		// single-edit path (line-match counts, drift hints).
+		matched, total := countMatchingLines(strings.Join(content, "\n"), e.OldString)
+		te = t.searchReplaceError(path, e.OldString, err, matched, total)
+	default:
+		if toolErr, ok := err.(*internal.ToolError); ok {
+			te = toolErr
+		} else {
+			te = &internal.ToolError{Tool: "edit", Type: "operation_failed", Detail: err.Error()}
+		}
+	}
+	te.Detail = fmt.Sprintf("%s: %s — no changes were written; fix the failing edit and retry the whole batch", prefix, te.Detail)
+	if te.HintText == "" {
+		te.HintText = "Use 'read' to verify the file content and operation parameters, then retry."
+	}
+	return te
+}
+
+// combinedMatchDesc summarizes the match types of the search/replace edits in
+// a batch: empty when none ran, the single match type when all agree, or
+// "mixed" otherwise.
+func combinedMatchDesc(types []MatchType) string {
+	if len(types) == 0 {
+		return ""
+	}
+	all := true
+	for _, mt := range types[1:] {
+		if mt != types[0] {
+			all = false
+			break
+		}
+	}
+	if !all {
+		return "mixed"
+	}
+	return matchTypeDesc(types[0])
+}
+
+func matchTypeDesc(mt MatchType) string {
+	switch mt {
+	case MatchTrailingWhitespace:
+		return "trailing whitespace normalized"
+	case MatchFuzzy:
+		return "fuzzy whitespace match (indentation auto-adjusted)"
+	default:
+		return "exact match"
+	}
+}
+
+// writeEditResult stages a backup, persists the new content in a single
+// write, and fires the change notifiers. It is the one place every successful
+// edit path (single or batch) goes through, so the file is always written
+// atomically per tool call. The content string is written verbatim: callers
+// decide how to render their line-based results (and whether to preserve the
+// file's trailing newline).
+func (t *EditFileTool) writeEditResult(targetPath, displayPath, content string) (string, error) {
+	if t.BackupStager != nil {
+		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
+	}
+	if err := os.WriteFile(targetPath, []byte(content), 0644); err != nil {
+		return "", t.errWrite(displayPath, err)
+	}
+	if t.FileChangeNotifier != nil {
+		t.FileChangeNotifier(targetPath)
+	}
+	return t.notifyLSP(context.Background(), targetPath), nil
 }
 
 // opRequiresContent reports whether the operation needs replacement content
@@ -344,18 +579,24 @@ func (t *EditFileTool) Examples() []string {
 		`{"path": "src/main.go", "old_string": "fmt.Println(\"hello\")", "new_string": "fmt.Println(\"world\")"}`,
 		`{"path": "auth.go", "old_string": "func oldName()", "new_string": "func newName()"}`,
 		`{"path": "src/main.go", "operation": "replace_lines", "start_line": 5, "end_line": 8, "new_content": "func main() {\n\tlog.Println(\"start\")\n}"}`,
+		`{"path": "src/main.go", "edits": [{"old_string": "import \"fmt\"", "new_string": "import (\n\t\"fmt\"\n\t\"log\"\n)"}, {"old_string": "fmt.Println(\"hi\")", "new_string": "log.Println(\"hi\")"}]}`,
 	}
 }
 
-func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, string, string, error) {
+// readLines loads the target file and returns its lines, the resolved target
+// path, a fuzzy-filename note (when the requested path did not exist), and
+// whether the file ends with a newline — callers that rewrite the file need
+// that to avoid silently stripping it (splitLines drops the final empty
+// element).
+func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, string, string, bool, error) {
 	targetPath, data, err := ReadFileWithFuzzyFallback(t.Config, resolvedPath, originalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, "", "", &internal.ToolError{Tool: "edit", Type: "file_not_found",
+			return nil, "", "", false, &internal.ToolError{Tool: "edit", Type: "file_not_found",
 				Detail:   fmt.Sprintf("File not found: %s", originalPath),
 				HintText: "Check the path or use write to create the file first."}
 		}
-		return nil, "", "", &internal.ToolError{Tool: "edit", Type: "read_error",
+		return nil, "", "", false, &internal.ToolError{Tool: "edit", Type: "read_error",
 			Detail:   fmt.Sprintf("Cannot read %s: %v", originalPath, err),
 			HintText: "Ensure the file exists and is readable."}
 	}
@@ -363,7 +604,7 @@ func (t *EditFileTool) readLines(resolvedPath, originalPath string) ([]string, s
 	if targetPath != resolvedPath {
 		fuzzyNote = fmt.Sprintf("Note: file not found, used closest match: %s", targetPath)
 	}
-	return splitLines(string(data)), targetPath, fuzzyNote, nil
+	return splitLines(string(data)), targetPath, fuzzyNote, strings.HasSuffix(string(data), "\n"), nil
 }
 
 func (t *EditFileTool) runOp(lines []string, op EditOperation, p editParams) ([]string, int, error) {
@@ -730,27 +971,13 @@ func (t *EditFileTool) searchReplace(resolvedPath, originalPath, oldStr, newStr 
 		return "", t.searchReplaceError(originalPath, oldStr, err, matched, total)
 	}
 
-	if t.BackupStager != nil {
-		t.BackupStager.StageBeforeEdit(targetPath, t.ProjectDir)
+	diagBlock, writeErr := t.writeEditResult(targetPath, originalPath, result.NewContent)
+	if writeErr != nil {
+		return "", writeErr
 	}
-
-	if err := os.WriteFile(targetPath, []byte(result.NewContent), 0644); err != nil {
-		return "", t.errWrite(originalPath, err)
-	}
-
-	if t.FileChangeNotifier != nil {
-		t.FileChangeNotifier(targetPath)
-	}
-	diagBlock := t.notifyLSP(context.Background(), targetPath)
 
 	// Build a clear result message
-	matchDesc := "exact match"
-	switch result.MatchType {
-	case MatchTrailingWhitespace:
-		matchDesc = "trailing whitespace normalized"
-	case MatchFuzzy:
-		matchDesc = "fuzzy whitespace match (indentation auto-adjusted)"
-	}
+	matchDesc := matchTypeDesc(result.MatchType)
 
 	resultMsg := fmt.Sprintf("[edit: %s] search/replace applied — lines %d-%d, match: %s\n%s",
 		originalPath, result.StartLine, result.EndLine, matchDesc, result.Diff)

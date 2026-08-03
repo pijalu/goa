@@ -131,6 +131,80 @@ func TestHandleTokenStats_CMReplaySessionExport(t *testing.T) {
 	}
 }
 
+// TestHandleTokenStats_CacheMissFreshContextReset is the regression test for
+// the fresh-context goal CM bug (bugs.md "Fresh-context goal start counted as
+// a cache miss"): when a goal begins on a clean context, RunFresh clears the
+// live history AND rotates the provider cache key, so the first request of
+// the new conversation is cold by nature — zero or tiny cache reads on a
+// fresh key. The detector must re-arm on EventContextReset: the fresh
+// conversation's cold start is not a bust, the session totals (CH/CW) and
+// the CM counter itself survive, and a real bust after the fresh cache
+// re-establishes still counts.
+func TestHandleTokenStats_CacheMissFreshContextReset(t *testing.T) {
+	feed := func(a *App, cacheRead int) {
+		a.handleTokenStats(&agentic.OutputEvent{
+			Timings: &agentic.TokenTimings{CacheReadTokens: cacheRead},
+		})
+	}
+	reset := func(a *App) {
+		a.handleAgentOutputEvent(&agentic.OutputEvent{Type: agentic.EventContextReset})
+	}
+
+	t.Run("cold start after context reset is not a miss", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000) // prior conversation: hot cache established
+		feed(a, 151000) // normal hit
+		reset(a)        // fresh-context goal begins: context + cache key reset
+		feed(a, 0)      // first request of the fresh conversation: cold by nature
+		feed(a, 0)      // provider cache still warming on the new key
+		feed(a, 12000)  // system prompt + objective prefix now cached — establishes
+		feed(a, 13000)  // normal growth — no miss
+		if a.tokenCacheMisses != 0 {
+			t.Errorf("tokenCacheMisses = %d, want 0 (fresh-context cold start is not a bust)", a.tokenCacheMisses)
+		}
+	})
+
+	t.Run("drop from prior conversation baseline is not a miss", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000) // large established read before the reset
+		reset(a)
+		feed(a, 8192) // first fresh request hits only the shared system-prompt prefix:
+		// a collapse vs the prior turn's 150k read, but a cold start, not a bust
+		if a.tokenCacheMisses != 0 {
+			t.Errorf("tokenCacheMisses = %d, want 0 (drop across the reset boundary is not a bust)", a.tokenCacheMisses)
+		}
+	})
+
+	t.Run("bust after re-establishment still counts", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 150000)
+		reset(a)
+		feed(a, 12000) // establishes the fresh conversation's cache
+		feed(a, 12500)
+		feed(a, 0) // real bust (provider TTL expiry) — must count
+		if a.tokenCacheMisses != 1 {
+			t.Errorf("tokenCacheMisses = %d, want 1 (real bust after fresh re-establishment)", a.tokenCacheMisses)
+		}
+	})
+
+	t.Run("reset keeps session totals and CM count", func(t *testing.T) {
+		a := New(testSubsystems())
+		feed(a, 100)
+		feed(a, 0) // one real bust before the reset
+		if a.tokenCacheMisses != 1 {
+			t.Fatalf("precondition: tokenCacheMisses = %d, want 1", a.tokenCacheMisses)
+		}
+		reset(a)
+		feed(a, 0) // cold start of the fresh conversation — not a miss
+		if a.tokenCacheMisses != 1 {
+			t.Errorf("tokenCacheMisses = %d, want 1 (reset must not wipe the CM counter)", a.tokenCacheMisses)
+		}
+		if a.tokenCacheReadTotal != 100 {
+			t.Errorf("tokenCacheReadTotal = %d, want 100 (session totals survive the reset)", a.tokenCacheReadTotal)
+		}
+	})
+}
+
 // TestBuildFooterStatParts_CacheMiss verifies CM renders next to CH only
 // when non-zero.
 func TestBuildFooterStatParts_CacheMiss(t *testing.T) {

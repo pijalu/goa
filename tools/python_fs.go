@@ -615,33 +615,48 @@ func osGetpid(_ pyFileScope, _ py.Tuple, _ py.StringDict) (py.Object, error) {
 	return py.Int(os.Getpid()), nil
 }
 
-const osBuiltinOpenDoc = `open(file, mode='r', encoding=None) -> file
+const osBuiltinOpenDoc = `open(file, mode='r', encoding=None, errors=None) -> file
 
 Open a file, jail-confined to the project root. Supports the common modes
 ('r', 'w', 'a', optionally with 'b' or '+') and an optional encoding
-(utf-8 only — the interpreter's native string encoding). Returns a file
-object supporting read(), write(), close(), iteration, and the
-with-statement.`
+(utf-8 only — the interpreter's native string encoding). The errors
+argument accepts 'strict' (default: bytes pass through unchanged, since
+the interpreter's strings are byte-oriented), 'replace' (invalid UTF-8
+becomes U+FFFD on text reads) and 'ignore' (invalid UTF-8 is dropped on
+text reads). Returns a file object supporting read(), write(), close(),
+iteration, and the with-statement.`
 
 func osBuiltinOpen(scope pyFileScope, args py.Tuple, kwargs py.StringDict) (py.Object, error) {
 	var filename py.Object
 	var mode py.Object = py.String("r")
 	var encoding py.Object = py.None
-	if err := py.ParseTupleAndKeywords(args, kwargs, "s|sz:open",
-		[]string{"file", "mode", "encoding"}, &filename, &mode, &encoding); err != nil {
+	var errors py.Object = py.None
+	if err := py.ParseTupleAndKeywords(args, kwargs, "s|szz:open",
+		[]string{"file", "mode", "encoding", "errors"}, &filename, &mode, &encoding, &errors); err != nil {
 		return nil, err
 	}
 	if encoding != py.None {
-		enc := string(encoding.(py.String))
-		switch enc {
+		enc, ok := encoding.(py.String)
+		if !ok {
+			return nil, py.ExceptionNewf(py.TypeError, "open() argument 'encoding' must be str, not %s", encoding.Type().Name)
+		}
+		switch string(enc) {
 		case "utf-8", "utf8", "UTF-8", "UTF8", "utf_8":
 		default:
-			return nil, py.ExceptionNewf(py.NotImplementedError, "encoding %q not implemented (only utf-8)", enc)
+			return nil, py.ExceptionNewf(py.NotImplementedError, "encoding %q not implemented (only utf-8)", string(enc))
 		}
+	}
+	var errorsHandling string
+	if errors != py.None {
+		es, ok := errors.(py.String)
+		if !ok {
+			return nil, py.ExceptionNewf(py.TypeError, "open() argument 'errors' must be str, not %s", errors.Type().Name)
+		}
+		errorsHandling = string(es)
 	}
 	abs, err := scope.resolve(string(filename.(py.String)))
 	if err != nil {
 		return nil, err
 	}
-	return py.OpenFile(abs, string(mode.(py.String)), -1)
+	return py.OpenFileErrors(abs, string(mode.(py.String)), -1, errorsHandling)
 }

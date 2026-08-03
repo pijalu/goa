@@ -37,12 +37,15 @@ A goal needs a verifiable end state. If your request is vague, the model will as
 - Only the **active** goal consumes continuation turns, budget, and tokens.
 - `complete` is the only terminal status; the goal record is cleared after the completion event is emitted.
 - `cancel` (`/goal:cancel`) discards the goal at any status without a completion event. Unlike a completion, a cancel **never auto-starts the next goal**: the queue head is promoted **paused** and waits for an explicit `/goal:resume` (framework transitions such as `postpone` and auto-unblock still start the successor).
+- `/goal:pause:next` arms a **pause-after-completion one-shot** on the active goal: the goal keeps running, but when it completes the queue head is promoted **paused** (like a cancel) instead of auto-started — so you can review the completion evidence before the queue drains on. The flag is durable (survives a session restart), dies with the goal, and is disarmed with `/goal:pause:next:off`. `/goal:status`, `/goal:current` and `/goal:list` show the armed state.
 
 Control commands:
 
 ```text
 /goal:status   # show current goal
 /goal:pause    # pause active goal
+/goal:pause:next       # arm pause-after-completion (successor promotes paused)
+/goal:pause:next:off   # disarm the pause-after-completion one-shot
 /goal:resume   # resume paused/blocked goal
 /goal:cancel   # discard current goal (next queued goal promotes paused)
 /goal:cancel:current   # same as /goal:cancel

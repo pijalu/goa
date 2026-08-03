@@ -498,6 +498,9 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	if result.StopReason != "" {
 		a.lastStopReason = result.StopReason
 	}
+	// Flush cache-miss notices: the provider journal flags misses as streams
+	// complete; logging here keeps the notice next to the round that missed.
+	a.drainCacheMissNotices()
 }
 
 // toolListHashLocked returns a cheap fingerprint of the registered tool set
@@ -613,6 +616,9 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 // UI consumers (e.g. the status spinner) tear down turn state mid-turn, which
 // silently dropped the spinner after the first tool call.
 func (a *Agent) completeStreamTurn(ctx context.Context) bool {
+	// Flush any cache-miss notice that landed after the last per-round drain
+	// (the journal attaches usage just after the stream closes).
+	a.drainCacheMissNotices()
 	// Window-edge truncation (finish_reason=length at ~100% of the window) is
 	// the last warning before a provider-side context rejection on the next
 	// request: compress before any continuation round goes out.

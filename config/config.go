@@ -977,19 +977,19 @@ type ContextCompressionConfig struct {
 	// ThresholdPercent is the legacy single trigger level.
 	// Deprecated: use Thresholds.TriggerPercent. When both are set,
 	// ThresholdPercent wins (backwards compatibility).
-	ThresholdPercent    int                                 `yaml:"threshold_percent"`
-	Thresholds          CompressionThresholdsConfig         `yaml:"thresholds,omitempty"`
-	Strategies          CompressionLayerStrategiesConfig    `yaml:"strategies,omitempty"`
-	PerModel            map[string]ModelCompressionOverride `yaml:"per_model,omitempty"`
-	OnContextError      bool                                `yaml:"on_context_error"`
-	Strategy            string                              `yaml:"strategy"`
+	ThresholdPercent int                                 `yaml:"threshold_percent"`
+	Thresholds       CompressionThresholdsConfig         `yaml:"thresholds,omitempty"`
+	Strategies       CompressionLayerStrategiesConfig    `yaml:"strategies,omitempty"`
+	PerModel         map[string]ModelCompressionOverride `yaml:"per_model,omitempty"`
+	OnContextError   bool                                `yaml:"on_context_error"`
+	Strategy         string                              `yaml:"strategy"`
 	// CacheGate controls the prefix-cache gate that defers proactive
 	// compression while the provider cache is presumed hot: "on" (default)
 	// or "off". Per-model overrides win over the global value. Turn it off
 	// for models/providers without a meaningful prefix cache.
-	CacheGate           string                              `yaml:"cache_gate,omitempty"`
-	PreserveRecentTurns int                                 `yaml:"preserve_recent_turns"`
-	MicroCompaction     MicroCompactionSettings             `yaml:"micro_compaction,omitempty"`
+	CacheGate           string                  `yaml:"cache_gate,omitempty"`
+	PreserveRecentTurns int                     `yaml:"preserve_recent_turns"`
+	MicroCompaction     MicroCompactionSettings `yaml:"micro_compaction,omitempty"`
 }
 
 // CompressionThresholdsConfig holds the fill levels (percent of the effective
@@ -1067,11 +1067,15 @@ func (c *Config) resolveThinkingLevel(r string) string {
 }
 
 func (c *Config) mainAgentThinkingLevel() string {
-	if level := c.ThinkingLevels.MainAgent; level != "" {
-		return level
-	}
+	// The active model's own thinking_level wins over the global
+	// thinking_levels.main_agent default: runtime thinking-level changes are
+	// saved per model, and the more specific setting must shadow the global
+	// one so switching models restores each model's saved level.
 	if m, err := c.GetActiveModelConfig(); err == nil && m.ThinkingLevel != "" {
 		return m.ThinkingLevel
+	}
+	if level := c.ThinkingLevels.MainAgent; level != "" {
+		return level
 	}
 	return ""
 }

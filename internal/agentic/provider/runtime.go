@@ -110,6 +110,13 @@ func executeRequest(
 		req.Headers["X-Session-ID"] = reqCtx.Options.SessionID
 	}
 
+	// Record the complete request in the cache-forensics journal BEFORE it
+	// goes out; the response usage (attached on every exit path via defer)
+	// drives per-sequence cache-miss detection. Only the requests around a
+	// detected miss are retained as reports — never every request.
+	forensicsRec := recordCacheForensicsRequest(reqCtx.Model, reqCtx.Options.SessionID, reqCtx.Context.SystemPrompt, url, req.Body)
+	defer func() { forensicsRec.complete(streamResultUsage(stream)) }()
+
 	resp, err := tr.Do(goCtx, req)
 	if err != nil {
 		errCtx := &hooks.ErrorContext{
@@ -155,6 +162,17 @@ func executeRequest(
 		stream.CloseWithError(err)
 		return
 	}
+}
+
+// streamResultUsage returns the final usage of a terminated stream, or nil
+// when the stream produced no result (transport/HTTP failures). It is only
+// called once the stream is closed, so Result never blocks.
+func streamResultUsage(stream *schema.AssistantMessageEventStream) *schema.Usage {
+	res := stream.Result()
+	if res == nil {
+		return nil
+	}
+	return res.Usage
 }
 
 func selectTransport(opts schema.StreamOptions) transport.Transport {

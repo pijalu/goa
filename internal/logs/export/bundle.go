@@ -18,6 +18,7 @@ import (
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
 
@@ -157,6 +158,12 @@ func collectArtifacts(zb *ZipBuilder, ctx core.Context, opts BuildOptions) (pres
 	// HTTP request/response log (captures last N LLM API calls).
 	httpEntries := transport.GlobalHTTPLog.Snapshot()
 	collector.addJSONLog(httpEntries, "logs/http.jsonl")
+
+	// Cache-miss forensics: COMPLETE API request bodies, retained only around
+	// detected provider prefix-cache misses (the bust plus the sequence's
+	// preceding call) — the requests that identify why the cache missed,
+	// without logging every request body.
+	collector.addJSON(provider.CacheForensicsReports(), "logs/cache_miss_requests.json")
 
 	// Agent-friendly derived trace: compact per-request timeline + anomaly
 	// flags (e.g. tool result not forwarded, finish_reason=length). Lets a

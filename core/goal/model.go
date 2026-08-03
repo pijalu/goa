@@ -66,6 +66,12 @@ type GoalSnapshot struct {
 	// confirms completion, instead of trusting the evidence prose alone.
 	VerifyCommand *string `json:"verifyCommand,omitempty"`
 	FreshContext  bool    `json:"freshContext,omitempty"`
+	// PauseAfterComplete is the user-armed one-shot (/goal:pause:next): when
+	// this goal completes, the queued successor is promoted PAUSED instead of
+	// auto-started, so the user can review the completion evidence before the
+	// queue drains on. The flag dies with the goal — the promoted successor
+	// does not inherit it.
+	PauseAfterComplete bool `json:"pauseAfterComplete,omitempty"`
 	// Handover carries a continuity note from a predecessor goal (its
 	// completion evidence, or explicit text the creator attached) into this
 	// goal's reminder. Nil for stand-alone goals. Untrusted data, never
@@ -192,6 +198,7 @@ type goalStage struct {
 	completionCriterion *string
 	verifyCommand       *string
 	freshContext        bool
+	pauseAfterComplete  bool
 	handoff             *string
 	todos               []GoalTodoItem
 	status              GoalStatus
@@ -250,6 +257,9 @@ type GoalEventRecord struct {
 	TokensUsed   *int              `json:"tokensUsed,omitempty"`
 	WallClockMs  *int64            `json:"wallClockMs,omitempty"`
 	BudgetLimits *GoalBudgetLimits `json:"budgetLimits,omitempty"`
+	// PauseAfterComplete patches the /goal:pause:next one-shot flag (arm or
+	// disarm); nil leaves the flag untouched on replay.
+	PauseAfterComplete *bool `json:"pauseAfterComplete,omitempty"`
 }
 
 // UnmarshalJSON decodes a goal event record, accepting both the current

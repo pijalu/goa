@@ -39,6 +39,14 @@ func TestGoalCommand_parseArgs(t *testing.T) {
 		{args: []string{"cancel", "all"}, want: "cancel-all"},
 		{args: []string{"cancel", "ALL"}, want: "cancel-all"},
 		{args: []string{"cancel", "bogus"}, want: "error"},
+		// /goal:pause scope variants — bare and :current pause the active
+		// goal now, :next arms the pause-after-completion one-shot,
+		// :next:off disarms it, anything else is a hint.
+		{args: []string{"pause", "current"}, want: "pause"},
+		{args: []string{"pause", "next"}, want: "pause-next"},
+		{args: []string{"pause", "NEXT"}, want: "pause-next"},
+		{args: []string{"pause", "next", "off"}, want: "pause-next-off"},
+		{args: []string{"pause", "bogus"}, want: "error"},
 		{args: []string{"manage"}, want: "manage"},
 		// /goal:new — bare and with text
 		{args: []string{"new"}, want: "create-interactive"},
@@ -181,6 +189,107 @@ func TestGoalCommand_PauseResume(t *testing.T) {
 	}
 	if mode.GetGoal().Goal.Status != goal.GoalActive {
 		t.Errorf("status = %q", mode.GetGoal().Goal.Status)
+	}
+}
+
+// /goal:pause:current is an explicit alias for the bare /goal:pause — it
+// pauses the active goal immediately.
+func TestGoalCommand_PauseCurrent(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	cmd.Run(ctx, []string{"fix tests"})
+	if err := cmd.Run(ctx, []string{"pause", "current"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal.Status != goal.GoalPaused {
+		t.Errorf("status = %q, want paused", mode.GetGoal().Goal.Status)
+	}
+}
+
+// /goal:pause:next arms the pause-after-completion one-shot WITHOUT pausing
+// the active goal; :next:off disarms it again.
+func TestGoalCommand_PauseNext(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	cmd.Run(ctx, []string{"fix tests"})
+
+	if err := cmd.Run(ctx, []string{"pause", "next"}); err != nil {
+		t.Fatal(err)
+	}
+	g := mode.GetGoal().Goal
+	if !g.PauseAfterComplete {
+		t.Error("PauseAfterComplete = false after /goal:pause:next, want armed")
+	}
+	if g.Status != goal.GoalActive {
+		t.Errorf("status = %q after /goal:pause:next, want still active", g.Status)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "armed") {
+		t.Errorf("arm output should mention the armed one-shot: %q", out)
+	}
+
+	// Re-arming is idempotent (no duplicate event, no error).
+	if err := cmd.Run(ctx, []string{"pause", "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "already armed") {
+		t.Errorf("re-arm output should say already armed: %q", out)
+	}
+
+	if err := cmd.Run(ctx, []string{"pause", "next", "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal.PauseAfterComplete {
+		t.Error("PauseAfterComplete = true after /goal:pause:next:off, want disarmed")
+	}
+}
+
+// /goal:pause:next without a goal is an error, not a panic.
+func TestGoalCommand_PauseNext_NoGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"pause", "next"}); err == nil {
+		t.Fatal("expected error when there is no current goal")
+	}
+	if err := cmd.Run(ctx, []string{"pause", "next", "off"}); err == nil {
+		t.Fatal("expected error when there is no current goal")
+	}
+}
+
+// CompleteArgs must offer the nested /goal:pause:<scope> variants once the
+// user typed "pause:".
+func TestGoalCommand_CompleteArgs_PauseScopes(t *testing.T) {
+	cmd := &GoalCommand{}
+	ctx := testContext()
+
+	// Level-2: /goal:pause:<tab> lists the scopes, fully spelled out.
+	vals := cmd.CompleteArgs(ctx, "pause:")
+	if len(vals) != 3 {
+		t.Fatalf("CompleteArgs(pause:) = %+v, want 3 entries", vals)
+	}
+	want := []string{"pause:current", "pause:next", "pause:next:off"}
+	for i, w := range want {
+		if vals[i].Value != w {
+			t.Errorf("pause scope values = %+v, want %v", vals, want)
+			break
+		}
+	}
+
+	// Prefix filtering at the nested level.
+	vals = cmd.CompleteArgs(ctx, "pause:next:")
+	if len(vals) != 1 || vals[0].Value != "pause:next:off" {
+		t.Errorf("CompleteArgs(pause:next:) = %+v, want pause:next:off", vals)
+	}
+
+	// Top-level behavior is untouched: /goal:pau still completes "pause".
+	vals = cmd.CompleteArgs(ctx, "pau")
+	if len(vals) != 1 || vals[0].Value != "pause" {
+		t.Errorf("CompleteArgs(pau) = %+v, want pause", vals)
 	}
 }
 

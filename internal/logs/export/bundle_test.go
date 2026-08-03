@@ -6,17 +6,127 @@ package export
 
 import (
 	"archive/zip"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
+	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
+
+// TestBuildBundle_CacheMissRequestsArtifact drives a real provider cache bust
+// through the generic runtime and expects the debug bundle to carry the
+// COMPLETE requests around the miss (the bust + the preceding call) in
+// logs/cache_miss_requests.json — and, when no miss was detected, an empty
+// array (requests are never logged wholesale).
+func TestBuildBundle_CacheMissRequestsArtifact(t *testing.T) {
+	provider.ResetCacheForensics()
+	defer provider.ResetCacheForensics()
+	old := transport.Default()
+	defer transport.SetDefault(old)
+
+	call := func(cachedTokens int) {
+		transport.SetDefault(&cacheMissMockTransport{cached: cachedTokens})
+		model := schema.Model{
+			ID:       "kimi-k2",
+			Api:      schema.ApiOpenAICompletions,
+			Provider: schema.ProviderKimiCode,
+			BaseURL:  "http://example.com/v1/chat/completions",
+		}
+		stream, err := provider.Stream(model,
+			schema.Context{Messages: []schema.Message{schema.NewUserMessage("hi")}},
+			schema.StreamOptions{SessionID: "sess-1"})
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		_ = stream.Result()
+	}
+	call(100) // establish the cache baseline
+	call(0)   // bust
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(provider.CacheForensicsReports()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(provider.CacheForensicsReports()) != 1 {
+		t.Fatalf("expected 1 forensics report, got %d", len(provider.CacheForensicsReports()))
+	}
+
+	dir := t.TempDir()
+	setupTestProject(t, dir)
+	ctx := core.Context{
+		Config: &config.Config{
+			ConfigDir: filepath.Join(dir, ".goa"),
+		},
+		ProjectDir: dir,
+	}
+	result, err := BuildBundle(ctx, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBundle failed: %v", err)
+	}
+
+	data, err := readZipFile(t, result.Path, "logs/cache_miss_requests.json")
+	if err != nil {
+		t.Fatalf("cache-miss artifact missing from bundle: %v", err)
+	}
+	var reports []map[string]any
+	if err := json.Unmarshal(data, &reports); err != nil {
+		t.Fatalf("artifact is not a JSON array: %v\n%s", err, data)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 report in artifact, got %d", len(reports))
+	}
+	requests, _ := reports[0]["requests"].([]any)
+	if len(requests) != 2 {
+		t.Fatalf("report must hold the miss + the preceding request, got %d", len(requests))
+	}
+	missReq, _ := requests[1].(map[string]any)
+	body, _ := missReq["body"].(map[string]any)
+	if body["messages"] == nil {
+		t.Errorf("miss request body is not the COMPLETE wire request: %v", body)
+	}
+
+	// No miss → empty array, never a wholesale request dump.
+	provider.ResetCacheForensics()
+	result, err = BuildBundle(ctx, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBundle failed: %v", err)
+	}
+	data, err = readZipFile(t, result.Path, "logs/cache_miss_requests.json")
+	if err != nil {
+		t.Fatalf("artifact missing on empty journal: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "[]" {
+		t.Errorf("empty journal must export an empty array, got: %s", data)
+	}
+}
+
+// cacheMissMockTransport answers an OpenAI-completions SSE stream whose usage
+// chunk reports cached tokens, enough for the journal's miss detection.
+type cacheMissMockTransport struct {
+	cached int
+}
+
+func (m *cacheMissMockTransport) Do(_ context.Context, _ *transport.TransportRequest) (*transport.TransportResponse, error) {
+	body := `data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}` + "\n\n" +
+		fmt.Sprintf(`data: {"choices":[{"index":0,"delta":{}}],"usage":{"prompt_tokens":200,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":%d}}}`, m.cached) + "\n\n" +
+		`data: [DONE]` + "\n\n"
+	return &transport.TransportResponse{
+		StatusCode: 200,
+		Headers:    map[string]string{"Content-Type": "text/event-stream"},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}, nil
+}
 
 func TestBuildBundle_IncludesAllArtifacts(t *testing.T) {
 	dir := t.TempDir()

@@ -427,3 +427,142 @@ Moved from bugs.md per guideline workflow.
   5. With no active goal, Enter on `-- add at start --` opened
      `Set new goal objective (ctrl-c to cancel)` and the submitted goal
      started immediately (goal.create event; queue untouched).
+
+---
+
+## python tool: jail-confined `open()` rejects CPython `errors=` keyword — FIXED
+
+- **Observed** (e2e session): the standard CPython idiom for reading logs
+  that may contain non-UTF-8 bytes died before any I/O:
+  ```python
+  raw = open('/tmp/goa-next-e2e/run1.log', 'r', errors='replace').read()
+  ```
+  ```
+  TypeError: "open() got an unexpected keyword argument 'errors'"
+  ```
+- **Localization**: `tools/python_fs.go` `osBuiltinOpen` — goa shadows the
+  builtin `open()` with a jail-confined version whose kwlist was only
+  `file/mode/encoding`, so `py.ParseTupleAndKeywords` rejected `errors=`.
+  Root behavior in the pinned fork `github.com/pijalu/gpython`: `py.File`
+  had no errors-handling mode and `stdlib/builtin.builtin_open` raised
+  `NotImplementedError` for any non-None `errors`.
+- **Fix applied**:
+  1. Fork commit `11bd58a` (pushed to github.com/pijalu/gpython):
+     `py.File` gains an `Errors` field applied in `readResult` for
+     text-mode reads only — `replace` substitutes each run of invalid
+     UTF-8 with U+FFFD, `ignore` drops it, `''`/`strict` keep the historic
+     byte passthrough (documented divergence: gpython strings are
+     byte-oriented, so no decode error can occur). Binary-mode reads are
+     never filtered. Unknown handlers raise `LookupError` at open time
+     (CPython parity: "unknown error handler name"). New
+     `py.OpenFileErrors` constructor; `py.OpenFile` delegates with
+     signature unchanged. `builtin_open` passes `errors` through and
+     raises `TypeError` (not a panic) for non-str values.
+  2. Goa: `osBuiltinOpen` kwlist gains `errors` (default None), passed to
+     `py.OpenFileErrors`; `encoding` type assertion hardened the same way;
+     `osBuiltinOpenDoc` and `tools/python.long.md` document the behavior.
+  3. Pin bumped: `v0.3.1-0.20260803205726-11bd58a11820` (same
+     pseudo-version flow as the previous pin; verified with a clean
+     GOMODCACHE build, which fetched the new version from the proxy).
+- **Tests** (RED first — reproduced the exact reported `TypeError` before
+  editing): `tools/python_fs_test.go` `TestOS_OpenErrorsHandling`,
+  table-driven, 7 cases: replace (U+FFFD inserted), ignore (bytes
+  dropped), strict default+explicit (raw passthrough), unknown-handler
+  error, binary-mode unfiltered, and the exact original e2e snippet
+  (ANSI-laced log + `errors="replace"` + `re.sub` cleanup + dedup loop).
+  Assertions print Python-side booleans because `ansi.Sanitize` in the
+  output path itself replaces invalid UTF-8. Fork: item 5 in
+  `py/goa_regression_test.go` (`TestGoaRegression_OpenErrors`) also covers
+  readline/iteration and non-str `errors=1` → `TypeError`.
+- **Validation** (guideline-6 commands run separately): `go vet ./...`
+  exit 0; `go test -count=1 -race -cover ./...` exit 0, no FAIL;
+  `staticcheck ./...` no findings in changed files (pre-existing
+  U1000/ST1005 in unrelated files); `gocognit -over 15` / `gocyclo -over
+  12` clean for all changed files (the test was refactored table-driven
+  to get under budget); `gofmt` clean on changed files (repo-wide
+  struct-tag alignment drift in 230 untouched files is pre-existing);
+  `GOMODCACHE=$(mktemp -d) go build ./...` exit 0.
+
+---
+
+## Fresh-context goal start counted as a cache miss (CM) — FIXED 2026-08-03
+
+- **Reported (user, 2026-08-03)**: "On goal execution with new context - make
+  sure to not count the start of conversation as a cache miss."
+- **Observed**: when a goal carrying the fresh-context flag begins
+  (`GoalDriver.runTurn` → `FreshAgentRunner.RunFresh` with `begin=true`), the
+  runner clears the live context (`agent.SetHistory(nil)`) and rotates the
+  provider cache key (`AgentManager.ResetConversationID()`), but the App-level
+  cache-bust detector (`internal/app/stats.go` `handleTokenStats`) kept the
+  PRIOR conversation's state (`lastTurnCacheRead`, `tokenCacheReadTotal`). The
+  first request of the new conversation is cold by nature (cache_read=0 on a
+  fresh cache key, or a tiny system-prompt read), so both bust rules fired:
+  the zero-read rule (`CacheReadTokens == 0 && tokenCacheReadTotal > 0`) and
+  the drop rule (collapse vs the prior turn's large read) — a spurious `CM:1`
+  in the footer for an intentional context reset.
+- **Localization**:
+  - `internal/app/subsystems.go` `agentManagerRunner.RunFresh` (begin path):
+    reset context + cache key but emitted no lifecycle signal;
+    `Agent.SetHistory` does not emit `EventClear` (only `Agent.Clear` does),
+    and `EventClear`→`clearStats` would have been wrong anyway (it wipes
+    session totals and the CM counter itself — only the detector baseline
+    may re-arm).
+  - `internal/app/stats.go` `handleTokenStats`: the "cache established"
+    signal reused `tokenCacheReadTotal > 0`, a session total that also feeds
+    the CH display and must not be zeroed mid-session.
+- **Fix**:
+  1. New `agentic.EventContextReset` event type (`internal/agentic/observer.go`)
+     + exported `Agent.EmitContextReset()` (`internal/agentic/agent_events.go`);
+     `RunFresh` emits it on the begin turn after the reset. Distinct from
+     `EventClear`: session-level counters survive, only per-conversation
+     detector baselines re-arm.
+  2. App detector: establishment now tracked in a dedicated
+     `cacheReadEstablished` flag (set on any positive cache read; identical
+     in-session semantics to `tokenCacheReadTotal > 0`), reset together with
+     `lastTurnCacheRead` by the new `resetCacheBustBaseline()` on
+     `EventContextReset` (`clearStats` resets the flag too). Session totals
+     (CH/CW) and the CM counter itself survive the reset.
+  3. `handleAgentOutputEvent` stats/lifecycle cases extracted into
+     `handleAgentStatsEvent` (behavior-preserving): the new case pushed the
+     switch to gocyclo 14 (baseline 13, budget 12); both functions are now
+     under budget.
+- **Tests**:
+  - RED first: the three test files were written before the fix and failed
+    to build (new API missing); after the signal half landed, the app
+    detector test FAILED at runtime exactly as reported (cold start after
+    reset counted: `tokenCacheMisses = 2, want 0`; drop across the reset
+    boundary counted: `= 1, want 0`).
+  - `TestAgent_EmitContextReset` (agentic): exactly one event emitted.
+  - `TestAgentManagerRunner_RunFreshEmitsContextReset` (app): begin=true
+    emits once, begin=false does not re-emit (full turn against a simulated
+    provider).
+  - `TestHandleTokenStats_CacheMissFreshContextReset` (app, 4 subtests):
+    cold start after reset not a miss; drop across the reset boundary not a
+    miss; real bust after fresh re-establishment still counts; reset keeps
+    session totals and CM count.
+  - Pre-existing CM suite stays green:
+    `TestHandleTokenStats_CacheMissCounter`, `..._CacheMissPartialBust`,
+    `..._CMReplaySessionExport`, `TestBuildFooterStatParts_CacheMiss`.
+- **Validation** (guideline 6, each run separately): `go vet ./...` exit 0;
+  `go test -count=1 -race -cover ./...` exit 0, zero FAIL (internal/app
+  54.0%, internal/agentic 81.7%); `staticcheck` on changed packages — only
+  pre-existing U1000 `applyToolResultToWidget` (retained-for-orchestrator,
+  no callers at HEAD either, unrelated hunks); `gocognit -over 15` clean on
+  changed files; `gocyclo -over 12` clean on changed files except
+  pre-existing `buildFooterStatParts` 13 (13 at HEAD, untouched);
+  `gofmt -l` clean on all changed files (pre-existing EOF newline in
+  subsystems.go fixed; repo-wide drift in untouched files pre-existing).
+  Guideline-5 interactive validation not applicable: the bug is a
+  stats-counter defect reproduced and pinned by replay-style tests; a live
+  e2e would require a cache-reporting provider session.
+- **Diff**: `internal/agentic/observer.go`, `internal/agentic/agent_events.go`,
+  `internal/agentic/agent_context_reset_test.go` (new),
+  `internal/app/subsystems.go`, `internal/app/app.go`,
+  `internal/app/stats.go`, `internal/app/stats_cm_test.go`,
+  `internal/app/goal_fresh_context_reset_test.go` (new).
+- **Out of scope (noted, benign)**: the agent-side micro-compaction gate
+  (`cacheColdWithThreshold`) conflates inter-turn activity recency with
+  cache warmth; after a fresh-context reset it still presumes "hot" for up
+  to `cache_miss_threshold` and defers proactive micro compaction. That
+  direction is conservative (no false bust; the deferral ceiling still
+  applies) and is not a counted miss.

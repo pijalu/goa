@@ -46,8 +46,8 @@ github.com/mattn/go-sqlite3 v1.14.45 h1:6KA/spDguL3KV8rnybG7ezSaE4SeMR3KC9VbUoAQ
 github.com/mattn/go-sqlite3 v1.14.45/go.mod h1:pjEuOr8IwzLJP2MfGeTb0A35jauH+C2kbHKBr7yXKVQ=
 github.com/modelcontextprotocol/go-sdk v1.6.1 h1:0zOSupjKUxPKSocPT1Wtago+mUHU2/uZ4xSOY0FGReU=
 github.com/modelcontextprotocol/go-sdk v1.6.1/go.mod h1:kzm3kzFL1/+AziGOE0nUs3gvPoNxMCvkxokMkuFapXQ=
-github.com/pijalu/gpython v0.3.0 h1:o9VawPNqqYaWY7KXnFG0QE1L2payX+BJ06ljG2jiOKY=
-github.com/pijalu/gpython v0.3.0/go.mod h1:OCAsrEZn4FHQUkXFpATYpDutBRWRvxyyXtVo98+fw1s=
+github.com/pijalu/gpython v0.3.1-0.20260803205726-11bd58a11820 h1:fapkhNqPOWutO1/nfa5reUI3it9LeoiPrEz9aX9OPWw=
+github.com/pijalu/gpython v0.3.1-0.20260803205726-11bd58a11820/go.mod h1:OCAsrEZn4FHQUkXFpATYpDutBRWRvxyyXtVo98+fw1s=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rivo/uniseg v0.4.7 h1:WUdvkW8uEhrYfLC4ZzdpI2ztxP1I582+49Oc5Mq64VQ=

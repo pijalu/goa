@@ -15,6 +15,17 @@ Operation alias:
   {"path": "file.go", "operation": "replace", "old_string": "text to find", "new_string": "replacement text"}
   This is identical to the search/replace form above.
 
+Batch edits (preferred when making several changes to the same file):
+  {"path": "file.go", "edits": [
+    {"old_string": "first text", "new_string": "first replacement"},
+    {"operation": "insert_after", "pattern": "func main()", "new_content": "\tlog.Println(\"hi\")"},
+    {"operation": "delete_lines", "start_line": 40, "end_line": 42}
+  ]}
+  All edits apply in order against the same file and are written atomically:
+  either every edit succeeds and the file is written once, or one fails and
+  nothing is written. Each edit sees the result of the previous ones, so line
+  numbers in later edits refer to the already-edited content.
+
 Legacy operations: replace_lines, replace_pattern, insert_after, insert_before, delete_lines
 Indent modes: preserve (default), normalize, as-is
 

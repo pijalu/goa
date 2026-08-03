@@ -743,6 +743,12 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 		// keep reading the prior conversation's cache (bugs.md Issue 8).
 		r.agentMgr.ResetConversationID()
 		r.agentMgr.InjectSystemMessage("⟡ Context reset: this goal is running on a clean context. The prior conversation is preserved in the transcript but is not sent to the agent for this goal.")
+		// Re-arm the cache-bust detector for the new conversation: its cold
+		// start (zero or tiny cache reads on the fresh provider cache key)
+		// must not count as a bust against the prior conversation's
+		// established cache (bugs.md: fresh-context goal start counted as a
+		// cache miss).
+		agent.EmitContextReset()
 	}
 	err := agent.Run(ctx, input)
 	// Same leftover-steering dispatch as Run (see there): fresh-context goal
@@ -1157,7 +1163,10 @@ func restoreSessionState(agentMgr *core.AgentManager, snap core.SessionStateSnap
 	if snap.ThinkingLevel != "" {
 		level = snap.ThinkingLevel
 	}
-	if err := agentMgr.SetThinkingLevel(level); err != nil {
+	// RestoreThinkingLevel (not SetThinkingLevel): startup restore must not
+	// re-save the value to the active model's config entry — a stale snapshot
+	// value would otherwise be stamped onto a model the user never changed.
+	if err := agentMgr.RestoreThinkingLevel(level); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to restore thinking level: %v\n", err)
 	}
 }
@@ -1185,6 +1194,9 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	if promptDir == "" {
 		promptDir = filepath.Join(projectDir, ".goa", "prompts")
 	}
+	// Per-model thinking-level changes made at runtime (/thinking, level
+	// cycle shortcut, /config) are persisted through the config cascade.
+	ab.agentMgr.SetConfigSaver(loader)
 	s := &subsystems{
 		cfg:               cfg,
 		loader:            loader,

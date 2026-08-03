@@ -360,6 +360,95 @@ with open("note.txt") as g:
 	}
 }
 
+// TestOS_OpenErrorsHandling replays the e2e failure where the standard
+// CPython idiom open(path, "r", errors="replace") — used habitually when
+// reading logs that may contain non-UTF-8 bytes — died with
+// `TypeError: "open() got an unexpected keyword argument 'errors'"` because
+// the jail-confined open() shadow only accepted file/mode/encoding.
+//
+// Assertions run inside Python and print booleans: the tool output path
+// (ansi.Sanitize) itself replaces invalid UTF-8 with U+FFFD, so raw output
+// cannot distinguish byte passthrough from errors="replace".
+// writePyFixture writes content to a file in dir for python snippets.
+func writePyFixture(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOS_OpenErrorsHandling(t *testing.T) {
+	dir := t.TempDir()
+	// 0xff 0xfe is an invalid UTF-8 run between two valid segments.
+	writePyFixture(t, dir, "bad.log", "valid-\xff\xfef\xc3\xa9-tail")
+	// ANSI-laced log lines for the original-snippet replay.
+	writePyFixture(t, dir, "run1.log", "\x1b[32mok line\x1b[0m\nbad \xff bytes line\nok line\n")
+
+	cases := []struct {
+		name    string
+		code    string
+		want    string // substring expected in stdout
+		wantErr bool
+	}{
+		{"replace", `
+with open("bad.log", "r", errors="replace") as f:
+    s = f.read()
+print("valid-" in s and "-tail" in s)
+print("\ufffd" in s)
+`, "True\nTrue", false},
+		{"ignore", `
+with open("bad.log", "r", errors="ignore") as f:
+    s = f.read()
+print("valid-f" in s)
+print("\ufffd" in s)
+`, "True\nFalse", false},
+		// Documented divergence: gpython strings are byte-oriented, so the
+		// default (and explicit strict) passes bytes through unchanged
+		// instead of raising UnicodeDecodeError — no U+FFFD appears.
+		{"strict-default", `s = open("bad.log").read(); print("\ufffd" in s)`, "False", false},
+		{"strict-explicit", `s = open("bad.log", errors="strict").read(); print("\ufffd" in s)`, "False", false},
+		{"unknown-handler", `open("bad.log", errors="bogus")`, "", true},
+		// The exact script shape from the e2e failure log: ANSI-laced log
+		// lines, errors="replace", re.sub cleanup, dedup loop.
+		{"original-snippet", `
+import re
+
+raw = open("run1.log", "r", errors="replace").read()
+clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\(\w|\r', '', raw)
+lines = [re.sub(r'\s+', ' ', l).strip() for l in clean.split('\n')]
+lines = [l for l in lines if l]
+
+seen_order = []
+for l in lines:
+    if not seen_order or seen_order[-1] != l:
+        seen_order.append(l)
+print(seen_order)
+`, "ok line", false},
+		{"binary-mode-unfiltered", `
+data = open("bad.log", "rb").read()
+print(isinstance(data, bytes), len(data))
+`, "True 16", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runPyInProject(t, dir, true, tc.code)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("execute: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output missing %q\nfull:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
 func TestOS_OpenJailEscape(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()

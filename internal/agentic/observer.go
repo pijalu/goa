@@ -50,6 +50,14 @@ const (
 	EventEnd EventType = "end"
 	// EventClear signals the conversation was cleared.
 	EventClear EventType = "clear"
+	// EventContextReset signals the live conversation context was reset in
+	// place to a cold start — currently a fresh-context goal begin
+	// (FreshAgentRunner.RunFresh): history holds only the system prompt and
+	// the provider cache key was rotated. Unlike EventClear (user /clear),
+	// session-level counters must NOT be wiped: only per-conversation
+	// detector baselines (e.g. the cache-bust detector) re-arm, so the new
+	// conversation's cold start is not miscounted as a cache bust.
+	EventContextReset EventType = "context_reset"
 	// EventCompact signals the conversation was compacted.
 	EventCompact EventType = "compact"
 	// EventTokenStats carries token generation statistics.
