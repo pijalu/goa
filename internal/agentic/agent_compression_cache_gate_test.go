@@ -53,37 +53,60 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 		}
 	}
 
-	t.Run("hot cache defers proactive elision", func(t *testing.T) {
-		a := NewAgent(newCfg())
-		a.history = makeHistory()
-		// Simulate a turn that JUST finished (cache presumed hot).
-		a.lastTurnEnd = time.Now()
+	tests := []struct {
+		name string
+		// setup tweaks the agent's cache state after history is loaded.
+		setup func(a *Agent)
+		// wantMutation reports whether proactive elision should have rewritten
+		// the old tool result at history[2].
+		wantMutation bool
+	}{
+		{
+			name: "hot cache defers proactive elision",
+			// Simulate a turn that JUST finished (cache presumed hot).
+			setup:        func(a *Agent) { a.lastTurnEnd = time.Now() },
+			wantMutation: false,
+		},
+		{
+			name: "cold cache applies proactive elision",
+			// Idle far longer than any cache TTL → cache presumed cold.
+			setup:        func(a *Agent) { a.lastTurnEnd = time.Now().Add(-2 * time.Hour) },
+			wantMutation: true,
+		},
+		{
+			// First turn (zero lastTurnEnd): the cold presumption must expire
+			// once a completed request reports cache_read > 0 — otherwise the
+			// gate fails open for the entire first turn and churns a
+			// demonstrably hot cache (bugs.md "Micro-compaction cache gate
+			// fails open during the entire first turn").
+			name: "first turn with warm observation defers proactive elision",
+			// lastTurnEnd zero: still in the session's first turn, but round
+			// 1's completed request reported cache hits.
+			setup:        func(a *Agent) { a.cacheWarmObserved = true },
+			wantMutation: false,
+		},
+		{
+			// lastTurnEnd zero and no cache hits reported: genuine cold cache.
+			name:         "first turn without warm observation applies proactive elision",
+			setup:        func(a *Agent) {},
+			wantMutation: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAgent(newCfg())
+			a.history = makeHistory()
+			tt.setup(a)
 
-		before := a.history[2].Content
-		if err := a.maybeCompress(context.Background()); err != nil {
-			t.Fatalf("maybeCompress: %v", err)
-		}
-		if a.history[2].Content != before {
-			t.Errorf("proactive elision mutated history while the cache was hot; " +
-				"it should defer to avoid churning the provider prefix cache")
-		}
-	})
-
-	t.Run("cold cache applies proactive elision", func(t *testing.T) {
-		a := NewAgent(newCfg())
-		a.history = makeHistory()
-		// Idle far longer than any cache TTL → cache presumed cold.
-		a.lastTurnEnd = time.Now().Add(-2 * time.Hour)
-
-		before := a.history[2].Content
-		if err := a.maybeCompress(context.Background()); err != nil {
-			t.Fatalf("maybeCompress: %v", err)
-		}
-		if a.history[2].Content == before {
-			t.Errorf("proactive elision did NOT run on a cold cache; " +
-				"old tool results should have been elided")
-		}
-	})
+			before := a.history[2].Content
+			if err := a.maybeCompress(context.Background()); err != nil {
+				t.Fatalf("maybeCompress: %v", err)
+			}
+			if mutated := a.history[2].Content != before; mutated != tt.wantMutation {
+				t.Errorf("proactive elision mutation = %v, want %v", mutated, tt.wantMutation)
+			}
+		})
+	}
 }
 
 // The cache-hot deferral must stop protecting the cache near the window:

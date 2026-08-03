@@ -121,11 +121,15 @@ func (a *Agent) recordContextUsageLocked(u *provider.Usage) {
 // history is shrunk, replaced, or mutated in place, the recorded prompt no
 // longer corresponds to the conversation and flooring at it would overstate
 // usage (potentially above the hard ceiling, blocking new turns forever).
+// The cache-warmth evidence (cacheWarmObserved) is dropped for the same
+// reason: the mutation that invalidated the prompt also busted the provider
+// prefix cache, so the gate must re-learn warmth from the next cache read.
 // The caller must hold a.mu.
 func (a *Agent) invalidateContextUsageLocked() {
 	a.lastGrossInputTokens = 0
 	a.lastUsageHistoryLen = 0
 	a.lastUsageOutputTokens = 0
+	a.cacheWarmObserved = false
 }
 
 // estimateTokensFromHistory returns a token estimate for a message slice:

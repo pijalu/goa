@@ -283,6 +283,20 @@ type Agent struct {
 	// usage hits the hard ceiling. Updated under mu in finishProcessing.
 	lastTurnEnd time.Time
 
+	// cacheWarmObserved records whether any completed request in this agent
+	// reported provider cache reads (CacheReadTokens > 0) — direct evidence the
+	// provider prefix cache is hot. It expires the first-turn cold presumption
+	// in cacheAssumedCold/cacheAssumedColdForProactive: without it the
+	// zero-lastTurnEnd branch presumes cold for the ENTIRE first turn
+	// (lastTurnEnd is only written at turn END), failing the gate open and
+	// churning a cache that has been hot since round 2. It deliberately does
+	// NOT override the idle-gap TTL logic: after a long idle gap the provider
+	// cache really has expired, warm history notwithstanding.
+	// Set under mu in captureStreamResult; cleared by
+	// invalidateContextUsageLocked (history mutation or reset busts the cache,
+	// so warmth evidence goes stale together with the recorded prompt size).
+	cacheWarmObserved bool
+
 	// lastAssistantHash and assistantRepeatCount detect assistant-message
 	// loops where the model emits the same text/thinking across consecutive
 	// turns without making progress.

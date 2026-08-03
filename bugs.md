@@ -102,7 +102,7 @@ If new items are added, restart the process.
 
 ---
 
-## Micro-compaction cache gate fails open during the entire first turn — OPEN
+## Micro-compaction cache gate fails open during the entire first turn — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (2026-08-02, session export goa-export-20260802-104717.zip,
   kimi-code/k3-256k): a micro-compaction fired at round 58 of the session's
@@ -155,6 +155,37 @@ If new items are added, restart the process.
 - **Note**: unrelated second cache miss in the same export (request at
   10:45:39, full cold) is expected provider TTL expiry after a 34-min idle
   gap — no action needed.
+- **Resolution** (2026-08-03): implemented the observed-cache-hit signal per
+  the fix plan.
+  - `agent.go`: new `cacheWarmObserved bool` field (guarded by `a.mu`,
+    documented next to `lastTurnEnd`).
+  - `agent_streaming.go` `captureStreamResult`: sets `cacheWarmObserved`
+    when a completed request reports `Usage.CacheReadTokens > 0` — covers
+    every stream round, mid-turn and turn-final.
+  - `compaction.go`: `cacheAssumedCold` and `cacheAssumedColdForProactive`
+    now return hot (`false`) on the zero-`lastTurnEnd` branch once
+    `cacheWarmObserved` is set. The idle-gap TTL logic is deliberately
+    unchanged — warm evidence does NOT resurrect a cache idle past its TTL
+    (see the Note above).
+  - `agent_context_stats.go` `invalidateContextUsageLocked`: clears the
+    flag — history mutation/reset (Clear, SetHistory, elision, compression)
+    busts the provider cache, so warmth evidence goes stale together with
+    the recorded prompt size and is re-learned from the next cache read.
+  - Regression tests (RED on pre-fix code → GREEN after):
+    `TestMicroCompact_FirstTurnDeferredWhenCacheWarmObserved` (first turn,
+    ~53% ≥ min_context_ratio 0.5, warm → DEFERRED),
+    `TestMicroCompact_FirstTurnRunsWhenNoCacheWarmObserved` (genuine cold →
+    runs), `TestCacheAssumedCold_WarmObservation` (both gates; idle-gap
+    invariant pinned), `TestCaptureStreamResult_SetsCacheWarmObserved`
+    (hook: >0 sets, 0/nil leave unset), `TestClear_ClearsCacheWarmObserved`,
+    plus two first-turn subtests in
+    `TestMaybeCompress_ToolElision_DefersWhileCacheHot` (table-driven).
+  - Gates (run separately): `go vet`, `staticcheck`, `gocognit -over 15`,
+    `gocyclo -over 12` show only pre-existing findings identical to HEAD
+    (verified via stash diff); `go test ./internal/agentic/ -count=1 -race
+    -cover` green, coverage 80.9%. Live validation step 2 (long single-turn
+    session against a cache-reporting provider) not re-run — covered by the
+    regression tests above. Awaiting archive.
 
 ---
 

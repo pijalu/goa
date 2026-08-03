@@ -5,6 +5,8 @@ package agentic
 import (
 	"testing"
 	"time"
+
+	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
 // microAgent builds an Agent wired for micro compaction with a large history
@@ -115,5 +117,147 @@ func TestCacheAssumedCold(t *testing.T) {
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour)
 	if !a.cacheAssumedCold() {
 		t.Fatalf("idle > threshold should be treated as cold")
+	}
+}
+
+// Regression test for bugs.md "Micro-compaction cache gate fails open during
+// the entire first turn": lastTurnEnd is written only at turn END, so a
+// zero-lastTurnEnd gate presumed cold for the WHOLE first turn — at round 58
+// of turn 1 a micro compaction busted a cache that had been hot since round 2
+// (cache_read 113,408 → 5,376). Once any completed request reports
+// cache_read_tokens > 0 (cacheWarmObserved), the first-turn presumption must
+// expire. Incident shape: first turn, ratio 53% (≥ min_context_ratio 0.5,
+// below the 85% deferral ceiling) → micro compaction must DEFER.
+func TestMicroCompact_FirstTurnDeferredWhenCacheWarmObserved(t *testing.T) {
+	a := microAgent(time.Time{}) // first turn: no completed turn yet
+	// ~53% usage: over the 0.5 ratio gate, under the 85% deferral ceiling,
+	// so the cache gate — not the ratio gate or the ceiling — decides.
+	a.cfg.ContextCompression.MaxTokens = 7000
+	a.cfg.ContextCompression.MicroCompaction.MinContextRatio = 0.5
+	// Round 1's completed request reported cache_read_tokens > 0.
+	a.cacheWarmObserved = true
+
+	a.microCompactForced(false)
+	if anyTruncated(a) {
+		t.Fatalf("first-turn micro compaction ran despite observed cache hits; " +
+			"the hot provider prefix cache would be churned (bugs.md first-turn gate)")
+	}
+}
+
+// The same first turn with NO cache hits reported (cache_read == 0 on every
+// completed request) is a genuine cold cache: compaction may still run.
+func TestMicroCompact_FirstTurnRunsWhenNoCacheWarmObserved(t *testing.T) {
+	a := microAgent(time.Time{}) // first turn, no warm evidence
+	a.cfg.ContextCompression.MaxTokens = 7000
+	a.cfg.ContextCompression.MicroCompaction.MinContextRatio = 0.5
+
+	a.microCompactForced(false)
+	if !anyTruncated(a) {
+		t.Fatalf("first-turn micro compaction did not run on a genuinely cold cache")
+	}
+}
+
+// TestCacheAssumedCold_WarmObservation pins the gate semantics: warm evidence
+// expires ONLY the first-turn (zero lastTurnEnd) presumption; the idle-gap
+// TTL logic is unchanged — a warm observation must not resurrect a cache that
+// sat idle past its TTL (provider TTL expiry is real, see the bugs.md note on
+// the 34-min idle-gap miss). Both gates (micro + proactive) must agree.
+func TestCacheAssumedCold_WarmObservation(t *testing.T) {
+	newAgent := func() *Agent {
+		return &Agent{
+			cfg: Config{
+				ContextCompression: ContextCompressionConfig{
+					MicroCompaction: MicroCompactionConfig{CacheMissThreshold: 1 * time.Hour},
+				},
+			},
+		}
+	}
+
+	// First turn, warm evidence → hot for both gates.
+	a := newAgent()
+	a.cacheWarmObserved = true
+	if a.cacheAssumedCold() {
+		t.Fatalf("first turn with observed cache hits must be treated as hot")
+	}
+	if a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: first turn with cache hits is hot")
+	}
+
+	// Warm evidence + idle past the TTL → STILL cold (idle-gap logic wins).
+	a.lastTurnEnd = time.Now().Add(-2 * time.Hour)
+	if !a.cacheAssumedCold() {
+		t.Fatalf("idle > threshold must stay cold even with warm observation (provider TTL expiry)")
+	}
+	if !a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: idle > threshold is cold despite warm observation")
+	}
+
+	// Warm evidence + recent turn end → hot (existing later-turn behavior).
+	a.lastTurnEnd = time.Now()
+	if a.cacheAssumedCold() {
+		t.Fatalf("recent turn with 1h threshold should be treated as hot")
+	}
+	if a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: recent turn is hot")
+	}
+
+	// First turn, no warm evidence → cold (genuine cold cache).
+	b := newAgent()
+	if !b.cacheAssumedCold() {
+		t.Fatalf("first turn without observed cache hits should be treated as cold")
+	}
+	if !b.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: first turn without cache hits is cold")
+	}
+}
+
+// TestCaptureStreamResult_SetsCacheWarmObserved verifies the observation
+// hook: a completed request whose usage reports cache_read_tokens > 0 flips
+// the warm flag; zero cache reads or missing usage leave it unset.
+func TestCaptureStreamResult_SetsCacheWarmObserved(t *testing.T) {
+	t.Run("cache read flips the flag", func(t *testing.T) {
+		a := &Agent{}
+		s := provider.NewAssistantMessageEventStream(4)
+		s.End(&provider.AssistantMessage{
+			Usage: &provider.Usage{InputTokens: 10, OutputTokens: 2, CacheReadTokens: 100},
+		})
+		a.captureStreamResult(s)
+		if !a.cacheWarmObserved {
+			t.Fatalf("cache_read_tokens=100 must set cacheWarmObserved")
+		}
+	})
+
+	t.Run("zero cache read leaves the flag unset", func(t *testing.T) {
+		a := &Agent{}
+		s := provider.NewAssistantMessageEventStream(4)
+		s.End(&provider.AssistantMessage{
+			Usage: &provider.Usage{InputTokens: 10, OutputTokens: 2},
+		})
+		a.captureStreamResult(s)
+		if a.cacheWarmObserved {
+			t.Fatalf("cache_read_tokens=0 must not set cacheWarmObserved")
+		}
+	})
+
+	t.Run("missing usage leaves the flag unset", func(t *testing.T) {
+		a := &Agent{}
+		s := provider.NewAssistantMessageEventStream(4)
+		s.End(&provider.AssistantMessage{})
+		a.captureStreamResult(s)
+		if a.cacheWarmObserved {
+			t.Fatalf("nil usage must not set cacheWarmObserved")
+		}
+	})
+}
+
+// TestClear_ClearsCacheWarmObserved verifies a conversation reset drops the
+// warmth evidence: the new conversation's prefix is not in the provider
+// cache, so the first-turn cold presumption must apply again.
+func TestClear_ClearsCacheWarmObserved(t *testing.T) {
+	a := &Agent{}
+	a.cacheWarmObserved = true
+	a.Clear()
+	if a.cacheWarmObserved {
+		t.Fatalf("Clear must reset cacheWarmObserved for the new conversation")
 	}
 }

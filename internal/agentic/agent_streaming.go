@@ -473,6 +473,11 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 		a.providerUsage = result.Usage
 	}
 	if result.Usage != nil {
+		if result.Usage.CacheReadTokens > 0 {
+			// Direct evidence the provider prefix cache is hot: expires the
+			// first-turn cold presumption of the compaction cache gate.
+			a.cacheWarmObserved = true
+		}
 		a.recordContextUsageLocked(result.Usage)
 	}
 	if result.StopReason != "" {

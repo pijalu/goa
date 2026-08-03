@@ -99,7 +99,13 @@ func (a *Agent) microCompactForced(force bool) {
 // otherwise churn a hot cache. The cache is assumed cold when either
 //   - CacheMissThreshold <= 0 (cache protection disabled; legacy behavior), or
 //   - the agent has been idle (no completed turn) for longer than the threshold,
-//     or no previous turn has completed yet (first turn / fresh resume).
+//     or no previous turn has completed yet (first turn / fresh resume) AND no
+//     completed request has reported cache reads. The cacheWarmObserved escape
+//     keeps the first-turn presumption from failing open for the whole turn:
+//     lastTurnEnd is written only at turn END, so without it every per-round
+//     gate check in turn 1 would see a cold cache even though the cache has
+//     been hot since round 2. Warm evidence does NOT override the idle-gap
+//     TTL logic — after a long idle gap the provider cache really has expired.
 //
 // The caller must hold a.mu: lastTurnEnd is guarded by it (written in
 // finishProcessing under the lock).
@@ -110,7 +116,7 @@ func (a *Agent) cacheAssumedCold() bool {
 	}
 	last := a.lastTurnEnd
 	if last.IsZero() {
-		return true
+		return !a.cacheWarmObserved
 	}
 	return time.Since(last) >= threshold
 }
@@ -125,6 +131,10 @@ func (a *Agent) cacheAssumedCold() bool {
 // threshold here means the provider cache TTL (~1h, the default micro config);
 // only an explicitly negative threshold disables protection.
 //
+// Like cacheAssumedCold, a zero lastTurnEnd (first turn / fresh resume) is
+// cold only until a completed request reports cache reads
+// (cacheWarmObserved); the idle-gap TTL logic is unaffected by warm evidence.
+//
 // The caller must hold a.mu.
 func (a *Agent) cacheAssumedColdForProactive() bool {
 	threshold := a.cfg.ContextCompression.MicroCompaction.CacheMissThreshold
@@ -136,7 +146,7 @@ func (a *Agent) cacheAssumedColdForProactive() bool {
 	}
 	last := a.lastTurnEnd
 	if last.IsZero() {
-		return true
+		return !a.cacheWarmObserved
 	}
 	return time.Since(last) >= threshold
 }
