@@ -126,11 +126,19 @@ When > 0 (embedded default 50), every newly created goal gets that hard turn cei
 ## Queued goals
 
 ```text
-/goal:next refactor the auth module
-/goal:next                    # interactive: prompts for the objective
-/goal:manage                  # open the queue manager
-/goal:reorder:1B,2C,3A        # reorder by letter mapping
+/goal:next refactor the auth module   # front of the queue: runs right after the active goal
+/goal:next:first refactor the auth    # same as /goal:next (explicit)
+/goal:next:last polish the docs       # end of the queue: runs after all queued goals
+/goal:next                            # interactive: prompts for the objective
+/goal:manage                          # open the queue manager
+/goal:reorder:1B,2C,3A                # reorder by letter mapping
 ```
+
+`/goal:next` inserts the goal at the FRONT of the queue — it is promoted
+next, right after the active goal completes (equivalent to the goal tool's
+`priority: "front"`). Use `/goal:next:last` to append at the end instead.
+The "Queue it for later" choice offered by `/goal:new` when a goal is
+active always appends to the end.
 
 **Promotion contract:** when the active goal completes, the queue head promotes automatically and preserves its **objective, completion criterion, verify command, fresh-context flag, and friendly alias** (traceability). The promoted goal also inherits the predecessor's completion evidence as a **handoff** note, rendered as an untrusted block in the per-turn goal reminder (rebuilt every turn, so it survives fresh-context resets). On promote failure the item is restored to the front of the queue. The model's batched `create` applies the call's `completionCriterion` to every objective, including queued ones.
 

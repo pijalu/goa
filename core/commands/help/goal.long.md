@@ -11,8 +11,9 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:new:<text>            Create a goal with the given objective
   /goal:new:fresh:<text>      Create a goal on a clean context (no prior conversation)
   /goal:new:reuse:<text>      Create a goal reusing the current conversation
-  /goal:next                  Queue a goal interactively (appended last)
-  /goal:next:<text>           Queue a goal to run after the current one
+  /goal:next                  Queue a goal to run next, interactively (front of the queue)
+  /goal:next[:first]:<text>   Queue a goal to run right after the active goal (front of the queue)
+  /goal:next:last[:<text>]    Queue a goal at the END of the queue
   /goal:next:fresh|reuse:<text> Queue with an explicit context mode
   /goal:replace               Replace the current goal interactively (asks objective)
   /goal:replace:<text>        Replace the current goal with a new one (asks confirmation)

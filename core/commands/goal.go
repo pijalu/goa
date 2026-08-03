@@ -87,10 +87,13 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 	"log":        func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.showEventLog(ctx) },
 	"verify":     func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.runVerify(ctx) },
 	"next-add": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
+		if p.placement == placementLast {
+			return c.queueLast(ctx, p.objective, c.resolveFresh(p.contextMode))
+		}
 		return c.queueNext(ctx, p.objective, c.resolveFresh(p.contextMode))
 	},
-	"next-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error {
-		return c.promptCreateInteractive(ctx, placementLast)
+	"next-interactive": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
+		return c.promptCreateInteractive(ctx, p.placement)
 	},
 	"reorder": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
 		return c.reorderQueue(ctx, p.objective)
@@ -130,6 +133,9 @@ type parsedGoalArgs struct {
 	// /goal:new:fresh|reuse (or /goal:next:fresh|reuse): "" = configured
 	// default, "fresh" = clean context, "reuse" = keep conversation.
 	contextMode string
+	// placement carries the /goal:next placement token (/goal:next:first|
+	// last, default first). Zero value (placementAsk) for other commands.
+	placement goalPlacement
 }
 
 func (c *GoalCommand) parseArgs(args []string) parsedGoalArgs {
@@ -206,19 +212,58 @@ func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
 		}
 		return parsedGoalArgs{kind: kind}
 	default: // subOptional
-		// /goal:new:fresh <text> and /goal:new:reuse <text> (also :next:) carry
-		// a leading context-mode token that overrides the configured default.
-		if cmd == "new" || cmd == "next" {
-			mode, rest := splitGoalContextToken(text)
-			if rest == "" {
-				return parsedGoalArgs{kind: spec.bareKind, contextMode: mode}
-			}
-			return parsedGoalArgs{kind: spec.kind, objective: rest, contextMode: mode}
+		return parseOptionalGoalArgs(cmd, spec.kind, spec.bareKind, text)
+	}
+}
+
+// parseOptionalGoalArgs parses subOptional subcommands (new/next/replace):
+// bare → bareKind (interactive); with text → kind. /goal:next consumes
+// optional leading placement (first|last, default first) and context-mode
+// (fresh|reuse) tokens in any order; /goal:new consumes a context token.
+func parseOptionalGoalArgs(cmd, kind, bareKind, text string) parsedGoalArgs {
+	if cmd == "next" {
+		placement, mode, rest := splitGoalNextArgs(text)
+		if rest == "" {
+			return parsedGoalArgs{kind: bareKind, contextMode: mode, placement: placement}
 		}
-		if text == "" {
-			return parsedGoalArgs{kind: spec.bareKind}
+		return parsedGoalArgs{kind: kind, objective: rest, contextMode: mode, placement: placement}
+	}
+	// /goal:new:fresh <text> and /goal:new:reuse <text> carry a leading
+	// context-mode token that overrides the configured default.
+	if cmd == "new" {
+		mode, rest := splitGoalContextToken(text)
+		if rest == "" {
+			return parsedGoalArgs{kind: bareKind, contextMode: mode}
 		}
-		return parsedGoalArgs{kind: spec.kind, objective: text}
+		return parsedGoalArgs{kind: kind, objective: rest, contextMode: mode}
+	}
+	if text == "" {
+		return parsedGoalArgs{kind: bareKind}
+	}
+	return parsedGoalArgs{kind: kind, objective: text}
+}
+
+// splitGoalNextArgs parses /goal:next arguments: optional leading placement
+// (first|last, default first) and context-mode (fresh|reuse) tokens in any
+// order, followed by the objective text. Examples:
+//
+//	"fix tests"        → (placementNext, "", "fix tests")
+//	"last fresh audit" → (placementLast, "fresh", "audit")
+//	"last"             → (placementLast, "", "") → interactive
+func splitGoalNextArgs(text string) (placement goalPlacement, mode, rest string) {
+	placement = placementNext
+	rest = text
+	for {
+		tok, tail, ok := splitLeadingToken(rest, "first", "last", "fresh", "reuse")
+		if !ok {
+			return placement, mode, rest
+		}
+		if tok == "last" {
+			placement = placementLast
+		} else if tok == "fresh" || tok == "reuse" {
+			mode = tok
+		}
+		rest = tail
 	}
 }
 
@@ -226,15 +271,25 @@ func (c *GoalCommand) parseSubcommand(args []string) parsedGoalArgs {
 // from the objective text (/goal:new:fresh fix, /goal:next:reuse investigate).
 // Returns ("", text) unchanged when there is no token.
 func splitGoalContextToken(text string) (mode, rest string) {
-	for _, tok := range []string{"fresh", "reuse"} {
-		if text == tok {
-			return tok, ""
+	tok, tail, ok := splitLeadingToken(text, "fresh", "reuse")
+	if !ok {
+		return "", text
+	}
+	return tok, tail
+}
+
+// splitLeadingToken returns the first word of text when it is one of tokens,
+// plus the remaining text, trimmed. ok is false when no token matches.
+func splitLeadingToken(text string, tokens ...string) (tok, rest string, ok bool) {
+	for _, t := range tokens {
+		if text == t {
+			return t, "", true
 		}
-		if strings.HasPrefix(text, tok+" ") {
-			return tok, strings.TrimSpace(strings.TrimPrefix(text, tok+" "))
+		if strings.HasPrefix(text, t+" ") {
+			return t, strings.TrimSpace(strings.TrimPrefix(text, t+" ")), true
 		}
 	}
-	return "", text
+	return "", text, false
 }
 
 // parseObjectiveArg joins args into an objective, returning emptyKind when the
@@ -607,10 +662,31 @@ func goalOnOffLabel(v bool) string {
 	return "disabled"
 }
 
-// queueNext appends a goal to the durable queue (/goal:next). fresh is the
-// resolved context mode — stored with the goal so its turns run on a clean
-// context (or the surviving conversation) when it is promoted.
+// queueNext inserts a goal at the FRONT of the durable queue (/goal:next and
+// /goal:next:first): it is promoted NEXT, right after the active goal
+// completes. fresh is the resolved context mode — stored with the goal so
+// its turns run on a clean context (or the surviving conversation) when it
+// is promoted.
 func (c *GoalCommand) queueNext(ctx core.Context, objective string, fresh bool) error {
+	goals, err := c.Queue.PrependGoal(goal.UpcomingGoalInput{
+		Objective:    objective,
+		FreshContext: fresh,
+	})
+	if err != nil {
+		return err
+	}
+	name := goals[0].Name
+	if name == "" {
+		writeFmt(ctx, "Queued goal to run next (queue: %d): %s\n", len(goals), objective)
+	} else {
+		writeFmt(ctx, "Queued goal to run next (queue: %d) [%s]: %s\n", len(goals), name, objective)
+	}
+	return nil
+}
+
+// queueLast appends a goal to the END of the durable queue (/goal:next:last
+// and the "Queue it for later" choice of the first-or-last prompt).
+func (c *GoalCommand) queueLast(ctx core.Context, objective string, fresh bool) error {
 	goals, err := c.Queue.AppendGoal(goal.UpcomingGoalInput{
 		Objective:    objective,
 		FreshContext: fresh,
@@ -723,7 +799,11 @@ const (
 	placementAsk goalPlacement = iota
 	// placementFirst replaces the active goal (becomes first).
 	placementFirst
-	// placementLast appends to the queue (runs after current).
+	// placementNext inserts at the FRONT of the queue (/goal:next[:first]):
+	// the goal is promoted right after the active goal completes. Unlike
+	// placementFirst it never touches the active goal.
+	placementNext
+	// placementLast appends to the END of the queue (/goal:next:last).
 	placementLast
 )
 
@@ -777,7 +857,7 @@ func (c *GoalCommand) promptFirstOrLast(ctx core.Context, objective string, fres
 		case "first":
 			_ = c.startGoal(ctx, objective, true, fresh)
 		case "last":
-			_ = c.queueNext(ctx, objective, fresh)
+			_ = c.queueLast(ctx, objective, fresh)
 		}
 	})
 	return nil
@@ -828,11 +908,15 @@ func (c *GoalCommand) describeActiveGoal(ctx core.Context, g *goal.GoalSnapshot)
 
 // promptCreateInteractive drives the interactive create/queue flow via the
 // main input line: ctrl-c (or empty) aborts; a typed objective proceeds
-// according to placement. For placementAsk, the first/last prompt follows.
+// according to placement (front of queue, end of queue, replace, or — for
+// placementAsk — the first/last prompt follows).
 func (c *GoalCommand) promptCreateInteractive(ctx core.Context, placement goalPlacement) error {
 	promptText := "Set new goal objective (ctrl-c to cancel)"
-	if placement == placementLast {
-		promptText = "Queue a goal objective — it runs after the current one (ctrl-c to cancel)"
+	switch placement {
+	case placementNext:
+		promptText = "Queue a goal to run next — right after the active goal (ctrl-c to cancel)"
+	case placementLast:
+		promptText = "Queue a goal at the end of the queue (ctrl-c to cancel)"
 	}
 	if ctx.RequestMainInput == nil {
 		return fmt.Errorf("main input not available")
@@ -843,8 +927,10 @@ func (c *GoalCommand) promptCreateInteractive(ctx core.Context, placement goalPl
 			return
 		}
 		switch placement {
-		case placementLast:
+		case placementNext:
 			_ = c.queueNext(ctx, objective, c.resolveFresh(""))
+		case placementLast:
+			_ = c.queueLast(ctx, objective, c.resolveFresh(""))
 		case placementFirst:
 			_ = c.startGoal(ctx, objective, true, c.resolveFresh(""))
 		default: // placementAsk
@@ -983,14 +1069,31 @@ var goalCancelScopes = []struct {
 	{"all", "discard the current goal and clear the queue"},
 }
 
+// goalNextOptions is the nested /goal:next:<option> list offered once the
+// user typed "next:" (level-2 completion): queue placement and context mode.
+var goalNextOptions = []struct {
+	value string
+	desc  string
+}{
+	{"first", "queue at the front — runs right after the active goal (default)"},
+	{"last", "queue at the end — runs after all queued goals"},
+	{"fresh", "queue on a clean context"},
+	{"reuse", "queue reusing the current conversation"},
+}
+
 // CompleteArgs implements core.ArgCompleter, providing /goal:<tab> completion
 // for subcommand keywords. The router passes the raw text after "goal" as
 // prefix (e.g. "ne" for /goal:ne); a prefix containing ":" (e.g. "cancel:a"
 // for /goal:cancel:a) is completed at the nested scope level.
 func (c *GoalCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
-	if sub, rest, nested := splitGoalCompletionPrefix(prefix); nested && sub == "cancel" {
-		return cancelScopeCompletions(rest)
+	if sub, rest, nested := splitGoalCompletionPrefix(prefix); nested {
+		switch sub {
+		case "cancel":
+			return cancelScopeCompletions(rest)
+		case "next":
+			return nextOptionCompletions(rest)
+		}
 	}
 	var comps []core.ArgCompletion
 	for _, sc := range goalSubcommands {
@@ -1024,6 +1127,22 @@ func cancelScopeCompletions(rest string) []core.ArgCompletion {
 			comps = append(comps, core.ArgCompletion{
 				Value:       "cancel:" + sc.value,
 				Description: sc.desc,
+			})
+		}
+	}
+	return comps
+}
+
+// nextOptionCompletions returns the /goal:next:<option> completions whose
+// option starts with rest, with values fully spelled out ("next:first") so
+// the completer prefixes them into /goal:next:first.
+func nextOptionCompletions(rest string) []core.ArgCompletion {
+	var comps []core.ArgCompletion
+	for _, opt := range goalNextOptions {
+		if rest == "" || strings.HasPrefix(opt.value, rest) {
+			comps = append(comps, core.ArgCompletion{
+				Value:       "next:" + opt.value,
+				Description: opt.desc,
 			})
 		}
 	}

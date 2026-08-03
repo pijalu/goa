@@ -72,6 +72,53 @@ func TestGoalCommand_parseArgs_EscapesReservedWords(t *testing.T) {
 	}
 }
 
+// TestGoalCommand_parseNextArgs verifies /goal:next argument parsing: the
+// optional leading placement token (first|last, default first) and context
+// token (fresh|reuse) are consumed in any order; an empty remainder falls
+// back to the interactive flow carrying the parsed placement.
+func TestGoalCommand_parseNextArgs(t *testing.T) {
+	cmd := &GoalCommand{}
+	cases := []struct {
+		name      string
+		args      []string
+		kind      string
+		placement goalPlacement
+		mode      string
+		objective string
+	}{
+		{name: "bare", args: []string{"next"},
+			kind: "next-interactive", placement: placementNext},
+		{name: "text only", args: []string{"next", "fix tests"},
+			kind: "next-add", placement: placementNext, objective: "fix tests"},
+		{name: "first explicit", args: []string{"next", "first", "fix tests"},
+			kind: "next-add", placement: placementNext, objective: "fix tests"},
+		{name: "first bare", args: []string{"next", "first"},
+			kind: "next-interactive", placement: placementNext},
+		{name: "last", args: []string{"next", "last", "fix tests"},
+			kind: "next-add", placement: placementLast, objective: "fix tests"},
+		{name: "last bare", args: []string{"next", "last"},
+			kind: "next-interactive", placement: placementLast},
+		{name: "fresh default first", args: []string{"next", "fresh", "audit"},
+			kind: "next-add", placement: placementNext, mode: "fresh", objective: "audit"},
+		{name: "last then fresh", args: []string{"next", "last", "fresh", "audit"},
+			kind: "next-add", placement: placementLast, mode: "fresh", objective: "audit"},
+		{name: "fresh then last", args: []string{"next", "fresh", "last", "audit"},
+			kind: "next-add", placement: placementLast, mode: "fresh", objective: "audit"},
+		{name: "reuse then first", args: []string{"next", "reuse", "first", "audit"},
+			kind: "next-add", placement: placementNext, mode: "reuse", objective: "audit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cmd.parseArgs(tc.args)
+			if got.kind != tc.kind || got.placement != tc.placement ||
+				got.contextMode != tc.mode || got.objective != tc.objective {
+				t.Errorf("parseArgs(%v) = %+v, want kind=%q placement=%v mode=%q objective=%q",
+					tc.args, got, tc.kind, tc.placement, tc.mode, tc.objective)
+			}
+		})
+	}
+}
+
 func TestGoalCommand_CreateGoal(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore("")}
@@ -295,6 +342,43 @@ func TestGoalCommand_CompleteArgs_CancelScopes(t *testing.T) {
 	vals = cmd.CompleteArgs(ctx, "can")
 	if len(vals) != 1 || vals[0].Value != "cancel" {
 		t.Errorf("CompleteArgs(can) = %+v, want cancel", vals)
+	}
+}
+
+func TestGoalCommand_CompleteArgs_NextOptions(t *testing.T) {
+	cmd := &GoalCommand{}
+	ctx := testContext()
+
+	// Level-2: /goal:next:<tab> lists the placement and context options,
+	// fully spelled out (mirrors the /goal:cancel: scopes).
+	vals := cmd.CompleteArgs(ctx, "next:")
+	if len(vals) != 4 {
+		t.Fatalf("CompleteArgs(next:) = %+v, want 4 entries", vals)
+	}
+	want := []string{"next:first", "next:last", "next:fresh", "next:reuse"}
+	for i, w := range want {
+		if vals[i].Value != w {
+			t.Errorf("CompleteArgs(next:)[%d] = %q, want %q", i, vals[i].Value, w)
+		}
+	}
+
+	// Prefix filtering at the nested level.
+	if vals := cmd.CompleteArgs(ctx, "next:l"); len(vals) != 1 || vals[0].Value != "next:last" {
+		t.Errorf("CompleteArgs(next:l) = %+v, want next:last only", vals)
+	}
+	if vals := cmd.CompleteArgs(ctx, "next:f"); len(vals) != 2 ||
+		vals[0].Value != "next:first" || vals[1].Value != "next:fresh" {
+		t.Errorf("CompleteArgs(next:f) = %+v, want next:first and next:fresh", vals)
+	}
+
+	// Unknown option → nothing.
+	if vals := cmd.CompleteArgs(ctx, "next:zzz"); len(vals) != 0 {
+		t.Errorf("CompleteArgs(next:zzz) = %+v, want none", vals)
+	}
+
+	// Top-level behavior untouched: /goal:nex still completes "next".
+	if vals := cmd.CompleteArgs(ctx, "nex"); len(vals) != 1 || vals[0].Value != "next" {
+		t.Errorf("CompleteArgs(nex) = %+v, want next", vals)
 	}
 }
 
@@ -926,13 +1010,17 @@ func TestGoalCommand_FirstOrLast_CancelDoesNothing(t *testing.T) {
 	}
 }
 
-func TestGoalCommand_NextInteractive_Appends(t *testing.T) {
-	// /goal:next (bare) → main input; typed text is queued.
+func TestGoalCommand_NextInteractive_PrependsToQueue(t *testing.T) {
+	// /goal:next (bare) → main input; the typed goal runs NEXT: inserted at
+	// the FRONT of the queue, ahead of already-queued goals (default :first).
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
 	cmd := &GoalCommand{Mode: mode, Queue: queue}
 	ctx := testContext()
 
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "existing"}); err != nil {
+		t.Fatal(err)
+	}
 	ctx.RequestMainInput = func(_ string, cb func(string)) {
 		cb("queued objective")
 	}
@@ -940,8 +1028,99 @@ func TestGoalCommand_NextInteractive_Appends(t *testing.T) {
 		t.Fatal(err)
 	}
 	queued, _ := queue.Read()
-	if len(queued) != 1 || queued[0].Objective != "queued objective" {
-		t.Errorf("queue = %v", queued)
+	if len(queued) != 2 {
+		t.Fatalf("queue = %v, want 2 goals", queued)
+	}
+	if queued[0].Objective != "queued objective" || queued[1].Objective != "existing" {
+		t.Errorf("queue order = [%q %q], want [queued objective existing]",
+			queued[0].Objective, queued[1].Objective)
+	}
+}
+
+func TestGoalCommand_NextAdd_PrependsToQueue(t *testing.T) {
+	// /goal:next:<text> queues the goal to run NEXT (the default :first):
+	// FRONT of the queue, ahead of already-queued goals.
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"next", "urgent fix"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 2 || queued[0].Objective != "urgent fix" || queued[1].Objective != "existing" {
+		t.Errorf("queue = %v, want [urgent fix existing]", queued)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "run next") {
+		t.Errorf("output should say the goal runs next: %q", out)
+	}
+}
+
+func TestGoalCommand_NextAdd_ExplicitFirstPrependsToQueue(t *testing.T) {
+	// /goal:next:first:<text> is the explicit form of the default.
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"next", "first", "urgent fix"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 2 || queued[0].Objective != "urgent fix" || queued[1].Objective != "existing" {
+		t.Errorf("queue = %v, want [urgent fix existing]", queued)
+	}
+}
+
+func TestGoalCommand_NextAdd_LastAppendsToQueue(t *testing.T) {
+	// /goal:next:last:<text> appends the goal at the END of the queue.
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"next", "last", "tidy docs"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 2 || queued[0].Objective != "existing" || queued[1].Objective != "tidy docs" {
+		t.Errorf("queue = %v, want [existing tidy docs]", queued)
+	}
+}
+
+func TestGoalCommand_FirstOrLast_AppendsToEnd(t *testing.T) {
+	// The "Queue it for later" choice of the first-or-last prompt must keep
+	// APPENDING to the end of the queue (it is not /goal:next).
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"active goal"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		cb("last", true)
+	}
+	if err := cmd.Run(ctx, []string{"new", "second goal"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 2 || queued[0].Objective != "existing" || queued[1].Objective != "second goal" {
+		t.Errorf("queue = %v, want [existing second goal]", queued)
 	}
 }
 

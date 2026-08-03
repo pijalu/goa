@@ -808,3 +808,72 @@ re.finditer, reasoning_content detection) is fixed above. Note: `go.mod`
 carries a `replace` to the local gpython fork (/Users/muaddib/dev/gpython,
 commit b042729) for the enumerate-kwargs fix — drop it after the fork
 release ships.
+
+---
+
+## /goal:next appends at the end of the queue instead of running next — FIXED (2026-08-03)
+
+- **Observed** (2026-08-03): `/goal:next <text>` (and the bare interactive
+  form) appended the goal at the END of the queue (printed `Queued goal #N`),
+  so it ran after every already-queued goal — contradicting the command
+  name and its own help ("Queue a goal to run after the current one").
+  Reported as: "/goal:next add goal at the end of the goals".
+- **Requested behavior** (user, 2026-08-03):
+  1. `/goal:next:first[:<text>]` inserts at the FRONT of the queue — the
+     1st goal after the goal being executed.
+  2. `/goal:next:last[:<text>]` appends at the END of the queue.
+  3. Bare `/goal:next` (with or without text) defaults to
+     `/goal:next:first`.
+  4. Tab completion offers the new options (nested `next:` completions,
+     mirroring `/goal:cancel:`).
+- **Root cause:** `queueNext` in `core/commands/goal.go` called
+  `Queue.AppendGoal` (end of queue) and the interactive bare form routed
+  through `promptCreateInteractive(placementLast)` — also append. No
+  front-placement path existed for the command even though the queue store
+  already had `PrependGoal` (used by the goal tool's `priority:"front"`).
+- **Fix** (`core/commands/goal.go`, help + docs):
+  1. `queueNext` now calls `PrependGoal` (front) and prints "Queued goal to
+     run next (queue: N)"; new `queueLast` keeps `AppendGoal` (end, prints
+     "Queued goal #N") and backs `/goal:next:last` and the "Queue it for
+     later" choice of `promptFirstOrLast` (unchanged append semantics).
+  2. New `goalPlacement` value `placementNext` (front of queue, never
+     replaces the active goal — distinct from `placementFirst`).
+  3. Parsing: `/goal:next` consumes optional leading placement
+     (`first`|`last`, default `first`) and context (`fresh`|`reuse`)
+     tokens in any order via `splitGoalNextArgs` + shared
+     `splitLeadingToken` helper; `parseSubcommand`'s subOptional branch
+     extracted to `parseOptionalGoalArgs` (gocognit of parseSubcommand
+     back to the HEAD baseline of 14, under the 15 budget).
+  4. Completion: nested `/goal:next:` options `first` / `last` / `fresh` /
+     `reuse` via `nextOptionCompletions` (mirrors
+     `cancelScopeCompletions`).
+  5. Help `core/commands/help/goal.long.md` and `docs/GOALS.md` document
+     `:first` (default, front) and `:last` (end).
+- **Tests** (`core/commands/goal_test.go`):
+  `TestGoalCommand_parseNextArgs` (10 table cases: placement/context
+  tokens in any order, bare forms), `TestGoalCommand_NextAdd_PrependsToQueue`,
+  `TestGoalCommand_NextAdd_ExplicitFirstPrependsToQueue`,
+  `TestGoalCommand_NextAdd_LastAppendsToQueue`,
+  `TestGoalCommand_NextInteractive_PrependsToQueue` (replaces the old
+  append assertion), `TestGoalCommand_FirstOrLast_AppendsToEnd`
+  (regression: the first-or-last "last" choice still appends),
+  `TestGoalCommand_CompleteArgs_NextOptions` (4 nested options, prefix
+  filtering, top-level completion untouched).
+- **Validation (guidelines 5+6):**
+  - Guideline 6 checks run separately: `go vet ./...` clean;
+    `staticcheck ./...` no new findings (remaining U1000 are pre-existing
+    in unrelated files); `gocognit -over 15 .` and `gocyclo -over 12 .`
+    flag only pre-existing functions (verified against HEAD —
+    parseSubcommand was 14 at HEAD and is 14 after);
+    `go test -count=1 -race -cover -timeout 300s ./...` green (exit 0).
+  - Guideline 5 interactive run (ptydrive, real binary in a PTY):
+    `/goal:next:last:aaa-last` printed `Queued goal #1 [sturdy.viper]`;
+    `/goal:next:bbb-next` printed `Queued goal to run next (queue: 2)`;
+    bare `/goal:next` showed the prompt "Queue a goal to run next — right
+    after the active goal (ctrl-c to cancel)" and prepended the typed
+    objective; `/goal:list` showed execution order `1. ccc-bare
+    2. bbb-next 3. aaa-last`; Tab after `/goal:next:` rendered the popup
+    with `/goal:next:first … (default)` and `/goal:next:last …`;
+    accepting `next:first` and typing `ddd-from-tab` put it at queue
+    position 1. Final `upcoming-goals.json` order: ddd-from-tab,
+    ccc-bare, bbb-next, aaa-last. Evidence log: /tmp/goa-next-e2e/run1.log.
