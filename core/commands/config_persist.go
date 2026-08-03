@@ -10,8 +10,10 @@ import (
 	"github.com/pijalu/goa/config"
 )
 
-// saveProjectConfig persists the full config to the project .goa/config.yaml.
-// Used for project-local settings such as autonomy level.
+// saveProjectConfig persists the mode configuration to the project
+// .goa/config.yaml (field-scoped: only the mode section is written;
+// see CascadeLoader.SaveProjectConfig). Used for project-local settings
+// such as autonomy level.
 func saveProjectConfig(cfg *config.Config, saver config.ConfigSaver) error {
 	if saver == nil {
 		return nil

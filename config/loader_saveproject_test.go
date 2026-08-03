@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,74 @@ func TestSaveProjectConfig_PreservesOnDiskToolFlags(t *testing.T) {
 	// blanket no-op).
 	if string(reloaded.Mode.Default.Major) != "oracle" {
 		t.Errorf("mode change not persisted: Mode.Default.Major = %q, want oracle", reloaded.Mode.Default.Major)
+	}
+}
+
+// TestSaveProjectConfig_NoExistingFile_WritesModeOnly is the regression test
+// for the stale-project-config shadowing bug (bugs.md): when the project has
+// no .goa/config.yaml yet, SaveProjectConfig must persist ONLY the mode
+// section — the documented field scope of this entry point (/mode, /autonomy,
+// autonomy-cycle hotkey). Previously it marshaled the ENTIRE merged in-memory
+// config (embedded defaults + home-layer values) into the project layer,
+// where those baked values silently shadowed every later home-config edit
+// (e.g. the embedded default context_compression.strategy "micro" kept
+// winning over the user's home-config "tool_elision" on every startup).
+func TestSaveProjectConfig_NoExistingFile_WritesModeOnly(t *testing.T) {
+	proj := t.TempDir()
+	home := t.TempDir()
+	mustMkdir(t, filepath.Join(home, ".goa"))
+
+	cl := NewCascadeLoader(proj, "", map[string]string{})
+	cl.homeDir = home
+
+	cfg, err := cl.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	// Precondition: the merged in-memory config carries embedded defaults
+	// (context_compression) — the values that must NOT be baked into the
+	// project layer.
+	if cfg.ContextCompression.Strategy == "" {
+		t.Fatalf("precondition: embedded compression strategy should be set")
+	}
+	// The caller's legitimate change (what /mode and /autonomy persist).
+	cfg.Mode.Default.Major = "oracle"
+
+	if err := cl.SaveProjectConfig(cfg); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+
+	// The written file must contain ONLY the mode section: no merged
+	// top-level sections that would shadow the home config on next load.
+	raw, err := os.ReadFile(filepath.Join(proj, ".goa", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read written project config: %v", err)
+	}
+	content := string(raw)
+	for _, banned := range []string{
+		"context_compression", "providers:", "models:", "tools:",
+		"telegram:", "execution:", "active_model", "orchestrator:",
+	} {
+		if strings.Contains(content, banned) {
+			t.Errorf("project config must not bake %q into the project layer, got:\n%s", banned, content)
+		}
+	}
+	if !strings.Contains(content, "mode:") {
+		t.Errorf("project config missing the mode section, got:\n%s", content)
+	}
+
+	// The caller's mode change round-trips, and compression still resolves
+	// from the lower layers (nothing shadowed by the project file).
+	reloaded, err := cl.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if string(reloaded.Mode.Default.Major) != "oracle" {
+		t.Errorf("mode change not persisted: Mode.Default.Major = %q, want oracle", reloaded.Mode.Default.Major)
+	}
+	if reloaded.ContextCompression.Strategy != cfg.ContextCompression.Strategy {
+		t.Errorf("compression strategy changed across save: %q -> %q (project layer must not restate it)",
+			cfg.ContextCompression.Strategy, reloaded.ContextCompression.Strategy)
 	}
 }
 

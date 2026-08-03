@@ -33,7 +33,12 @@ type ConfigSaver interface {
 	// Save writes the given config to ~/.goa/config.yaml.
 	Save(cfg *Config) error
 
-	// SaveProjectConfig writes the given config to .goa/config.yaml in the project directory.
+	// SaveProjectConfig persists the mode configuration (active major mode and
+	// per-mode autonomy) to .goa/config.yaml in the project directory. The save
+	// is field-scoped: existing on-disk settings are preserved, and a newly
+	// created file contains only the mode section — never a dump of the merged
+	// in-memory config (that would bake embedded defaults and home-layer values
+	// into the project layer, where they shadow later home-config edits).
 	SaveProjectConfig(cfg *Config) error
 
 	// SaveHomeProvidersAndModels updates providers, models, active_provider, and
@@ -761,28 +766,57 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 	// the entire in-memory config, so a stale in-memory Tools.Enabled (e.g.
 	// goal toggled earlier in the session) was written back over the on-disk
 	// value — silently reverting the user's tool toggles on the next session.
-	merged := cfg.DeepCopy()
-	if data, err := os.ReadFile(path); err == nil {
-		onDisk := &Config{}
-		if uerr := yaml.Unmarshal(data, onDisk); uerr == nil {
-			merged = onDisk
-			merged.Mode = cfg.Mode
-		}
-	} else if !os.IsNotExist(err) {
+	data, err := os.ReadFile(path)
+	switch {
+	case err != nil && !os.IsNotExist(err):
 		return fmt.Errorf("read project config: %w", err)
+	case err != nil:
+		// No project file yet: persist ONLY the mode section this entry
+		// point owns. Writing the full merged config would bake embedded
+		// defaults and home-layer values into the project layer, where they
+		// silently shadow every later home-config edit (bugs.md: startup
+		// /config showed the embedded default compression strategy "micro"
+		// instead of the home-config value on every launch).
+		return writeModeOnlyProjectConfig(path, cfg.Mode)
 	}
+
+	onDisk := &Config{}
+	if uerr := yaml.Unmarshal(data, onDisk); uerr != nil {
+		// Unreadable project file: same mode-only scope — never dump the
+		// full merged config into the project layer.
+		return writeModeOnlyProjectConfig(path, cfg.Mode)
+	}
+	merged := onDisk
+	merged.Mode = cfg.Mode
 
 	saveCfg := merged.DeepCopy()
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
 	saveCfg.Models = persistableModels(saveCfg.Models)
 
-	data, err := yaml.Marshal(saveCfg)
+	out, err := yaml.Marshal(saveCfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, out, 0644); err != nil {
+		return fmt.Errorf("write project config: %w", err)
+	}
+	return nil
+}
+
+// writeModeOnlyProjectConfig creates a project config file containing only
+// the mode section — the single field scope SaveProjectConfig is documented
+// to own. It marshals a map rather than a sparse Config because most Config
+// fields lack omitempty: a sparse Config would emit zero-value sections
+// (e.g. tools.terminal.sandbox.enabled: false) that would shadow home-layer
+// values on the next cascade load.
+func writeModeOnlyProjectConfig(path string, mode ModeConfig) error {
+	out, err := yaml.Marshal(map[string]ModeConfig{"mode": mode})
+	if err != nil {
+		return fmt.Errorf("marshal mode config: %w", err)
+	}
+	if err := os.WriteFile(path, out, 0644); err != nil {
 		return fmt.Errorf("write project config: %w", err)
 	}
 	return nil

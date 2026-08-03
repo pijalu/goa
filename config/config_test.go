@@ -423,6 +423,76 @@ func TestDeepCopy(t *testing.T) {
 	}
 }
 
+// deepCopyFixture returns a config exercising the fields a faithful deep
+// copy must handle: a disabled ContextCompression block (DeepMerge would
+// drop it), nested maps, a slice of structs, a *bool, and yaml:"-" fields.
+func deepCopyFixture() *Config {
+	stall := false
+	return &Config{
+		ContextCompression: ContextCompressionConfig{
+			Enabled:    false, // disabled: DeepMerge would drop the whole block
+			Thresholds: CompressionThresholdsConfig{SoftPercent: 85, TriggerPercent: 80},
+			PerModel:   map[string]ModelCompressionOverride{"m1": {MaxTokens: 4096}},
+		},
+		Execution: ExecutionConfig{DisableThinkingStallDetection: &stall},
+		Providers: []ProviderConfig{{ID: "p1", Headers: map[string]string{"k": "v"}}},
+		Aliases:   map[string]string{"n": "session:new"},
+		FirstRun:  true,
+		ConfigDir: "/tmp/x",
+	}
+}
+
+// TestDeepCopy_Faithful pins fidelity: DeepCopy must preserve sections the
+// cascade merge would skip (the ContextCompression block when disabled),
+// nested reference content, and yaml:"-" fields.
+func TestDeepCopy_Faithful(t *testing.T) {
+	copy := deepCopyFixture().DeepCopy()
+
+	if copy.ContextCompression.Thresholds != (CompressionThresholdsConfig{SoftPercent: 85, TriggerPercent: 80}) {
+		t.Errorf("DeepCopy lost disabled ContextCompression thresholds: %+v", copy.ContextCompression)
+	}
+	if copy.ContextCompression.PerModel["m1"].MaxTokens != 4096 {
+		t.Errorf("DeepCopy lost ContextCompression per-model overrides: %+v", copy.ContextCompression.PerModel)
+	}
+	if len(copy.Providers) != 1 || copy.Providers[0].ID != "p1" || copy.Providers[0].Headers["k"] != "v" {
+		t.Errorf("DeepCopy lost provider slice content: %+v", copy.Providers)
+	}
+	if copy.Aliases["n"] != "session:new" {
+		t.Errorf("DeepCopy lost aliases: %+v", copy.Aliases)
+	}
+	if copy.Execution.DisableThinkingStallDetection == nil || *copy.Execution.DisableThinkingStallDetection {
+		t.Errorf("DeepCopy lost *bool field: %v", copy.Execution.DisableThinkingStallDetection)
+	}
+	if !copy.FirstRun || copy.ConfigDir != "/tmp/x" {
+		t.Errorf("DeepCopy lost yaml:\"-\" fields: FirstRun=%v ConfigDir=%q", copy.FirstRun, copy.ConfigDir)
+	}
+}
+
+// TestDeepCopy_NoAliasing pins independence: mutating the copy must not
+// leak into the original (no shared maps, slices, or pointers).
+func TestDeepCopy_NoAliasing(t *testing.T) {
+	original := deepCopyFixture()
+	copy := original.DeepCopy()
+
+	copy.ContextCompression.PerModel["m1"] = ModelCompressionOverride{MaxTokens: 8192}
+	copy.Providers[0].Headers["k"] = "changed"
+	copy.Aliases["n"] = "changed"
+	*copy.Execution.DisableThinkingStallDetection = true
+
+	if original.ContextCompression.PerModel["m1"].MaxTokens != 4096 {
+		t.Error("PerModel map aliased between original and copy")
+	}
+	if original.Providers[0].Headers["k"] != "v" {
+		t.Error("provider Headers map aliased between original and copy")
+	}
+	if original.Aliases["n"] != "session:new" {
+		t.Error("Aliases map aliased between original and copy")
+	}
+	if *original.Execution.DisableThinkingStallDetection {
+		t.Error("*bool field aliased between original and copy")
+	}
+}
+
 // --- M13: ModeConfig tests ---
 
 func TestDefaultModeState_UsesExplicitDefault(t *testing.T) {

@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -189,12 +190,39 @@ func modeDefaultsPath(cfg *config.Config) []string {
 func applyConfigSet(ctx core.Context, key, value string) error {
 	path := strings.Split(key, ".")
 	prevProvider := ctx.Config.ActiveProvider
-	if err := setConfigField(ctx.Config, path, value); err != nil {
+	// Apply the change to a deep copy first: per-key setters only check their
+	// own range, but cross-field invariants (e.g. compression thresholds
+	// soft ≤ trigger ≤ hard) are enforced by Config.Validate. Without this
+	// gate /config could apply and persist a configuration that fails
+	// validation on the next start (bugs.md).
+	candidate := ctx.Config.DeepCopy()
+	if err := setConfigField(candidate, path, value); err != nil {
 		writeFmt(ctx, "Invalid value for %s: %v\n", key, err)
 		return nil
 	}
 	// execution.mode needs the new-mode-system default updated before we sync
 	// the runtime agent mode, otherwise the agent manager keeps the old autonomy.
+	if key == "execution.mode" {
+		updateModeDefault(candidate, value)
+	}
+	if err := candidate.Validate(); err != nil {
+		writeFmt(ctx, "Refusing to set %s = %s: the resulting configuration is invalid (not applied, not saved):\n%v\n", key, value, err)
+		// /config:set is an internal command: its router output is not echoed
+		// to the chat viewport (echoCommandResult drops internal output), so
+		// the rejection must also go through the flash channel — otherwise it
+		// would be silent in the TUI.
+		flash := err.Error()
+		var ve *internal.ValidationError
+		if errors.As(err, &ve) {
+			flash = strings.Join(ve.ErrList, "; ")
+		}
+		ctx.Flash(fmt.Sprintf("Rejected %s = %s: %s (not applied, not saved)", key, value, flash))
+		return nil
+	}
+	// Commit the validated change to the live config. The setters are
+	// deterministic functions of (cfg, value), so this cannot fail after the
+	// candidate applied cleanly.
+	_ = setConfigField(ctx.Config, path, value)
 	if key == "execution.mode" {
 		updateModeDefault(ctx.Config, value)
 	}
