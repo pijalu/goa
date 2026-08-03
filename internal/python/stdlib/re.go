@@ -84,7 +84,11 @@ backreferences.
 
 Supported flags: I/IGNORECASE, M/MULTILINE, S/DOTALL, X/VERBOSE.
 VERBOSE is implemented by stripping unescaped whitespace and comments
-outside character classes before handing the pattern to RE2.`,
+outside character classes before handing the pattern to RE2.
+
+CPython parity note: finditer returns a LIST of Match objects rather
+than a lazy iterator (Py3.4-subset pragmatism); 'for m in
+re.finditer(...)' and 'list(...)' usage works identically.`,
 		},
 		Methods: []*py.Method{
 			py.MustNewMethod("compile", reCompile, 0, `compile(pattern, flags=0) -> Pattern
@@ -100,8 +104,12 @@ If zero or more characters at the beginning of string match the
 regular expression pattern, return a corresponding Match object.`),
 			py.MustNewMethod("findall", reFindall, 0, `findall(pattern, string, flags=0) -> list[str]
 
-Return all non-overlapping matches of pattern in string as a list
-of strings.`),
+ Return all non-overlapping matches of pattern in string as a list
+ of strings.`),
+			py.MustNewMethod("finditer", reFinditer, 0, `finditer(pattern, string, flags=0) -> list[Match]
+
+ Return all non-overlapping matches of pattern in string as a list
+ of Match objects (CPython returns a lazy iterator; see module doc).`),
 			py.MustNewMethod("sub", reSub, 0, `sub(pattern, repl, string, flags=0) -> str
 
 Return the string obtained by replacing the leftmost non-overlapping
@@ -137,8 +145,13 @@ If zero or more characters at the beginning of string match this
 pattern, return a corresponding Match object.`)
 	patternType.Dict["findall"] = py.MustNewMethod("findall", patternFindall, 0, `findall(string) -> list[str]
 
-Return all non-overlapping matches of this pattern in string as a
-list of strings.`)
+ Return all non-overlapping matches of this pattern in string as a
+ list of strings.`)
+	patternType.Dict["finditer"] = py.MustNewMethod("finditer", patternFinditer, 0, `finditer(string) -> list[Match]
+
+ Return all non-overlapping matches of this pattern in string as a
+ list of Match objects (CPython returns a lazy iterator; see module
+ doc).`)
 	patternType.Dict["sub"] = py.MustNewMethod("sub", patternSub, 0, `sub(repl, string) -> str
 
 Return the string obtained by replacing the leftmost non-overlapping
@@ -217,6 +230,34 @@ func reFindall(self py.Object, args py.Tuple) (py.Object, error) {
 		items[i] = py.String(m)
 	}
 	return py.NewListFromItems(items), nil
+}
+
+// reFinditer implements re.finditer(pattern, string, flags=0). CPython
+// returns a lazy iterator; the Py3.4-subset pragmatism here returns a LIST
+// of Match objects (see the module doc) — 'for m in re.finditer(...)' and
+// 'list(...)' usage is identical.
+func reFinditer(self py.Object, args py.Tuple) (py.Object, error) {
+	var flags int64
+	pat, str, err := parseTwoOrThreeArgs(args, "finditer", &flags)
+	if err != nil {
+		return nil, err
+	}
+	pp, txt, err := compileAndGetText(pat, str, "finditer", int(flags))
+	if err != nil {
+		return nil, err
+	}
+	return finditerMatches(pp, txt), nil
+}
+
+// finditerMatches returns all non-overlapping matches of pp in txt as a
+// py.List of *Match objects ([] when nothing matches).
+func finditerMatches(pp *Pattern, txt string) py.Object {
+	all := pp.re.FindAllStringSubmatchIndex(txt, -1)
+	items := make([]py.Object, len(all))
+	for i, indices := range all {
+		items[i] = &Match{pattern: pp, text: txt, indices: indices}
+	}
+	return py.NewListFromItems(items)
 }
 
 // reSub implements re.sub(pattern, repl, string, flags=0).
@@ -317,6 +358,24 @@ func patternFindall(self py.Object, args py.Tuple) (py.Object, error) {
 		items[i] = py.String(m)
 	}
 	return py.NewListFromItems(items), nil
+}
+
+// patternFinditer implements Pattern.finditer(string). Like the module-level
+// finditer, returns a LIST of Match objects (see the module doc).
+func patternFinditer(self py.Object, args py.Tuple) (py.Object, error) {
+	var str py.Object
+	if err := py.UnpackTuple(args, nil, "finditer", 1, 1, &str); err != nil {
+		return nil, err
+	}
+	pp, ok := self.(*Pattern)
+	if !ok {
+		return nil, py.ExceptionNewf(py.TypeError, "expected Pattern, got %s", self.Type().Name)
+	}
+	txt, err := compat.AsString(str, "finditer")
+	if err != nil {
+		return nil, err
+	}
+	return finditerMatches(pp, txt), nil
 }
 
 func patternSub(self py.Object, args py.Tuple) (py.Object, error) {

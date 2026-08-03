@@ -650,7 +650,7 @@ If new items are added, restart the process.
 
 ---
 
-## python tool `re` module missing `finditer` (module-level and Pattern) — OPEN
+## python tool `re` module missing `finditer` (module-level and Pattern) — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (2026-08-03, export goa-export-20260803-113756.zip; the
   model's script):
@@ -687,6 +687,23 @@ If new items are added, restart the process.
   1. `go test ./internal/python/... ./tools/ -count=1 -race` green.
   2. Interactive: `for m in re.finditer(r'\d+', 'a1 b22'): print(m.group(0))`.
   3. Quality gates per guideline 6, run separately.
+- **Resolution** (2026-08-03): implemented per the fix plan.
+  - `internal/python/stdlib/re.go`: new module-level `re.finditer(pattern,
+    string, flags=0)` and `Pattern.finditer(string)`, both returning a LIST
+    of `Match` objects via the shared `finditerMatches` helper (Py3.4-subset
+    pragmatism — a list satisfies `for m in re.finditer(...)` and `list(...)`
+    usage; the difference is documented in the module Doc per the fix plan).
+    Match objects are built from `FindAllStringSubmatchIndex`, so
+    `group(0..n)`, `start()`, `end()`, `span()`, `string` and `re` all work
+    exactly like search/match results; the empty case returns `[]`.
+  - Regression tests: `internal/python/stdlib/re_test.go`
+    `TestReFinditer` (3-match positions, groups, empty case, flags
+    combination `re.I`, `list()` usage) and `TestReFinditer_PatternMethod`
+    (Pattern parity); tool-layer regression `tools/python_test.go`
+    `TestPythonTool_Execute_ReFinditer` replays the reported snippet.
+  - Validation: `go test ./internal/python/... ./tools/ -count=1 -race`
+    green. Interactive step 2 covered by the pyCode tests. Gates per
+    guideline 6 run at archive time. Awaiting archive.
 
 ---
 

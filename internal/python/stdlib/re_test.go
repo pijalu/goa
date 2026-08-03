@@ -480,3 +480,71 @@ print("verbose_escaped:", m6 is not None)
 		}
 	}
 }
+
+// TestReFinditer covers module-level re.finditer: Match objects with correct
+// group(0)/start()/end() for a multi-match pattern, the empty case, flags,
+// and iteration/list() usage (bugs.md re.finditer parity gap).
+func TestReFinditer(t *testing.T) {
+	code := `
+import re
+
+# 3-match pattern: Match objects with correct group(0), start(), end()
+ms = re.finditer(r'\d+', 'a1 b22 c333')
+print("count:", len(ms))
+for m in ms:
+    print(m.group(0), m.start(), m.end())
+
+# group(n) on a finditer match
+ms2 = re.finditer(r'(\w+)=(\d+)', 'x=1 y=2')
+for m in ms2:
+    print(m.group(1), m.group(2))
+
+# empty case returns []
+print("empty:", re.finditer(r'z+', 'abc'))
+
+# flags combine: case-insensitive
+print("flags:", len(re.finditer(r'a', 'A a', re.I)))
+
+# list() usage works
+print("list:", list(re.finditer(r'\d', '1 2')) is not None)
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	for _, want := range []string{
+		"count: 3", "1 1 2", "22 4 6", "333 8 11",
+		"x 1", "y 2", "empty: []", "flags: 2", "list: True",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got: %s", want, out)
+		}
+	}
+}
+
+// TestReFinditer_PatternMethod covers Pattern.finditer parity with the
+// module-level function.
+func TestReFinditer_PatternMethod(t *testing.T) {
+	code := `
+import re
+p = re.compile(r'\d+')
+ms = p.finditer('a1 b22 c333')
+print("count:", len(ms))
+for m in ms:
+    print(m.group(0), m.start(), m.end())
+print("empty:", p.finditer('abc'))
+print("string_attr:", ms[0].string)
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	for _, want := range []string{
+		"count: 3", "1 1 2", "22 4 6", "333 8 11",
+		"empty: []", "string_attr: a1 b22 c333",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got: %s", want, out)
+		}
+	}
+}

@@ -470,3 +470,21 @@ func TestClarifyModuleError_Passthrough(t *testing.T) {
 		t.Errorf("non-module error rewritten: %q", got)
 	}
 }
+
+// TestPythonTool_Execute_ReFinditer replays the session failure from
+// goa-export-20260803-113756.zip: re.finditer raised "'module' has no
+// attribute 'finditer'" (bugs.md re.finditer parity gap).
+func TestPythonTool_Execute_ReFinditer(t *testing.T) {
+	tool := &PythonTool{}
+	code := `import re
+src = "def flatten(x): pass\ndef formatValue(y): pass\ndef other(z): pass"
+for m in re.finditer(r'func (flatten|formatValue|valStr|toStr)\(', "func flatten(a) func formatValue(b)"):
+    print(m.group(1), m.start())`
+	out, err := tool.Execute(fmt.Sprintf(`{"code": %q}`, code))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, "flatten 0") || !strings.Contains(out, "formatValue 16") {
+		t.Errorf("output = %q, want finditer matches with positions", out)
+	}
+}
