@@ -84,6 +84,53 @@ func TestModelCommand_NoArgs_ShowsSelector(t *testing.T) {
 	}
 }
 
+// TestModelCommand_PickerKeepsDefaultKeymap is a regression guard for the
+// /goal:manage selector rework (bugs.md goal manager): the /model picker
+// must keep the DEFAULT selector bindings — '+' = add, '-' = delete — and
+// must not request the per-instance reorder keymap.
+func TestModelCommand_PickerKeepsDefaultKeymap(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveProvider = "test-provider"
+	ctx.Config.ActiveModel = "k3"
+	ctx.Config.Providers = []config.ProviderConfig{{ID: "test-provider", Name: "Test"}}
+	ctx.Config.Models = []config.ModelConfig{
+		{ID: "k3", ProviderID: "test-provider", Model: "k3"},
+	}
+	ctx.ProviderManager = newTestProviderManager()
+	ctx.SelectOptionKeyedFunc = func(string, []tui.SelectorItem, string, tui.SelectorKeymap, func(string, bool)) {
+		t.Error("/model must use the default selector bindings, not the reorder keymap")
+	}
+	var titles []string
+	var onSel func(string, bool)
+	ctx.SelectOptionFunc = func(title string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		titles = append(titles, title)
+		onSel = cb
+	}
+
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, []string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(titles) != 1 || titles[0] != "Select model:" {
+		t.Fatalf("expected the model picker, got %v", titles)
+	}
+
+	// '-' on a model row emits "__delete__"+id → the remove-confirmation
+	// flow must open (delete semantics unchanged).
+	onSel("__delete__k3", true)
+	if got := titles[len(titles)-1]; got != "Remove model k3?" {
+		t.Fatalf("'-' must keep delete semantics: got selector %q", got)
+	}
+
+	// Decline the removal; '+' must still open the add-model flow (the
+	// provider picker — add semantics unchanged, no network involved).
+	onSel("no", true)
+	onSel("__add__", true)
+	if got := titles[len(titles)-1]; got != "Select provider:" {
+		t.Fatalf("'+' must keep add semantics: got selector %q", got)
+	}
+}
+
 func TestModelCommand_WithArg_SwitchesModel(t *testing.T) {
 	ctx := newModeTestContext()
 	ctx.Config.ActiveModel = "llama3"

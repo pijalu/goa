@@ -162,6 +162,12 @@ type Context struct {
 	// immediately and onSelected runs later.
 	SelectOptionFunc func(title string, options []tui.SelectorItem, current string, onSelected func(selected string, ok bool))
 
+	// SelectOptionKeyedFunc is like SelectOptionFunc but carries per-instance
+	// hotkey bindings (tui.SelectorKeymap) — /goal:manage uses it to repurpose
+	// '+'/'-' from add/delete to direct reordering. Optional; when nil,
+	// SelectOptionKeyed falls back to SelectOption with default bindings.
+	SelectOptionKeyedFunc func(title string, options []tui.SelectorItem, current string, keys tui.SelectorKeymap, onSelected func(selected string, ok bool))
+
 	// SelectOptionAsyncFunc is like SelectOptionFunc but for options that must
 	// be fetched asynchronously (e.g. a provider's live GET /models). The UI
 	// shows a loading placeholder immediately, runs fetch in a goroutine, and
@@ -454,6 +460,19 @@ func (c Context) SelectOption(title string, options []tui.SelectorItem, current 
 	} else if onSelected != nil {
 		onSelected("", false)
 	}
+}
+
+// SelectOptionKeyed shows an interactive picker with per-instance hotkey
+// bindings (e.g. the goal manager's reorder mode). When no keyed callback is
+// configured it falls back to SelectOption with default bindings — the keyed
+// behavior is a progressive enhancement, so a host without it keeps the
+// legacy (add/delete) emits, which the caller must also handle.
+func (c Context) SelectOptionKeyed(title string, options []tui.SelectorItem, current string, keys tui.SelectorKeymap, onSelected func(selected string, ok bool)) {
+	if c.SelectOptionKeyedFunc != nil {
+		c.SelectOptionKeyedFunc(title, options, current, keys, onSelected)
+		return
+	}
+	c.SelectOption(title, options, current, onSelected)
 }
 
 // SelectOptionAsync shows a loading placeholder, runs fetch in the background,

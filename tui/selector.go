@@ -26,6 +26,27 @@ type SelectorItem struct {
 	// caller's item order is kept as-is. Use for chronologically ordered
 	// lists (e.g. the /session picker) where sorting would destroy meaning.
 	PreserveOrder bool
+	// Editable opts the item into the 'e' edit hotkey: with an empty search
+	// filter, pressing 'e' while this item is highlighted emits
+	// "__edit__"+Value instead of starting a filter (used by /goal:manage to
+	// edit a queued goal's description). On non-editable items 'e' keeps its
+	// default filter behavior, so other pickers are unaffected.
+	Editable bool
+}
+
+// SelectorKeymap configures what a Selector instance's hotkeys emit. The
+// zero value keeps the default bindings shared by most pickers (/provider,
+// /model, …): '+' emits "__add__", '-' emits "__delete__"+value, and
+// Delete/Backspace emits "__delete__"+value.
+type SelectorKeymap struct {
+	// ReorderMode repurposes '+'/'-' from add/delete to direct reordering
+	// (used by /goal:manage): '+' emits "__moveup__"+value and '-' emits
+	// "__movedown__"+value for the highlighted non-sentinel item; on sentinel
+	// rows and empty lists the keys are consumed without emitting, so they
+	// never pollute the search filter. Delete/Backspace keeps the delete
+	// emit, so deletion stays available (and confirmed by the caller) in
+	// reorder mode.
+	ReorderMode bool
 }
 
 // Selector is a Component that shows a searchable list of options.
@@ -35,6 +56,7 @@ type SelectorItem struct {
 //   - Enter to select
 //   - Escape to cancel
 //   - Backspace/Delete (on a non-menu item) to trigger deletion
+//   - 'e' (on an Editable item with an empty filter) to trigger editing
 //
 // The result is delivered through a channel.
 //
@@ -51,6 +73,7 @@ type Selector struct {
 	filtered     []SelectorItem
 	selected     int
 	currentValue string // the currently active option value (shown with ✓ marker)
+	keymap       SelectorKeymap
 
 	result chan string // delivers the selected value (empty on cancel)
 	done   func()      // restores the editor
@@ -118,6 +141,10 @@ func preserveSelectorOrder(items []SelectorItem) bool {
 
 // SetDone sets the callback that restores the editor when selection ends.
 func (s *Selector) SetDone(fn func()) { s.done = fn }
+
+// SetKeymap sets the per-instance hotkey bindings (see SelectorKeymap). The
+// default (never calling this) keeps '+' = add and '-' = delete.
+func (s *Selector) SetKeymap(k SelectorKeymap) { s.keymap = k }
 
 // SetTUI stores the TUI reference for triggering re-renders on animation.
 func (s *Selector) SetTUI(t *TUI) { s.tui = t }
@@ -197,34 +224,85 @@ func isSelectorSentinel(v string) bool {
 	switch v {
 	case "__add__", "__custom__":
 		return true
+	// /goal:manage action rows: the add-at-start/end rows and the Done row are
+	// never deletable or movable — the reorder/delete keys are consumed on
+	// them (the Done row previously emitted "__delete____done__", which
+	// surfaced a bogus "queued goal not found" error).
+	case "__add_first__", "__add_last__", "__done__":
+		return true
 	}
 	return false
 }
 
 func (s *Selector) handlePrintable(data string) *string {
-	if len(data) == 1 && data[0] >= 32 && data[0] < 127 {
-		if s.searchText == "" {
-			switch data[0] {
-			case '+':
-				v := "__add__"
-				return &v
-			case '-':
-				if len(s.filtered) > 0 {
-					item := s.filtered[s.selected]
-					if !isSelectorSentinel(item.Value) {
-						v := "__delete__" + item.Value
-						return &v
-					}
-				}
-				// Deletion is not applicable (sentinel item or empty list):
-				// consume the key instead of polluting the search filter.
-				return nil
-			}
-		}
-		s.searchText += data
-		s.applyFilter()
+	if len(data) != 1 || data[0] < 32 || data[0] >= 127 {
+		return nil
 	}
+	if s.searchText == "" {
+		if emit, consumed := s.handleHotkey(data[0]); emit != nil || consumed {
+			return emit
+		}
+	}
+	s.searchText += data
+	s.applyFilter()
 	return nil
+}
+
+// handleHotkey processes the empty-filter hotkeys ('+', '-', 'e'). It returns
+// the value to emit (nil when the hotkey does not apply) and whether the key
+// is consumed (consumed keys never reach the search filter).
+func (s *Selector) handleHotkey(key byte) (emit *string, consumed bool) {
+	switch key {
+	case '+':
+		if s.keymap.ReorderMode {
+			return s.moveHotkey("__moveup__"), true
+		}
+		v := "__add__"
+		return &v, true
+	case '-':
+		if s.keymap.ReorderMode {
+			return s.moveHotkey("__movedown__"), true
+		}
+		// '-' is always consumed: when deletion does not apply (sentinel
+		// item or empty list) the key must not pollute the search filter.
+		return s.deleteHotkey(), true
+	case 'e':
+		// 'e' is consumed ONLY by an editable row; otherwise it falls
+		// through and starts a filter like any other letter.
+		return s.editHotkey(), false
+	}
+	return nil, false
+}
+
+// moveHotkey implements the '+/-' hotkeys in ReorderMode (/goal:manage): emit
+// prefix+value for the highlighted item, unless it is a sentinel action row
+// or the list is empty.
+func (s *Selector) moveHotkey(prefix string) *string {
+	if len(s.filtered) == 0 || isSelectorSentinel(s.filtered[s.selected].Value) {
+		return nil
+	}
+	v := prefix + s.filtered[s.selected].Value
+	return &v
+}
+
+// deleteHotkey implements the '-' hotkey: emit "__delete__"+value for the
+// highlighted item, unless it is a sentinel action row or the list is empty.
+func (s *Selector) deleteHotkey() *string {
+	if len(s.filtered) == 0 || isSelectorSentinel(s.filtered[s.selected].Value) {
+		return nil
+	}
+	v := "__delete__" + s.filtered[s.selected].Value
+	return &v
+}
+
+// editHotkey implements the 'e' hotkey: emit "__edit__"+value when the
+// highlighted item opts in via SelectorItem.Editable.
+func (s *Selector) editHotkey() *string {
+	if len(s.filtered) == 0 || !s.filtered[s.selected].Editable {
+		return nil
+	}
+	v := "__edit__" + s.filtered[s.selected].Value
+	return &v
 }
 
 func (s *Selector) handleBackspace(data string) *string {
@@ -437,8 +515,15 @@ func (s *Selector) renderSearchLine(c selectorColors) string {
 
 func (s *Selector) renderHint(c selectorColors) string {
 	hint := "  ↑↓ nav  /  type filter  /  enter  /  esc"
-	if hasDeletableItems(s.items) {
+	if s.keymap.ReorderMode {
+		if hasDeletableItems(s.items) {
+			hint += "  /  " + ansi.Fg(c.suc) + "+ up / - down / del delete" + ansi.Reset
+		}
+	} else if hasDeletableItems(s.items) {
 		hint += "  /  " + ansi.Fg(c.suc) + "+ add / - delete" + ansi.Reset
+	}
+	if hasEditableItems(s.items) {
+		hint += "  /  " + ansi.Fg(c.suc) + "e edit" + ansi.Reset
 	}
 	return ansi.Fg(c.sys) + ansi.Faint + hint + ansi.Reset
 }
@@ -446,6 +531,15 @@ func (s *Selector) renderHint(c selectorColors) string {
 func hasDeletableItems(items []SelectorItem) bool {
 	for _, item := range items {
 		if !strings.HasPrefix(item.Value, "__") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEditableItems(items []SelectorItem) bool {
+	for _, item := range items {
+		if item.Editable {
 			return true
 		}
 	}

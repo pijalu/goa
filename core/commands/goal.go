@@ -386,10 +386,13 @@ func todoStatusMark(status string) string {
 	}
 }
 
-// showList implements /goal:list: list the active goal and every queued goal
-// in execution order, printing each goal's COMPLETE objective (no truncation).
-// The output is markdown so it renders formatted in the chat panel — the
-// counterpart to the goal bubble, which caps its display at 3 lines.
+// showList implements /goal:list: list the current goal and every queued goal
+// in execution order, showing ALL information recorded for each goal —
+// placement, name, status, counters, context run type (fresh/reuse),
+// completion criterion, verify command, handover, budget, terminal state and
+// todos — plus the COMPLETE objective (no truncation). The output is markdown
+// so it renders formatted in the chat panel — the counterpart to the goal
+// bubble, which caps its display at 3 lines.
 func (c *GoalCommand) showList(ctx core.Context) error {
 	active := c.Mode.GetGoal().Goal
 	queued, err := c.Queue.Read()
@@ -405,17 +408,11 @@ func (c *GoalCommand) showList(ctx core.Context) error {
 	sb.WriteString("## Goals\n\n")
 	order := 1
 	if active != nil {
-		name := active.Name
-		if active.ManagedBy != "" {
-			name += " [" + active.ManagedBy + "]"
-		}
-		meta := fmt.Sprintf("status %s · turns %d · %s tokens · %s",
-			active.Status, active.TurnsUsed, goal.FormatTokens(active.TokensUsed), goal.FormatElapsed(active.WallClockMs))
-		writeGoalListEntry(&sb, order, "active", name, meta, active.Objective)
+		writeCurrentGoalListEntry(&sb, order, active)
 		order++
 	}
-	for _, g := range queued {
-		writeGoalListEntry(&sb, order, "queued", g.Name, "", g.Objective)
+	for i := range queued {
+		writeQueuedGoalListEntry(&sb, order, &queued[i])
 		order++
 	}
 	writeStr(ctx, sb.String())
@@ -438,6 +435,114 @@ func writeGoalListEntry(sb *strings.Builder, order int, placement, name, meta, o
 		fmt.Fprintf(sb, "*%s*\n\n", meta)
 	}
 	fmt.Fprintf(sb, "%s\n\n", objective)
+}
+
+// contextRunLabel renders the goal's context run type: "fresh" runs the
+// continuation turns on a clean context (objective + handover only), "reuse"
+// reuses the current conversation.
+func contextRunLabel(fresh bool) string {
+	if fresh {
+		return "fresh"
+	}
+	return "reuse"
+}
+
+// formatGoalBudget renders a compact "budget used/limit" summary for goals
+// with hard limits; unlimited goals yield "".
+func formatGoalBudget(g *goal.GoalSnapshot) string {
+	parts := make([]string, 0, 3)
+	if g.Budget.TurnBudget != nil {
+		parts = append(parts, fmt.Sprintf("turns %d/%d", g.TurnsUsed, *g.Budget.TurnBudget))
+	}
+	if g.Budget.TokenBudget != nil {
+		parts = append(parts, fmt.Sprintf("tokens %s/%s", goal.FormatTokens(g.TokensUsed), goal.FormatTokens(*g.Budget.TokenBudget)))
+	}
+	if g.Budget.WallClockBudgetMs != nil {
+		parts = append(parts, fmt.Sprintf("time %s/%s", goal.FormatElapsed(g.WallClockMs), goal.FormatElapsed(*g.Budget.WallClockBudgetMs)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "budget " + strings.Join(parts, " · ")
+}
+
+// writeGoalAttrs renders the optional attributes shared by current and queued
+// goals — completion criterion, verify command and handover — as one markdown
+// bullet block. A set handover is shown as a presence marker only: its text
+// is untrusted free-form content carried into the goal's reminder, not list
+// material.
+func writeGoalAttrs(sb *strings.Builder, criterion, verifyCommand, handover *string) {
+	wrote := false
+	if criterion != nil {
+		fmt.Fprintf(sb, "- Completion criterion: %s\n", *criterion)
+		wrote = true
+	}
+	if verifyCommand != nil {
+		fmt.Fprintf(sb, "- Verify command: `%s`\n", *verifyCommand)
+		wrote = true
+	}
+	if handover != nil {
+		sb.WriteString("- Handover: attached\n")
+		wrote = true
+	}
+	if wrote {
+		sb.WriteString("\n")
+	}
+}
+
+// writeGoalTerminalState renders the terminal reason/expectation of a paused
+// or blocked goal as a markdown bullet block. Goals without a terminal state
+// yield nothing.
+func writeGoalTerminalState(sb *strings.Builder, g *goal.GoalSnapshot) {
+	wrote := false
+	if g.TerminalReason != nil {
+		fmt.Fprintf(sb, "- Reason: %s\n", *g.TerminalReason)
+		wrote = true
+	}
+	if g.TerminalExpectation != nil {
+		fmt.Fprintf(sb, "- Needs: %s\n", *g.TerminalExpectation)
+		wrote = true
+	}
+	if wrote {
+		sb.WriteString("\n")
+	}
+}
+
+// writeCurrentGoalListEntry renders the current goal (whatever its status)
+// with its full information: counters, context run type, budget, criterion,
+// verify command, handover, terminal state and todos.
+func writeCurrentGoalListEntry(sb *strings.Builder, order int, g *goal.GoalSnapshot) {
+	name := g.Name
+	if g.ManagedBy != "" {
+		name += " [" + g.ManagedBy + "]"
+	}
+	meta := fmt.Sprintf("status %s · turns %d · %s tokens · %s · context %s",
+		g.Status, g.TurnsUsed, goal.FormatTokens(g.TokensUsed), goal.FormatElapsed(g.WallClockMs), contextRunLabel(g.FreshContext))
+	if budget := formatGoalBudget(g); budget != "" {
+		meta += " · " + budget
+	}
+	writeGoalListEntry(sb, order, "active", name, meta, g.Objective)
+	writeGoalAttrs(sb, g.CompletionCriterion, g.VerifyCommand, g.Handoff)
+	writeGoalTerminalState(sb, g)
+	if len(g.Todos) > 0 {
+		writeGoalTodos(sb, g.Todos)
+		sb.WriteString("\n")
+	}
+}
+
+// writeQueuedGoalListEntry renders a queued goal with its full information:
+// context run type, queue time, criterion, verify command and handover.
+func writeQueuedGoalListEntry(sb *strings.Builder, order int, g *goal.UpcomingGoal) {
+	name := g.Name
+	if g.ManagedBy != "" {
+		name += " [" + g.ManagedBy + "]"
+	}
+	meta := "context " + contextRunLabel(g.FreshContext)
+	if !g.CreatedAt.IsZero() {
+		meta += " · queued " + g.CreatedAt.Format("2006-01-02 15:04")
+	}
+	writeGoalListEntry(sb, order, "queued", name, meta, g.Objective)
+	writeGoalAttrs(sb, g.CompletionCriterion, g.VerifyCommand, g.Handoff)
 }
 
 func (c *GoalCommand) pause(ctx core.Context) error {
@@ -704,74 +809,260 @@ func (c *GoalCommand) queueLast(ctx core.Context, objective string, fresh bool) 
 	return nil
 }
 
+// goalManagerKeymap repurposes '+'/'-' from add/delete to direct reordering
+// for /goal:manage; Delete/Backspace keeps emitting the delete sentinel.
+var goalManagerKeymap = tui.SelectorKeymap{ReorderMode: true}
+
+// showQueueManager implements /goal:manage: an interactive manager listing
+// the goals in EXECUTION ORDER — the active goal first (marked [active], not
+// movable), then the queued goals in run order — framed by sentinel rows to
+// add goals at the start/end. With the reorder keymap, '+' moves the
+// highlighted goal up one position and '-' moves it down (direct hotkeys, no
+// submenu); Delete/Backspace asks for confirmation before removing; 'e'
+// edits the description; Enter on an add row opens the create-goal flow.
 func (c *GoalCommand) showQueueManager(ctx core.Context) error {
-	goals, err := c.Queue.Read()
+	return c.showQueueManagerAt(ctx, "")
+}
+
+// showQueueManagerAt opens the manager with the cursor (and ✓ marker) on the
+// row with the given value — every hotkey emit closes the selector, so the
+// manager reopens after each action and cursor keeps it on the row the user
+// is working with ("" starts on the first row).
+func (c *GoalCommand) showQueueManagerAt(ctx core.Context, cursor string) error {
+	queued, err := c.Queue.Read()
 	if err != nil {
 		return err
 	}
-	if len(goals) == 0 {
-		writeStr(ctx, "No queued goals.\n")
-		return nil
-	}
-	items := make([]tui.SelectorItem, 0, len(goals)+1)
-	for i, g := range goals {
-		label := truncate(g.Objective, 60)
-		if g.Name != "" {
-			label = fmt.Sprintf("%s — %s", g.Name, label)
-		}
-		items = append(items, tui.SelectorItem{
-			Value:       g.ID,
-			Label:       label,
-			Description: fmt.Sprintf("%c", 'A'+i),
-		})
-	}
-	items = append(items, tui.SelectorItem{Value: "__done__", Label: "Done", Description: "Close queue manager"})
-	ctx.SelectOption("Manage queued goals", items, "", func(selected string, ok bool) {
-		if !ok || selected == "__done__" {
-			return
-		}
-		// The selector's '-' hotkey emits "__delete__"+id for the highlighted
-		// item (mirrors the /provider and /model pickers): delete the goal
-		// directly instead of treating the sentinel-prefixed string as a goal
-		// id — which previously reached Queue.Remove and failed with
-		// "queued goal \"__delete__…\" not found" (bugs.md Issue 23).
-		if strings.HasPrefix(selected, "__delete__") {
-			id := strings.TrimPrefix(selected, "__delete__")
-			if _, _, err := c.Queue.Remove(id); err != nil {
-				ctx.Flash(err.Error())
-				return
-			}
-			ctx.Flash("Goal deleted.")
-			_ = c.showQueueManager(ctx) // reopen with the updated list
-			return
-		}
-		c.promptQueueAction(ctx, selected)
+	items := c.managerItems(queued)
+	ctx.SelectOptionKeyed("Goal manager — execution order", items, cursor, goalManagerKeymap, func(selected string, ok bool) {
+		c.handleManagerSelection(ctx, selected, ok)
 	})
 	return nil
 }
 
-func (c *GoalCommand) promptQueueAction(ctx core.Context, id string) {
-	actions := []tui.SelectorItem{
-		{Value: "up", Label: "Move up"},
-		{Value: "down", Label: "Move down"},
-		{Value: "delete", Label: "Delete"},
-		{Value: "cancel", Label: "Cancel"},
+// managerItems builds the manager rows in execution order: the add-at-start
+// sentinel, the active goal (marked, if any), the queued goals in run order,
+// the add-at-end sentinel and the Done row. PreserveOrder on every row keeps
+// the selector in caller order — the default alphabetical Label sort would
+// scramble the execution order the manager is meant to show. Goal rows opt
+// into the 'e' edit hotkey via Editable.
+func (c *GoalCommand) managerItems(queued []goal.UpcomingGoal) []tui.SelectorItem {
+	items := make([]tui.SelectorItem, 0, len(queued)+4)
+	items = append(items, tui.SelectorItem{
+		Value: "__add_first__", Label: "-- add at start --",
+		Description: "queue a goal to run next", PreserveOrder: true,
+	})
+	if active := c.Mode.GetGoal().Goal; active != nil {
+		items = append(items, tui.SelectorItem{
+			Value:         "__active__",
+			Label:         "[active] " + goalRowLabel(active.Name, active.Objective),
+			Description:   "running — not reorderable here",
+			PreserveOrder: true,
+		})
 	}
-	ctx.SelectOption("Queue action", actions, "", func(action string, ok bool) {
-		if !ok || action == "cancel" {
+	for i, g := range queued {
+		items = append(items, tui.SelectorItem{
+			Value:         g.ID,
+			Label:         goalRowLabel(g.Name, g.Objective),
+			Description:   fmt.Sprintf("%c", 'A'+i),
+			Editable:      true,
+			PreserveOrder: true,
+		})
+	}
+	items = append(items,
+		tui.SelectorItem{Value: "__add_last__", Label: "-- add at end --",
+			Description: "queue a goal to run last", PreserveOrder: true},
+		tui.SelectorItem{Value: "__done__", Label: "Done",
+			Description: "Close goal manager", PreserveOrder: true},
+	)
+	return items
+}
+
+// goalRowLabel renders one goal row as "name — objective…" with the
+// objective truncated to fit the selector width.
+func goalRowLabel(name, objective string) string {
+	label := truncate(objective, 60)
+	if name != "" {
+		label = fmt.Sprintf("%s — %s", name, label)
+	}
+	return label
+}
+
+// handleManagerSelection dispatches one selector emit from the manager:
+// hotkey emits (move up/down, delete, edit), the add rows, the active-goal
+// row, and plain Enter on a goal row.
+func (c *GoalCommand) handleManagerSelection(ctx core.Context, selected string, ok bool) {
+	if !ok || selected == "__done__" {
+		return
+	}
+	if id, yes := strings.CutPrefix(selected, "__moveup__"); yes {
+		c.moveManagerGoal(ctx, id, "up")
+		return
+	}
+	if id, yes := strings.CutPrefix(selected, "__movedown__"); yes {
+		c.moveManagerGoal(ctx, id, "down")
+		return
+	}
+	if id, yes := strings.CutPrefix(selected, "__delete__"); yes {
+		c.confirmDeleteManagerGoal(ctx, id)
+		return
+	}
+	// The selector's 'e' hotkey emits "__edit__"+id for the highlighted goal
+	// (goal rows opt in via SelectorItem.Editable): prompt for the new
+	// description instead of treating the sentinel as a goal id.
+	if id, yes := strings.CutPrefix(selected, "__edit__"); yes {
+		c.promptEditQueuedGoal(ctx, id)
+		return
+	}
+	switch selected {
+	case "__add_first__":
+		c.promptCreateForPlacement(ctx, placementNext)
+	case "__add_last__":
+		c.promptCreateForPlacement(ctx, placementLast)
+	case "__add__":
+		// Generic '+' emit — only reachable through a host without the
+		// reorder keymap (SelectOptionKeyed fallback). Route it to the add
+		// flow: it previously fell through to the queue-action menu and
+		// failed with "queued goal … not found" (bugs.md goal manager).
+		c.promptCreateForPlacement(ctx, placementLast)
+	case "__active__":
+		ctx.Flash("The active goal is running — use /goal:pause, /goal:cancel or /goal:replace.")
+		_ = c.showQueueManagerAt(ctx, "__active__")
+	default:
+		// Enter on a queued goal: reorder and delete are hotkey-driven now
+		// (the two-step action menu is gone) — remind and reopen.
+		ctx.Flash("Hotkeys: '+' move up · '-' move down · 'e' edit · del delete (with confirmation)")
+		_ = c.showQueueManagerAt(ctx, selected)
+	}
+}
+
+// moveManagerGoal implements the '+/-' reorder hotkeys: move the goal one
+// position and reopen the manager with the cursor on it, so repeated presses
+// keep moving the same goal. The active goal is not movable from the manager.
+func (c *GoalCommand) moveManagerGoal(ctx core.Context, id, direction string) {
+	if id == "__active__" {
+		ctx.Flash("The active goal is running — queued goals reorder around it.")
+		_ = c.showQueueManagerAt(ctx, "__active__")
+		return
+	}
+	if _, err := c.Queue.Move(id, direction); err != nil {
+		ctx.Flash(err.Error())
+		_ = c.showQueueManagerAt(ctx, "")
+		return
+	}
+	_ = c.showQueueManagerAt(ctx, id)
+}
+
+// confirmDeleteManagerGoal implements the Delete/Backspace hotkey: deletion
+// asks for confirmation before the goal is removed (previously it was
+// removed immediately). Yes removes and reopens the manager; No (or Escape)
+// returns to the manager with the cursor back on the goal. The active goal
+// cannot be removed here — it goes through /goal:cancel.
+func (c *GoalCommand) confirmDeleteManagerGoal(ctx core.Context, id string) {
+	if id == "__active__" {
+		ctx.Flash("The active goal is running — cancel it with /goal:cancel (or /goal:cancel:all).")
+		_ = c.showQueueManagerAt(ctx, "__active__")
+		return
+	}
+	label := c.managerGoalLabel(ctx, id)
+	if label == "" {
+		_ = c.showQueueManagerAt(ctx, "")
+		return
+	}
+	opts := []tui.SelectorItem{
+		{Value: "yes", Label: "Yes, delete it"},
+		{Value: "no", Label: "No, keep it"},
+	}
+	ctx.SelectOption("Delete goal "+label+"?", opts, "no", func(v string, ok bool) {
+		if !ok || v != "yes" {
+			_ = c.showQueueManagerAt(ctx, id)
 			return
 		}
-		switch action {
-		case "up", "down":
-			if _, err := c.Queue.Move(id, action); err != nil {
-				ctx.Flash(err.Error())
-			}
-		case "delete":
-			if _, _, err := c.Queue.Remove(id); err != nil {
-				ctx.Flash(err.Error())
-			}
+		if _, _, err := c.Queue.Remove(id); err != nil {
+			ctx.Flash(err.Error())
+		} else {
+			ctx.Flash("Goal deleted.")
 		}
+		_ = c.showQueueManagerAt(ctx, "")
 	})
+}
+
+// managerGoalLabel returns the display label of a queued goal for the
+// delete-confirmation title, or "" (after flashing) when it is not queued.
+func (c *GoalCommand) managerGoalLabel(ctx core.Context, id string) string {
+	goals, err := c.Queue.Read()
+	if err != nil {
+		ctx.Flash(err.Error())
+		return ""
+	}
+	for _, g := range goals {
+		if g.ID == id {
+			return goalRowLabel(g.Name, g.Objective)
+		}
+	}
+	ctx.Flash(fmt.Sprintf("queued goal %q not found", id))
+	return ""
+}
+
+// promptCreateForPlacement opens the create-goal flow for the manager's add
+// rows: with an active goal, placementNext prepends to the queue (the goal
+// runs next) and placementLast appends — neither silently replaces the
+// running goal (replacement goes through /goal:replace). With no active
+// goal, the new goal starts immediately regardless of placement.
+func (c *GoalCommand) promptCreateForPlacement(ctx core.Context, placement goalPlacement) {
+	if c.Mode.GetGoal().Goal == nil {
+		_ = c.promptCreateInteractive(ctx, placementAsk)
+		return
+	}
+	_ = c.promptCreateInteractive(ctx, placement)
+}
+
+// promptEditQueuedGoal implements the 'e' hotkey of /goal:manage: it opens an
+// input prompt pre-filled with the queued goal's current objective and
+// persists the edit via Queue.Update. The manager reopens afterwards —
+// including on cancel or an empty submission — so it stays open until the
+// user picks Done.
+func (c *GoalCommand) promptEditQueuedGoal(ctx core.Context, id string) {
+	goals, err := c.Queue.Read()
+	if err != nil {
+		ctx.Flash(err.Error())
+		return
+	}
+	idx := -1
+	for i := range goals {
+		if goals[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		ctx.Flash(fmt.Sprintf("queued goal %q not found", id))
+		_ = c.showQueueManagerAt(ctx, "")
+		return
+	}
+	current := goals[idx].Objective
+	ctx.ShowInput("Edit goal description:", current, func(value string, ok bool) {
+		c.applyEditedObjective(ctx, id, current, value, ok)
+		_ = c.showQueueManagerAt(ctx, id)
+	})
+}
+
+// applyEditedObjective persists a submitted edit: a non-empty, changed
+// objective is written via Queue.Update; cancel, blank, or unchanged input
+// is a no-op.
+func (c *GoalCommand) applyEditedObjective(ctx core.Context, id, current, value string, ok bool) {
+	if !ok {
+		return
+	}
+	v := strings.TrimSpace(value)
+	if v == "" || v == current {
+		return
+	}
+	if _, err := c.Queue.Update(id, v); err != nil {
+		ctx.Flash(err.Error())
+		return
+	}
+	ctx.Flash("Goal updated.")
 }
 
 func (c *GoalCommand) reorderQueue(ctx core.Context, mapping string) error {

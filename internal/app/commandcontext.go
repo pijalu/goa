@@ -71,6 +71,15 @@ func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 			}
 		}()
 	}
+	ctx.SelectOptionKeyedFunc = func(title string, options []tui.SelectorItem, current string, keys tui.SelectorKeymap, onSelected func(string, bool)) {
+		ch := subs.tuiEngine.ShowSelectorKeyed(title, options, current, keys)
+		go func() {
+			selected := <-ch
+			if onSelected != nil {
+				app.apply(func() { onSelected(selected, selected != "") })
+			}
+		}()
+	}
 	wireAsyncSelectCallback(ctx, subs, app)
 	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
 		if inp := subs.getInput(); inp != nil {

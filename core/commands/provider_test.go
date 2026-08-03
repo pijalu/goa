@@ -10,6 +10,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/tui"
 )
 
 // TestProviderCommand_NoProviders_WritesMessage verifies that /provider
@@ -139,6 +140,47 @@ func TestProviderCommand_PickerAddRunsWizard(t *testing.T) {
 	}
 	if cfg.ActiveProvider != "kimi-code" {
 		t.Errorf("ActiveProvider = %q after add, want unchanged kimi-code", cfg.ActiveProvider)
+	}
+}
+
+// TestProviderCommand_PickerKeepsDefaultKeymap is a regression guard for the
+// /goal:manage selector rework (bugs.md goal manager): the /provider picker
+// must keep the DEFAULT selector bindings — '+' = add, '-' = delete — and
+// must not request the per-instance reorder keymap.
+func TestProviderCommand_PickerKeepsDefaultKeymap(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "openai",
+		Providers:      []config.ProviderConfig{{ID: "openai", Name: "OpenAI"}},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	ctx.SelectOptionKeyedFunc = func(string, []tui.SelectorItem, string, tui.SelectorKeymap, func(string, bool)) {
+		t.Error("/provider must use the default selector bindings, not the reorder keymap")
+	}
+
+	cmd := &ProviderCommand{}
+	if err := cmd.Run(*ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if sr.title != "Select provider:" {
+		t.Fatalf("expected provider picker, got %q", sr.title)
+	}
+
+	// '-' on a provider row emits "__delete__"+id → the remove-confirmation
+	// flow must open (delete semantics unchanged).
+	sr.onSel("__delete__openai", true)
+	if sr.title != "Remove provider openai?" {
+		t.Fatalf("'-' must keep delete semantics: got selector %q", sr.title)
+	}
+
+	// Decline the removal (picker reopens); '+' must still open the add
+	// wizard (add semantics unchanged).
+	sr.onSel("no", true)
+	if sr.title != "Select provider:" {
+		t.Fatalf("declining the removal must reopen the picker, got %q", sr.title)
+	}
+	sr.onSel("__add__", true)
+	if sr.title != "Select provider type:" {
+		t.Fatalf("'+' must keep add semantics: got selector %q", sr.title)
 	}
 }
 

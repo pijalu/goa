@@ -130,7 +130,7 @@ When > 0 (embedded default 50), every newly created goal gets that hard turn cei
 /goal:next:first refactor the auth    # same as /goal:next (explicit)
 /goal:next:last polish the docs       # end of the queue: runs after all queued goals
 /goal:next                            # interactive: prompts for the objective
-/goal:manage                          # open the queue manager
+/goal:manage                          # open the queue manager ('e' edits the highlighted goal's description)
 /goal:reorder:1B,2C,3A                # reorder by letter mapping
 ```
 

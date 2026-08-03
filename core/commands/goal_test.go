@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -464,13 +465,17 @@ func TestGoalCommand_NextAndReorder(t *testing.T) {
 	cmd := &GoalCommand{Mode: mode, Queue: queue}
 	ctx := testContext()
 
-	if err := cmd.Run(ctx, []string{"next", "first"}); err != nil {
+	// /goal:next inserts at the FRONT (commit 7d476cb): queue is
+	// [gamma, beta, alpha], so letter A=gamma, B=beta, C=alpha.
+	// Note: "first"/"last"/"fresh"/"reuse" are reserved placement/context
+	// tokens for /goal:next and cannot be used as objectives.
+	if err := cmd.Run(ctx, []string{"next", "alpha"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Run(ctx, []string{"next", "second"}); err != nil {
+	if err := cmd.Run(ctx, []string{"next", "beta"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Run(ctx, []string{"next", "third"}); err != nil {
+	if err := cmd.Run(ctx, []string{"next", "gamma"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -481,24 +486,31 @@ func TestGoalCommand_NextAndReorder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(goals) != 3 || goals[0].Objective != "third" {
+	if len(goals) != 3 || goals[0].Objective != "alpha" {
 		t.Errorf("reorder failed: %v", goals)
 	}
 }
 
+// TestGoalCommand_ManageEmpty: with no active goal and an empty queue the
+// manager still opens — framed by the add-at-start/add-at-end sentinels and
+// the Done row — so goals can be created from it (bugs.md goal manager: the
+// manager previously just printed "No queued goals.").
 func TestGoalCommand_ManageEmpty(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
 	cmd := &GoalCommand{Mode: mode, Queue: queue}
 	ctx := testContext()
 
+	var items []tui.SelectorItem
+	ctx.SelectOptionFunc = func(_ string, it []tui.SelectorItem, _ string, cb func(string, bool)) {
+		items = it
+		cb("", false)
+	}
+
 	if err := cmd.Run(ctx, []string{"manage"}); err != nil {
 		t.Fatal(err)
 	}
-	out := ctx.OutputBuffer.String()
-	if !strings.Contains(out, "No queued goals") {
-		t.Errorf("unexpected output: %s", out)
-	}
+	assertManagerLayout(t, items, "__add_first__", "__add_last__", "__done__")
 }
 
 func TestGoalCommand_StartGoalPrompt(t *testing.T) {
@@ -593,8 +605,8 @@ func TestGoalCommand_QueueManagerManage(t *testing.T) {
 	cmd := &GoalCommand{Mode: mode, Queue: queue}
 	ctx := testContext()
 
-	cmd.Run(ctx, []string{"next", "first"})
-	cmd.Run(ctx, []string{"next", "second"})
+	cmd.Run(ctx, []string{"next", "alpha"})
+	cmd.Run(ctx, []string{"next", "beta"})
 
 	var capturedItems []tui.SelectorItem
 	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, initial string, cb func(string, bool)) {
@@ -605,47 +617,70 @@ func TestGoalCommand_QueueManagerManage(t *testing.T) {
 	if err := cmd.Run(ctx, []string{"manage"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(capturedItems) != 3 {
-		t.Errorf("items = %d", len(capturedItems))
+	// /goal:next prepends: queue is [beta, alpha]; the manager frames it with
+	// the add-at-start/add-at-end sentinels and the Done row.
+	queued, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertManagerLayout(t, capturedItems,
+		"__add_first__", queued[0].ID, queued[1].ID, "__add_last__", "__done__")
 }
 
+// TestGoalCommand_QueueManagerMoveAndDelete drives the manager's hotkey
+// emits end to end: "__moveup__"+id reorders the queue directly (no action
+// submenu) and reopens with the cursor on the moved goal; "__delete__"+id
+// asks for confirmation and only "yes" removes the goal.
 func TestGoalCommand_QueueManagerMoveAndDelete(t *testing.T) {
-	mode := goal.NewGoalMode(nil, nil, nil, nil)
-	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
-	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	cmd, queue := newManagerCommand(t, "")
+	ids := appendQueued(t, queue, "alpha", "beta")
+
+	// Phase 1: move the second goal (beta) up via the '+' emit.
 	ctx := testContext()
+	opens := 0
+	var cursor string
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, current string, cb func(string, bool)) {
+		opens++
+		cursor = current
+		if opens == 1 {
+			cb("__moveup__"+ids[1], true) // simulate '+' on beta
+			return
+		}
+		cb("", false) // close the reopened manager
+	}
 
-	cmd.Run(ctx, []string{"next", "first"})
-	cmd.Run(ctx, []string{"next", "second"})
+	if err := cmd.Run(ctx, []string{"manage"}); err != nil {
+		t.Fatal(err)
+	}
+	assertQueueObjectives(t, queue, []string{"beta", "alpha"})
+	expectManagerCursor(t, opens, 2, cursor, ids[1])
 
-	var capturedID string
-	var actionCB func(string, bool)
-	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, initial string, cb func(string, bool)) {
-		if title == "Manage queued goals" {
-			capturedID = items[0].Value
-			cb(items[0].Value, true)
-		} else if title == "Queue action" {
-			actionCB = cb
+	// Phase 2: delete the front goal via the Delete emit + confirmation.
+	opens = 0
+	var confirmTitle string
+	ctx.SelectOptionFunc = func(title string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		opens++
+		switch opens {
+		case 1:
+			cb("__delete__"+ids[1], true) // simulate Delete on beta
+		case 2:
+			confirmTitle = title
+			cb("yes", true)
+		default:
+			cb("", false) // close the reopened manager
 		}
 	}
 
-	cmd.Run(ctx, []string{"manage"})
-	actionCB("up", true)
-
-	goals, _ := queue.Read()
-	if len(goals) != 2 || goals[0].Objective != "first" {
-		t.Errorf("after up: %v", goals)
+	if err := cmd.Run(ctx, []string{"manage"}); err != nil {
+		t.Fatal(err)
 	}
-
-	cmd.Run(ctx, []string{"manage"})
-	actionCB("delete", true)
-
-	goals, _ = queue.Read()
-	if len(goals) != 1 {
-		t.Errorf("after delete: %d goals", len(goals))
+	if !strings.HasPrefix(confirmTitle, "Delete goal ") {
+		t.Errorf("expected a delete confirmation, got selector %q", confirmTitle)
 	}
-	_ = capturedID
+	assertQueueObjectives(t, queue, []string{"alpha"})
+	if opens != 3 {
+		t.Errorf("expected manager→confirm→manager (3 opens), got %d", opens)
+	}
 }
 
 func testContext() core.Context {
@@ -1391,6 +1426,90 @@ func TestGoalCommand_List(t *testing.T) {
 	}
 }
 
+// TestGoalCommand_ListShowsAllInfo verifies /goal:list renders ALL recorded
+// goal information — context run type (fresh/reuse), completion criterion,
+// verify command, handover, budget, terminal state and todos — for both the
+// current and the queued goals (bugs.md: goal list shows all information).
+func TestGoalCommand_ListShowsAllInfo(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	// Current goal: reuse context, criterion, verify command, handover,
+	// turn budget and a todo.
+	criterion := "all tests pass"
+	verify := "go test ./..."
+	handover := "prior goal evidence"
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{
+		Objective:           "current goal with full metadata",
+		CompletionCriterion: &criterion,
+		VerifyCommand:       &verify,
+		FreshContext:        false,
+		Handoff:             &handover,
+	}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mode.AddGoalTodo("write the tests", goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	turnBudget := 7
+	if _, err := mode.SetBudgetLimits(goal.GoalBudgetLimits{TurnBudget: &turnBudget}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+
+	// Queued goal: fresh context, criterion and verify command.
+	queuedCriterion := "docs build without warnings"
+	queuedVerify := "go run ./cmd/goa --help"
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{
+		Objective:           "queued goal with full metadata",
+		CompletionCriterion: &queuedCriterion,
+		VerifyCommand:       &queuedVerify,
+		FreshContext:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Run(ctx, []string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	out := ctx.OutputBuffer.String()
+
+	for _, want := range []string{
+		"context reuse",                                       // current goal context run type
+		"context fresh",                                       // queued goal context run type
+		"- Completion criterion: all tests pass",              // current criterion
+		"- Verify command: `go test ./...`",                   // current verify command
+		"- Handover: attached",                                // current handover marker
+		"budget turns 0/7",                                    // current budget used/limit
+		"Todos (0/1 done):",                                   // current todos block
+		"- [ ] write the tests",                               // current todo item
+		"- Completion criterion: docs build without warnings", // queued criterion
+		"- Verify command: `go run ./cmd/goa --help`",         // queued verify command
+		"queued ", // queued timestamp label
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in list output:\n%s", want, out)
+		}
+	}
+
+	// Paused goal: terminal state (status + reason) must render too.
+	ctx.OutputBuffer.Reset()
+	reason := "paused for review"
+	if _, err := mode.PauseGoal(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"list"}); err != nil {
+		t.Fatal(err)
+	}
+	out = ctx.OutputBuffer.String()
+	for _, want := range []string{"status paused", "- Reason: paused for review"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in paused list output:\n%s", want, out)
+		}
+	}
+}
+
 func TestGoalCommand_ListEmpty(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	cmd := &GoalCommand{Mode: mode, Queue: core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))}
@@ -1418,42 +1537,59 @@ func TestGoalCommand_ListCompletion(t *testing.T) {
 	}
 }
 
-// TestGoalCommand_ManageDeleteHotkey reproduces bugs.md Issue 23: pressing the
-// selector's '-' hotkey in /goal:manage emits "__delete__"+id; the manager must
-// strip the sentinel and delete the goal instead of looking up the mangled id
-// ("queued goal \"__delete__…\" not found").
-func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
+// TestGoalCommand_ManageEdit covers the 'e' hotkey in /goal:manage: the
+// selector emits "__edit__"+id; the manager must prompt with the current
+// objective pre-filled, persist the edited description via Queue.Update, and
+// reopen the manager. Cancel and blank submissions leave the objective
+// untouched (and still return to the manager).
+func TestGoalCommand_ManageEdit(t *testing.T) {
+	cases := []struct {
+		name          string
+		submitValue   string
+		submitOK      bool
+		wantObjective string
+	}{
+		{"edit applies", "edited objective", true, "edited objective"},
+		{"edit trims whitespace", "  padded  ", true, "padded"},
+		{"cancel keeps objective", "", false, "original objective"},
+		{"blank keeps objective", "   ", true, "original objective"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runManageEditCase(t, tc.submitValue, tc.submitOK, tc.wantObjective)
+		})
+	}
+}
+
+// runManageEditCase drives one /goal:manage edit scenario: simulate the 'e'
+// hotkey on the single queued goal, answer the edit prompt with
+// (submitValue, submitOK), then verify the stored objective, the pre-filled
+// prompt, and the manager reopen.
+func runManageEditCase(t *testing.T, submitValue string, submitOK bool, wantObjective string) {
+	t.Helper()
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
 	cmd := &GoalCommand{Mode: mode, Queue: queue}
 
-	goals, err := queue.Append("first queued goal")
+	goals, err := queue.Append("original objective")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if goals, err = queue.Append("second queued goal"); err != nil {
-		t.Fatal(err)
-	}
-	victim := goals[1].ID
+	target := goals[0].ID
 
 	ctx := testContext()
-	ctx.EventBus = event.MakeBus(8, 8, 8, 8)
-	var flashes []string
-	flashDone := make(chan struct{})
-	go func() {
-		defer close(flashDone)
-		for ev := range ctx.EventBus.Chat {
-			if ev.Flash != nil {
-				flashes = append(flashes, ev.Flash.Text)
-			}
-		}
-	}()
-
-	var selections []func(string, bool)
+	var promptSeen, prefilled string
+	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
+		promptSeen, prefilled = prompt, current
+		onSubmit(submitValue, submitOK)
+	}
+	managerOpens := 0
+	var firstItems []tui.SelectorItem
 	ctx.SelectOptionFunc = func(_ string, items []tui.SelectorItem, _ string, cb func(string, bool)) {
-		selections = append(selections, cb)
-		if len(selections) == 1 {
-			cb("__delete__"+victim, true) // simulate the '-' hotkey
+		managerOpens++
+		if managerOpens == 1 {
+			firstItems = items
+			cb("__edit__"+target, true) // simulate the 'e' hotkey
 			return
 		}
 		cb("", false) // close the reopened manager
@@ -1463,22 +1599,576 @@ func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	remaining, err := queue.Read()
+	updated, err := queue.Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != 1 || remaining[0].Objective != "first queued goal" {
-		t.Fatalf("expected only the first goal to remain, got %+v", remaining)
+	if len(updated) != 1 || updated[0].Objective != wantObjective {
+		t.Fatalf("objective = %+v, want %q", updated, wantObjective)
 	}
-	if len(selections) != 2 {
-		t.Errorf("expected the manager to reopen after delete (2 selector invocations), got %d", len(selections))
+	assertManagerEditableItems(t, firstItems)
+	// The manager must show the queue in execution order — the add-at-start
+	// sentinel, the goal row, the add-at-end sentinel, Done — not an
+	// alphabetical label sort.
+	assertManagerLayout(t, firstItems, "__add_first__", target, "__add_last__", "__done__")
+	if prefilled != "original objective" {
+		t.Errorf("edit prompt %q pre-filled with %q, want the current objective", promptSeen, prefilled)
 	}
-	close(ctx.EventBus.Chat)
-	<-flashDone
-	for _, f := range flashes {
+	if managerOpens != 2 {
+		t.Errorf("expected the manager to reopen after the edit prompt (2 opens), got %d", managerOpens)
+	}
+}
+
+// assertManagerEditableItems verifies goal rows opt into the 'e' edit hotkey
+// (SelectorItem.Editable) and the sentinel action rows do not.
+func assertManagerEditableItems(t *testing.T, items []tui.SelectorItem) {
+	t.Helper()
+	for _, it := range items {
+		if strings.HasPrefix(it.Value, "__") {
+			if it.Editable {
+				t.Errorf("sentinel row %q must not be editable", it.Value)
+			}
+			continue
+		}
+		if !it.Editable {
+			t.Errorf("goal item %q not marked editable", it.Value)
+		}
+	}
+}
+
+// TestGoalCommand_ManageDeleteHotkey covers the Delete hotkey in /goal:manage
+// (bugs.md goal manager): the "__delete__"+id emit must open a confirmation
+// selector and only "yes" removes the goal. Previously deletion fired
+// immediately; and before that, the sentinel-prefixed string reached
+// Queue.Remove and failed with "queued goal \"__delete__…\" not found"
+// (bugs.md Issue 23).
+func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
+	cmd, queue := newManagerCommand(t, "")
+	ids := appendQueued(t, queue, "first queued goal", "second queued goal")
+
+	ctx := testContext()
+	getFlashes := collectFlashes(&ctx)
+
+	opens := 0
+	var confirmTitle, confirmCursor string
+	ctx.SelectOptionFunc = func(title string, _ []tui.SelectorItem, current string, cb func(string, bool)) {
+		opens++
+		switch opens {
+		case 1: // manager
+			cb("__delete__"+ids[1], true) // simulate the Delete hotkey
+		case 2: // delete confirmation
+			confirmTitle, confirmCursor = title, current
+			cb("yes", true)
+		default: // reopened manager
+			cb("", false)
+		}
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(confirmTitle, "Delete goal ") {
+		t.Errorf("expected a delete confirmation, got selector %q", confirmTitle)
+	}
+	if confirmCursor != "no" {
+		t.Errorf("confirm cursor = %q, want the safe default on \"no\"", confirmCursor)
+	}
+	assertQueueObjectives(t, queue, []string{"first queued goal"})
+	if opens != 3 {
+		t.Errorf("expected manager→confirm→manager (3 selector invocations), got %d", opens)
+	}
+	for _, f := range getFlashes() {
 		if strings.Contains(f, "not found") {
 			t.Errorf("regression: mangled-id error surfaced: %q", f)
 		}
+	}
+}
+
+// TestGoalCommand_ManageDeleteConfirmNo verifies the delete confirmation's
+// negative paths: "no" (and Escape) leave the goal queued and return to the
+// manager with the cursor back on it.
+func TestGoalCommand_ManageDeleteConfirmNo(t *testing.T) {
+	cases := []struct {
+		name     string
+		answer   string
+		answerOK bool
+	}{
+		{"no keeps the goal", "no", true},
+		{"escape keeps the goal", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runManageDeleteDeclineCase(t, tc.answer, tc.answerOK)
+		})
+	}
+}
+
+// runManageDeleteDeclineCase drives one declined-confirmation scenario: the
+// Delete emit opens the confirmation, the (answer, answerOK) response
+// declines, and the manager reopens with the cursor on the kept goal.
+func runManageDeleteDeclineCase(t *testing.T, answer string, answerOK bool) {
+	t.Helper()
+	cmd, queue := newManagerCommand(t, "")
+	ids := appendQueued(t, queue, "keep me")
+
+	ctx := testContext()
+	opens := 0
+	var cursor string
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, current string, cb func(string, bool)) {
+		opens++
+		cursor = current
+		switch opens {
+		case 1: // manager
+			cb("__delete__"+ids[0], true)
+		case 2: // confirmation → decline
+			cb(answer, answerOK)
+		default: // reopened manager
+			cb("", false)
+		}
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertQueueObjectives(t, queue, []string{"keep me"})
+	expectManagerCursor(t, opens, 3, cursor, ids[0])
+}
+
+// collectFlashes routes ctx.Flash messages into a slice; the returned
+// function must be called exactly once (it closes the bus) to collect them.
+func collectFlashes(ctx *core.Context) func() []string {
+	ctx.EventBus = event.MakeBus(8, 8, 8, 8)
+	var mu sync.Mutex
+	var flashes []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range ctx.EventBus.Chat {
+			if ev.Flash != nil {
+				mu.Lock()
+				flashes = append(flashes, ev.Flash.Text)
+				mu.Unlock()
+			}
+		}
+	}()
+	return func() []string {
+		close(ctx.EventBus.Chat)
+		<-done
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), flashes...)
+	}
+}
+
+// newManagerCommand builds a GoalCommand backed by a temp-dir queue and,
+// when activeObjective is non-empty, a running goal with that objective.
+func newManagerCommand(t *testing.T, activeObjective string) (*GoalCommand, *core.GoalQueueStore) {
+	t.Helper()
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if activeObjective != "" {
+		if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: activeObjective}, goal.GoalActorUser); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	return &GoalCommand{Mode: mode, Queue: queue}, queue
+}
+
+// appendQueued appends the objectives to the queue and returns their IDs in
+// queue order.
+func appendQueued(t *testing.T, queue *core.GoalQueueStore, objectives ...string) []string {
+	t.Helper()
+	ids := make([]string, 0, len(objectives))
+	for _, obj := range objectives {
+		goals, err := queue.Append(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, goals[len(goals)-1].ID)
+	}
+	return ids
+}
+
+// queueObjectives returns the queued objectives in queue order.
+func queueObjectives(t *testing.T, queue *core.GoalQueueStore) []string {
+	t.Helper()
+	got, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs := make([]string, 0, len(got))
+	for _, g := range got {
+		objs = append(objs, g.Objective)
+	}
+	return objs
+}
+
+// assertQueueObjectives checks the queue holds exactly want, in order.
+func assertQueueObjectives(t *testing.T, queue *core.GoalQueueStore, want []string) {
+	t.Helper()
+	if got := queueObjectives(t, queue); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("queue = %v, want %v", got, want)
+	}
+}
+
+// assertQueueIDs checks the queue holds exactly wantOrder (indices into ids)
+// in order.
+func assertQueueIDs(t *testing.T, queue *core.GoalQueueStore, ids []string, wantOrder []int) {
+	t.Helper()
+	got, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(wantOrder) {
+		t.Fatalf("queue = %+v, want %d goals", got, len(wantOrder))
+	}
+	for pos, orig := range wantOrder {
+		if got[pos].ID != ids[orig] {
+			t.Errorf("queue[%d] = %q, want original #%d (queue=%+v)", pos, got[pos].ID, orig, got)
+		}
+	}
+}
+
+// expectManagerCursor asserts the selector was invoked wantOpens times and
+// the last invocation carried the cursor on want.
+func expectManagerCursor(t *testing.T, opens, wantOpens int, cursor, want string) {
+	t.Helper()
+	if opens != wantOpens || cursor != want {
+		t.Errorf("selector opens=%d cursor=%q, want %d opens with the cursor on %q",
+			opens, cursor, wantOpens, want)
+	}
+}
+
+// assertManagerLayout checks the manager rows' values, in order.
+func assertManagerLayout(t *testing.T, items []tui.SelectorItem, wantValues ...string) {
+	t.Helper()
+	if len(items) != len(wantValues) {
+		t.Fatalf("manager items = %+v, want %d rows", items, len(wantValues))
+	}
+	for i, w := range wantValues {
+		if items[i].Value != w {
+			t.Errorf("items[%d].Value = %q, want %q (all=%+v)", i, items[i].Value, w, items)
+		}
+	}
+}
+
+// assertAllPreserveOrder checks every manager row opts out of the
+// alphabetical sort (the manager's execution order is caller order).
+func assertAllPreserveOrder(t *testing.T, items []tui.SelectorItem) {
+	t.Helper()
+	for i, it := range items {
+		if !it.PreserveOrder {
+			t.Errorf("items[%d] (%q) must set PreserveOrder to keep execution order", i, it.Value)
+		}
+	}
+}
+
+// TestGoalCommand_ManageListExecutionOrder pins the manager's list layout
+// (bugs.md goal manager): the add-at-start sentinel, the ACTIVE goal
+// (marked, not movable), the queued goals in run order, the add-at-end
+// sentinel and Done — every row PreserveOrder — and the manager requests
+// the reorder keymap ('+'/'-' = move up/down).
+func TestGoalCommand_ManageListExecutionOrder(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "running goal"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	if _, err := queue.Append("first queued"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Append("second queued"); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := testContext()
+	var items []tui.SelectorItem
+	var keys tui.SelectorKeymap
+	keyedUsed := false
+	ctx.SelectOptionKeyedFunc = func(_ string, it []tui.SelectorItem, _ string, k tui.SelectorKeymap, cb func(string, bool)) {
+		keyedUsed = true
+		keys = k
+		items = it
+		cb("__done__", true)
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !keyedUsed || !keys.ReorderMode {
+		t.Errorf("manager must request the reorder keymap (keyedUsed=%v, keys=%+v)", keyedUsed, keys)
+	}
+	assertManagerLayout(t, items,
+		"__add_first__", "__active__", queued[0].ID, queued[1].ID, "__add_last__", "__done__")
+	assertAllPreserveOrder(t, items)
+	if !strings.HasPrefix(items[1].Label, "[active] ") {
+		t.Errorf("active row label = %q, want an [active] marker", items[1].Label)
+	}
+	assertManagerEditableItems(t, items)
+}
+
+// TestGoalCommand_ManageMoveHotkeys covers the '+/-' reorder emits
+// (table-driven): each move calls Queue.Move and reopens the manager with
+// the cursor on the moved goal; boundary moves are no-ops that keep the
+// cursor on the goal.
+func TestGoalCommand_ManageMoveHotkeys(t *testing.T) {
+	cases := []manageMoveCase{
+		{"move second up", "__moveup__", 1, []int{1, 0, 2}, 1},
+		{"move first down", "__movedown__", 0, []int{1, 0, 2}, 0},
+		{"first cannot move up", "__moveup__", 0, []int{0, 1, 2}, 0},
+		{"last cannot move down", "__movedown__", 2, []int{0, 1, 2}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runManageMoveCase(t, tc)
+		})
+	}
+}
+
+// manageMoveCase describes one reorder-hotkey scenario: emit prefix+ids[idx]
+// on the first manager open, expect the queue reordered per wantOrder
+// (indices into the original ids) and the cursor on ids[wantCursor].
+type manageMoveCase struct {
+	name       string
+	prefix     string
+	idx        int
+	wantOrder  []int
+	wantCursor int
+}
+
+func runManageMoveCase(t *testing.T, tc manageMoveCase) {
+	t.Helper()
+	cmd, queue := newManagerCommand(t, "")
+	ids := appendQueued(t, queue, "g0", "g1", "g2")
+
+	ctx := testContext()
+	opens := 0
+	var cursor string
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, current string, cb func(string, bool)) {
+		opens++
+		cursor = current
+		if opens == 1 {
+			cb(tc.prefix+ids[tc.idx], true) // simulate the hotkey
+			return
+		}
+		cb("", false) // close the reopened manager
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertQueueIDs(t, queue, ids, tc.wantOrder)
+	expectManagerCursor(t, opens, 2, cursor, ids[tc.wantCursor])
+}
+
+// TestGoalCommand_ManageActiveRowRejected: move/delete emits and plain Enter
+// on the ACTIVE goal row are rejected with a flash — the queue and the
+// running goal are untouched and the manager reopens on the active row.
+func TestGoalCommand_ManageActiveRowRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		emit string
+	}{
+		{"move up on active", "__moveup____active__"},
+		{"move down on active", "__movedown____active__"},
+		{"delete on active", "__delete____active__"},
+		{"enter on active", "__active__"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runManageActiveRowCase(t, tc.emit)
+		})
+	}
+}
+
+// runManageActiveRowCase drives one active-row rejection: the emit must not
+// touch the queue or the running goal, must flash a rejection, and must
+// reopen the manager on the active row.
+func runManageActiveRowCase(t *testing.T, emit string) {
+	t.Helper()
+	cmd, queue := newManagerCommand(t, "running")
+	appendQueued(t, queue, "queued one")
+
+	ctx := testContext()
+	getFlashes := collectFlashes(&ctx)
+	opens := 0
+	var cursor string
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, current string, cb func(string, bool)) {
+		opens++
+		cursor = current
+		if opens == 1 {
+			cb(emit, true)
+			return
+		}
+		cb("", false)
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertQueueObjectives(t, queue, []string{"queued one"})
+	if g := cmd.Mode.GetGoal().Goal; g == nil || g.Objective != "running" {
+		t.Errorf("active goal must still be running, got %+v", g)
+	}
+	expectManagerCursor(t, opens, 2, cursor, "__active__")
+	flashes := getFlashes()
+	if len(flashes) == 0 || !strings.Contains(flashes[0], "active goal") {
+		t.Errorf("expected a rejection flash mentioning the active goal, got %v", flashes)
+	}
+}
+
+// TestGoalCommand_ManageAddRows drives the add sentinels (table-driven):
+// with an active goal, "-- add at start --" prepends to the queue (the goal
+// runs next) and "-- add at end --" appends — neither touches the running
+// goal; with no active goal the new goal starts immediately.
+func TestGoalCommand_ManageAddRows(t *testing.T) {
+	cases := []manageAddRowCase{
+		{"add at start with active goal", "__add_first__", true,
+			[]string{"new goal", "queued one"}, "running", "run next"},
+		{"add at end with active goal", "__add_last__", true,
+			[]string{"queued one", "new goal"}, "running", "end of the queue"},
+		{"add at start with no active goal", "__add_first__", false,
+			[]string{"queued one"}, "new goal", "Set new goal objective"},
+		{"add at end with no active goal", "__add_last__", false,
+			[]string{"queued one"}, "new goal", "Set new goal objective"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runManageAddRowCase(t, tc)
+		})
+	}
+}
+
+// manageAddRowCase describes one add-row scenario: Enter on the sentinel row
+// must open the create-goal flow (prompt contains wantPromptSub), and after
+// submitting "new goal" the queue holds wantQueue and the active goal's
+// objective is wantActive.
+type manageAddRowCase struct {
+	name          string
+	sentinel      string
+	active        bool
+	wantQueue     []string
+	wantActive    string
+	wantPromptSub string
+}
+
+func runManageAddRowCase(t *testing.T, tc manageAddRowCase) {
+	t.Helper()
+	activeObjective := ""
+	if tc.active {
+		activeObjective = "running"
+	}
+	cmd, queue := newManagerCommand(t, activeObjective)
+	appendQueued(t, queue, "queued one")
+
+	ctx := testContext()
+	var prompt string
+	ctx.RequestMainInput = func(p string, onSubmit func(string)) {
+		prompt = p
+		onSubmit("new goal")
+	}
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		cb(tc.sentinel, true) // Enter on the add row
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if prompt == "" {
+		t.Fatal("the add row did not open the create-goal flow")
+	}
+	if !strings.Contains(prompt, tc.wantPromptSub) {
+		t.Errorf("create prompt = %q, want substring %q", prompt, tc.wantPromptSub)
+	}
+	assertQueueObjectives(t, queue, tc.wantQueue)
+	g := cmd.Mode.GetGoal().Goal
+	if g == nil || g.Objective != tc.wantActive {
+		t.Errorf("active goal = %+v, want objective %q", g, tc.wantActive)
+	}
+}
+
+// TestGoalCommand_ManageGenericAddEmit is the regression for the generic
+// '__add__' emit reaching the queue-action menu and failing with
+// "queued goal … not found" (bugs.md goal manager item 4): it must open the
+// create-goal flow instead. Reachable via a host without the reorder keymap
+// (SelectOptionKeyed fallback).
+func TestGoalCommand_ManageGenericAddEmit(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	if _, err := mode.CreateGoal(goal.CreateGoalInput{Objective: "running"}, goal.GoalActorUser); err != nil {
+		t.Fatal(err)
+	}
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+
+	ctx := testContext()
+	getFlashes := collectFlashes(&ctx)
+	ctx.RequestMainInput = func(_ string, onSubmit func(string)) {
+		onSubmit("added goal")
+	}
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		cb("__add__", true)
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := queue.Read()
+	if len(got) != 1 || got[0].Objective != "added goal" {
+		t.Errorf("queue = %+v, want the added goal queued behind the active one", got)
+	}
+	for _, f := range getFlashes() {
+		if strings.Contains(f, "not found") {
+			t.Errorf("regression: __add__ leaked into a goal lookup: %q", f)
+		}
+	}
+}
+
+// TestGoalCommand_ManageEnterOnGoalRow: plain Enter on a queued goal row no
+// longer opens the two-step action menu — reorder and delete are
+// hotkey-driven; the manager flashes the cheat sheet and reopens with the
+// cursor on the row.
+func TestGoalCommand_ManageEnterOnGoalRow(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	goals, err := queue.Append("some goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := goals[0].ID
+
+	ctx := testContext()
+	getFlashes := collectFlashes(&ctx)
+	opens := 0
+	var cursor string
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, current string, cb func(string, bool)) {
+		opens++
+		cursor = current
+		if opens == 1 {
+			cb(id, true) // Enter on the goal row
+			return
+		}
+		cb("", false)
+	}
+
+	if err := cmd.showQueueManager(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := queue.Read()
+	if len(got) != 1 {
+		t.Errorf("queue must be unchanged, got %+v", got)
+	}
+	if opens != 2 || cursor != id {
+		t.Errorf("manager must reopen on the same row (opens=%d, cursor=%q)", opens, cursor)
+	}
+	flashes := getFlashes()
+	if len(flashes) == 0 || !strings.Contains(flashes[0], "move up") {
+		t.Errorf("expected a hotkey cheat-sheet flash, got %v", flashes)
 	}
 }
 

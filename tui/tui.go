@@ -27,7 +27,6 @@ func recoverToLog(where string) {
 	}
 }
 
-
 // OverlayOptions define positioning and sizing for overlay components.
 type OverlayOptions struct {
 	Width        int  // overlay width (0 = auto)
@@ -949,6 +948,15 @@ func (t *TUI) routeToCapturingOverlay(data, key string) bool {
 // title is shown at the top; currentValue is marked with a ✓ indicator.
 func (t *TUI) ShowSelector(title string, items []SelectorItem, currentValue string) <-chan string {
 	_, result := t.showSelector(title, items, currentValue)
+	return result
+}
+
+// ShowSelectorKeyed is ShowSelector with per-instance hotkey bindings (see
+// SelectorKeymap): /goal:manage uses it to repurpose '+'/'-' from add/delete
+// to direct reordering. Pickers using ShowSelector keep the default bindings.
+func (t *TUI) ShowSelectorKeyed(title string, items []SelectorItem, currentValue string, keys SelectorKeymap) <-chan string {
+	sel, result := t.showSelector(title, items, currentValue)
+	sel.SetKeymap(keys)
 	return result
 }
 

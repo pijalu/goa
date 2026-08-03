@@ -17,7 +17,7 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:next:fresh|reuse:<text> Queue with an explicit context mode
   /goal:replace               Replace the current goal interactively (asks objective)
   /goal:replace:<text>        Replace the current goal with a new one (asks confirmation)
-  /goal:manage                Open the queued-goals manager
+  /goal:manage                Open the goal manager: execution order, +/-: move up/down, e: edit, del: delete (confirm)
   /goal:reorder:<map>         Reorder queue with letter mapping (e.g. 1B,2C,3A)
   /goal:status                Show current goal status
   /goal:current               Show the current goal in full: objective, criterion, verify command, todos
