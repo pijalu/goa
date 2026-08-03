@@ -98,27 +98,63 @@ func (a *Agent) microCompactForced(force bool) {
 // for the upcoming request, justifying in-place history mutation that would
 // otherwise churn a hot cache. The cache is assumed cold when either
 //   - CacheMissThreshold <= 0 (cache protection disabled; legacy behavior), or
-//   - the agent has been idle (no completed turn) for longer than the threshold,
-//     or no previous turn has completed yet (first turn / fresh resume) AND no
-//     completed request has reported cache reads. The cacheWarmObserved escape
-//     keeps the first-turn presumption from failing open for the whole turn:
-//     lastTurnEnd is written only at turn END, so without it every per-round
-//     gate check in turn 1 would see a cold cache even though the cache has
-//     been hot since round 2. Warm evidence does NOT override the idle-gap
-//     TTL logic — after a long idle gap the provider cache really has expired.
+//   - the agent has been idle (no completed provider request) for longer than
+//     the threshold, or no provider request has completed yet (first turn /
+//     fresh resume) AND no completed request has reported cache reads. The
+//     cacheWarmObserved escape keeps the first-turn presumption from failing
+//     open for the whole turn: without it every per-round gate check in turn
+//     1 would see a cold cache even though the cache has been hot since
+//     round 2. Warm evidence does NOT override the idle-gap TTL logic —
+//     after a long idle gap the provider cache really has expired.
 //
-// The caller must hold a.mu: lastTurnEnd is guarded by it (written in
-// finishProcessing under the lock).
+// Idleness is measured from the freshest provider contact
+// (lastProviderActivityLocked): per-round completions keep the cache hot
+// during long single turns where lastTurnEnd (written only at turn END)
+// would go stale past the threshold mid-turn.
+//
+// The caller must hold a.mu: the activity timestamps are guarded by it.
 func (a *Agent) cacheAssumedCold() bool {
 	threshold := a.cfg.ContextCompression.MicroCompaction.CacheMissThreshold
 	if threshold <= 0 {
 		return true
 	}
-	last := a.lastTurnEnd
+	return a.cacheColdWithThreshold(threshold)
+}
+
+// cacheColdWithThreshold is the shared body of the cache gates once the
+// effective idle threshold is resolved. The caller must hold a.mu.
+//
+// The first turn with no reported cache reads fails OPEN (cold) even while
+// rounds keep completing: with no cache-read evidence there is no proven
+// cache to protect, and treating round activity as warmth would suppress the
+// per-round compression gate for the whole turn on providers that report no
+// cache stats (TestAgent_CompressionGateBetweenRounds shape). From the
+// second turn on — or once cache reads prove a hot cache — recent per-round
+// activity means hot.
+func (a *Agent) cacheColdWithThreshold(threshold time.Duration) bool {
+	if a.lastTurnEnd.IsZero() && !a.cacheWarmObserved {
+		return true
+	}
+	last := a.lastProviderActivityLocked()
 	if last.IsZero() {
 		return !a.cacheWarmObserved
 	}
 	return time.Since(last) >= threshold
+}
+
+// lastProviderActivityLocked returns the freshest provider-contact timestamp
+// known: per-round request completions (lastRoundActivity) when present,
+// falling back to the last turn end (inter-turn idle). lastTurnEnd alone goes
+// stale mid-turn — it advances only at turn END, so during a long single turn
+// the idle-gap logic would flip the gate cold while rounds still complete
+// every few seconds, busting a provably hot cache BELOW the deferral ceiling
+// (bugs.md prefix-cache bust loop companion defect). The caller must hold a.mu.
+func (a *Agent) lastProviderActivityLocked() time.Time {
+	last := a.lastTurnEnd
+	if a.lastRoundActivity.After(last) {
+		last = a.lastRoundActivity
+	}
+	return last
 }
 
 // cacheAssumedColdForProactive is the cache gate for proactive (threshold-
@@ -131,9 +167,12 @@ func (a *Agent) cacheAssumedCold() bool {
 // threshold here means the provider cache TTL (~1h, the default micro config);
 // only an explicitly negative threshold disables protection.
 //
-// Like cacheAssumedCold, a zero lastTurnEnd (first turn / fresh resume) is
-// cold only until a completed request reports cache reads
-// (cacheWarmObserved); the idle-gap TTL logic is unaffected by warm evidence.
+// Like cacheAssumedCold, a zero lastTurnEnd AND zero lastRoundActivity
+// (first turn / fresh resume) is cold only until a completed request reports
+// cache reads (cacheWarmObserved); the idle-gap TTL logic is unaffected by
+// warm evidence and runs off the freshest provider contact
+// (lastProviderActivityLocked) so rounds completing mid-turn keep the cache
+// hot past the inter-turn threshold.
 //
 // The caller must hold a.mu.
 func (a *Agent) cacheAssumedColdForProactive() bool {
@@ -144,11 +183,7 @@ func (a *Agent) cacheAssumedColdForProactive() bool {
 	if threshold == 0 {
 		threshold = DefaultMicroCompactionConfig.CacheMissThreshold
 	}
-	last := a.lastTurnEnd
-	if last.IsZero() {
-		return !a.cacheWarmObserved
-	}
-	return time.Since(last) >= threshold
+	return a.cacheColdWithThreshold(threshold)
 }
 
 func (a *Agent) contextRatio() float64 {

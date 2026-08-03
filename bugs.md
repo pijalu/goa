@@ -189,7 +189,7 @@ If new items are added, restart the process.
 
 ---
 
-## Provider prefix-cache bust loop: tool_elision mutates history every round above the 85% deferral ceiling (status bar CM:13) — OPEN
+## Provider prefix-cache bust loop: tool_elision mutates history every round above the 85% deferral ceiling (status bar CM:13) — FIXED 2026-08-03 (pending archive)
 
 - **Observed** (2026-08-03, session exports goa-export-20260803-094337.zip and
   goa-export-20260803-095438.zip, frigolite project, opencode/deepseek-v4-flash-free,
@@ -274,6 +274,64 @@ If new items are added, restart the process.
   3. Quality gates (separately): `go vet ./...`, `staticcheck ./...`,
      `gocognit -over 15 .`, `gocyclo -over 12 .`,
      `go test -count=1 -race -cover ./...` — no new violations.
+- **Resolution** (2026-08-03): implemented fix-plan items 1 (token-budget
+  hysteresis + escalation) and 2 (per-round gate clock), plus the item 3
+  forensics log.
+  - `agent_compression.go` `compressToolElision`: the proactive
+    (force=false) path now resolves its boundary via
+    `proactiveElisionBoundary`. Cold cache (mutation free) keeps the legacy
+    count boundary; a HOT cache (reachable only at/above the deferral
+    ceiling, where the gate overrides cache protection) elides oldest-first
+    by TOKEN BUDGET until the estimate drops to the hysteresis target
+    (`elisionTargetPercent()` = hard−20 ≈ 75%, `compression_thresholds.go`),
+    walking past the preserve window if needed but never touching the
+    in-flight tail (last two messages). When the elidable payload cannot
+    meet the budget, the pass escalates to `compressSelective()` so the
+    single bust buys real headroom instead of nibbling every round (the
+    "stop nibbling" alternative). Forced/manual elision is unchanged.
+  - `compaction.go` gates: new `lastProviderActivityLocked()` (freshest of
+    `lastRoundActivity`/`lastTurnEnd`) backs the idle-gap TTL, fixing the
+    companion defect where >1h into a long single turn the stale
+    `lastTurnEnd` flipped the gate cold mid-turn and fired BELOW the
+    ceiling. Both gates share `cacheColdWithThreshold`, which keeps the
+    first turn failing OPEN when no cache reads were ever reported —
+    otherwise usage-less providers would see the per-round compression gate
+    suppressed for the whole turn (caught by the pre-existing
+    `TestAgent_CompressionGateBetweenRounds`, RED before the guard).
+  - `agent.go`: new `lastRoundActivity time.Time` (set per completed
+    request in `captureStreamResult`) and `lastCacheReadTokens int`
+    (forensics delta); both reset by `Clear`.
+  - `agent_streaming.go` `captureStreamResult`: records round activity and
+    logs (Debug) prev→curr cache_read plus a sorted tool-name FNV hash
+    (`toolListHashLocked`) per request — the round-17 anomaly forensics to
+    discriminate provider-side eviction (hash stable) from request-shape
+    changes / tool-set re-registration (hash changes). Paused→resume repro
+    attempt deferred to live validation.
+  - Regression tests (RED on pre-fix code → GREEN after):
+    `TestMaybeCompress_ToolElision_HotCacheBudgetHysteresis` (94%-band
+    usage → ONE pass to ≤75%, minimal mutation, no below-trigger re-fire),
+    `TestMaybeCompress_ToolElision_HotCacheEscalatesWhenBudgetUnmet`
+    (payload-poor → selective escalation, ≤ target),
+    `TestMaybeCompress_ToolElision_CacheBustConvergence` (85-round
+    simulated session climb → ≤2 busts, ≥10-round gaps, post-bust ≤
+    target; pre-fix code busts ~every round above the ceiling),
+    `TestCacheGates_MidTurnRoundActivity`,
+    `TestCacheGates_FirstTurnUsageLessProviderStaysCold`,
+    `TestMicroCompact_MidTurnDeferredWhenRoundsActive`,
+    `TestCaptureStreamResult_SetsLastRoundActivity`,
+    `TestClear_ClearsRoundActivity`, and
+    `TestHandleTokenStats_CMReplaySessionExport` (internal/app: the
+    export's cache_read series still counts exactly 13 misses — detector
+    unchanged). Test configs pin `TriggerPercent: 80` (production shape:
+    deferral ceiling = hard−10 = 85; the SDK default trigger 90 clamps the
+    ceiling to 90).
+  - Gates (run separately): see entry workflow — `go vet`,
+    `staticcheck`, `gocognit -over 15`, `gocyclo -over 12` show only
+    pre-existing findings; `go test ./internal/agentic/ ./internal/app/
+    -count=1 -race` green (validation step 1). Live validation step 2
+    (counting `Applied tool_elision` lines/min in a long single-turn
+    session) not re-run — covered by the convergence regression test.
+    Awaiting archive.
 
 ---
 

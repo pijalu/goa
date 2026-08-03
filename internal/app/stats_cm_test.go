@@ -93,6 +93,44 @@ func TestHandleTokenStats_CacheMissPartialBust(t *testing.T) {
 	})
 }
 
+// TestHandleTokenStats_CMReplaySessionExport replays the cache_read series
+// from the CM:13 session export (bugs.md "Provider prefix-cache bust loop"):
+// the round-17 anomaly drop (30592→7552), the first elision pass
+// (169088→7552), and the advancing-floor busts (re-warm to ~164k, drop to an
+// advancing frontier) must count EXACTLY the 13 partial-drop misses the entry
+// recorded — the fix changes how often elision fires, not the detector. The
+// companion convergence test in internal/agentic
+// (TestMaybeCompress_ToolElision_CacheBustConvergence) covers the post-fix
+// "same workload yields ≤2 misses" bar.
+func TestHandleTokenStats_CMReplaySessionExport(t *testing.T) {
+	feed := func(a *App, cacheRead int) {
+		a.handleTokenStats(&agentic.OutputEvent{
+			Timings: &agentic.TokenTimings{CacheReadTokens: cacheRead},
+		})
+	}
+
+	series := []int{
+		30592,  // rounds 15-16: cache established
+		7552,   // round 17 anomaly drop — miss 1
+		169088, // growth re-warm — no miss
+		7552,   // round 141: first elision pass — miss 2
+	}
+	// Rounds 227-410: re-warm to ~164k between busts, then a drop to the
+	// advancing elision frontier — misses 3..13.
+	floors := []int{65536, 98304, 113792, 131072, 141312, 147072, 151552, 155520, 157056, 157824, 159488}
+	for i, f := range floors {
+		series = append(series, 164000+i*200, f)
+	}
+
+	a := New(testSubsystems())
+	for _, v := range series {
+		feed(a, v)
+	}
+	if a.tokenCacheMisses != 13 {
+		t.Errorf("tokenCacheMisses = %d, want exactly 13 (the session export's CM count)", a.tokenCacheMisses)
+	}
+}
+
 // TestBuildFooterStatParts_CacheMiss verifies CM renders next to CH only
 // when non-zero.
 func TestBuildFooterStatParts_CacheMiss(t *testing.T) {

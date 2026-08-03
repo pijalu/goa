@@ -5,6 +5,8 @@ package agentic
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -469,6 +471,19 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Per-round provider contact: keeps the compaction cache gates hot during
+	// long single turns where lastTurnEnd (turn END only) would go stale.
+	a.lastRoundActivity = time.Now()
+	if result.Usage != nil {
+		if a.cfg.Logger != nil {
+			// bugs.md round-17 anomaly forensics: correlate cache_read drops
+			// with request-shape changes (tool-set re-registration changes
+			// tools_hash) vs provider-side eviction (hash stable).
+			a.cfg.Logger.Log(Debug, "request usage: cache_read %d -> %d, tools_hash=%08x",
+				a.lastCacheReadTokens, result.Usage.CacheReadTokens, a.toolListHashLocked())
+		}
+		a.lastCacheReadTokens = result.Usage.CacheReadTokens
+	}
 	if result.Usage != nil && !a.turnStatsEmitted {
 		a.providerUsage = result.Usage
 	}
@@ -483,6 +498,26 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	if result.StopReason != "" {
 		a.lastStopReason = result.StopReason
 	}
+}
+
+// toolListHashLocked returns a cheap fingerprint of the registered tool set
+// (sorted schema names) so cache-drop forensics can discriminate provider-side
+// partial eviction from request-shape changes: a tool-set re-registration
+// alters the provider request shape and busts the prefix cache exactly like
+// an in-place history mutation (bugs.md round-17 anomaly). The caller must
+// hold a.mu (reads a.cfg.Tools, replaced under mu by SetTools).
+func (a *Agent) toolListHashLocked() uint32 {
+	names := make([]string, 0, len(a.cfg.Tools))
+	for _, t := range a.cfg.Tools {
+		names = append(names, t.Schema().Name)
+	}
+	sort.Strings(names)
+	h := fnv.New32a()
+	for _, n := range names {
+		h.Write([]byte(n))
+		h.Write([]byte{0})
+	}
+	return h.Sum32()
 }
 
 func (a *Agent) handleStreamError(_ context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {

@@ -297,6 +297,22 @@ type Agent struct {
 	// so warmth evidence goes stale together with the recorded prompt size).
 	cacheWarmObserved bool
 
+	// lastRoundActivity records when the last provider request completed (any
+	// stream round), set under mu in captureStreamResult. The cache gates key
+	// off the freshest of this and lastTurnEnd: lastTurnEnd advances only at
+	// turn END, so during a long single turn it goes stale and the idle-gap
+	// logic would flip the gate cold mid-turn while rounds still complete
+	// every few seconds — busting a provably hot cache BELOW the ceiling
+	// (bugs.md prefix-cache bust loop companion defect). lastTurnEnd stays
+	// for inter-turn idle bookkeeping. Cleared by Clear.
+	lastRoundActivity time.Time
+
+	// lastCacheReadTokens is the previous completed request's cache_read
+	// count, kept so the per-request debug log can show cache_read deltas
+	// (bugs.md round-17 anomaly forensics: discriminate provider-side
+	// partial eviction from request-shape changes). Cleared by Clear.
+	lastCacheReadTokens int
+
 	// lastAssistantHash and assistantRepeatCount detect assistant-message
 	// loops where the model emits the same text/thinking across consecutive
 	// turns without making progress.
@@ -1291,6 +1307,8 @@ func (a *Agent) Clear() {
 	a.history = nil
 	a.queue = nil
 	a.processing = false
+	a.lastRoundActivity = time.Time{}
+	a.lastCacheReadTokens = 0
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 

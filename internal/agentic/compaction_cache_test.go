@@ -261,3 +261,138 @@ func TestClear_ClearsCacheWarmObserved(t *testing.T) {
 		t.Fatalf("Clear must reset cacheWarmObserved for the new conversation")
 	}
 }
+
+// --- bugs.md CM:13 companion defect: mid-turn gate clock ---
+
+// TestCacheGates_MidTurnRoundActivity is the regression for the CM:13
+// companion defect: cacheAssumedCold read lastTurnEnd, written only at turn
+// END — so >1h into a long single turn (the session ran ~399 rounds / ~40min
+// in one turn) the idle-gap logic would flip the gate cold while rounds were
+// still completing every few seconds, and the gate would fire BELOW the
+// ceiling, busting a provably hot cache. Per-round activity
+// (lastRoundActivity) must keep both gates hot.
+func TestCacheGates_MidTurnRoundActivity(t *testing.T) {
+	newAgent := func() *Agent {
+		return &Agent{
+			cfg: Config{
+				ContextCompression: ContextCompressionConfig{
+					MicroCompaction: MicroCompactionConfig{CacheMissThreshold: 1 * time.Hour},
+				},
+			},
+		}
+	}
+
+	// Turn 1 ended >1h ago, but a round of the current (long) turn just
+	// completed: both gates must read hot.
+	a := newAgent()
+	a.lastTurnEnd = time.Now().Add(-2 * time.Hour)
+	a.lastRoundActivity = time.Now()
+	if a.cacheAssumedCold() {
+		t.Fatalf("rounds completing mid-turn must keep the cache hot (stale lastTurnEnd flips it cold)")
+	}
+	if a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: mid-turn round activity means hot")
+	}
+
+	// Rounds ALSO stopped >1h ago: genuinely idle → cold on both gates.
+	a.lastRoundActivity = time.Now().Add(-2 * time.Hour)
+	if !a.cacheAssumedCold() {
+		t.Fatalf("idle past the threshold (turn and rounds both stale) must be cold")
+	}
+	if !a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: stale round activity is cold")
+	}
+}
+
+// TestCacheGates_FirstTurnUsageLessProviderStaysCold pins the fail-open side:
+// a provider that reports no cache stats has no proven cache to protect, so
+// turn-1 rounds completing must NOT flip the gate hot — otherwise the
+// per-round compression gate is suppressed for the whole first turn
+// (TestAgent_CompressionGateBetweenRounds shape). Warm evidence flips it hot.
+func TestCacheGates_FirstTurnUsageLessProviderStaysCold(t *testing.T) {
+	a := &Agent{
+		cfg: Config{
+			ContextCompression: ContextCompressionConfig{
+				MicroCompaction: MicroCompactionConfig{CacheMissThreshold: 1 * time.Hour},
+			},
+		},
+	}
+	a.lastRoundActivity = time.Now() // rounds completing, but turn 1 + no cache reads
+	if !a.cacheAssumedCold() {
+		t.Fatalf("turn 1 with no cache-read evidence must fail open even while rounds complete")
+	}
+	if !a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: turn 1 without warm evidence is cold")
+	}
+	a.cacheWarmObserved = true
+	if a.cacheAssumedCold() {
+		t.Fatalf("cache reads reported mid-turn-1 must flip the gate hot")
+	}
+	if a.cacheAssumedColdForProactive() {
+		t.Fatalf("proactive gate must agree: warm evidence means hot")
+	}
+}
+
+// TestMicroCompact_MidTurnDeferredWhenRoundsActive drives the companion
+// defect end-to-end: a long turn past the 1h CacheMissThreshold (stale
+// lastTurnEnd) with rounds still completing must NOT truncate below the
+// deferral ceiling — before the fix this truncated and busted the hot cache.
+func TestMicroCompact_MidTurnDeferredWhenRoundsActive(t *testing.T) {
+	a := microAgent(time.Now().Add(-2 * time.Hour)) // stale inter-turn clock
+	a.lastRoundActivity = time.Now()                 // but rounds still completing
+	a.microCompactForced(false)
+	if anyTruncated(a) {
+		t.Fatalf("micro compaction truncated mid-turn on a stale lastTurnEnd; " +
+			"per-round activity must keep the hot cache deferred (bugs.md CM:13 companion defect)")
+	}
+}
+
+// TestCaptureStreamResult_SetsLastRoundActivity verifies the per-round
+// observation hook: every completed request refreshes the gate clock and the
+// cache_read forensics delta, even when the provider sends no usage block.
+func TestCaptureStreamResult_SetsLastRoundActivity(t *testing.T) {
+	t.Run("completed request with usage", func(t *testing.T) {
+		a := &Agent{}
+		before := time.Now()
+		s := provider.NewAssistantMessageEventStream(4)
+		s.End(&provider.AssistantMessage{
+			Usage: &provider.Usage{InputTokens: 10, OutputTokens: 2, CacheReadTokens: 42},
+		})
+		a.captureStreamResult(s)
+		if a.lastRoundActivity.Before(before) {
+			t.Fatalf("completed request must record lastRoundActivity")
+		}
+		if a.lastCacheReadTokens != 42 {
+			t.Fatalf("lastCacheReadTokens = %d, want 42 (forensics delta)", a.lastCacheReadTokens)
+		}
+	})
+
+	t.Run("completed request without usage", func(t *testing.T) {
+		a := &Agent{}
+		s := provider.NewAssistantMessageEventStream(4)
+		s.End(&provider.AssistantMessage{})
+		a.captureStreamResult(s)
+		if a.lastRoundActivity.IsZero() {
+			t.Fatalf("a completed request must record activity even without a usage block")
+		}
+		if a.lastCacheReadTokens != 0 {
+			t.Fatalf("no usage block must leave the forensics delta untouched, got %d", a.lastCacheReadTokens)
+		}
+	})
+}
+
+// TestClear_ClearsRoundActivity verifies a conversation reset also drops the
+// per-round clock and forensics delta: the new conversation starts with no
+// provider contact, so the gates apply the first-turn presumption again.
+func TestClear_ClearsRoundActivity(t *testing.T) {
+	a := &Agent{}
+	a.lastRoundActivity = time.Now()
+	a.lastCacheReadTokens = 100
+	a.Clear()
+	if !a.lastRoundActivity.IsZero() {
+		t.Fatalf("Clear must reset lastRoundActivity for the new conversation")
+	}
+	if a.lastCacheReadTokens != 0 {
+		t.Fatalf("Clear must reset lastCacheReadTokens, got %d", a.lastCacheReadTokens)
+	}
+}

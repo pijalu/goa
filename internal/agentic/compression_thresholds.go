@@ -92,6 +92,20 @@ func (t resolvedThresholds) deferralCeiling() int {
 	return c
 }
 
+// elisionTargetPercent is the usage level a hot-cache proactive tool_elision
+// pass elides down to: far enough below the deferral ceiling that one cache
+// bust buys many rounds of headroom (hysteresis), instead of re-busting the
+// hot prefix cache every round as the count-based boundary advances with
+// history growth (bugs.md prefix-cache bust loop). Sits 20 points below the
+// hard ceiling (default ≈75%).
+func (t resolvedThresholds) elisionTargetPercent() int {
+	target := t.hard - 20
+	if target < 1 {
+		target = 1
+	}
+	return target
+}
+
 // resolveThresholds folds the explicit Thresholds with the deprecated
 // ThresholdPercent alias and the documented defaults, and resolves the
 // per-layer strategies (legacy Strategy maps to the trigger layer).

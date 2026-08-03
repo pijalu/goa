@@ -26,6 +26,10 @@ const compactSummaryRequestPrompt = "Summarize our conversation so far, preservi
 // function.arguments are not valid JSON — which broke /compress:summarize).
 const elidedToolCallArguments = "[elided]"
 
+// elidedToolResultContent is the placeholder written by elideToolMessages in
+// place of elided tool result bodies.
+const elidedToolResultContent = "[tool result elided]"
+
 func (a *Agent) Compact(ctx context.Context) error {
 	a.mu.Lock()
 	empty := len(a.history) == 0
@@ -337,20 +341,23 @@ func (a *Agent) compressHybrid(ctx context.Context) error {
 // compressToolElision replaces old tool arguments and results with placeholders.
 // When force is true (manual /compress invocation), the recent-turn preserve
 // window is reduced so that small histories still have messages to elide.
+// The proactive path (force=false) picks its boundary via
+// proactiveElisionBoundary: eager with a cold cache, token-budgeted with
+// hysteresis when the pass must bust a hot provider prefix cache.
 func (a *Agent) compressToolElision(force bool) {
 	preserve := a.cfg.ContextCompression.PreserveRecentTurns
 	if preserve == 0 {
 		preserve = 2
 	}
 	boundary := computeElisionBoundary(len(a.history), preserve)
-	// Forced compression must always do visible work. If the standard boundary
-	// leaves nothing to elide, keep only the two most recent messages and
-	// process everything before them.
-	if force && boundary <= 1 {
-		boundary = len(a.history) - 2
-		if boundary < 1 {
-			boundary = 1
-		}
+	escalate := false
+	if force {
+		// Forced compression must always do visible work. If the standard
+		// boundary leaves nothing to elide, keep only the two most recent
+		// messages and process everything before them.
+		boundary = forcedElisionBoundary(boundary, len(a.history))
+	} else {
+		boundary, escalate = a.proactiveElisionBoundary(boundary)
 	}
 	a.elideToolMessages(boundary)
 	if boundary > 1 {
@@ -361,6 +368,87 @@ func (a *Agent) compressToolElision(force bool) {
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "Applied tool_elision to messages before index %d", boundary)
 	}
+	if escalate {
+		// The elidable payload could not meet the hysteresis budget, so this
+		// hot-cache bust would repeat next round. Drop old turns instead so
+		// the bust buys real headroom (bugs.md prefix-cache bust loop).
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "tool_elision budget unmet: escalating to selective compression")
+		}
+		a.compressSelective()
+	}
+}
+
+// forcedElisionBoundary applies the forced-pass floor: keep only the two most
+// recent messages when the count-based boundary leaves nothing to elide.
+func forcedElisionBoundary(boundary, histLen int) int {
+	if boundary > 1 {
+		return boundary
+	}
+	boundary = histLen - 2
+	if boundary < 1 {
+		boundary = 1
+	}
+	return boundary
+}
+
+// proactiveElisionBoundary returns the elision boundary for a threshold-
+// triggered pass, and whether the caller must escalate to selective
+// compression afterwards. With a cold (or cache-gate-disabled) cache the
+// legacy count-based boundary is used: mutation is free, so elide eagerly.
+//
+// With a HOT cache (reachable only at/above the deferral ceiling, where the
+// gate overrides cache protection) the pass must buy hysteresis: elide
+// oldest-first by token budget until the estimated usage drops to the
+// elision target (hard−20), so one cache bust buys many rounds of headroom
+// instead of re-busting every round as the count boundary advances with
+// history growth (bugs.md prefix-cache bust loop: the count boundary frees
+// only the ~2 messages that crossed it per round while usage stays at the
+// ceiling, so the bust repeats every round and never converges). The budget
+// walk may extend past the count boundary into the preserve window but never
+// touches the in-flight tail (the last two messages). When the elidable
+// payload cannot meet the budget, escalate is set: nibbling again next round
+// is strictly worse than one headroom-buying selective pass.
+//
+// The caller must hold a.mu (cache gate and history reads).
+func (a *Agent) proactiveElisionBoundary(countBoundary int) (boundary int, escalate bool) {
+	if a.cfg.ContextCompression.DisableCacheGate || a.cacheAssumedColdForProactive() {
+		return countBoundary, false
+	}
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 {
+		return countBoundary, false
+	}
+	rt := a.cfg.ContextCompression.resolveThresholds()
+	need := a.computeContextStatsForMax(maxTokens).EstimatedTokens - maxTokens*rt.elisionTargetPercent()/100
+	if need <= 0 {
+		return countBoundary, false
+	}
+	freed := 0
+	boundary = 1
+	tailCap := len(a.history) - 2
+	for i := 1; i < tailCap && freed < need; i++ {
+		freed += elisionReclaim(&a.history[i])
+		boundary = i + 1
+	}
+	return boundary, freed < need
+}
+
+// elisionReclaim estimates the tokens elideToolMessages would free on msg:
+// tool-call arguments collapse to the elision marker and tool results to the
+// result placeholder. Messages elideToolMessages would not touch (and already
+// elided ones) reclaim zero or less; the caller sums the raw deltas.
+func elisionReclaim(msg *Message) int {
+	reclaim := 0
+	switch msg.Role {
+	case Assistant:
+		for j := range msg.ToolCalls {
+			reclaim += estimateTokens(msg.ToolCalls[j].Arguments) - estimateTokens(elidedToolCallArguments)
+		}
+	case ToolRole:
+		reclaim += estimateTokens(msg.Content) - estimateTokens(elidedToolResultContent)
+	}
+	return reclaim
 }
 
 // logElidedSnapshotCount logs how many elided tool-call blocks a
@@ -396,7 +484,7 @@ func (a *Agent) elideToolMessages(boundary int) {
 		case ToolRole:
 			// Always replace the tool result body with a compact placeholder,
 			// regardless of size, so tool_elision consistently frees tokens.
-			msg.Content = "[tool result elided]"
+			msg.Content = elidedToolResultContent
 		}
 	}
 }
