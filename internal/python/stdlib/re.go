@@ -614,34 +614,48 @@ func stripVerbosePattern(pat string) string {
 	escaped := false
 	for i := 0; i < len(pat); i++ {
 		c := pat[i]
-		if escaped {
+		switch {
+		case escaped:
 			b.WriteByte(c)
 			escaped = false
-			continue
-		}
-		switch {
 		case c == '\\':
 			b.WriteByte(c)
 			escaped = true
 		case inClass:
 			b.WriteByte(c)
-			if c == ']' {
-				inClass = false
-			}
+			inClass = c != ']'
 		case c == '[':
 			b.WriteByte(c)
 			inClass = true
 		case c == '#':
-			for i+1 < len(pat) && pat[i+1] != '\n' {
-				i++
-			}
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f':
+			i = skipVerboseComment(pat, i)
+		case isVerboseSpace(c):
 			// drop unescaped whitespace
 		default:
 			b.WriteByte(c)
 		}
 	}
 	return b.String()
+}
+
+// isVerboseSpace reports whether c is unescaped whitespace dropped by
+// re.VERBOSE.
+func isVerboseSpace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	}
+	return false
+}
+
+// skipVerboseComment returns the index of the last byte of the #-comment
+// starting at i — the byte before the terminating newline, or the end of the
+// pattern.
+func skipVerboseComment(pat string, i int) int {
+	for i+1 < len(pat) && pat[i+1] != '\n' {
+		i++
+	}
+	return i
 }
 
 // toPattern converts a py.Object to a *Pattern. If the object is a string, it
