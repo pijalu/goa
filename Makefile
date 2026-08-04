@@ -21,7 +21,27 @@
 .PHONY: build clean test test-short test-cover test-race lint vet fmt install cross run web-build web-clean web-serve help
 
 GO := go
-BINARY := goa
+
+# Detect the host OS so native builds use the right binary extension.
+# Windows (cmd/PowerShell sets OS=Windows_NT; Git Bash/MSYS2 report
+# MINGW*/MSYS* via uname) gets a .exe, all other hosts get the bare name.
+OS_NAME := $(shell uname -s 2>/dev/null)
+ifeq ($(findstring Windows_NT,$(OS)),)
+    HOST_OS := windows
+else ifeq ($(findstring MINGW,$(OS_NAME)),)
+    HOST_OS := windows
+else ifeq ($(findstring MSYS,$(OS_NAME)),)
+    HOST_OS := windows
+else
+    HOST_OS := $(OS_NAME)
+endif
+
+ifeq ($(HOST_OS),windows)
+    BINARY := goa.exe
+else
+    BINARY := goa
+endif
+
 LD_FLAGS := -ldflags="-s -w"
 MODULE := github.com/yourorg/goa
 GO_PACKAGES := ./cmd/... ./config/... ./core/... ./internal/... ./memory/... \
@@ -44,7 +64,7 @@ build: clean models
 # ── Clean ────────────────────────────────────────────────────────────────
 
 clean:
-	rm -f $(BINARY) coverage.out coverage.html
+	rm -f goa goa.exe coverage.out coverage.html
 	rm -rf dist/
 
 # ── Test ─────────────────────────────────────────────────────────────────

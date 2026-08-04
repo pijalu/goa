@@ -192,7 +192,7 @@ func loadGeneratedModels() {
 		ID: "moonshotai/Kimi-K2.6-TEE", Name: "Kimi K2.6 TEE", Api: provider.Api("openai-completions"), Provider: provider.Provider("chutes"),
 		BaseURL:   "https://llm.chutes.ai/v1",
 		Reasoning: true, ContextWindow: 262144, MaxTokens: 65535, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000006600, Output: 0.0000035000, CacheRead: 0.0000000660, CacheWrite: 0.0000000000},
+		Cost:           provider.ModelPricing{Input: 0.0000005800, Output: 0.0000034000, CacheRead: 0.0000000580, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
