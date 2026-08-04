@@ -38,6 +38,13 @@ func RunSetupWizard(projectDir string, loader *CascadeLoader) (*WizardResult, er
 		return nil, err
 	}
 
+	// Start() only enters raw mode and clears the screen; without an explicit
+	// first frame plus the command/render loops the wizard component is never
+	// drawn, leaving a blank window instead of the setup dialog. Mirror the
+	// main app's startup sequence (app.go: RenderNow() then RunLoops()).
+	engine.RenderNow()
+	engine.RunLoops()
+
 	tuiStopped := make(chan struct{})
 	var stopOnce sync.Once
 	go func() {
