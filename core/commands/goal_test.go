@@ -896,6 +896,129 @@ func TestGoalCommand_Resume_StartsDriver(t *testing.T) {
 	waitForRun(t, ran, "resume continuation")
 }
 
+// Spec: /goal:resume with no current goal takes the FIRST queued goal
+// (paused, enqueued) and moves it active — a queued goal must never be a
+// dead end (2026-08-04 export: /goal:list showed two queued goals while
+// /goal:resume errored "no current goal to resume").
+func TestGoalCommand_Resume_NoCurrentGoal_PromotesFirstQueued(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	ran := make(chan struct{}, 4)
+	driver := &core.GoalDriver{Mode: mode, Agent: &fakeAgentSignalsRun{ran: ran}}
+	switcher := &testAutonomySwitcher{level: internal.AutonomyYolo}
+	cmd := &GoalCommand{Mode: mode, Queue: queue, Driver: driver, AutonomySwitcher: switcher}
+	ctx := testContext()
+
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "first queued"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "second queued"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Run(ctx, []string{"resume"}); err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Stop()
+
+	current := mode.GetGoal().Goal
+	if current == nil {
+		t.Fatal("resume should have promoted the first queued goal to current")
+	}
+	if current.Objective != "first queued" {
+		t.Errorf("promoted objective = %q, want %q", current.Objective, "first queued")
+	}
+	if current.Status != goal.GoalActive {
+		t.Errorf("status = %q, want active", current.Status)
+	}
+	queued, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].Objective != "second queued" {
+		t.Errorf("queue after promotion = %+v, want only [second queued]", queued)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "first queued") {
+		t.Errorf("resume output = %q, want it to name the promoted goal", out)
+	}
+	// Like a plain resume, the promotion must schedule a continuation turn.
+	waitForRun(t, ran, "resume-from-queue continuation")
+}
+
+// /goal:resume with no current goal AND an empty queue keeps the original
+// error (there is genuinely nothing to resume).
+func TestGoalCommand_Resume_NoCurrentGoal_EmptyQueue(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	err := cmd.Run(ctx, []string{"resume"})
+	if err == nil || !strings.Contains(err.Error(), "no current goal to resume") {
+		t.Errorf("resume error = %v, want 'no current goal to resume'", err)
+	}
+}
+
+// Spec: /goal:next with no active goal enqueues the goal as parked (queued,
+// never auto-started) and prints a clear note — /goal:resume to start.
+func TestGoalCommand_Next_NoActiveGoal_PrintsResumeNote(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"next", "parked work"}); err != nil {
+		t.Fatal(err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("/goal:next must not auto-start the goal when none is active")
+	}
+	queued, err := queue.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].Objective != "parked work" {
+		t.Errorf("queue = %+v, want [parked work]", queued)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "/goal:resume to start") {
+		t.Errorf("output = %q, want the '/goal:resume to start' note", out)
+	}
+}
+
+// The same parked-goal note applies to /goal:next:last with no active goal.
+func TestGoalCommand_NextLast_NoActiveGoal_PrintsResumeNote(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"next", "last", "parked work"}); err != nil {
+		t.Fatal(err)
+	}
+	if out := ctx.OutputBuffer.String(); !strings.Contains(out, "/goal:resume to start") {
+		t.Errorf("output = %q, want the '/goal:resume to start' note", out)
+	}
+}
+
+// With an active goal, /goal:next queues normally and does NOT print the
+// parked-goal note (the queue drains on completion as before).
+func TestGoalCommand_Next_WithActiveGoal_NoResumeNote(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"first"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"next", "queued work"}); err != nil {
+		t.Fatal(err)
+	}
+	if out := ctx.OutputBuffer.String(); strings.Contains(out, "/goal:resume to start") {
+		t.Errorf("output = %q, must not contain the parked-goal note with an active goal", out)
+	}
+}
+
 // fakeAgentBlocksUntilCancel simulates an in-flight continuation turn: Run
 // blocks until its context is cancelled, then returns the ctx error — the
 // same unwinding a real agent performs on interrupt.

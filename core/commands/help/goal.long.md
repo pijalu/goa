@@ -11,7 +11,8 @@ Usage: /goal[:subcommand[:<text>]]
   /goal:new:<text>            Create a goal with the given objective
   /goal:new:fresh:<text>      Create a goal on a clean context (no prior conversation)
   /goal:new:reuse:<text>      Create a goal reusing the current conversation
-  /goal:next                  Queue a goal to run next, interactively (front of the queue)
+  /goal:next                  Queue a goal to run next, interactively (front of the queue);
+                              with no active goal the goal stays parked — /goal:resume to start
   /goal:next[:first]:<text>   Queue a goal to run right after the active goal (front of the queue)
   /goal:next:last[:<text>]    Queue a goal at the END of the queue
   /goal:next:fresh|reuse:<text> Queue with an explicit context mode
@@ -28,7 +29,8 @@ Usage: /goal[:subcommand[:<text>]]
                               queued goal is promoted paused (never auto-started) —
                               review the completion, then /goal:resume
   /goal:pause:next:off        Disarm the pause-after-completion one-shot
-  /goal:resume                Resume a paused or blocked goal
+  /goal:resume                Resume a paused or blocked goal; with no current
+                              goal, start the first queued goal
   /goal:cancel                Discard the current goal (next queued goal is promoted paused, never auto-started)
   /goal:cancel:current        Same as /goal:cancel
   /goal:cancel:all            Discard the current goal AND clear every queued goal

@@ -616,7 +616,11 @@ func (c *GoalCommand) resume(ctx core.Context) error {
 		return err
 	}
 	if c.Mode.GetGoal().Goal == nil {
-		return fmt.Errorf("no current goal to resume")
+		// No current goal: take the first queued goal and move it active.
+		// A queued goal must never be a dead end — previously this errored
+		// with "no current goal to resume" while /goal:list showed queued
+		// work the user had no way to start.
+		return c.resumeFirstQueued(ctx)
 	}
 	_, err := c.Mode.ResumeGoal(goal.GoalReasonInput{}, goal.GoalActorUser)
 	if err != nil {
@@ -627,6 +631,50 @@ func (c *GoalCommand) resume(ctx core.Context) error {
 	// schedule the continuation turn the same way goal creation does, so the
 	// goal proceeds without requiring a user message. Start is a no-op when a
 	// drive loop is already running.
+	if c.Driver != nil {
+		c.Driver.Start(context.Background())
+	}
+	return nil
+}
+
+// resumeFirstQueued promotes the head of the durable queue straight to
+// ACTIVE and kicks the driver: /goal:resume with no current goal starts the
+// first queued goal (paused, enqueued) instead of erroring. Mirrors the
+// app's promoteQueuedGoal (no completion handoff exists on this path — the
+// queued goal's own handoff, if any, rides along).
+func (c *GoalCommand) resumeFirstQueued(ctx core.Context) error {
+	if c.Queue == nil {
+		return fmt.Errorf("no current goal to resume")
+	}
+	queue, err := c.Queue.Read()
+	if err != nil {
+		return err
+	}
+	if len(queue) == 0 {
+		return fmt.Errorf("no current goal to resume")
+	}
+	next := queue[0]
+	_, removed, err := c.Queue.Remove(next.ID)
+	if err != nil {
+		return err
+	}
+	if removed == nil {
+		return fmt.Errorf("no current goal to resume")
+	}
+	if _, err := c.Mode.CreateGoal(goal.CreateGoalInput{
+		Objective:           removed.Objective,
+		Name:                removed.Name,
+		CompletionCriterion: removed.CompletionCriterion,
+		VerifyCommand:       removed.VerifyCommand,
+		FreshContext:        removed.FreshContext,
+		Handoff:             removed.Handoff,
+	}, goal.GoalActorUser); err != nil {
+		_, _ = c.Queue.Restore(*removed)
+		return err
+	}
+	writeFmt(ctx, "Queued goal resumed: %s\n", removed.Objective)
+	// Same kick as a plain resume: flip state AND schedule the continuation
+	// turn, so the goal proceeds without requiring a user message.
 	if c.Driver != nil {
 		c.Driver.Start(context.Background())
 	}
@@ -836,6 +884,7 @@ func (c *GoalCommand) queueNext(ctx core.Context, objective string, fresh bool) 
 	} else {
 		writeFmt(ctx, "Queued goal to run next (queue: %d) [%s]: %s\n", len(goals), name, objective)
 	}
+	c.noteResumeWhenNoActiveGoal(ctx)
 	return nil
 }
 
@@ -856,7 +905,17 @@ func (c *GoalCommand) queueLast(ctx core.Context, objective string, fresh bool) 
 	} else {
 		writeFmt(ctx, "Queued goal #%d [%s]: %s\n", len(goals), name, objective)
 	}
+	c.noteResumeWhenNoActiveGoal(ctx)
 	return nil
+}
+
+// noteResumeWhenNoActiveGoal appends the parked-goal hint after a queue
+// insert: with no current goal the queue does not drain by itself — the
+// goal stays parked (queued, paused) until the user starts it explicitly.
+func (c *GoalCommand) noteResumeWhenNoActiveGoal(ctx core.Context) {
+	if c.Mode.GetGoal().Goal == nil {
+		writeStr(ctx, "No active goal — the goal stays queued (paused): /goal:resume to start.\n")
+	}
 }
 
 // goalManagerKeymap repurposes '+'/'-' from add/delete to direct reordering
@@ -1396,7 +1455,7 @@ var goalSubcommands = []struct {
 	{"verify", "run the recorded verify command now"},
 	{"settings", "toggle goal settings (auto-unblock)"},
 	{"pause", "pause the active goal (:next to pause after completion)"},
-	{"resume", "resume a paused goal"},
+	{"resume", "resume a paused goal (or start the first queued goal)"},
 	{"cancel", "discard the current goal (next queued promotes paused)"},
 }
 
