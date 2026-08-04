@@ -240,7 +240,7 @@ func convertBedrockAssistantContent(blocks []provider.ContentBlock) []map[string
 				"toolUse": map[string]interface{}{
 					"toolUseId": b.ToolCallID,
 					"name":      b.ToolName,
-					"input":     json.RawMessage(b.ToolArguments),
+					"input":     json.RawMessage(provider.SafeToolArguments(b.ToolArguments)),
 				},
 			})
 		}

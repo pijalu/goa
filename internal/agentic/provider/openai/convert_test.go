@@ -5,6 +5,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -76,6 +77,42 @@ func TestConvertAssistantMessage_WithToolCalls(t *testing.T) {
 	}
 	if fn["name"] != "read" {
 		t.Errorf("expected function name read, got %q", fn["name"])
+	}
+}
+
+func TestConvertAssistantMessage_SanitizesMalformedToolArguments(t *testing.T) {
+	// Regression test for the poolside 400 "Invalid JSON in tool call
+	// arguments": a tool call truncated mid-stream must re-serialize as
+	// valid JSON or the provider rejects the whole request.
+	msg := provider.NewAssistantMessage([]provider.ContentBlock{
+		{Type: provider.ContentBlockToolCall, ToolCallID: "call_1", ToolName: "edit",
+			ToolArguments: `{"path": "/tmp/a.md", "old_string": "a", "new_string": "b"`},
+	})
+	compat := provider.OpenAICompletionsCompat{}
+
+	got := convertAssistantMessage(msg, compat)
+
+	toolCalls, ok := got["tool_calls"].([]map[string]interface{})
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool_call, got %+v", got["tool_calls"])
+	}
+	fn, ok := toolCalls[0]["function"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected function map")
+	}
+	args, ok := fn["arguments"].(string)
+	if !ok {
+		t.Fatalf("expected string arguments, got %T", fn["arguments"])
+	}
+	if !json.Valid([]byte(args)) {
+		t.Fatalf("arguments must be valid JSON, got %q", args)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+		t.Fatalf("arguments must unmarshal: %v", err)
+	}
+	if parsed["path"] != "/tmp/a.md" {
+		t.Errorf("repair must preserve the model's intent, got %v", parsed["path"])
 	}
 }
 

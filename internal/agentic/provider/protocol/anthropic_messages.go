@@ -185,7 +185,7 @@ func convertAnthropicAssistantBlocks(blocks []schema.ContentBlock) []map[string]
 				"type":  "tool_use",
 				"id":    b.ToolCallID,
 				"name":  b.ToolName,
-				"input": json.RawMessage(b.ToolArguments),
+				"input": json.RawMessage(schema.SafeToolArguments(b.ToolArguments)),
 			})
 		}
 	}

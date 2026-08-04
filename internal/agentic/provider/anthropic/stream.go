@@ -175,7 +175,7 @@ func convertAssistantBlocks(blocks []provider.ContentBlock) []map[string]interfa
 				"type":  "tool_use",
 				"id":    b.ToolCallID,
 				"name":  b.ToolName,
-				"input": json.RawMessage(b.ToolArguments),
+				"input": json.RawMessage(provider.SafeToolArguments(b.ToolArguments)),
 			})
 		}
 	}
