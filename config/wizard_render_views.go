@@ -152,11 +152,19 @@ func (w *wizardComponent) renderProviderTest(width int) []string {
 		fmt.Sprintf("  Provider:  %s", s.providerName),
 		fmt.Sprintf("  Endpoint:  %s", s.endpoint),
 		fmt.Sprintf("  API Key:   %s", maskKey(s.apiKey)),
-		"",
-		ansi.Faint+"  (press Enter to continue)"+ansi.Reset,
-		"",
-		ansi.Faint+"  [Enter] Continue  [Esc] Back"+ansi.Reset,
 	)
+	if s.fetching {
+		// Model list is being fetched in the background; the command loop stays
+		// responsive. Input is ignored until the fetch lands.
+		lines = append(lines, "", ansi.Faint+"  Fetching available models..."+ansi.Reset)
+	} else {
+		lines = append(lines,
+			"",
+			ansi.Faint+"  (press Enter to continue)"+ansi.Reset,
+			"",
+			ansi.Faint+"  [Enter] Continue  [Esc] Back"+ansi.Reset,
+		)
+	}
 	return lines
 }
 

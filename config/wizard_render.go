@@ -302,8 +302,50 @@ func (w *wizardComponent) advanceFromTest() {
 	w.inputMode = ""
 	w.editor.Clear()
 	s := w.currentSlot()
-	w.fetchAvailableModels(s)
-	if len(s.availableModels) > 0 {
+	if s.fetching {
+		return // a fetch is already in flight; keep the loop non-blocking
+	}
+	s.fetching = true
+	s.fetchGen++
+	token := s.fetchGen
+
+	if w.apply == nil {
+		// Unit-test / single-goroutine path: no command loop, run inline.
+		w.applyModels(s, token, fetchModelsRemote(s.endpoint, s.apiKey))
+		return
+	}
+
+	// Async path: the HTTP call (up to 5s timeout for unreachable endpoints)
+	// must NOT run on the command loop or the whole UI freezes — no key
+	// input, no rendering — for the duration. Run it on a background
+	// goroutine and post the result back onto the loop when it lands.
+	endpoint, apiKey := s.endpoint, s.apiKey
+	go func() {
+		models := fetchModelsRemote(endpoint, apiKey)
+		// Don't post back if the wizard has already been torn down
+		// (engine.Stopped is nil-safe in single-goroutine tests).
+		if w.engine != nil {
+			select {
+			case <-w.engine.Stopped():
+				return
+			default:
+			}
+		}
+		w.apply(func() { w.applyModels(s, token, models) })
+	}()
+}
+
+// applyModels commits a fetched model list onto the command loop. It ignores
+// stale results (user navigated back while the fetch was in flight) via the
+// fetchGen token, then either opens the model-selection screen or falls back
+// to the manual model form.
+func (w *wizardComponent) applyModels(s *modelSlot, token int, models []string) {
+	if !s.fetching || s.fetchGen != token {
+		return // stale result discarded
+	}
+	s.fetching = false
+	s.availableModels = models
+	if len(models) > 0 {
 		s.selectedModelIdx = 0
 		if w.state == stateCompanionProviderTest {
 			w.state = stateCompanionModelSelect
@@ -454,12 +496,12 @@ func (w *wizardComponent) previousState() wizardState {
 	}
 	if st == stateProviderTest {
 		w.clearInput()
-		w.main.availableModels = nil
+		w.cancelFetch(&w.main)
 		return stateProviderType
 	}
 	if st == stateCompanionProviderTest {
 		w.clearInput()
-		w.companion.availableModels = nil
+		w.cancelFetch(&w.companion)
 		return stateCompanionProviderType
 	}
 	return w.previousStateAfterProvider(st)
@@ -508,7 +550,7 @@ func (w *wizardComponent) dynamicPreviousState(st wizardState) (wizardState, boo
 		return stateCompanionProviderType, true
 	case stateCompanionProviderTest:
 		w.clearInput()
-		w.companion.availableModels = nil
+		w.cancelFetch(&w.companion)
 		return stateCompanionProviderType, true
 	case stateCompanionModelSetup:
 		w.commitEditorToField()
@@ -544,6 +586,15 @@ func (w *wizardComponent) modeBackTarget() wizardState {
 func (w *wizardComponent) clearInput() {
 	w.inputMode = ""
 	w.editor.Clear()
+}
+
+// cancelFetch invalidates any in-flight model fetch for a slot so a stale
+// result posted back later is discarded instead of hijacking the wizard. It is
+// safe to call even when no fetch is pending.
+func (w *wizardComponent) cancelFetch(s *modelSlot) {
+	s.fetching = false
+	s.fetchGen++
+	s.availableModels = nil
 }
 
 func (w *wizardComponent) modelSetupBackTarget() wizardState {
@@ -846,27 +897,30 @@ func (w *wizardComponent) focusProvider(idx int) {
 
 // -- Model fetching -----------------------------------------------
 
-func (w *wizardComponent) fetchAvailableModels(s *modelSlot) {
-	s.availableModels = nil
-	if s.endpoint == "" {
-		return
+// fetchModelsRemote performs the network call to list a provider's models.
+// Pure function — no wizard/TUI state — so it can run on a background
+// goroutine without touching the command loop. Any failure/timeout (5s for
+// unreachable endpoints such as local LLM servers) returns an empty list.
+func fetchModelsRemote(endpoint, apiKey string) []string {
+	if endpoint == "" {
+		return nil
 	}
-	endpoint := modelsEndpoint(s.endpoint)
-	req, err := http.NewRequest("GET", endpoint, nil)
+	e := modelsEndpoint(endpoint)
+	req, err := http.NewRequest("GET", e, nil)
 	if err != nil {
-		return
+		return nil
 	}
-	if s.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+s.apiKey)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return
+		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return
+		return nil
 	}
 	var result struct {
 		Data []struct {
@@ -874,13 +928,15 @@ func (w *wizardComponent) fetchAvailableModels(s *modelSlot) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return
+		return nil
 	}
+	models := make([]string, 0, len(result.Data))
 	for _, m := range result.Data {
 		if m.ID != "" {
-			s.availableModels = append(s.availableModels, m.ID)
+			models = append(models, m.ID)
 		}
 	}
+	return models
 }
 
 func modelsEndpoint(endpoint string) string {
