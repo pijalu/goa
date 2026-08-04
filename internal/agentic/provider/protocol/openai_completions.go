@@ -729,6 +729,9 @@ func parseOpenAIChunk(chunk string) ([]parserMessage, error) {
 	if err := json.Unmarshal([]byte(chunk), &raw); err != nil {
 		return nil, fmt.Errorf("decode openai chunk: %w", err)
 	}
+	if err := detectOpenAIChunkError(raw); err != nil {
+		return nil, err
+	}
 	choices, ok := raw["choices"].([]any)
 	if !ok || len(choices) == 0 {
 		if rootMsgs := parseRootFields(raw); len(rootMsgs) > 0 {
@@ -756,6 +759,39 @@ func parseOpenAIChunk(chunk string) ([]parserMessage, error) {
 		out = append(out, finishReason...)
 	}
 	return out, nil
+}
+
+// detectOpenAIChunkError surfaces provider error frames delivered inside
+// the SSE stream. LM Studio/llama.cpp report request failures (e.g. HTTP 400
+// chat-template rejections such as "System message must be at the
+// beginning") as HTTP 200 + "event: error" frames whose data payload carries
+// {"error": {...}} instead of a choices chunk. Without this check the frame
+// parses to zero messages and the stream ends "cleanly", so the agent
+// misclassifies a hard provider error as an empty response and retries a
+// payload that can never succeed — the session breaks with no diagnosable
+// message (2026-08-04 LM Studio export).
+func detectOpenAIChunkError(raw map[string]any) error {
+	errObj, ok := raw["error"]
+	if !ok || errObj == nil {
+		return nil
+	}
+	msg := "provider error"
+	if m, ok := raw["message"].(string); ok && m != "" {
+		msg = m
+	}
+	if m, ok := openAIErrorMessage(errObj); ok && m != "" {
+		msg = m
+	}
+	return fmt.Errorf("LLM error: %s", msg)
+}
+
+func openAIErrorMessage(errObj any) (string, bool) {
+	m, ok := errObj.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	msg, ok := m["message"].(string)
+	return msg, ok
 }
 
 func parseToolCalls(delta map[string]any) []parserMessage {

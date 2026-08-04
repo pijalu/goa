@@ -1898,7 +1898,16 @@ func TestAgent_InjectSystemMessage_IncludesLaterSystemMessages(t *testing.T) {
 
 	agent.InjectSystemMessage("additional system info")
 	assertHistoryContains(t, agent.GetHistory(), "additional system info")
-	assertProviderContextContains(t, agent.buildProviderContext(context.Background()), "additional system info")
+	pCtx := agent.buildProviderContext(context.Background())
+	assertProviderContextContains(t, pCtx, "additional system info")
+	// The injected note must reach the provider as a user-role message: a
+	// non-leading system role breaks strict Jinja chat templates (HTTP 400
+	// "System message must be at the beginning", 2026-08-04 LM Studio export).
+	for _, m := range pCtx.Messages {
+		if m.Role == provider.RoleSystem {
+			t.Error("injected system message must not keep system role in provider context")
+		}
+	}
 }
 
 func assertHistoryContains(t *testing.T, hist []Message, want string) {
@@ -1911,12 +1920,13 @@ func assertHistoryContains(t *testing.T, hist []Message, want string) {
 	t.Errorf("injected system message not found in history: %+v", hist)
 }
 
+// assertProviderContextContains reports the injected note is forwarded to
+// the provider at any role. Non-leading system messages are downgraded to
+// user-role notes at the provider boundary (strict Jinja templates reject
+// them), so presence is asserted role-agnostically.
 func assertProviderContextContains(t *testing.T, pCtx provider.Context, want string) {
 	t.Helper()
 	for _, m := range pCtx.Messages {
-		if m.Role != provider.RoleSystem {
-			continue
-		}
 		for _, b := range m.Content {
 			if b.Type == provider.ContentBlockText && b.Text == want {
 				return

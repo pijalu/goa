@@ -694,10 +694,15 @@ func (a *Agent) shouldAutoContinue() bool {
 	return looksTruncated(content)
 }
 
-// looksTruncated reports whether streamed answer text ends mid-task. Signals,
-// in priority order: a trailing continuation marker (: , ; - ( …), a trailing
-// intent phrase ("let me", "I'll", "I will", ...), or no terminal punctuation
-// at all (a real summary ends with . ! ? or a markdown structure).
+// looksTruncated reports whether streamed answer text ends mid-task. It
+// requires an explicit continuation signal: a trailing continuation marker
+// (: , ; - ( …) or a trailing intent phrase ("let me", "I'll", "I will",
+// ...). Missing terminal punctuation alone is NOT evidence of truncation:
+// terse styles (e.g. minimal-punctuation skill answers like "Skill loaded —
+// telegram ready") end complete replies without one, and auto-continuing
+// those burns extra rounds and re-nudges the model for no reason
+// (2026-08-04 export: false positive triggered the auto-continue that broke
+// the session).
 func looksTruncated(content string) bool {
 	s := strings.TrimRight(content, " \t\r\n")
 	if s == "" {
@@ -723,8 +728,8 @@ func looksTruncated(content string) bool {
 			return true
 		}
 	}
-	// No terminal punctuation and no closing structure → likely truncated.
-	return true
+	// No explicit continuation signal → treat as complete.
+	return false
 }
 
 // finishStreamTurn handles a stream that ended without an explicit EventDone.
@@ -1716,6 +1721,21 @@ func (a *Agent) buildProviderHistory() []provider.Message {
 		// example runtime tool-change notifications) must still be sent.
 		if i == 0 && a.cfg.SystemPrompt != "" && m.Role == System {
 			continue
+		}
+		// Downgrade any non-leading system message to a user-role context
+		// note. Runtime injections (context-reset boundary, goal/swarm
+		// reminders, ephemeral control nudges) are appended with Role
+		// System, but a system message after the first is not portable:
+		// strict Jinja chat templates (LM Studio/llama.cpp) reject the
+		// whole request with HTTP 400 "System message must be at the
+		// beginning", and the Anthropic/Google/Mistral/Bedrock serializers
+		// silently drop it. Sending it as user keeps the notice visible to
+		// the model on every provider — the same reason persistGoalReminder
+		// is user-role. A leading system message (i == 0, no separate
+		// SystemPrompt) stays system: it IS at the beginning, so strict
+		// templates accept it.
+		if i > 0 && m.Role == System {
+			m.Role = User
 		}
 		internal = append(internal, m)
 	}

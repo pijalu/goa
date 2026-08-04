@@ -148,13 +148,17 @@ func TestLooksTruncated(t *testing.T) {
 		{"Done!", false},
 		{"Is it done?", false},
 		{"All tests pass (clean run)", false},
-		{"- item one\n- item two", true}, // no terminal punctuation (markdown list) — borderline, accepted
-		{"| a | b |\n| 1 | 2 |", false},  // markdown table closes with |
+		{"- item one\n- item two", false}, // markdown list with no dangling signal — complete
+		{"| a | b |\n| 1 | 2 |", false},   // markdown table closes with |
 		{"Let me fix both the call site and the function:", true},
 		{"Still working on it:", true},
 		{"I'll now update the parser", true},
 		{"Now I need to check the executor", true},
-		{"The result was 42", true},  // no terminal punctuation → treated truncated
+		{"The result was 42", false}, // terse complete answer: no explicit continuation signal
+		// Regression (2026-08-04 LM Studio export): a minimal-punctuation skill
+		// reply must not false-positive as truncated — the spurious auto-continue
+		// injected the system nudge that broke the session.
+		{"Skill loaded — telegram ready", false},
 		{"```go\nfunc main() {}\n```", false},
 	}
 	for _, c := range cases {
