@@ -138,6 +138,15 @@ func (e *Editor) computeLayout(width int) editorLayout {
 		e.lastTerminalRows = tr
 		e.stableMaxLines = 0
 	}
+	// A user deletion removed content: let the reserved height decay toward
+	// the current visual-line count so the editor shrinks back instead of
+	// pinning the layout at its historical maximum.
+	if e.shrinkPending {
+		e.shrinkPending = false
+		if e.maxLines < e.stableMaxLines {
+			e.stableMaxLines = e.maxLines
+		}
+	}
 	if e.maxLines > e.stableMaxLines {
 		e.stableMaxLines = e.maxLines
 	}

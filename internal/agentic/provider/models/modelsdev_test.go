@@ -373,3 +373,55 @@ func findGlobal(cat *runtimeCatalog, id string) *provider.Model {
 	cp := m
 	return &cp
 }
+
+// TestModelsDevProviders_SurfaceAddableMetadata verifies the enumeration used
+// by the "/provider add" picker carries everything needed to build a preset:
+// display name, default base URL and wire API for BOTH mapped providers
+// (catalog identity) and unmapped providers (synthesized, e.g. tensorx).
+func TestModelsDevProviders_SurfaceAddableMetadata(t *testing.T) {
+	got := map[string]ModelsDevProvider{}
+	for _, p := range ModelsDevProviders() {
+		got[p.Key] = p
+	}
+
+	// Mapped provider: openai resolves to the catalog identity/base URL and the
+	// models.dev API override (responses), not the chat-completions fallback.
+	openai, ok := got["openai"]
+	if !ok {
+		t.Fatal("openai missing from ModelsDevProviders")
+	}
+	if openai.Identity != provider.ProviderOpenAI {
+		t.Errorf("openai Identity = %q, want %q", openai.Identity, provider.ProviderOpenAI)
+	}
+	if openai.Name == "" {
+		t.Error("openai Name empty, want display name")
+	}
+	if openai.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("openai BaseURL = %q, want catalog base URL", openai.BaseURL)
+	}
+	if openai.API != provider.ApiOpenAIResponses {
+		t.Errorf("openai API = %q, want %q", openai.API, provider.ApiOpenAIResponses)
+	}
+
+	// Unmapped provider: tensorx synthesizes identity from the models.dev key
+	// and derives base URL/API from the provider metadata.
+	tx, ok := got["tensorx"]
+	if !ok {
+		t.Fatal("tensorx missing from ModelsDevProviders")
+	}
+	if tx.Identity != provider.Provider("tensorx") {
+		t.Errorf("tensorx Identity = %q, want %q", tx.Identity, provider.Provider("tensorx"))
+	}
+	if tx.Name != "TensorX" {
+		t.Errorf("tensorx Name = %q, want %q", tx.Name, "TensorX")
+	}
+	if tx.BaseURL != "https://api.tensorx.ai/v1" {
+		t.Errorf("tensorx BaseURL = %q, want %q", tx.BaseURL, "https://api.tensorx.ai/v1")
+	}
+	if tx.API != provider.ApiOpenAICompletions {
+		t.Errorf("tensorx API = %q, want %q", tx.API, provider.ApiOpenAICompletions)
+	}
+	if len(tx.ModelIDs) == 0 {
+		t.Error("tensorx ModelIDs empty, want tool-calling models")
+	}
+}

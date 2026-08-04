@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pijalu/goa/internal"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -87,9 +88,9 @@ func Open(path string) (*Store, error) {
 
 // DefaultPath returns ~/.goa/usage.db.
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("usage: home dir: %w", err)
+	home, ok := internal.GoaHome()
+	if !ok {
+		return "", fmt.Errorf("usage: home dir unavailable")
 	}
 	return filepath.Join(home, ".goa", "usage.db"), nil
 }

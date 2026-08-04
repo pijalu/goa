@@ -208,10 +208,17 @@ func GetRuntimeModels(providerName provider.Provider) []provider.Model {
 // ModelsDevProvider describes one models.dev catalog provider as imported by
 // Goa: the models.dev key, the Goa provider identity it maps to (the curated
 // catalog identity for mapped providers, the key itself for the fallback),
-// and the tool-calling model IDs that provider serves.
+// the display name, the default base URL, the wire API, and the tool-calling
+// model IDs that provider serves. Name/BaseURL/API are surfaced so the
+// "/provider add" buildProviderPresetItems can turn any models.dev provider
+// (e.g. tensorx) into a selectable, configurable preset without a catalog
+// ProviderDef.
 type ModelsDevProvider struct {
 	Key      string
 	Identity provider.Provider
+	Name     string
+	BaseURL  string
+	API      provider.Api
 	ModelIDs []string
 }
 
@@ -227,30 +234,52 @@ func ModelsDevProviders() []ModelsDevProvider {
 	}
 	out := make([]ModelsDevProvider, 0, len(top))
 	for key, raw := range top {
-		var prov struct {
-			Models map[string]modelsDevModel `json:"models"`
+		if p, ok := modelsDevProviderFromEntry(key, raw); ok {
+			out = append(out, p)
 		}
-		if err := json.Unmarshal(raw, &prov); err != nil {
-			continue
-		}
-		var ids []string
-		for id, m := range prov.Models {
-			if m.ToolCall != nil && *m.ToolCall {
-				ids = append(ids, id)
-			}
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		identity := provider.Provider(key)
-		if mapping, ok := modelsDevProviderMappings[key]; ok {
-			identity = mapping.Provider
-		}
-		sort.Strings(ids)
-		out = append(out, ModelsDevProvider{Key: key, Identity: identity, ModelIDs: ids})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
+}
+
+// modelsDevProviderFromEntry builds a ModelsDevProvider from one embedded
+// api.json entry, or (zero, false) when the provider serves no tool-calling
+// model (nothing Goa can use) or the entry is malformed.
+func modelsDevProviderFromEntry(key string, raw json.RawMessage) (ModelsDevProvider, bool) {
+	var prov modelsDevProviderEntry
+	if err := json.Unmarshal(raw, &prov); err != nil {
+		return ModelsDevProvider{}, false
+	}
+	var ids []string
+	for id, m := range prov.Models {
+		if m.ToolCall != nil && *m.ToolCall {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return ModelsDevProvider{}, false
+	}
+	name := prov.Name
+	if name == "" {
+		name = key
+	}
+	identity := provider.Provider(key)
+	baseURL := prov.API
+	api := synthesizeMapping(key, prov.modelsDevProviderInfo).API
+	if mapping, ok := modelsDevProviderMappings[key]; ok {
+		identity = mapping.Provider
+		baseURL = mapping.BaseURL
+		api = mapping.API
+	}
+	sort.Strings(ids)
+	return ModelsDevProvider{
+		Key:      key,
+		Identity: identity,
+		Name:     name,
+		BaseURL:  baseURL,
+		API:      api,
+		ModelIDs: ids,
+	}, true
 }
 
 // ---------------------------------------------------------------------------
@@ -332,10 +361,10 @@ type modelsDevProviderEntry struct {
 // models.dev providers are OpenAI-compatible; the few with native protocols
 // are listed explicitly. The zero value ("") defaults to OpenAI completions.
 var npmToAPI = map[string]provider.Api{
-	"@ai-sdk/anthropic":       provider.ApiAnthropicMessages,
-	"@ai-sdk/google":          provider.ApiGoogleGenerativeAI,
-	"@ai-sdk/google-vertex":   provider.ApiGoogleVertex,
-	"@ai-sdk/mistral":         provider.ApiMistralConversations,
+	"@ai-sdk/anthropic":     provider.ApiAnthropicMessages,
+	"@ai-sdk/google":        provider.ApiGoogleGenerativeAI,
+	"@ai-sdk/google-vertex": provider.ApiGoogleVertex,
+	"@ai-sdk/mistral":       provider.ApiMistralConversations,
 }
 
 // parseModelsDev builds the runtime catalog from the models.dev api.json.

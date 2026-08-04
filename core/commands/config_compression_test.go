@@ -106,15 +106,15 @@ func TestApplyConfigSet_RejectsCrossFieldInvalidThresholds(t *testing.T) {
 		get  func(*config.Config) int
 	}{
 		{"soft_above_trigger",
-			config.ContextCompressionConfig{Enabled: true, Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80}},
+			config.ContextCompressionConfig{Enabled: boolPtr(true), Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80}},
 			"context_compression.thresholds.soft_percent", "85", "75",
 			func(c *config.Config) int { return c.ContextCompression.Thresholds.SoftPercent }},
 		{"trigger_below_soft",
-			config.ContextCompressionConfig{Enabled: true, Thresholds: config.CompressionThresholdsConfig{SoftPercent: 80}},
+			config.ContextCompressionConfig{Enabled: boolPtr(true), Thresholds: config.CompressionThresholdsConfig{SoftPercent: 80}},
 			"context_compression.thresholds.trigger_percent", "60", "90",
 			func(c *config.Config) int { return c.ContextCompression.Thresholds.TriggerPercent }},
 		{"hard_below_trigger",
-			config.ContextCompressionConfig{Enabled: true, Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80}},
+			config.ContextCompressionConfig{Enabled: boolPtr(true), Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80}},
 			"context_compression.thresholds.hard_percent", "70", "95",
 			func(c *config.Config) int { return c.ContextCompression.Thresholds.HardPercent }},
 	}
@@ -207,7 +207,7 @@ func assertThresholdSetApplied(t *testing.T, ctx *core.Context, cfg *config.Conf
 // drop the disabled ContextCompression block).
 func TestApplyConfigSet_RejectsEnableWithInvalidThresholds(t *testing.T) {
 	cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
-		Enabled:    false,
+		Enabled:    boolPtr(false),
 		Thresholds: config.CompressionThresholdsConfig{SoftPercent: 85, TriggerPercent: 80},
 	}}
 	ctx, _, _, bus := newMenuTestContext(t, cfg)
@@ -217,7 +217,7 @@ func TestApplyConfigSet_RejectsEnableWithInvalidThresholds(t *testing.T) {
 	if err := applyConfigSet(*ctx, "context_compression.enabled", "true"); err != nil {
 		t.Fatalf("applyConfigSet: %v", err)
 	}
-	if cfg.ContextCompression.Enabled {
+	if cfg.ContextCompression.EnabledValue() {
 		t.Error("compression enabled despite invalid thresholds")
 	}
 	out := buf.String()

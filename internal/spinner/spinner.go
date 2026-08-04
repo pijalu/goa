@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/pijalu/goa/internal"
 )
 
 //go:embed spinners.json
@@ -92,7 +94,7 @@ func Default() (string, Definition) {
 
 func load() {
 	// Try user-provided ~/.goa/spinner.json first
-	home, _ := os.UserHomeDir()
+	home, _ := internal.GoaHome()
 	if home != "" {
 		userPath := filepath.Join(home, ".goa", "spinner.json")
 		if data, err := os.ReadFile(userPath); err == nil {

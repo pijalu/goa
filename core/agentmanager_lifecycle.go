@@ -207,7 +207,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		},
 	}
 	compressionCfg := am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
-	if cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {
+	if cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
 	}
 	if level := am.modeMgr.GetThinkingLevel(); level != "" {

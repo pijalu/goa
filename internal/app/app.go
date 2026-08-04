@@ -17,6 +17,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/commands"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/internal/usage"
@@ -364,6 +365,12 @@ func Main() {
 func runApp() bool {
 	projectDir := MustGetwd()
 	cliFlags, runtimeOpts := ParseCLIFlags()
+	// --home (or GOA_HOME) relocates every ~/.goa path (config, cache, logs,
+	// usage, first-run detection). It must be applied before the cascade
+	// loader and any subsystem resolves the home directory.
+	if home := cliFlags["home"]; home != "" {
+		internal.SetGoaHome(home)
+	}
 	if err := runtimeOpts.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -406,8 +413,8 @@ func runApp() bool {
 // stale. Model pickers then prefer the fresh catalog, falling back to the
 // embedded registry when models.dev is unreachable. Never blocks startup.
 func enableModelsDevCatalog() {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home, ok := internal.GoaHome()
+	if !ok {
 		return
 	}
 	models.EnableModelsDevCatalog(filepath.Join(home, ".goa", "cache"))

@@ -32,7 +32,7 @@ func (m *configMenu) settingCompression() {
 		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg)},
 		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg)},
 		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg)},
-		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.Enabled)},
+		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
 		{Value: "on_context_error", Label: "Compress on context error", Description: boolLabel(cfg.ContextCompression.OnContextError)},
 	}
 	openers := map[string]func(){
@@ -64,7 +64,7 @@ func (m *configMenu) settingCompression() {
 			m.applySet("context_compression.cache_gate", toggleCacheGateValue(cfg.ContextCompression.CacheGate))
 			m.settingCompression()
 		case "enabled":
-			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.Enabled))
+			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.EnabledValue()))
 			m.settingCompression()
 		case "on_context_error":
 			m.applySet("context_compression.on_context_error", toggleBoolLabel(cfg.ContextCompression.OnContextError))
@@ -436,7 +436,7 @@ func microTruncatedMarkerLabel(cfg *config.Config) string {
 
 // compressionLabel returns a one-line summary for the root /config menu.
 func compressionLabel(cfg *config.Config) string {
-	if !cfg.ContextCompression.Enabled {
+	if !cfg.ContextCompression.EnabledValue() {
 		return "off"
 	}
 	strategy := cfg.ContextCompression.Strategy

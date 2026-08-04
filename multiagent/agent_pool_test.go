@@ -160,7 +160,7 @@ func TestAgentPool_GetOrCreate_InheritsGoaConfig(t *testing.T) {
 		Execution: config.ExecutionConfig{MaxToolRepeatTotal: 5},
 		Skills:    config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline},
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:             true,
+			Enabled:             &trueVal,
 			MaxTokens:           4096,
 			ThresholdPercent:    75,
 			OnContextError:      true,

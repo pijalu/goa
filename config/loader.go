@@ -89,7 +89,7 @@ type CascadeLoader struct {
 // NewCascadeLoader creates a new cascade loader.
 // cliFlags is a map of flag names to values from cobra.
 func NewCascadeLoader(projectDir, explicitConfigPath string, cliFlags map[string]string) *CascadeLoader {
-	homeDir, _ := os.UserHomeDir()
+	homeDir, _ := internal.GoaHome()
 	return &CascadeLoader{
 		homeDir:      homeDir,
 		projectDir:   projectDir,
@@ -572,7 +572,8 @@ func (cl *CascadeLoader) applyCompressionCLIOverride(cfg *Config) {
 	}
 	switch compression {
 	case "true":
-		cfg.ContextCompression.Enabled = true
+		on := true
+		cfg.ContextCompression.Enabled = &on
 		if cfg.ContextCompression.MaxTokens == 0 {
 			cfg.ContextCompression.MaxTokens = 8192
 		}
@@ -580,7 +581,8 @@ func (cl *CascadeLoader) applyCompressionCLIOverride(cfg *Config) {
 			cfg.ContextCompression.Strategy = AgenticCompressionToolElision
 		}
 	case "false":
-		cfg.ContextCompression.Enabled = false
+		off := false
+		cfg.ContextCompression.Enabled = &off
 	}
 }
 

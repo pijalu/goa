@@ -598,7 +598,7 @@ func TestAgentManager_StartSession_ForwardsConfig(t *testing.T) {
 		},
 		Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline},
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:             true,
+			Enabled:             ccBoolPtr(true),
 			MaxTokens:           4096,
 			ThresholdPercent:    75,
 			OnContextError:      true,
@@ -1084,7 +1084,7 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 	newCfg := func() *config.Config {
 		return &config.Config{
 			ContextCompression: config.ContextCompressionConfig{
-				Enabled:             true,
+				Enabled:             ccBoolPtr(true),
 				MaxTokens:           0,
 				Strategy:            config.AgenticCompressionMicro,
 				PreserveRecentTurns: 4,
@@ -1178,7 +1178,7 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 func TestAgentManager_SetModel_AppliesPerModelOverride(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:  true,
+			Enabled:  ccBoolPtr(true),
 			Strategy: config.AgenticCompressionToolElision,
 			Thresholds: config.CompressionThresholdsConfig{
 				TriggerPercent: 80,
@@ -1219,7 +1219,7 @@ func TestAgentManager_SetModel_AppliesPerModelOverride(t *testing.T) {
 func TestAgentManager_RefreshContextCompression(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:    true,
+			Enabled:    ccBoolPtr(true),
 			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80, HardPercent: 95},
 		},
 	}

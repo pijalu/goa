@@ -291,8 +291,9 @@ func swapStateStore(am *AgentManager, ss *StateStore) {
 // global section, with inheritance for unset fields (bugs.md compression
 // directive: cache management configurable globally and per model).
 func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
+	ccEnabled := true
 	cc := config.ContextCompressionConfig{
-		Enabled:   true,
+		Enabled:   &ccEnabled,
 		CacheGate: "on",
 		Strategies: config.CompressionLayerStrategiesConfig{
 			Soft:    "micro",

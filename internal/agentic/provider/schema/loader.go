@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pijalu/goa/internal"
 )
 
 //go:embed variants/*.json
@@ -70,7 +72,7 @@ func LoadUserProfiles() ([]VariantProfile, error) {
 
 func profileSearchDirs() []string {
 	var dirs []string
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, ok := internal.GoaHome(); ok {
 		dirs = append(dirs, filepath.Join(home, userConfigDir, providersSubdir))
 	}
 	if cwd, err := os.Getwd(); err == nil {

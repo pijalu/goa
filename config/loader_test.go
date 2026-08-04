@@ -262,7 +262,7 @@ func assertCLIExecutionOverrides(t *testing.T, cfg *Config) {
 	if cfg.Skills.ExecutionMode != "inline" {
 		t.Errorf("Skills.ExecutionMode = %q, want inline", cfg.Skills.ExecutionMode)
 	}
-	if !cfg.ContextCompression.Enabled {
+	if !cfg.ContextCompression.EnabledValue() {
 		t.Error("ContextCompression should be enabled")
 	}
 }

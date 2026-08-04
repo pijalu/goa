@@ -231,7 +231,7 @@ func (m *configMenu) addModel(providerID, modelID, modelName string) {
 		ProviderID: providerID,
 		Model:      modelName,
 	})
-	m.saveConfig()
+	m.saveProvidersAndModels()
 	m.flash(fmt.Sprintf("Model %q added.", modelID))
 	m.settingModels()
 }
@@ -291,7 +291,7 @@ func (m *configMenu) applyTemperature(idx int, value string) {
 		return
 	}
 	cfg.Models[idx].Temperature = temp
-	m.saveConfig()
+	m.saveProvidersAndModels()
 	m.flash(fmt.Sprintf("Model %q updated.", cfg.Models[idx].ID))
 }
 
@@ -335,7 +335,7 @@ func (m *configMenu) doRemoveModel(id string) {
 		if cfg.ActiveModel == id {
 			cfg.ActiveModel = ""
 		}
-		m.saveConfig()
+		m.saveProvidersAndModels()
 		m.flash(fmt.Sprintf("Model %q removed.", id))
 		m.settingModels()
 		return

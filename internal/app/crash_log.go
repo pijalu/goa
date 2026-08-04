@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -70,8 +71,8 @@ func crashLogPath(projectDir string) string {
 	if projectDir != "" {
 		return filepath.Join(projectDir, ".goa", "crash.log")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home, ok := internal.GoaHome()
+	if !ok {
 		return filepath.Join(".", ".goa", "crash.log")
 	}
 	return filepath.Join(home, ".goa", "crash.log")

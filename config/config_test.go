@@ -430,7 +430,7 @@ func deepCopyFixture() *Config {
 	stall := false
 	return &Config{
 		ContextCompression: ContextCompressionConfig{
-			Enabled:    false, // disabled: DeepMerge would drop the whole block
+			Enabled:    boolPtr(false), // disabled: explicit off survives merges
 			Thresholds: CompressionThresholdsConfig{SoftPercent: 85, TriggerPercent: 80},
 			PerModel:   map[string]ModelCompressionOverride{"m1": {MaxTokens: 4096}},
 		},
@@ -917,8 +917,8 @@ func TestMergeExecution_LoopDetectionDisable(t *testing.T) {
 
 func assertContextCompression(t *testing.T, cfg Config) {
 	t.Helper()
-	if !cfg.ContextCompression.Enabled {
-		t.Error("ContextCompression.Enabled should be true")
+	if !cfg.ContextCompression.EnabledValue() {
+		t.Error("ContextCompression.EnabledValue() should be true")
 	}
 	if cfg.ContextCompression.MaxTokens != 8192 {
 		t.Errorf("ContextCompression.MaxTokens = %d, want 8192", cfg.ContextCompression.MaxTokens)
@@ -948,7 +948,7 @@ func TestConfigValidate_AgenticFields(t *testing.T) {
 				}},
 				Skills: SkillsConfig{ExecutionMode: AgenticSkillModeInline},
 				ContextCompression: ContextCompressionConfig{
-					Enabled:          true,
+					Enabled:          boolPtr(true),
 					Strategy:         AgenticCompressionToolElision,
 					ThresholdPercent: 75,
 				},
@@ -1000,7 +1000,7 @@ func TestConfigValidate_AgenticFields(t *testing.T) {
 			cfg: &Config{
 				Execution: ExecutionConfig{Mode: internal.ExecutionYolo, WorktreeMode: internal.WorktreeAlways},
 				ContextCompression: ContextCompressionConfig{
-					Enabled:  true,
+					Enabled:  boolPtr(true),
 					Strategy: "unknown",
 				},
 			},
@@ -1011,7 +1011,7 @@ func TestConfigValidate_AgenticFields(t *testing.T) {
 			cfg: &Config{
 				Execution: ExecutionConfig{Mode: internal.ExecutionYolo, WorktreeMode: internal.WorktreeAlways},
 				ContextCompression: ContextCompressionConfig{
-					Enabled:          true,
+					Enabled:          boolPtr(true),
 					ThresholdPercent: 150,
 				},
 			},
@@ -1131,7 +1131,7 @@ func TestDeepMerge_ContextCompression(t *testing.T) {
 	base := &Config{}
 	override := &Config{
 		ContextCompression: ContextCompressionConfig{
-			Enabled:             true,
+			Enabled:             boolPtr(true),
 			MaxTokens:           4096,
 			ThresholdPercent:    75,
 			OnContextError:      true,
@@ -1140,8 +1140,8 @@ func TestDeepMerge_ContextCompression(t *testing.T) {
 		},
 	}
 	base.DeepMerge(override)
-	if !base.ContextCompression.Enabled {
-		t.Error("ContextCompression.Enabled should be true")
+	if !base.ContextCompression.EnabledValue() {
+		t.Error("ContextCompression.EnabledValue() should be true")
 	}
 	if base.ContextCompression.MaxTokens != 4096 {
 		t.Errorf("ContextCompression.MaxTokens = %d, want 4096", base.ContextCompression.MaxTokens)

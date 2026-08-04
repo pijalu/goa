@@ -153,6 +153,129 @@ func TestConfigMenu_SkillToggleEmbeddedPersistsToHome(t *testing.T) {
 	}
 }
 
+// TestConfigMenu_SkillToggleSurvivesReload reproduces bugs.md "Skill
+// enable/disable state is lost / unstable across sessions": a toggle must
+// round-trip through the cascade — persist, then a fresh load (simulated
+// restart) must reflect the same enabled state.
+func TestConfigMenu_SkillToggleSurvivesReload(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	projectDir := t.TempDir()
+	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
+	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
+		"refactor": embeddedTestSkill("refactor", "Refactor code"),
+		"qa-e2e":   localTestSkill("qa-e2e", "Run e2e QA"),
+	})
+	home := os.Getenv("HOME")
+
+	reload := func() *config.Config {
+		t.Helper()
+		reloaded, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		return reloaded
+	}
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("skills", true)
+
+	// Disable an embedded skill → home layer. After a "restart", the same
+	// state must be computed from the merged config.
+	sr.onSel("embedded", true)
+	sr.onSel("refactor", true)
+	if got := reload(); skillEnabled(got, "refactor") {
+		t.Errorf("after disable+reload, refactor should be off (home=%s)", home)
+	}
+	if got := reload(); !skillEnabled(got, "qa-e2e") {
+		t.Error("after disable+reload, qa-e2e should still be on (untouched)")
+	}
+
+	// Disable a local skill → project layer; restart; must stay off.
+	menu.settingSkills()
+	sr.onSel("local", true)
+	sr.onSel("qa-e2e", true)
+	if data, err := os.ReadFile(filepath.Join(projectDir, ".goa", "config.yaml")); err == nil {
+		t.Logf("project config after disabling qa-e2e:\n%s", data)
+	}
+	if got := reload(); skillEnabled(got, "qa-e2e") {
+		t.Error("after disable+reload, qa-e2e should be off")
+	}
+
+	// Re-enable both; restart; both must be on again and neither list may
+	// resurrect them as disabled.
+	menu.settingSkills()
+	sr.onSel("embedded", true)
+	sr.onSel("refactor", true)
+	menu.settingSkills()
+	sr.onSel("local", true)
+	sr.onSel("qa-e2e", true)
+	got := reload()
+	if !skillEnabled(got, "refactor") {
+		t.Errorf("after re-enable+reload, refactor should be on (disabled=%v enabled=%v)", got.Skills.Disabled, got.Skills.Enabled)
+	}
+	if !skillEnabled(got, "qa-e2e") {
+		t.Errorf("after re-enable+reload, qa-e2e should be on (disabled=%v enabled=%v)", got.Skills.Disabled, got.Skills.Enabled)
+	}
+}
+
+// TestConfigMenu_SkillAllowListSurvivesDisableReenable reproduces the
+// unstable-across-sessions report for allow-list mode: with skills.enabled
+// set to a single skill, disabling then re-enabling it must restore the
+// allow-list — otherwise the merged config flips from "only this skill" to
+// "all skills on" (bugs.md: enabled/disabled state is lost/unstable).
+func TestConfigMenu_SkillAllowListSurvivesDisableReenable(t *testing.T) {
+	cfg := &config.Config{Skills: config.SkillsConfig{Enabled: []string{"refactor"}}}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	projectDir := t.TempDir()
+	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
+	// Seed the home config with the allow-list so a reload reproduces the
+	// in-memory starting state (the user's pre-existing configuration).
+	homeCfg := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
+	writeTestConfig(t, homeCfg, "skills:\n  enabled:\n    - refactor\n")
+	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
+		"refactor": embeddedTestSkill("refactor", "Refactor code"),
+		"review":   embeddedTestSkill("review", "Review code"),
+	})
+
+	reload := func() *config.Config {
+		t.Helper()
+		reloaded, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+		if err != nil {
+			t.Fatalf("reload: %v", err)
+		}
+		return reloaded
+	}
+
+	// Initially: allow-list active — review is implicitly off.
+	if got := reload(); skillEnabled(got, "review") {
+		t.Fatal("review should be off under allow-list [refactor]")
+	}
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("skills", true)
+	sr.onSel("embedded", true)
+
+	// Disable refactor explicitly, then re-enable it.
+	sr.onSel("refactor", true)
+	if got := reload(); skillEnabled(got, "refactor") {
+		t.Error("refactor should be off after disable+reload")
+	}
+	sr.onSel("refactor", true)
+	got := reload()
+	if !skillEnabled(got, "refactor") {
+		t.Error("refactor should be on after re-enable+reload")
+	}
+	// The allow-list must be restored: review must still be off. If the
+	// round-trip deleted skills.enabled, review flips on — the state loss.
+	if skillEnabled(got, "review") {
+		t.Errorf("review flipped on after disable/re-enable round trip; allow-list was lost (enabled=%v disabled=%v)",
+			got.Skills.Enabled, got.Skills.Disabled)
+	}
+}
+
 // TestConfigMenu_SkillToggleLocalPersistsToProject verifies toggling a
 // file-based skill writes the change to the PROJECT config per the gold rules
 // and never touches the home config.
@@ -433,11 +556,11 @@ func TestSkillSourceForToggle(t *testing.T) {
 // including allowlist (Enabled non-empty) semantics.
 func TestSetSkillEnabled(t *testing.T) {
 	cfg := &config.Config{}
-	setSkillEnabled(cfg, "refactor", false)
+	setSkillEnabled(cfg, "refactor", false, false)
 	if !stringInSlice(cfg.Skills.Disabled, "refactor") {
 		t.Error("disable should add to Disabled")
 	}
-	setSkillEnabled(cfg, "refactor", true)
+	setSkillEnabled(cfg, "refactor", true, false)
 	if stringInSlice(cfg.Skills.Disabled, "refactor") {
 		t.Error("enable should remove from Disabled")
 	}
@@ -447,16 +570,22 @@ func TestSetSkillEnabled(t *testing.T) {
 
 	// Allowlist mode: enabling adds to the allowlist.
 	cfg.Skills.Enabled = []string{"telegram"}
-	setSkillEnabled(cfg, "refactor", true)
+	setSkillEnabled(cfg, "refactor", true, true)
 	if !stringInSlice(cfg.Skills.Enabled, "refactor") {
 		t.Errorf("enable with allowlist should add to Enabled, got %v", cfg.Skills.Enabled)
 	}
 	// Disabling removes from the allowlist and adds to Disabled.
-	setSkillEnabled(cfg, "refactor", false)
+	setSkillEnabled(cfg, "refactor", false, true)
 	if stringInSlice(cfg.Skills.Enabled, "refactor") {
 		t.Error("disable should remove from Enabled")
 	}
 	if !stringInSlice(cfg.Skills.Disabled, "refactor") {
 		t.Error("disable should add to Disabled")
+	}
+	// Re-enabling the last allow-listed skill restores membership when the
+	// caller knows the allowlist mode is active (from the persisted layer).
+	setSkillEnabled(cfg, "refactor", true, true)
+	if !stringInSlice(cfg.Skills.Enabled, "refactor") {
+		t.Errorf("re-enable with active allowlist should restore Enabled, got %v", cfg.Skills.Enabled)
 	}
 }

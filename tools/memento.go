@@ -122,7 +122,7 @@ func (t *MementoTool) globalMemoryDir() string {
 	if t.GlobalDir != "" {
 		return filepath.Join(t.GlobalDir, "memory")
 	}
-	home, _ := os.UserHomeDir()
+	home, _ := internal.GoaHome()
 	return filepath.Join(home, ".goa", "memory")
 }
 

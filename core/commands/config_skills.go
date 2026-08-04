@@ -6,11 +6,15 @@ package commands
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
+	"gopkg.in/yaml.v3"
 )
 
 // settingSkills is the /config → Skills sub-menu: execution mode plus
@@ -129,19 +133,26 @@ func skillEnabled(cfg *config.Config, name string) bool {
 }
 
 // setSkillEnabled updates the in-memory skills lists for a toggle. Enabling
-// removes the name from Disabled and adds it to Enabled only when an allowlist
-// is active (so the default all-on state stays empty); disabling removes it
-// from Enabled and adds it to Disabled.
-func setSkillEnabled(cfg *config.Config, name string, enabled bool) {
+// removes the name from Disabled and adds it to Enabled when an allowlist is
+// active (so the default all-on state stays empty); disabling removes it
+// from Enabled and adds it to Disabled — except when the name is the last
+// allowlist member: removing it would collapse the allowlist to empty, which
+// loads as "all on" and silently destroys the user's allowlist mode (bugs.md:
+// a disable/re-enable round trip flipped every other skill on). A name in
+// both lists is disabled (explicit off wins), so keeping the membership is
+// inert until the skill is re-enabled.
+func setSkillEnabled(cfg *config.Config, name string, enabled bool, allowListActive bool) {
 	if enabled {
 		cfg.Skills.Disabled = removeString(cfg.Skills.Disabled, name)
-		if len(cfg.Skills.Enabled) > 0 {
+		if allowListActive {
 			cfg.Skills.Enabled = appendUnique(cfg.Skills.Enabled, name)
 		}
 		return
 	}
-	cfg.Skills.Enabled = removeString(cfg.Skills.Enabled, name)
 	cfg.Skills.Disabled = appendUnique(cfg.Skills.Disabled, name)
+	if len(cfg.Skills.Enabled) > 1 || !stringInSlice(cfg.Skills.Enabled, name) {
+		cfg.Skills.Enabled = removeString(cfg.Skills.Enabled, name)
+	}
 }
 
 // toggleSkill flips a skill's enabled state, persists it to the config layer
@@ -150,7 +161,7 @@ func setSkillEnabled(cfg *config.Config, name string, enabled bool) {
 func (m *configMenu) toggleSkill(name, source string) {
 	cfg := m.ctx.Config
 	enabled := skillEnabled(cfg, name)
-	setSkillEnabled(cfg, name, !enabled)
+	setSkillEnabled(cfg, name, !enabled, skillAllowListActive(m.ctx, name, source, !enabled))
 	if err := persistSkillToggle(m.ctx, source, !enabled); err != nil {
 		m.flash("Failed to save skill config: " + err.Error())
 	}
@@ -164,13 +175,88 @@ func setSkillEnabledState(ctx core.Context, name string, enabled bool) error {
 	if ctx.Config == nil {
 		return fmt.Errorf("configuration not available")
 	}
-	setSkillEnabled(ctx.Config, name, enabled)
 	source := skillSourceForToggle(ctx, name)
+	setSkillEnabled(ctx.Config, name, enabled, skillAllowListActive(ctx, name, source, enabled))
 	if err := persistSkillToggle(ctx, source, enabled); err != nil {
 		return err
 	}
 	reloadSkillsFor(ctx)
 	return nil
+}
+
+// skillAllowListActive reports whether a skills allowlist is in effect for
+// the layer owning source, so enabling a skill re-joins the allowlist instead
+// of leaving the merged config in the default all-on mode. It checks the live
+// merged list first, then — for the re-enable path where the just-emptied
+// in-memory list hides the mode — the persisted layer on disk. enabling is
+// the state being applied (true = re-enable).
+func skillAllowListActive(ctx core.Context, name, source string, enabling bool) bool {
+	if ctx.Config == nil {
+		return false
+	}
+	if len(ctx.Config.Skills.Enabled) > 0 {
+		return true
+	}
+	if !enabling {
+		// Disabling never needs the disk check: an empty live list means no
+		// allowlist is active (or it just became empty, in which case the
+		// disabled entry now being written preserves the off state).
+		return false
+	}
+	// Re-enabling with an empty live list: consult the persisted layers. The
+	// owning layer for embedded skills is home, for file skills project;
+	// unknown sources check both.
+	home, project := false, false
+	switch source {
+	case "embedded":
+		home = true
+	case "local", "file":
+		project = true
+	default:
+		home, project = true, true
+	}
+	if home && skillEnabledKeyOnDisk(ctx, true, name) {
+		return true
+	}
+	return project && skillEnabledKeyOnDisk(ctx, false, name)
+}
+
+// skillEnabledKeyOnDisk reports whether the given config layer persists a
+// non-empty skills.enabled list, or one that still contains name (the layer
+// may hold the stale membership from before the disable emptied the live
+// list). A read failure is conservative: no allowlist is assumed.
+func skillEnabledKeyOnDisk(ctx core.Context, homeLayer bool, name string) bool {
+	path := skillLayerConfigPath(ctx, homeLayer)
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var raw struct {
+		Skills struct {
+			Enabled []string `yaml:"enabled"`
+		} `yaml:"skills"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return len(raw.Skills.Enabled) > 0 || stringInSlice(raw.Skills.Enabled, name)
+}
+
+// skillLayerConfigPath resolves the on-disk config path for a layer.
+func skillLayerConfigPath(ctx core.Context, homeLayer bool) string {
+	if homeLayer {
+		if home, ok := internal.GoaHome(); ok {
+			return filepath.Join(home, ".goa", "config.yaml")
+		}
+		return ""
+	}
+	if ctx.ProjectDir == "" {
+		return ""
+	}
+	return filepath.Join(ctx.ProjectDir, ".goa", "config.yaml")
 }
 
 // skillSourceForToggle resolves the config layer a skill toggle belongs to.

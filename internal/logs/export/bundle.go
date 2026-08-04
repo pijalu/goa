@@ -341,7 +341,7 @@ func resolveConfigDir(ctx core.Context) string {
 	if ctx.Config != nil && ctx.Config.ConfigDir != "" {
 		return ctx.Config.ConfigDir
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, ok := internal.GoaHome(); ok {
 		return filepath.Join(home, ".goa")
 	}
 	return filepath.Join(resolveProjectDir(ctx), ".goa")

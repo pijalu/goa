@@ -6,6 +6,8 @@ package config
 
 import (
 	"testing"
+
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 // TestPresetProviders_ContainsAllPresets verifies PresetProviders returns the expected set.
@@ -15,7 +17,10 @@ func TestPresetProviders_ContainsAllPresets(t *testing.T) {
 		t.Fatalf("PresetProviders() returned %d presets, want >= 10", len(presets))
 	}
 
-	// Check each preset has non-empty required fields
+	// Check each preset has non-empty required fields. DefaultModel is NOT
+	// required: it is truly optional and only curated for providers with a
+	// known suggested model (most catalog entries carry none; the setup wizard
+	// falls back to a default and /model:add resolves the live model list).
 	for _, p := range presets {
 		if p.ID == "" {
 			t.Errorf("Preset %+v has empty ID", p)
@@ -25,9 +30,6 @@ func TestPresetProviders_ContainsAllPresets(t *testing.T) {
 		}
 		if p.Endpoint == "" {
 			t.Errorf("Preset %q has empty Endpoint", p.ID)
-		}
-		if p.DefaultModel == "" {
-			t.Errorf("Preset %q has empty DefaultModel", p.ID)
 		}
 	}
 
@@ -57,6 +59,17 @@ func presetExpectations() []presetExpectation {
 		{"zai", "Z.ai Coding", "glm-5.2", true},
 		{"zai-api", "Z.ai", "glm-5.2", true},
 		{"poolside", "Poolside", "poolside-default", true},
+		// Surfaced from the catalog: OpenAI-compatible and native API cloud
+		// providers with a wizard-addable base URL. No curated default model.
+		{"anthropic", "Anthropic", "", true},
+		{"google", "Google", "", true},
+		{"mistral", "Mistral", "", true},
+		{"groq", "Groq", "", true},
+		{"xai", "xAI", "", true},
+		{"together", "Together", "", true},
+		{"fireworks", "Fireworks", "", true},
+		{"perplexity", "Perplexity", "", true},
+		{"github", "GitHub Copilot", "", true},
 	}
 }
 
@@ -133,13 +146,18 @@ func TestIsPresetID(t *testing.T) {
 }
 
 // TestPresetProviders_StableOrder verifies the preset order doesn't change
-// unexpectedly, which would renumber wizard options.
+// unexpectedly. Catalog order is authoritative; this list is the exact set of
+// catalog entries that carry a wizard-addable base URL (see
+// wizardPresetAddable). Adding a provider to the catalog with a base URL must
+// also extend this list (TestPresetProviders_CoverCatalogProviders guards it).
 func TestPresetProviders_StableOrder(t *testing.T) {
 	presets := PresetProviders()
 	expected := []string{
 		"openai", "lmstudio", "ollama", "openrouter",
 		"opencode", "opencode-go", "deepseek", "kimi", "kimi-code",
 		"zai", "zai-api", "poolside",
+		"anthropic", "google", "mistral",
+		"groq", "xai", "together", "fireworks", "perplexity", "github",
 	}
 	if len(presets) != len(expected) {
 		t.Fatalf("PresetProviders() = %d presets, want %d", len(presets), len(expected))
@@ -147,6 +165,66 @@ func TestPresetProviders_StableOrder(t *testing.T) {
 	for i, p := range presets {
 		if p.ID != expected[i] {
 			t.Errorf("Preset[%d].ID = %q, want %q (preset order changed)", i, p.ID, expected[i])
+		}
+	}
+}
+
+// TestPresetProviders_CoverCatalogProviders verifies the core invariant behind
+// this fix: EVERY catalog provider with a wizard-addable base URL MUST be a
+// preset. This is what prevents a provider added to the catalog (e.g. groq,
+// xai, together) from silently missing from the /provider add picker.
+func TestPresetProviders_CoverCatalogProviders(t *testing.T) {
+	presets := PresetProviders()
+	got := make(map[string]bool, len(presets))
+	for _, p := range presets {
+		got[p.ID] = true
+	}
+	for _, d := range schema.ProviderCatalog() {
+		if !wizardPresetAddable(&d) {
+			continue
+		}
+		if !got[d.ID] {
+			t.Errorf("catalog provider %q (base URL %q) missing from PresetProviders", d.ID, d.BaseURL)
+		}
+	}
+}
+
+// TestAllProviderPresets_CoversModelsDev verifies the "add provider" pickers
+// surface every models.dev provider that has no catalog preset (e.g. tensorx),
+// and do not duplicate catalog presets.
+func TestAllProviderPresets_CoversModelsDev(t *testing.T) {
+	all := AllProviderPresets()
+	byID := make(map[string]ProviderPreset, len(all))
+	for _, p := range all {
+		if _, dup := byID[p.ID]; dup {
+			t.Errorf("AllProviderPresets has duplicate ID %q", p.ID)
+		}
+		byID[p.ID] = p
+	}
+	// The concrete regression: tensorx (a models.dev-only provider) is addable.
+	p, ok := byID["tensorx"]
+	if !ok {
+		t.Fatal("tensorx missing from AllProviderPresets")
+	}
+	if p.Endpoint == "" {
+		t.Errorf("tensorx preset Endpoint = %q, want base URL", p.Endpoint)
+	}
+	if !p.NeedsAPIKey {
+		t.Error("tensorx preset NeedsAPIKey = false, want true (cloud provider)")
+	}
+	if p.Provider != "tensorx" {
+		t.Errorf("tensorx preset Provider = %q, want %q", p.Provider, "tensorx")
+	}
+
+	// FindPreset must resolve models.dev providers too (picker callback + manager identity).
+	if f := FindPreset("tensorx"); f == nil {
+		t.Error("FindPreset(tensorx) = nil, want models.dev preset")
+	}
+
+	// Catalog presets must appear exactly once in the full addable set.
+	for _, cp := range PresetProviders() {
+		if _, ok := byID[cp.ID]; !ok {
+			t.Errorf("catalog preset %q missing from AllProviderPresets", cp.ID)
 		}
 	}
 }

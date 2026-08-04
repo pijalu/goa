@@ -472,7 +472,7 @@ var configSetters = map[string]configSetter{
 	"thinking_level":                                 setThinkingLevel,
 	"multi_agent.enabled":                            setBool(func(cfg *config.Config) *bool { return &cfg.MultiAgent.Enabled }),
 	"multi_agent.companion_provider":                 setString(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionProvider }),
-	"context_compression.enabled":                    setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.Enabled }),
+	"context_compression.enabled":                    setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.Enabled }),
 	"context_compression.strategy":                   setCompressionStrategy,
 	"context_compression.threshold_percent":          setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
 	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),

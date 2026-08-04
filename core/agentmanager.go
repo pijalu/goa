@@ -861,7 +861,7 @@ func (am *AgentManager) RefreshContextCompression() {
 	}
 	mdl := am.activeAgent.Model()
 	compressionCfg := am.buildCompressionConfig(am.cfg, mdl.ID, mdl.ContextWindow)
-	if am.cfg.ContextCompression.Enabled || compressionCfg.MaxTokens > 0 {
+	if am.cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
 		am.activeAgent.SetContextCompression(compressionCfg)
 	}
 }

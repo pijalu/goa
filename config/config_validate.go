@@ -200,7 +200,7 @@ func (c *Config) validateAgenticModels(ve *internal.ValidationError) {
 
 func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	cc := c.ContextCompression
-	if !cc.Enabled {
+	if !cc.EnabledValue() {
 		return
 	}
 	if !validCompressionStrategy(cc.Strategy) {

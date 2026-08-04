@@ -642,10 +642,14 @@ func (c *Config) mergeThinkingLevels(other *Config) {
 
 func (c *Config) mergeContextCompression(other *Config) {
 	cc := other.ContextCompression
-	if !cc.Enabled {
+	if contextCompressionLayerEmpty(cc) {
 		return
 	}
-	c.ContextCompression.Enabled = true
+	// Enabled is tri-state: an explicit true or false in a higher layer wins;
+	// a layer that leaves it unset preserves the lower layer's value.
+	if cc.Enabled != nil {
+		c.ContextCompression.Enabled = cc.Enabled
+	}
 	// Numeric scalars merge field-wise (0 = inherit from the lower layer),
 	// matching the thresholds/per-model merge below. This fixes the previous
 	// replace-all behavior where a higher layer that enabled compression
@@ -660,16 +664,67 @@ func (c *Config) mergeContextCompression(other *Config) {
 		c.ContextCompression.PreserveRecentTurns = cc.PreserveRecentTurns
 	}
 	// OnContextError is a bool (explicit false is meaningful), so it keeps
-	// the historical replace semantics: any layer with compression enabled
+	// the historical replace semantics: any layer touching compression
 	// carries the effective value.
 	c.ContextCompression.OnContextError = cc.OnContextError
 	if cc.Strategy != "" {
 		c.ContextCompression.Strategy = cc.Strategy
 	}
+	if cc.CacheGate != "" {
+		c.ContextCompression.CacheGate = cc.CacheGate
+	}
 	mergeCompressionThresholds(&c.ContextCompression.Thresholds, cc.Thresholds)
+	mergeCompressionStrategies(&c.ContextCompression.Strategies, cc.Strategies)
 	mergeCompressionPerModel(&c.ContextCompression.PerModel, cc.PerModel)
-	if cc.MicroCompaction != (MicroCompactionSettings{}) {
-		c.ContextCompression.MicroCompaction = cc.MicroCompaction
+	mergeMicroCompaction(&c.ContextCompression.MicroCompaction, cc.MicroCompaction)
+}
+
+// contextCompressionLayerEmpty reports whether a cascade layer carries no
+// context_compression settings at all, so merging it would be a no-op (and
+// must not flip OnContextError or wipe the block with zero values).
+func contextCompressionLayerEmpty(cc ContextCompressionConfig) bool {
+	return cc.Enabled == nil &&
+		cc.MaxTokens == 0 &&
+		cc.ThresholdPercent == 0 &&
+		cc.PreserveRecentTurns == 0 &&
+		cc.Strategy == "" &&
+		cc.CacheGate == "" &&
+		cc.Thresholds == (CompressionThresholdsConfig{}) &&
+		cc.Strategies == (CompressionLayerStrategiesConfig{}) &&
+		len(cc.PerModel) == 0 &&
+		cc.MicroCompaction == (MicroCompactionSettings{})
+}
+
+// mergeCompressionStrategies overlays non-empty per-layer strategy fields.
+func mergeCompressionStrategies(dst *CompressionLayerStrategiesConfig, src CompressionLayerStrategiesConfig) {
+	if src.Soft != "" {
+		dst.Soft = src.Soft
+	}
+	if src.Trigger != "" {
+		dst.Trigger = src.Trigger
+	}
+	if src.Hard != "" {
+		dst.Hard = src.Hard
+	}
+}
+
+// mergeMicroCompaction overlays micro-compaction settings field-wise so a
+// higher layer setting one key does not reset the others to zero.
+func mergeMicroCompaction(dst *MicroCompactionSettings, src MicroCompactionSettings) {
+	if src.KeepRecentMessages != 0 {
+		dst.KeepRecentMessages = src.KeepRecentMessages
+	}
+	if src.MinContentTokens != 0 {
+		dst.MinContentTokens = src.MinContentTokens
+	}
+	if src.CacheMissThreshold != "" {
+		dst.CacheMissThreshold = src.CacheMissThreshold
+	}
+	if src.TruncatedMarker != "" {
+		dst.TruncatedMarker = src.TruncatedMarker
+	}
+	if src.MinContextRatio != 0 {
+		dst.MinContextRatio = src.MinContextRatio
 	}
 }
 

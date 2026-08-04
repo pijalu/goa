@@ -13,6 +13,18 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
+// saveOrchestratorSection persists the orchestrator config section to the
+// home config, preserving other home settings (no full-config dump).
+func (m *configMenu) saveOrchestratorSection() {
+	m.saveHomeSection([]string{"orchestrator"}, m.ctx.Config.Orchestrator)
+}
+
+// saveGoalsSection persists the goals config section to the home config,
+// preserving other home settings (no full-config dump).
+func (m *configMenu) saveGoalsSection() {
+	m.saveHomeSection([]string{"goals"}, m.ctx.Config.Goals)
+}
+
 // openOrchestratorMenu is the entry point for /config -> Orchestrator.
 func (m *configMenu) openOrchestrator() {
 	m.current = m.openOrchestrator
@@ -142,7 +154,7 @@ func (m *configMenu) promptRoleField(name, field string) {
 			updated.Provider = strings.TrimSpace(value)
 		}
 		cfg.Orchestrator.Roles[name] = updated
-		m.saveConfig()
+		m.saveOrchestratorSection()
 		m.openRoleDetail(name)
 	})
 }
@@ -159,7 +171,7 @@ func (m *configMenu) promptRoleTools(name string) {
 		updated := cfg.Orchestrator.Roles[name]
 		updated.AllowedTools = splitTrim(value, ",")
 		cfg.Orchestrator.Roles[name] = updated
-		m.saveConfig()
+		m.saveOrchestratorSection()
 		m.openRoleDetail(name)
 	})
 }
@@ -176,7 +188,7 @@ func (m *configMenu) confirmRemoveRole(name string) {
 			return
 		}
 		delete(m.ctx.Config.Orchestrator.Roles, name)
-		m.saveConfig()
+		m.saveOrchestratorSection()
 		m.flash(fmt.Sprintf("Role %q removed.", name))
 		m.openOrchestratorRoles()
 	})
@@ -204,7 +216,7 @@ func (m *configMenu) addOrchestratorRole() {
 				m.ctx.Config.Orchestrator.Roles = map[string]config.OrchestratorRole{}
 			}
 			m.ctx.Config.Orchestrator.Roles[name] = config.OrchestratorRole{Model: strings.TrimSpace(model)}
-			m.saveConfig()
+			m.saveOrchestratorSection()
 			m.openRoleDetail(name)
 		})
 	})
@@ -251,7 +263,7 @@ func (m *configMenu) promptPoolInt(prompt string, target *int, allowZero bool) {
 			return
 		}
 		*target = n
-		m.saveConfig()
+		m.saveOrchestratorSection()
 		m.openOrchestratorPool()
 	})
 }
@@ -299,7 +311,7 @@ func (m *configMenu) addPerModelRule() {
 				m.ctx.Config.Orchestrator.Pool.MaxAgentsPerModel = map[string]int{}
 			}
 			m.ctx.Config.Orchestrator.Pool.MaxAgentsPerModel[strings.TrimSpace(model)] = n
-			m.saveConfig()
+			m.saveOrchestratorSection()
 			m.openPerModelPool()
 		})
 	})
@@ -319,7 +331,7 @@ func (m *configMenu) editPerModelRule(model string) {
 		}
 		if action == "remove" {
 			delete(m.ctx.Config.Orchestrator.Pool.MaxAgentsPerModel, model)
-			m.saveConfig()
+			m.saveOrchestratorSection()
 			m.openPerModelPool()
 			return
 		}
@@ -335,7 +347,7 @@ func (m *configMenu) editPerModelRule(model string) {
 				return
 			}
 			m.ctx.Config.Orchestrator.Pool.MaxAgentsPerModel[model] = n
-			m.saveConfig()
+			m.saveOrchestratorSection()
 			m.openPerModelPool()
 		})
 	})
@@ -356,7 +368,7 @@ func (m *configMenu) openOrchestratorDefaults() {
 			return
 		}
 		m.ctx.Config.Orchestrator.Defaults.Topology = v
-		m.saveConfig()
+		m.saveOrchestratorSection()
 		m.back()
 	})
 }
@@ -378,15 +390,15 @@ func (m *configMenu) openOrchestratorRetention() {
 		switch field {
 		case "enabled":
 			cfg.Enabled = !cfg.Enabled
-			m.saveConfig()
+			m.saveOrchestratorSection()
 			m.openOrchestratorRetention()
 		case "days":
-			m.promptRetentionDays(&cfg.Enabled, &cfg.Days)
+			m.promptRetentionDays(&cfg.Enabled, &cfg.Days, m.saveOrchestratorSection, m.openOrchestratorRetention)
 		}
 	})
 }
 
-func (m *configMenu) promptRetentionDays(enabled *bool, days *int) {
+func (m *configMenu) promptRetentionDays(enabled *bool, days *int, save func(), reopen func()) {
 	m.ctx.ShowInput("Retention days (0 = keep forever):", fmt.Sprintf("%d", *days), func(value string, ok bool) {
 		if !ok {
 			m.back()
@@ -402,8 +414,8 @@ func (m *configMenu) promptRetentionDays(enabled *bool, days *int) {
 		if n > 0 {
 			*enabled = true
 		}
-		m.saveConfig()
-		m.openOrchestratorRetention()
+		save()
+		reopen()
 	})
 }
 
@@ -428,10 +440,10 @@ func (m *configMenu) openGoalsRetention() {
 		switch field {
 		case "enabled":
 			cfg.Enabled = !cfg.Enabled
-			m.saveConfig()
+			m.saveGoalsSection()
 			m.openGoalsRetention()
 		case "days":
-			m.promptRetentionDays(&cfg.Enabled, &cfg.Days)
+			m.promptRetentionDays(&cfg.Enabled, &cfg.Days, m.saveGoalsSection, m.openGoalsRetention)
 		case "auto_unblock":
 			m.toggleGoalAutoUnblock()
 		case "fresh_context":
@@ -447,7 +459,7 @@ func (m *configMenu) toggleGoalAutoUnblock() {
 	g := &m.ctx.Config.Goals
 	next := !g.AutoUnblockEnabled()
 	g.AutoUnblock = &next
-	m.saveConfig()
+	m.saveGoalsSection()
 	m.flash("Auto-unblock goals " + toggleNextLabel(!next))
 	m.openGoalsRetention()
 }
@@ -460,7 +472,7 @@ func (m *configMenu) toggleGoalFreshContext() {
 	g := &m.ctx.Config.Goals
 	next := !g.FreshContextEnabled()
 	g.FreshContext = &next
-	m.saveConfig()
+	m.saveGoalsSection()
 	m.flash("Fresh context for new goals " + toggleNextLabel(!next))
 	m.openGoalsRetention()
 }

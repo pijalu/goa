@@ -223,8 +223,8 @@ func (t *ReadFileTool) readDir(path string) (string, error) {
 
 // shortenPath replaces the home directory prefix with ~ for display.
 func shortenPath(path string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home, ok := internal.GoaHome()
+	if !ok {
 		return path
 	}
 	if strings.HasPrefix(path, home) {

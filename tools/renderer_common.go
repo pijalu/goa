@@ -6,10 +6,10 @@ package tools
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
@@ -127,8 +127,8 @@ var Themer ThemeProvider
 
 // shortenHome replaces the home directory prefix with ~ for display.
 func shortenHome(path string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home, ok := internal.GoaHome()
+	if !ok {
 		return path
 	}
 	if strings.HasPrefix(path, home) {
