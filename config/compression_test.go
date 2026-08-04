@@ -273,11 +273,15 @@ func TestDefaultConfig_CompressionThresholds(t *testing.T) {
 	if !cc.EnabledValue() {
 		t.Fatal("ContextCompression.EnabledValue() = false, want true")
 	}
-	if cc.Thresholds.TriggerPercent != 80 {
-		t.Errorf("Thresholds.TriggerPercent = %d, want 80", cc.Thresholds.TriggerPercent)
+	// Proactive compression is opt-in: thresholds default to 0 (disabled).
+	if cc.Thresholds.TriggerPercent != 0 {
+		t.Errorf("Thresholds.TriggerPercent = %d, want 0 (disabled by default)", cc.Thresholds.TriggerPercent)
 	}
-	if cc.Thresholds.HardPercent != 95 {
-		t.Errorf("Thresholds.HardPercent = %d, want 95", cc.Thresholds.HardPercent)
+	if cc.Thresholds.HardPercent != 0 {
+		t.Errorf("Thresholds.HardPercent = %d, want 0 (disabled by default)", cc.Thresholds.HardPercent)
+	}
+	if !cc.OnContextError {
+		t.Error("OnContextError = false, want true (reactive safety net stays on)")
 	}
 	if cc.ThresholdPercent != 0 {
 		t.Errorf("legacy ThresholdPercent = %d, want 0 (migrated to thresholds block)", cc.ThresholdPercent)

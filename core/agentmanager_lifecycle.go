@@ -235,9 +235,19 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	// the value stale and hide the real capacity in the UI.
 	ov := overlayCompressionForModel(cfg.ContextCompression, modelID)
 
+	thresholds := am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger)
+	// Honor the Enabled toggle: an explicit `enabled: false` disables all
+	// proactive threshold-triggered compression (soft/trigger/hard → 0), which
+	// was previously persisted but silently ignored (archived bugs.md). The
+	// reactive safety net (on_context_error + the hard-ceiling enforcer) is
+	// unaffected and keeps protecting the window.
+	if !cfg.ContextCompression.EnabledValue() {
+		thresholds = agentic.CompressionThresholds{}
+	}
+
 	return agentic.ContextCompressionConfig{
 		MaxTokens:           ov.maxTokens,
-		Thresholds:          am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger),
+		Thresholds:          thresholds,
 		OnContextError:      cfg.ContextCompression.OnContextError,
 		Strategy:            compressionStrategy(ov.strategy),
 		Strategies:          agenticLayerStrategies(ov.strategies),

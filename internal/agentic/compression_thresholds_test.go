@@ -24,18 +24,18 @@ func TestResolveThresholds(t *testing.T) {
 		wantHard    int
 	}{
 		{
-			name:        "zero config reproduces legacy defaults",
+			name:        "zero config disables every proactive layer (opt-in)",
 			cfg:         ContextCompressionConfig{},
-			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
-			wantTrigger: 90, // legacy SDK fallback
-			wantHard:    95,
+			wantSoft:    0, // proactive compression is opt-in: 0 = disabled
+			wantTrigger: 0,
+			wantHard:    0,
 		},
 		{
 			name:        "legacy ThresholdPercent maps to trigger",
 			cfg:         ContextCompressionConfig{ThresholdPercent: 80},
-			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
+			wantSoft:    0,
 			wantTrigger: 80,
-			wantHard:    95,
+			wantHard:    0,
 		},
 		{
 			name: "explicit Thresholds win over legacy alias",
@@ -43,9 +43,9 @@ func TestResolveThresholds(t *testing.T) {
 				ThresholdPercent: 70,
 				Thresholds:       CompressionThresholds{TriggerPercent: 85},
 			},
-			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
+			wantSoft:    0,
 			wantTrigger: 70, // legacy alias wins when both set (backwards compat)
-			wantHard:    95,
+			wantHard:    0,
 		},
 		{
 			name: "full explicit tiers",
@@ -59,9 +59,16 @@ func TestResolveThresholds(t *testing.T) {
 		{
 			name:        "hard percent explicit",
 			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{HardPercent: 88}},
-			wantSoft:    80, // soft defaults to 80 (micro layer enabled)
-			wantTrigger: 90,
+			wantSoft:    0,
+			wantTrigger: 0,
 			wantHard:    88,
+		},
+		{
+			name:        "negative values clamp to disabled",
+			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: -5, HardPercent: -1}},
+			wantSoft:    0,
+			wantTrigger: 0,
+			wantHard:    0,
 		},
 	}
 	for _, tt := range tests {
@@ -125,6 +132,48 @@ func TestProactiveTier(t *testing.T) {
 	}
 }
 
+// TestProactiveTier_ZeroThresholdsDisableProactive guards the opt-in default:
+// with no thresholds configured (all 0), proactive compression NEVER fires —
+// even at 99% usage with a cold cache. Only the reactive error/ceiling net
+// protects the window.
+func TestProactiveTier_ZeroThresholdsDisableProactive(t *testing.T) {
+	rt := ContextCompressionConfig{}.resolveThresholds()
+	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
+	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache: would fire if enabled
+	for _, usage := range []int{50, 80, 90, 95, 99} {
+		a.mu.Lock()
+		got := a.proactiveTierLocked(usage, rt)
+		a.mu.Unlock()
+		if got != tierNone {
+			t.Errorf("proactiveTierLocked(%d%%, zero thresholds) = %v, want tierNone (proactive disabled by default)", usage, got)
+		}
+	}
+}
+
+// TestMaybeCompress_ZeroThresholdsNoProactive confirms maybeCompress is a no-op
+// by default: it neither mutates nor drops history when every proactive
+// threshold is disabled.
+func TestMaybeCompress_ZeroThresholdsNoProactive(t *testing.T) {
+	a := NewAgent(Config{
+		Model: testModel(provider.ApiOpenAICompletions),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens: 20000,
+			Strategy:  CompressionToolElision, // strategy set, but no thresholds
+		},
+	})
+	a.history = softTierTestHistory()
+	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache
+
+	before := a.history[2].Content
+	beforeLen := len(a.history)
+	if err := a.maybeCompress(context.Background()); err != nil {
+		t.Fatalf("maybeCompress: %v", err)
+	}
+	if a.history[2].Content != before || len(a.history) != beforeLen {
+		t.Errorf("maybeCompress with zero thresholds must be a no-op (no proactive compression)")
+	}
+}
+
 func TestProactiveTier_SoftDisabledWhenNegative(t *testing.T) {
 	// SoftPercent -1 disables the soft layer entirely: usage in the soft band
 	// does nothing even with a cold cache.
@@ -171,15 +220,15 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 		wantSoft    CompressionStrategy
 		wantTrigger CompressionStrategy
 		wantHard    CompressionStrategy
-		wantSoftPct int // -1 = expect the DefaultSoftPercent fallback
+		wantSoftPct int // expected resolved soft percent (0 = disabled; opt-in)
 	}{
 		{
-			name:        "defaults: micro / tool_elision / hybrid, soft at 80",
+			name:        "defaults: micro / tool_elision / hybrid, all layers off",
 			cfg:         ContextCompressionConfig{},
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionToolElision,
 			wantHard:    CompressionHybrid,
-			wantSoftPct: -1,
+			wantSoftPct: 0,
 		},
 		{
 			name:        "legacy Strategy maps to the trigger layer",
@@ -187,7 +236,7 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionSummarize,
 			wantHard:    CompressionHybrid,
-			wantSoftPct: -1,
+			wantSoftPct: 0,
 		},
 		{
 			name: "explicit per-layer strategies win over legacy Strategy",
@@ -198,7 +247,7 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			wantSoft:    CompressionToolElision,
 			wantTrigger: CompressionSelective,
 			wantHard:    CompressionSummarize,
-			wantSoftPct: -1,
+			wantSoftPct: 0,
 		},
 		{
 			name: "soft layer degrades LLM strategies to micro",
@@ -208,10 +257,10 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionToolElision,
 			wantHard:    CompressionHybrid,
-			wantSoftPct: -1,
+			wantSoftPct: 0,
 		},
 		{
-			name:        "negative soft percent disables the layer",
+			name:        "negative soft percent clamps to disabled",
 			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1}},
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionToolElision,
@@ -231,12 +280,8 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			if rt.hardStrategy != tt.wantHard {
 				t.Errorf("hardStrategy = %q, want %q", rt.hardStrategy, tt.wantHard)
 			}
-			wantPct := tt.wantSoftPct
-			if wantPct < 0 {
-				wantPct = DefaultSoftPercent
-			}
-			if rt.soft != wantPct {
-				t.Errorf("soft percent = %d, want %d", rt.soft, wantPct)
+			if rt.soft != tt.wantSoftPct {
+				t.Errorf("soft percent = %d, want %d", rt.soft, tt.wantSoftPct)
 			}
 		})
 	}

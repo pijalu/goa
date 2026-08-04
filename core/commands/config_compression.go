@@ -21,9 +21,9 @@ func (m *configMenu) settingCompression() {
 		{Value: "strategy", Label: "Trigger strategy", Description: strategy},
 		{Value: "soft_strategy", Label: "Soft strategy", Description: layerStrategyLabel(cfg.ContextCompression.Strategies.Soft, "micro")},
 		{Value: "hard_strategy", Label: "Hard strategy", Description: layerStrategyLabel(cfg.ContextCompression.Strategies.Hard, "hybrid")},
-		{Value: "soft", Label: "Soft threshold (early maintenance)", Description: percentLabel(cfg.ContextCompression.Thresholds.SoftPercent, "80% (default)")},
+		{Value: "soft", Label: "Soft threshold (early maintenance)", Description: percentLabel(cfg.ContextCompression.Thresholds.SoftPercent, "off (default)")},
 		{Value: "threshold", Label: "Trigger threshold", Description: trigger},
-		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "95% (default)")},
+		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "off (default)")},
 		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
 		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
 		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg)},
@@ -98,9 +98,9 @@ func (m *configMenu) settingCompressionStrategy() {
 
 func (m *configMenu) settingCompressionThreshold() {
 	m.current = m.settingCompressionThreshold
-	// 0 = SDK default (90%), then the settable range in 5% steps (10-95%).
+	// 0 = off (default: no proactive trigger); the settable range in 5% steps.
 	items := []tui.SelectorItem{
-		{Value: "0", Label: "default (90%)", Description: "SDK default trigger"},
+		{Value: "0", Label: "off (default)", Description: "no proactive trigger — compress only on context error"},
 	}
 	items = append(items, percentStepItems()...)
 	current := fmt.Sprintf("%d", compressionTriggerValue(m.ctx.Config))
@@ -179,10 +179,9 @@ func (m *configMenu) settingCompressionHardStrategy() {
 
 func (m *configMenu) settingCompressionSoft() {
 	m.current = m.settingCompressionSoft
-	// 0 = SDK default (80%), -1 disables the layer, levels in 5% steps 10-95.
+	// 0 = off (default: no early maintenance); levels in 5% steps 10-95.
 	items := []tui.SelectorItem{
-		{Value: "0", Label: "default (80%)", Description: "SDK default early maintenance"},
-		{Value: "-1", Label: "off", Description: "no early maintenance"},
+		{Value: "0", Label: "off (default)", Description: "no early maintenance"},
 	}
 	items = append(items, percentStepItems()...)
 	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.Thresholds.SoftPercent)
@@ -199,7 +198,7 @@ func (m *configMenu) settingCompressionSoft() {
 func (m *configMenu) settingCompressionHard() {
 	m.current = m.settingCompressionHard
 	items := []tui.SelectorItem{
-		{Value: "0", Label: "default (95%)", Description: "SDK default ceiling"},
+		{Value: "0", Label: "off (default)", Description: "no proactive ceiling — the reactive error/ceiling net stays on"},
 	}
 	items = append(items, percentStepItems()...)
 	current := fmt.Sprintf("%d", compressionHardValue(m.ctx.Config))
@@ -435,8 +434,16 @@ func microTruncatedMarkerLabel(cfg *config.Config) string {
 }
 
 // compressionLabel returns a one-line summary for the root /config menu.
+// With proactive compression off (the default), it surfaces the reactive
+// on-error net instead of a misleading "strategy @ 0%".
 func compressionLabel(cfg *config.Config) string {
 	if !cfg.ContextCompression.EnabledValue() {
+		return "off"
+	}
+	if compressionTriggerValue(cfg) <= 0 {
+		if cfg.ContextCompression.OnContextError {
+			return "on-error (hybrid)"
+		}
 		return "off"
 	}
 	strategy := cfg.ContextCompression.Strategy
@@ -456,20 +463,18 @@ func compressionTriggerValue(cfg *config.Config) int {
 }
 
 // compressionTriggerDisplay renders the trigger value for the menu,
-// annotating when it comes from neither field (SDK default applies).
+// annotating when it is unset (proactive trigger off — the default).
 func compressionTriggerDisplay(cfg *config.Config) string {
 	if v := compressionTriggerValue(cfg); v > 0 {
 		return fmt.Sprintf("%d%%", v)
 	}
-	return "90% (default)"
+	return "off (default)"
 }
 
-// compressionHardValue resolves the effective hard ceiling for display.
+// compressionHardValue resolves the effective hard ceiling for display
+// (0 = proactive ceiling off; the reactive net still protects the window).
 func compressionHardValue(cfg *config.Config) int {
-	if cfg.ContextCompression.Thresholds.HardPercent > 0 {
-		return cfg.ContextCompression.Thresholds.HardPercent
-	}
-	return 95
+	return cfg.ContextCompression.Thresholds.HardPercent
 }
 
 // percentLabel renders an optional percent value with a fallback label.

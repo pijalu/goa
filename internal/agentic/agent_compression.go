@@ -195,9 +195,11 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 	rt := a.cfg.ContextCompression.resolveThresholds()
 
 	// Legacy whole-strategy micro: micro compaction self-manages its internal
-	// thresholds, so skip the tier gate except at the emergency ceiling.
+	// thresholds, so skip the tier gate except at the emergency ceiling. Uses
+	// effectiveHard so a disabled proactive hard layer (0) still leaves the
+	// emergency branch reachable for the reactive paths.
 	stats := a.ContextStats()
-	if rt.triggerStrategy == CompressionMicro && stats.UsagePercent < rt.hard {
+	if rt.triggerStrategy == CompressionMicro && stats.UsagePercent < rt.effectiveHard() {
 		return a.compressAndReport(ctx)
 	}
 
@@ -319,8 +321,11 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 
 // compressHybrid applies tool_elision then selective if still over threshold.
 // The in-memory steps run under a.mu; Compact (network) runs off-lock.
+// The "still too full" gate uses the escalation level (effectiveHard−5), not
+// the proactive trigger — so the last-resort summarize only fires when the
+// window is genuinely near full, independent of any opt-in trigger level.
 func (a *Agent) compressHybrid(ctx context.Context) error {
-	threshold := a.cfg.ContextCompression.resolveThresholds().trigger
+	threshold := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
 
 	a.mu.Lock()
 	a.compressToolElision(true)
@@ -571,7 +576,9 @@ func (a *Agent) checkSilentOverflow() {
 	if maxTokens == 0 {
 		return
 	}
-	hard := a.cfg.ContextCompression.resolveThresholds().hard
+	// Use effectiveHard (not the raw configured hard): with proactive thresholds
+	// disabled (0) the reactive ceiling still guards against silent truncation.
+	hard := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	stats := a.computeContextStats()
 	if stats.UsagePercent < hard {
 		return
@@ -581,7 +588,7 @@ func (a *Agent) checkSilentOverflow() {
 	a.emitEvent(OutputEvent{
 		Type:         EventContextStats,
 		ContextStats: &stats,
-		Text:         fmt.Sprintf("warning: context usage ≥ %d%% without provider error — proactive compression will fire on next turn", hard),
+		Text:         fmt.Sprintf("warning: context usage ≥ %d%% without provider error — compression will fire on next turn", hard),
 	})
 }
 
@@ -609,26 +616,31 @@ func (a *Agent) maybeCompressAfterLengthTruncation() {
 	a.cfg.Logger.Log(Warn, "provider truncated output at the context window edge (%d/%d tokens, finish_reason=length); forcing compression before the next round",
 		total, maxTokens)
 	// Cheap strategies only touch tool payloads and cannot be trusted to free
-	// enough at the window edge; follow with selective turn removal, same as
-	// the overflow-recovery path.
-	a.compressHistoryWithStrategy(string(a.cfg.ContextCompression.Strategy), true)
-	a.mu.Lock()
-	a.compressSelective()
-	a.mu.Unlock()
+	// enough at the window edge. With the default (empty) strategy this reduces
+	// to tool_elision + selective; the explicit summarize/hybrid paths skip the
+	// LLM call here (no ctx) and run the same free-space steps directly.
+	if a.cfg.ContextCompression.Strategy == "" {
+		a.mu.Lock()
+		a.compressToolElision(true)
+		a.compressSelective()
+		a.mu.Unlock()
+	} else {
+		a.compressHistoryWithStrategy(string(a.cfg.ContextCompression.Strategy), true)
+		a.mu.Lock()
+		a.compressSelective()
+		a.mu.Unlock()
+	}
 	a.emitContextStats()
 }
 
 // handleContextError checks if the error is a context-length error and, if
-// OnContextError is enabled, applies the configured compression strategy
-// to free context space.  Unlike compressToolElision (which only elides
-// tool calls/results), this uses the full configured strategy — including
-// selective (message removal) and summarization — so text-heavy
-// conversations are handled too.
-//
-// When the configured strategy is tool_elision or micro (which may leave
-// text content untouched), it escalates to selective as a fallback so the
-// retry can make progress.
-func (a *Agent) handleContextError(err error) {
+// OnContextError is enabled, applies the hybrid compression strategy to free
+// context space: tool_elision → selective (message removal) → summarize as a
+// last resort (pi-style). This is the reactive safety net that stays on when
+// proactive threshold compression is disabled (the default): cheap steps run
+// first, and only if the window is still near full does it escalate — ending
+// in a Compact (LLM summarize) when nothing cheaper freed enough.
+func (a *Agent) handleContextError(ctx context.Context, err error) {
 	if !isContextLengthError(err) {
 		return
 	}
@@ -647,32 +659,36 @@ func (a *Agent) handleContextError(err error) {
 		return
 	}
 
-	strategy := CompressionStrategy(a.cfg.ContextCompression.Strategy)
 	if a.cfg.Logger != nil {
-		a.cfg.Logger.Log(Info, "Context length error — applying compression (strategy=%s)", strategy)
+		a.cfg.Logger.Log(Info, "Context length error — applying hybrid compression (elision → selective → summarize)")
 	}
+	a.compressOverflowRecovery(ctx)
+}
 
-	// compressHistoryWithStrategy self-manages a.mu per strategy branch (micro
-	// emits after unlock; the pure strategies take the lock around their
-	// mutation), so do not hold the lock across it here.
-	a.compressHistoryWithStrategy(string(strategy), true)
+// compressOverflowRecovery applies the hybrid strategy for a PROVEN context
+// overflow: tool_elision → selective (unconditional) → summarize (only if the
+// estimate still sits at the window edge). Unlike compressHybrid (which gates
+// selective behind the escalation level), a provider rejection proves the
+// request exceeded the window — and the local estimate provably under-counts
+// (a deepseek-v4 session overflowed at 84% estimated / 100% actual, and
+// gating selective behind the estimate made the retry fail identically). So
+// selective message removal ALWAYS runs here to buy real headroom.
+func (a *Agent) compressOverflowRecovery(ctx context.Context) {
+	a.mu.Lock()
+	a.compressToolElision(true)
+	a.compressSelective()
+	stats := a.computeContextStats()
+	a.mu.Unlock()
 
-	// Cheap strategies (tool_elision, micro) touch only tool payloads and can
-	// leave the context nearly full — the bulk is often assistant text,
-	// tool-call arguments and sheer message count. The provider just PROVED
-	// the request exceeds the window, so the local estimate must not veto
-	// escalation: it under-reads real usage (a deepseek-v4 session overflowed
-	// at 84% estimated / 100% actual, the 90% escalation gate never opened,
-	// and the retry failed identically). Always escalate to selective message
-	// removal so the retry goes out with real headroom.
-	if strategy == "" || strategy == CompressionToolElision || strategy == CompressionMicro {
-		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Info, "Provider rejected the request for context size — escalating to selective compression (strategy=%s)", strategy)
+	// If the estimate still sits at the window edge, escalate to a summarize as
+	// the last resort (pi-style): the cheaper steps could not free enough.
+	threshold := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+	if stats.UsagePercent >= threshold {
+		if err := a.Compact(ctx); err != nil && a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Error, "Context-overflow summarize failed: %v", err)
 		}
-		a.mu.Lock()
-		a.compressSelective()
-		a.mu.Unlock()
 	}
+	a.emitContextStats()
 }
 
 // compressHistoryWithStrategy applies the named compression strategy

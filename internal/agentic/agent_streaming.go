@@ -523,8 +523,8 @@ func (a *Agent) toolListHashLocked() uint32 {
 	return h.Sum32()
 }
 
-func (a *Agent) handleStreamError(_ context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
-	return true, false, a.resolveStreamError(stream, event.Error)
+func (a *Agent) handleStreamError(ctx context.Context, stream *provider.AssistantMessageEventStream, event provider.AssistantMessageEvent) (bool, bool, error) {
+	return true, false, a.resolveStreamError(ctx, stream, event.Error)
 }
 
 // tryAutoHealToolCalls parses the accumulated assistant text for XML tool
@@ -753,7 +753,7 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 			// EventEnd, and the UI would see two turns — the duplicate response bug.
 			// Instead, skip finalization: let the error propagate to handleStreamFailure
 			// which will undo any partial assistant message, compress, and retry.
-			a.handleContextError(err)
+			a.handleContextError(ctx, err)
 			return false, err
 		}
 		return false, err
@@ -785,7 +785,7 @@ func (a *Agent) finishStreamTurn(ctx context.Context, stream *provider.Assistant
 }
 
 // resolveStreamError extracts the error from a stream error event.
-func (a *Agent) resolveStreamError(stream *provider.AssistantMessageEventStream, eventErr error) error {
+func (a *Agent) resolveStreamError(ctx context.Context, stream *provider.AssistantMessageEventStream, eventErr error) error {
 	// Detect context overflow BEFORE finalizing the turn so the
 	// duplicate-EventEnd bug is avoided.  Check both eventErr and
 	// stream.Err() since the error may be in either location.
@@ -794,7 +794,7 @@ func (a *Agent) resolveStreamError(stream *provider.AssistantMessageEventStream,
 		err = stream.Err()
 	}
 	if err != nil && isContextLengthError(err) {
-		a.handleContextError(err)
+		a.handleContextError(ctx, err)
 		return err
 	}
 

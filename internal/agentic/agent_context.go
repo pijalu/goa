@@ -47,7 +47,9 @@ func (a *Agent) enforceContextCeiling() {
 		return
 	}
 
-	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
+	// Use effectiveHard: the ceiling enforcer is a REACTIVE safety net that
+	// stays on even when proactive threshold compression is disabled (hard=0).
+	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	// The fixed per-turn cost (system prompt + tool schemas) is always present;
 	// history must fit in the remainder or the outgoing request still overflows.
@@ -169,7 +171,7 @@ func (a *Agent) checkContextLimit() error {
 	if maxTokens == 0 {
 		return nil
 	}
-	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
+	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	a.mu.Lock()
 	estimated := a.estimateContextTokensLocked()
