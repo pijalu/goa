@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,5 +111,50 @@ func TestAnthropicParseError(t *testing.T) {
 		`data: {"type":"error","error":{"type":"rate_limit_error","message":"too many requests"}}`,
 	), stream)
 
-	require.Error(t, stream.Err())
+	err := stream.Err()
+	require.Error(t, err)
+	// A mid-stream rate-limit frame must be classified retryable — the frame
+	// bypasses the transport's error hook (HTTP 200), so without
+	// classification the agent would kill the turn with zero retries.
+	var provErr *hooks.ProviderError
+	require.ErrorAs(t, err, &provErr)
+	assert.Equal(t, 429, provErr.StatusCode())
+	assert.True(t, provErr.IsRateLimit)
+	assert.True(t, provErr.IsRetryable)
+}
+
+// Anthropic overload (529) and api_error (500) frames must be retryable;
+// a 4xx like invalid_request_error must not be.
+func TestAnthropicParseErrorClassification(t *testing.T) {
+	cases := []struct {
+		name       string
+		errType    string
+		wantStatus int
+		wantRetry  bool
+	}{
+		{"overloaded_error 529", "overloaded_error", 529, true},
+		{"api_error 500", "api_error", 500, true},
+		{"invalid_request_error 400", "invalid_request_error", 400, false},
+		{"authentication_error 401", "authentication_error", 401, false},
+		{"unknown type", "weird_new_error", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := ForAPI(schema.ApiAnthropicMessages)
+			require.NotNil(t, p)
+
+			stream := schema.NewAssistantMessageEventStream(4)
+			go p.ParseResponse(anthropicSSE(
+				"event: error",
+				`data: {"type":"error","error":{"type":"`+tc.errType+`","message":"boom"}}`,
+			), stream)
+
+			err := stream.Err()
+			require.Error(t, err)
+			var provErr *hooks.ProviderError
+			require.ErrorAs(t, err, &provErr)
+			assert.Equal(t, tc.wantStatus, provErr.StatusCode())
+			assert.Equal(t, tc.wantRetry, provErr.IsRetryable)
+		})
+	}
 }

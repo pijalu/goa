@@ -5,13 +5,91 @@
 package openai
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
+
+// Regression: a mid-stream provider error frame (HTTP 200 +
+// {"error": {...}}) must be classified into a *hooks.ProviderError so a
+// 5xx (llama.cpp "[503] The request queue is full.") is retried by the
+// agent instead of killing the turn as a non-retryable bare error.
+func TestParseChunkErrorFrameClassification(t *testing.T) {
+	cases := []struct {
+		name       string
+		chunk      string
+		wantErr    string
+		wantStatus int
+		wantRetry  bool
+	}{
+		{
+			name:       "503 queue full retryable",
+			chunk:      `{"error":{"message":"Streaming response failed: [503] The request queue is full."}}`,
+			wantErr:    "LLM error: Streaming response failed: [503] The request queue is full.",
+			wantStatus: 503,
+			wantRetry:  true,
+		},
+		{
+			name:       "500 retryable",
+			chunk:      `{"error":{"message":"Internal error 500","code":500}}`,
+			wantErr:    "LLM error: Internal error 500",
+			wantStatus: 500,
+			wantRetry:  true,
+		},
+		{
+			name:       "429 rate limited",
+			chunk:      `{"error":{"message":"Rate limit reached","code":"429"}}`,
+			wantErr:    "LLM error: Rate limit reached",
+			wantStatus: 429,
+			wantRetry:  true,
+		},
+		{
+			name:       "400 not retryable",
+			chunk:      `{"error":{"message":"Engine protocol predict request returned 400: System message must be at the beginning."}}`,
+			wantErr:    "LLM error: Engine protocol predict request returned 400: System message must be at the beginning.",
+			wantStatus: 400,
+			wantRetry:  false,
+		},
+		{
+			name:       "no status unclassified",
+			chunk:      `{"error":{"message":"boom"}}`,
+			wantErr:    "LLM error: boom",
+			wantStatus: 0,
+			wantRetry:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertChunkErrorFrame(t, tc.chunk, tc.wantErr, tc.wantStatus, tc.wantRetry)
+		})
+	}
+}
+
+func assertChunkErrorFrame(t *testing.T, chunk, wantErr string, wantStatus int, wantRetry bool) {
+	t.Helper()
+	_, err := parseChunk(chunk)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if err.Error() != wantErr {
+		t.Errorf("error text = %q, want %q", err.Error(), wantErr)
+	}
+	var provErr *hooks.ProviderError
+	if !errors.As(err, &provErr) {
+		t.Fatalf("error frame must be a *hooks.ProviderError, got %T", err)
+	}
+	if provErr.StatusCode() != wantStatus {
+		t.Errorf("StatusCode = %d, want %d", provErr.StatusCode(), wantStatus)
+	}
+	if provErr.IsRetryable != wantRetry {
+		t.Errorf("IsRetryable = %v, want %v", provErr.IsRetryable, wantRetry)
+	}
+}
 
 func TestParseChunk_TextStop(t *testing.T) {
 	chunk := `{"choices":[{"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`
