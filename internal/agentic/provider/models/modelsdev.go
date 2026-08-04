@@ -265,6 +265,45 @@ func writeCatalogCache(cacheDir string, raw []byte) error {
 // Parsing (shared semantics with cmd/genmodels)
 // ---------------------------------------------------------------------------
 
+// modelsDevProviderInfo captures the provider-level metadata that models.dev
+// publishes alongside each provider entry. Used by the unmapped-provider
+// fallback to synthesize a mapping from scratch.
+type modelsDevProviderInfo struct {
+	API  string `json:"api"`  // base URL (e.g. "https://api.tensorx.ai/v1")
+	NPM  string `json:"npm"`  // AI-SDK package hint for wire protocol
+	Name string `json:"name"` // display name
+}
+
+// modelsDevProviderEntry is a full models.dev provider entry: the provider
+// metadata plus the nested models map. Embedding modelsDevProviderInfo lets
+// the fallback decode both in one pass.
+type modelsDevProviderEntry struct {
+	modelsDevProviderInfo
+	Models map[string]modelsDevModel `json:"models"`
+}
+
+// npmToAPI maps models.dev npm package identifiers to Goa API types. Most
+// models.dev providers are OpenAI-compatible; the few with native protocols
+// are listed explicitly. The zero value ("") defaults to OpenAI completions.
+var npmToAPI = map[string]provider.Api{
+	"@ai-sdk/anthropic":       provider.ApiAnthropicMessages,
+	"@ai-sdk/google":          provider.ApiGoogleGenerativeAI,
+	"@ai-sdk/google-vertex":   provider.ApiGoogleVertex,
+	"@ai-sdk/mistral":         provider.ApiMistralConversations,
+}
+
+// parseModelsDev builds the runtime catalog from the models.dev api.json.
+//
+// Two passes ensure ALL providers are covered:
+//   - Pass 1 (mapped): providers with a hand-curated ProviderDef carrying a
+//     ModelsDevKey use that mapping (detailed compat, correct API override,
+//     provider-specific identity like zai-api vs zai).
+//   - Pass 2 (fallback): every remaining models.dev key that has no mapping
+//     gets a synthesized mapping built from the provider-level metadata (api
+//     URL, npm protocol). This makes providers like tensorx — which exist on
+//     models.dev but have no ProviderDef — visible in the runtime catalog
+//     under a provider identity matching the models.dev key (and matching
+//     DeriveProviderID for endpoint-based provider config).
 func parseModelsDev(raw []byte) (*runtimeCatalog, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &top); err != nil {
@@ -275,6 +314,7 @@ func parseModelsDev(raw []byte) (*runtimeCatalog, error) {
 		models: map[string]provider.Model{},
 		byProv: map[provider.Provider][]provider.Model{},
 	}
+	// Pass 1: mapped providers (hand-curated, detailed compat).
 	for key, mapping := range modelsDevProviderMappings {
 		rawProv, ok := top[key]
 		if !ok {
@@ -286,18 +326,57 @@ func parseModelsDev(raw []byte) (*runtimeCatalog, error) {
 		if err := json.Unmarshal(rawProv, &prov); err != nil {
 			continue
 		}
-		for id, mm := range prov.Models {
-			m, ok := convertModelsDevModel(id, mm, mapping)
-			if !ok {
-				continue
-			}
-			cat.byProv[mapping.Provider] = append(cat.byProv[mapping.Provider], m)
-			if _, exists := cat.models[id]; !exists {
-				cat.models[id] = m
-			}
+		addProviderModels(cat, mapping, prov.Models)
+	}
+	// Pass 2: unmapped providers (fallback — synthesize mapping from metadata).
+	for key, rawProv := range top {
+		if _, mapped := modelsDevProviderMappings[key]; mapped {
+			continue
 		}
+		var prov modelsDevProviderEntry
+		if err := json.Unmarshal(rawProv, &prov); err != nil {
+			continue
+		}
+		if len(prov.Models) == 0 {
+			continue
+		}
+		mapping := synthesizeMapping(key, prov.modelsDevProviderInfo)
+		addProviderModels(cat, mapping, prov.Models)
 	}
 	return cat, nil
+}
+
+// addProviderModels converts and appends all models from a models.dev provider
+// entry into the runtime catalog. Shared by both the mapped and fallback
+// passes. First-wins for the global ID index; per-provider slice is append-only.
+func addProviderModels(cat *runtimeCatalog, mapping modelsDevProviderMapping, models map[string]modelsDevModel) {
+	for id, mm := range models {
+		m, ok := convertModelsDevModel(id, mm, mapping)
+		if !ok {
+			continue
+		}
+		cat.byProv[mapping.Provider] = append(cat.byProv[mapping.Provider], m)
+		if _, exists := cat.models[id]; !exists {
+			cat.models[id] = m
+		}
+	}
+}
+
+// synthesizeMapping builds a modelsDevProviderMapping for an unmapped provider
+// using the models.dev provider-level metadata. The provider identity is the
+// models.dev key itself (e.g. "tensorx"), which matches DeriveProviderID for
+// the provider's endpoint URL — so ListRegistryModels finds the models when a
+// user configures that provider.
+func synthesizeMapping(key string, info modelsDevProviderInfo) modelsDevProviderMapping {
+	api := provider.ApiOpenAICompletions
+	if a, ok := npmToAPI[info.NPM]; ok {
+		api = a
+	}
+	return modelsDevProviderMapping{
+		Provider: provider.Provider(key),
+		API:      api,
+		BaseURL:  info.API,
+	}
 }
 
 func convertModelsDevModel(id string, mm modelsDevModel, mapping modelsDevProviderMapping) (provider.Model, bool) {

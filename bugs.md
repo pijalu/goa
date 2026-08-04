@@ -140,47 +140,40 @@ wizard black screen — was fixed and archived to
 
 ---
 
-## All providers + models from models.dev should be present — OPEN
+## All providers + models from models.dev should be present — FIXED
 
 Only providers that already have a hand-curated `ProviderDef` with a
 `ModelsDevKey` in the catalog (`schema.ProviderCatalog()`) are processed
 from the models.dev runtime catalog (`modelsDevProviderMappings` in
 `internal/agentic/provider/models/modelsdev.go`). Any provider that exists
-on models.dev but lacks a catalog entry is **silently dropped** — the user
+on models.dev but lacks a catalog entry was **silently dropped** — the user
 never sees it in the model picker or `/config`.
 
 - **Symptom**: The models.dev catalog (`https://models.dev/api.json`)
  lists many providers (e.g. Together AI, Groq, Fireworks, Perplexity,
- AI21, Cohere, NVIDIA NIM, etc.). Goa only surfaces a subset (those with
- existing `ProviderDef` entries). Models from unmapped providers are
- invisible to the user even though the data is fetched and cached.
+ AI21, Cohere, NVIDIA NIM, TensorX, etc.). Goa only surfaced a subset
+ (those with existing `ProviderDef` entries). Models from unmapped
+ providers were invisible to the user even though the data was fetched
+ and cached. Concrete example: TensorX (25 models) absent.
 - **Root cause**: `buildModelsDevMappings()` iterates `ProviderCatalog()`
  and only emits a mapping for entries where `ModelsDevKey != ""`. The
- runtime parser (`parseModelsDev`) then skips any models.dev provider key
- not present in `modelsDevProviderMappings`. There is no fallback path
- that creates provider entries on the fly from models.dev data.
-- **Relevant code**:
- - `internal/agentic/provider/models/modelsdev.go`:
-   `modelsDevProviderMappings`, `buildModelsDevMappings`,
-   `parseModelsDev`, `convertModelsDevModel`
- - `internal/agentic/provider/schema/catalog.go`:
-   `providerCatalog` (the gated list of providers with `ModelsDevKey`)
- - `cmd/genmodels/main.go`: build-time generator uses the same gated
-   `supportedProviders` list
-- **Plan**:
- 1. Add a fallback in the runtime parser: when a models.dev provider key
-    has no explicit `ProviderDef` mapping, synthesize one using the
-    models.dev metadata (provider name, base URL from the first model's
-    endpoint, OpenAI-compatible API by default, auto-derived Goa
-    provider/identity). This makes every models.dev provider visible
-    without requiring a manual catalog entry for each.
- 2. For providers that need special wire-level behavior (non-standard
-    API, thinking format, etc.), the existing hand-curated `ProviderDef`
-    with `ModelsDevKey` + `Compat` overrides still takes priority — the
-    fallback only fills gaps for providers Goa knows nothing about.
- 3. Test approach: table-driven tests asserting that a models.dev fixture
-    with an unmapped provider produces runtime model entries with
-    correct derived identity and base URL; existing mapped providers are
-    unaffected.
- 4. Validate per guideline 5 (pick a model from a previously-missing
-    provider in `/config` or the model picker) and guideline 6.
+ runtime parser (`parseModelsDev`) then skipped any models.dev provider
+ key not present in `modelsDevProviderMappings`. There was no fallback
+ path that creates provider entries on the fly from models.dev data.
+- **Fix**: Added a two-pass `parseModelsDev`: Pass 1 processes mapped
+ providers (hand-curated, detailed compat) as before. Pass 2 iterates
+ every remaining models.dev key and synthesizes a mapping from the
+ provider-level metadata (`api` URL for BaseURL, `npm` package for wire
+ protocol, provider key for identity). The synthesized identity matches
+ `DeriveProviderID` for the endpoint, so `ListRegistryModels` finds the
+ models when a user configures that provider. Extracted
+ `addProviderModels` and `synthesizeMapping` helpers to keep complexity
+ in budget.
+- **Tests**: `TestParseModelsDev_UnmappedProviderFallback` (RED→GREEN):
+ fixture with an unmapped provider (tensorx) produces runtime catalog
+ entries with correct provider identity, BaseURL, API type, and model
+ metadata. Verified with the real models.dev cache: all 25 TensorX
+ models now visible under `provider.Provider("tensorx")`.
+- **Validation**: `go vet`, `staticcheck`, `gocognit`, `gocyclo`, and
+ `go test -count=1 -race -cover` all pass for affected packages; no
+ existing tests broken.

@@ -45,6 +45,46 @@ const modelsDevFixture = `{
   }
 }`
 
+// modelsDevUnmappedFixture adds an unmapped provider (tensorx) that has no
+// hand-curated ProviderDef with a ModelsDevKey. The fallback path must
+// synthesize a mapping from the provider-level metadata so its models appear
+// in the runtime catalog.
+const modelsDevUnmappedFixture = `{
+  "zai": {
+    "models": {
+      "glm-5.2": {
+        "name": "GLM-5.2",
+        "tool_call": true,
+        "reasoning": true,
+        "limit": {"context": 1000000, "output": 131072},
+        "cost": {"input": 1.4, "output": 4.4}
+      }
+    }
+  },
+  "tensorx": {
+    "id": "tensorx",
+    "name": "TensorX",
+    "api": "https://api.tensorx.ai/v1",
+    "npm": "@ai-sdk/openai-compatible",
+    "env": ["TENSORX_API_KEY"],
+    "models": {
+      "deepseek/deepseek-v4-pro": {
+        "name": "DeepSeek V4 Pro",
+        "tool_call": true,
+        "reasoning": true,
+        "limit": {"context": 1002000, "output": 128000},
+        "cost": {"input": 1.74, "output": 3.48}
+      },
+      "qwen/qwen3-coder-30b-a3b-instruct": {
+        "name": "Qwen3-Coder 30B-A3B Instruct",
+        "tool_call": true,
+        "reasoning": false,
+        "limit": {"context": 131072, "output": 131072}
+      }
+    }
+  }
+}`
+
 func resetRuntimeCatalog(t *testing.T) {
 	t.Helper()
 	runtime.mu.Lock()
@@ -189,4 +229,76 @@ func TestRuntimeCatalog_RefreshPopulatesFromFetcher(t *testing.T) {
 	if m := GetRuntimeModel(provider.ProviderZai, "glm-5.2"); m == nil {
 		t.Error("catalog not populated after refresh")
 	}
+}
+
+// TestParseModelsDev_UnmappedProviderFallback verifies that providers on
+// models.dev without a hand-curated ProviderDef mapping (e.g. tensorx) are
+// NOT silently dropped. The fallback must synthesize a mapping from the
+// provider-level metadata (api URL, npm protocol) so the models appear in
+// the runtime catalog under a provider identity matching the models.dev key.
+func TestParseModelsDev_UnmappedProviderFallback(t *testing.T) {
+	cat, err := parseModelsDev([]byte(modelsDevUnmappedFixture))
+	if err != nil {
+		t.Fatalf("parseModelsDev: %v", err)
+	}
+
+	// Mapped provider still works.
+	if findInCatalog(cat, provider.ProviderZaiApi, "glm-5.2") == nil {
+		t.Error("zai-api glm-5.2 missing — mapped provider broken by fallback")
+	}
+
+	// Unmapped provider tensorx must have its models in the catalog.
+	tensorxProv := provider.Provider("tensorx")
+	models := cat.byProv[tensorxProv]
+	if len(models) != 2 {
+		t.Fatalf("tensorx models = %d, want 2 (got: %v)", len(models), modelIDs(models))
+	}
+
+	deepseek := findInCatalog(cat, tensorxProv, "deepseek/deepseek-v4-pro")
+	if deepseek == nil {
+		t.Fatal("tensorx deepseek/deepseek-v4-pro missing from catalog")
+	}
+	if deepseek.Provider != tensorxProv {
+		t.Errorf("deepseek Provider = %q, want %q", deepseek.Provider, tensorxProv)
+	}
+	if deepseek.BaseURL != "https://api.tensorx.ai/v1" {
+		t.Errorf("deepseek BaseURL = %q, want https://api.tensorx.ai/v1", deepseek.BaseURL)
+	}
+	if deepseek.Api != provider.ApiOpenAICompletions {
+		t.Errorf("deepseek Api = %q, want openai-completions", deepseek.Api)
+	}
+	if !deepseek.Reasoning {
+		t.Error("deepseek Reasoning = false, want true")
+	}
+	if deepseek.ContextWindow != 1002000 {
+		t.Errorf("deepseek ContextWindow = %d, want 1002000", deepseek.ContextWindow)
+	}
+
+	// Non-reasoning model also present.
+	qwen := findInCatalog(cat, tensorxProv, "qwen/qwen3-coder-30b-a3b-instruct")
+	if qwen == nil {
+		t.Fatal("tensorx qwen/qwen3-coder-30b-a3b-instruct missing from catalog")
+	}
+
+	// Global ID index also has the models (first-wins).
+	if findGlobal(cat, "deepseek/deepseek-v4-pro") == nil {
+		t.Error("deepseek/deepseek-v4-pro not in global ID index")
+	}
+}
+
+func modelIDs(ms []provider.Model) []string {
+	ids := make([]string, len(ms))
+	for i, m := range ms {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+func findGlobal(cat *runtimeCatalog, id string) *provider.Model {
+	m, ok := cat.models[id]
+	if !ok {
+		return nil
+	}
+	cp := m
+	return &cp
 }
