@@ -398,14 +398,10 @@ func runSkillSubAgent(ctx core.Context, reg core.SkillRegistry, skill *skills.Sk
 	return nil
 }
 
+// runSkillInline executes a skill in the main agent: the skill body is
+// framed as active instructions and submitted as a user message. Skill bodies
+// are never injected into the system prompt.
 func runSkillInline(ctx core.Context, skill *skills.Skill, task string, submitFunc func(string), name string) error {
-	if !conversationStarted(ctx) && shouldLoadIntoSystemPrompt(skill, ctx.Config) {
-		current := ctx.CurrentMode()
-		ctx.SetMode(current.AddSkill(name))
-		writeFmt(ctx, "Skill '%s' loaded into system prompt.\n", name)
-		return nil
-	}
-
 	var sb strings.Builder
 	// Strip SPDX/comment noise and the bare "[Skill:]" marker (Issue B), and
 	// frame the body as active instructions to execute — not documentation to
@@ -425,33 +421,6 @@ func runSkillInline(ctx core.Context, skill *skills.Skill, task string, submitFu
 		writeStr(ctx, sb.String())
 	}
 	return nil
-}
-
-// shouldLoadIntoSystemPrompt returns true for skills that should be injected
-// into the system prompt before the conversation starts. Action-category
-// skills are executed on demand as user messages, so they are never loaded
-// into the system prompt. Knowledge or explicitly inline skills are loaded
-// when the global config skills.execution_mode is inline (or the skill has
-// inline: true).
-func shouldLoadIntoSystemPrompt(skill *skills.Skill, cfg *config.Config) bool {
-	// Explicit inline flag always wins.
-	if skill.Meta.Inline {
-		return true
-	}
-	// Action-category skills (the default) are executed on demand as user
-	// messages, so they are never loaded into the system prompt.
-	cat := skill.Meta.Category
-	if cat == "" {
-		cat = skills.SkillCategoryAction
-	}
-	if cat == skills.SkillCategoryAction {
-		return false
-	}
-	// Knowledge/category-less skills respect the global config fallback.
-	if cfg != nil && cfg.Skills.ExecutionMode == config.AgenticSkillModeInline {
-		return true
-	}
-	return false
 }
 
 func skillTypeLabel(skill *skills.Skill) string {
@@ -495,17 +464,6 @@ func showSkill(w core.OutputWriter, reg core.SkillRegistry, args []string) error
 	}
 	writeFmt(w, "Skill '%s' details require SkillRegistry\n", args[0])
 	return nil
-}
-
-// conversationStarted reports whether the user has already submitted at least
-// one message in the current session. It is used by inline-skill loading to
-// decide whether to add the skill to the system prompt (pre-conversation) or
-// submit it as a user message (mid-conversation).
-func conversationStarted(ctx core.Context) bool {
-	if ctx.AgentManager == nil {
-		return false
-	}
-	return ctx.AgentManager.LastUserInput() != ""
 }
 
 // SkillShortcutCommand is a command dynamically registered for a skill that

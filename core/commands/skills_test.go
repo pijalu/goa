@@ -203,7 +203,10 @@ func TestRunSkill_InlineNoSubmitFunc(t *testing.T) {
 	}
 }
 
-func TestRunSkill_Inline_BeforeConversation_LoadsIntoSystemPrompt(t *testing.T) {
+// Inline/knowledge skills run before the conversation starts must also use
+// the normal execution path — the framed body is submitted as a user message —
+// never injected into the system prompt via the mode skill stack.
+func TestRunSkill_Inline_BeforeConversation_SubmitsAsUserMessage(t *testing.T) {
 	var buf strings.Builder
 	var submitted string
 	submitFunc := func(s string) { submitted = s }
@@ -216,22 +219,23 @@ func TestRunSkill_Inline_BeforeConversation_LoadsIntoSystemPrompt(t *testing.T) 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if submitted != "" {
-		t.Errorf("submitFunc should not be called before conversation starts, got: %s", submitted)
+	if submitted == "" {
+		t.Fatal("expected inline skill to be submitted as user message before conversation")
 	}
-	if !strings.Contains(buf.String(), "loaded into system prompt") {
-		t.Errorf("expected load message, got: %s", buf.String())
+	if !strings.Contains(submitted, `skill "telegram" is now active`) {
+		t.Errorf("expected active-skill framing in submission, got: %s", submitted)
+	}
+	if !strings.Contains(submitted, "Skill body for telegram") {
+		t.Errorf("expected full skill body in submission, got: %s", submitted)
+	}
+	if strings.Contains(buf.String(), "loaded into system prompt") {
+		t.Errorf("skill must NOT be loaded into system prompt, got: %s", buf.String())
 	}
 	current := ctx.AgentManager.CurrentMode()
-	found := false
 	for _, s := range current.Skills {
 		if s == "telegram" {
-			found = true
-			break
+			t.Errorf("skill must NOT be added to mode skills, got %v", current.Skills)
 		}
-	}
-	if !found {
-		t.Errorf("expected 'telegram' in mode skills, got %v", current.Skills)
 	}
 }
 

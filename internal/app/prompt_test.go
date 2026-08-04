@@ -195,7 +195,11 @@ func TestBuildMemorySectionRespectsBudget(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_IncludesActiveSkillListings(t *testing.T) {
+// Regression: skill bodies and skill-stack listings must never be injected
+// into the system prompt — skills execute via run_skill or /skill:run, which
+// submits the body as a user message. Even with a populated mode skill stack
+// and a loaded registry, no <active_skills> section may appear.
+func TestBuildSystemPrompt_NeverInjectsActiveSkills(t *testing.T) {
 	dir := t.TempDir()
 	skillsDir := filepath.Join(dir, ".goa", "skills")
 	skillRoot := filepath.Join(skillsDir, "telegram")
@@ -226,18 +230,16 @@ func TestBuildSystemPrompt_IncludesActiveSkillListings(t *testing.T) {
 	subs.skillRegistry = skillReg
 
 	got := buildSystemPrompt(subs)
-	if !strings.Contains(got, "<active_skills>") {
-		t.Errorf("missing <active_skills> section:\n%s", got)
+	if strings.Contains(got, "<active_skills>") {
+		t.Errorf("<active_skills> must never be injected into the system prompt:\n%s", got)
 	}
-	if !strings.Contains(got, "telegram") {
-		t.Errorf("missing active skill name:\n%s", got)
-	}
-	if strings.Contains(got, "<skill name=\"telegram\">") {
-		t.Errorf("active skill should not be inlined as a full body:\n%s", got)
+	if strings.Contains(got, "Use telegraphic style for all thinking and reasoning.") &&
+		!strings.Contains(got, "<available_skills>") {
+		t.Errorf("skill body must not be inlined into the system prompt:\n%s", got)
 	}
 }
 
-func TestBuildActiveSkillsSection_NoSkills(t *testing.T) {
+func TestBuildSystemPrompt_NoActiveSkillsSectionWithoutSkills(t *testing.T) {
 	subs := newTestSubsystems(t.TempDir())
 	if got := buildSystemPrompt(subs); strings.Contains(got, "<active_skills>") {
 		t.Errorf("<active_skills> should be omitted when no skills are active:\n%s", got)

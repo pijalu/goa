@@ -26,11 +26,13 @@ import (
 //  1. Mode system prompt (coder/planner/reviewer)
 //  2. AGENTS.md context files (wrapped in <project_context>)
 //  3. Long-term memory summaries (wrapped in <memory>)
-//  4. Active skill listings from the current mode's skill stack (name,
-//     description, location — not the full body)
-//  5. Available skills listing (wrapped in <available_skills>)
-//  6. Self-documentation links (goa:// references for the LLM)
-//  7. Agent-driven prompts (if enabled, added by agentmanager)
+//  4. Available skills listing (wrapped in <available_skills>)
+//  5. Self-documentation links (goa:// references for the LLM)
+//  6. Agent-driven prompts (if enabled, added by agentmanager)
+//
+// Skill bodies are never injected into the system prompt: skills run through
+// the normal execution behavior (run_skill tool, or the skill body submitted
+// as a user message by /skill:run).
 //
 // The assembled prompt is bounded by a context-window-aware budget. Low-priority
 // sections are dropped or truncated first so the prompt stays within a safe
@@ -58,31 +60,23 @@ func buildSystemPrompt(subs *subsystems) string {
 		parts = append(parts, renderContextFiles(subs.contextFiles))
 	}
 
-	// 3. Active skill listings from the current mode's skill stack.
-	// The full skill body is not inlined; the agent loads a skill via the read
-	// tool when the task matches it. This follows the pi approach and keeps the
-	// initial prompt small.
-	if activeSkills := buildActiveSkillsSection(subs, budget); activeSkills != "" {
-		parts = append(parts, activeSkills)
-	}
-
-	// 4. Long-term memory summaries — lower priority than active skills
-	// because memories can be read on demand.
+	// 3. Long-term memory summaries — low priority because memories can be
+	// read on demand.
 	if memSection := buildMemorySection(subs); memSection != "" {
 		parts = append(parts, memSection)
 	}
 
-	// 5. Available skills (all skills listed regardless of inline vs sub-agent)
+	// 4. Available skills (all skills listed regardless of inline vs sub-agent)
 	if rendered := availableSkillsSection(subs); rendered != "" {
 		parts = append(parts, rendered)
 	}
 
-	// 6. Self-documentation links (single source of truth — generated from embedded docs)
+	// 5. Self-documentation links (single source of truth — generated from embedded docs)
 	if selfDoc := buildSelfDocSection(); selfDoc != "" {
 		parts = append(parts, selfDoc)
 	}
 
-	// 7. MCP server instructions — how to use each connected MCP server's
+	// 6. MCP server instructions — how to use each connected MCP server's
 	// tools (from the server handshake), mirroring OpenCode's
 	// <mcp_instructions> block.
 	if mcpSection := buildMCPInstructionsSection(subs); mcpSection != "" {
@@ -166,8 +160,8 @@ func systemPromptBudget(ctxWindow int) int {
 	// message, and the assistant response consume the rest of the context.
 	switch {
 	case ctxWindow <= 8192:
-		// 8k context: keep the mode prompt, project context, and a compact
-		// active-skills list; drop available skills, self-doc, and excess memory.
+		// 8k context: keep the mode prompt and project context; drop available
+		// skills, self-doc, and excess memory.
 		return 6000
 	case ctxWindow <= 16384:
 		return 9000
@@ -535,63 +529,6 @@ func filterToolsForCurrentMode(subs *subsystems, allTools []agentic.Tool) []agen
 		}
 	}
 	return filtered
-}
-
-// buildActiveSkillsSection lists the skills loaded into the current mode's
-// skill stack in compact form: name and file location.
-// The full skill body is not inlined in the system prompt; the agent loads a
-// skill with the read tool when the task matches it. This follows the pi
-// approach and keeps the initial prompt as short as possible.
-func buildActiveSkillsSection(subs *subsystems, budget int) string {
-	if subs.agentMgr == nil || subs.skillRegistry == nil {
-		return ""
-	}
-	mode := subs.agentMgr.CurrentMode()
-	if len(mode.Skills) == 0 {
-		return ""
-	}
-
-	type item struct {
-		name     string
-		location string
-	}
-	var items []item
-	for _, name := range mode.Skills {
-		skill, ok := subs.skillRegistry.Get(name)
-		if !ok {
-			continue
-		}
-		items = append(items, item{
-			name:     escapeXML(skill.Meta.Name),
-			location: escapeXML(skill.FilePath),
-		})
-	}
-	if len(items) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString("<active_skills>\n")
-	b.WriteString("Active skills: ")
-	for i, it := range items {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%s (%s)", it.name, it.location)
-	}
-	b.WriteString("\n</active_skills>")
-	return b.String()
-}
-
-// escapeXML escapes special XML characters so rendered skill metadata is safe
-// for inclusion in the system prompt.
-func escapeXML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&apos;")
-	return s
 }
 
 // buildMemorySection constructs a <memory> block from memory file summaries.

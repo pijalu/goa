@@ -8,8 +8,10 @@ Copyright (C) 2026 Pierre Poissinger
 
 Skills are reusable prompt templates that extend Goa's capabilities. They are defined as plain Markdown files with YAML frontmatter. Each skill has two orthogonal dimensions:
 
-- **Execution mode** — `inline` (injected into the system prompt) or `sub-agent` (executed as a separate agent via `run_skill`)
-- **Category** — `knowledge` (provides rules/instructions injected into the system prompt) or `action` (performs a task when invoked)
+- **Execution mode** — `inline` (executed by the main agent, body submitted as a user message) or `sub-agent` (executed as a separate agent via `run_skill`)
+- **Category** — `knowledge` (provides rules/instructions for the main agent) or `action` (performs a task when invoked)
+
+Skill bodies are never injected into the system prompt; skills always run through the normal execution behavior (`run_skill` tool or `/skill:run`, which submits the body as a user message).
 
 ## Skill Architecture
 
@@ -32,13 +34,13 @@ Skills are reusable prompt templates that extend Goa's capabilities. They are de
         ▼
 ┌────────────────┐     ┌───────────────────────┐
 │  Inline Skill  │     │  Sub-agent Skill      │
-│  (in system    │     │  (via run_skill tool) │
-│   prompt)      │     │                       │
+│  (main agent,  │     │  (via run_skill tool) │
+│   user message)│     │                       │
 │                │     │  ┌────────────────┐   │
-│  System prompt │     │  │  Sub-agent     │   │
-│  + skill body  │     │  │  Agentic Agent │   │
-│  → LLM sees it │     │  │  with tools:   │   │
-│  as context    │     │  │  read     │        │
+│  Skill body    │     │  │  Sub-agent     │   │
+│  → user msg    │     │  │  Agentic Agent │   │
+│  → LLM executes│     │  │  with tools:   │   │
+│  as instruct.  │     │  │  read     │        │
 │                │     │  │  edit     │        │
 │                │     │  │  run_command   │   │
 │                │     │  │  rest_api      │   │
@@ -74,16 +76,16 @@ Full Markdown body with step-by-step instructions.
 | Category | Behavior | Example |
 |----------|----------|---------|
 | `action` (default) | Skill must be explicitly invoked via `/skill:run:<name>` or the `run_skill` tool. Listed in `<available_skills>` but body is not auto-injected. | `golang-check`, `refactor` |
-| `knowledge` | Skill body is automatically injected into the system prompt when the skill is enabled. Provides rules, style guides, or context the LLM should always follow. | `telegram` |
+| `knowledge` | Provides rules, style guides, or context the LLM should always follow. When activated via `/skill:run`, the body is submitted to the agent as a user message (never injected into the system prompt). | `telegram` |
 
 ### Execution Modes
 
 | Mode | Description |
 |------|-------------|
-| `inline` | Skill body is injected into the system prompt or submitted as a user message. No sub-agent is spawned. |
+| `inline` | Skill body is submitted to the main agent as a user message. No sub-agent is spawned. |
 | `sub-agent` | Skill is executed by spawning an isolated sub-agent via AgentPool. The skill body becomes the sub-agent's system prompt. |
 
-A `knowledge` skill is typically also `inline: true` (its body goes into the system prompt). An `action` skill is typically `sub-agent` (runs in isolation) but can be `inline` if the instructions are simple enough for the main agent to follow directly.
+A `knowledge` skill is typically also `inline: true` (its body is submitted as a user message when activated). An `action` skill is typically `sub-agent` (runs in isolation) but can be `inline` if the instructions are simple enough for the main agent to follow directly.
 
 ### Where Skills Live
 
@@ -121,7 +123,7 @@ summaries := registry.List()  // []SkillSummary
 
 // Check if a skill is inline
 if registry.IsInline("explain") {
-    // inject into system prompt
+    // runs in the main agent (body submitted as a user message)
 }
 ```
 
@@ -138,9 +140,10 @@ The skill body stays **on disk** — it is never injected into the context
 window unless the LLM explicitly reads it. This is token-efficient and
 follows the inline skill approach used by Pi and other coding agents.
 
-Knowledge-category skills that are activated (via mode or `/skill:run`) get
-their body injected into the system prompt automatically through the
-`InlineSkillInjector`.
+Knowledge-category skills that are activated (via `/skill:run` or the
+`run_skill` tool) get their body submitted to the agent as a regular user
+message — the same normal execution path as action skills. Skill bodies are
+never injected into the system prompt.
 
 ```
 <available_skills>
