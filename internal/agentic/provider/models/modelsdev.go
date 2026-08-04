@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -201,6 +202,54 @@ func GetRuntimeModels(providerName provider.Provider) []provider.Model {
 	}
 	out := make([]provider.Model, len(runtime.cat.byProv[providerName]))
 	copy(out, runtime.cat.byProv[providerName])
+	return out
+}
+
+// ModelsDevProvider describes one models.dev catalog provider as imported by
+// Goa: the models.dev key, the Goa provider identity it maps to (the curated
+// catalog identity for mapped providers, the key itself for the fallback),
+// and the tool-calling model IDs that provider serves.
+type ModelsDevProvider struct {
+	Key      string
+	Identity provider.Provider
+	ModelIDs []string
+}
+
+// ModelsDevProviders returns the canonical enumeration of "all providers from
+// models.dev" that Goa imports, derived from the embedded api.json: every
+// provider key serving at least one tool-calling model, with its Goa identity
+// and tool-calling model IDs. Sorted by key for deterministic tests. Tests and
+// tooling use it to assert coverage without re-parsing api.json.
+func ModelsDevProviders() []ModelsDevProvider {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(embeddedAPIJSON, &top); err != nil {
+		return nil
+	}
+	out := make([]ModelsDevProvider, 0, len(top))
+	for key, raw := range top {
+		var prov struct {
+			Models map[string]modelsDevModel `json:"models"`
+		}
+		if err := json.Unmarshal(raw, &prov); err != nil {
+			continue
+		}
+		var ids []string
+		for id, m := range prov.Models {
+			if m.ToolCall != nil && *m.ToolCall {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		identity := provider.Provider(key)
+		if mapping, ok := modelsDevProviderMappings[key]; ok {
+			identity = mapping.Provider
+		}
+		sort.Strings(ids)
+		out = append(out, ModelsDevProvider{Key: key, Identity: identity, ModelIDs: ids})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
 }
 

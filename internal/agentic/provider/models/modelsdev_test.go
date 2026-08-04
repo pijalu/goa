@@ -5,8 +5,11 @@
 package models
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -292,6 +295,74 @@ func modelIDs(ms []provider.Model) []string {
 		ids[i] = m.ID
 	}
 	return ids
+}
+
+// TestModelsDevProviders_CoversEveryToolCallingProvider verifies that the
+// canonical "all providers from models.dev" enumeration (ModelsDevProviders)
+// matches the raw embedded api.json: every provider key serving at least one
+// tool-calling model must be present with exactly that provider's tool-calling
+// model IDs, and providers with no tool-calling model must be excluded. This
+// pins the coverage claim used by the filmstrip validation (all models.dev
+// providers visible in the TUI).
+func TestModelsDevProviders_CoversEveryToolCallingProvider(t *testing.T) {
+	var top map[string]struct {
+		Models map[string]modelsDevModel `json:"models"`
+	}
+	if err := json.Unmarshal(embeddedAPIJSON, &top); err != nil {
+		t.Fatalf("embedded api.json decode: %v", err)
+	}
+
+	want := map[string][]string{}
+	for key, prov := range top {
+		var ids []string
+		for id, m := range prov.Models {
+			if m.ToolCall != nil && *m.ToolCall {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			sort.Strings(ids)
+			want[key] = ids
+		}
+	}
+
+	got := ModelsDevProviders()
+	if len(got) == 0 {
+		t.Fatal("ModelsDevProviders returned no providers")
+	}
+	if len(got) != len(want) {
+		t.Errorf("ModelsDevProviders = %d providers, raw api.json has %d tool-calling providers", len(got), len(want))
+	}
+	gotSet := map[string]ModelsDevProvider{}
+	for _, p := range got {
+		gotSet[p.Key] = p
+	}
+	for key, wantIDs := range want {
+		p, ok := gotSet[key]
+		if !ok {
+			t.Errorf("provider %q missing from ModelsDevProviders", key)
+			continue
+		}
+		if p.Identity == "" {
+			t.Errorf("provider %q has empty Identity", key)
+		}
+		if !slices.Equal(p.ModelIDs, wantIDs) {
+			t.Errorf("provider %q ModelIDs = %v, want %v", key, p.ModelIDs, wantIDs)
+		}
+	}
+	if len(got) == len(want) {
+		for _, p := range got {
+			if _, ok := want[p.Key]; !ok {
+				t.Errorf("provider %q listed but has no tool-calling model in api.json", p.Key)
+			}
+		}
+	}
+	// Sorted, stable order (assertion determinism).
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Key >= got[i].Key {
+			t.Fatalf("ModelsDevProviders not sorted by key at %d: %q >= %q", i, got[i-1].Key, got[i].Key)
+		}
+	}
 }
 
 func findGlobal(cat *runtimeCatalog, id string) *provider.Model {

@@ -174,6 +174,21 @@ never sees it in the model picker or `/config`.
  entries with correct provider identity, BaseURL, API type, and model
  metadata. Verified with the real models.dev cache: all 25 TensorX
  models now visible under `provider.Provider("tensorx")`.
+- **Filmstrip validation**: `internal/app/modelsdev_providers_filmstrip_test.go`
+ proves "all providers from models.dev are visible in the TUI":
+ - `TestModelsDev_AllProvidersReachableInPickerData` iterates every
+   models.dev provider in the embedded api.json (via the new
+   `models.ModelsDevProviders()` enumeration) and asserts
+   `ProviderManager.ListRegistryModels` surfaces each provider's
+   tool-calling models — the data source the `/model:add` picker reads.
+ - `TestModelsDev_ProviderPickerShowsModelsDevProviders_Filmstrip` drives
+   the real `/model:add` command and filmstrip-captures the provider
+   picker, proving the models.dev-configured providers are selectable rows.
+ - `TestModelsDev_ModelsVisibleInTUIPicker_Filmstrip` renders the exact
+   item set `ListRegistryModels` feeds the model picker through the real
+   TUI Selector for a mapped provider (zai), an unmapped-fallback
+   provider (tensorx), and deepseek, then asserts from the scrolled
+   filmstrip that every models.dev model ID for that provider is visible.
 - **Validation**: `go vet`, `staticcheck`, `gocognit`, `gocyclo`, and
  `go test -count=1 -race -cover` all pass for affected packages; no
  existing tests broken.
