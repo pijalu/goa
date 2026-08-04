@@ -76,7 +76,111 @@ If new items are added, restart the process.
   3. Tests (table-driven, RED first): strategies block survives a
      home+project cascade; micro keys merge field-wise across layers;
      `enabled: false` in home disables compression; `Save`-replacement
-     flows do not restate unrelated sections in the home file.
-  4. Validate with the guideline-6 checks run separately; verify the
-     /config compression display interactively per guideline 5 after a
-     round-trip through each flow.
+     4. Validate with the guideline-6 checks run separately; verify the
+        /config compression display interactively per guideline 5 after a
+        round-trip through each flow.
+
+---
+
+## No CLI way to relocate `~/.goa` (blocks isolated first-run testing) — OPEN
+
+There is no way to point goa at a non-default home directory to test or
+isolate a first run without disturbing the real `~/.goa`. (Bug A — the
+wizard black screen — was fixed and archived to
+`docs/archive/bugs.2026-08-04.md`.)
+
+- **Symptom**: There is no `--home` flag (nor a `GOA_HOME` env override)
+  to point goa at a home directory other than the OS user home. The only
+  file-path override is `--config`, which sets an explicit *config file*
+  (`configPath`), not the home root, so it does not relocate the cache,
+  crash log, usage stats, or first-run detection. `GOA_HOME` appears in
+  the codebase **only** as a string captured into log-export bundles
+  (`internal/logs/export/bundle.go:289`) — it is never *read* as a home
+  override. This makes reproducing/verifying any first-run change require
+  juggling `HOME=`, which is fragile and also moves every other dotdir.
+- **Root cause**: `NewCascadeLoader` (`config/loader.go:91-99`) hardcodes
+  `homeDir, _ := os.UserHomeDir()` with no parameter or override; the
+  home dir is then used to build `~/.goa/config.yaml` (first-run
+  detection at `config/loader.go:165-168`, `loadHomeConfig` at
+  `config/loader.go:172-180`) and `ConfigDir`.
+- **Scope**: `os.UserHomeDir()` is called directly (non-test) in 14
+  places, each then hardcoding the `.goa` (or `.agents`) subdirectory. A
+  `--home` flag must override **all** of them for consistency, otherwise
+  config/cache/logs/usage split across two roots:
+
+  | File | Use |
+  |------|-----|
+  | `config/loader.go:92` | config load + first-run detection (`CascadeLoader.homeDir`) |
+  | `config/config.go:1283` | config path resolution |
+  | `config/defaults.go:41` | default skill dirs (`~/.agents/skills`) |
+  | `internal/app/app.go:409` | models.dev cache (`~/.goa/cache`) |
+  | `internal/app/crash_log.go:73` | crash log path |
+  | `internal/usage/usage.go:90` | usage stats |
+  | `internal/agentic/provider/schema/loader.go:73` | provider schema cache |
+  | `internal/spinner/spinner.go:95` | spinner state |
+  | `internal/logs/export/bundle.go:344` | log export |
+  | `internal/sandbox/manager.go:48` | sandbox home |
+  | `tools/renderer_common.go:130` | tool rendering (path display) |
+  | `tools/memento.go:125` | memento store |
+  | `tools/common/search_priority.go:57` | search priority |
+  | `tools/readfile.go:226` | readfile (path display) |
+- **Plan**:
+  1. Introduce a single resolution point for the goa home dir: a
+     `--home` flag (priority front of the cascade: flag → `GOA_HOME` env
+     → `os.UserHomeDir()`), threaded into `NewCascadeLoader` and exposed
+     to the subsystems/tools that currently call `os.UserHomeDir()`
+     directly. Prefer a shared helper (e.g. `config.GoaHome()`) over
+     touching all 14 sites ad hoc, so future callers use one source.
+  2. Test approach: table-driven tests asserting that `--home`/`GOA_HOME`
+     relocates config load, first-run detection, and the cache path;
+     a first-run under a temp `--home` launches the wizard from that
+     root.
+  3. Validate per guideline 5 (`--home /tmp/x goa` on a clean root shows
+    the wizard and writes nothing to the real `~/.goa`) and guideline 6.
+
+---
+
+## All providers + models from models.dev should be present — OPEN
+
+Only providers that already have a hand-curated `ProviderDef` with a
+`ModelsDevKey` in the catalog (`schema.ProviderCatalog()`) are processed
+from the models.dev runtime catalog (`modelsDevProviderMappings` in
+`internal/agentic/provider/models/modelsdev.go`). Any provider that exists
+on models.dev but lacks a catalog entry is **silently dropped** — the user
+never sees it in the model picker or `/config`.
+
+- **Symptom**: The models.dev catalog (`https://models.dev/api.json`)
+ lists many providers (e.g. Together AI, Groq, Fireworks, Perplexity,
+ AI21, Cohere, NVIDIA NIM, etc.). Goa only surfaces a subset (those with
+ existing `ProviderDef` entries). Models from unmapped providers are
+ invisible to the user even though the data is fetched and cached.
+- **Root cause**: `buildModelsDevMappings()` iterates `ProviderCatalog()`
+ and only emits a mapping for entries where `ModelsDevKey != ""`. The
+ runtime parser (`parseModelsDev`) then skips any models.dev provider key
+ not present in `modelsDevProviderMappings`. There is no fallback path
+ that creates provider entries on the fly from models.dev data.
+- **Relevant code**:
+ - `internal/agentic/provider/models/modelsdev.go`:
+   `modelsDevProviderMappings`, `buildModelsDevMappings`,
+   `parseModelsDev`, `convertModelsDevModel`
+ - `internal/agentic/provider/schema/catalog.go`:
+   `providerCatalog` (the gated list of providers with `ModelsDevKey`)
+ - `cmd/genmodels/main.go`: build-time generator uses the same gated
+   `supportedProviders` list
+- **Plan**:
+ 1. Add a fallback in the runtime parser: when a models.dev provider key
+    has no explicit `ProviderDef` mapping, synthesize one using the
+    models.dev metadata (provider name, base URL from the first model's
+    endpoint, OpenAI-compatible API by default, auto-derived Goa
+    provider/identity). This makes every models.dev provider visible
+    without requiring a manual catalog entry for each.
+ 2. For providers that need special wire-level behavior (non-standard
+    API, thinking format, etc.), the existing hand-curated `ProviderDef`
+    with `ModelsDevKey` + `Compat` overrides still takes priority — the
+    fallback only fills gaps for providers Goa knows nothing about.
+ 3. Test approach: table-driven tests asserting that a models.dev fixture
+    with an unmapped provider produces runtime model entries with
+    correct derived identity and base URL; existing mapped providers are
+    unaffected.
+ 4. Validate per guideline 5 (pick a model from a previously-missing
+    provider in `/config` or the model picker) and guideline 6.
