@@ -20,8 +20,9 @@ import (
 
 // modelsdev.go — runtime models.dev catalog with on-disk cache.
 //
-// The built-in registry (modelDefs + models_generated.go) is the always-
-// available floor. On top of it, Goa keeps a runtime catalog fetched from
+// The embedded api.json snapshot (go:embed api.json in overrides.go) is the
+// always-available floor. On top of it, Goa keeps a runtime catalog fetched
+// from
 // https://models.dev/api.json and cached at ~/.goa/cache/models.dev.json:
 //
 //   - First use within a session returns whatever is already loaded
@@ -32,12 +33,12 @@ import (
 //   - When models.dev is unreachable, the previous catalog (or embedded
 //     data) keeps serving — the runtime layer never breaks model lookup.
 //
-// models.dev ids → Goa models via providerMappings (shared with the
-// cmd/genmodels build-time generator semantics: per-million-token costs are
-// converted to per-token rates).
+// models.dev ids → Goa models via providerMappings (shared semantics with
+// the embedded catalog parser: per-million-token costs are converted to
+// per-token rates).
 
 const (
-	// ModelsDevURL is the canonical catalog endpoint (same as genmodels).
+	// ModelsDevURL is the canonical catalog endpoint.
 	ModelsDevURL = "https://models.dev/api.json"
 	// cacheTTL is how long the on-disk cache is considered fresh.
 	cacheTTL = 24 * time.Hour
@@ -53,14 +54,10 @@ type modelsDevProviderMapping struct {
 	BaseURL  string
 }
 
-// modelsDevProviderMappings mirrors cmd/genmodels supportedProviders. The
-// two are kept in sync manually: adding a provider there means adding it
-// here (same identities), so the runtime catalog matches the build-time
-// embedded catalog.
-//
-// Derived from the provider catalog: any catalog entry with a ModelsDevKey
-// produces a mapping from that key to its identity and base URL. Catalog
-// entries override the API to the models.dev wire protocol where the
+// modelsDevProviderMappings defines the hand-curated provider identity
+// mappings. Derived from the provider catalog: any catalog entry with a
+// ModelsDevKey produces a mapping from that key to its identity and base URL.
+// Catalog entries override the API to the models.dev wire protocol where the
 // catalog's default differs (models.dev lists each provider's primary API).
 var modelsDevProviderMappings = buildModelsDevMappings()
 
@@ -262,7 +259,7 @@ func writeCatalogCache(cacheDir string, raw []byte) error {
 }
 
 // ---------------------------------------------------------------------------
-// Parsing (shared semantics with cmd/genmodels)
+// Parsing (shared by embedded api.json and runtime catalog)
 // ---------------------------------------------------------------------------
 
 // modelsDevProviderInfo captures the provider-level metadata that models.dev
