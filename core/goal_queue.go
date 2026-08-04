@@ -124,6 +124,12 @@ func (s *GoalQueueStore) insertGoal(input goal.UpcomingGoalInput, front bool) ([
 	if err != nil {
 		return nil, err
 	}
+	// Entry-point validation: reject an oversized objective NOW, while the
+	// author can act on the hint — never later at promotion/resume time
+	// (there must never be a stored goal that is "too big" to run).
+	if err := goal.ValidateObjective(input.Objective); err != nil {
+		return nil, err
+	}
 	handoff, err := goal.NormalizeHandover(input.Handoff)
 	if err != nil {
 		return nil, err

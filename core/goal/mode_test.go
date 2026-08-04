@@ -5,6 +5,7 @@
 package goal
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -504,5 +505,65 @@ func TestRequireStateNoPanic(t *testing.T) {
 				t.Fatalf("expected error when no goal is active")
 			}
 		})
+	}
+}
+
+// TestValidateObjective covers the creation-entry length gate: boundary
+// values, the markdown-pointer hint, and the rune-vs-byte measurement —
+// a pasted TUI transcript (2275 runes but 4491 BYTES of box-drawing) must
+// be measured in characters, matching the error message's wording.
+func TestValidateObjective(t *testing.T) {
+	boxObjective := strings.Repeat("─", 2275) // 2275 runes, 6825 bytes
+	if got := len(boxObjective); got <= MaxObjectiveLength {
+		t.Fatalf("test setup: box objective must exceed the byte cap (%d bytes)", got)
+	}
+
+	cases := []struct {
+		name      string
+		objective string
+		wantErr   bool
+	}{
+		{"empty passes (length-only validator)", "", false},
+		{"short objective", "fix the bug", false},
+		{"exactly at limit", strings.Repeat("a", MaxObjectiveLength), false},
+		{"one over limit", strings.Repeat("a", MaxObjectiveLength+1), true},
+		{"multibyte runes counted as characters", boxObjective, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateObjective(tc.objective)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected rejection, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected rejection: %v", err)
+			}
+			if tc.wantErr {
+				if !strings.Contains(err.Error(), "markdown") {
+					t.Errorf("rejection must hint at the markdown-document workaround: %v", err)
+				}
+				if !strings.Contains(err.Error(), "4000") {
+					t.Errorf("rejection must state the limit: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestCreateGoalAcceptsOversizedObjective is the no-dead-end guarantee:
+// GoalMode.CreateGoal is the shared internal path for resume, queue
+// promotion, and auto-unblock — it must NEVER reject a stored objective
+// for length, or a goal that predates/bypasses entry validation becomes
+// unstartable (the /goal:resume "objective cannot exceed 4000" zombie).
+func TestCreateGoalAcceptsOversizedObjective(t *testing.T) {
+	st := &testStore{}
+	mode := NewGoalMode(st, nil, nil, nil)
+	big := strings.Repeat("x", MaxObjectiveLength+1000)
+	snap, err := mode.CreateGoal(CreateGoalInput{Objective: big}, GoalActorUser)
+	if err != nil {
+		t.Fatalf("CreateGoal must not length-reject a stored objective: %v", err)
+	}
+	if snap.Objective != big {
+		t.Errorf("objective len = %d, want %d", len(snap.Objective), len(big))
 	}
 }

@@ -1078,3 +1078,27 @@ func TestGoalTool_PromoteCarriesHandover(t *testing.T) {
 		t.Errorf("demoted goal must keep its handover: %+v", read)
 	}
 }
+
+// TestGoalTool_CreateRejectsOversizedObjective: the tool's create is a
+// creation entry point — an oversized objective must be rejected with the
+// markdown-pointer hint so the model restructures (write doc, point at it)
+// instead of producing a stored goal that resume later refuses to start.
+func TestGoalTool_CreateRejectsOversizedObjective(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	oversized := strings.Repeat("a", goal.MaxObjectiveLength+1)
+
+	_, err := tool.Execute(`{"action":"create","objective":"` + oversized + `"}`)
+	if err == nil {
+		t.Fatal("expected rejection for oversized objective")
+	}
+	if !strings.Contains(err.Error(), "objective_too_long") {
+		t.Errorf("error type should be objective_too_long: %v", err)
+	}
+	if !strings.Contains(err.Error(), "markdown") {
+		t.Errorf("rejection must hint at the markdown-document workaround: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("rejected create must not leave a goal behind")
+	}
+}

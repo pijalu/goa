@@ -392,6 +392,12 @@ func (t *GoalTool) resolveFreshContext(args goalArgs) bool {
 // createActive starts obj as the active goal. replace mirrors the legacy
 // replace-on-create behaviour.
 func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (agentic.ToolResult, error) {
+	// Creation entry point: reject an oversized objective with the
+	// point-to-a-markdown-doc hint so the model restructures its request
+	// instead of hitting a wall later at resume/promotion time.
+	if err := goal.ValidateObjective(objective); err != nil {
+		return agentic.ToolResult{}, goalToolErr("goal", "objective_too_long", err)
+	}
 	snapshot, err := t.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:           objective,
 		CompletionCriterion: args.CompletionCriterion,

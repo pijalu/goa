@@ -41,6 +41,24 @@ func TestGoalManager_EmptyObjective_Error(t *testing.T) {
 	}
 }
 
+// TestGoalManager_OversizedObjective_RejectedWithHint: the manager create
+// path is a creation entry point — an oversized objective is rejected NOW
+// with the markdown-pointer hint, so it can never become a stored goal
+// that resume/promotion later refuses to start.
+func TestGoalManager_OversizedObjective_RejectedWithHint(t *testing.T) {
+	gm := NewGoalManager(t.TempDir())
+	_, err := gm.CreateGoal(strings.Repeat("a", goal.MaxObjectiveLength+1))
+	if err == nil {
+		t.Fatal("expected rejection for oversized objective")
+	}
+	if !strings.Contains(err.Error(), "markdown") {
+		t.Errorf("rejection must hint at the markdown-document workaround: %v", err)
+	}
+	if gm.ActiveGoal() != nil {
+		t.Error("rejected create must not leave an active goal")
+	}
+}
+
 func TestGoalManager_PauseResume(t *testing.T) {
 	gm := NewGoalManager(t.TempDir())
 	g, _ := gm.CreateGoal("test")
