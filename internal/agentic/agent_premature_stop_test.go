@@ -109,6 +109,32 @@ func TestAgent_PrematureStopAutoContinues(t *testing.T) {
 	}
 }
 
+// TestAgent_PrematureStopIntentWithPeriodAutoContinues reproduces the
+// 2026-08-05 kimi-code/k3-256k export: after real tool work the model ended
+// finish_reason=stop with text ending "…Let me check these." — a stated
+// intent to continue, but with terminal punctuation, and zero tool calls.
+// The punctuation gate in looksTruncated classified it "complete" and the
+// round silently ended mid-task. The intent signal must win over terminal
+// punctuation for turns that already executed tools.
+func TestAgent_PrematureStopIntentWithPeriodAutoContinues(t *testing.T) {
+	p := registerPrematureStopProvider("Key findings so far. Let me check these.", false)
+	agent := newAgentWithMockTool(p.API(), 10)
+	obs := runAgentCollectingEvents(t, agent, "check the findings")
+
+	var allText strings.Builder
+	for _, e := range obs.Events() {
+		if e.Type == EventContent {
+			allText.WriteString(e.Text)
+		}
+	}
+	if !strings.Contains(allText.String(), "Both fixes applied and verified.") {
+		t.Errorf("expected auto-continue past the intent-with-period fragment; got text: %q", allText.String())
+	}
+	if got := p.calls.Load(); got != 3 {
+		t.Errorf("provider calls = %d, want 3 (tool round, intent-with-period round, auto-continued round)", got)
+	}
+}
+
 // TestAgent_CompleteStopNoAutoContinue verifies a normal, properly-terminated
 // answer is not auto-continued (no false positive).
 func TestAgent_CompleteStopNoAutoContinue(t *testing.T) {

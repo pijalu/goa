@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pijalu/goa/docs"
@@ -31,6 +32,12 @@ type ReadFileTool struct {
 	// fresh — matching OpenCode's read→lsp.touchFile link. Errors are ignored:
 	// a read must never fail because LSP is unavailable.
 	LSPManager LSPDocumentManager
+	// dedup is the E1.3 read-dedup ring (ENHANCE.md): sha256 hashes of rendered
+	// read results, so a byte-identical repeat read returns a short hint
+	// instead of re-sending the full content into an append-only context.
+	// Lazily initialised on first use; safe for concurrent reads.
+	dedup *readDedupStore
+	dedupOnce sync.Once
 }
 
 // Schema returns the tool schema for read.
@@ -133,7 +140,25 @@ func (t *ReadFileTool) Execute(input string) (string, error) {
 	if targetPath != resolvedPath {
 		return fmt.Sprintf("Note: file not found, used closest match: %s\n%s", targetPath, rendered), nil
 	}
-	return rendered, nil
+	return t.maybeDedup(targetPath, rendered, p), nil
+}
+
+// maybeDedup implements the E1.3 read-dedup guard: when enabled and this exact
+// rendered result was already returned this session, return a short hint
+// instead of the content. Otherwise record the content hash and return it.
+// The check runs AFTER rendering so the hash covers the exact bytes the model
+// would receive (line numbers, truncation), keeping different ranges and
+// changed files distinct. Never applied to directory listings, binary results,
+// or goa:// docs (those paths return before this point).
+func (t *ReadFileTool) maybeDedup(path, rendered string, p readFileParams) string {
+	if !FileToolDedupEnabled(t.Config) {
+		return rendered
+	}
+	t.dedupOnce.Do(func() { t.dedup = &readDedupStore{} })
+	if t.dedup.seenOrAdd(hashRenderedRead(rendered)) {
+		return dedupHint(path, len(splitLines(string(rendered))), len(rendered))
+	}
+	return rendered
 }
 
 // touchLSP notifies the LSP manager that a file was read, opening/updating the

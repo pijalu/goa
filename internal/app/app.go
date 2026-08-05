@@ -69,6 +69,18 @@ type App struct {
 	lastTurnCacheWrite int
 	lastTurnSpeed      float64
 	turnCount          int
+	// lastStatsDedup fingerprints the most recently APPLIED TokenTimings
+	// (prompt/predicted/cacheRead/cacheWrite + the turn it landed in).
+	// emitTurnStats re-emits the unchanged providerUsage on consecutive round
+	// ends without setting turnStatsEmitted, so the App receives identical
+	// TokenTimings twice per turn; without this guard the session totals, the
+	// cache-bust counter and the usage.db record were all double-counted
+	// (2026-08-04 export: usage.db held 716 rows for 379 real calls).
+	// A genuine new round reports different values; identical values in a NEW
+	// turn (turnCount advanced) must count again.
+	lastStatsDedup     turnStatsFingerprint
+	lastStatsDedupSet  bool
+	lastStatsDedupTurn int
 	// turnStatsSeen records whether any EventTokenStats arrived since the
 	// last turn end. Turns that never reached the LLM (latch errors,
 	// connection failures) log a distinct "no LLM call" line instead of

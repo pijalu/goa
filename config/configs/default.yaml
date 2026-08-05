@@ -196,6 +196,11 @@ tools:
     # wrong path would cause irreversible data loss.
   read_file:
     fuzzy_match: true
+    # Re-reading byte-identical content returns a short hint instead of the
+    # full body, so an append-only context is not bloated with redundant
+    # file copies (ENHANCE.md E1.3). A changed file or a different line
+    # range is never deduped. Set false to always return full content.
+    dedup: true
   webfetch:
     enabled: true
     max_lines_default: 250

@@ -141,8 +141,11 @@ func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 }
 
 // TestGoalReminder_InjectedOncePerTurn pins the per-turn cadence: every Run
-// appends ONE fresh reminder pair (with the current progress snapshot), so
-// turn N+1's history carries both snapshots as ordinary append-only history.
+// appends ONE fresh dynamic progress snapshot, so turn N+1's history carries
+// both snapshots as ordinary append-only history. The STATIC reminder is
+// byte-identical for a given goal, so E5 (ENHANCE.md) persists it only once
+// until it changes — re-appending it per turn bloated the append-only
+// context (~1.5KB of guidance per turn; see agent_goal_chatter_test.go).
 func TestGoalReminder_InjectedOncePerTurn(t *testing.T) {
 	cap := registerCapturingProvider("goal-per-turn")
 	gp := &mockGoalProvider{
@@ -173,8 +176,8 @@ func TestGoalReminder_InjectedOncePerTurn(t *testing.T) {
 	if second < 0 {
 		t.Fatalf("turn 2 must append a fresh reminder snapshot")
 	}
-	if n := countSlotContaining(pctx.Messages, "STATIC GOAL REMINDER"); n != 2 {
-		t.Errorf("expected exactly 2 persisted static reminders (one per turn), got %d", n)
+	if n := countSlotContaining(pctx.Messages, "STATIC GOAL REMINDER"); n != 1 {
+		t.Errorf("expected exactly 1 persisted static reminder (E5: byte-identical static text persists once until it changes), got %d", n)
 	}
 }
 

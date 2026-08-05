@@ -43,6 +43,7 @@ var (
 	NormalizeFileToolPath     = common.NormalizeFileToolPath
 	ResolveFileToolPath       = common.ResolveFileToolPath
 	FileToolFuzzyMatchEnabled = common.FileToolFuzzyMatchEnabled
+	FileToolDedupEnabled      = common.FileToolDedupEnabled
 	ReadFileWithFuzzyFallback = common.ReadFileWithFuzzyFallback
 	IsProtectedPath           = common.IsProtectedPath
 	ResolveToolPath           = common.ResolveToolPath

@@ -691,7 +691,16 @@ func (a *Agent) shouldAutoContinue() bool {
 	a.mu.Lock()
 	content := a.contentBuf.String()
 	a.mu.Unlock()
-	return looksTruncated(content)
+	if looksTruncated(content) {
+		return true
+	}
+	// After tool work, an unfulfilled trailing intent is a premature stop even
+	// when the text ends with terminal punctuation: looksTruncated's
+	// punctuation gate exists to protect no-tool terse answers, but a turn that
+	// already executed tools and then announces more work ("…Let me check
+	// these.") without emitting the calls stopped mid-task (2026-08-05
+	// kimi-code/k3-256k export: silent round end, no tool calls, no error).
+	return hasTrailingIntent(content)
 }
 
 // looksTruncated reports whether streamed answer text ends mid-task. It
@@ -718,6 +727,14 @@ func looksTruncated(content string) bool {
 		return true
 	}
 	// Trailing intent phrase (last 40 chars, case-insensitive).
+	return hasTrailingIntent(s)
+}
+
+// hasTrailingIntent reports whether the tail of s carries an explicit intent
+// to keep working ("let me", "I'll", "I will", ...; last 40 chars,
+// case-insensitive). It is the shared intent detector for looksTruncated and
+// for the post-tool-work premature-stop path in shouldAutoContinue.
+func hasTrailingIntent(s string) bool {
 	tail := s
 	if len(tail) > 40 {
 		tail = tail[len(tail)-40:]
@@ -728,7 +745,6 @@ func looksTruncated(content string) bool {
 			return true
 		}
 	}
-	// No explicit continuation signal → treat as complete.
 	return false
 }
 
@@ -1785,9 +1801,18 @@ func (a *Agent) persistGoalReminder() {
 		return
 	}
 	if reminder := p.ActiveGoalReminder(); reminder != "" {
-		msg := Message{Type: Content, Role: User, Content: "[goal]\n" + reminder}
-		a.history = append(a.history, msg)
-		a.emitMessage(msg)
+		// E5 (ENHANCE.md): the static reminder is byte-identical for a given
+		// goal across turns, so re-appending it every turn only bloats the
+		// append-only context (~1.5KB of guidance per turn in a long goal
+		// session). Persist it once, and again only when it actually changes
+		// (new goal, edited objective, status flip). The dynamic progress below
+		// legitimately churns and keeps updating each turn.
+		if reminder != a.lastPersistedGoalReminder {
+			msg := Message{Type: Content, Role: User, Content: "[goal]\n" + reminder}
+			a.history = append(a.history, msg)
+			a.emitMessage(msg)
+			a.lastPersistedGoalReminder = reminder
+		}
 	}
 	if progress := p.ActiveGoalProgress(); progress != "" {
 		msg := Message{Type: Content, Role: User, Content: "[goal progress]\n" + progress}

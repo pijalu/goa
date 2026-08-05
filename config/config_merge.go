@@ -416,10 +416,13 @@ func (c *Config) mergeTools(other *Config) {
 }
 
 // mergeReadFile merges the read_file tool config, preserving the default-on
-// fuzzy_match value when the source config does not set it.
+// fuzzy_match and dedup values when the source config does not set them.
 func mergeReadFile(dst, src *tools.FileToolConfig) {
 	if src.FuzzyMatch != nil {
 		dst.FuzzyMatch = src.FuzzyMatch
+	}
+	if src.Dedup != nil {
+		dst.Dedup = src.Dedup
 	}
 }
 

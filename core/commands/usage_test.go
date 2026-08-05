@@ -17,6 +17,7 @@ import (
 type fakeUsageStore struct {
 	stats     map[string][]usage.Stat // key: dim|project
 	sum       usage.Stat
+	busts     int
 	daily     []usage.DayCount
 	lastSince time.Time
 }
@@ -28,6 +29,9 @@ func (f *fakeUsageStore) Query(dim usage.Dimension, project string, since time.T
 func (f *fakeUsageStore) Sum(project string, since time.Time) (usage.Stat, error) {
 	f.lastSince = since
 	return f.sum, nil
+}
+func (f *fakeUsageStore) Busts(project string, since time.Time) (int, error) {
+	return f.busts, nil
 }
 func (f *fakeUsageStore) DailyCounts(project string, days int) ([]usage.DayCount, error) {
 	return f.daily, nil

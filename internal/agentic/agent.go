@@ -384,6 +384,12 @@ type Agent struct {
 	// autoContinueCount tracks how many times this turn auto-continued after a
 	// detected premature stop (bounded by maxAutoContinuePerTurn).
 	autoContinueCount int
+	// lastPersistedGoalReminder is the static goal-reminder text most recently
+	// appended to history by persistGoalReminder. The static reminder is
+	// byte-identical for a given goal across turns (BuildStaticGoalReminder's
+	// contract), so re-appending it every turn just bloats the append-only
+	// context (E5, ENHANCE.md): it is re-persisted only when it changes.
+	lastPersistedGoalReminder string
 }
 
 // partialToolCall tracks a tool call whose arguments are still being
