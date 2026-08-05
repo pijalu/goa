@@ -56,6 +56,7 @@ const (
 	PauseModelConfig  = "Paused after model configuration error"
 	PauseRuntimeError = "Paused after runtime error"
 	PauseRunawayLoop  = "Paused after detecting a runaway response loop"
+	PauseSilentStop   = "Paused after model stopped mid-reasoning (send continue to resume)"
 )
 
 // RunawayRecoveryPrompt replaces the byte-identical ContinuationPrompt for
@@ -80,6 +81,23 @@ goal with action "update", status "blocked" with reason+expectation.`
 // even after the goal is cleared (bugs.md Issue 7: "goal cannot be
 // stopped").
 var ErrAgentBusy = errors.New("goal driver: agent busy with another turn")
+
+// ErrSilentStop is returned by runTurn when the turn completed without error
+// but the model stopped mid-reasoning (produced thinking but no answer content
+// or tool calls — a reasoning-token or output limit on the provider side). The
+// drive loop must pause the goal instead of auto-continuing, because the next
+// continuation turn would deterministically hit the same limit again. The user
+// is told to "send continue to resume", so the goal must wait for that resume.
+var ErrSilentStop = errors.New("goal driver: model stopped after reasoning without producing a reply")
+
+// SilentStopReporter is an optional interface that AgentRunner implementations
+// can implement to report whether the most recently completed turn ended with a
+// "silent stop" (model produced thinking/reasoning but no visible answer or
+// tool calls). The goal driver checks this after each turn to decide whether to
+// pause instead of auto-continuing into the same reasoning limit.
+type SilentStopReporter interface {
+	LastTurnSilentStop() bool
+}
 
 // AgentRunner is the subset of agentic.Agent used by GoalDriver.
 type AgentRunner interface {
@@ -221,6 +239,9 @@ func (d *GoalDriver) handleTurnError(err error) error {
 		return nil
 	}
 	reason := mapDriverError(err)
+	if errors.Is(err, ErrSilentStop) {
+		reason = PauseSilentStop
+	}
 	pauseReason := reason
 	if reason == PauseRunawayLoop {
 		// The guardrail error carries the (elided) repeated sequence; keep it
@@ -278,16 +299,37 @@ func (d *GoalDriver) checkStall(current *goal.GoalSnapshot) {
 // the ordinary Run path against the current conversation.
 func (d *GoalDriver) runTurn(ctx context.Context, active *goal.GoalSnapshot) error {
 	prompt := d.turnPrompt(active)
+	var err error
 	if active.FreshContext {
 		if fr, ok := d.Agent.(FreshAgentRunner); ok {
 			begin := d.freshBegunFor != active.GoalID
 			d.freshBegunFor = active.GoalID
-			return fr.RunFresh(ctx, prompt, begin)
+			err = fr.RunFresh(ctx, prompt, begin)
+			if err != nil {
+				return err
+			}
+			return d.checkSilentStop()
 		}
 	}
-	// Any non-fresh turn (or a different goal) resets the begin tracker.
+	// Normal Run path (not fresh-context, or runner lacks fresh support).
+	// Any non-fresh turn resets the begin tracker.
 	d.freshBegunFor = ""
-	return d.Agent.Run(ctx, prompt)
+	err = d.Agent.Run(ctx, prompt)
+	if err != nil {
+		return err
+	}
+	return d.checkSilentStop()
+}
+
+// checkSilentStop returns ErrSilentStop when the agent reports that the just-
+// completed turn ended with a silent stop (model stopped mid-reasoning). The
+// goal driver pauses the goal so the user can resume with "continue" instead
+// of auto-continuing into the same reasoning limit.
+func (d *GoalDriver) checkSilentStop() error {
+	if sr, ok := d.Agent.(SilentStopReporter); ok && sr.LastTurnSilentStop() {
+		return ErrSilentStop
+	}
+	return nil
 }
 
 // turnPrompt picks the continuation prompt for this turn. The first turn

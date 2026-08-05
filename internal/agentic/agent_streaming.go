@@ -848,6 +848,9 @@ func (a *Agent) finalizeStreamTurn() {
 	// follow-up "continue" resumes with full context.
 	if a.contentBuf.Len() == 0 && a.thinkingBuf.Len() > 0 {
 		a.cfg.Logger.Log(Warn, "turn ended with thinking but no answer content (model stopped mid-reasoning)")
+		a.mu.Lock()
+		a.lastTurnSilentStop = true
+		a.mu.Unlock()
 		a.emitEvent(OutputEvent{
 			Type: EventContent,
 			Role: System,
@@ -1519,6 +1522,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.turnHadToolExecution = false
 	a.turnSawContent = false
 	a.turnSawThinking = false
+	a.lastTurnSilentStop = false
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
 	a.thinkingDisplayBuf.Reset()

@@ -80,6 +80,60 @@ func TestGoalDriver_Drive(t *testing.T) {
 	}
 }
 
+// silentStopAgent is a fake AgentRunner that also implements SilentStopReporter.
+// On its first Run it reports a silent stop (model stopped mid-reasoning). On
+// subsequent Runs it completes normally. This lets us verify the goal driver
+// pauses after a silent stop instead of auto-continuing.
+type silentStopAgent struct {
+	runs       atomic.Int32
+	silentStop atomic.Bool
+}
+
+func (a *silentStopAgent) Run(ctx context.Context, prompt string) error {
+	n := a.runs.Add(1)
+	// First turn: model stopped after reasoning (no content, no tool calls).
+	a.silentStop.Store(n == 1)
+	return nil
+}
+
+func (a *silentStopAgent) LastTurnSilentStop() bool {
+	return a.silentStop.Load()
+}
+
+// TestGoalDriver_SilentStopPausesGoal verifies that when a continuation turn
+// ends with a silent stop (model produced thinking but no answer — a
+// reasoning-token/output limit), the goal driver pauses the goal instead of
+// auto-continuing into the same limit. Without this fix, the driver looped
+// indefinitely, auto-continuing after each silent stop while the user was told
+// to "send continue to resume".
+func TestGoalDriver_SilentStopPausesGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	agent := &silentStopAgent{}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	err := driver.Drive(context.Background())
+	if err == nil {
+		t.Fatal("expected Drive to return an error (ErrSilentStop)")
+	}
+	if !errors.Is(err, ErrSilentStop) {
+		t.Fatalf("expected ErrSilentStop, got: %v", err)
+	}
+	// Only ONE continuation turn should have run — the driver must NOT
+	// auto-continue after a silent stop.
+	if n := agent.runs.Load(); n != 1 {
+		t.Fatalf("runs = %d, want 1 (driver must pause, not auto-continue, after a silent stop)", n)
+	}
+	// The goal must be paused with the silent-stop reason.
+	g := mode.GetGoal()
+	if g.Goal.Status != goal.GoalPaused {
+		t.Fatalf("status = %q, want %q", g.Goal.Status, goal.GoalPaused)
+	}
+	if g.Goal.TerminalReason == nil || !strings.Contains(*g.Goal.TerminalReason, "mid-reasoning") {
+		t.Fatalf("terminal reason = %v, want it to contain 'mid-reasoning'", g.Goal.TerminalReason)
+	}
+}
+
 func TestGoalDriver_NoGoal(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	agent := &fakeAgent{}
@@ -89,6 +143,26 @@ func TestGoalDriver_NoGoal(t *testing.T) {
 	}
 	if agent.runs != 0 {
 		t.Errorf("runs = %d", agent.runs)
+	}
+}
+
+// TestGoalDriver_NonReporterAgentContinues verifies backward compatibility:
+// when the agent does NOT implement SilentStopReporter, the goal driver
+// continues to auto-continue after each turn as it did before the silent-stop
+// fix was added.
+func TestGoalDriver_NonReporterAgentContinues(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	// fakeAgent does NOT implement SilentStopReporter.
+	agent := &fakeAgentThatCompletes{mode: mode}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	// Drive should complete normally (the fake agent marks the goal done).
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	if n := agent.runs.Load(); n != 1 {
+		t.Errorf("runs = %d, want 1", n)
 	}
 }
 

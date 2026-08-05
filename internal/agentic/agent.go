@@ -129,6 +129,14 @@ type Agent struct {
 	// turn end to avoid double-counting.
 	turnStatsEmitted bool
 
+	// lastTurnSilentStop records whether the most recently completed turn ended
+	// with a "silent stop": the model produced thinking/reasoning but no visible
+	// answer content and no tool calls (a reasoning-token or output limit on the
+	// provider side). Set in finalizeStreamTurn; read by the goal driver (via the
+	// LastTurnSilentStop method / SilentStopReporter interface) so it pauses the
+	// goal instead of auto-continuing into the same limit again.
+	lastTurnSilentStop bool
+
 	// turnStartHistoryLen records the length of the history at the start of
 	// the current user turn. It is used to identify assistant messages that
 	// belong to the current turn so that stream retries can undo only the
@@ -1209,6 +1217,17 @@ func (a *Agent) Stop() {
 	a.processing = false
 	a.queue = nil
 	a.mu.Unlock()
+}
+
+// LastTurnSilentStop reports whether the most recently completed turn ended
+// with a "silent stop": the model produced thinking/reasoning tokens but no
+// visible answer content and no tool calls (a reasoning-token or output limit
+// on the provider side). The goal driver uses this to decide whether to pause
+// the goal instead of auto-continuing into the same limit.
+func (a *Agent) LastTurnSilentStop() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastTurnSilentStop
 }
 
 func (a *Agent) processTurn(ctx context.Context) error {
