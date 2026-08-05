@@ -127,6 +127,15 @@ type App struct {
 	// reviewOverlayRestore field is needed.
 	pendingInput *inputRequest
 
+	// commandBusy is true while an async (long-running) slash command is
+	// executing in a background goroutine. It gates steering routing so that
+	// free-text submitted during the command is enqueued and delivered as a
+	// follow-up agent message when the command completes. All access is on the
+	// TUI commandLoop: set true before launching the goroutine, set false
+	// inside app.apply (which runs on the loop), and read from routeSteering
+	// (also on the loop) — so no mutex is required.
+	commandBusy bool
+
 	// goalCompletionHandoff stashes the terminal reason (completion evidence)
 	// of the goal that just completed so the next auto-promoted queued goal
 	// inherits it as its handover note (a queued goal's own stored handover

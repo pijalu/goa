@@ -167,3 +167,39 @@ func TestReportCompression_Lifespan(t *testing.T) {
 		t.Errorf("expected freed tokens in output, got: %s", buf.String())
 	}
 }
+
+// TestCompressCommand_AsyncHint verifies that LLM-backed strategies (summarize,
+// hybrid, default) opt into async execution while in-memory strategies stay
+// synchronous.
+func TestCompressCommand_AsyncHint(t *testing.T) {
+	cmd := &CompressCommand{}
+	tests := []struct {
+		name    string
+		args    []string
+		wantAsync bool
+		wantSub  string // substring expected in the label when async
+	}{
+		{"summarize", []string{"summarize"}, true, "summarize"},
+		{"hybrid", []string{"hybrid"}, true, "hybrid"},
+		{"default empty", nil, true, "Compressing"},
+		{"default force", []string{"force"}, true, "Compressing"},
+		{"tool_elision", []string{"tool_elision"}, false, ""},
+		{"selective", []string{"selective"}, false, ""},
+		{"micro", []string{"micro"}, false, ""},
+		{"unknown", []string{"bogus"}, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			label := cmd.AsyncHint(tt.args)
+			if tt.wantAsync && label == "" {
+				t.Fatalf("AsyncHint(%v) = empty, want non-empty label", tt.args)
+			}
+			if !tt.wantAsync && label != "" {
+				t.Fatalf("AsyncHint(%v) = %q, want empty (sync)", tt.args, label)
+			}
+			if tt.wantSub != "" && !strings.Contains(label, tt.wantSub) {
+				t.Errorf("AsyncHint(%v) = %q, want it to contain %q", tt.args, label, tt.wantSub)
+			}
+		})
+	}
+}
