@@ -806,6 +806,34 @@ func TestMigrateMessagesDropsElidedPairs(t *testing.T) {
 	}
 }
 
+// TestMigrateMessagesDropsResultsForMissingAssistant is the defense-in-depth
+// regression for the export-20260805-180955 bug: when the owning
+// assistant(tool_calls) message is removed entirely (not just elided) by
+// enforceContextCeiling or any other history mutation, migrateMessages must
+// drop the orphaned tool result — a tool message with no preceding tool_calls
+// is rejected by strict providers (HTTP 400).
+func TestMigrateMessagesDropsResultsForMissingAssistant(t *testing.T) {
+	// The assistant that issued "orphan_call" is absent from this snapshot;
+	// only its tool result survives. migrateMessages must drop it.
+	msgs := []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		// missing: Assistant with ToolCalls{ID:"orphan_call"}
+		{Type: Content, Role: ToolRole, Content: "result", ToolCallID: "orphan_call", ToolName: "read"},
+		{Type: Content, Role: Assistant, Content: "ok"},
+	}
+
+	out := migrateMessages(msgs)
+	assertToolPairingConsistent(t, out)
+
+	for _, m := range out {
+		for _, b := range m.Content {
+			if b.Type == provider.ContentBlockToolResult && b.ToolCallID == "orphan_call" {
+				t.Errorf("orphaned tool result for missing assistant leaked into payload")
+			}
+		}
+	}
+}
+
 // TestSummarizeHistoryWithElidedPairs is the /compress:summarize regression:
 // a snapshot containing elided pairs must reach the provider with no
 // "[elided]" arguments and consistent pairing (the failing request shape

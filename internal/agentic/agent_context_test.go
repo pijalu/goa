@@ -7,6 +7,7 @@ package agentic
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -266,5 +267,105 @@ func TestEnforceContextCeiling_NoopWhenUnderCeiling(t *testing.T) {
 		if a.history[i].Role != before[i].Role || a.history[i].Content != before[i].Content {
 			t.Errorf("history mutated at index %d", i)
 		}
+	}
+}
+
+// firstOrphanedToolResult returns a human-readable description of the first
+// tool-role message whose owning assistant(tool_calls) is absent from the
+// history — the exact state strict providers reject with HTTP 400
+// "Messages with role 'tool' must be a response to a preceding message with
+// 'tool_calls'". An empty string means every tool result is paired.
+func firstOrphanedToolResult(hist []Message) string {
+	seen := make(map[string]bool)
+	for i := range hist {
+		m := hist[i]
+		if m.Role == Assistant {
+			for _, tc := range m.ToolCalls {
+				if tc.ID != "" {
+					seen[tc.ID] = true
+				}
+			}
+		}
+		if m.Role == ToolRole && !seen[m.ToolCallID] {
+			return fmt.Sprintf("tool result at index %d (call_id=%q) has no preceding assistant tool_calls", i, m.ToolCallID)
+		}
+	}
+	return ""
+}
+
+func roleNames(hist []Message) []string {
+	out := make([]string, len(hist))
+	for i, m := range hist {
+		out[i] = string(m.Role)
+	}
+	return out
+}
+
+// TestEnforceContextCeiling_NeverOrphansToolResults is the regression test for
+// the export-20260805-180955 bug: enforceContextCeiling dropped the
+// assistant(tool_calls) message while keeping its tool result, producing a
+// history that the provider rejected with HTTP 400 "Messages with role 'tool'
+// must be a response to a preceding message with 'tool_calls'".
+//
+// Each case sets a token budget that forces the cut to land exactly at a tool
+// result message. After enforceContextCeiling the result must contain zero
+// orphaned tool results.
+func TestEnforceContextCeiling_NeverOrphansToolResults(t *testing.T) {
+	// 260 ascii chars ≈ 78 content tokens; with the 4-token message overhead
+	// a "big" message is ~82 tokens — large enough that the ceiling enforcer
+	// must drop it to fit under ContextWindow=100 (hard ceiling 95 tokens).
+	bigContent := strings.Repeat("x", 260)
+
+	tests := []struct {
+		name    string
+		history []Message
+	}{
+		{
+			name: "single orphaned tool result at cut",
+			history: []Message{
+				{Type: Content, Role: System, Content: "sys"}, // idx 0 — always kept
+				{Type: Content, Role: User, Content: bigContent},
+				{Type: Content, Role: User, Content: bigContent},
+				{Type: Content, Role: Assistant, Content: bigContent, ToolCalls: []ToolCallInfo{
+					{ID: "tc1", Type: "function", Name: "read", Arguments: "{}"},
+				}},
+				{Type: Content, Role: ToolRole, Content: "result", ToolCallID: "tc1", ToolName: "read"},
+				{Type: Content, Role: User, Content: "ok"},
+			},
+		},
+		{
+			name: "multiple orphaned tool results at cut",
+			history: []Message{
+				{Type: Content, Role: System, Content: "sys"},
+				{Type: Content, Role: User, Content: bigContent},
+				{Type: Content, Role: Assistant, Content: bigContent, ToolCalls: []ToolCallInfo{
+					{ID: "tc1", Type: "function", Name: "read", Arguments: "{}"},
+					{ID: "tc2", Type: "function", Name: "search", Arguments: "{}"},
+				}},
+				{Type: Content, Role: ToolRole, Content: "r1", ToolCallID: "tc1", ToolName: "read"},
+				{Type: Content, Role: ToolRole, Content: "r2", ToolCallID: "tc2", ToolName: "search"},
+				{Type: Content, Role: User, Content: "ok"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := &Agent{
+				cfg:     Config{Model: provider.Model{ContextWindow: 100}},
+				history: append([]Message(nil), tt.history...),
+			}
+			a.enforceContextCeiling()
+
+			if orphan := firstOrphanedToolResult(a.history); orphan != "" {
+				t.Fatalf("%s\nroles after enforceContextCeiling: %v",
+					orphan, roleNames(a.history))
+			}
+			// Sanity: system prompt must always survive.
+			if len(a.history) == 0 || a.history[0].Role != System {
+				t.Fatalf("system prompt must survive ceiling enforcement, got: %v",
+					roleNames(a.history))
+			}
+		})
 	}
 }

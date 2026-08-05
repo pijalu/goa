@@ -103,6 +103,20 @@ func (a *Agent) enforceContextCeiling() {
 		droppedTokens += tok[k]
 	}
 
+	// Advance past any tool results whose owning assistant(tool_calls) message
+	// was just dropped by the cut. A leading tool result with no preceding
+	// tool_calls is rejected by strict providers (OpenAI/DeepSeek HTTP 400:
+	// "Messages with role 'tool' must be a response to a preceding message
+	// with 'tool_calls'"). Dropping these orphans is the correct move for a
+	// last-resort safety net: they reference a call the model no longer sees,
+	// so they carry no useful information. This never widens backward (which
+	// could re-exceed the ceiling and cascade); it only drops more from the
+	// front, so the token budget invariant is preserved.
+	for cut < len(hist) && hist[cut].Role == ToolRole {
+		droppedTokens += tok[cut]
+		cut++
+	}
+
 	for _, m := range hist[1:cut] {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Warn, "Context ceiling enforced: dropped %s message (len=%d)", m.Role, len(m.Content))
