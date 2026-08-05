@@ -836,6 +836,13 @@ func persistableModels(models []ModelConfig) []ModelConfig {
 	return out
 }
 
+// HomeConfigPath returns the absolute path of the home config file
+// (<goa home>/.goa/config.yaml) this loader reads from and Save writes to.
+// The goa home honors --home / GOA_HOME overrides via internal.GoaHome.
+func (cl *CascadeLoader) HomeConfigPath() string {
+	return filepath.Join(cl.homeDir, ".goa", "config.yaml")
+}
+
 func (cl *CascadeLoader) Save(cfg *Config) error {
 	configDir := filepath.Join(cl.homeDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -853,8 +860,7 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	path := filepath.Join(configDir, "config.yaml")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(cl.HomeConfigPath(), data, 0644); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 

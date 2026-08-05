@@ -229,7 +229,7 @@ func (w *wizardComponent) advancePostModel() bool {
 }
 
 func (w *wizardComponent) advanceFromCompanionModel() {
-	if w.companionModelSelected {
+	if w.companionUseMainModel == 1 {
 		w.state = stateMode
 	} else {
 		w.state = stateCompanionProviderType
@@ -483,7 +483,8 @@ var staticPreviousStates = map[wizardState]wizardState{
 	stateModelSelect:            stateProviderTest,
 	stateModelAdvanced:          stateModelSetup,
 	stateWebFetchSummary:        stateModelAdvanced,
-	stateCompanionModel:         stateWebFetchSummary,
+	stateDreamModel:             stateWebFetchSummary,
+	stateCompanionModel:         stateDreamModel,
 	stateCompanionProviderType:  stateCompanionModel,
 	stateCompanionModelSelect:   stateCompanionProviderTest,
 	stateCompanionModelAdvanced: stateCompanionModelSetup,
@@ -531,7 +532,7 @@ func (w *wizardComponent) companionModelSetupBackTarget() wizardState {
 }
 
 func (w *wizardComponent) modeBackTarget() wizardState {
-	if w.companionModelSelected {
+	if w.companionUseMainModel == 1 {
 		return stateCompanionModel
 	}
 	// If companion went through full provider/model setup, go back to the advanced screen
@@ -641,18 +642,15 @@ func (w *wizardComponent) handleNumber(key string) {
 		w.handleNumberProviderType(key)
 	case stateModelSelect:
 		w.handleNumberModelSelect(key)
-	case stateWebFetchSummary:
-		w.handleNumberWebFetchSummary(key)
 	case stateMode:
 		w.handleNumberMode(key)
-	case stateSkillMode:
-		w.handleNumberSkillMode(key)
 	case stateAdvancedOptions:
 		w.handleNumberAdvancedOptions(key)
 	case stateModelAdvanced, stateCompanionModelAdvanced:
 		w.handleNumberModelAdvanced(key)
-	case statePromptPreview, stateWorkflowPreview:
-		w.handleNumberPreview(key)
+	default:
+		// All two-option screens share one quick-pick path.
+		w.pickYesNo(key)
 	}
 }
 
@@ -670,24 +668,6 @@ func (w *wizardComponent) handleNumberModelAdvanced(key string) {
 			}
 		}
 		s.modelThinkingLevel = levels[0]
-	}
-}
-
-func (w *wizardComponent) handleNumberWebFetchSummary(key string) {
-	switch key {
-	case "1":
-		w.webfetchSummaryEnabled = 0
-	case "2":
-		w.webfetchSummaryEnabled = 1
-	}
-}
-
-func (w *wizardComponent) handleNumberSkillMode(key string) {
-	switch key {
-	case "1":
-		w.skillMode = 0
-	case "2":
-		w.skillMode = 1
 	}
 }
 
@@ -736,83 +716,89 @@ func (w *wizardComponent) handleNumberMode(key string) {
 	}
 }
 
-func (w *wizardComponent) handleNumberPreview(key string) {
+
+func (w *wizardComponent) handleUp()   { w.handleVertical(-1) }
+func (w *wizardComponent) handleDown() { w.handleVertical(1) }
+
+// handleVertical moves the current screen's selection by dir (-1 up, +1 down)
+// with wraparound. All wizard option lists are cyclic.
+func (w *wizardComponent) handleVertical(dir int) {
+	// Two-option (Yes/No) screens all cycle a single 0/1 field.
+	if s := w.yesNoScreen(); s != nil {
+		cycleYesNo(s.field, dir)
+		return
+	}
+	switch w.state {
+	case stateProviderType, stateCompanionProviderType:
+		presets := PresetProviders()
+		s := w.currentSlot()
+		cur := s.selectedPresetIndex
+		if cur < 0 {
+			cur = len(presets)
+		}
+		w.focusProvider(cur + dir)
+	case stateModelSelect, stateCompanionModelSelect:
+		s := w.currentSlot()
+		if n := len(s.availableModels); n > 0 {
+			s.selectedModelIdx = (s.selectedModelIdx + dir + n) % n
+		}
+	case stateMode:
+		w.selectedMode = (w.selectedMode + dir + 4) % 4
+	case stateAdvancedOptions:
+		w.cycleAdvancedField(dir)
+	case stateModelSetup, stateCompanionModelSetup:
+		w.commitEditorToField()
+		s := w.currentSlot()
+		s.modelFieldIdx = (s.modelFieldIdx + dir + modelFieldCount) % modelFieldCount
+		w.loadFieldIntoEditor()
+	}
+}
+
+// yesNoScreen binds a two-option wizard screen to its selection field and the
+// field value that highlights the first listed option (e.g. "Yes"). Field
+// values are always 0/1; which of the two means "first option" differs per
+// screen (enabled-style fields use 1, index-style fields use 0).
+type yesNoScreen struct {
+	field *int
+	first int
+}
+
+// yesNoScreen returns the descriptor for the current two-option screen, or
+// nil when the current state is not a two-option choice.
+func (w *wizardComponent) yesNoScreen() *yesNoScreen {
+	switch w.state {
+	case stateSkillMode:
+		return &yesNoScreen{&w.skillMode, 0} // 1st = sub-agent
+	case statePromptPreview, stateWorkflowPreview:
+		return &yesNoScreen{&w.previewYesNo, 0} // 1st = Yes
+	case stateWebFetchSummary:
+		return &yesNoScreen{&w.webfetchSummaryEnabled, 1} // 1st = Yes
+	case stateDreamModel:
+		return &yesNoScreen{&w.dreamEnabled, 1} // 1st = Yes
+	case stateCompanionModel:
+		return &yesNoScreen{&w.companionUseMainModel, 1} // 1st = Yes
+	}
+	return nil
+}
+
+// pickYesNo handles a quick-pick key on a two-option screen: "1" selects the
+// first listed option, "2" the second, matching the rendered order.
+func (w *wizardComponent) pickYesNo(key string) {
+	s := w.yesNoScreen()
+	if s == nil {
+		return
+	}
 	switch key {
 	case "1":
-		w.previewYesNo = 0
+		*s.field = s.first
 	case "2":
-		w.previewYesNo = 1
+		*s.field = 1 - s.first
 	}
 }
 
-func (w *wizardComponent) handleUp() {
-	switch w.state {
-	case stateProviderType, stateCompanionProviderType:
-		presets := PresetProviders()
-		s := w.currentSlot()
-		cur := s.selectedPresetIndex
-		if cur < 0 {
-			cur = len(presets)
-		}
-		w.focusProvider(cur - 1)
-	case stateModelSelect, stateCompanionModelSelect:
-		s := w.currentSlot()
-		if len(s.availableModels) > 0 {
-			s.selectedModelIdx = (s.selectedModelIdx - 1 + len(s.availableModels)) % len(s.availableModels)
-		}
-	case stateMode:
-		w.selectedMode = (w.selectedMode - 1 + 4) % 4
-	case stateSkillMode:
-		w.skillMode = (w.skillMode - 1 + 2) % 2
-	case stateAdvancedOptions:
-		w.cycleAdvancedField(-1)
-	case stateModelSetup, stateCompanionModelSetup:
-		w.commitEditorToField()
-		s := w.currentSlot()
-		s.modelFieldIdx = (s.modelFieldIdx - 1 + modelFieldCount) % modelFieldCount
-		w.loadFieldIntoEditor()
-	case stateCompanionModel:
-		w.companionModelSelected = !w.companionModelSelected
-	case statePromptPreview, stateWorkflowPreview:
-		w.previewYesNo = (w.previewYesNo - 1 + 2) % 2
-	case stateWebFetchSummary:
-		w.webfetchSummaryEnabled = (w.webfetchSummaryEnabled - 1 + 2) % 2
-	}
-}
-
-func (w *wizardComponent) handleDown() {
-	switch w.state {
-	case stateProviderType, stateCompanionProviderType:
-		presets := PresetProviders()
-		s := w.currentSlot()
-		cur := s.selectedPresetIndex
-		if cur < 0 {
-			cur = len(presets)
-		}
-		w.focusProvider(cur + 1)
-	case stateModelSelect, stateCompanionModelSelect:
-		s := w.currentSlot()
-		if len(s.availableModels) > 0 {
-			s.selectedModelIdx = (s.selectedModelIdx + 1) % len(s.availableModels)
-		}
-	case stateMode:
-		w.selectedMode = (w.selectedMode + 1) % 4
-	case stateSkillMode:
-		w.skillMode = (w.skillMode + 1) % 2
-	case stateAdvancedOptions:
-		w.cycleAdvancedField(1)
-	case stateModelSetup, stateCompanionModelSetup:
-		w.commitEditorToField()
-		s := w.currentSlot()
-		s.modelFieldIdx = (s.modelFieldIdx + 1) % modelFieldCount
-		w.loadFieldIntoEditor()
-	case stateCompanionModel:
-		w.companionModelSelected = !w.companionModelSelected
-	case statePromptPreview, stateWorkflowPreview:
-		w.previewYesNo = (w.previewYesNo + 1) % 2
-	case stateWebFetchSummary:
-		w.webfetchSummaryEnabled = (w.webfetchSummaryEnabled + 1) % 2
-	}
+// cycleYesNo moves a two-option selection (0/1) by dir positions with wrap.
+func cycleYesNo(v *int, dir int) {
+	*v = (*v + dir + 2) % 2
 }
 
 func (w *wizardComponent) deriveDefaultModelName() string {

@@ -157,11 +157,11 @@ type wizardComponent struct {
 	inputMode    string
 	editor       *tui.LineEditor
 
-	companionModelSelected bool
-	copyPrompts            bool
-	copyWorkflows          bool
-	previewYesNo           int
-	focused                bool
+	companionUseMainModel int // 0 = no (configure separately), 1 = yes (use main model)
+	copyPrompts           bool
+	copyWorkflows         bool
+	previewYesNo          int
+	focused               bool
 
 	skillMode              int // 0 = sub-agent, 1 = inline
 	advancedMode           int // 0 = defaults, 1 = customize
