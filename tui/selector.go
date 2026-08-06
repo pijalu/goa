@@ -42,14 +42,15 @@ type SelectorItem struct {
 
 // SelectorKeymap configures what a Selector instance's hotkeys emit. The
 // zero value keeps the default bindings shared by most pickers (/provider,
-// /model, …): '+' emits "__add__", '-' emits "__delete__"+value, and
-// Delete/Backspace emits "__delete__"+value.
+// /model, …): '+' emits "__add__", '-' emits "__delete__"+value, and the
+// Delete key emits "__delete__"+value. Backspace never deletes — it only
+// edits the search filter.
 type SelectorKeymap struct {
 	// ReorderMode repurposes '+'/'-' from add/delete to direct reordering
 	// (used by /goal:manage): '+' emits "__moveup__"+value and '-' emits
 	// "__movedown__"+value for the highlighted non-sentinel item; on sentinel
 	// rows and empty lists the keys are consumed without emitting, so they
-	// never pollute the search filter. Delete/Backspace keeps the delete
+	// never pollute the search filter. The Delete key keeps the delete
 	// emit, so deletion stays available (and confirmed by the caller) in
 	// reorder mode.
 	ReorderMode bool
@@ -61,7 +62,9 @@ type SelectorKeymap struct {
 //   - Up/Down to navigate
 //   - Enter to select
 //   - Escape to cancel
-//   - Backspace/Delete (on a non-menu item) to trigger deletion
+//   - Backspace/Delete (on a non-menu item) to trigger deletion; Backspace
+//     only edits the search filter (it never deletes) and only the Delete key
+//     deletes, so clearing a filter with Backspace can never emit a deletion
 //   - 'e' (on an Editable item with an empty filter) to trigger editing
 //
 // The result is delivered through a channel.
@@ -204,8 +207,15 @@ func (s *Selector) dispatchInput(data string) *string {
 	return s.handleCancel(data)
 }
 
+// handleDelete emits "__delete__"+value for the highlighted item when the
+// user presses the Delete key. Backspace is intentionally NOT a delete
+// trigger: it is exclusively the filter-editing key (see handleBackspace), so
+// pressing Backspace to clear the search filter must never surface a deletion
+// (previously Backspace with an empty filter emitted __delete__ — that made
+// /model propose to delete the highlighted model, and closed the /config
+// menu). Only KeyDelete and the '-' hotkey (handleHotkey) delete.
 func (s *Selector) handleDelete(data string) *string {
-	if !(matchesKey(data, KeyBackspace) && len(s.searchText) == 0) && !matchesKey(data, KeyDelete) {
+	if !matchesKey(data, KeyDelete) {
 		return nil
 	}
 	if len(s.filtered) == 0 {
