@@ -166,9 +166,10 @@ func (f *fakeSelector) SelectOption(title string, options []tui.SelectorItem, cu
 
 // fakeSessionStore implements core.SessionStoreAPI for testing.
 type fakeSessionStore struct {
-	sessions []core.SessionInfo
-	events   map[string][]agentic.OutputEvent
-	err      error
+	sessions  []core.SessionInfo
+	events    map[string][]agentic.OutputEvent
+	err       error
+	startedID string
 }
 
 func newSessionStore(sessions []core.SessionInfo) *fakeSessionStore {
@@ -184,9 +185,15 @@ func (f *fakeSessionStore) LoadSession(name string) ([]agentic.OutputEvent, erro
 func (f *fakeSessionStore) SaveCurrent(name string) error               { return f.err }
 func (f *fakeSessionStore) DeleteSession(name string) error             { return f.err }
 func (f *fakeSessionStore) ImportSession(name, sourcePath string) error { return f.err }
-func (f *fakeSessionStore) SessionID() string                           { return "" }
+func (f *fakeSessionStore) SessionID() string                           { return f.startedID }
 func (f *fakeSessionStore) CurrentSessionPath() string                  { return "" }
-func (f *fakeSessionStore) StartSessionWithID(id string) string          { return id }
+func (f *fakeSessionStore) StartSessionWithID(id string) string {
+	f.startedID = id
+	return id
+}
+
+// StartedID returns the last ID passed to StartSessionWithID ("" if never).
+func (f *fakeSessionStore) StartedID() string { return f.startedID }
 func (f *fakeSessionStore) AddEvents(name string, events []agentic.OutputEvent) {
 	f.events[name] = events
 }

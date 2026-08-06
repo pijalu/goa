@@ -81,23 +81,7 @@ func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 		}()
 	}
 	wireAsyncSelectCallback(ctx, subs, app)
-	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
-		if inp := subs.getInput(); inp != nil {
-			inp.SetText(current)
-		}
-		app.requestMainInputWithCancel(prompt, func(text string) {
-			if onSubmit != nil {
-				onSubmit(text, true)
-			}
-		}, func() {
-			if onSubmit != nil {
-				onSubmit("", false)
-			}
-		})
-	}
-	ctx.RequestMainInput = func(prompt string, onSubmit func(string)) {
-		app.requestMainInput(prompt, onSubmit)
-	}
+	wireInputCallbacks(ctx, subs, app)
 	ctx.ClarifyFunc = func(card *tui.ClarifyCard) (string, bool) {
 		return app.clarify(card)
 	}
@@ -118,6 +102,36 @@ func wireInteractiveCallbacks(ctx *core.Context, subs *subsystems, app *App) {
 			CaptureInput: true,
 		}
 		subs.tuiEngine.ShowOverlay(pv, opts)
+	}
+}
+
+// wireInputCallbacks wires the Context input-editor callbacks: single-line
+// prompts, main-input requests, and editor text prefill (used by /fork to
+// stage the selected message for edit + resend).
+func wireInputCallbacks(ctx *core.Context, subs *subsystems, app *App) {
+	ctx.ShowInputFunc = func(prompt, current string, onSubmit func(string, bool)) {
+		if inp := subs.getInput(); inp != nil {
+			inp.SetText(current)
+		}
+		app.requestMainInputWithCancel(prompt, func(text string) {
+			if onSubmit != nil {
+				onSubmit(text, true)
+			}
+		}, func() {
+			if onSubmit != nil {
+				onSubmit("", false)
+			}
+		})
+	}
+	ctx.RequestMainInput = func(prompt string, onSubmit func(string)) {
+		app.requestMainInput(prompt, onSubmit)
+	}
+	ctx.SetEditorTextFunc = func(text string) {
+		app.apply(func() {
+			if inp := subs.getInput(); inp != nil {
+				inp.SetText(text)
+			}
+		})
 	}
 }
 
