@@ -20,19 +20,19 @@ type llmTrace struct {
 }
 
 type llmTraceRequest struct {
-	Seq             int     `json:"seq"`
-	Timestamp       string  `json:"timestamp"`
-	Model           string  `json:"model,omitempty"`
-	StatusCode      int     `json:"statusCode,omitempty"`
-	DurationMs      int64   `json:"durationMs"`
-	MessageCount    int     `json:"messageCount"`
-	LastRole        string  `json:"lastRole,omitempty"`
-	LastIsToolResult bool   `json:"lastIsToolResult"`
-	ToolCallBlocks  int     `json:"toolCallBlocks"`
-	ToolResultBlocks int    `json:"toolResultBlocks"`
-	Roles           []string `json:"roles,omitempty"`
-	FinishReason    string  `json:"finishReason,omitempty"`
-	Error           string  `json:"error,omitempty"`
+	Seq              int      `json:"seq"`
+	Timestamp        string   `json:"timestamp"`
+	Model            string   `json:"model,omitempty"`
+	StatusCode       int      `json:"statusCode,omitempty"`
+	DurationMs       int64    `json:"durationMs"`
+	MessageCount     int      `json:"messageCount"`
+	LastRole         string   `json:"lastRole,omitempty"`
+	LastIsToolResult bool     `json:"lastIsToolResult"`
+	ToolCallBlocks   int      `json:"toolCallBlocks"`
+	ToolResultBlocks int      `json:"toolResultBlocks"`
+	Roles            []string `json:"roles,omitempty"`
+	FinishReason     string   `json:"finishReason,omitempty"`
+	Error            string   `json:"error,omitempty"`
 }
 
 // buildLLMTrace derives a compact diagnostic timeline from the HTTP log
@@ -45,12 +45,12 @@ func buildLLMTrace(entries []transport.HTTPLogEntry) llmTrace {
 
 	for i, e := range entries {
 		req := llmTraceRequest{
-			Seq:        i + 1,
-			Timestamp:  e.Timestamp,
-			StatusCode: e.StatusCode,
-			DurationMs: e.DurationMs,
+			Seq:          i + 1,
+			Timestamp:    e.Timestamp,
+			StatusCode:   e.StatusCode,
+			DurationMs:   e.DurationMs,
 			FinishReason: e.FinishReason,
-			Error:      e.Error,
+			Error:        e.Error,
 		}
 		if e.RequestSummary != nil {
 			req.Model = e.RequestSummary.Model
@@ -88,12 +88,12 @@ func lastRequestAnomaly(reqs []llmTraceRequest) []string {
 	last := reqs[len(reqs)-1]
 	var flags []string
 	if last.LastIsToolResult {
-		flags = append(flags, "last request sent a tool result back to the model (lastRole=tool); " +
-			"verify whether the model actually responded — if no later request exists, " +
+		flags = append(flags, "last request sent a tool result back to the model (lastRole=tool); "+
+			"verify whether the model actually responded — if no later request exists, "+
 			"the tool result may not have been followed up (possible silent stop)")
 	}
 	if strings.EqualFold(last.FinishReason, "length") {
-		flags = append(flags, "last response finished with finish_reason=length: the model was truncated " +
+		flags = append(flags, "last response finished with finish_reason=length: the model was truncated "+
 			"(likely hit a max-tokens/reasoning cap) and may not have produced content or a tool call")
 	}
 	return flags

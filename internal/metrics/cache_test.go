@@ -8,9 +8,9 @@ import "testing"
 
 func TestCacheHitPct(t *testing.T) {
 	cases := []struct {
-		name              string
-		read, write, in   int
-		want              float64
+		name            string
+		read, write, in int
+		want            float64
 	}{
 		{"no activity", 0, 0, 0, 0},
 		{"no activity with prompt", 0, 0, 400, 0},

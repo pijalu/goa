@@ -46,10 +46,10 @@ func TestTodoCommand_Parse(t *testing.T) {
 		{args: []string{"undone", "1"}, kind: "undone", pos: 1},
 		{args: []string{"delete", "2"}, kind: "delete", pos: 2},
 		{args: []string{"rm", "2"}, kind: "delete", pos: 2},
-		{args: []string{"done", "x"}, kind: "error"},   // non-numeric
-		{args: []string{"frobnicate"}, kind: "error"},  // unknown subcommand
-		{args: []string{"edit"}, kind: "error"},        // missing positional
-		{args: []string{"delete"}, kind: "error"},      // missing positional
+		{args: []string{"done", "x"}, kind: "error"},  // non-numeric
+		{args: []string{"frobnicate"}, kind: "error"}, // unknown subcommand
+		{args: []string{"edit"}, kind: "error"},       // missing positional
+		{args: []string{"delete"}, kind: "error"},     // missing positional
 	}
 	for _, tc := range cases {
 		got := cmd.parseArgs(tc.args)

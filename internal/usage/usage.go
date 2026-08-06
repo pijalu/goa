@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pijalu/goa/internal"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pijalu/goa/internal"
 )
 
 // Record is one token-usage observation (a single model turn).

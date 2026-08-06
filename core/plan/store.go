@@ -22,14 +22,14 @@ import (
 // append → mu.Unlock. The store provides a single-writer invariant: exactly one
 // goroutine may hold the mutex at any time.
 type Store struct {
-	root string   // .goa/plans
-	id   string   // plan-<hex>
+	root string // .goa/plans
+	id   string // plan-<hex>
 	mu   sync.Mutex
-	plan *Plan    // in-memory state
-	seq  int      // next event sequence number
+	plan *Plan // in-memory state
+	seq  int   // next event sequence number
 
-	dir  string   // <root>/<id>/
-	f    *os.File // events.jsonl handle (kept open for append)
+	dir string   // <root>/<id>/
+	f   *os.File // events.jsonl handle (kept open for append)
 }
 
 // Create initialises a new plan store, writing the initial plan_created event.
@@ -537,12 +537,12 @@ func (s *Store) applyClarification(evt Event) error {
 func applyItemFields(item *PlanItem, fields map[string]json.RawMessage) error {
 	// Mapping of JSON field names to setter functions.
 	setters := map[string]func(json.RawMessage) error{
-		"title": func(v json.RawMessage) error { return json.Unmarshal(v, &item.Title) },
+		"title":       func(v json.RawMessage) error { return json.Unmarshal(v, &item.Title) },
 		"description": func(v json.RawMessage) error { return json.Unmarshal(v, &item.Description) },
-		"depends_on": func(v json.RawMessage) error { return json.Unmarshal(v, &item.DependsOn) },
-		"role": func(v json.RawMessage) error { return json.Unmarshal(v, &item.Role) },
-		"status": func(v json.RawMessage) error { return json.Unmarshal(v, &item.Status) },
-		"result": func(v json.RawMessage) error { return json.Unmarshal(v, &item.Result) },
+		"depends_on":  func(v json.RawMessage) error { return json.Unmarshal(v, &item.DependsOn) },
+		"role":        func(v json.RawMessage) error { return json.Unmarshal(v, &item.Role) },
+		"status":      func(v json.RawMessage) error { return json.Unmarshal(v, &item.Status) },
+		"result":      func(v json.RawMessage) error { return json.Unmarshal(v, &item.Result) },
 	}
 	for key, val := range fields {
 		setter, ok := setters[key]

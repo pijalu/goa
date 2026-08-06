@@ -23,9 +23,9 @@ import (
 // SKIPPED execution of the 2nd identical call.
 func TestSoftRepeatGuardrail_SecondCallNotSkipped(t *testing.T) {
 	a := NewAgent(Config{
-		Model:                     testModel(provider.ApiOpenAICompletions),
-		MaxToolRepeatConsecutive:  2, // configured: block at 3rd consecutive
-		MaxToolRepeatTotal:        10,
+		Model:                    testModel(provider.ApiOpenAICompletions),
+		MaxToolRepeatConsecutive: 2, // configured: block at 3rd consecutive
+		MaxToolRepeatTotal:       10,
 	})
 
 	callKey := "read::{\"path\":\"x.go\"}"

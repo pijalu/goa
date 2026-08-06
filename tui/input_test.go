@@ -58,7 +58,7 @@ func TestInput_HistoryDown_PastNewest_ReturnsToEmptyLine(t *testing.T) {
 	in.history = []string{"a", "b"}
 
 	in.HandleInput(KeyUp)
-	in.HandleInput(KeyUp) // now at "a"
+	in.HandleInput(KeyUp)   // now at "a"
 	in.HandleInput(KeyDown) // to "b"
 	in.HandleInput(KeyDown) // past newest -> empty
 

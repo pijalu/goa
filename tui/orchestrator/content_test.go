@@ -128,7 +128,7 @@ func TestRenderStatsTable_CacheHitPercentage(t *testing.T) {
 	rows := []AgentEnhancedRow{
 		{Role: "coder", TokensIn: 400, CacheRead: 500, CacheCreation: 100}, // 500/(500+100)=83%
 		{Role: "reviewer", TokensIn: 100, CacheRead: 0, CacheCreation: 50}, // 0% (writes, no reads)
-		{Role: "writer", TokensIn: 50, CacheRead: 0, CacheCreation: 0},    // no activity → "-"
+		{Role: "writer", TokensIn: 50, CacheRead: 0, CacheCreation: 0},     // no activity → "-"
 	}
 	joined := strings.Join(stripAll(RenderStatsTable(rows, 90)), "\n")
 	for _, want := range []string{"83%", "0%", "-"} {

@@ -24,17 +24,17 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 		// Long tool results old enough to be elided (beyond the preserve window).
 		long := strings.Repeat("x", 4000)
 		return []Message{
-			{Type: Content, Role: System, Content: "sys"}, // 0
-			{Type: Content, Role: User, Content: "q1"}, // 1
+			{Type: Content, Role: System, Content: "sys"},                    // 0
+			{Type: Content, Role: User, Content: "q1"},                       // 1
 			{Type: Content, Role: ToolRole, Content: long, ToolCallID: "c1"}, // 2 <- elided (idx < boundary)
 			{Type: Content, Role: ToolRole, Content: long, ToolCallID: "c2"}, // 3 <- elided
 			{Type: Content, Role: ToolRole, Content: long, ToolCallID: "c3"}, // 4 <- elided
-			{Type: Content, Role: Assistant, Content: "a1"}, // 5
-			{Type: Content, Role: User, Content: "q2"}, // 6
+			{Type: Content, Role: Assistant, Content: "a1"},                  // 5
+			{Type: Content, Role: User, Content: "q2"},                       // 6
 			{Type: Content, Role: ToolRole, Content: long, ToolCallID: "c4"}, // 7
-			{Type: Content, Role: Assistant, Content: "a2"}, // 8
-			{Type: Content, Role: User, Content: "q3"}, // 9
-			{Type: Content, Role: Assistant, Content: "a3"}, // 10
+			{Type: Content, Role: Assistant, Content: "a2"},                  // 8
+			{Type: Content, Role: User, Content: "q3"},                       // 9
+			{Type: Content, Role: Assistant, Content: "a3"},                  // 10
 		}
 		// boundary = 11 - preserve(2)*3 = 5 → indices 1..4 elided; 2,3,4 are tool results.
 	}

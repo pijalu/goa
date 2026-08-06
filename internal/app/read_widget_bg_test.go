@@ -56,5 +56,3 @@ func bgParams(t *testing.T, key string) string {
 	r, g, b := ansi.HexToRGB(hex)
 	return "48;2;" + strconv.Itoa(int(r)) + ";" + strconv.Itoa(int(g)) + ";" + strconv.Itoa(int(b))
 }
-
-

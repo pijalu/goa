@@ -78,7 +78,7 @@ func newFakeOrchSource() *fakeOrchSource {
 }
 
 func (f *fakeOrchSource) Subscribe() <-chan orchestrator.Event { return f.events }
-func (f *fakeOrchSource) Done() <-chan struct{}               { return f.done }
+func (f *fakeOrchSource) Done() <-chan struct{}                { return f.done }
 
 // lifecycleEvents is a realistic fanout event sequence used by several tests.
 func lifecycleEvents() []orchestrator.Event {

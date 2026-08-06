@@ -73,6 +73,6 @@ func (t *LogTerminal) logWrite(p []byte) {
 }
 
 var (
-	_ Terminal = (*LogTerminal)(nil)
+	_ Terminal  = (*LogTerminal)(nil)
 	_ io.Writer = (*LogTerminal)(nil)
 )

@@ -455,6 +455,7 @@ func TestMapDriverError(t *testing.T) {
 		}
 	}
 }
+
 // fakeFreshAgent records whether turns were routed via RunFresh (fresh context)
 // or the ordinary Run path, and how many began a fresh context.
 type fakeFreshAgent struct {

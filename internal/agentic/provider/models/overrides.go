@@ -34,17 +34,17 @@ var embeddedOverridesYAML []byte
 // that differ from the models.dev defaults need to be set; the zero value means
 // "inherit from the catalog entry."
 type overrideModel struct {
-	ID              string             `yaml:"id"`
-	Provider        string             `yaml:"provider"`
-	API             string             `yaml:"api,omitempty"`
-	Name            string             `yaml:"name,omitempty"`
-	Reasoning       *bool              `yaml:"reasoning,omitempty"`
-	ContextWindow   *int               `yaml:"context_window,omitempty"`
-	MaxTokens       *int               `yaml:"max_tokens,omitempty"`
-	ThinkingFormat  string             `yaml:"thinking_format,omitempty"`
+	ID               string            `yaml:"id"`
+	Provider         string            `yaml:"provider"`
+	API              string            `yaml:"api,omitempty"`
+	Name             string            `yaml:"name,omitempty"`
+	Reasoning        *bool             `yaml:"reasoning,omitempty"`
+	ContextWindow    *int              `yaml:"context_window,omitempty"`
+	MaxTokens        *int              `yaml:"max_tokens,omitempty"`
+	ThinkingFormat   string            `yaml:"thinking_format,omitempty"`
 	ThinkingLevelMap map[string]string `yaml:"thinking_level_map,omitempty"`
-	Compat          map[string]bool    `yaml:"compat,omitempty"`
-	Cost            *struct {
+	Compat           map[string]bool   `yaml:"compat,omitempty"`
+	Cost             *struct {
 		Input      *float64 `yaml:"input,omitempty"`
 		Output     *float64 `yaml:"output,omitempty"`
 		CacheRead  *float64 `yaml:"cache_read,omitempty"`

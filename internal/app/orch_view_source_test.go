@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core/orchestrator"
-	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 	"github.com/pijalu/goa/tui"
+	orchpanel "github.com/pijalu/goa/tui/orchestrator"
 )
 
 // TestTranslateOrchEvent_Mappings is a table-driven assertion that every
@@ -160,4 +160,3 @@ func TestDisplayOrchestratorQuestion_EmptyQuestionIsNoOp(t *testing.T) {
 		t.Errorf("expected no messages for empty question, got %d", len(a.subs.chat.Messages()))
 	}
 }
-

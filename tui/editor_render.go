@@ -653,7 +653,6 @@ func simulateWordWrap(runes []rune, words []wordInfo, offset, width int) (visLin
 	return visLine, visCol
 }
 
-
 // Focused returns focus state.
 func (e *Editor) Focused() bool {
 	return e.focused

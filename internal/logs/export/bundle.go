@@ -203,7 +203,6 @@ func (c *artifactCollector) addArtifact(a Artifact) {
 	}
 }
 
-
 func (c *artifactCollector) addBytes(target string, data []byte) {
 	if err := c.zb.AddBytes(target, data); err == nil {
 		c.present = append(c.present, target)

@@ -123,8 +123,8 @@ type ChatViewport struct {
 	// toolsPreviewLines is the configured Summary line count (default 10).
 	// showRead controls read tool output visibility (default false = silent).
 	toolsDefaultExpanded bool
-	toolsExpandOverride   *bool
-	toolsPreviewLines     int
+	toolsExpandOverride  *bool
+	toolsPreviewLines    int
 	showRead             bool
 
 	// toolWidgetsDirty is set by the animation ticker to request an in-place
@@ -530,7 +530,6 @@ func (cv *ChatViewport) updateLastEntry(width int) {
 	e.dirty = false
 	cv.renderCache.width = width
 }
-
 
 // Snapshot returns the pure-data view of the conversation for agents/controllers.
 func (cv *ChatViewport) Snapshot() []MessageData { return cv.Conversation.Snapshot() }

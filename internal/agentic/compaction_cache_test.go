@@ -339,7 +339,7 @@ func TestCacheGates_FirstTurnUsageLessProviderStaysCold(t *testing.T) {
 // deferral ceiling — before the fix this truncated and busted the hot cache.
 func TestMicroCompact_MidTurnDeferredWhenRoundsActive(t *testing.T) {
 	a := microAgent(time.Now().Add(-2 * time.Hour)) // stale inter-turn clock
-	a.lastRoundActivity = time.Now()                 // but rounds still completing
+	a.lastRoundActivity = time.Now()                // but rounds still completing
 	a.microCompactForced(false)
 	if anyTruncated(a) {
 		t.Fatalf("micro compaction truncated mid-turn on a stale lastTurnEnd; " +

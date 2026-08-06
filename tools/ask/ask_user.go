@@ -78,7 +78,7 @@ type clarifyAnswer struct {
 // tool to reach for when it needs clarification before proceeding.
 func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
-		Name: "ask_user_question",
+		Name:        "ask_user_question",
 		Description: "Ask the user for clarification.",
 		Schema: map[string]any{
 			"type": "object",
@@ -96,8 +96,8 @@ func (t *AskUserQuestionTool) Schema() agentic.ToolSchema {
 								"description": "answer choices (max 6)",
 								"items":       map[string]any{"type": "string"},
 							},
-							"required":         map[string]any{"type": "boolean", "description": "If true, cancellation is an error. Default false."},
-							"allow_free_text":  map[string]any{"type": "boolean", "description": "If false with options, restrict to listed options. Default true."},
+							"required":        map[string]any{"type": "boolean", "description": "If true, cancellation is an error. Default false."},
+							"allow_free_text": map[string]any{"type": "boolean", "description": "If false with options, restrict to listed options. Default true."},
 						},
 						"required": []string{"question"},
 					},

@@ -61,7 +61,7 @@ func getSpinner() (frames []string, interval time.Duration) {
 // Concurrency: the commandLoop is the sole owner of StatusMsg state. Show,
 // Clear, Render and the frame-advance all run on the loop; the animation
 // goroutine only forwards each tick back to the loop via TUI.Apply (see
-//). No mutex is required.
+// ). No mutex is required.
 type StatusMsg struct {
 	text          string
 	spinning      bool

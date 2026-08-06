@@ -143,8 +143,8 @@ var canonicalProviders = map[provider.Provider]bool{
 	provider.ProviderGoogle: true, provider.ProviderDeepSeek: true,
 	provider.ProviderMistral: true, provider.ProviderKimi: true,
 	provider.ProviderKimiCode: true, provider.ProviderZai: true,
-	provider.ProviderZaiApi: true,
-	provider.Provider("xai"): true,
+	provider.ProviderZaiApi:   true,
+	provider.Provider("xai"):  true,
 	provider.ProviderTogether: true, provider.ProviderFireworks: true,
 	provider.ProviderGroq: true, provider.ProviderPerplexity: true,
 }

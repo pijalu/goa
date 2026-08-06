@@ -60,12 +60,12 @@ const (
 // status colors, and visual truncation.
 type ToolExecutionComponent struct {
 	Container
-	box          *toolBox
-	toolName     string
-	toolArgs     string
-	args         map[string]any
-	output       string
-	expanded     bool
+	box      *toolBox
+	toolName string
+	toolArgs string
+	args     map[string]any
+	output   string
+	expanded bool
 	// expandedSet is true once the user has explicitly toggled this block
 	// (Enter/Ctrl+O on the focused widget). An explicit choice wins over the
 	// global view policy (Ctrl+O-all / config default) in BOTH directions — so

@@ -361,7 +361,7 @@ func (f *fakeSessionStore) DeleteSession(name string) error             { return
 func (f *fakeSessionStore) ImportSession(name, sourcePath string) error { return nil }
 func (f *fakeSessionStore) SessionID() string                           { return f.sessionID }
 func (f *fakeSessionStore) CurrentSessionPath() string                  { return f.sessionPath }
-func (f *fakeSessionStore) StartSessionWithID(id string) string          { return id }
+func (f *fakeSessionStore) StartSessionWithID(id string) string         { return id }
 
 // TestBuildBundle_IncludesContributorArtifacts verifies the Open/Closed
 // extension point: a registered ArtifactContributor's artifacts are bundled
@@ -389,7 +389,7 @@ func TestBuildBundle_IncludesContributorArtifacts(t *testing.T) {
 	})
 
 	ctx := core.Context{
-		Config:    &config.Config{ConfigDir: filepath.Join(dir, ".goa")},
+		Config:     &config.Config{ConfigDir: filepath.Join(dir, ".goa")},
 		ProjectDir: dir,
 	}
 	result, err := BuildBundle(ctx, BuildOptions{})

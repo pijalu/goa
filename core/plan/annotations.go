@@ -73,9 +73,9 @@ func renderResolved(b *strings.Builder, p *Plan, comments []PlanComment) {
 
 // commentGroup groups comments by item.
 type commentGroup struct {
-	ItemID   string
+	ItemID    string
 	ItemTitle string
-	Comments []PlanComment
+	Comments  []PlanComment
 }
 
 // openCommentsByItem returns open comments grouped by item,

@@ -156,9 +156,9 @@ func TestResolveModulePath(t *testing.T) {
 		wantErr bool
 	}{
 		{"./lib/a.js", false},
-		{"lib/a", false},       // extension appended
-		{"./a", false},         // resolves to a.js
-		{"../escape.js", true}, // traversal
+		{"lib/a", false},        // extension appended
+		{"./a", false},          // resolves to a.js
+		{"../escape.js", true},  // traversal
 		{"/abs/path.js", false}, // absolute joins under base; still confined by hasPathPrefix? joined→base/abs/path.js
 		{"", true},              // empty
 	}

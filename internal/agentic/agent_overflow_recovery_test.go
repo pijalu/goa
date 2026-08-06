@@ -150,7 +150,7 @@ func TestMaybeCompressAfterLengthTruncation_IgnoresOutputCapTruncation(t *testin
 	before := len(a.GetHistory())
 
 	a.lastStopReason = provider.StopReasonMaxTokens
-	a.lastGrossInputTokens = 3000 // prompt only 30% full…
+	a.lastGrossInputTokens = 3000  // prompt only 30% full…
 	a.lastUsageOutputTokens = 5000 // …but a long output hit the cap
 
 	a.maybeCompressAfterLengthTruncation()

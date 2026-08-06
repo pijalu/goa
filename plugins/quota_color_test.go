@@ -13,9 +13,9 @@ import (
 
 // ANSI RGB triplets produced by the harness SegmentColor hexes.
 const (
-	rgbOk       = "38;2;63;185;80"  // #3fb950
-	rgbWarn     = "38;2;210;153;34" // #d29922
-	rgbCritical = "38;2;248;81;73"  // #f85149
+	rgbOk       = "38;2;63;185;80"   // #3fb950
+	rgbWarn     = "38;2;210;153;34"  // #d29922
+	rgbCritical = "38;2;248;81;73"   // #f85149
 	rgbPending  = "38;2;139;148;158" // #8b949e
 )
 

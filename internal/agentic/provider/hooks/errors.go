@@ -159,9 +159,9 @@ var defaultContextOverflowPatterns = []string{
 	"sequence length",
 	"model's context window",
 	"exceeds the maximum",
-	"context size",           // catches llama.cpp "max context size" / "available context size"
+	"context size", // catches llama.cpp "max context size" / "available context size"
 	"context size limit",
-	"exceed_context",         // catches llama.cpp type field "exceed_context_size_error"
+	"exceed_context", // catches llama.cpp type field "exceed_context_size_error"
 	"too long",
 }
 
@@ -169,10 +169,10 @@ var defaultContextOverflowPatterns = []string{
 // would miss due to boundary characters (e.g. "tokens) exceeds" vs.
 // "tokens exceed").  Each regex is checked before the substring list.
 var defaultContextOverflowRegexes = []*regexp.Regexp{
-	regexp.MustCompile(`input\s*\(\d+\s*tokens\)\s*(?:is\s+longer|exceeds)`),           // Together AI, llama.ccp
-	regexp.MustCompile(`exceeds\s+the\s+(?:available\s+)?context\s+size`),                    // llama.ccp exact
-	regexp.MustCompile(`input\s+token\s+count.*exceeds\s+the\s+maximum`),                      // Google Gemini
-	regexp.MustCompile(`exceeds\s+(?:the\s+)?(?:model'?s\s+)?maximum\s+context\s+length`),      // OpenAI, LiteLLM
+	regexp.MustCompile(`input\s*\(\d+\s*tokens\)\s*(?:is\s+longer|exceeds)`),              // Together AI, llama.ccp
+	regexp.MustCompile(`exceeds\s+the\s+(?:available\s+)?context\s+size`),                 // llama.ccp exact
+	regexp.MustCompile(`input\s+token\s+count.*exceeds\s+the\s+maximum`),                  // Google Gemini
+	regexp.MustCompile(`exceeds\s+(?:the\s+)?(?:model'?s\s+)?maximum\s+context\s+length`), // OpenAI, LiteLLM
 }
 
 // defaultNonOverflowPatterns are patterns that, when present in an error,
@@ -181,9 +181,9 @@ var defaultContextOverflowRegexes = []*regexp.Regexp{
 // substrings (e.g. Bedrock "Throttling error: Too many tokens" contains
 // "too many tokens" which matches defaultContextOverflowPatterns).
 var defaultNonOverflowPatterns = []string{
-	"throttling error",    // AWS Bedrock throttling
-	"rate limit",          // HTTP 429 rate limiting
-	"too many requests",   // HTTP 429 style
+	"throttling error",  // AWS Bedrock throttling
+	"rate limit",        // HTTP 429 rate limiting
+	"too many requests", // HTTP 429 style
 }
 
 var rateLimitPatterns = []string{

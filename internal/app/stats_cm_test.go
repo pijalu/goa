@@ -31,8 +31,8 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 		// byte-identical all-zero emissions into one, which is the re-emission
 		// artifact that guard exists to remove. Distinct-turn busts still count.
 		a.turnCount++
-		feed(a, 0)   // bust 2 (new turn)
-		feed(a, 60)  // cache back — no miss
+		feed(a, 0)  // bust 2 (new turn)
+		feed(a, 60) // cache back — no miss
 		if a.tokenCacheMisses != 2 {
 			t.Errorf("tokenCacheMisses = %d, want 2", a.tokenCacheMisses)
 		}

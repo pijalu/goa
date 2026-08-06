@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core"
-	"github.com/pijalu/goa/internal/auth"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/auth"
 )
 
 type fakePrompter struct {

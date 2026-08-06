@@ -20,9 +20,9 @@ import (
 // 404 burned the retry budget with "Reconnecting…" churn before failing.
 func TestErrorHook_404RetryableScope(t *testing.T) {
 	cases := []struct {
-		name           string
-		provider       string
-		wantRetryable  bool
+		name          string
+		provider      string
+		wantRetryable bool
 	}{
 		{"openai 404 retried once", "openai", true},
 		{"anthropic 404 surfaces immediately", "anthropic", false},

@@ -463,11 +463,11 @@ func (s *SessionStore) ImportSession(name, sourcePath string) error {
 
 // sessionScan accumulates listing metadata while scanning a session file.
 type sessionScan struct {
-	count          int
-	tokens         int
-	firstMsg       string
+	count           int
+	tokens          int
+	firstMsg        string
 	hasConversation bool
-	hasModelTurn   bool
+	hasModelTurn    bool
 }
 
 // absorb folds one JSONL line into the scan: event count, token totals, the

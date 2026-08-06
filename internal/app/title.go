@@ -51,9 +51,9 @@ const titleStartupTransitionInterval = time.Second
 // rather than blocking, so a slow terminal can never stall input or the
 // animation ticker.
 type titleController struct {
-	frames    []string     // working-animation frames (empty = no animation)
-	interval  time.Duration
-	animated  bool // animated-title config (false = always static)
+	frames   []string // working-animation frames (empty = no animation)
+	interval time.Duration
+	animated bool // animated-title config (false = always static)
 
 	mu      sync.Mutex
 	phase   titlePhase
@@ -65,7 +65,7 @@ type titleController struct {
 
 	// writes carries pending title strings to the writer goroutine. Capacity 1
 	// plus latest-wins drop keeps only the freshest title queued.
-	writes chan string
+	writes  chan string
 	writeCh chan<- string // sink handed to enqueue (writes)
 }
 

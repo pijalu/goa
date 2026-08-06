@@ -43,26 +43,26 @@ type RequestSummary struct {
 	Model            string   `json:"model,omitempty"`
 	Stream           bool     `json:"stream,omitempty"`
 	MessageCount     int      `json:"messageCount"`
-	Roles            []string `json:"roles,omitempty"`       // tail of the role sequence (last 16)
-	ToolCallBlocks   int      `json:"toolCallBlocks"`        // assistant messages carrying tool_calls
-	ToolResultBlocks int      `json:"toolResultBlocks"`      // tool-role messages (tool results sent back)
+	Roles            []string `json:"roles,omitempty"`  // tail of the role sequence (last 16)
+	ToolCallBlocks   int      `json:"toolCallBlocks"`   // assistant messages carrying tool_calls
+	ToolResultBlocks int      `json:"toolResultBlocks"` // tool-role messages (tool results sent back)
 	LastRole         string   `json:"lastRole,omitempty"`
-	LastIsToolResult bool     `json:"lastIsToolResult"`      // last message is a tool result being sent back
+	LastIsToolResult bool     `json:"lastIsToolResult"` // last message is a tool result being sent back
 }
 
 // HTTPLogEntry records a single HTTP request/response transaction.
 type HTTPLogEntry struct {
-	Timestamp       string          `json:"timestamp"`
-	Method          string          `json:"method"`
-	URL             string          `json:"url"`
-	StatusCode      int             `json:"statusCode,omitempty"`
-	DurationMs      int64           `json:"durationMs"`
-	Error           string          `json:"error,omitempty"`
-	RequestSummary  *RequestSummary `json:"requestSummary,omitempty"`
-	RequestBody     string          `json:"requestBody,omitempty"`  // truncated tail of the request body
-	ResponseBody    string          `json:"responseBody,omitempty"` // head of the response stream
-	ResponseTail    string          `json:"responseTail,omitempty"` // tail of the response stream (finish_reason/usage)
-	FinishReason    string          `json:"finishReason,omitempty"`
+	Timestamp       string            `json:"timestamp"`
+	Method          string            `json:"method"`
+	URL             string            `json:"url"`
+	StatusCode      int               `json:"statusCode,omitempty"`
+	DurationMs      int64             `json:"durationMs"`
+	Error           string            `json:"error,omitempty"`
+	RequestSummary  *RequestSummary   `json:"requestSummary,omitempty"`
+	RequestBody     string            `json:"requestBody,omitempty"`  // truncated tail of the request body
+	ResponseBody    string            `json:"responseBody,omitempty"` // head of the response stream
+	ResponseTail    string            `json:"responseTail,omitempty"` // tail of the response stream (finish_reason/usage)
+	FinishReason    string            `json:"finishReason,omitempty"`
 	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
 }
 

@@ -19,8 +19,8 @@ import (
 // and DeleteProjectField calls for assertion.
 type mcpRecordingSaver struct {
 	fakeConfigSaver
-	savedPaths  [][]string
-	savedValues []any
+	savedPaths   [][]string
+	savedValues  []any
 	deletedPaths [][]string
 }
 
@@ -260,7 +260,7 @@ func TestMCPList_DefaultsToList(t *testing.T) {
 	var buf strings.Builder
 	ctx := mcpTestContext(&buf)
 	ctx.Config.MCP["srv"] = config.MCPServerConfig{
-		Type: config.MCPTypeLocal,
+		Type:    config.MCPTypeLocal,
 		Command: []string{"cmd"},
 	}
 	cmd := &MCPCommand{}

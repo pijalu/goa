@@ -152,9 +152,9 @@ func parseGoFailures(output string) []Failure {
 }
 
 type failureParser struct {
-	lines    []string
-	failures []Failure
-	current  Failure
+	lines     []string
+	failures  []Failure
+	current   Failure
 	inFailure bool
 }
 

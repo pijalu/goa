@@ -36,14 +36,14 @@ func SafeToolArguments(args string) string {
 
 // Frame expectations for the repair scanner.
 const (
-	expectObjKeyOrEnd  uint8 = iota // just after '{'
-	expectObjKey                    // after ',' in an object
-	expectObjColon                  // after a key string
-	expectObjValue                  // after ':'
-	expectObjCommaOrEnd             // after a complete object value
-	expectArrValueOrEnd             // just after '['
-	expectArrValue                  // after ',' in an array
-	expectArrCommaOrEnd             // after a complete array element
+	expectObjKeyOrEnd   uint8 = iota // just after '{'
+	expectObjKey                     // after ',' in an object
+	expectObjColon                   // after a key string
+	expectObjValue                   // after ':'
+	expectObjCommaOrEnd              // after a complete object value
+	expectArrValueOrEnd              // just after '['
+	expectArrValue                   // after ',' in an array
+	expectArrCommaOrEnd              // after a complete array element
 )
 
 type jsonRepairFrame struct {

@@ -27,7 +27,7 @@ type TermEmulator struct {
 	scrollback  []string
 	row, col    int
 	curBg       string // current SGR background params (e.g. "48;2;42;50;41")
-	pendingWrap bool // DEC deferred wrap: last cell filled, next char wraps
+	pendingWrap bool   // DEC deferred wrap: last cell filled, next char wraps
 	// scrollTop/scrollBot model the DECSTBM scroll region (0-indexed,
 	// inclusive). \n scrolls only within [scrollTop, scrollBot]; rows outside
 	// the region never move, which is how pinned chrome is emulated. Defaults

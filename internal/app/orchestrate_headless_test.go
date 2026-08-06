@@ -95,24 +95,24 @@ func TestHeadless_OrchestrateRejectsNoAdapter(t *testing.T) {
 // noopHeadlessRenderer satisfies HeadlessRenderer with no-ops.
 type noopHeadlessRenderer struct{}
 
-func (noopHeadlessRenderer) UserPrompt(string)                       {}
-func (noopHeadlessRenderer) AssistantChunk(string)                   {}
-func (noopHeadlessRenderer) ThinkingStart()                          {}
-func (noopHeadlessRenderer) ThinkingChunk(string)                    {}
-func (noopHeadlessRenderer) ThinkingEnd()                            {}
-func (noopHeadlessRenderer) ToolCall(string, string, string)         {}
-func (noopHeadlessRenderer) ToolResult(string, string, string)       {}
-func (noopHeadlessRenderer) Stats(sessionStats, int)                 {}
+func (noopHeadlessRenderer) UserPrompt(string)                        {}
+func (noopHeadlessRenderer) AssistantChunk(string)                    {}
+func (noopHeadlessRenderer) ThinkingStart()                           {}
+func (noopHeadlessRenderer) ThinkingChunk(string)                     {}
+func (noopHeadlessRenderer) ThinkingEnd()                             {}
+func (noopHeadlessRenderer) ToolCall(string, string, string)          {}
+func (noopHeadlessRenderer) ToolResult(string, string, string)        {}
+func (noopHeadlessRenderer) Stats(sessionStats, int)                  {}
 func (noopHeadlessRenderer) Summary(sessionStats, int, time.Duration) {}
-func (noopHeadlessRenderer) Error(string)                            {}
-func (noopHeadlessRenderer) AssistantStreamEnd()                     {}
-func (noopHeadlessRenderer) CompanionStart(int)                      {}
-func (noopHeadlessRenderer) CompanionEnd(int)                        {}
-func (noopHeadlessRenderer) CompanionThinkingStart()                 {}
-func (noopHeadlessRenderer) CompanionThinkingChunk(string)           {}
-func (noopHeadlessRenderer) CompanionThinkingEnd()                   {}
-func (noopHeadlessRenderer) CompanionChunk(string)                   {}
-func (noopHeadlessRenderer) Flush()                                  {}
+func (noopHeadlessRenderer) Error(string)                             {}
+func (noopHeadlessRenderer) AssistantStreamEnd()                      {}
+func (noopHeadlessRenderer) CompanionStart(int)                       {}
+func (noopHeadlessRenderer) CompanionEnd(int)                         {}
+func (noopHeadlessRenderer) CompanionThinkingStart()                  {}
+func (noopHeadlessRenderer) CompanionThinkingChunk(string)            {}
+func (noopHeadlessRenderer) CompanionThinkingEnd()                    {}
+func (noopHeadlessRenderer) CompanionChunk(string)                    {}
+func (noopHeadlessRenderer) Flush()                                   {}
 
 // fakeRuntimeBuilder returns a prebuilt runtime, letting tests drive
 // startOrchestrate without a live provider pool.

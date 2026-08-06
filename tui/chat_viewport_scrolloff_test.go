@@ -68,7 +68,7 @@ func TestChatViewport_IsScrolledOff_HeaderAboveTranscript(t *testing.T) {
 		headerH      = 12 // mascot/header child above the transcript
 		bottomChrome = 5  // status + input + footer
 	)
-	visibleH := termH - bottomChrome   // 25 — the true compositor band
+	visibleH := termH - bottomChrome         // 25 — the true compositor band
 	budget := termH - headerH - bottomChrome // 13 — what the layout allocates
 	cv.SetViewportHeight(termH)
 	cv.SetBottomChromeHeight(bottomChrome)

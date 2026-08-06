@@ -108,4 +108,3 @@ func TestEditor_ClearResetsHeightViaTUI(t *testing.T) {
 		t.Errorf("cleared editor height = %d, want 3 (single-line collapsed)", clearedHeight)
 	}
 }
-

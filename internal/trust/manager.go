@@ -23,11 +23,11 @@ const (
 
 // Manager stores per-project trust decisions.
 type Manager struct {
-	mu                    sync.RWMutex
-	path                  string
-	decisions             map[string]Decision
-	defaultDecision       Decision
-	projectTrustPrompted  bool // whether the user has been asked about project skills
+	mu                   sync.RWMutex
+	path                 string
+	decisions            map[string]Decision
+	defaultDecision      Decision
+	projectTrustPrompted bool // whether the user has been asked about project skills
 }
 
 // NewManager creates a trust manager.

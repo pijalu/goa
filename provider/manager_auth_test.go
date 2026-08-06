@@ -54,8 +54,8 @@ func TestListModels_UsesAuthStoreAPIKey(t *testing.T) {
 // fakeOAuthProvider is a minimal OAuthProvider for testing refresh+persist.
 type fakeOAuthProvider struct{ refreshed *oauth.Tokens }
 
-func (f *fakeOAuthProvider) Name() string                                          { return "fake" }
-func (f *fakeOAuthProvider) AuthURL(ctx context.Context) (string, error)           { return "", nil }
+func (f *fakeOAuthProvider) Name() string                                { return "fake" }
+func (f *fakeOAuthProvider) AuthURL(ctx context.Context) (string, error) { return "", nil }
 func (f *fakeOAuthProvider) Exchange(ctx context.Context, code string) (*oauth.Tokens, error) {
 	return f.refreshed, nil
 }

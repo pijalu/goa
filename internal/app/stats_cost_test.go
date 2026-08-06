@@ -20,10 +20,10 @@ import (
 // ignored entirely in cost computation.
 func TestComputeCost_CacheBuckets(t *testing.T) {
 	pricing := &config.PricingConfig{
-		InputPer1M:      3.0,   // $3 / 1M fresh input
-		OutputPer1M:     15.0,  // $15 / 1M output
-		CacheReadPer1M:  0.30,  // $0.30 / 1M cache reads (1/10 input)
-		CacheWritePer1M: 3.75,  // $3.75 / 1M cache writes (1.25x input)
+		InputPer1M:      3.0,  // $3 / 1M fresh input
+		OutputPer1M:     15.0, // $15 / 1M output
+		CacheReadPer1M:  0.30, // $0.30 / 1M cache reads (1/10 input)
+		CacheWritePer1M: 3.75, // $3.75 / 1M cache writes (1.25x input)
 	}
 
 	t.Run("no cache: input+output only", func(t *testing.T) {

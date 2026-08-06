@@ -27,10 +27,10 @@ import (
 type msgKind int
 
 const (
-	kindOther msgKind = iota // user prompt / plain assistant text (append-once)
-	kindCall                 // assistant message carrying tool_call blocks
-	kindNote                 // assistant elision note (elided form of a call)
-	kindResult               // tool result message
+	kindOther  msgKind = iota // user prompt / plain assistant text (append-once)
+	kindCall                  // assistant message carrying tool_call blocks
+	kindNote                  // assistant elision note (elided form of a call)
+	kindResult                // tool result message
 )
 
 func classify(m provider.Message) (kind msgKind, callID, toolName string, resultElided bool) {
@@ -266,7 +266,6 @@ func resultIsElidedForm(m provider.Message) bool {
 	}
 	return false
 }
-
 
 // wire renders a message's content blocks compactly for failure output.
 func wire(m provider.Message) string {

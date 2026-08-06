@@ -14,12 +14,12 @@ import (
 // fields they set.
 func TestDeepMergeContextCompressionThresholds(t *testing.T) {
 	base := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:          boolPtr(true),
 		ThresholdPercent: 80,
 		Thresholds:       CompressionThresholdsConfig{SoftPercent: 50, TriggerPercent: 75, HardPercent: 95},
 	}}
 	override := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:    boolPtr(true),
 		Thresholds: CompressionThresholdsConfig{TriggerPercent: 85},
 	}}
 	base.DeepMerge(override)
@@ -83,7 +83,7 @@ func TestDeepMergeContextCompressionPerModel(t *testing.T) {
 func TestDeepMergeContextCompressionMicroCompaction(t *testing.T) {
 	base := &Config{ContextCompression: ContextCompressionConfig{Enabled: boolPtr(true)}}
 	override := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:         boolPtr(true),
 		MicroCompaction: MicroCompactionSettings{KeepRecentMessages: 30, MinContextRatio: 0.6},
 	}}
 	base.DeepMerge(override)
@@ -104,14 +104,14 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "valid tiers",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{SoftPercent: 50, TriggerPercent: 80, HardPercent: 95},
 			},
 		},
 		{
 			name: "soft above trigger rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{SoftPercent: 85, TriggerPercent: 80},
 			},
 			wantErr: "soft_percent (85) must be ≤ trigger_percent (80)",
@@ -119,7 +119,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "trigger above hard rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{TriggerPercent: 96, HardPercent: 95},
 			},
 			wantErr: "trigger_percent (96) must be ≤ hard_percent (95)",
@@ -127,7 +127,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "out of range rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{HardPercent: 101},
 			},
 			wantErr: "hard_percent: must be 10-95 in 5% increments",
@@ -135,14 +135,14 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "soft disable (-1) accepted",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{SoftPercent: -1},
 			},
 		},
 		{
 			name: "soft negative below -1 rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{SoftPercent: -2},
 			},
 			wantErr: "soft_percent: must be 10-95 in 5% increments",
@@ -150,7 +150,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "non 5-step increment rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{TriggerPercent: 42},
 			},
 			wantErr: "trigger_percent: must be 10-95 in 5% increments",
@@ -158,7 +158,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "level below 10 rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Thresholds: CompressionThresholdsConfig{SoftPercent: 5},
 			},
 			wantErr: "soft_percent: must be 10-95 in 5% increments",
@@ -166,14 +166,14 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "valid per-layer strategies accepted",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Strategies: CompressionLayerStrategiesConfig{Soft: "micro", Trigger: "tool_elision", Hard: "hybrid"},
 			},
 		},
 		{
 			name: "soft layer LLM strategy rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Strategies: CompressionLayerStrategiesConfig{Soft: "summarize"},
 			},
 			wantErr: "soft layer must be zero-LLM",
@@ -181,7 +181,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "unknown layer strategy rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:    boolPtr(true),
 				Strategies: CompressionLayerStrategiesConfig{Hard: "bogus"},
 			},
 			wantErr: `strategies.hard: unknown strategy "bogus"`,
@@ -189,14 +189,14 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "cache gate values accepted",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:   boolPtr(true),
 				CacheGate: "off",
 			},
 		},
 		{
 			name: "invalid cache gate rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:   boolPtr(true),
 				CacheGate: "maybe",
 			},
 			wantErr: `cache_gate: must be "on" or "off"`,
@@ -204,7 +204,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "unknown per-model key rejected",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:  boolPtr(true),
 				PerModel: map[string]ModelCompressionOverride{"ghost": {MaxTokens: 1000}},
 			},
 			wantErr: `no model with id "ghost" is configured`,
@@ -212,7 +212,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "known per-model key accepted",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:  boolPtr(true),
 				PerModel: map[string]ModelCompressionOverride{"qwen": {MaxTokens: 1000}},
 			},
 			models: []ModelConfig{{ID: "qwen", ProviderID: "p", Model: "qwen3"}},
@@ -231,7 +231,7 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "per-model strategy validated",
 			cfg: ContextCompressionConfig{
-				Enabled: boolPtr(true),
+				Enabled:  boolPtr(true),
 				PerModel: map[string]ModelCompressionOverride{"qwen": {Strategy: "bogus"}},
 			},
 			models:  []ModelConfig{{ID: "qwen", ProviderID: "p", Model: "qwen3"}},

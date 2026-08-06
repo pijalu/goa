@@ -61,7 +61,7 @@ func registerCapturingProvider(name string) *capturingProvider {
 // mockGoalProvider returns a stable static reminder and dynamic progress that
 // can be distinguished in assertions.
 type mockGoalProvider struct {
-	staticReminder string
+	staticReminder  string
 	dynamicProgress string
 }
 

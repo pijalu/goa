@@ -23,8 +23,8 @@ type MajorModeSpec struct {
 	DefaultAutonomy internal.AutonomyLevel `yaml:"default_autonomy" json:"default_autonomy"`
 	Temperature     float64                `yaml:"temperature,omitempty" json:"temperature,omitempty"`
 	MaxTokens       int                    `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
-	Body            string              `yaml:"body,omitempty" json:"body,omitempty"`
-	Guard           perms.GuardConfig   `yaml:"guard,omitempty" json:"guard,omitempty"`
+	Body            string                 `yaml:"body,omitempty" json:"body,omitempty"`
+	Guard           perms.GuardConfig      `yaml:"guard,omitempty" json:"guard,omitempty"`
 }
 
 // SkillSpec defines a skill that can be on the skill stack.

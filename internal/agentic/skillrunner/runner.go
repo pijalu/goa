@@ -71,13 +71,13 @@ func NewAgentWithSkillsLoader(cfg agentic.Config, loader *SkillsLoader, workDir 
 	}
 
 	return agentic.NewAgent(agentic.Config{
-		Model:              cfg.Model,
-		APIKey:             cfg.APIKey,
-		StreamOptions:      cfg.StreamOptions,
-		SystemPrompt:       systemPrompt,
-		Logger:             cfg.Logger,
-		Tools:              allTools,
-		SkillExecutionMode: cfg.SkillExecutionMode,
+		Model:                    cfg.Model,
+		APIKey:                   cfg.APIKey,
+		StreamOptions:            cfg.StreamOptions,
+		SystemPrompt:             systemPrompt,
+		Logger:                   cfg.Logger,
+		Tools:                    allTools,
+		SkillExecutionMode:       cfg.SkillExecutionMode,
 		MaxToolRepeatTotal:       cfg.MaxToolRepeatTotal,
 		MaxToolRepeatConsecutive: cfg.MaxToolRepeatConsecutive,
 	}), nil
@@ -120,18 +120,18 @@ func buildInlineSystemPrompt(cfg agentic.Config, loader *SkillsLoader) string {
 
 func newSubAgentRunner(cfg agentic.Config, loader *SkillsLoader, workDir string, executionMode ExecutionMode) (*Runner, error) {
 	runner, err := NewRunner(Config{
-		Loader:             loader,
-		Model:              cfg.Model,
-		StreamOptions:      cfg.StreamOptions,
-		WorkDir:            workDir,
-		Logger:             cfg.Logger,
-		ExecutionMode:      executionMode,
+		Loader:                   loader,
+		Model:                    cfg.Model,
+		StreamOptions:            cfg.StreamOptions,
+		WorkDir:                  workDir,
+		Logger:                   cfg.Logger,
+		ExecutionMode:            executionMode,
 		MaxToolRepeatTotal:       cfg.MaxToolRepeatTotal,
 		MaxToolRepeatConsecutive: cfg.MaxToolRepeatConsecutive,
-		ContextCompression: cfg.ContextCompression,
-		ReasoningEffort:    cfg.ReasoningEffort,
-		ToolResultAsUser:   cfg.ToolResultAsUser,
-		SkillExecutionMode: cfg.SkillExecutionMode,
+		ContextCompression:       cfg.ContextCompression,
+		ReasoningEffort:          cfg.ReasoningEffort,
+		ToolResultAsUser:         cfg.ToolResultAsUser,
+		SkillExecutionMode:       cfg.SkillExecutionMode,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create skill runner: %w", err)
@@ -541,20 +541,20 @@ func (r *Runner) buildSubRunner(skill *Skill, parentTools []agentic.Tool) *Runne
 		return nil
 	}
 	subRunner, err := NewRunner(Config{
-		Skills:             append(inheritedSkills, skill.SubSkills...),
-		Model:              r.cfg.Model,
-		StreamOptions:      r.cfg.StreamOptions,
-		WorkDir:            r.cfg.WorkDir,
-		Logger:             r.cfg.Logger,
-		ParentTools:        parentTools,
-		Observer:           r.cfg.Observer,
-		Enricher:           r.cfg.Enricher,
+		Skills:                   append(inheritedSkills, skill.SubSkills...),
+		Model:                    r.cfg.Model,
+		StreamOptions:            r.cfg.StreamOptions,
+		WorkDir:                  r.cfg.WorkDir,
+		Logger:                   r.cfg.Logger,
+		ParentTools:              parentTools,
+		Observer:                 r.cfg.Observer,
+		Enricher:                 r.cfg.Enricher,
 		MaxToolRepeatTotal:       r.cfg.MaxToolRepeatTotal,
 		MaxToolRepeatConsecutive: r.cfg.MaxToolRepeatConsecutive,
-		ContextCompression: r.cfg.ContextCompression,
-		ReasoningEffort:    r.cfg.ReasoningEffort,
-		ToolResultAsUser:   r.cfg.ToolResultAsUser,
-		SkillExecutionMode: r.cfg.SkillExecutionMode,
+		ContextCompression:       r.cfg.ContextCompression,
+		ReasoningEffort:          r.cfg.ReasoningEffort,
+		ToolResultAsUser:         r.cfg.ToolResultAsUser,
+		SkillExecutionMode:       r.cfg.SkillExecutionMode,
 	})
 	if err != nil {
 		if r.cfg.Logger != nil {
@@ -591,18 +591,18 @@ func (r *Runner) inheritedSkills(skill *Skill) []*Skill {
 
 func (r *Runner) newSubAgent(systemPrompt string, subTools []agentic.Tool) *agentic.Agent {
 	return agentic.NewAgent(agentic.Config{
-		Model:              r.cfg.Model,
-		APIKey:             r.cfg.StreamOptions.APIKey,
-		StreamOptions:      r.cfg.StreamOptions,
-		SystemPrompt:       systemPrompt,
-		Tools:              subTools,
-		Logger:             r.cfg.Logger,
-		SkillExecutionMode: r.cfg.SkillExecutionMode,
-		ContextCompression: r.cfg.ContextCompression,
+		Model:                    r.cfg.Model,
+		APIKey:                   r.cfg.StreamOptions.APIKey,
+		StreamOptions:            r.cfg.StreamOptions,
+		SystemPrompt:             systemPrompt,
+		Tools:                    subTools,
+		Logger:                   r.cfg.Logger,
+		SkillExecutionMode:       r.cfg.SkillExecutionMode,
+		ContextCompression:       r.cfg.ContextCompression,
 		MaxToolRepeatTotal:       r.cfg.MaxToolRepeatTotal,
 		MaxToolRepeatConsecutive: r.cfg.MaxToolRepeatConsecutive,
-		ReasoningEffort:    r.cfg.ReasoningEffort,
-		ToolResultAsUser:   r.cfg.ToolResultAsUser,
+		ReasoningEffort:          r.cfg.ReasoningEffort,
+		ToolResultAsUser:         r.cfg.ToolResultAsUser,
 	})
 }
 

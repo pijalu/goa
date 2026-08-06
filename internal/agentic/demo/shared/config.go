@@ -18,15 +18,15 @@ import (
 
 // Config holds the LLM connection settings shared across demos.
 type Config struct {
-	Endpoint         string
-	APIKey           string
-	Model            string
-	SkillMode        string
-	Compression      string
-	MaxTokens        int
-	Threshold        int
-	DetectContext    bool
-	ToolResultAsUser bool
+	Endpoint                 string
+	APIKey                   string
+	Model                    string
+	SkillMode                string
+	Compression              string
+	MaxTokens                int
+	Threshold                int
+	DetectContext            bool
+	ToolResultAsUser         bool
 	MaxToolRepeatTotal       int
 	MaxToolRepeatConsecutive int
 	ReasoningEffort          string
@@ -55,15 +55,15 @@ func Parse(defaultEndpoint, defaultModel string) Config {
 	}
 
 	cfg := Config{
-		Endpoint:        firstNonEmpty(*endpointFlag, os.Getenv("AGENTIC_ENDPOINT"), defaultEndpoint),
-		APIKey:          firstNonEmpty(*apiKeyFlag, os.Getenv("AGENTIC_API_KEY")),
-		Model:           firstNonEmpty(*modelFlag, os.Getenv("AGENTIC_MODEL"), defaultModel),
-		SkillMode:       firstNonEmpty(*skillModeFlag, os.Getenv("AGENTIC_SKILL_MODE"), "subagent"),
-		Compression:     firstNonEmpty(*compressionFlag, os.Getenv("AGENTIC_COMPRESSION"), "hybrid"),
-		Threshold:       *thresholdFlag,
-		DetectContext:   *detectCtxFlag,
-		MaxToolRepeatTotal:       *maxToolRepeatFlag,
-		ReasoningEffort: firstNonEmpty(*reasoningEffortFlag, os.Getenv("AGENTIC_REASONING_EFFORT")),
+		Endpoint:           firstNonEmpty(*endpointFlag, os.Getenv("AGENTIC_ENDPOINT"), defaultEndpoint),
+		APIKey:             firstNonEmpty(*apiKeyFlag, os.Getenv("AGENTIC_API_KEY")),
+		Model:              firstNonEmpty(*modelFlag, os.Getenv("AGENTIC_MODEL"), defaultModel),
+		SkillMode:          firstNonEmpty(*skillModeFlag, os.Getenv("AGENTIC_SKILL_MODE"), "subagent"),
+		Compression:        firstNonEmpty(*compressionFlag, os.Getenv("AGENTIC_COMPRESSION"), "hybrid"),
+		Threshold:          *thresholdFlag,
+		DetectContext:      *detectCtxFlag,
+		MaxToolRepeatTotal: *maxToolRepeatFlag,
+		ReasoningEffort:    firstNonEmpty(*reasoningEffortFlag, os.Getenv("AGENTIC_REASONING_EFFORT")),
 	}
 
 	trau := strings.ToLower(firstNonEmpty(*toolResultAsUserFlag, os.Getenv("AGENTIC_TOOL_RESULT_AS_USER"), "auto"))
@@ -109,12 +109,12 @@ func (c Config) ToModel() provider.Model {
 func (c Config) ToAgentConfig() agentic.Config {
 	tr := c.ToolResultAsUser
 	return agentic.Config{
-		Model:            c.ToModel(),
-		APIKey:           c.APIKey,
-		ToolResultAsUser: &tr,
+		Model:                    c.ToModel(),
+		APIKey:                   c.APIKey,
+		ToolResultAsUser:         &tr,
 		MaxToolRepeatTotal:       c.MaxToolRepeatTotal,
 		MaxToolRepeatConsecutive: c.MaxToolRepeatConsecutive,
-		ReasoningEffort:  agentic.ReasoningEffort(c.ReasoningEffort),
+		ReasoningEffort:          agentic.ReasoningEffort(c.ReasoningEffort),
 	}
 }
 

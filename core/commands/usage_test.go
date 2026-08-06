@@ -152,8 +152,8 @@ func TestStatsCommand_Verbose(t *testing.T) {
 			dimKey(usage.ByProvider, "/a"): {{Key: "kimi", Turns: 2, PromptN: 150, PredictedN: 70}},
 			dimKey(usage.ByProvider, "/b"): {{Key: "openai", Turns: 1, PromptN: 60, PredictedN: 30}},
 			// Per-project model splits.
-			dimKey(usage.ByModel, "/a"):    {{Key: "k2", Turns: 2, PromptN: 150, PredictedN: 70}},
-			dimKey(usage.ByModel, "/b"):    {{Key: "gpt-5", Turns: 1, PromptN: 60, PredictedN: 30}},
+			dimKey(usage.ByModel, "/a"): {{Key: "k2", Turns: 2, PromptN: 150, PredictedN: 70}},
+			dimKey(usage.ByModel, "/b"): {{Key: "gpt-5", Turns: 1, PromptN: 60, PredictedN: 30}},
 		},
 	}
 	cmd := &StatsCommand{OpenStore: func() (usageStore, error) { return store, nil }, ProjectDir: "/a"}

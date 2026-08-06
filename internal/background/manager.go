@@ -466,4 +466,3 @@ func (m *Manager) outputDir(id string) string {
 	}
 	return filepath.Join(filepath.Dir(m.path), "tasks", id)
 }
-

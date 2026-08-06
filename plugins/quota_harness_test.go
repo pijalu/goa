@@ -17,17 +17,17 @@ import (
 // all goa.* bridges mocked, so tests can drive the command, segment, and
 // fetchers without network or a TUI.
 type quotaTestEnv struct {
-	mu         sync.Mutex
-	responders []quotaResponder
-	outputs    []string
+	mu          sync.Mutex
+	responders  []quotaResponder
+	outputs     []string
 	browserURLs []string
-	commands   map[string]func([]string) (string, error)
-	segments   *UIBridge
-	hotkeys    *HotkeyBridge
-	storage    *StorageBridge
-	scheduler  *Scheduler
-	config     map[string]any
-	bridge     *JSBridge // set by load, used to inject test stubs
+	commands    map[string]func([]string) (string, error)
+	segments    *UIBridge
+	hotkeys     *HotkeyBridge
+	storage     *StorageBridge
+	scheduler   *Scheduler
+	config      map[string]any
+	bridge      *JSBridge // set by load, used to inject test stubs
 }
 
 type quotaResponder struct {
@@ -44,10 +44,10 @@ func newQuotaTestEnv(t *testing.T) *quotaTestEnv {
 		t.Fatal(err)
 	}
 	return &quotaTestEnv{
-		commands: map[string]func([]string) (string, error){},
-		segments: NewUIBridge(),
-		hotkeys:  NewHotkeyBridge(),
-		storage:  st,
+		commands:  map[string]func([]string) (string, error){},
+		segments:  NewUIBridge(),
+		hotkeys:   NewHotkeyBridge(),
+		storage:   st,
 		scheduler: NewScheduler(),
 		config: map[string]any{
 			"providers":      map[string]any{},
@@ -135,9 +135,9 @@ func (e *quotaTestEnv) context() PluginContext {
 				e.mu.Unlock()
 				return nil
 			}},
-			Hotkeys:   e.hotkeys,
-			UI:        e.segments,
-			Output:    func(m string) { e.mu.Lock(); e.outputs = append(e.outputs, m); e.mu.Unlock() },
+			Hotkeys: e.hotkeys,
+			UI:      e.segments,
+			Output:  func(m string) { e.mu.Lock(); e.outputs = append(e.outputs, m); e.mu.Unlock() },
 			SessionUsage: func() map[string]any {
 				return map[string]any{"input": 142300, "output": 28900, "turns": 15, "toolCalls": 20}
 			},

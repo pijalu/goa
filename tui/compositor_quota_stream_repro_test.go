@@ -24,9 +24,9 @@ import (
 // scrollback watermark desynced and re-emitted already-scrolled content.
 func TestCompositor_QuotaDuringStream_NoDuplicatedRows(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		streaming  bool
-		steering   bool
+		name      string
+		streaming bool
+		steering  bool
 	}{
 		{name: "full repro: stream+steering+quota", streaming: true, steering: true},
 		{name: "no steering bubble", streaming: true, steering: false},

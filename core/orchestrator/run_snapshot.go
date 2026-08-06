@@ -18,20 +18,20 @@ import (
 // replaying a run's event log. It is what Resume feeds back into a fresh
 // Orchestrator so the run can continue.
 type AgentSnapshot struct {
-	ID          string
-	Role        string
-	Model       string
-	Status      AgentStatus
-	Turns       int
-	TokensIn    int
-	TokensOut   int
-	CacheRead   int
-	CacheCreation int
-	ToolCalls   int
-	StartedAt   time.Time
-	UpdatedAt   time.Time
+	ID              string
+	Role            string
+	Model           string
+	Status          AgentStatus
+	Turns           int
+	TokensIn        int
+	TokensOut       int
+	CacheRead       int
+	CacheCreation   int
+	ToolCalls       int
+	StartedAt       time.Time
+	UpdatedAt       time.Time
 	PendingSteering []string
-	Messages     []string
+	Messages        []string
 }
 
 // RunSnapshot is the fully-replayed state of a run, used by Resume.

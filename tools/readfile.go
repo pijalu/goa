@@ -36,7 +36,7 @@ type ReadFileTool struct {
 	// read results, so a byte-identical repeat read returns a short hint
 	// instead of re-sending the full content into an append-only context.
 	// Lazily initialised on first use; safe for concurrent reads.
-	dedup *readDedupStore
+	dedup     *readDedupStore
 	dedupOnce sync.Once
 }
 

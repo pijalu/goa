@@ -63,6 +63,7 @@ func startStdinPoller() <-chan stdinReadResult {
 	}()
 	return ch
 }
+
 var stdinRead = defaultStdinRead
 
 func defaultStdinRead(buf []byte) (int, error) {

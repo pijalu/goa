@@ -17,10 +17,10 @@ func TestIncrementalMD_Property(t *testing.T) {
 	docs := []string{
 		"# H\n\npara\n\n```go\ncode\n```\n\n- a\n- b\n\n| x |\n|---|\n| 1 |\n\n> q\n\nend\n",
 		"para one line\n\npara two\n\n\n\ndouble blank\n\n",
-		"```\n\n\n```\n\nafter\n",       // fence with internal blanks
+		"```\n\n\n```\n\nafter\n",         // fence with internal blanks
 		"> quote\n\n> more quote\n\n",     // quote absorbing blank
 		"- list\n\n- continued\n\npara\n", // list absorbing blank
-		"| a |\n|-|\n| b |\n\ntext\n",    // table
+		"| a |\n|-|\n| b |\n\ntext\n",     // table
 		"no boundaries at all here",
 		"\n\n\nleading blanks\n\n",
 		"# only heading",

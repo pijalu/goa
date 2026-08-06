@@ -229,26 +229,26 @@ var providerCatalog = []ProviderDef{
 	{
 		ID: "together", Name: "Together", Provider: ProviderTogether,
 		API: ApiOpenAICompletions, BaseURL: "https://api.together.xyz/v1",
-		EnvKeys: []string{"TOGETHER_API_KEY"},
+		EnvKeys:     []string{"TOGETHER_API_KEY"},
 		URLPatterns: []string{"api.together.ai", "api.together.xyz"},
 		Compat:      ProviderCompat{ThinkingFormat: "together", NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoCacheRetention: true, NoStrictMode: true},
 	},
 	{
 		ID: "fireworks", Name: "Fireworks", Provider: ProviderFireworks,
 		API: ApiOpenAICompletions, BaseURL: "https://api.fireworks.ai/inference/v1",
-		EnvKeys: []string{"FIREWORKS_API_KEY"},
+		EnvKeys:     []string{"FIREWORKS_API_KEY"},
 		URLPatterns: []string{"fireworks.ai"},
 	},
 	{
 		ID: "perplexity", Name: "Perplexity", Provider: ProviderPerplexity,
 		API: ApiOpenAICompletions, BaseURL: "https://api.perplexity.ai",
-		EnvKeys: []string{"PERPLEXITY_API_KEY"},
+		EnvKeys:     []string{"PERPLEXITY_API_KEY"},
 		URLPatterns: []string{"api.perplexity.ai"},
 	},
 	{
 		ID: "github", Name: "GitHub Copilot", Provider: ProviderGitHub,
 		API: ApiOpenAICompletions, BaseURL: "https://api.githubcopilot.com",
-		EnvKeys: []string{"COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"},
+		EnvKeys:     []string{"COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN"},
 		URLPatterns: []string{"githubcopilot.com"},
 	},
 	{

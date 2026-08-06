@@ -143,8 +143,8 @@ type SkillRegistry struct {
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
 	disabled     map[string]bool
 	enabled      map[string]bool // non-nil → allowlist; only listed skills load
-	homeDir      string // home dir path for source labeling ("home")
-	projectDir   string // project dir path for source labeling ("project")
+	homeDir      string          // home dir path for source labeling ("home")
+	projectDir   string          // project dir path for source labeling ("project")
 }
 
 // NewSkillRegistry creates a registry that scans the given directories.

@@ -716,7 +716,6 @@ func (w *wizardComponent) handleNumberMode(key string) {
 	}
 }
 
-
 func (w *wizardComponent) handleUp()   { w.handleVertical(-1) }
 func (w *wizardComponent) handleDown() { w.handleVertical(1) }
 

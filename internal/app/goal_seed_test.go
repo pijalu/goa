@@ -10,8 +10,8 @@ import (
 
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/internal/event"
-	goaltui "github.com/pijalu/goa/tui/goal"
 	"github.com/pijalu/goa/tui"
+	goaltui "github.com/pijalu/goa/tui/goal"
 )
 
 // TestSeedGoalUI_RestoresBubbleAndFooter reproduces bugs.md Issue 1: an app

@@ -314,5 +314,5 @@ var (
 	_ py.I__iter__     = (*Counter)(nil)
 	_ py.I__len__      = (*Counter)(nil)
 	_ py.I__bool__     = (*Counter)(nil)
-	_ py.Object         = (*Counter)(nil)
+	_ py.Object        = (*Counter)(nil)
 )

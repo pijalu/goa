@@ -14,15 +14,15 @@ import (
 
 // fakeGoalBinder is a recording GoalBinder for runtime goal-binding tests.
 type fakeGoalBinder struct {
-	mu        sync.Mutex
-	tokens    int
-	overAt    int  // tokens at which RecordTokens reports over-budget
-	over      bool
-	completed bool
-	blocked   bool
+	mu             sync.Mutex
+	tokens         int
+	overAt         int // tokens at which RecordTokens reports over-budget
+	over           bool
+	completed      bool
+	blocked        bool
 	completeReason string
 	blockReason    string
-	created   string
+	created        string
 }
 
 func (f *fakeGoalBinder) Create(objective string, tokenBudget int) (string, error) {

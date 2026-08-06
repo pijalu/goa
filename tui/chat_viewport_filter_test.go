@@ -70,7 +70,7 @@ func TestChatViewportAgentFilter_IncludesToolWidgets(t *testing.T) {
 // authoritative full text repairs any gaps dropped by the live fanout.
 func TestChatViewportAgentContentReconcile_ToFullText(t *testing.T) {
 	cv := NewChatViewport()
-	cv.AddAgentContent("coder", "answer ") // simulates a dropped-chunk gap
+	cv.AddAgentContent("coder", "answer ")        // simulates a dropped-chunk gap
 	cv.UpdateAgentContent("coder", "answer text") // reconcile to full text
 
 	rendered := ansi.Strip(strings.Join(cv.Render(80), "\n"))

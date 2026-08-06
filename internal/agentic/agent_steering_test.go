@@ -125,7 +125,10 @@ func TestAgent_SteeringWovenMidTurn(t *testing.T) {
 	})
 	agent.SetSteeringSource(src)
 
-	go func() { for range agent.Output { } }()
+	go func() {
+		for range agent.Output {
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

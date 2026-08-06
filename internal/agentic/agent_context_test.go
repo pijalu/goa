@@ -227,10 +227,10 @@ func TestEnforceContextCeiling_KeepsSystemAndFittingTail(t *testing.T) {
 	a := &Agent{
 		cfg: Config{Model: provider.Model{ContextWindow: 100}}, // hardCeiling = 95 tokens
 		history: []Message{
-			mk(System, 4),   // ~1 token, index 0 — must always be retained
-			mk(User, 200),   // ~50 tokens (oldest non-system; dropped first)
-			mk(User, 200),   // ~50 tokens
-			mk(User, 200),   // ~50 tokens (newest; retained)
+			mk(System, 4), // ~1 token, index 0 — must always be retained
+			mk(User, 200), // ~50 tokens (oldest non-system; dropped first)
+			mk(User, 200), // ~50 tokens
+			mk(User, 200), // ~50 tokens (newest; retained)
 		},
 	}
 	a.enforceContextCeiling()

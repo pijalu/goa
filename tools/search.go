@@ -47,7 +47,7 @@ type searchResult struct {
 // Schema returns the tool schema for search.
 func (t *SearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
-		Name: "search",
+		Name:        "search",
 		Description: "Parallel regex search across files. Globs, recursive, case-insensitive, structured results.",
 		Schema: map[string]any{
 			"type": "object",

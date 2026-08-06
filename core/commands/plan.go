@@ -192,7 +192,7 @@ func (c *PlanCommand) cmdNew(ctx core.Context, in planInput) error {
 	}
 	defer store.Close()
 
-	ctx.Writef( "Plan %q created (ID: %s)\n", in.Objective, store.ID())
+	ctx.Writef("Plan %q created (ID: %s)\n", in.Objective, store.ID())
 	return nil
 }
 
@@ -321,13 +321,13 @@ func (c *PlanCommand) cmdList(ctx core.Context) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			ctx.Writef( "No plans found.\n")
+			ctx.Writef("No plans found.\n")
 			return nil
 		}
 		return fmt.Errorf("plan: list: %w", err)
 	}
 
-	ctx.Writef( "Plans:\n")
+	ctx.Writef("Plans:\n")
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -340,7 +340,7 @@ func (c *PlanCommand) cmdList(ctx core.Context) error {
 		if err := json.Unmarshal(data, &p); err != nil {
 			continue
 		}
-		ctx.Writef( "  %-20s  %-10s  rev=%-2d  items=%d\n",
+		ctx.Writef("  %-20s  %-10s  rev=%-2d  items=%d\n",
 			p.Name, p.Status, p.Revision, len(p.Items))
 	}
 	return nil
@@ -361,6 +361,6 @@ func (c *PlanCommand) cmdDelete(ctx core.Context, in planInput) error {
 		return fmt.Errorf("plan: delete: %w", err)
 	}
 
-	ctx.Writef( "Plan %q deleted.\n", id)
+	ctx.Writef("Plan %q deleted.\n", id)
 	return nil
 }

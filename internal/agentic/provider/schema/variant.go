@@ -32,13 +32,13 @@ type CompatFlags struct {
 
 // Defaults holds per-variant default request parameters.
 type Defaults struct {
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	TopK            *float64        `json:"top_k,omitempty"`
-	MaxTokens       *int            `json:"max_tokens,omitempty"`
-	Thinking        string          `json:"thinking,omitempty"`
+	Temperature      *float64         `json:"temperature,omitempty"`
+	TopP             *float64         `json:"top_p,omitempty"`
+	TopK             *float64         `json:"top_k,omitempty"`
+	MaxTokens        *int             `json:"max_tokens,omitempty"`
+	Thinking         string           `json:"thinking,omitempty"`
 	ThinkingLevelMap ThinkingLevelMap `json:"thinking_level_map,omitempty"`
-	ThinkingBudgets ThinkingBudgets `json:"thinking_budgets,omitempty"`
+	ThinkingBudgets  ThinkingBudgets  `json:"thinking_budgets,omitempty"`
 }
 
 // ErrorRules describes how to classify and retry provider errors.

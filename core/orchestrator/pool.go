@@ -46,17 +46,17 @@ type AcquireOptions struct {
 // Acquire blocks (FIFO, context-cancellable) when either cap is saturated.
 // Release frees the slot and wakes the head waiter.
 type BoundedAgentPool struct {
-	factory AgentFactory
-	roles   map[string]config.OrchestratorRole
-	totalCap int
+	factory     AgentFactory
+	roles       map[string]config.OrchestratorRole
+	totalCap    int
 	perModelCap map[string]int
 
-	mu        sync.Mutex
-	total     int
-	perModel  map[string]int
-	live      map[string]*AgentHandle
-	nextID    int
-	waiters   []chan struct{}
+	mu       sync.Mutex
+	total    int
+	perModel map[string]int
+	live     map[string]*AgentHandle
+	nextID   int
+	waiters  []chan struct{}
 }
 
 // NewBoundedAgentPool builds a pool from the orchestrator config and a

@@ -448,17 +448,17 @@ func TestSessionWriteEvent_SkipsToolCallDeltas(t *testing.T) {
 	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.Assistant, Text: "hello", IsDelta: true})
 	// The completed tool-call event is the one we need to replay.
 	ss.WriteEvent(agentic.OutputEvent{
-		Type:       agentic.EventToolCall,
-		ToolName:   "bash",
-		ToolInput:  `{"command":"ls"}`,
-		IsDelta:    false,
+		Type:      agentic.EventToolCall,
+		ToolName:  "bash",
+		ToolInput: `{"command":"ls"}`,
+		IsDelta:   false,
 	})
 	// Streaming tool-call deltas must NOT be persisted.
 	ss.WriteEvent(agentic.OutputEvent{
-		Type:       agentic.EventToolCall,
-		ToolName:   "write",
-		ToolInput:  strings.Repeat("x", 100000),
-		IsDelta:    true,
+		Type:      agentic.EventToolCall,
+		ToolName:  "write",
+		ToolInput: strings.Repeat("x", 100000),
+		IsDelta:   true,
 	})
 
 	if err := ss.Close(); err != nil {

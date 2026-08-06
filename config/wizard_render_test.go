@@ -50,9 +50,9 @@ func (ft *wizardTestTerminal) Size() (int, int) { return ft.w, ft.h }
 
 func (ft *wizardTestTerminal) SetRaw() (func(), error) { return func() {}, nil }
 
-func (ft *wizardTestTerminal) HideCursor()    {}
-func (ft *wizardTestTerminal) ShowCursor()    {}
-func (ft *wizardTestTerminal) ClearScreen()   {}
+func (ft *wizardTestTerminal) HideCursor()     {}
+func (ft *wizardTestTerminal) ShowCursor()     {}
+func (ft *wizardTestTerminal) ClearScreen()    {}
 func (ft *wizardTestTerminal) SetTitle(string) {}
 
 // reset clears the accumulated output buffer so subsequent waitForContent

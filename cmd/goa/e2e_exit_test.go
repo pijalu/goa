@@ -1,9 +1,11 @@
 //go:build (darwin || linux) && e2e
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
 
 package main
+
 import (
 	"os"
 	"strings"

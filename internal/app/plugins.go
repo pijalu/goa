@@ -430,7 +430,7 @@ func (c *pluginCommandWrapper) LongHelp() string {
 	if c.longHelp != "" {
 		return c.longHelp
 	}
-		return c.ShortHelp()
+	return c.ShortHelp()
 }
 func (c *pluginCommandWrapper) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
 	return nil

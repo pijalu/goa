@@ -90,7 +90,7 @@ type assistantMessage struct {
 	// rendered stable prefix (closed blocks) so that during streaming only the
 	// open tail is re-parsed each frame instead of the whole message. Recreated
 	// when the render width changes. Nil until first render.
-	incr *IncrementalMDRenderer
+	incr      *IncrementalMDRenderer
 	incrWidth int
 }
 

@@ -14,10 +14,10 @@ func TestPathPolicy_SoloBlocksProtectedAndOutside(t *testing.T) {
 	policy := PathPolicy{ProjectDir: project, Autonomy: "solo"}
 
 	cases := []struct {
-		name   string
-		tool   string
-		input  string
-		want   PathDecision
+		name  string
+		tool  string
+		input string
+		want  PathDecision
 	}{
 		{"read inside project", "read", `{"path":"main.go"}`, PathAllow},
 		{"read protected .goa", "read", `{"path":".goa/config.yaml"}`, PathDeny},

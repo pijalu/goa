@@ -25,12 +25,12 @@ func (c *testRecordableCommand) Run(ctx core.Context, args []string) error {
 
 type testInternalCommand2 struct{}
 
-func (c *testInternalCommand2) Name() string      { return "internalcmd" }
-func (c *testInternalCommand2) Aliases() []string { return nil }
-func (c *testInternalCommand2) ShortHelp() string { return "internal command" }
-func (c *testInternalCommand2) LongHelp() string  { return "internal command" }
+func (c *testInternalCommand2) Name() string                              { return "internalcmd" }
+func (c *testInternalCommand2) Aliases() []string                         { return nil }
+func (c *testInternalCommand2) ShortHelp() string                         { return "internal command" }
+func (c *testInternalCommand2) LongHelp() string                          { return "internal command" }
 func (c *testInternalCommand2) Run(ctx core.Context, args []string) error { return nil }
-func (c *testInternalCommand2) IsInternal() bool                            { return true }
+func (c *testInternalCommand2) IsInternal() bool                          { return true }
 
 // testPlaceholderCommand observes the status placeholder while Run executes.
 type testPlaceholderCommand struct {

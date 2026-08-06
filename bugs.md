@@ -17,6 +17,10 @@
 At the end of the session - the bug list should be empty and this file should only contain the guidelines for bug reporting.
 If new items are added, restart the process.
 
+## Must fix
+
+- `--- FAIL: TestOrchestrateCommand_ResumeRebindsGoal (0.00s)` — `/orchestrate:resume` goal rebinding (`core/commands/orchestrate_command_test.go:259`). Note: passes locally standalone (×5, `-race`) and in full `core/commands` package run — reproduce in the failing environment to capture the actual output before fixing.
+
 ## Workflow for bugs
 1. Reproduce the failure before editing — ideally a command or script that triggers it on demand.
 2. State the observed failure exactly (command + output).

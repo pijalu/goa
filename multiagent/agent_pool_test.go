@@ -118,7 +118,7 @@ type agenticToolMock struct {
 	name string
 }
 
-func (m *agenticToolMock) Schema() agentic.ToolSchema { return agentic.ToolSchema{Name: m.name} }
+func (m *agenticToolMock) Schema() agentic.ToolSchema           { return agentic.ToolSchema{Name: m.name} }
 func (m *agenticToolMock) Execute(input string) (string, error) { return "", nil }
 func (m *agenticToolMock) IsRetryable(err error) bool           { return false }
 

@@ -256,11 +256,11 @@ type renamedAsyncCommand struct {
 	name  string
 }
 
-func (c *renamedAsyncCommand) Name() string                          { return c.name }
-func (c *renamedAsyncCommand) Aliases() []string                     { return nil }
-func (c *renamedAsyncCommand) ShortHelp() string                     { return "renamed" }
-func (c *renamedAsyncCommand) LongHelp() string                      { return "renamed" }
-func (c *renamedAsyncCommand) AsyncHint(args []string) string        { return c.inner.AsyncHint(args) }
+func (c *renamedAsyncCommand) Name() string                   { return c.name }
+func (c *renamedAsyncCommand) Aliases() []string              { return nil }
+func (c *renamedAsyncCommand) ShortHelp() string              { return "renamed" }
+func (c *renamedAsyncCommand) LongHelp() string               { return "renamed" }
+func (c *renamedAsyncCommand) AsyncHint(args []string) string { return c.inner.AsyncHint(args) }
 func (c *renamedAsyncCommand) Run(ctx core.Context, args []string) error {
 	return c.inner.Run(ctx, args)
 }

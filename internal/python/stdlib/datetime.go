@@ -502,10 +502,10 @@ var (
 	_ py.I__getattr__ = (*DateTime)(nil)
 	_ py.I__add__     = (*DateTime)(nil)
 	_ py.I__sub__     = (*DateTime)(nil)
-	_ py.Object        = (*DateTime)(nil)
+	_ py.Object       = (*DateTime)(nil)
 
 	_ py.I__getattr__ = (*Date)(nil)
-	_ py.Object        = (*Date)(nil)
+	_ py.Object       = (*Date)(nil)
 
 	_ py.I__getattr__ = (*TimeDelta)(nil)
 	_ py.I__add__     = (*TimeDelta)(nil)
@@ -515,5 +515,5 @@ var (
 	_ py.I__mul__     = (*TimeDelta)(nil)
 	_ py.I__rmul__    = (*TimeDelta)(nil)
 	_ py.I__truediv__ = (*TimeDelta)(nil)
-	_ py.Object        = (*TimeDelta)(nil)
+	_ py.Object       = (*TimeDelta)(nil)
 )

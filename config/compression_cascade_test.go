@@ -15,11 +15,11 @@ import (
 // silently dropped (bugs.md: strategies never merged).
 func TestDeepMergeContextCompressionStrategies(t *testing.T) {
 	base := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:    boolPtr(true),
 		Strategies: CompressionLayerStrategiesConfig{Soft: "micro", Trigger: "tool_elision", Hard: "hybrid"},
 	}}
 	override := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:    boolPtr(true),
 		Strategies: CompressionLayerStrategiesConfig{Trigger: "summarize"},
 	}}
 	base.DeepMerge(override)
@@ -41,11 +41,11 @@ func TestDeepMergeContextCompressionStrategies(t *testing.T) {
 // reset the others (bugs.md: micro_compaction replaced wholesale).
 func TestDeepMergeContextCompressionMicroCompactionFieldWise(t *testing.T) {
 	base := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:         boolPtr(true),
 		MicroCompaction: MicroCompactionSettings{KeepRecentMessages: 30, MinContextRatio: 0.6, CacheMissThreshold: "1h"},
 	}}
 	override := &Config{ContextCompression: ContextCompressionConfig{
-		Enabled: boolPtr(true),
+		Enabled:         boolPtr(true),
 		MicroCompaction: MicroCompactionSettings{MinContextRatio: 0.4},
 	}}
 	base.DeepMerge(override)

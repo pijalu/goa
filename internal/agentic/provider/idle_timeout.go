@@ -43,8 +43,8 @@ type idleTimeoutReader struct {
 	r       io.ReadCloser
 	timeout time.Duration
 
-	readReq chan []byte        // Read() -> loop: a buffer to fill
-	readRes chan readResult    // loop -> Read(): the filled result
+	readReq chan []byte     // Read() -> loop: a buffer to fill
+	readRes chan readResult // loop -> Read(): the filled result
 	closeMu sync.Mutex
 	closed  bool
 	closeCh chan struct{} // closed once by Close()

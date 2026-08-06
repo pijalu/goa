@@ -174,10 +174,10 @@ func TestReportCompression_Lifespan(t *testing.T) {
 func TestCompressCommand_AsyncHint(t *testing.T) {
 	cmd := &CompressCommand{}
 	tests := []struct {
-		name    string
-		args    []string
+		name      string
+		args      []string
 		wantAsync bool
-		wantSub  string // substring expected in the label when async
+		wantSub   string // substring expected in the label when async
 	}{
 		{"summarize", []string{"summarize"}, true, "summarize"},
 		{"hybrid", []string{"hybrid"}, true, "hybrid"},

@@ -67,7 +67,7 @@ func TestHandleTokenStats_DuplicateRoundStatsDeduped(t *testing.T) {
 	t.Run("same values after a new user turn count again", func(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 1500, 120, 140000, 0)
-		a.turnCount++ // EventEnd: new user turn begins
+		a.turnCount++                 // EventEnd: new user turn begins
 		feed(a, 1500, 120, 140000, 0) // identical numbers, but a different turn — must count
 		if a.tokenPromptTotal != 3000 {
 			t.Errorf("tokenPromptTotal = %d, want 3000 (same values in a NEW turn must count)", a.tokenPromptTotal)

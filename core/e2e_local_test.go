@@ -1,4 +1,5 @@
 //go:build e2e
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
@@ -7,6 +8,7 @@
 // Requires a server running at http://localhost:1234.
 // Run: go test -count=1 -tags e2e -run TestE2E ./...
 package core
+
 import (
 	"context"
 	"net/http"

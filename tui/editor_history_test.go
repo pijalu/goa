@@ -135,7 +135,7 @@ func TestEditor_DownArrow_PastNewest_ReturnsToEmptyLine(t *testing.T) {
 	ed.SetFocused(true)
 
 	ed.HandleInput(KeyUp)
-	ed.HandleInput(KeyUp) // now at "a"
+	ed.HandleInput(KeyUp)   // now at "a"
 	ed.HandleInput(KeyDown) // to "b"
 	ed.HandleInput(KeyDown) // past newest -> empty
 
@@ -157,8 +157,8 @@ func TestEditor_DownArrow_FromMultilineHistory_EmptyReachable(t *testing.T) {
 	ed.SetHistory([]string{"line1\nline2", "x"})
 	ed.SetFocused(true)
 
-	ed.HandleInput(KeyUp) // "x"
-	ed.HandleInput(KeyUp) // "line1\nline2"
+	ed.HandleInput(KeyUp)   // "x"
+	ed.HandleInput(KeyUp)   // "line1\nline2"
 	ed.HandleInput(KeyDown) // "x"
 	ed.HandleInput(KeyDown) // empty
 
@@ -227,7 +227,6 @@ func TestEditor_UpArrow_AtStartOfFirstLine_RecallsHistory(t *testing.T) {
 	}
 }
 
-
 // TestEditor_UpArrow_AfterSubmit_RecallsLast verifies that pressing Up after
 // submitting text recalls the just-submitted entry.
 func TestEditor_UpArrow_AfterSubmit_RecallsLast(t *testing.T) {
@@ -247,4 +246,3 @@ func TestEditor_UpArrow_AfterSubmit_RecallsLast(t *testing.T) {
 		t.Errorf("Text() after Up = %q, want %q", got, want)
 	}
 }
-

@@ -972,10 +972,10 @@ type ThinkingLevelConfig struct {
 
 // ContextCompressionConfig controls automatic conversation history compression.
 type ContextCompressionConfig struct {
-// Enabled is tri-state: nil = inherit from the lower cascade layer (embedded
-// default: on); an explicit false in a home/project file disables compression.
-Enabled   *bool `yaml:"enabled,omitempty"`
-MaxTokens int   `yaml:"max_tokens"`
+	// Enabled is tri-state: nil = inherit from the lower cascade layer (embedded
+	// default: on); an explicit false in a home/project file disables compression.
+	Enabled   *bool `yaml:"enabled,omitempty"`
+	MaxTokens int   `yaml:"max_tokens"`
 	// ThresholdPercent is the legacy single trigger level.
 	// Deprecated: use Thresholds.TriggerPercent. When both are set,
 	// ThresholdPercent wins (backwards compatibility).

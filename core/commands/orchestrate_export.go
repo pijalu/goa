@@ -59,11 +59,11 @@ type orchestratorSummaryAgent struct {
 }
 
 type orchestratorSummaryRun struct {
-	RunID     string                  `json:"runId"`
-	Name      string                  `json:"name,omitempty"`
-	Objective string                  `json:"objective,omitempty"`
-	Topology  string                  `json:"topology,omitempty"`
-	Finished  bool                    `json:"finished"`
+	RunID     string                     `json:"runId"`
+	Name      string                     `json:"name,omitempty"`
+	Objective string                     `json:"objective,omitempty"`
+	Topology  string                     `json:"topology,omitempty"`
+	Finished  bool                       `json:"finished"`
 	Agents    []orchestratorSummaryAgent `json:"agents"`
 }
 
