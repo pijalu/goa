@@ -108,6 +108,7 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"active_provider", "provider id"},
 		{"active_model", "model id"},
 		{"execution.mode", "yolo | confirm | review | solo"},
+		{"execution.auto_save_model", "true | false (persist model changes to project config)"},
 		{"mode.plan_file_path", "path to plan file (default: .goa/plan.md)"},
 		{"execution.max_tool_calls", "integer"},
 		{"execution.max_tool_repeat_total", "integer"},

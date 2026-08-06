@@ -294,6 +294,45 @@ func TestApplyConfigSet_ActiveModelMissingProvider(t *testing.T) {
 	}
 }
 
+// TestApplyConfigSet_AutoSaveModel verifies /config:set can toggle
+// execution.auto_save_model (previously only editable by hand in YAML).
+func TestApplyConfigSet_AutoSaveModel(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	if err := applyConfigSet(ctx, "execution.auto_save_model", "on"); err != nil {
+		t.Fatalf("applyConfigSet on: %v", err)
+	}
+	if !ctx.Config.Execution.AutoSaveModel {
+		t.Error("AutoSaveModel = false after 'on', want true")
+	}
+
+	if err := applyConfigSet(ctx, "execution.auto_save_model", "off"); err != nil {
+		t.Fatalf("applyConfigSet off: %v", err)
+	}
+	if ctx.Config.Execution.AutoSaveModel {
+		t.Error("AutoSaveModel = true after 'off', want false")
+	}
+}
+
+// TestApplyConfigSet_ActiveModelRejectsSentinel verifies a selector sentinel
+// value ("__delete__X") cannot be persisted as the active model.
+func TestApplyConfigSet_ActiveModelRejectsSentinel(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveModel = "gpt-4"
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+
+	if err := applyConfigSet(ctx, "active_model", "__delete__gpt-4"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	if ctx.Config.ActiveModel != "gpt-4" {
+		t.Errorf("ActiveModel = %q, want gpt-4 (sentinel must be rejected)", ctx.Config.ActiveModel)
+	}
+}
+
 func TestFilteredCompletions(t *testing.T) {
 	comps := filteredCompletions([]string{"yolo", "confirm", "review"}, "y", "")
 	if len(comps) != 1 || comps[0].Value != "yolo" {

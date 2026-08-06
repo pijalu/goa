@@ -484,6 +484,100 @@ func TestModelCommand_MissingProviderDoesNotSwitch(t *testing.T) {
 	}
 }
 
+// TestModelCommand_SentinelArgRejected is the regression for the leaked
+// selector sentinel bug: a "__delete__X" value (emitted by the picker's
+// backspace/delete hotkey) must never become the active model — the picker
+// previously left the active model named "__delete__deepseek-v4-flash".
+func TestModelCommand_SentinelArgRejected(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveProvider = "local"
+	ctx.Config.ActiveModel = "llama3"
+	ctx.Config.Providers = []config.ProviderConfig{
+		{ID: "local", Endpoint: "http://localhost:1234/v1"},
+	}
+	ctx.Config.Models = []config.ModelConfig{
+		{ID: "llama3", ProviderID: "local", Model: "llama3"},
+	}
+	ctx.ProviderManager = newTestProviderManager()
+
+	var buf strings.Builder
+	ctx.OutputBuffer = &buf
+
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, []string{"__delete__llama3"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if ctx.Config.ActiveModel != "llama3" {
+		t.Errorf("ActiveModel = %q, want llama3 (sentinel must not be applied)", ctx.Config.ActiveModel)
+	}
+	if !strings.Contains(buf.String(), "Invalid model name") {
+		t.Errorf("expected rejection message, got %q", buf.String())
+	}
+}
+
+// TestApplyModelSelection_SentinelIgnored verifies the picker callback path:
+// applyModelSelection must drop sentinel values instead of persisting them.
+func TestApplyModelSelection_SentinelIgnored(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveProvider = "local"
+	ctx.Config.ActiveModel = "llama3"
+	ctx.Config.Providers = []config.ProviderConfig{
+		{ID: "local", Endpoint: "http://localhost:1234/v1"},
+	}
+	ctx.Config.Models = []config.ModelConfig{
+		{ID: "llama3", ProviderID: "local", Model: "llama3"},
+	}
+
+	applyModelSelection(ctx, ctx.Config, nil, "__delete__llama3")
+
+	if ctx.Config.ActiveModel != "llama3" {
+		t.Errorf("ActiveModel = %q, want llama3 (sentinel must be dropped)", ctx.Config.ActiveModel)
+	}
+}
+
+// TestModelPickerItems_HaveSearchLabel verifies model selector items carry a
+// SearchLabel (model id + provider + model name) so the picker filter does
+// not match the "model="/"provider=" description noise.
+func TestModelPickerItems_HaveSearchLabel(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.Config.ActiveProvider = "opencode-go"
+	ctx.Config.ActiveModel = "deepseek-v4-flash"
+	ctx.Config.Providers = []config.ProviderConfig{
+		{ID: "opencode-go", Endpoint: "https://opencode.ai/zen/go/v1"},
+	}
+	ctx.Config.Models = []config.ModelConfig{
+		{ID: "deepseek-v4-flash", ProviderID: "opencode-go", Model: "deepseek-v4-flash"},
+	}
+	ctx.ProviderManager = newTestProviderManager()
+
+	var got []tui.SelectorItem
+	ctx.SelectOptionFunc = func(_ string, options []tui.SelectorItem, _ string, onSelected func(string, bool)) {
+		got = options
+		onSelected("", false)
+	}
+
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, item := range got {
+		if item.Value == "deepseek-v4-flash" {
+			if item.SearchLabel == "" {
+				t.Fatalf("model item missing SearchLabel: %+v", item)
+			}
+			for _, term := range []string{"deepseek-v4-flash", "opencode-go"} {
+				if !strings.Contains(item.SearchLabel, term) {
+					t.Errorf("SearchLabel %q missing term %q", item.SearchLabel, term)
+				}
+			}
+			return
+		}
+	}
+	t.Fatalf("model item not found in picker: %v", got)
+}
+
 // TestModelCommand_PropagatesToAgent verifies that switching a model updates
 // the active agent's model via AgentManager.SetModel.
 func TestModelCommand_PropagatesToAgent(t *testing.T) {

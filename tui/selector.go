@@ -32,6 +32,12 @@ type SelectorItem struct {
 	// edit a queued goal's description). On non-editable items 'e' keeps its
 	// default filter behavior, so other pickers are unaffected.
 	Editable bool
+	// SearchLabel, when non-empty, replaces Label+Description as the text the
+	// search filter matches against. Pickers whose Description carries
+	// structural noise (e.g. the model picker's "provider=X model=Y")
+	// set this to the user-meaningful terms (model name, provider name) so
+	// typing "model" or "provider" does not match every row.
+	SearchLabel string
 }
 
 // SelectorKeymap configures what a Selector instance's hotkeys emit. The
@@ -418,6 +424,18 @@ func (s *Selector) handleCancel(data string) *string {
 	return nil
 }
 
+// selectorItemMatches reports whether the lowercase search term matches the
+// item. When the item sets SearchLabel, only that text is searched (the
+// Description is excluded); otherwise the filter matches Label or
+// Description as before.
+func selectorItemMatches(item SelectorItem, lowerTerm string) bool {
+	if item.SearchLabel != "" {
+		return strings.Contains(strings.ToLower(item.SearchLabel), lowerTerm)
+	}
+	return strings.Contains(strings.ToLower(item.Label), lowerTerm) ||
+		strings.Contains(strings.ToLower(item.Description), lowerTerm)
+}
+
 func (s *Selector) applyFilter() {
 	if s.searchText == "" {
 		s.filtered = s.items
@@ -425,8 +443,7 @@ func (s *Selector) applyFilter() {
 		var f []SelectorItem
 		lower := strings.ToLower(s.searchText)
 		for _, item := range s.items {
-			if strings.Contains(strings.ToLower(item.Label), lower) ||
-				strings.Contains(strings.ToLower(item.Description), lower) {
+			if selectorItemMatches(item, lower) {
 				f = append(f, item)
 			}
 		}

@@ -72,6 +72,7 @@ func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 			Label:       mod.ID,
 			Description: mod.Model,
 			Color:       localModelColor(m.ctx.Config, mod.ProviderID),
+			SearchLabel: modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
 		})
 	}
 	if len(items) == 0 {
@@ -129,7 +130,12 @@ func (m *configMenu) resolveModelFull(providerID, modelName string, onSelected f
 		if findModelIndex(m.ctx.Config.Models, mod.ID) >= 0 {
 			desc += " ✓ configured"
 		}
-		items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
+		items = append(items, tui.SelectorItem{
+			Value:       mod.ID,
+			Label:       mod.ID,
+			Description: desc,
+			SearchLabel: modelSearchLabel(mod.ID, providerID, mod.ID),
+		})
 	}
 	items = append(items, tui.SelectorItem{
 		Value:       "__custom__",

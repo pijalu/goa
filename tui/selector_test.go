@@ -263,6 +263,38 @@ func TestSelector_FilterMatchesDescription(t *testing.T) {
 	}
 }
 
+// TestSelector_FilterSearchLabelExcludesDescription verifies that an item
+// with SearchLabel set is matched ONLY against that label: terms present
+// solely in the Description (e.g. the model picker's "model=" prefix) must
+// not match, while terms in the SearchLabel (model name / provider name)
+// still do.
+func TestSelector_FilterSearchLabelExcludesDescription(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Select model:", []SelectorItem{
+		{Value: "a", Label: "alpha", Description: "model=alpha provider=p1", SearchLabel: "alpha p1 alpha"},
+		{Value: "b", Label: "beta", Description: "model=beta provider=p2", SearchLabel: "beta p2 beta"},
+	}, "", result)
+
+	// "model" appears in both Descriptions but in neither SearchLabel:
+	// without the fix both rows match; with SearchLabel nothing matches.
+	for _, r := range "model" {
+		s.HandleInput(string(r))
+	}
+	if len(s.filtered) != 0 {
+		t.Fatalf("SearchLabel must exclude Description: %d rows matched 'model', want 0", len(s.filtered))
+	}
+
+	// Clearing the filter and typing a provider name still matches its row.
+	for len(s.searchText) > 0 {
+		s.HandleInput("backspace")
+	}
+	s.HandleInput("p")
+	s.HandleInput("2")
+	if len(s.filtered) != 1 || s.filtered[0].Value != "b" {
+		t.Fatalf("SearchLabel provider match: got %v, want only b", s.filtered)
+	}
+}
+
 // TestSelector_MinusOnSentinelDoesNotSearch is the regression for "-' does
 // not work on provider, it types '-' in the search": pressing '-' while a
 // sentinel item (__add__/__remove__) is highlighted must not pollute the
