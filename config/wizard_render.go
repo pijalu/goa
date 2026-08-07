@@ -59,15 +59,18 @@ func (w *wizardComponent) HandleInput(data string) {
 }
 
 func (w *wizardComponent) handleNavKey(data string) bool {
+	base := stripKeyModifiers(data)
 	switch {
-	case matchesKey(data, tui.KeyUp):
+	case matchesKey(base, tui.KeyUp):
 		w.handleUp()
-	case matchesKey(data, tui.KeyDown):
+	case matchesKey(base, tui.KeyDown):
 		w.handleDown()
+	case matchesKey(base, tui.KeyEscape):
+		w.handleEscape()
+		return true
 	default:
 		// Don't pass action keys to the editor — let handleActionKey process them.
-		if matchesKey(data, tui.KeyEnter) || matchesKey(data, tui.KeyEscape) ||
-			matchesKey(data, tui.KeyBackspace) || (len(data) == 1 && data[0] >= '1' && data[0] <= '9') {
+		if matchesKey(base, tui.KeyEnter) || matchesKey(base, tui.KeyBackspace) || (len(base) == 1 && base[0] >= '1' && base[0] <= '9') {
 			return false
 		}
 		if w.inputMode != "" && w.editor.HandleKey(data) {
@@ -79,21 +82,22 @@ func (w *wizardComponent) handleNavKey(data string) bool {
 }
 
 func (w *wizardComponent) handleActionKey(data string) bool {
+	base := stripKeyModifiers(data)
 	switch {
-	case matchesKey(data, tui.KeyEnter):
+	case matchesKey(base, tui.KeyEnter):
 		if w.advance() {
 			w.finish()
 		}
-	case matchesKey(data, tui.KeyEscape):
+	case matchesKey(base, tui.KeyEscape):
 		w.handleEscape()
-	case matchesKey(data, tui.KeyBackspace):
+	case matchesKey(base, tui.KeyBackspace):
 		if w.inputMode != "" {
-			w.editor.HandleKey(data)
+			w.editor.HandleKey(base)
 		} else {
 			w.goBack()
 		}
-	case len(data) == 1 && data[0] >= '1' && data[0] <= '9':
-		w.handleNumber(data)
+	case len(base) == 1 && base[0] >= '1' && base[0] <= '9':
+		w.handleNumber(base)
 	default:
 		return false
 	}
@@ -134,6 +138,34 @@ func (w *wizardComponent) SetFocused(focused bool) { w.focused = focused }
 func (w *wizardComponent) Focused() bool           { return w.focused }
 
 func matchesKey(data, key string) bool { return data == key }
+
+// stripKeyModifiers removes modifier prefixes (shift+, ctrl+, alt+, and
+// combinations) from key strings so that e.g. "shift+up" matches "up".
+// This is necessary for terminals that enable modifyOtherKeys mode.
+func stripKeyModifiers(data string) string {
+	const (
+		prefixShift = "shift+"
+		prefixCtrl  = "ctrl+"
+		prefixAlt   = "alt+"
+	)
+	switch {
+	case strings.HasPrefix(data, prefixCtrl+prefixAlt+prefixShift):
+		return data[len(prefixCtrl+prefixAlt+prefixShift):]
+	case strings.HasPrefix(data, prefixCtrl+prefixShift):
+		return data[len(prefixCtrl+prefixShift):]
+	case strings.HasPrefix(data, prefixAlt+prefixShift):
+		return data[len(prefixAlt+prefixShift):]
+	case strings.HasPrefix(data, prefixCtrl+prefixAlt):
+		return data[len(prefixCtrl+prefixAlt):]
+	case strings.HasPrefix(data, prefixShift):
+		return data[len(prefixShift):]
+	case strings.HasPrefix(data, prefixCtrl):
+		return data[len(prefixCtrl):]
+	case strings.HasPrefix(data, prefixAlt):
+		return data[len(prefixAlt):]
+	}
+	return data
+}
 
 // -- State transitions --------------------------------------------
 
