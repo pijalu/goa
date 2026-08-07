@@ -64,7 +64,7 @@ build: clean models
 # ── Clean ────────────────────────────────────────────────────────────────
 
 clean:
-	rm -f goa goa.exe coverage.out coverage.html
+	rm -f $(BINARY) coverage.out coverage.html
 	rm -rf dist/
 
 # ── Test ─────────────────────────────────────────────────────────────────
