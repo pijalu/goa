@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
@@ -306,8 +307,8 @@ func anthropicHandleMessageStart(ctx *anthropicEventContext, data string) error 
 	var parsed struct {
 		Message struct {
 			Usage struct {
-				InputTokens      int `json:"input_tokens"`
-				OutputTokens     int `json:"output_tokens"`
+				InputTokens       int `json:"input_tokens"`
+				OutputTokens      int `json:"output_tokens"`
 				CacheCreateTokens int `json:"cache_creation_input_tokens"`
 				CacheReadTokens   int `json:"cache_read_input_tokens"`
 			} `json:"usage"`
@@ -453,8 +454,42 @@ func anthropicHandleError(ctx *anthropicEventContext, data string) error {
 	if err := json.Unmarshal([]byte(data), &errData); err != nil {
 		return fmt.Errorf("decode error chunk: %w", err)
 	}
-	ctx.stream.CloseWithError(fmt.Errorf("anthropic error: %s — %s", errData.Error.Type, errData.Error.Message))
+	// Classify the frame so a mid-stream overload (529), api_error (500),
+	// or rate limit is retried by the agent instead of killing the turn as
+	// a non-retryable bare error — the frame bypasses the transport's error
+	// hook, so without classification here the retry loop never engages.
+	status := anthropicErrorStatus(errData.Error.Type)
+	frameErr := fmt.Errorf("anthropic error: %s — %s", errData.Error.Type, errData.Error.Message)
+	ctx.stream.CloseWithError(hooks.NewStreamFrameError(frameErr, status, data))
 	return nil
+}
+
+// anthropicErrorStatus maps Anthropic's documented stream error types to
+// their HTTP status codes. Unknown types return 0 (unclassified —
+// non-retryable unless the message text carries a transient pattern).
+func anthropicErrorStatus(errType string) int {
+	switch errType {
+	case "invalid_request_error":
+		return 400
+	case "authentication_error":
+		return 401
+	case "billing_error":
+		return 402
+	case "permission_error":
+		return 403
+	case "not_found_error":
+		return 404
+	case "request_too_large":
+		return 413
+	case "rate_limit_error":
+		return 429
+	case "api_error":
+		return 500
+	case "overloaded_error":
+		return 529
+	default:
+		return 0
+	}
 }
 
 func parseAnthropicSSE(body io.Reader, stream *schema.AssistantMessageEventStream) {

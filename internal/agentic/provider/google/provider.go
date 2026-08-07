@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
 
 func init() {
@@ -298,7 +299,36 @@ func parseGoogleResponse(raw []byte) ([]googleCandidateResponse, error) {
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("decode google chunk: %w", err)
 	}
+	if err := detectGoogleStreamError(raw); err != nil {
+		return nil, err
+	}
 	return resp.Candidates, nil
+}
+
+// detectGoogleStreamError surfaces provider error frames delivered inside
+// the SSE stream. Google reports mid-stream failures as HTTP 200 + a data
+// payload shaped {"error": {"code": 503, "message": "...", "status":
+// "UNAVAILABLE"}} instead of a candidates chunk. Without this check the
+// frame parses to zero candidates and is silently skipped, so the stream
+// ends "cleanly" and the agent misclassifies a hard provider error as an
+// empty response. The frame is classified into a *hooks.ProviderError so a
+// 5xx/429 (overloaded model, rate limit) is retried instead of killing the
+// turn as a non-retryable bare error.
+func detectGoogleStreamError(raw []byte) error {
+	var frame struct {
+		ErrObj any `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil || frame.ErrObj == nil {
+		return nil
+	}
+	msg := "provider error"
+	if m, ok := frame.ErrObj.(map[string]any); ok {
+		if s, ok := m["message"].(string); ok && s != "" {
+			msg = s
+		}
+	}
+	status := hooks.ExtractStreamErrorStatus(frame.ErrObj, msg)
+	return hooks.NewStreamFrameError(fmt.Errorf("google error: %s", msg), status, string(raw))
 }
 
 func (g *googleStreamAcc) ensureStart() {

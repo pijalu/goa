@@ -10,6 +10,7 @@ import (
 
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
 
 // parseChunk parses a single SSE data chunk from an OpenAI-compatible API.
@@ -19,7 +20,7 @@ func parseChunk(chunk string) ([]agentic.Message, error) {
 	if err := json.Unmarshal([]byte(chunk), &raw); err != nil {
 		return nil, fmt.Errorf("decode openai chunk: %w", err)
 	}
-	if err := detectChunkError(raw); err != nil {
+	if err := detectChunkError(raw, chunk); err != nil {
 		return nil, err
 	}
 	choices, ok := raw["choices"].([]interface{})
@@ -57,7 +58,14 @@ func parseChunk(chunk string) ([]agentic.Message, error) {
 	return out, nil
 }
 
-func detectChunkError(raw map[string]any) error {
+// detectChunkError surfaces provider error frames delivered inside the SSE
+// stream (HTTP 200 + {"error": {...}} instead of a choices chunk). The frame
+// is classified into a *hooks.ProviderError so a mid-stream 5xx/408/429
+// (llama.cpp "[503] The request queue is full.", overloads, rate limits) is
+// retried by the agent instead of killing the turn as a non-retryable bare
+// error: these frames bypass the transport's error hook, so without
+// classification here the retry loop never engages.
+func detectChunkError(raw map[string]any, chunk string) error {
 	errObj, ok := raw["error"]
 	if !ok || errObj == nil {
 		return nil
@@ -69,7 +77,8 @@ func detectChunkError(raw map[string]any) error {
 	if m, ok := extractErrorMessage(errObj); ok && m != "" {
 		msg = m
 	}
-	return fmt.Errorf("LLM error: %s", msg)
+	status := hooks.ExtractStreamErrorStatus(errObj, msg)
+	return hooks.NewStreamFrameError(fmt.Errorf("LLM error: %s", msg), status, chunk)
 }
 
 func extractErrorMessage(errObj any) (string, bool) {

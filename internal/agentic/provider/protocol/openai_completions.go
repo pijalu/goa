@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
@@ -729,7 +730,7 @@ func parseOpenAIChunk(chunk string) ([]parserMessage, error) {
 	if err := json.Unmarshal([]byte(chunk), &raw); err != nil {
 		return nil, fmt.Errorf("decode openai chunk: %w", err)
 	}
-	if err := detectOpenAIChunkError(raw); err != nil {
+	if err := detectOpenAIChunkError(raw, chunk); err != nil {
 		return nil, err
 	}
 	choices, ok := raw["choices"].([]any)
@@ -770,7 +771,13 @@ func parseOpenAIChunk(chunk string) ([]parserMessage, error) {
 // misclassifies a hard provider error as an empty response and retries a
 // payload that can never succeed — the session breaks with no diagnosable
 // message (2026-08-04 LM Studio export).
-func detectOpenAIChunkError(raw map[string]any) error {
+//
+// The frame is classified into a *hooks.ProviderError so a mid-stream
+// 5xx/408/429 (llama.cpp "[503] The request queue is full.", overloads,
+// rate limits) is retried by the agent instead of killing the turn as a
+// non-retryable bare error: these frames bypass the transport's error hook
+// (HTTP 200), so without classification here the retry loop never engages.
+func detectOpenAIChunkError(raw map[string]any, chunk string) error {
 	errObj, ok := raw["error"]
 	if !ok || errObj == nil {
 		return nil
@@ -782,7 +789,8 @@ func detectOpenAIChunkError(raw map[string]any) error {
 	if m, ok := openAIErrorMessage(errObj); ok && m != "" {
 		msg = m
 	}
-	return fmt.Errorf("LLM error: %s", msg)
+	status := hooks.ExtractStreamErrorStatus(errObj, msg)
+	return hooks.NewStreamFrameError(fmt.Errorf("LLM error: %s", msg), status, chunk)
 }
 
 func openAIErrorMessage(errObj any) (string, bool) {

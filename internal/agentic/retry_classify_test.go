@@ -128,6 +128,60 @@ func TestRetryBackoffCapped(t *testing.T) {
 	assert.Equal(t, maxStreamBackoff, retryBackoff(rl, 0))
 }
 
+// TestShouldRetryStreamError_MidStream5xxFrame is the end-to-end regression
+// for the reported failure:
+//
+//	Error: chunk decode failed: LLM error: Streaming response failed:
+//	[503] The request queue is full.   → goal paused, zero retries.
+//
+// The error frame bypasses the transport's error hook (HTTP 200), so the
+// parse layer classifies it into a *hooks.ProviderError (all 5xx are
+// intrinsically retryable); the agent's retry loop must honor that through
+// the "chunk decode failed" wrapping.
+func TestShouldRetryStreamError_MidStream5xxFrame(t *testing.T) {
+	liveCtx := context.Background()
+
+	frameErr := hooks.NewStreamFrameError(
+		fmt.Errorf("LLM error: Streaming response failed: [503] The request queue is full."),
+		503,
+		`{"error":{"message":"Streaming response failed: [503] The request queue is full."}}`,
+	)
+	streamErr := fmt.Errorf("chunk decode failed: %w", frameErr)
+
+	assert.True(t, shouldRetryStreamError(liveCtx, streamErr),
+		"mid-stream 503 error frame must be retried, not kill the turn")
+
+	// The retry bubble must render the decoded status + provider message.
+	msg := formatRetryMessage(streamErr)
+	assert.Contains(t, msg, "503")
+	assert.Contains(t, msg, "request queue is full")
+	assert.Contains(t, msg, "retrying")
+}
+
+// TestShouldRetryStreamError_MidStream5xxTextSafetyNet covers error frames
+// whose status cannot be parsed at all (no code field, no bracketed/bare
+// code): the 5xx-as-text patterns keep them retryable.
+func TestShouldRetryStreamError_MidStream5xxTextSafetyNet(t *testing.T) {
+	liveCtx := context.Background()
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"queue full no code", fmt.Errorf("chunk decode failed: %w", errors.New("LLM error: The request queue is full."))},
+		{"overloaded", errors.New("anthropic error: overloaded — try again later")},
+		{"service unavailable", errors.New("LLM error: 503 Service Unavailable")},
+		{"bad gateway", errors.New("stream failed: 502 Bad Gateway")},
+		{"gateway timeout", errors.New("LLM error: 504 Gateway Timeout")},
+		{"internal server error", errors.New("LLM error: Internal Server Error")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.True(t, shouldRetryStreamError(liveCtx, tc.err),
+				"bare 5xx-text stream error must be retried: %v", tc.err)
+		})
+	}
+}
+
 func TestFormatFatalStreamMessage(t *testing.T) {
 	// Non-retryable bubbles must NOT carry the "- retrying" suffix.
 	msg := formatFatalStreamMessage(errors.New("bad request body"))

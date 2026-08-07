@@ -107,7 +107,10 @@ func isTransientStreamError(err error) bool {
 // transientStreamPatterns are lowercased substrings that mark a bare error as
 // worth retrying. They intentionally overlap with isRetryableNetworkError in
 // the hooks package so bare (unwrapped) variants of the same failures are
-// handled consistently.
+// handled consistently. The 5xx-text entries are the last-resort net for
+// mid-stream provider error frames that carry no parseable status code
+// (parse-layer classification in hooks.NewStreamFrameError is the primary
+// path): a queue-full/overloaded server is transient by definition.
 var transientStreamPatterns = []string{
 	"idle timeout",
 	"stream disconnected",
@@ -125,6 +128,14 @@ var transientStreamPatterns = []string{
 	"no such host",
 	"temporarily unavailable",
 	"timeout",
+	// 5xx-as-text: mid-stream error frames without a status code.
+	"queue is full", // llama.cpp/LM Studio "The request queue is full."
+	"overloaded",    // Anthropic overloaded_error, gateway overloads
+	"service unavailable",
+	"bad gateway",
+	"gateway timeout",
+	"internal server error",
+	"upstream connect error", // Envoy proxy upstream failure
 }
 
 // retryBackoff computes the delay before the next retry for err.
