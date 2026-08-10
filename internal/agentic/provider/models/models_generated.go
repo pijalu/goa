@@ -364,20 +364,6 @@ func loadGeneratedModels() {
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
-		ID: "gemini-2.0-flash", Name: "Gemini 2.0 Flash", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
-		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: false, ContextWindow: 1048576, MaxTokens: 8192, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000001000, Output: 0.0000004000, CacheRead: 0.0000000250, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "gemini-2.0-flash-lite", Name: "Gemini 2.0 Flash-Lite", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
-		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: false, ContextWindow: 1048576, MaxTokens: 8192, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000000750, Output: 0.0000003000, CacheRead: 0.0000000000, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
 		ID: "gemini-2.5-computer-use-preview-10-2025", Name: "Gemini 2.5 Computer Use Preview 10-2025", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: true, ContextWindow: 131072, MaxTokens: 65536, InputTypes: []string{"text", "image"},
@@ -410,13 +396,6 @@ func loadGeneratedModels() {
 		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
 		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
 		Cost:           provider.ModelPricing{Input: 0.0000005000, Output: 0.0000030000, CacheRead: 0.0000000500, CacheWrite: 0.0000000000},
-		ThinkingFormat: provider.ThinkingFormatNone,
-	})
-	addModel(provider.Model{
-		ID: "gemini-3-pro-preview", Name: "Gemini 3 Pro Preview", Api: provider.Api("google-generative-ai"), Provider: provider.Provider("google"),
-		BaseURL:   "https://generativelanguage.googleapis.com/v1beta",
-		Reasoning: true, ContextWindow: 1048576, MaxTokens: 65536, InputTypes: []string{"text", "image"},
-		Cost:           provider.ModelPricing{Input: 0.0000020000, Output: 0.0000120000, CacheRead: 0.0000002000, CacheWrite: 0.0000000000},
 		ThinkingFormat: provider.ThinkingFormatNone,
 	})
 	addModel(provider.Model{
