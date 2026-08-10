@@ -531,10 +531,54 @@ Footer gains a team segment when active: `⛃ pair-strong (review:agent)` —
 drifted shown as `pair-strong*`. The existing goal panel shows the goal's
 bound team when different from the session team.
 
-### 8.3 Config menu
+### 8.3 Config menu — full team-definition CRUD
 
-`/config` → new **Teams** section: select active team, view definitions
-(definitions themselves are edited in YAML — no inline editor in v1).
+`/config` gains a **Teams** root item with **full add/edit/remove of team
+definitions** (not just active-team selection), mirroring the existing
+`/config → Orchestrator → Roles` flow (`core/commands/config_orchestrator.go`):
+list → detail → field edit / `— add —` / remove-confirm, with every mutation
+persisted via `saveHomeSection([]string{"teams"}, cfg.Teams)` and revalidated
+per §3.5.
+
+```
+/config → Teams
+├── Active team            → selector over defined teams + "(none)"; sets teams.active
+├── Team definitions       → N defined
+│   ├── <team-name> …      → Team detail (below)
+│   └── — add team —       → wizard
+└── (footer shows active team + drift marker)
+```
+
+**Team detail** (`/config → Teams → <name>`):
+
+| Item | Behavior |
+|------|----------|
+| Description | text input |
+| Review policy | selector: `off / agent / framework / gated` |
+| Gated triggers | multi-select of §3.2 trigger names + `quorum: all/any` selector (only when `gated`) |
+| Delegation | `agent / off` toggle (only when worker members exist) |
+| Members | list → member detail; `— add member —`; remove member (guard: cannot remove the last `role: main`; cannot end with 0 or 2+ mains — validation runs on save) |
+| Defaults | `autonomy` selector, `turn_budget` numeric input |
+| Remove team | confirm dialog; refused with explanation while the team is `teams.active` or bound to any queued goal (must unbind first) |
+
+**Member detail** (`… → Members → <member>`): `model` (selector over
+`models:`), `provider` (selector + "(default)"), `mode` (selector over
+built-in + custom modes), `thinking_level` (selector over
+`off|minimal|low|medium|high|xhigh|— inherit —`), `role` (selector
+`main / reviewer / worker`; choosing `main` on one member demotes the
+previous main to worker after confirmation), remove member.
+
+**Add-team wizard**: name → main member (model/mode/thinking) → review
+policy → if policy ≠ off: reviewer member(s) (model/mode/thinking, repeatable
+"add another reviewer") → optional worker members → save + validate. The
+wizard only asks for the shorthand-shaped team; N-member canonical form is
+reachable by adding members afterwards in the detail view.
+
+**Live-effect semantics:** editing a definition does **not** retroactively
+re-apply to running goals/runs (their overlays were resolved at apply time);
+editing the definition of the *active* team marks it drifted (`team*`) until
+`/team:sync` re-applies. All edits are home-level persists
+(`~/.goa/config.yaml`), consistent with the orchestrator-roles editor.
 
 ### 8.4 TUI rendering of reviews
 
@@ -663,7 +707,8 @@ the model's saved level for the team's lifetime without mutating it.
 - **Per-goal autonomy/mode overrides** beyond what the team defines.
 - **Cross-provider failover** inside a team (model fallback stays a
   provider-manager concern).
-- **Editing team definitions from the TUI** (YAML only in v1).
+- **Import/export of team definitions** (shareable team files) — YAML editing
+  plus `/config` CRUD (§8.3) covers authoring in v1.
 - **Team-scoped token budgets** (goal/run budgets already exist; aggregate
   team budget is a later addition).
 
