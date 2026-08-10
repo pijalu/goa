@@ -674,7 +674,7 @@ func (t *ProcessTerminal) WriteString(s string) {
 // until a real, plausible size is read again. Genuine resizes still pass
 // through immediately (they read as valid, non-degenerate sizes).
 func (t *ProcessTerminal) Size() (width, height int) {
-	w, h, err := term.GetSize(t.fd)
+	w, h, err := t.readSize()
 	return t.filteredSize(w, h, err != nil)
 }
 
