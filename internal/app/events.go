@@ -1058,6 +1058,7 @@ func (a *App) promoteQueuedGoal(pauseCause *promotePauseCause) {
 		CompletionCriterion: removed.CompletionCriterion,
 		VerifyCommand:       removed.VerifyCommand,
 		FreshContext:        removed.FreshContext,
+		Team:                removed.Team,
 		Handoff:             handoff,
 	}, goal.GoalActorUser); err != nil {
 		_, _ = a.subs.goalManager.Queue.Restore(*removed)

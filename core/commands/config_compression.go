@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -17,6 +18,7 @@ func (m *configMenu) settingCompression() {
 		strategy = "tool_elision"
 	}
 	trigger := compressionTriggerDisplay(cfg)
+	hardPct := cfg.ContextCompression.Thresholds.HardPercent
 	items := []tui.SelectorItem{
 		{Value: "strategy", Label: "Trigger strategy", Description: strategy},
 		{Value: "soft_strategy", Label: "Soft strategy", Description: layerStrategyLabel(cfg.ContextCompression.Strategies.Soft, "micro")},
@@ -24,6 +26,15 @@ func (m *configMenu) settingCompression() {
 		{Value: "soft", Label: "Soft threshold (early maintenance)", Description: percentLabel(cfg.ContextCompression.Thresholds.SoftPercent, "off (default)")},
 		{Value: "threshold", Label: "Trigger threshold", Description: trigger},
 		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "off (default)")},
+		// Derived limits (bugs.md CM:13 design rule 5: ALL compression-related
+		// limits must be visible in /config — no hidden 95%). These are computed
+		// from the hard ceiling and shown read-only so the user can see exactly
+		// where each reactive/proactive gate fires.
+		{Value: "_derived_eff_hard", Label: "  ↳ Effective hard ceiling (reactive)", Description: derivedPercentLabel(agentic.EffectiveHardPercent(hardPct))},
+		{Value: "_derived_escalation", Label: "  ↳ Escalation level (cheap→selective)", Description: derivedPercentLabel(agentic.EscalationPercent(hardPct))},
+		{Value: "_derived_deferral", Label: "  ↳ Deferral ceiling (cache-hot cutoff)", Description: derivedPercentLabel(agentic.DeferralCeilingPercent(hardPct))},
+		{Value: "_derived_elision", Label: "  ↳ Elision target (hysteresis)", Description: derivedPercentLabel(agentic.ElisionTargetPercent(hardPct))},
+		{Value: "_derived_reactive_savings", Label: "  ↳ Reactive savings target", Description: fmt.Sprintf("%d%% per pass (cut to %d%%)", agentic.ReactiveSavingsPercent, agentic.ReactiveTargetPercent(hardPct))},
 		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
 		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
 		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg)},
@@ -482,6 +493,13 @@ func percentLabel(v int, fallback string) string {
 	if v <= 0 {
 		return fallback
 	}
+	return fmt.Sprintf("%d%%", v)
+}
+
+// derivedPercentLabel renders a computed (always-present) compression limit.
+// Unlike percentLabel these values are never "off" — they are derived from the
+// hard ceiling (bugs.md CM:13 rule 5: no hidden limits).
+func derivedPercentLabel(v int) string {
 	return fmt.Sprintf("%d%%", v)
 }
 

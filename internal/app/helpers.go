@@ -62,6 +62,20 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 	if h.subs == nil {
 		return 0, fmt.Errorf("subsystems not initialized")
 	}
+	// Re-authorize the skill enable/disable lists from the on-disk config so the
+	// running session's registry matches what a freshly started session would
+	// compute. The toggle path (setSkillEnabledState) mutates this in-memory
+	// config and persists a per-source partition; reloading the merged lists
+	// here guarantees the running session and a parallel session see identical
+	// skill sets (bugs.md must-fix #5: skills enable/disable inconsistent
+	// across sessions). Only Enabled/Disabled are refreshed — Dirs,
+	// ExecutionMode, etc. stay from the live config.
+	if h.subs.loader != nil {
+		if fresh, err := h.subs.loader.Load(); err == nil {
+			h.subs.cfg.Skills.Enabled = fresh.Skills.Enabled
+			h.subs.cfg.Skills.Disabled = fresh.Skills.Disabled
+		}
+	}
 	// Rebuild skill dirs (default dirs + configured dirs)
 	skillDirs := append(config.DefaultSkillDirs(h.subs.projectDir), h.subs.cfg.Skills.Dirs...)
 	h.subs.skillRegistry = skills.NewSkillRegistry(skillDirs)

@@ -143,6 +143,7 @@ func (s *GoalQueueStore) insertGoal(input goal.UpcomingGoalInput, front bool) ([
 		CompletionCriterion: goal.NormalizeOptionalText(input.CompletionCriterion),
 		VerifyCommand:       goal.NormalizeOptionalText(input.VerifyCommand),
 		FreshContext:        input.FreshContext,
+		Team:                strings.TrimSpace(input.Team),
 		Handoff:             handoff,
 		CreatedAt:           now,
 		UpdatedAt:           now,

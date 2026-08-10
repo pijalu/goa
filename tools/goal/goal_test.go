@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/internal/toolaccess"
 )
 
 // newGoalTool builds a GoalTool with a controllable create gate.
@@ -1100,5 +1101,27 @@ func TestGoalTool_CreateRejectsOversizedObjective(t *testing.T) {
 	}
 	if mode.GetGoal().Goal != nil {
 		t.Error("rejected create must not leave a goal behind")
+	}
+}
+
+// TestGoalTool_AccessSerializesConcurrentCalls is the regression test for the
+// goal-tool-call ordering bug (bugs.md must-fix #4): "When multiple goal tool
+// calls are executed, the request order should be kept." Because the goal tool
+// mutates shared goal-manager state, concurrent goal calls must be serialized
+// by the tool scheduler — which happens only when the tool declares an access
+// category that conflicts with itself. This asserts GoalTool is a toolaccess
+//.Accessor whose Access() returns a non-empty, self-conflicting category.
+func TestGoalTool_AccessSerializesConcurrentCalls(t *testing.T) {
+	var acc toolaccess.Accessor = &GoalTool{}
+	a := acc.Access(`{"action":"list"}`)
+	if a.Category == "" {
+		t.Fatalf("GoalTool must declare an access Category so the scheduler " +
+			"serializes concurrent goal calls in request order; got empty category")
+	}
+	// Two goal calls (any input) must conflict so they never run in parallel.
+	b := acc.Access(`{"action":"update","status":"complete"}`)
+	if !toolaccess.Conflict(a, b) {
+		t.Fatalf("goal tool calls must self-conflict (category=%q) so the "+
+			"scheduler serializes them; a=%+v b=%+v", a.Category, a, b)
 	}
 }

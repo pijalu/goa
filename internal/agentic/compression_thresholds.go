@@ -125,6 +125,68 @@ func (t resolvedThresholds) elisionTargetPercent() int {
 	return target
 }
 
+// ReactiveSavingsPercent is the minimum fraction of the context window a
+// reactive ceiling pass must free, expressed as a percentage of the window
+// (bugs.md CM:13 design rule 4). The reactive enforcer (enforceContextCeiling)
+// is destructive: every front-cut busts the provider prefix cache. A nibble
+// that frees only enough to dip below the 95% ceiling re-busts on the very next
+// tool result (the CM:13 session showed 13 busts / 58 drops). Cutting once to
+// free ≥50% of the window buys many rounds of headroom per cache miss.
+const ReactiveSavingsPercent = 50
+
+// reactiveTargetPercent is the usage level the reactive ceiling enforcer cuts
+// history down TO: the hard ceiling minus ReactiveSavingsPercent, so one
+// destructive pass frees at least ReactiveSavingsPercent points of the window
+// (design rule 4). With the default hard=95 the target is 45%, giving one
+// cache bust ~50 points of headroom instead of re-busting every round. It never
+// exceeds effectiveHard (no-op when savings is 0) and never goes below 1%.
+func (t resolvedThresholds) reactiveTargetPercent() int {
+	target := t.effectiveHard() - ReactiveSavingsPercent
+	if target > t.effectiveHard() {
+		target = t.effectiveHard()
+	}
+	if target < 1 {
+		target = 1
+	}
+	return target
+}
+
+// --- Exported derived-percent helpers (bugs.md CM:13 design rule 5) ---
+//
+// These let non-agentic packages (e.g. /config display in core/commands) show
+// the derived compression limits — which are otherwise hidden because they are
+// computed from the hard ceiling rather than stored as config. Each takes the
+// raw configured hard percent (0 = disabled → DefaultHardPercent) so the caller
+// does not need to construct a resolvedThresholds.
+
+// EffectiveHardPercent returns the reactive ceiling actually in force for the
+// given configured hard percent: the value itself, or DefaultHardPercent when 0.
+func EffectiveHardPercent(hard int) int {
+	r := resolvedThresholds{hard: hard}
+	return r.effectiveHard()
+}
+
+// EscalationPercent returns the escalation level (effective hard − 5).
+func EscalationPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.escalationPercent()
+}
+
+// DeferralCeilingPercent returns the cache-hot deferral cutoff (effective hard − 10).
+func DeferralCeilingPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.deferralCeiling()
+}
+
+// ElisionTargetPercent returns the proactive elision hysteresis target (effective hard − 20).
+func ElisionTargetPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.elisionTargetPercent()
+}
+
+// ReactiveTargetPercent returns the level a reactive ceiling cut targets
+// (effective hard − ReactiveSavingsPercent).
+func ReactiveTargetPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.reactiveTargetPercent()
+}
+
 // resolveThresholds folds the explicit Thresholds with the deprecated
 // ThresholdPercent alias and the documented defaults, and resolves the
 // per-layer strategies (legacy Strategy maps to the trigger layer).

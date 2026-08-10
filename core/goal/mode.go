@@ -194,6 +194,9 @@ func (m *GoalMode) RestoreCreate(record GoalEventRecord) {
 	if record.FreshContext != nil {
 		state.freshContext = *record.FreshContext
 	}
+	if record.Team != nil {
+		state.team = *record.Team
+	}
 	m.state = &state
 }
 
@@ -309,6 +312,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		completionCriterion: completionCriterion,
 		verifyCommand:       verifyCommand,
 		freshContext:        input.FreshContext,
+		team:                input.Team,
 		handoff:             handoff,
 		status:              GoalActive,
 		turnsUsed:           0,
@@ -331,6 +335,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		VerifyCommand:       state.verifyCommand,
 		Handoff:             state.handoff,
 		FreshContext:        &state.freshContext,
+		Team:                &state.team,
 	})
 	m.telemetry.Track(TelemetryGoalCreated, map[string]any{
 		"actor":   string(actor),
@@ -921,6 +926,7 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 		CompletionCriterion: state.completionCriterion,
 		VerifyCommand:       state.verifyCommand,
 		FreshContext:        state.freshContext,
+		Team:                state.team,
 		PauseAfterComplete:  state.pauseAfterComplete,
 		Handoff:             state.handoff,
 		Todos:               append([]GoalTodoItem(nil), state.todos...),

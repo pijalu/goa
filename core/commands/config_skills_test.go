@@ -5,6 +5,7 @@
 package commands
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -587,5 +588,81 @@ func TestSetSkillEnabled(t *testing.T) {
 	setSkillEnabled(cfg, "refactor", true, true)
 	if !stringInSlice(cfg.Skills.Enabled, "refactor") {
 		t.Errorf("re-enable with active allowlist should restore Enabled, got %v", cfg.Skills.Enabled)
+	}
+}
+
+// TestSkillToggle_CrossSessionConsistency is the regression test for bugs.md
+// must-fix #5 (skills enable/disable inconsistent across sessions): after any
+// sequence of toggles in the running session (which mutate the in-memory config
+// and persist per-source partitions), a FRESH session — built from a clean
+// cascade load of the same config files — must compute identical skill
+// on/off decisions for every skill. ReloadSkills() re-authorizes from disk, so
+// the running session and a parallel session can never diverge.
+func TestSkillToggle_CrossSessionConsistency(t *testing.T) {
+	// HOME must be set BEFORE any CascadeLoader is created: the loader resolves
+	// and caches the home dir at construction time via internal.GoaHome(), so a
+	// later t.Setenv would leave the loader pointing at the real user home.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectDir := t.TempDir()
+
+	var buf strings.Builder
+	ctx := skillTestContext(&buf)
+	cfg := ctx.Config
+	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
+
+	// Real registry: several embedded skills + a file skill.
+	dir := t.TempDir()
+	for _, n := range []string{"qa-e2e", "go-debug"} {
+		sd := filepath.Join(dir, n)
+		os.MkdirAll(sd, 0o755)
+		os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte("---\nname: "+n+"\n---\nbody"), 0o644)
+	}
+	reg := skills.NewSkillRegistry([]string{dir})
+	reg.SetEmbeddedFS(skills.EmbeddedSkillsFS)
+	if err := reg.LoadAll(); err != nil {
+		t.Fatal(err)
+	}
+	ctx.SkillRegistry = reg
+
+	// Seed an allowlist in BOTH layers so toggle logic operates in allowlist
+	// mode (the configuration shape that produced the 4-vs-13 divergence).
+	writeTestConfig(t, filepath.Join(home, ".goa", "config.yaml"),
+		"skills:\n  enabled:\n    - refactor\n    - review\n")
+	writeTestConfig(t, filepath.Join(projectDir, ".goa", "config.yaml"),
+		"skills:\n  enabled:\n    - qa-e2e\n")
+
+	loaded, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Skills = loaded.Skills
+
+	cmd := &SkillsCommand{}
+	// Exercise a mix of toggles across both sources.
+	for _, op := range []string{"disable review", "enable telegram", "disable qa-e2e", "enable review"} {
+		if err := cmd.Run(ctx, strings.Fields(op)); err != nil {
+			t.Fatalf("%q: %v", op, err)
+		}
+	}
+
+	// Probe: every skill the registry can discover must agree between the
+	// running (in-memory) session and a fresh (disk) load.
+	probe := []string{"refactor", "review", "telegram", "qa-e2e", "go-debug", "debug", "document"}
+	fresh, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diverged []string
+	for _, name := range probe {
+		inMem := skillEnabled(cfg, name)
+		disk := skillEnabled(fresh, name)
+		if inMem != disk {
+			diverged = append(diverged, fmt.Sprintf("%s(in-mem=%v,disk=%v)", name, inMem, disk))
+		}
+	}
+	if len(diverged) > 0 {
+		t.Errorf("skill decisions diverge across sessions: %s\n  in-mem enabled=%v disabled=%v\n  fresh  enabled=%v disabled=%v",
+			strings.Join(diverged, ", "), cfg.Skills.Enabled, cfg.Skills.Disabled, fresh.Skills.Enabled, fresh.Skills.Disabled)
 	}
 }

@@ -667,6 +667,7 @@ func (c *GoalCommand) resumeFirstQueued(ctx core.Context) error {
 		CompletionCriterion: removed.CompletionCriterion,
 		VerifyCommand:       removed.VerifyCommand,
 		FreshContext:        removed.FreshContext,
+		Team:                removed.Team,
 		Handoff:             removed.Handoff,
 	}, goal.GoalActorUser); err != nil {
 		_, _ = c.Queue.Restore(*removed)

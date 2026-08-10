@@ -744,14 +744,33 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	if sr.title != "Compression settings:" {
 		t.Fatalf("title = %q, want Compression settings:", sr.title)
 	}
-	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard", "cache_gate", "max_tokens", "preserve_recent_turns", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
+	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard",
+		"_derived_eff_hard", "_derived_escalation", "_derived_deferral", "_derived_elision", "_derived_reactive_savings",
+		"cache_gate", "max_tokens", "preserve_recent_turns", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
 	if len(sr.options) != len(want) {
-		t.Fatalf("expected %d compression items, got %d", len(want), len(sr.options))
+		t.Fatalf("expected %d compression items, got %d: %+v", len(want), len(sr.options), sr.options)
 	}
 	for i, w := range want {
 		if sr.options[i].Value != w {
 			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
 		}
+	}
+	// CM:13 design rule 5: the derived limits must be VISIBLE in /config (no
+	// hidden 95%). With no hard ceiling configured, the effective hard defaults
+	// to 95 and the derived levels are computed from it.
+	descOf := func(v string) string {
+		for _, o := range sr.options {
+			if o.Value == v {
+				return o.Description
+			}
+		}
+		return ""
+	}
+	if got := descOf("_derived_eff_hard"); got != "95%" {
+		t.Errorf("effective hard ceiling = %q, want 95%% (default when unconfigured)", got)
+	}
+	if got := descOf("_derived_reactive_savings"); !strings.Contains(got, "50%") {
+		t.Errorf("reactive savings label = %q, want it to show 50%% savings", got)
 	}
 }
 

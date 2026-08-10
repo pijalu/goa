@@ -369,3 +369,83 @@ func TestEnforceContextCeiling_NeverOrphansToolResults(t *testing.T) {
 		})
 	}
 }
+
+// TestEnforceContextCeiling_ReactiveCutFreesHalfWindow is the CM:13 regression
+// test (bugs.md must-fix #1): the reactive ceiling enforcer must NOT nibble —
+// dropping just enough to dip under the 95% ceiling re-busts the provider prefix
+// cache on the very next tool result (the CM:13 session: 13 busts / 58 drops).
+// Instead, a reactive cut must free ≥ReactiveSavingsPercent of the window in one
+// pass so one cache miss buys many rounds of headroom (design rule 4).
+//
+// We build a history pinned near the 95% ceiling, run the enforcer, and assert
+// the retained history occupies at most the reactive target (≈45% of the window
+// at the default 95% ceiling), i.e. ≥50% savings.
+func TestEnforceContextCeiling_ReactiveCutFreesHalfWindow(t *testing.T) {
+	const window = 10000
+	// estimateTokens counts ascii chars as asciiCount/4, so N chars => N/4 tokens.
+	// Build ~38 messages of ~100 tokens each (~3800 tokens ≈ 38% of window) plus a
+	// system prompt, totaling just over the 95% ceiling so the enforcer fires.
+	mk := func(role Role, chars int) Message {
+		return Message{Type: Content, Role: role, Content: strings.Repeat("x", chars)}
+	}
+	hist := []Message{mk(System, 400)} // ~100 tokens
+	// Fill to ~96% of the window: 95 ceiling, so the enforcer must cut.
+	for i := 0; i < 95; i++ {
+		hist = append(hist, mk(User, 400)) // ~100 tokens each
+	}
+	a := &Agent{cfg: Config{Model: provider.Model{ContextWindow: window}}, history: hist}
+	a.enforceContextCeiling()
+
+	retained := 0
+	for i := range a.history {
+		retained += messageTokenCount(&a.history[i])
+	}
+	// Reactive target at default hard=95: 95 - ReactiveSavingsPercent(50) = 45%.
+	// Fixed cost is ~0 here (no tool schemas), so retained must be ≤ 45% of window.
+	target := window * 45 / 100
+	if retained > target {
+		t.Errorf("reactive cut did not free ≥50%% of the window: retained %d tokens (%.1f%%), target %d tokens (45%%) — "+
+			"a nibble that only dips under the 95%% ceiling re-busts the prefix cache every round (CM:13)",
+			retained, float64(retained)/float64(window)*100, target)
+	}
+	// The cut must have actually happened (history shrank substantially).
+	if len(a.history) >= len(hist) {
+		t.Errorf("history was not cut: %d messages before, %d after", len(hist), len(a.history))
+	}
+}
+
+// TestEnforceContextCeiling_ReactiveCutNoImmediateRebust verifies the second
+// half of the CM:13 fix: after a reactive cut to the target, a single small
+// tool-result addition must NOT push history back over the ceiling (which would
+// force another destructive cut and re-bust). This is the "one cache bust buys
+// many rounds" guarantee (design rule 4 rationale).
+func TestEnforceContextCeiling_ReactiveCutNoImmediateRebust(t *testing.T) {
+	const window = 10000
+	mk := func(role Role, chars int) Message {
+		return Message{Type: Content, Role: role, Content: strings.Repeat("x", chars)}
+	}
+	hist := []Message{mk(System, 400)}
+	for i := 0; i < 95; i++ {
+		hist = append(hist, mk(User, 400))
+	}
+	a := &Agent{cfg: Config{Model: provider.Model{ContextWindow: window}}, history: hist}
+	a.enforceContextCeiling()
+
+	// Simulate the next round: a small assistant + tool result (~200 tokens).
+	a.history = append(a.history, mk(Assistant, 400), mk(ToolRole, 400))
+	a.enforceContextCeiling()
+
+	// After the small addition + a second enforce, history must STILL be under
+	// the hard ceiling (95%) — the first cut left enough headroom that a single
+	// round did not re-trigger a destructive cut. If the first cut had only
+	// nibbled to the ceiling, this second enforce would cut again.
+	retained := 0
+	for i := range a.history {
+		retained += messageTokenCount(&a.history[i])
+	}
+	hardCeiling := window * 95 / 100
+	if retained > hardCeiling {
+		t.Errorf("after reactive cut + one small round, history %d tokens exceeds 95%% ceiling %d — "+
+			"the first cut did not buy headroom (re-bust every round = the CM:13 loop)", retained, hardCeiling)
+	}
+}

@@ -13,7 +13,24 @@ import (
 
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/toolaccess"
 )
+
+// Compile-time assertion that GoalTool declares its resource access so the
+// tool scheduler can serialize concurrent goal calls in request order
+// (bugs.md must-fix #4: "When multiple goal tool calls are executed, the
+// request order should be kept"). Goal calls all mutate the same shared
+// goal-manager state, so they share a category and never run in parallel.
+var _ toolaccess.Accessor = (*GoalTool)(nil)
+
+// Access declares that every goal tool call touches a single shared resource
+// (the goal manager). Because all goal calls share the "goal" category, the
+// tool scheduler serializes them — preserving the model's request order and
+// preventing races on shared goal state when multiple goal calls arrive in one
+// turn.
+func (t *GoalTool) Access(_ string) toolaccess.Access {
+	return toolaccess.Access{Category: "goal"}
+}
 
 // GoalTool is the single goal-management tool exposed to the model. It
 // consolidates create / update / get / set_budget behind one `action`

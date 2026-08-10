@@ -277,9 +277,16 @@ func TestOrchestrateCommand_ResumeRebindsGoal(t *testing.T) {
 	if err := c.Run(ctx, []string{"resume", "id=happy.hare"}); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	rt := c.Active.Get()
+	// The runtime reference is captured synchronously by the builder during
+	// doResume→NewRuntime (before Run returns). Reading c.Active.Get() here
+	// instead is racy: the launch goroutine can complete the (instant) fake run
+	// and clear Active before this line runs, flakily returning nil
+	// (bugs.md must-fix #2).
+	b.mu.Lock()
+	rt := b.rt
+	b.mu.Unlock()
 	if rt == nil {
-		t.Fatal("no active runtime after resume")
+		t.Fatal("no runtime built after resume")
 	}
 	if !rt.GoalBound() {
 		t.Error("resumed run should re-bind the run's existing goal")
