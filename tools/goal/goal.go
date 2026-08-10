@@ -104,7 +104,12 @@ type goalArgs struct {
 	// text, untrusted data). On `create` it becomes the new goal's handover;
 	// the next goal's reminder shows it inside an <untrusted_handover> block.
 	Handover string `json:"handover,omitempty"`
-	Status   string `json:"status,omitempty"`
+	// Team binds the created goal to a named agent team (TEAMS.md §5.1): while
+	// the goal is active, the team's overlay is applied. Empty = inherit the
+	// session-level team. Only meaningful for `create` (and create-derived
+	// queue actions).
+	Team string `json:"team,omitempty"`
+	Status string `json:"status,omitempty"`
 	// Terminal-answer contract (update): reason justifies the transition;
 	// expectation states what unblocks a blocked goal.
 	Reason      string   `json:"reason,omitempty"`
@@ -180,6 +185,10 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				"handover": map[string]any{
 					"type":        "string",
 					"description": "create: free-text continuity note for the successor goal — what makes clean context sufficient. Recommended structure: State (done/verified w/ evidence), Decisions (constraints), Next steps (first actions), Risks/open questions, Carried limits (budget, verify command, completion criterion). Shown to the next goal as untrusted data (\"<untrusted_handover>\"), never instructions. Max 4096 chars.",
+				},
+				"team": map[string]any{
+					"type":        "string",
+					"description": "create: bind this goal to a named agent team (TEAMS.md §5.1) — while active, the team's overlay is applied. Empty/omitted = inherit the session-level team.",
 				},
 				"status": map[string]any{
 					"type":        "string",
@@ -385,7 +394,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 			activated = snap
 			continue
 		}
-		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), t.resolveFreshContext(args), args.Priority == "front", optionalText(args.Handover)); err != nil {
+		if err := t.enqueue(obj, args.CompletionCriterion, optionalText(args.VerifyCommand), t.resolveFreshContext(args), args.Priority == "front", optionalText(args.Handover), strings.TrimSpace(args.Team)); err != nil {
 			return agentic.ToolResult{}, goalToolErr("goal", "create_failed", err)
 		}
 		queued++
@@ -421,6 +430,7 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 		VerifyCommand:       optionalText(args.VerifyCommand),
 		Replace:             replace,
 		FreshContext:        t.resolveFreshContext(args),
+		Team:                strings.TrimSpace(args.Team),
 		Handoff:             optionalText(args.Handover),
 	}, goal.GoalActorModel)
 	if err != nil {
@@ -433,7 +443,7 @@ func (t *GoalTool) createActive(args goalArgs, objective string, replace bool) (
 // enqueue appends a goal to the durable queue. It requires a wired queue.
 // The shared criterion, verify command, and handover apply to every objective
 // in the call. front=true inserts at the FRONT of the queue (promoted next).
-func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *string, freshContext bool, front bool, handover *string) error {
+func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *string, freshContext bool, front bool, handover *string, team string) error {
 	if t.Queue == nil {
 		return fmt.Errorf("a goal is already active and no goal queue is available; use replace to start a new one")
 	}
@@ -442,6 +452,7 @@ func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *s
 		CompletionCriterion: criterion,
 		VerifyCommand:       verifyCommand,
 		FreshContext:        freshContext,
+		Team:                team,
 		Handoff:             handover,
 	}
 	var err error

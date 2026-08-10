@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/pijalu/goa/core/goal"
@@ -157,6 +158,30 @@ type GoalDriver struct {
 	// Written by handleTurnError, consumed by runTurn — both run on the
 	// single Drive loop goroutine, so no extra locking is needed.
 	runawayPausedFor string
+
+	// TeamOverlay manages goal-scoped team overlays (TEAMS.md §5.2). When a
+	// team-bound goal is active, the drive loop applies the team's overlay for
+	// the goal's duration and removes it when the goal ends (mirrors
+	// FreshContext's per-goal tracking). overlayGoalID records which goal the
+	// overlay is currently bound to so it is applied once per goal. Nil =
+	// team overlays disabled (no TeamManager wired). Both fields are only
+	// touched from the single Drive loop.
+	TeamOverlay    TeamOverlayManager
+	overlayGoalID  string
+}
+
+// TeamOverlayManager is the subset of the TeamManager the goal drive loop needs
+// to apply/remove goal-scoped team overlays. It is defined here (in package
+// core) to avoid a core → core/team dependency cycle; the concrete
+// *team.Manager satisfies it.
+type TeamOverlayManager interface {
+	// ApplyOverlay applies the named team as a goal overlay (snapshotting the
+	// session state for later restore). It is idempotent-safe: re-applying the
+	// same overlay is a no-op when one is already active.
+	ApplyOverlay(name string) error
+	// RemoveOverlay tears down the active goal overlay, restoring the session.
+	// It is a no-op when no overlay is active.
+	RemoveOverlay() error
 }
 
 // stallChallengeLimit is the number of unanswered stall challenges after
@@ -201,8 +226,12 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 		}
 		active := d.Mode.GetActiveGoal()
 		if active == nil {
+			d.syncTeamOverlay(nil)
 			return nil
 		}
+		// Apply/remove the goal-scoped team overlay to match the active goal
+		// (TEAMS.md §5.2). Done once per goal before the first turn.
+		d.syncTeamOverlay(active)
 		if active.Budget.OverBudget {
 			reason := "A configured budget was reached"
 			d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
@@ -226,6 +255,39 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 			return nil
 		}
 		d.checkStall(current)
+	}
+}
+
+// syncTeamOverlay keeps the goal-scoped team overlay aligned to the active goal
+// (TEAMS.md §5.2). When a team-bound goal is active and the overlay is not yet
+// bound to it, the team is applied for the goal's duration. When the active goal
+// clears (nil) or has no team, any lingering overlay is removed so the session
+// state is restored. It is a no-op when no TeamOverlay manager is wired. Errors
+// are logged via the overlay manager's own logging; the drive loop continues
+// (a missing/undefined team does not block the goal — it runs session-default).
+func (d *GoalDriver) syncTeamOverlay(active *goal.GoalSnapshot) {
+	if d.TeamOverlay == nil {
+		return
+	}
+	want := ""
+	wantID := ""
+	if active != nil {
+		want = strings.TrimSpace(active.Team)
+		wantID = active.GoalID
+	}
+	switch {
+	case want == "" && d.overlayGoalID != "":
+		// Active goal ended (or has no team): tear down the lingering overlay.
+		_ = d.TeamOverlay.RemoveOverlay()
+		d.overlayGoalID = ""
+	case want != "" && d.overlayGoalID != wantID:
+		// New team-bound goal: apply its overlay. RemoveOverlay is safe first
+		// (no-op when none) so a prior overlay for a different goal is cleared.
+		if d.overlayGoalID != "" {
+			_ = d.TeamOverlay.RemoveOverlay()
+		}
+		_ = d.TeamOverlay.ApplyOverlay(want)
+		d.overlayGoalID = wantID
 	}
 }
 

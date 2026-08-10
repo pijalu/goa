@@ -115,3 +115,36 @@ func (s *memoryEventStore) Append(record GoalEventRecord) error {
 func (s *memoryEventStore) Replay() ([]GoalEventRecord, error) {
 	return append([]GoalEventRecord(nil), s.records...), nil
 }
+
+// TestCreateGoal_TeamRoundTrip verifies the Team binding survives create →
+// snapshot → get → JSON (TEAMS.md §5.1 goal binding).
+func TestCreateGoal_TeamRoundTrip(t *testing.T) {
+	mode := NewGoalMode(nil, nil, nil, nil)
+	snap, err := mode.CreateGoal(CreateGoalInput{
+		Objective: "ship it",
+		Team:      "alpha",
+	}, GoalActorModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Team != "alpha" {
+		t.Errorf("snapshot Team = %q, want alpha", snap.Team)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.Team != "alpha" {
+		t.Errorf("get Team = %q, want alpha", goalSnapTeam(g))
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"team":"alpha"`) {
+		t.Errorf("snapshot JSON must expose team: %s", data)
+	}
+}
+
+func goalSnapTeam(g *GoalSnapshot) string {
+	if g == nil {
+		return "<nil>"
+	}
+	return g.Team
+}

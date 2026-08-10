@@ -1125,3 +1125,40 @@ func TestGoalTool_AccessSerializesConcurrentCalls(t *testing.T) {
 			"scheduler serializes them; a=%+v b=%+v", a.Category, a, b)
 	}
 }
+
+// TestGoalTool_CreateWithTeam verifies the /goal tool threads the `team` arg
+// into the created goal (TEAMS.md §5.1 goal binding).
+func TestGoalTool_CreateWithTeam(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"ship it","team":"alpha"}`); err != nil {
+		t.Fatalf("create with team: %v", err)
+	}
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("no goal created")
+	}
+	if g.Team != "alpha" {
+		t.Errorf("created goal Team = %q, want alpha", g.Team)
+	}
+}
+
+// TestGoalTool_CreateTeamTrimmed verifies the team name is trimmed of
+// surrounding whitespace before binding.
+func TestGoalTool_CreateTeamTrimmed(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"ship it","team":"  beta  "}`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.Team != "beta" {
+		t.Errorf("trimmed Team = %q, want beta", goalTeam(g))
+	}
+}
+
+func goalTeam(g *goal.GoalSnapshot) string {
+	if g == nil {
+		return "<nil>"
+	}
+	return g.Team
+}

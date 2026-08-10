@@ -1250,6 +1250,11 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		lspMgr:            base.lspMgr,
 		mcpManager:        base.mcpManager,
 	}
+	// Wire the goal drive loop's team-overlay manager now that both the goal
+	// driver and the team manager exist (TEAMS.md §5.2: a team-bound goal
+	// applies the team's overlay for its duration). The driver no-ops the
+	// overlay when this is nil.
+	s.goalDriver.TeamOverlay = s.teamManager
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
 	}

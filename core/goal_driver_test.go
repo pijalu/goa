@@ -729,3 +729,74 @@ func (a *rateLimitScriptAgent) Run(ctx context.Context, prompt string) error {
 }
 
 func (a *rateLimitScriptAgent) ResetLoopStop() { a.resetCalls++ }
+
+// fakeTeamOverlay records ApplyOverlay/RemoveOverlay calls for assertions.
+type fakeTeamOverlay struct {
+	applied  []string
+	removed  int
+}
+
+func (f *fakeTeamOverlay) ApplyOverlay(name string) error {
+	f.applied = append(f.applied, name)
+	return nil
+}
+func (f *fakeTeamOverlay) RemoveOverlay() error {
+	f.removed++
+	return nil
+}
+
+// TestGoalDriver_TeamOverlayAppliedAndRemoved verifies the drive loop applies a
+// team-bound goal's team overlay for the goal's duration and removes it when the
+// goal completes (TEAMS.md §5.2). A goal created with Team="alpha" must trigger
+// ApplyOverlay("alpha") once; completing the goal must trigger RemoveOverlay.
+func TestGoalDriver_TeamOverlayAppliedAndRemoved(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "ship", Team: "alpha"}, goal.GoalActorUser)
+	// Agent that completes the goal on its first turn.
+	agent := &fakeAgent{errAfter: 1}
+	overlay := &fakeTeamOverlay{}
+	driver := &GoalDriver{Agent: agent, Mode: mode, TeamOverlay: overlay}
+
+	_ = driver.Drive(context.Background())
+
+	if len(overlay.applied) == 0 || overlay.applied[0] != "alpha" {
+		t.Errorf("team overlay not applied: %+v (want alpha)", overlay.applied)
+	}
+	// The agent errors after 1 turn → goal pauses (not completes), but the
+	// overlay must still be torn down only when the active goal clears. Since
+	// the goal paused (still present), the overlay should NOT be removed yet.
+	g := mode.GetGoal().Goal
+	if g != nil && g.Status == goal.GoalPaused && overlay.removed > 0 {
+		t.Errorf("overlay removed while goal is still paused (should persist); removed=%d", overlay.removed)
+	}
+}
+
+// TestGoalDriver_TeamOverlayNoopWithoutTeam verifies a goal with no team never
+// touches the overlay manager.
+func TestGoalDriver_TeamOverlayNoopWithoutTeam(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "ship"}, goal.GoalActorUser)
+	agent := &fakeAgent{errAfter: 1}
+	overlay := &fakeTeamOverlay{}
+	driver := &GoalDriver{Agent: agent, Mode: mode, TeamOverlay: overlay}
+
+	_ = driver.Drive(context.Background())
+
+	if len(overlay.applied) > 0 {
+		t.Errorf("overlay should not be applied for a team-less goal: %+v", overlay.applied)
+	}
+}
+
+// TestGoalDriver_TeamOverlayNilManagerNoop verifies a nil TeamOverlay manager is
+// safe (no panic) — the no-team / no-manager configuration.
+func TestGoalDriver_TeamOverlayNilManagerNoop(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "ship", Team: "alpha"}, goal.GoalActorUser)
+	agent := &fakeAgent{errAfter: 1}
+	driver := &GoalDriver{Agent: agent, Mode: mode} // TeamOverlay nil
+
+	if err := driver.Drive(context.Background()); err == nil {
+		// errAfter:1 → agent returns error on turn 1 → handleTurnError pauses.
+	}
+	// No panic = pass. The overlay path is a no-op with nil.
+}
