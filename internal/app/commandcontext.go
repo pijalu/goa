@@ -45,6 +45,7 @@ func coreContextForCommand(subs *subsystems, app *App) core.Context {
 		AssistantText:          lastAssistantText(subs),
 		ForegroundOrchestrator: subs.foregroundOrch,
 		AgentPool:              subs.agentPool,
+		TeamManager:            subs.teamManager,
 		SkillSubAgentRunner:    &skillSubAgentRunner{pool: subs.agentPool},
 		WorkflowRegistry:       subs.workflowReg,
 		GoalManager:            subs.goalManager,

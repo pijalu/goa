@@ -22,6 +22,7 @@ import (
 	"github.com/pijalu/goa/core/sessiontree"
 	"github.com/pijalu/goa/core/swarm"
 	"github.com/pijalu/goa/core/tasks"
+	"github.com/pijalu/goa/core/team"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
@@ -75,6 +76,7 @@ type subsystems struct {
 	foregroundOrch *multiagent.ForegroundOrchestrator
 	workflowReg    *multiagent.WorkflowRegistry
 	agentPool      *multiagent.AgentPool
+	teamManager    *team.Manager
 	events         *event.Bus
 	goaTool        *core.GoaCommandTool // retained so /tools:goa:on can re-register at runtime
 	swarmState     *swarm.State         // retained so /tools:agent_swarm:on can rebuild the tool
@@ -1229,6 +1231,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		goalManager:       goalManager,
 		goalDriver:        goalDriver,
 		orchAdapter:       NewOrchestratorAdapter(agentPool, cfg, promptDir),
+		teamManager:       newTeamManager(cfg, base.providerMgr, ab.agentMgr, agentPool, foregroundOrch, sc.modeRegistry, nil),
 		orchActive:        orchestrator.NewActiveRuntime(),
 		contextFiles:      internal.LoadProjectContextFiles(projectDir, cfg.ConfigDir),
 		requestReviewTool: requestReviewTool,

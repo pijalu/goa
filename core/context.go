@@ -221,6 +221,12 @@ type Context struct {
 	// AgentPool creates and caches sub-agents for the Agent tool and workflows.
 	AgentPool *multiagent.AgentPool
 
+	// TeamManager applies named agent teams (main/companion pairings with a
+	// review policy) to the session; nil when teams are unavailable.
+	// Concrete type is *team.Manager — declared as any to avoid a core→team
+	// import cycle (team depends on core interfaces).
+	TeamManager any
+
 	// SkillSubAgentRunner executes a skill in a sub-agent and returns the result.
 	// When nil, sub-agent execution is unavailable.
 	SkillSubAgentRunner SkillSubAgentRunner
