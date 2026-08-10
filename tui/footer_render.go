@@ -280,6 +280,13 @@ func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 	} else {
 		right2 = "no-model"
 	}
+	if f.data.Team != "" {
+		badge := "⛃ " + f.data.Team
+		if f.data.TeamDrifted {
+			badge += "*"
+		}
+		right2 = ansi.Fg("#56d4dd") + badge + ansi.Reset + " " + right2
+	}
 	if f.data.WorkflowActive {
 		right2 = ansi.Fg("#d29922") + "⟡ workflow" + ansi.Reset + " " + right2
 	}

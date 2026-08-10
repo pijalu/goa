@@ -363,6 +363,11 @@ func (a *App) refreshFooterFromConfig() {
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	}
 	subs.footer.SetData(data)
+	// Team badge: SetTeam is the sole writer (preserveFooterTeam keeps it
+	// across stats rebuilds) — push the manager's effective state on every
+	// full refresh so /team switches and overlays show immediately.
+	name, drifted := teamFooterInfo(subs)
+	subs.footer.SetTeam(name, drifted)
 	// Queue an async render for the updated footer. The render loop (60fps)
 	// picks it up within ~16ms, which is fast enough for model label changes.
 	subs.tuiEngine.RequestRender()

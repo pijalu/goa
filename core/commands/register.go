@@ -72,6 +72,8 @@ func RegisterAll(r *core.CommandRegistry, deps ...CommandDependencies) error {
 		&ModeCommand{},
 		// model
 		&ModelCommand{},
+		// team
+		&TeamCommand{},
 		// multiagent
 		&PipelineCommand{},
 		&GoCommand{},
