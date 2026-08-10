@@ -21,6 +21,21 @@ If new items are added, restart the process.
 
 - `--- FAIL: TestOrchestrateCommand_ResumeRebindsGoal (0.00s)` — `/orchestrate:resume` goal rebinding (`core/commands/orchestrate_command_test.go:259`). Note: passes locally standalone (×5, `-race`) and in full `core/commands` package run — reproduce in the failing environment to capture the actual output before fixing.
 
+- **gpython: `AttributeError: "'file' has no attribute 'readlines'"`** — file objects returned by `open()` don't support `.readlines()`:
+  ```
+  ✗ python
+  >>> path = "internal/function/function.go"
+  ... with open(path) as f:
+  ...     lines = f.readlines()
+  ...
+  Error: [python error: execution_error]
+  Traceback (most recent call last):
+    File "<python>", line 3, in <module>
+  AttributeError: "'file' has no attribute 'readlines'"
+  ```
+
+- **Goal tool**: When multiple goal tool calls are executed, the request order should be kept.
+
 ## Workflow for bugs
 1. Reproduce the failure before editing — ideally a command or script that triggers it on demand.
 2. State the observed failure exactly (command + output).
