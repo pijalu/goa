@@ -118,9 +118,13 @@ Pre-existing warnings are acceptable only if unrelated and explicitly noted.
 
 # Phase 3 — Commands, footer, /config CRUD (TEAMS.md §8)
 
-15. `core/commands/team.go` (self-registered `init()`): `/team`,
-    `/team:list`, `/team:use:<name>`, `/team:off`, `/team:sync`,
-    `/team:show:<name>` + completions from the merged registry.
+15. `core/commands/team.go` (self-registered `init()`), behaving **like
+    `/model`** (`core/commands/model.go` pattern): bare `/team` → interactive
+    team selector (`SelectOption` over defined teams, active preselected,
+    `— none —` deactivates); `/team:<name>` → direct switch (persist
+    `teams.active`, announce, `FooterRefresh`); `/team:off`, `/team:status`,
+    `/team:list`, `/team:sync`, `/team:show:<name>`; `/team:use:<name>` as
+    alias; completions from the merged registry.
 16. Footer: `tui/footer_data.go` team segment `⛃ <name> (review:<policy>)`
     + drift marker `*`; goal panel shows bound team when ≠ session team.
 17. `core/commands/config_teams.go` — **full CRUD** per §8.3, mirroring
@@ -254,8 +258,10 @@ teams:
 ## 8.2 Headless scenarios (binary built from `feature/team`)
 
 35. **T1 — activation + model/thinking switch**: in fixture dir, headless
-    `/team:use:qa-pair` then status: output shows main=qwen, companion=gemma,
-    `review:gated`; session state persists team name.
+    `/team:qa-pair` (direct-switch form, mirrors `/model:<id>`) then
+    `/team:status`: output shows main=qwen, companion=gemma, `review:gated`;
+    session state persists team name. Also exercise the interactive bare
+    `/team` selector in 8.4 (F-suite covers it in-process).
 36. **T2 — goal binding + gated review**: `/goal:new:write hello.txt containing OK
     --team qa-pair` with `--yes`; validate side effects: `hello.txt` exists;
     goal-events show team binding; team-events show a `goal_complete` review

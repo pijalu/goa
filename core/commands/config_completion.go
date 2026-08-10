@@ -135,6 +135,16 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 		{"orchestrator.pool.max_total_agents", "integer (0 = unlimited pool delegation)"},
 		{"orchestrator.pool.max_agents_per_model.*", "integer >= 1"},
 		{"orchestrator.defaults.topology", "hub | fanout | pipeline"},
+		{"teams.active", "team name from teams.definitions"},
+		{"teams.definitions.*.main.model", "model id"},
+		{"teams.definitions.*.companion.model", "model id"},
+		{"teams.definitions.*.members.*.model", "model id"},
+		{"teams.definitions.*.members.*.role", "main | reviewer | worker"},
+		{"teams.definitions.*.members.*.thinking_level", "off | minimal | low | medium | high | xhigh"},
+		{"teams.definitions.*.review", "off | agent | framework | gated"},
+		{"teams.definitions.*.review_gates.triggers", "comma list: turn_end, goal_complete, goal_turn, file_commit, run_complete"},
+		{"teams.definitions.*.review_gates.quorum", "all | any"},
+		{"teams.definitions.*.delegation", "agent | off"},
 	}
 	var comps []core.ArgCompletion
 	for _, k := range keys {
@@ -167,8 +177,34 @@ func configValueCompletions(ctx core.Context, key, prefix string) []core.ArgComp
 		return boolCompletionValues(prefix)
 	case "orchestrator.defaults.topology":
 		return filteredCompletions([]string{"hub", "fanout", "pipeline"}, prefix, "")
+	case "teams.definitions.*.review":
+		return filteredCompletions([]string{"off", "agent", "framework", "gated"}, prefix, "")
+	case "teams.definitions.*.members.*.role":
+		return filteredCompletions([]string{"main", "reviewer", "worker"}, prefix, "")
+	case "teams.definitions.*.members.*.thinking_level":
+		return thinkingLevelCompletionValues(prefix)
+	case "teams.definitions.*.review_gates.quorum":
+		return filteredCompletions([]string{"all", "any"}, prefix, "")
+	case "teams.definitions.*.delegation":
+		return filteredCompletions([]string{"agent", "off"}, prefix, "")
+	case "teams.active":
+		return teamCompletionValues(ctx, prefix)
 	}
 	return nil
+}
+
+// teamCompletionValues completes team names from the merged definitions.
+func teamCompletionValues(ctx core.Context, prefix string) []core.ArgCompletion {
+	if ctx.Config == nil {
+		return nil
+	}
+	var comps []core.ArgCompletion
+	for _, name := range ctx.Config.TeamNames() {
+		if prefix == "" || strings.HasPrefix(name, prefix) {
+			comps = append(comps, core.ArgCompletion{Value: name, Description: "defined team"})
+		}
+	}
+	return comps
 }
 
 func profileCompletionValues(ctx core.Context, prefix string) []core.ArgCompletion {

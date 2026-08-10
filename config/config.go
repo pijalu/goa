@@ -60,6 +60,7 @@ type Config struct {
 	ContextCompression ContextCompressionConfig `yaml:"context_compression"`
 	Telegram           TelegramConfig           `yaml:"telegram"`
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
+	Teams              TeamsConfig              `yaml:"teams,omitempty"`
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
 	Plan               PlanConfig               `yaml:"plan,omitempty"`
 	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`

@@ -512,18 +512,25 @@ driven by the run, not the goal driver).
 
 ### 8.1 Commands (`core/commands/team*.go`, self-registered)
 
+The command behaves **like `/model`**: bare `/team` opens an interactive
+selector over the defined teams (active team highlighted, plus a
+`— none —` entry to deactivate); `/team:<name>` switches directly with an
+announcement, persistence of `teams.active`, and a footer refresh.
+
 | Command | Action |
 |---------|--------|
-| `/team` | Status: active team (+drift marker), resolved models, review policy, bindings (goals/runs using it). |
-| `/team:list` | All defined teams with their main/companion models and review policy. |
-| `/team:use:<name>` | Activate a team for the session (§4.2). |
+| `/team` | Interactive team selector (like `/model`'s picker): team names with main/companion models + review policy as descriptions, active team preselected, `— none —` deactivates. |
+| `/team:<name>` | Activate a team directly (like `/model:<id>`): apply §4.2, persist `teams.active`, announce, refresh footer. |
 | `/team:off` | Deactivate; restore pre-team session state. |
+| `/team:status` | Status: active team (+drift marker), resolved models, review policy, bindings (goals/runs using it). |
+| `/team:list` | All defined teams with their main/companion models and review policy (non-interactive render). |
 | `/team:sync` | Re-apply the active team definition (clear drift). |
 | `/team:show:<name>` | Render a team definition (resolved models/providers, effective mode toolsets). |
 
-Completions for team names from the merged registry. `/goal:new` and
-`/goal:next` accept `--team <name>` (completion-aware). `/orchestrate new`
-accepts `--team <name>`.
+`/team:use:<name>` is kept as an alias of `/team:<name>` for script
+readability. Completions for team names from the merged registry.
+`/goal:new` and `/goal:next` accept `--team <name>` (completion-aware).
+`/orchestrate new` accepts `--team <name>`.
 
 ### 8.2 Footer/status
 

@@ -28,6 +28,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergeTelegram(other)
 	c.mergePermissions(other)
 	c.mergeOrchestrator(other)
+	c.mergeTeams(other)
 	c.mergePlan(other)
 	c.mergeGoals(other)
 	c.mergeMCP(other)

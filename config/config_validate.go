@@ -23,6 +23,7 @@ func (c *Config) Validate() error {
 	c.validateContextCompression(&ve)
 	c.validateSkillMode(&ve)
 	c.validateOrchestrator(&ve)
+	c.validateTeams(&ve)
 	c.validateGoals(&ve)
 	c.validatePlan(&ve)
 	c.validateMCP(&ve)
