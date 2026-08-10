@@ -296,26 +296,25 @@ func (w *wizardComponent) currentSlot() *modelSlot {
 }
 
 func (w *wizardComponent) advanceFromEndpoint() {
+	// commitTextInput captures the editor text into the slot and clears the
+	// editor. The endpoint must NOT be re-read afterwards — the editor is
+	// already empty, and the second read wiped the committed endpoint (the
+	// provider review pane then showed a blank endpoint).
 	w.commitTextInput()
-	s := w.currentSlot()
-	s.endpoint = w.editor.Text()
-	if s.selectedPresetIndex < 0 {
-		s.providerID = DeriveProviderID(s.endpoint)
-		s.providerName = deriveProviderName(s.endpoint)
-	}
-	w.editor.Clear()
 	if w.state == stateCompanionProviderEndpoint {
 		w.state = stateCompanionProviderKey
 	} else {
 		w.state = stateProviderKey
 	}
-	w.startKeyInput(s)
+	w.startKeyInput(w.currentSlot())
 }
 
 func (w *wizardComponent) advanceFromKey() {
+	// commitTextInput captures the editor text into s.apiKey and clears the
+	// editor. The key must NOT be re-read afterwards — the editor is already
+	// empty, and the second read wiped the pasted key, so the provider review
+	// pane reported "no API key provided".
 	w.commitTextInput()
-	s := w.currentSlot()
-	s.apiKey = w.editor.Text()
 	if w.state == stateCompanionProviderKey {
 		w.state = stateCompanionProviderTest
 	} else {

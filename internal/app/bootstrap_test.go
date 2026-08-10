@@ -5,10 +5,12 @@
 package app
 
 import (
+	"os"
 	"testing"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/tools"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRegisterTools_ClarifyDefaultOn(t *testing.T) {
@@ -122,4 +124,22 @@ func TestRuntimeOptions_DefaultIsTUI(t *testing.T) {
 	if opts.Headless() {
 		t.Error("expected TUI mode by default")
 	}
+}
+
+// TestParseCLIFlags_RepeatedCallsNoPanic is the regression test for the crash
+// after the setup wizard finishes: Main() relaunches via runApp(), which calls
+// ParseCLIFlags() a SECOND time. Before the fix, flags were registered on the
+// process-global flag.CommandLine, so the second registration panicked with
+// "goa flag redefined: model" and the app died right after the wizard saved
+// the config.
+func TestParseCLIFlags_RepeatedCallsNoPanic(t *testing.T) {
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"goa"} // flag-less launch, mirroring the wizard relaunch
+
+	firstFlags, firstOpts := ParseCLIFlags()
+	secondFlags, secondOpts := ParseCLIFlags() // used to panic: flag redefined
+
+	require.Equal(t, firstFlags, secondFlags)
+	require.Equal(t, firstOpts, secondOpts)
 }

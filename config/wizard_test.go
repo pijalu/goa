@@ -52,6 +52,52 @@ func TestWizardComponent_initDefaults_ReasoningEnabledHigh(t *testing.T) {
 	}
 }
 
+// TestWizardComponent_advanceFromKey_PreservesPastedKey is the regression
+// test for the "no API key provided" pane: advanceFromKey re-read the editor
+// AFTER commitTextInput had already captured the text and cleared the editor,
+// so the second read returned "" and wiped the pasted key.
+func TestWizardComponent_advanceFromKey_PreservesPastedKey(t *testing.T) {
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+	w.state = stateProviderKey
+	w.inputMode = "apikey"
+	const key = "sk-paste-demo-1234567890"
+	w.editor.SetText(key) // what a bracketed paste leaves in the editor
+
+	w.advanceFromKey()
+
+	if w.state != stateProviderTest {
+		t.Fatalf("state = %v, want stateProviderTest", w.state)
+	}
+	if w.main.apiKey != key {
+		t.Fatalf("apiKey = %q, want %q (editor was cleared before the capture was read)", w.main.apiKey, key)
+	}
+}
+
+// TestWizardComponent_advanceFromEndpoint_PreservesTypedEndpoint covers the
+// same double-commit bug on the custom-provider endpoint path.
+func TestWizardComponent_advanceFromEndpoint_PreservesTypedEndpoint(t *testing.T) {
+	done := make(chan *WizardResult, 1)
+	w := newWizardComponent(&Config{}, nil, "/tmp", done)
+	w.state = stateProviderEndpoint
+	w.inputMode = "endpoint"
+	w.main.selectedPresetIndex = -1 // custom provider: endpoint is typed
+	const ep = "https://api.example.com/v1"
+	w.editor.SetText(ep)
+
+	w.advanceFromEndpoint()
+
+	if w.state != stateProviderKey {
+		t.Fatalf("state = %v, want stateProviderKey", w.state)
+	}
+	if w.main.endpoint != ep {
+		t.Fatalf("endpoint = %q, want %q (editor was cleared before the capture was read)", w.main.endpoint, ep)
+	}
+	if w.main.providerID == "" {
+		t.Fatal("providerID not derived from the typed endpoint")
+	}
+}
+
 func TestWizardComponent_initModelSetup(t *testing.T) {
 	done := make(chan *WizardResult, 1)
 	w := newWizardComponent(&Config{}, nil, "/tmp", done)
