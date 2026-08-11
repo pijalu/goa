@@ -84,18 +84,31 @@ func buildSkillToggleItems(ctx core.Context, source string) []tui.SelectorItem {
 		items = append(items, tui.SelectorItem{
 			Value:       s.Name,
 			Label:       s.Name,
-			Description: boolLabel(skillEnabled(cfg, s.Name)),
+			Description: boolLabel(skillEnabled(cfg, s.Name, ctx.SkillRegistry)),
 		})
 	}
 	return items
 }
 
-// skillSummariesForSource filters the registry's loaded skills by origin:
-// source == "embedded" keeps embedded skills, otherwise file-based skills.
+// skillSummariesForSource filters the registry's skills by origin for the
+// toggle menu. For source == "embedded" it enumerates EVERY discoverable
+// embedded skill (including default-off ones the loader skipped, bugs.md:
+// embedded default-off except telegram) so the user can re-enable them from
+// the menu; the agent still never sees them until enabled. For file sources
+// it keeps the loaded file-based skills.
 func skillSummariesForSource(reg core.SkillRegistry, source string) []skills.SkillSummary {
 	if reg == nil {
 		return nil
 	}
+	// Real registry: enumerate EVERY discoverable embedded skill (including
+	// default-off ones the loader skipped) so the menu can re-enable them.
+	if source == "embedded" {
+		if r, ok := reg.(*skills.SkillRegistry); ok {
+			return r.ListEmbeddedDiscoverable()
+		}
+	}
+	// Fakes / non-concrete registries (tests) and the file-source branch:
+	// filter the loaded skills by origin.
 	wantEmbedded := source == "embedded"
 	var out []skills.SkillSummary
 	for _, s := range reg.List() {
@@ -113,7 +126,7 @@ func skillSourceLabel(reg core.SkillRegistry, source string, cfg *config.Config)
 	total := len(summaries)
 	on := 0
 	for _, s := range summaries {
-		if skillEnabled(cfg, s.Name) {
+		if skillEnabled(cfg, s.Name, reg) {
 			on++
 		}
 	}
@@ -121,27 +134,64 @@ func skillSourceLabel(reg core.SkillRegistry, source string, cfg *config.Config)
 }
 
 // skillEnabled reports whether a skill is currently on, mirroring
-// SkillRegistry.allowed: not disabled AND (no allowlist OR in allowlist).
-func skillEnabled(cfg *config.Config, name string) bool {
+// SkillRegistry.allowed PLUS the embedded default-off policy: not disabled,
+// (no allowlist OR in allowlist), AND — for embedded skills — not
+// default-off unless explicitly opted back in via skills.embedded_enabled.
+// reg may be nil (no embedded-default info → fall back to the list logic).
+func skillEnabled(cfg *config.Config, name string, reg core.SkillRegistry) bool {
 	if stringInSlice(cfg.Skills.Disabled, name) {
 		return false
 	}
 	if len(cfg.Skills.Enabled) > 0 {
 		return stringInSlice(cfg.Skills.Enabled, name)
 	}
+	// Embedded default-off: an embedded skill suppressed by default is off
+	// unless the user opted it back in via the embedded-scoped list.
+	if r, ok := reg.(*skills.SkillRegistry); ok && r.EmbeddedDefaultDisabled(name) {
+		return stringInSlice(cfg.Skills.EmbeddedEnabled, name)
+	}
 	return true
 }
 
-// setSkillEnabled updates the in-memory skills lists for a toggle. Enabling
-// removes the name from Disabled and adds it to Enabled when an allowlist is
-// active (so the default all-on state stays empty); disabling removes it
-// from Enabled and adds it to Disabled — except when the name is the last
-// allowlist member: removing it would collapse the allowlist to empty, which
-// loads as "all on" and silently destroys the user's allowlist mode (bugs.md:
-// a disable/re-enable round trip flipped every other skill on). A name in
-// both lists is disabled (explicit off wins), so keeping the membership is
-// inert until the skill is re-enabled.
-func setSkillEnabled(cfg *config.Config, name string, enabled bool, allowListActive bool) {
+// setSkillEnabled updates the in-memory skills lists for a toggle.
+//
+// Embedded skills (bugs.md: default-off except telegram) are routed to the
+// embedded-scoped skills.embedded_enabled list: enabling opts the skill back
+// in WITHOUT activating the global Enabled allowlist (which would suppress
+// file-based skills), and disabling removes it from that opt-in list so it
+// returns to default-off. isEmbedded marks embedded skills; defaultOff marks
+// an embedded skill that is OFF by default (all except telegram) so disabling
+// a default-ON one (telegram) still writes an explicit Disabled entry.
+//
+// Non-embedded (file) skills keep the legacy semantics: enabling removes the
+// name from Disabled and adds it to Enabled when an allowlist is active (so
+// the default all-on state stays empty); disabling removes it from Enabled
+// and adds it to Disabled — except when the name is the last allowlist
+// member: removing it would collapse the allowlist to empty, which loads as
+// "all on" and silently destroys the user's allowlist mode (bugs.md: a
+// disable/re-enable round trip flipped every other skill on). A name in both
+// lists is disabled (explicit off wins), so keeping the membership is inert
+// until the skill is re-enabled.
+func setSkillEnabled(cfg *config.Config, name string, enabled bool, allowListActive bool, isEmbedded bool, defaultOff bool) {
+	if isEmbedded {
+		if enabled {
+			cfg.Skills.Disabled = removeString(cfg.Skills.Disabled, name)
+			// A default-off skill needs the opt-in to come back on; a
+			// default-ON one (telegram) is on as soon as Disabled is cleared.
+			if defaultOff {
+				cfg.Skills.EmbeddedEnabled = appendUnique(cfg.Skills.EmbeddedEnabled, name)
+			}
+			return
+		}
+		// Disabling: a default-off embedded skill needs nothing (it is off
+		// already) beyond dropping any opt-in; a default-ON one (telegram)
+		// needs an explicit Disabled entry. defaultOff distinguishes the two.
+		cfg.Skills.EmbeddedEnabled = removeString(cfg.Skills.EmbeddedEnabled, name)
+		if !defaultOff {
+			cfg.Skills.Disabled = appendUnique(cfg.Skills.Disabled, name)
+		}
+		return
+	}
 	if enabled {
 		cfg.Skills.Disabled = removeString(cfg.Skills.Disabled, name)
 		if allowListActive {
@@ -160,8 +210,9 @@ func setSkillEnabled(cfg *config.Config, name string, enabled bool, allowListAct
 // skill registry so the change applies to the running session.
 func (m *configMenu) toggleSkill(name, source string) {
 	cfg := m.ctx.Config
-	enabled := skillEnabled(cfg, name)
-	setSkillEnabled(cfg, name, !enabled, skillAllowListActive(m.ctx, name, source, !enabled))
+	enabled := skillEnabled(cfg, name, m.ctx.SkillRegistry)
+	isEmbedded, defaultOff := embeddedToggleInfo(m.ctx.SkillRegistry, name)
+	setSkillEnabled(cfg, name, !enabled, skillAllowListActive(m.ctx, name, source, !enabled), isEmbedded, defaultOff)
 	if err := persistSkillToggle(m.ctx, source, !enabled); err != nil {
 		m.flash("Failed to save skill config: " + err.Error())
 	}
@@ -176,12 +227,28 @@ func setSkillEnabledState(ctx core.Context, name string, enabled bool) error {
 		return fmt.Errorf("configuration not available")
 	}
 	source := skillSourceForToggle(ctx, name)
-	setSkillEnabled(ctx.Config, name, enabled, skillAllowListActive(ctx, name, source, enabled))
+	isEmbedded, defaultOff := embeddedToggleInfo(ctx.SkillRegistry, name)
+	setSkillEnabled(ctx.Config, name, enabled, skillAllowListActive(ctx, name, source, enabled), isEmbedded, defaultOff)
 	if err := persistSkillToggle(ctx, source, enabled); err != nil {
 		return err
 	}
 	reloadSkillsFor(ctx)
 	return nil
+}
+
+// embeddedToggleInfo resolves whether a skill is an embedded built-in and, if
+// so, whether it is OFF by default (all except telegram). reg may be nil or a
+// non-concrete implementation (both → false, false, the file-skill path).
+func embeddedToggleInfo(reg core.SkillRegistry, name string) (isEmbedded, defaultOff bool) {
+	r, ok := reg.(*skills.SkillRegistry)
+	if !ok {
+		return false, false
+	}
+	src, ok := r.SourceOf(name)
+	if !ok || src != "embedded" {
+		return false, false
+	}
+	return true, r.IsEmbeddedDefaultOff(name)
 }
 
 // skillAllowListActive reports whether a skills allowlist is in effect for
@@ -297,35 +364,45 @@ func persistSkillToggle(ctx core.Context, source string, enabling bool) error {
 	}
 	cfg := ctx.Config
 	enabled, disabled := cfg.Skills.Enabled, cfg.Skills.Disabled
+	embeddedEnabled := cfg.Skills.EmbeddedEnabled
 	switch source {
 	case "embedded", "file":
 		home := source == "embedded"
 		filteredE, filteredD := skillNamesForLayer(ctx, enabled, disabled, home)
-		if err := saveSkillListsToLayer(ctx, home, filteredE, filteredD); err != nil {
+		if err := saveSkillListsToLayer(ctx, home, filteredE, filteredD, embeddedEnabled); err != nil {
 			return err
 		}
 		if enabling {
 			otherE, otherD := skillNamesForLayer(ctx, enabled, disabled, !home)
-			return saveSkillListsToLayer(ctx, !home, otherE, otherD)
+			return saveSkillListsToLayer(ctx, !home, otherE, otherD, embeddedEnabled)
 		}
 		return nil
 	default: // unknown source — write to both layers
 		homeE, homeD := skillNamesForLayer(ctx, enabled, disabled, true)
-		if err := saveSkillListsToLayer(ctx, true, homeE, homeD); err != nil {
+		if err := saveSkillListsToLayer(ctx, true, homeE, homeD, embeddedEnabled); err != nil {
 			return err
 		}
 		projE, projD := skillNamesForLayer(ctx, enabled, disabled, false)
-		return saveSkillListsToLayer(ctx, false, projE, projD)
+		return saveSkillListsToLayer(ctx, false, projE, projD, embeddedEnabled)
 	}
 }
 
-// saveSkillListsToLayer writes the given enabled/disabled lists to the home
-// (global) or project config layer, deleting keys when the lists are empty.
-func saveSkillListsToLayer(ctx core.Context, home bool, enabled, disabled []string) error {
+// saveSkillListsToLayer writes the skills lists to the home (global) or
+// project config layer, deleting keys when the lists are empty. The
+// embedded_enabled list (embedded-scoped opt-in, bugs.md) is written ONLY to
+// the home layer: embedded skills are global, so their opt-in never belongs
+// to a project config.
+func saveSkillListsToLayer(ctx core.Context, home bool, enabled, disabled, embeddedEnabled []string) error {
 	if err := saveSkillListField(ctx, home, "enabled", enabled); err != nil {
 		return err
 	}
-	return saveSkillListField(ctx, home, "disabled", disabled)
+	if err := saveSkillListField(ctx, home, "disabled", disabled); err != nil {
+		return err
+	}
+	if home {
+		return saveSkillListField(ctx, true, "embedded_enabled", embeddedEnabled)
+	}
+	return nil
 }
 
 // skillNamesForLayer filters merged skill names to those whose discoverable

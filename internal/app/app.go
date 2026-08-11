@@ -110,6 +110,9 @@ type App struct {
 	// Compression counters for the footer.
 	microCompacts int
 	compacts      int
+	// compactions documents each completed compression round (per-round
+	// session-stats record). Guarded by statsMu like the counters above.
+	compactions []CompactionRound
 
 	// Previous cache hit percentage for cache-hit evolution tracking.
 	// Used to color the CH% footer stat based on whether the cache hit rate
@@ -666,6 +669,8 @@ func (a *App) reloadSkills() {
 	reg.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	reg.SetDisabled(cfg.Skills.Disabled)
 	reg.SetEnabled(cfg.Skills.Enabled)
+	reg.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
+	reg.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
 	if err := reg.LoadAll(); err != nil {
 		log.Printf("Warning: failed to reload skills after trust: %v\n", err)
 		return

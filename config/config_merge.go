@@ -336,6 +336,8 @@ func (c *Config) mergeSkills(other *Config) {
 	c.Skills.Enabled = uniqueStrings(c.Skills.Enabled)
 	c.Skills.Disabled = append(c.Skills.Disabled, other.Skills.Disabled...)
 	c.Skills.Disabled = uniqueStrings(c.Skills.Disabled)
+	c.Skills.EmbeddedEnabled = append(c.Skills.EmbeddedEnabled, other.Skills.EmbeddedEnabled...)
+	c.Skills.EmbeddedEnabled = uniqueStrings(c.Skills.EmbeddedEnabled)
 }
 
 // mergeMCP merges MCP server definitions. Servers are keyed by name; a server

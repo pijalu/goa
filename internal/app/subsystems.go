@@ -881,6 +881,11 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	skillRegistry.SetDisabled(cfg.Skills.Disabled)
 	skillRegistry.SetEnabled(cfg.Skills.Enabled)
+	// Embedded skills are OFF by default except telegram (bugs.md); the user
+	// opts individual ones back in via skills.embedded_enabled (or the global
+	// allowlist). File-based skills are never affected by the default-off set.
+	skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
+	skillRegistry.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
 	if err := skillRegistry.LoadAll(); err != nil {
 		log.Printf("Warning: failed to load skills: %v\n", err)
 	} else if n := len(skillRegistry.List()); n > 0 {

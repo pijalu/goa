@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -143,8 +144,20 @@ type SkillRegistry struct {
 	trustChecker TrustChecker // nil means all filesystem skills are trusted
 	disabled     map[string]bool
 	enabled      map[string]bool // non-nil → allowlist; only listed skills load
-	homeDir      string          // home dir path for source labeling ("home")
-	projectDir   string          // project dir path for source labeling ("project")
+	// embeddedDefaultDisabled lists embedded skills that are OFF by default
+	// (bugs.md: all embedded skills except telegram). A default-off skill
+	// loads only when the user explicitly opts it back in via the embedded
+	// opt-in list (embeddedEnabled) or the global Enabled allowlist. It
+	// applies ONLY to the embedded source — home/project/plugin file skills
+	// are never affected.
+	embeddedDefaultDisabled map[string]bool
+	// embeddedEnabled is the embedded-scoped opt-in list: names here re-enable
+	// a default-off embedded skill WITHOUT activating the global Enabled
+	// allowlist (which would suppress file-based skills). Populated from
+	// config skills.embedded_enabled.
+	embeddedEnabled map[string]bool
+	homeDir         string          // home dir path for source labeling ("home")
+	projectDir      string          // project dir path for source labeling ("project")
 }
 
 // NewSkillRegistry creates a registry that scans the given directories.
@@ -191,6 +204,58 @@ func (r *SkillRegistry) SetEnabled(names []string) {
 	for _, n := range names {
 		r.enabled[n] = true
 	}
+}
+
+// SetEmbeddedDefaultDisabled marks embedded skill names as OFF by default.
+// These are skipped during the embedded scan ONLY when the user has not
+// explicitly opted them back in (via the embedded opt-in list or the global
+// Enabled allowlist). File-based skills from home/project/plugin dirs are
+// never affected. Must be called before LoadAll.
+func (r *SkillRegistry) SetEmbeddedDefaultDisabled(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	if r.embeddedDefaultDisabled == nil {
+		r.embeddedDefaultDisabled = make(map[string]bool, len(names))
+	}
+	for _, n := range names {
+		r.embeddedDefaultDisabled[n] = true
+	}
+}
+
+// SetEmbeddedEnabled installs the embedded-scoped opt-in list: names here
+// re-enable a default-off embedded skill WITHOUT activating the global
+// Enabled allowlist (which would suppress file-based skills). Must be called
+// before LoadAll.
+func (r *SkillRegistry) SetEmbeddedEnabled(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	r.embeddedEnabled = make(map[string]bool, len(names))
+	for _, n := range names {
+		r.embeddedEnabled[n] = true
+	}
+}
+
+// embeddedDefaultOff reports whether an embedded skill is suppressed by the
+// default-off policy: it is in the default-disabled set AND the user has not
+// explicitly opted it back in. Re-enable paths (either is sufficient):
+//   - the embedded opt-in list (embeddedEnabled) — embedded-scoped, no
+//     side-effects on file skills, or
+//   - the global Enabled allowlist (explicitly naming the skill).
+// Explicitly Disabled skills are already excluded by allowed() regardless.
+func (r *SkillRegistry) embeddedDefaultOff(name string) bool {
+	if !r.embeddedDefaultDisabled[name] {
+		return false
+	}
+	if r.embeddedEnabled[name] {
+		return false
+	}
+	// A global allowlist that explicitly names the skill also re-enables it.
+	if len(r.enabled) > 0 && r.enabled[name] {
+		return false
+	}
+	return true
 }
 
 // allowed reports whether a skill with the given name may be loaded:
@@ -274,7 +339,7 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		if name == "." {
 			return nil
 		}
-		if !r.allowed(name) {
+		if !r.allowed(name) || r.embeddedDefaultOff(name) {
 			return nil
 		}
 		data, err := fs.ReadFile(r.embedFS, path)
@@ -311,7 +376,7 @@ func (r *SkillRegistry) scanEmbeddedSubSkills(parentName, parentPath string) {
 		if err != nil {
 			continue
 		}
-		if !r.allowed(entry.Name()) {
+		if !r.allowed(entry.Name()) || r.embeddedDefaultOff(entry.Name()) {
 			continue
 		}
 		skill := parseSkill(entry.Name(), string(data), "embedded", "skills/"+skillPath)
@@ -408,6 +473,121 @@ func (r *SkillRegistry) SourceOf(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// ListEmbeddedDiscoverable returns summaries of EVERY skill discoverable in
+// the embedded filesystem, including default-off and explicitly-disabled ones
+// that LoadAll skipped. The /config skill toggle uses it so a default-off
+// embedded skill (e.g. review) still appears in the menu and can be re-enabled;
+// the agent never sees it (Get/List exclude it until enabled).
+func (r *SkillRegistry) ListEmbeddedDiscoverable() []SkillSummary {
+	if r.embedFS == nil {
+		return nil
+	}
+	var out []SkillSummary
+	_ = fs.WalkDir(r.embedFS, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		name := filepath.Dir(path)
+		if name == "." || filepath.Dir(name) != "." {
+			return nil // top-level skills only (sub-skills live under <parent>/skills/)
+		}
+		data, err := fs.ReadFile(r.embedFS, path)
+		if err != nil {
+			return nil
+		}
+		if skill := parseSkill(name, string(data), "embedded", "skills/"+path); skill != nil {
+			out = append(out, SkillSummary{
+				Name:        skill.Meta.Name,
+				Description: skill.Meta.Description,
+				Inline:      skill.Meta.Inline,
+				Category:    categoryOrDefault(skill.Meta.Category),
+				FilePath:    skill.FilePath,
+				Source:      "embedded",
+			})
+		}
+		return nil
+	})
+	return out
+}
+
+// EmbeddedDefaultDisabled reports whether the named skill is suppressed by the
+// embedded default-off policy right now (in the default-off set AND not
+// explicitly re-enabled). The config menu uses it to show the correct on/off
+// state for discoverable-but-inactive embedded skills.
+func (r *SkillRegistry) EmbeddedDefaultDisabled(name string) bool {
+	return r.embeddedDefaultOff(name)
+}
+
+// IsEmbeddedDefaultOff reports whether the named skill is a MEMBER of the
+// embedded default-off set (all embedded skills except telegram), regardless
+// of whether the user has since re-enabled it. Unlike EmbeddedDefaultDisabled
+// (the current suppressed state), this is stable across a toggle, so the
+// disable path can tell a default-off skill (disabling = drop the opt-in)
+// from a default-ON one (disabling = write an explicit Disabled entry).
+func (r *SkillRegistry) IsEmbeddedDefaultOff(name string) bool {
+	return r.embeddedDefaultDisabled[name]
+}
+
+// DefaultOnEmbeddedSkill is the single agent-facing embedded skill that stays
+// ON by default; every other agent-facing embedded skill is OFF by default
+// (bugs.md).
+const DefaultOnEmbeddedSkill = "telegram"
+
+// DefaultEmbeddedOffNames returns the names of all embedded skills that are
+// OFF by default: every agent-facing embedded skill except
+// DefaultOnEmbeddedSkill (telegram). Two kinds are excluded and stay ON:
+//   - telegram (the one kept agent-facing skill), and
+//   - hidden/internal skills (e.g. dream): they are never listed to the agent
+//     (Meta.Hidden) but internal features load them by name via Get, so
+//     defaulting them off would break those features for zero prompt savings.
+//
+// Derived from the embedded FS so it never drifts as skills are added.
+func DefaultEmbeddedOffNames(efs fs.FS) []string {
+	var out []string
+	if efs == nil {
+		return nil
+	}
+	for _, n := range EmbeddedSkillNames(efs) {
+		if n == DefaultOnEmbeddedSkill {
+			continue
+		}
+		hidden := false
+		if data, err := fs.ReadFile(efs, filepath.Join(n, "SKILL.md")); err == nil {
+			if s := parseSkill(n, string(data), "embedded", ""); s != nil {
+				hidden = s.Meta.Hidden
+			}
+		}
+		if !hidden {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// EmbeddedSkillNames returns the names of every top-level skill discoverable
+// in the embedded filesystem (sorted), regardless of enabled/disabled state.
+// It lets the wiring layer derive the default-off set ("all embedded skills
+// except telegram") without a hardcoded list that drifts as skills are added.
+func EmbeddedSkillNames(efs fs.FS) []string {
+	if efs == nil {
+		return nil
+	}
+	var names []string
+	_ = fs.WalkDir(efs, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() != "SKILL.md" {
+			return nil
+		}
+		name := filepath.Dir(path)
+		if name == "." || filepath.Dir(name) != "." {
+			return nil // top-level skills only
+		}
+		names = append(names, name)
+		return nil
+	})
+	sort.Strings(names)
+	return names
 }
 
 // List returns summaries of all registered skills.

@@ -78,7 +78,7 @@ func skillEnableCompletions(subcmd, searchPrefix string, ctx core.Context) []cor
 // skillDisableCompletions proposes enabled skills for /skill:disable.
 func skillDisableCompletions(subcmd, searchPrefix string, ctx core.Context) []core.ArgCompletion {
 	return skillNameCompletionsFiltered(subcmd, searchPrefix, ctx.SkillRegistry, func(s skills.SkillSummary) bool {
-		return ctx.Config == nil || skillEnabled(ctx.Config, s.Name)
+		return ctx.Config == nil || skillEnabled(ctx.Config, s.Name, ctx.SkillRegistry)
 	})
 }
 
@@ -164,7 +164,7 @@ func enableSkill(ctx core.Context, args []string) error {
 		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
 		return nil
 	}
-	if ctx.Config != nil && skillEnabled(ctx.Config, name) {
+	if ctx.Config != nil && skillEnabled(ctx.Config, name, ctx.SkillRegistry) {
 		writeFmt(ctx, "Skill %s is already enabled.\n", name)
 		return nil
 	}
@@ -186,7 +186,7 @@ func disableSkill(ctx core.Context, args []string) error {
 		writeFmt(ctx, "Skill not found: %s. Use /skills to list available skills.\n", name)
 		return nil
 	}
-	if ctx.Config != nil && !skillEnabled(ctx.Config, name) {
+	if ctx.Config != nil && !skillEnabled(ctx.Config, name, ctx.SkillRegistry) {
 		writeFmt(ctx, "Skill %s is already disabled.\n", name)
 		return nil
 	}
