@@ -121,10 +121,11 @@ func load() {
 		}
 	}
 
-	// pacman is generated programmatically (multi-cell ANSI frames cannot be
-	// expressed in the static spinners.json format): always register it, even
-	// when a user spinner.json replaces the builtin set.
+	// pacman and goat are generated programmatically (multi-cell frames cannot
+	// be expressed in the static spinners.json format): always register them,
+	// even when a user spinner.json replaces the builtin set.
 	registry["pacman"] = Pacman()
+	registry["goat"] = Goat()
 }
 
 func fallback() map[string]Definition {
