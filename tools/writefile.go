@@ -41,9 +41,9 @@ type LSPDocumentManager interface {
 }
 
 type WriteFileTool struct {
-	WorktreeMgr        *internal.WorktreeManager
-	ProjectDir         string
-	BackupStager       *BackupStager
+	WorktreeMgr  *internal.WorktreeManager
+	ProjectDir   string
+	BackupStager *BackupStager
 	// FileChangeNotifier, when set, is called after every successful file
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.

@@ -7,15 +7,21 @@
 4. Each bug should be moved to archive when tested and closed as the associated plan.
 5. Use interactive shell to validate the output of the tool - you must verify the actual terminal output.
 6. Check code quality with each tool run separately (do not chain them with `;` or `&&`):
-   - `go vet ./...`
-   - `staticcheck ./...`
-   - `gocognit -over 15 .`
-   - `gocyclo -over 12 .`
-   - `go test -count=1 -race -cover ./...`
-   Fix any new issues introduced by the change. Pre-existing warnings are acceptable only if they are unrelated to the change and explicitly noted.
+    - `go vet ./...`
+    - `staticcheck ./...`
+    - `gocognit -over 15 .`
+    - `gocyclo -over 12 .`
+    - `go test -count=1 -race -cover ./...`
+    Fix any new issues introduced by the change. Pre-existing warnings are acceptable only if they are unrelated to the change and explicitly noted.
 
 At the end of the session - the bug list should be empty and this file should only contain the guidelines for bug reporting.
 If new items are added, restart the process.
+
+## Must fix
+
+_(All must-fix items as of 2026-08-10 were closed and archived in
+`docs/archive/bugs.2026-08-10.md`. This section is empty until new items are
+added.)_
 
 ## Workflow for bugs
 1. Reproduce the failure before editing — ideally a command or script that triggers it on demand.
@@ -29,54 +35,36 @@ If new items are added, restart the process.
 
 ---
 
-## Context-compression cascade: per-layer `strategies` never merged, `micro_compaction` replaced wholesale, `enabled: false` ignored, home `Save` full-dumps merged config — OPEN
+## Teams feature: PHASE 4 — goal binding (feature/team branch)
 
-- **Found during diagnosis** of the archived 2026-08-03 "startup /config
-  does not match config" bug (docs/archive/bugs.20260803.md); all four are
-  pre-existing latent config-merge/persist defects in the same code area:
-  1. `mergeContextCompression` (`config/config_merge.go`) never merges the
-     `Strategies` block (`CompressionLayerStrategiesConfig`): a
-     `context_compression.strategies.{soft,trigger,hard}` key in a
-     home/project/local config file is silently DROPPED on cascade load —
-     only the embedded defaults survive. Verified: no `Strategies`
-     assignment exists in `config_merge.go`.
-  2. `MicroCompaction` is merged wholesale
-     (`if cc.MicroCompaction != (MicroCompactionSettings{}) { c... = cc... }`):
-     a higher layer that sets ONE micro key (e.g. `min_context_ratio`)
-     resets every other micro key to zero/SDK-default, unlike the
-     field-wise threshold merge right above it.
-  3. The `if !cc.Enabled { return }` gate makes `enabled: false` in a
-     home/project file a NO-OP: the embedded default (`enabled: true`)
-     survives, so compression cannot be disabled from any config file
-     (the /config `Enabled` toggle persists `enabled: false` to the home
-     file, which is then ignored on the next load). Verified empirically:
-     home file with `context_compression.enabled: false` loads as
-     `Enabled=true`.
-  4. `CascadeLoader.Save` (`config/loader.go`) still full-dumps the merged
-     in-memory config to `~/.goa/config.yaml` (used by the model-manager
-     and orchestrator settings flows via `m.saveConfig()`), baking
-     project-layer and embedded values into the home file — the same
-     contamination class as the archived bug, in the opposite direction.
-- **Relevant code**: `config/config_merge.go` `mergeContextCompression`,
-  `mergeCompressionThresholds` (contrast: field-wise), `mergeGoals` /
-  tri-state patterns for booleans; `config/loader.go` `Save`,
-  `SaveHomeFieldValue`; `core/commands/config_persist.go` `saveConfig`
-  callers (`config_models.go`, `config_orchestrator.go`).
-- **Plan**:
-  1. `mergeContextCompression`: merge `Strategies` field-wise (non-empty
-     wins per layer), merge `MicroCompaction` field-wise (non-zero scalars
-     per field, matching the threshold merge), and handle `Enabled` as a
-     tri-state (or gate only the *enabling* semantics) so an explicit
-     `enabled: false` in a higher layer disables compression. Keep the
-     gate's protection against a zero-value layer wiping the block.
-  2. Replace the `Save` full-dump callers in the model-manager and
-     orchestrator flows with field-scoped saves (`SaveHomeProvidersAndModels`
-     for models, `SaveHomeFieldValue` for the orchestrator section); keep
-     `Save` for flows that genuinely rewrite the home config.
-  3. Tests (table-driven, RED first): strategies block survives a
-     home+project cascade; micro keys merge field-wise across layers;
-     `enabled: false` in home disables compression; `Save`-replacement
-     flows do not restate unrelated sections in the home file.
-  4. Validate with the guideline-6 checks run separately; verify the
-     /config compression display interactively per guideline 5 after a
-     round-trip through each flow.
+Phase 4 threads the `Team` field through goal create/queue/promote and applies a
+team overlay for the duration of a team-bound goal (TEAMS.md §5.1–5.2).
+
+### Implemented
+- `core/goal/model.go` — `CreateGoalInput.Team`, `GoalSnapshot.Team`,
+  `UpcomingGoal.Team`, `UpcomingGoalInput.Team`, `goalStage.team`,
+  `GoalEventRecord.Team`.
+- `core/goal/mode.go` — `CreateGoal` stages `input.Team`; `RestoreCreate` reads
+  `record.Team`; `toSnapshot` carries `state.team`.
+- `core/goal_queue.go` — queue insert/append/prepend carry `Team`.
+- `tools/goal/goal.go` — `/goal` tool `team` arg + schema property; create +
+  enqueue pass `Team` into `CreateGoalInput`/`UpcomingGoalInput`.
+- `core/commands/goal.go` + `internal/app/events.go` — resume/promote pass the
+  queued goal's `Team` into the promoted `CreateGoalInput`.
+- `core/goal_driver.go` — `TeamOverlayManager` interface; `syncTeamOverlay`
+  applies the bound team's overlay while a team-bound goal is active and removes
+  it when the goal clears (mirrors FreshContext per-goal tracking). Wired to the
+  TeamManager in `subsystems.go`.
+
+### Remaining (follow-up, non-blocking)
+- `/goal:new --team` CLI flag (binding is by name string + tool arg today; an
+  interactive picker is a follow-up).
+- Missing-team → paused: today an undefined team name is a logged no-op (the goal
+  runs session-default); a hard pause-on-undefined-team can be added if desired.
+- Tests for the missing-team path once that contract is finalized.
+
+### Phases already committed
+- f963672 — phase 3: /team command (model-like), footer badge, /config CRUD
+- 6681e1f — phase 2: TeamManager snapshot/restore + adapters
+- c8661f0 — phase 1: teams config schema + validation
+- f69048e / 78cc5af — docs: TEAMS.md spec + TEAMS-PLAN.md microsteps

@@ -60,6 +60,7 @@ type Config struct {
 	ContextCompression ContextCompressionConfig `yaml:"context_compression"`
 	Telegram           TelegramConfig           `yaml:"telegram"`
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
+	Teams              TeamsConfig              `yaml:"teams,omitempty"`
 	Goals              GoalsConfig              `yaml:"goals,omitempty"`
 	Plan               PlanConfig               `yaml:"plan,omitempty"`
 	RegistryLoaders    RegistryLoaders          `yaml:"registry_loaders,omitempty"`
@@ -972,8 +973,10 @@ type ThinkingLevelConfig struct {
 
 // ContextCompressionConfig controls automatic conversation history compression.
 type ContextCompressionConfig struct {
-	Enabled   bool `yaml:"enabled"`
-	MaxTokens int  `yaml:"max_tokens"`
+	// Enabled is tri-state: nil = inherit from the lower cascade layer (embedded
+	// default: on); an explicit false in a home/project file disables compression.
+	Enabled   *bool `yaml:"enabled,omitempty"`
+	MaxTokens int   `yaml:"max_tokens"`
 	// ThresholdPercent is the legacy single trigger level.
 	// Deprecated: use Thresholds.TriggerPercent. When both are set,
 	// ThresholdPercent wins (backwards compatibility).
@@ -1024,6 +1027,13 @@ type ModelCompressionOverride struct {
 	Strategy            string                           `yaml:"strategy,omitempty"`
 	CacheGate           string                           `yaml:"cache_gate,omitempty"`
 	PreserveRecentTurns int                              `yaml:"preserve_recent_turns,omitempty"`
+}
+
+// EnabledValue reports whether context compression is active. Nil means the
+// setting was not explicitly provided at this cascade layer; the merged
+// default is on (matching the embedded default config).
+func (cc ContextCompressionConfig) EnabledValue() bool {
+	return cc.Enabled == nil || *cc.Enabled
 }
 
 // MicroCompactionSettings holds micro-specific config overrides.
@@ -1280,8 +1290,7 @@ func (c *Config) ResolvePlanFilePath(projectDir string) string {
 
 	p = os.ExpandEnv(p)
 	if strings.HasPrefix(p, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
+		if home, ok := internal.GoaHome(); ok {
 			p = filepath.Join(home, p[2:])
 		}
 	}

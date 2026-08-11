@@ -222,6 +222,7 @@ func defineStringFlags(fs *flag.FlagSet) map[string]*string {
 		{"thinking-blocks", "thinking_blocks", "Set thinking blocks visibility (on or off)"},
 		{"theme", "theme", "Override TUI theme (dark or light)"},
 		{"config", "config", "Explicit config path"},
+		{"home", "home", "Override the goa home directory (config, cache, logs, usage; env: GOA_HOME)"},
 		{"logfile", "logfile", "Write agent/LLM debug logs to file"},
 		{"terminal-log", "terminal_log", "Write raw TUI terminal output to file"},
 		{"render-log", "render_trace", "Write per-frame compositor render trace (JSONL) to file"},
@@ -519,16 +520,16 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 
 	compression := resolveCompression(cfg)
 	reg.Register(&tools.BashTool{
-		WorktreeMgr:         wm,
-		Blocked:             cfg.Tools.Bash.BlockedCommands,
-		Allowed:             cfg.Tools.Bash.AllowedCommands,
-		EnvMaskPatterns:     cfg.Tools.Bash.EnvMaskPatterns,
-		CompressOutput:      ptrBool(cfg.Tools.Bash.CompressOutput),
-		ProjectDir:          projectDir,
-		Jail:                cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
-		MaxOutputBytes:      cfg.Tools.Bash.MaxOutputBytes,
-		EnableComplexity:    cfg.Tools.Bash.EnableComplexityAnalysis,
-		WarnFileEdits: cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits,
+		WorktreeMgr:      wm,
+		Blocked:          cfg.Tools.Bash.BlockedCommands,
+		Allowed:          cfg.Tools.Bash.AllowedCommands,
+		EnvMaskPatterns:  cfg.Tools.Bash.EnvMaskPatterns,
+		CompressOutput:   ptrBool(cfg.Tools.Bash.CompressOutput),
+		ProjectDir:       projectDir,
+		Jail:             cfg.Tools.Bash.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
+		MaxOutputBytes:   cfg.Tools.Bash.MaxOutputBytes,
+		EnableComplexity: cfg.Tools.Bash.EnableComplexityAnalysis,
+		WarnFileEdits:    cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits,
 		// Resolve live so /config → tools.bash.warn_file_edits takes effect immediately.
 		WarnFileEditsResolver: func() bool {
 			return cfg.Tools.Bash.WarnFileEdits == nil || *cfg.Tools.Bash.WarnFileEdits

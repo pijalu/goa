@@ -67,24 +67,28 @@ context_compression:
   enabled: true
   # 0 means "auto": use the active model's advertised context window.
   max_tokens: 0
-  # Fill levels (percent of the effective window) at which compression
-  # escalates. soft: early cheap maintenance (0 = disabled); trigger: the
-  # configured strategy fires; hard: emergency ceiling (gate bypass,
-  # escalation, ceiling enforcement, new-turn refusal).
+  # Fill levels (percent of the effective window) at which PROACTIVE
+  # compression escalates. Every layer is OPT-IN (0 = disabled): proactive
+  # threshold compression busts the provider prefix cache and re-bills most
+  # of the context for modest headroom, so it is OFF by default. Enable a
+  # layer by setting a positive percent.
+  #   soft: early cheap maintenance; trigger: the configured strategy fires;
+  #   hard: proactive emergency ceiling (gate bypass + hard-layer strategy).
   # The legacy "threshold_percent" key still works and, when set, overrides
   # thresholds.trigger_percent (backwards compatibility).
   thresholds:
     soft_percent: 0
-    trigger_percent: 80
-    hard_percent: 95
+    trigger_percent: 0
+    hard_percent: 0
   # Optional per-model overrides keyed by models[].id, e.g.:
   # per_model:
   #   "local-qwen3-8b":
   #     max_tokens: 24576
   #     strategy: "hybrid"
   #     thresholds: { soft_percent: 40, trigger_percent: 65, hard_percent: 90 }
-  # Primary strategy: micro compaction after 1h idle.
-  # On context-length errors, tool elision is applied as fallback.
+  # Reactive safety net (always on): on a context-length error the hybrid
+  # strategy runs — tool_elision → selective → summarize (last resort) — and
+  # the hard-ceiling enforcer drops oldest messages to keep the request valid.
   on_context_error: true
   strategy: "micro"
   preserve_recent_turns: 4
@@ -192,6 +196,11 @@ tools:
     # wrong path would cause irreversible data loss.
   read_file:
     fuzzy_match: true
+    # Re-reading byte-identical content returns a short hint instead of the
+    # full body, so an append-only context is not bloated with redundant
+    # file copies (ENHANCE.md E1.3). A changed file or a different line
+    # range is never deduped. Set false to always return full content.
+    dedup: true
   webfetch:
     enabled: true
     max_lines_default: 250

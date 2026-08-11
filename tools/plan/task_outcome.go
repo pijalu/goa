@@ -24,10 +24,14 @@ type TaskOutcomeTool struct {
 var taskOutcomeDocs embed.FS
 
 // ShortDoc returns a short doc string.
-func (t *TaskOutcomeTool) ShortDoc() string { return common.ReadDoc(taskOutcomeDocs, "task_outcome.short.md") }
+func (t *TaskOutcomeTool) ShortDoc() string {
+	return common.ReadDoc(taskOutcomeDocs, "task_outcome.short.md")
+}
 
 // LongDoc returns a long doc string.
-func (t *TaskOutcomeTool) LongDoc() string { return common.ReadDoc(taskOutcomeDocs, "task_outcome.long.md") }
+func (t *TaskOutcomeTool) LongDoc() string {
+	return common.ReadDoc(taskOutcomeDocs, "task_outcome.long.md")
+}
 
 // Examples returns usage examples.
 func (t *TaskOutcomeTool) Examples() []string {

@@ -203,7 +203,6 @@ func (c *artifactCollector) addArtifact(a Artifact) {
 	}
 }
 
-
 func (c *artifactCollector) addBytes(target string, data []byte) {
 	if err := c.zb.AddBytes(target, data); err == nil {
 		c.present = append(c.present, target)
@@ -341,7 +340,7 @@ func resolveConfigDir(ctx core.Context) string {
 	if ctx.Config != nil && ctx.Config.ConfigDir != "" {
 		return ctx.Config.ConfigDir
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, ok := internal.GoaHome(); ok {
 		return filepath.Join(home, ".goa")
 	}
 	return filepath.Join(resolveProjectDir(ctx), ".goa")

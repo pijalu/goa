@@ -53,7 +53,7 @@ type SmartSearchTool struct {
 // Schema returns the tool schema for smartsearch.
 func (t *SmartSearchTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
-		Name: "smartsearch",
+		Name:        "smartsearch",
 		Description: "Search code by natural language.",
 		Schema: map[string]any{
 			"type": "object",

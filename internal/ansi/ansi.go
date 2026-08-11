@@ -35,25 +35,25 @@ const (
 	SaveCursor    = Esc + "7"
 	RestoreCursor = Esc + "8"
 
-	Reset        = CSI + "0m"
-	Bold         = CSI + "1m"
-	Faint        = CSI + "2m"
-	Italic       = CSI + "3m"
-	Underline    = CSI + "4m"
+	Reset         = CSI + "0m"
+	Bold          = CSI + "1m"
+	Faint         = CSI + "2m"
+	Italic        = CSI + "3m"
+	Underline     = CSI + "4m"
 	Strikethrough = CSI + "9m"
-	Reverse      = CSI + "7m"
-	ReverseReset = CSI + "27m"
+	Reverse       = CSI + "7m"
+	ReverseReset  = CSI + "27m"
 
 	// Partial resets preserve the active background color while resetting
 	// only the requested attribute. These are required when styling fragments
 	// inside background-colored blocks (e.g. tool execution output) so the
 	// outer background is not killed by an inner Reset.
-	FgReset           = CSI + "39m" // default foreground color
-	BgReset           = CSI + "49m" // default background color
-	BoldReset         = CSI + "22m" // normal intensity (resets bold and faint)
-	FaintReset        = CSI + "22m" // same as BoldReset
-	ItalicReset       = CSI + "23m"
-	UnderlineReset    = CSI + "24m"
+	FgReset            = CSI + "39m" // default foreground color
+	BgReset            = CSI + "49m" // default background color
+	BoldReset          = CSI + "22m" // normal intensity (resets bold and faint)
+	FaintReset         = CSI + "22m" // same as BoldReset
+	ItalicReset        = CSI + "23m"
+	UnderlineReset     = CSI + "24m"
 	StrikethroughReset = CSI + "29m"
 )
 

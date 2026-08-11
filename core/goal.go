@@ -174,8 +174,8 @@ func (m *GoalManager) CreateGoal(objective string) (*Goal, error) {
 	if strings.TrimSpace(objective) == "" {
 		return nil, fmt.Errorf("goal objective must not be empty")
 	}
-	if len(objective) > 4000 {
-		return nil, fmt.Errorf("goal objective too long (%d chars, max 4000)", len(objective))
+	if err := goal.ValidateObjective(objective); err != nil {
+		return nil, err
 	}
 
 	m.mu.Lock()

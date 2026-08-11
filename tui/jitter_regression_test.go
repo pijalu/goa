@@ -38,7 +38,7 @@ func TestCompositor_DiffSkipsUnchangedLinesBetweenChangingRegions(t *testing.T) 
 			TerminalW: w, TerminalH: h,
 			Layers: []Layer{{
 				Name: "stack", Kind: LayerBase,
-				Rect: Rect{X: 0, Y: 0, W: w, H: h},
+				Rect:    Rect{X: 0, Y: 0, W: w, H: h},
 				Content: []string{spinTop, sep, "hello", sep, spinBottom},
 			}},
 		}

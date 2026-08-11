@@ -83,4 +83,3 @@ func (c *ReviewerCommand) Run(ctx core.Context, args []string) error {
 	writeStr(ctx, "Companion is analyzing the content. Check chat for output.\n")
 	return nil
 }
-

@@ -19,15 +19,15 @@ import (
 // lazily on first use (OpenCode's getClients model). It is safe for concurrent
 // use.
 type Manager struct {
-	mu       sync.Mutex
-	rootDir  string
-	binDir   string
-	install  bool
-	started  bool
-	specs    []ServerSpec
-	clients  map[string]*serverClient // key: serverID + "|" + root
-	broken   map[string]error         // key: serverID + "|" + root → start error
-	diags    *Diagnostics
+	mu      sync.Mutex
+	rootDir string
+	binDir  string
+	install bool
+	started bool
+	specs   []ServerSpec
+	clients map[string]*serverClient // key: serverID + "|" + root
+	broken  map[string]error         // key: serverID + "|" + root → start error
+	diags   *Diagnostics
 	// spawning tracks in-flight async spawns: key → flight whose done channel
 	// closes when the spawn resolves (client registered or key marked broken).
 	// A channel (not sync.WaitGroup) so waiters can bound the wait with ctx.

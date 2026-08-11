@@ -525,4 +525,3 @@ func TestRenderInline_EntitiesInParagraph(t *testing.T) {
 		}
 	}
 }
-

@@ -11,15 +11,39 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pijalu/goa/internal"
 )
 
-const maxObjectiveLength = 4000
+// MaxObjectiveLength caps a goal objective at CREATION time, in characters
+// (runes) — not bytes: a pasted TUI transcript is heavy on 3-byte
+// box-drawing runes, and a byte-based cap trips at a third of the visible
+// length while the error message says "characters".
+//
+// The cap is enforced only at the entry points where a user or model
+// AUTHORS an objective (/goal:new, the goal tool's create, queue
+// append/prepend, headless start) — NEVER on internal transitions
+// (resume, queue promotion, auto-unblock requeue). Enforcing it on stored
+// goals dead-ended them: the queue insert path once skipped validation, so
+// an oversized objective enqueued fine and /goal:resume then refused to
+// restart it. There must never be a stored goal that is "too big" to run.
+const MaxObjectiveLength = 4000
 
 // MaxHandoverLength caps the handover continuity note (free text, untrusted
 // data). Inputs longer than this are rejected at create/enqueue time.
 const MaxHandoverLength = 4096
+
+// ValidateObjective rejects an over-long objective at creation time. The
+// error tells the author what to do instead: put the long-form content in
+// a markdown document and point the objective at it, keeping the goal
+// itself a short, durable statement of intent.
+func ValidateObjective(objective string) error {
+	if n := utf8.RuneCountInString(objective); n > MaxObjectiveLength {
+		return fmt.Errorf("goal objective cannot exceed %d characters (got %d) — write the full content to a markdown file and point the objective at it (e.g. 'Read plans/spec.md and implement it')", MaxObjectiveLength, n)
+	}
+	return nil
+}
 
 func generateGoalID() string {
 	return internal.PrefixedHexID("goal", 8)
@@ -170,6 +194,9 @@ func (m *GoalMode) RestoreCreate(record GoalEventRecord) {
 	if record.FreshContext != nil {
 		state.freshContext = *record.FreshContext
 	}
+	if record.Team != nil {
+		state.team = *record.Team
+	}
 	m.state = &state
 }
 
@@ -247,9 +274,11 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 	if objective == "" {
 		return GoalSnapshot{}, errors.New("goal objective cannot be empty")
 	}
-	if len(objective) > maxObjectiveLength {
-		return GoalSnapshot{}, fmt.Errorf("goal objective cannot exceed %d characters", maxObjectiveLength)
-	}
+	// Deliberately NO length validation here: CreateGoal serves both the
+	// creation entry points (which validate BEFORE calling, surfacing the
+	// reject+hint to the author) and the internal transitions (resume,
+	// queue promotion, auto-unblock). Validating length here dead-ends any
+	// stored goal that predates or bypasses entry validation.
 
 	if m.state != nil {
 		if !input.Replace {
@@ -283,6 +312,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		completionCriterion: completionCriterion,
 		verifyCommand:       verifyCommand,
 		freshContext:        input.FreshContext,
+		team:                input.Team,
 		handoff:             handoff,
 		status:              GoalActive,
 		turnsUsed:           0,
@@ -305,6 +335,7 @@ func (m *GoalMode) CreateGoal(input CreateGoalInput, actor GoalActor) (GoalSnaps
 		VerifyCommand:       state.verifyCommand,
 		Handoff:             state.handoff,
 		FreshContext:        &state.freshContext,
+		Team:                &state.team,
 	})
 	m.telemetry.Track(TelemetryGoalCreated, map[string]any{
 		"actor":   string(actor),
@@ -895,6 +926,7 @@ func (m *GoalMode) toSnapshot(state *goalStage) GoalSnapshot {
 		CompletionCriterion: state.completionCriterion,
 		VerifyCommand:       state.verifyCommand,
 		FreshContext:        state.freshContext,
+		Team:                state.team,
 		PauseAfterComplete:  state.pauseAfterComplete,
 		Handoff:             state.handoff,
 		Todos:               append([]GoalTodoItem(nil), state.todos...),

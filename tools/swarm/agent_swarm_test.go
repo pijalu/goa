@@ -46,9 +46,9 @@ func TestAgentSwarmToolExamples(t *testing.T) {
 
 func TestAgentSwarmToolParse_Validation(t *testing.T) {
 	cases := []struct {
-		name      string
-		input     string
-		wantType  string // internal.ToolError Type, "" means no error
+		name     string
+		input    string
+		wantType string // internal.ToolError Type, "" means no error
 	}{
 		{"missing task", `{"items":["a"],"prompt_template":"x {{item}}"}`, "missing_task"},
 		{"missing items", `{"task":"x","prompt_template":"{{item}}"}`, "missing_items"},

@@ -33,13 +33,13 @@ func (t *testTerminal) Write(p []byte) (int, error) {
 	t.writes = append(t.writes, string(p))
 	return len(p), nil
 }
-func (t *testTerminal) WriteString(s string)                        { t.writes = append(t.writes, s) }
-func (t *testTerminal) Size() (int, int)                            { return t.w, t.h }
-func (t *testTerminal) SetRaw() (func(), error)                     { return func() {}, nil }
-func (t *testTerminal) HideCursor()                                 {}
-func (t *testTerminal) ShowCursor()                                 {}
-func (t *testTerminal) ClearScreen()                                {}
-func (t *testTerminal) SetTitle(title string)                       {}
+func (t *testTerminal) WriteString(s string)    { t.writes = append(t.writes, s) }
+func (t *testTerminal) Size() (int, int)        { return t.w, t.h }
+func (t *testTerminal) SetRaw() (func(), error) { return func() {}, nil }
+func (t *testTerminal) HideCursor()             {}
+func (t *testTerminal) ShowCursor()             {}
+func (t *testTerminal) ClearScreen()            {}
+func (t *testTerminal) SetTitle(title string)   {}
 
 // lastTool returns the most recent ToolExecutionComponent child of the chat
 // viewport, or nil. Used by tests that previously inspected the removed

@@ -462,9 +462,6 @@ func assertDirectoryListing(t *testing.T, result string, want []string) {
 	}
 }
 
-
-
-
 func TestShortenPath_HomeDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -560,7 +557,6 @@ func TestClampLineRange(t *testing.T) {
 		})
 	}
 }
-
 
 func TestShortenPath_NonHomePath(t *testing.T) {
 	// Paths that are NOT under the home directory should stay unchanged.

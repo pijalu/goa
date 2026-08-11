@@ -11,10 +11,11 @@
 // execution finishes so you can analyze them with go tool pprof.
 //
 // Usage:
-//   go run ./cmd/profile                           # synthetic TUI load
-//   go run ./cmd/profile -mode=pty                 # real goa binary in a PTY
-//   go run ./cmd/profile -mode=pty -prompt="analyse this project"
-//   go tool pprof -http=:8080 cpu.prof
+//
+//	go run ./cmd/profile                           # synthetic TUI load
+//	go run ./cmd/profile -mode=pty                 # real goa binary in a PTY
+//	go run ./cmd/profile -mode=pty -prompt="analyse this project"
+//	go tool pprof -http=:8080 cpu.prof
 package main
 
 import (
@@ -107,16 +108,16 @@ func (t *recordingTerminal) Start(onInput func(string), onResize func()) {
 	t.onInput = onInput
 	t.onResize = onResize
 }
-func (t *recordingTerminal) Stop()                                 {}
-func (t *recordingTerminal) Write(p []byte) (int, error)             { t.record(string(p)); return len(p), nil }
-func (t *recordingTerminal) WriteString(s string)                    { t.record(s) }
-func (t *recordingTerminal) Size() (int, int)                        { return t.w, t.h }
-func (t *recordingTerminal) SetRaw() (func(), error)                 { return func() {}, nil }
-func (t *recordingTerminal) HideCursor()                             {}
-func (t *recordingTerminal) ShowCursor()                             {}
-func (t *recordingTerminal) ClearScreen()                            {}
-func (t *recordingTerminal) SetTitle(string)                        {}
-func (t *recordingTerminal) record(s string)                        {
+func (t *recordingTerminal) Stop()                       {}
+func (t *recordingTerminal) Write(p []byte) (int, error) { t.record(string(p)); return len(p), nil }
+func (t *recordingTerminal) WriteString(s string)        { t.record(s) }
+func (t *recordingTerminal) Size() (int, int)            { return t.w, t.h }
+func (t *recordingTerminal) SetRaw() (func(), error)     { return func() {}, nil }
+func (t *recordingTerminal) HideCursor()                 {}
+func (t *recordingTerminal) ShowCursor()                 {}
+func (t *recordingTerminal) ClearScreen()                {}
+func (t *recordingTerminal) SetTitle(string)             {}
+func (t *recordingTerminal) record(s string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.mu.writes = append(t.mu.writes, s)

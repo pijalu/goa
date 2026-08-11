@@ -42,6 +42,14 @@ func (f *Footer) SetGoalStatus(status string) {
 	f.data.GoalStatus = status
 }
 
+// SetTeam explicitly sets or clears the team badge (name + drift marker),
+// bypassing SetData's preservation logic — the team equivalent of
+// SetGoalStatus. Pass an empty name to clear the badge.
+func (f *Footer) SetTeam(name string, drifted bool) {
+	f.data.Team = name
+	f.data.TeamDrifted = drifted
+}
+
 // SetModelBusy sets the main model busy indicator directly.
 func (f *Footer) SetModelBusy(busy bool) { f.data.ModelBusy = busy }
 

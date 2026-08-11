@@ -121,7 +121,7 @@ Return the Cartesian product of the input iterables.`),
 
 // --- count ---
 
-func (c *countIterator) Type() *py.Type { return countIteratorType }
+func (c *countIterator) Type() *py.Type                { return countIteratorType }
 func (c *countIterator) M__iter__() (py.Object, error) { return c, nil }
 func (c *countIterator) M__next__() (py.Object, error) {
 	val := c.cur
@@ -147,7 +147,7 @@ func itertoolsCount(self py.Object, args py.Tuple) (py.Object, error) {
 
 // --- cycle ---
 
-func (c *cycleIterator) Type() *py.Type { return cycleIteratorType }
+func (c *cycleIterator) Type() *py.Type                { return cycleIteratorType }
 func (c *cycleIterator) M__iter__() (py.Object, error) { return c, nil }
 func (c *cycleIterator) M__next__() (py.Object, error) {
 	if len(c.items) == 0 {
@@ -172,7 +172,7 @@ func itertoolsCycle(self py.Object, args py.Tuple) (py.Object, error) {
 
 // --- repeat ---
 
-func (r *repeatIterator) Type() *py.Type { return repeatIteratorType }
+func (r *repeatIterator) Type() *py.Type                { return repeatIteratorType }
 func (r *repeatIterator) M__iter__() (py.Object, error) { return r, nil }
 func (r *repeatIterator) M__next__() (py.Object, error) {
 	if r.times >= 0 && r.count >= r.times {
@@ -201,7 +201,7 @@ func itertoolsRepeat(self py.Object, args py.Tuple) (py.Object, error) {
 
 // --- chain ---
 
-func (c *chainIterator) Type() *py.Type { return chainIteratorType }
+func (c *chainIterator) Type() *py.Type                { return chainIteratorType }
 func (c *chainIterator) M__iter__() (py.Object, error) { return c, nil }
 func (c *chainIterator) M__next__() (py.Object, error) {
 	for {
@@ -236,7 +236,7 @@ func itertoolsChain(self py.Object, args py.Tuple) (py.Object, error) {
 
 // --- islice ---
 
-func (i *isliceIterator) Type() *py.Type { return isliceIteratorType }
+func (i *isliceIterator) Type() *py.Type                { return isliceIteratorType }
 func (i *isliceIterator) M__iter__() (py.Object, error) { return i, nil }
 func (i *isliceIterator) M__next__() (py.Object, error) {
 	if i.shouldStop() {
@@ -346,7 +346,7 @@ func parseISliceArgs(args py.Tuple) (start, stop, step int64, err error) {
 
 // --- combinations ---
 
-func (c *combIterator) Type() *py.Type { return combIteratorType }
+func (c *combIterator) Type() *py.Type                { return combIteratorType }
 func (c *combIterator) M__iter__() (py.Object, error) { return c, nil }
 func (c *combIterator) M__next__() (py.Object, error) {
 	if c.done {
@@ -400,7 +400,7 @@ func itertoolsCombinations(self py.Object, args py.Tuple) (py.Object, error) {
 
 // --- permutations ---
 
-func (p *permIterator) Type() *py.Type { return permIteratorType }
+func (p *permIterator) Type() *py.Type                { return permIteratorType }
 func (p *permIterator) M__iter__() (py.Object, error) { return p, nil }
 func (p *permIterator) M__next__() (py.Object, error) {
 	if p.done {
@@ -455,7 +455,7 @@ func itertoolsPermutations(self py.Object, args py.Tuple) (py.Object, error) {
 
 // --- product ---
 
-func (p *productIterator) Type() *py.Type { return productIteratorType }
+func (p *productIterator) Type() *py.Type                { return productIteratorType }
 func (p *productIterator) M__iter__() (py.Object, error) { return p, nil }
 func (p *productIterator) M__next__() (py.Object, error) {
 	if p.done {
@@ -496,33 +496,33 @@ func itertoolsProduct(self py.Object, args py.Tuple) (py.Object, error) {
 var (
 	_ py.I__iter__ = (*countIterator)(nil)
 	_ py.I__next__ = (*countIterator)(nil)
-	_ py.Object      = (*countIterator)(nil)
+	_ py.Object    = (*countIterator)(nil)
 
 	_ py.I__iter__ = (*cycleIterator)(nil)
 	_ py.I__next__ = (*cycleIterator)(nil)
-	_ py.Object      = (*cycleIterator)(nil)
+	_ py.Object    = (*cycleIterator)(nil)
 
 	_ py.I__iter__ = (*repeatIterator)(nil)
 	_ py.I__next__ = (*repeatIterator)(nil)
-	_ py.Object      = (*repeatIterator)(nil)
+	_ py.Object    = (*repeatIterator)(nil)
 
 	_ py.I__iter__ = (*chainIterator)(nil)
 	_ py.I__next__ = (*chainIterator)(nil)
-	_ py.Object      = (*chainIterator)(nil)
+	_ py.Object    = (*chainIterator)(nil)
 
 	_ py.I__iter__ = (*isliceIterator)(nil)
 	_ py.I__next__ = (*isliceIterator)(nil)
-	_ py.Object      = (*isliceIterator)(nil)
+	_ py.Object    = (*isliceIterator)(nil)
 
 	_ py.I__iter__ = (*combIterator)(nil)
 	_ py.I__next__ = (*combIterator)(nil)
-	_ py.Object      = (*combIterator)(nil)
+	_ py.Object    = (*combIterator)(nil)
 
 	_ py.I__iter__ = (*permIterator)(nil)
 	_ py.I__next__ = (*permIterator)(nil)
-	_ py.Object      = (*permIterator)(nil)
+	_ py.Object    = (*permIterator)(nil)
 
 	_ py.I__iter__ = (*productIterator)(nil)
 	_ py.I__next__ = (*productIterator)(nil)
-	_ py.Object      = (*productIterator)(nil)
+	_ py.Object    = (*productIterator)(nil)
 )

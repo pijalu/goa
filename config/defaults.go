@@ -7,8 +7,9 @@ package config
 import (
 	"embed"
 	"fmt"
-	"os"
 	"path/filepath"
+
+	"github.com/pijalu/goa/internal"
 )
 
 //go:embed configs/default.yaml configs/themes/dark.yaml configs/themes/light.yaml
@@ -38,8 +39,8 @@ func DefaultThemeYAML(name string) string {
 // These are the cross-agent standard paths: ~/.agents/skills/ (user-global)
 // and $PWD/.agents/skills/ (project-local). Later dirs override earlier ones.
 func DefaultSkillDirs(projectDir string) []string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
+	homeDir, ok := internal.GoaHome()
+	if !ok {
 		return []string{filepath.Join(projectDir, ".agents", "skills")}
 	}
 	return []string{

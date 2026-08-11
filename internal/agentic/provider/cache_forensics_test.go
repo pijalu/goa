@@ -21,9 +21,9 @@ import (
 // cold or collapse beyond the wobble tolerance are.
 func TestCacheSeqStateObserve(t *testing.T) {
 	tests := []struct {
-		name      string
-		reads     []int
-		wantMiss  []bool
+		name     string
+		reads    []int
+		wantMiss []bool
 	}{
 		{"cold start zero is not a miss", []int{0}, []bool{false}},
 		{"first establishment", []int{100}, []bool{false}},

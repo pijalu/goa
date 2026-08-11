@@ -24,17 +24,17 @@ func (r *PlanToolRenderer) RenderCall(args map[string]any, ctx tuirender.RenderC
 	id, _ := args["id"].(string)
 
 	infos := map[string]renderInfo{
-		"add_item":         {"📋 add", title, ""},
-		"update_item":      {"✏️ update", id, ""},
-		"remove_item":      {"🗑️ remove", id, ""},
-		"reorder":          {"🔀 reorder", "", ""},
-		"get":              {"📄 get", "", ""},
-		"submit_review":    {"📬 submit review", "", ""},
-		"resolve_comment":  {"✅ resolve comment", id, ""},
-		"start_item":       {"▶️ start", id, ""},
-		"complete_item":    {"✅ complete", id, ""},
-		"block_item":       {"🚫 block", id, ""},
-		"skip_item":        {"⏭️ skip", id, ""},
+		"add_item":        {"📋 add", title, ""},
+		"update_item":     {"✏️ update", id, ""},
+		"remove_item":     {"🗑️ remove", id, ""},
+		"reorder":         {"🔀 reorder", "", ""},
+		"get":             {"📄 get", "", ""},
+		"submit_review":   {"📬 submit review", "", ""},
+		"resolve_comment": {"✅ resolve comment", id, ""},
+		"start_item":      {"▶️ start", id, ""},
+		"complete_item":   {"✅ complete", id, ""},
+		"block_item":      {"🚫 block", id, ""},
+		"skip_item":       {"⏭️ skip", id, ""},
 	}
 
 	info, ok := infos[action]

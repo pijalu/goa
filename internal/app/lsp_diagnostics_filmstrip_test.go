@@ -20,10 +20,10 @@ func TestFilmstrip_ToolResultWithDiagnostics(t *testing.T) {
 
 	sc.apply(&agentic.OutputEvent{Type: agentic.EventStateChange, State: agentic.StateThinking})
 	sc.apply(&agentic.OutputEvent{
-		Type:      agentic.EventToolCall,
-		State:     agentic.StateToolCall,
-		ToolName:  "write",
-		ToolInput: `{"path":"main.go","content":"package main"}`,
+		Type:       agentic.EventToolCall,
+		State:      agentic.StateToolCall,
+		ToolName:   "write",
+		ToolInput:  `{"path":"main.go","content":"package main"}`,
 		ToolCallID: "c1",
 	})
 	// Tool result carries a Diagnostics block (as appended by the write/edit
@@ -64,4 +64,3 @@ func TestFilmstrip_ToolResultWithDiagnostics(t *testing.T) {
 		t.Errorf("spinner still active after EventEnd: %q", last.Diff.StatusText)
 	}
 }
-

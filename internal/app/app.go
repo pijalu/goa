@@ -17,6 +17,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core/commands"
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/internal/usage"
@@ -68,6 +69,18 @@ type App struct {
 	lastTurnCacheWrite int
 	lastTurnSpeed      float64
 	turnCount          int
+	// lastStatsDedup fingerprints the most recently APPLIED TokenTimings
+	// (prompt/predicted/cacheRead/cacheWrite + the turn it landed in).
+	// emitTurnStats re-emits the unchanged providerUsage on consecutive round
+	// ends without setting turnStatsEmitted, so the App receives identical
+	// TokenTimings twice per turn; without this guard the session totals, the
+	// cache-bust counter and the usage.db record were all double-counted
+	// (2026-08-04 export: usage.db held 716 rows for 379 real calls).
+	// A genuine new round reports different values; identical values in a NEW
+	// turn (turnCount advanced) must count again.
+	lastStatsDedup     turnStatsFingerprint
+	lastStatsDedupSet  bool
+	lastStatsDedupTurn int
 	// turnStatsSeen records whether any EventTokenStats arrived since the
 	// last turn end. Turns that never reached the LLM (latch errors,
 	// connection failures) log a distinct "no LLM call" line instead of
@@ -113,6 +126,15 @@ type App struct {
 	// caller owns its own cancel/restore behavior — no separate
 	// reviewOverlayRestore field is needed.
 	pendingInput *inputRequest
+
+	// commandBusy is true while an async (long-running) slash command is
+	// executing in a background goroutine. It gates steering routing so that
+	// free-text submitted during the command is enqueued and delivered as a
+	// follow-up agent message when the command completes. All access is on the
+	// TUI commandLoop: set true before launching the goroutine, set false
+	// inside app.apply (which runs on the loop), and read from routeSteering
+	// (also on the loop) — so no mutex is required.
+	commandBusy bool
 
 	// goalCompletionHandoff stashes the terminal reason (completion evidence)
 	// of the goal that just completed so the next auto-promoted queued goal
@@ -364,6 +386,12 @@ func Main() {
 func runApp() bool {
 	projectDir := MustGetwd()
 	cliFlags, runtimeOpts := ParseCLIFlags()
+	// --home (or GOA_HOME) relocates every ~/.goa path (config, cache, logs,
+	// usage, first-run detection). It must be applied before the cascade
+	// loader and any subsystem resolves the home directory.
+	if home := cliFlags["home"]; home != "" {
+		internal.SetGoaHome(home)
+	}
 	if err := runtimeOpts.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -406,8 +434,8 @@ func runApp() bool {
 // stale. Model pickers then prefer the fresh catalog, falling back to the
 // embedded registry when models.dev is unreachable. Never blocks startup.
 func enableModelsDevCatalog() {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home, ok := internal.GoaHome()
+	if !ok {
 		return
 	}
 	models.EnableModelsDevCatalog(filepath.Join(home, ".goa", "cache"))

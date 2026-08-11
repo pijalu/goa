@@ -22,12 +22,12 @@ import (
 type EditOperation string
 
 const (
-	OpReplace       EditOperation = "replace"
-	OpReplaceLines  EditOperation = "replace_lines"
+	OpReplace        EditOperation = "replace"
+	OpReplaceLines   EditOperation = "replace_lines"
 	OpReplacePattern EditOperation = "replace_pattern"
-	OpInsertAfter   EditOperation = "insert_after"
-	OpInsertBefore  EditOperation = "insert_before"
-	OpDeleteLines   EditOperation = "delete_lines"
+	OpInsertAfter    EditOperation = "insert_after"
+	OpInsertBefore   EditOperation = "insert_before"
+	OpDeleteLines    EditOperation = "delete_lines"
 )
 
 type IndentMode string
@@ -49,11 +49,11 @@ type editParams struct {
 }
 
 type EditFileTool struct {
-	WorktreeMgr        *internal.WorktreeManager
-	ProjectDir         string
-	BackupStager       *BackupStager
-	AllowFuzz          bool // enable fuzzy matching (trailing whitespace, whitespace collapse, reindent)
-	Config             FileToolConfig
+	WorktreeMgr  *internal.WorktreeManager
+	ProjectDir   string
+	BackupStager *BackupStager
+	AllowFuzz    bool // enable fuzzy matching (trailing whitespace, whitespace collapse, reindent)
+	Config       FileToolConfig
 	// FileChangeNotifier, when set, is called after every successful file
 	// write with the resolved (absolute) path. Tools like SmartSearch use
 	// this to trigger background index updates.
@@ -115,59 +115,59 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 					"description": "preserve (default)|normalize|as-is",
 					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
-			"edits": map[string]any{
-				"type": "array",
-				"description": "batch of edits applied in order against the same file, atomically (all or nothing) in a single write. " +
-					"Each element takes the same fields as a single edit (operation/old_string/new_string, or operation + start_line/end_line/pattern/occurrence/new_content/indent_mode). " +
-					"Edits see the result of the previous ones, so line numbers in later edits refer to the already-edited content.",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"operation": map[string]any{
-							"type":        "string",
-							"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
-							"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
-						},
-						"old_string": map[string]any{
-							"type":        "string",
-							"description": "text to match (with new_string)",
-						},
-						"new_string": map[string]any{
-							"type":        "string",
-							"description": "replacement text",
-						},
-						"start_line": map[string]any{
-							"type":        "integer",
-							"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
-						},
-						"end_line": map[string]any{
-							"type":        "integer",
-							"description": "end line (1-indexed, for replace_lines/delete_lines)",
-						},
-						"pattern": map[string]any{
-							"type":        "string",
-							"description": "regex for replace_pattern/insert_after/insert_before",
-						},
-						"pattern_flags": map[string]any{
-							"type":        "string",
-							"description": "regex flags (e.g. 'i')",
-						},
-						"occurrence": map[string]any{
-							"type":        "integer",
-							"description": "occurrence for replace_pattern (default: 1)",
-						},
-						"new_content": map[string]any{
-							"type":        "string",
-							"description": "replacement content for replace_lines/insert_after/insert_before",
-						},
-						"indent_mode": map[string]any{
-							"type":        "string",
-							"description": "preserve (default)|normalize|as-is",
-							"enum":        []string{"preserve", "normalize", "as-is"},
+				"edits": map[string]any{
+					"type": "array",
+					"description": "batch of edits applied in order against the same file, atomically (all or nothing) in a single write. " +
+						"Each element takes the same fields as a single edit (operation/old_string/new_string, or operation + start_line/end_line/pattern/occurrence/new_content/indent_mode). " +
+						"Edits see the result of the previous ones, so line numbers in later edits refer to the already-edited content.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"operation": map[string]any{
+								"type":        "string",
+								"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
+								"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+							},
+							"old_string": map[string]any{
+								"type":        "string",
+								"description": "text to match (with new_string)",
+							},
+							"new_string": map[string]any{
+								"type":        "string",
+								"description": "replacement text",
+							},
+							"start_line": map[string]any{
+								"type":        "integer",
+								"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
+							},
+							"end_line": map[string]any{
+								"type":        "integer",
+								"description": "end line (1-indexed, for replace_lines/delete_lines)",
+							},
+							"pattern": map[string]any{
+								"type":        "string",
+								"description": "regex for replace_pattern/insert_after/insert_before",
+							},
+							"pattern_flags": map[string]any{
+								"type":        "string",
+								"description": "regex flags (e.g. 'i')",
+							},
+							"occurrence": map[string]any{
+								"type":        "integer",
+								"description": "occurrence for replace_pattern (default: 1)",
+							},
+							"new_content": map[string]any{
+								"type":        "string",
+								"description": "replacement content for replace_lines/insert_after/insert_before",
+							},
+							"indent_mode": map[string]any{
+								"type":        "string",
+								"description": "preserve (default)|normalize|as-is",
+								"enum":        []string{"preserve", "normalize", "as-is"},
+							},
 						},
 					},
 				},
-			},
 			},
 			"required": []string{"path"},
 		},

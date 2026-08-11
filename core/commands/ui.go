@@ -41,9 +41,9 @@ func (c *UICommand) Run(ctx core.Context, args []string) error {
 
 // CompleteArgs offers colon-aware completions for /ui:
 //
-// 	/ui:<empty>      → theme, pane, flash
-// 	/ui:theme:       → set
-// 	/ui:pane:        → show, hide
+//	/ui:<empty>      → theme, pane, flash
+//	/ui:theme:       → set
+//	/ui:pane:        → show, hide
 func (c *UICommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCompletion {
 	parts := strings.Split(prefix, ":")
 	switch len(parts) {

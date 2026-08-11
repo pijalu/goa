@@ -485,3 +485,90 @@ print("system=", hasattr(os, "system"))
 		}
 	}
 }
+
+// TestOS_FileReadlines is the regression test for the gpython file.readlines()
+// gap: file objects returned by open() raised
+// `AttributeError: "'file' has no attribute 'readlines'"` because gpython's
+// py.FileType registered read/readline/write/close/flush but not readlines.
+// Goa patches the global py.FileType with readlines; this asserts the common
+// idioms now work: list length, per-line terminator, the hint parameter,
+// binary mode, and the empty-file edge case.
+func TestOS_FileReadlines(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "story.txt"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		code    string
+		wantAll []string // each substring must appear in output
+	}{
+		{
+			name: "basic-count-and-tail",
+			code: `
+with open("story.txt") as f:
+    lines = f.readlines()
+print("count=", len(lines))
+print("last=", repr(lines[-1]))
+`,
+			wantAll: []string{"count= 3", "last= 'gamma\\n'"},
+		},
+		{
+			name: "line-terminator-included",
+			code: `
+with open("story.txt") as f:
+    lines = f.readlines()
+print("ok=", all(l.endswith("\n") for l in lines))
+`,
+			wantAll: []string{"ok= True"},
+		},
+		{
+			name: "hint-truncates",
+			code: `
+with open("story.txt") as f:
+    lines = f.readlines(7)
+print("hint-count=", len(lines))
+`,
+			// "alpha\n" is 6 bytes (< 7), so it reads on; "beta\n" pushes total
+			// to 11 (>= 7) and stops -> 2 lines.
+			wantAll: []string{"hint-count= 2"},
+		},
+		{
+			name: "binary-mode",
+			code: `
+with open("story.txt", "rb") as f:
+    lines = f.readlines()
+print("bin-count=", len(lines))
+print("bin-eq=", lines[0] == b"alpha\n")
+`,
+			wantAll: []string{"bin-count= 3", "bin-eq= True"},
+		},
+		{
+			name: "empty-file",
+			code: `
+with open("empty.txt") as f:
+    lines = f.readlines()
+print("empty=", len(lines))
+`,
+			wantAll: []string{"empty= 0"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runPyInProject(t, dir, true, tc.code)
+			if err != nil {
+				t.Fatalf("execute: %v\n%s", err, out)
+			}
+			for _, w := range tc.wantAll {
+				if !strings.Contains(out, w) {
+					t.Errorf("output missing %q\nfull:\n%s", w, out)
+				}
+			}
+		})
+	}
+}

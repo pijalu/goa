@@ -51,6 +51,11 @@ func (b *goalModeBinder) CreateWithName(objective, name string, tokenBudget int)
 	if b.mode == nil {
 		return "", fmt.Errorf("goal mode unavailable")
 	}
+	// Creation entry point: reject an oversized objective with the
+	// point-to-a-markdown-doc hint before it enters the system.
+	if err := goal.ValidateObjective(objective); err != nil {
+		return "", err
+	}
 	input := goal.CreateGoalInput{Objective: objective, Name: name, ManagedBy: "orchestrator", Replace: true}
 	if tokenBudget > 0 {
 		tb := tokenBudget

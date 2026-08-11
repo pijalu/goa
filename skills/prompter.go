@@ -125,11 +125,11 @@ func RenderSkillToolResult(renderer PromptRenderer, skillName, mode, output stri
 }
 
 type safeSkill struct {
-	Name         string
-	Description  string
-	Category     string
-	FilePath     string
-	ExecuteTool  string
+	Name             string
+	Description      string
+	Category         string
+	FilePath         string
+	ExecuteTool      string
 	RequiresSubAgent bool
 }
 

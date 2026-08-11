@@ -23,6 +23,7 @@ func (c *Config) Validate() error {
 	c.validateContextCompression(&ve)
 	c.validateSkillMode(&ve)
 	c.validateOrchestrator(&ve)
+	c.validateTeams(&ve)
 	c.validateGoals(&ve)
 	c.validatePlan(&ve)
 	c.validateMCP(&ve)
@@ -200,7 +201,7 @@ func (c *Config) validateAgenticModels(ve *internal.ValidationError) {
 
 func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	cc := c.ContextCompression
-	if !cc.Enabled {
+	if !cc.EnabledValue() {
 		return
 	}
 	if !validCompressionStrategy(cc.Strategy) {

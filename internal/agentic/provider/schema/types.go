@@ -219,8 +219,8 @@ type StreamOptions struct {
 	// Timeout bounds the connection phase only (dial → first response
 	// header). Body reads are guarded by IdleTimeout, never by Timeout, so
 	// long-running generations on slow models are not capped.
-	Timeout     time.Duration     `json:"timeout,omitempty"`
-	IdleTimeout time.Duration     `json:"idle_timeout,omitempty"`
+	Timeout     time.Duration `json:"timeout,omitempty"`
+	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
 
 	MaxRetries    int           `json:"max_retries,omitempty"`
 	MaxRetryDelay time.Duration `json:"max_retry_delay,omitempty"`

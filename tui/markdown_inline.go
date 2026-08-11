@@ -477,11 +477,17 @@ func renderInlineLinks(text string, theme *Theme) string {
 	return out.String()
 }
 
-// renderInlineEscapes removes backslash escapes.
+// renderInlineEscapes removes backslash escapes per CommonMark: a backslash
+// before an ASCII punctuation character escapes it (the backslash is dropped
+// and the punctuation is emitted literally). Backslashes before any other
+// character (letters, digits, whitespace) are preserved verbatim — otherwise
+// Windows paths like C:\Users\deg34286\tools\goa\AGENTS.md would lose every
+// separator when rendered through the markdown pipeline (bugs.md "startup
+// banner path separators").
 func renderInlineEscapes(text string) string {
 	var out strings.Builder
 	for i := 0; i < len(text); i++ {
-		if text[i] == '\\' && i+1 < len(text) {
+		if text[i] == '\\' && i+1 < len(text) && isASCIIPunctuation(text[i+1]) {
 			out.WriteByte(text[i+1])
 			i++
 		} else {
@@ -489,4 +495,13 @@ func renderInlineEscapes(text string) string {
 		}
 	}
 	return out.String()
+}
+
+// isASCIIPunctuation reports whether c is an ASCII punctuation character —
+// the escapable set of CommonMark: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~.
+func isASCIIPunctuation(c byte) bool {
+	return (c >= 0x21 && c <= 0x2F) || // ! " # $ % & ' ( ) * + , - . /
+		(c >= 0x3A && c <= 0x40) || // : ; < = > ? @
+		(c >= 0x5B && c <= 0x60) || // [ \ ] ^ _ `
+		(c >= 0x7B && c <= 0x7E) // { | } ~
 }

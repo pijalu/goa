@@ -146,13 +146,13 @@ func TestStoreOpenAndReplay(t *testing.T) {
 	// Simulate some mutations (we'll add them directly via append for now).
 	events := []Event{
 		{
-			Type:   EventPlanApproved,
-			PlanID: s1.id,
+			Type:    EventPlanApproved,
+			PlanID:  s1.id,
 			Payload: mustMarshal(t, PayloadPlanApproved{}),
 		},
 		{
-			Type:   EventPlanFailed,
-			PlanID: s1.id,
+			Type:    EventPlanFailed,
+			PlanID:  s1.id,
 			Payload: mustMarshal(t, PayloadPlanFailed{Reason: "test"}),
 		},
 	}

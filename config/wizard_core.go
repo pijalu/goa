@@ -20,12 +20,25 @@ type WizardResult struct {
 
 // RunSetupWizard launches the interactive setup wizard using the TUI engine.
 func RunSetupWizard(projectDir string, loader *CascadeLoader) (*WizardResult, error) {
+	return runSetupWizardWithTerminal(projectDir, loader, tui.NewProcessTerminal())
+}
+
+// runSetupWizardWithTerminal is the testable core of RunSetupWizard. It accepts
+// a Terminal so tests can inject a fake terminal and assert rendered output.
+// Production callers use RunSetupWizard, which passes a real ProcessTerminal.
+//
+// The engine lifecycle mirrors the production app: Start (raw mode + initial
+// clear), RenderNow (paint the first frame synchronously), RunLoops (launch the
+// commandLoop + renderLoop goroutines). Skipping RunLoops/RenderNow leaves the
+// wizard on a black screen: dirtyChan stays nil so RequestRender is a no-op,
+// and the terminal callback runs inline via Apply (no RequestRender), so no
+// frame ever reaches the terminal even though keystrokes are processed.
+func runSetupWizardWithTerminal(projectDir string, loader *CascadeLoader, term tui.Terminal) (*WizardResult, error) {
 	cfg, err := loader.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load config for wizard: %w", err)
 	}
 
-	term := tui.NewProcessTerminal()
 	engine := tui.NewTUI(term)
 
 	done := make(chan *WizardResult, 1)
@@ -42,6 +55,12 @@ func RunSetupWizard(projectDir string, loader *CascadeLoader) (*WizardResult, er
 	if err := engine.Start(); err != nil {
 		return nil, err
 	}
+	// Paint the first frame synchronously so the user sees the welcome screen
+	// immediately, then launch the Actor-model loops so every subsequent
+	// input-driven state change flows through commandLoop → applyCommand →
+	// RequestRender → renderLoop (the refresh-on-all-changes guarantee).
+	engine.RenderNow()
+	engine.RunLoops()
 
 	// Start() only enters raw mode and clears the screen; without an explicit
 	// first frame plus the command/render loops the wizard component is never
@@ -156,11 +175,11 @@ type wizardComponent struct {
 	inputMode    string
 	editor       *tui.LineEditor
 
-	companionModelSelected bool
-	copyPrompts            bool
-	copyWorkflows          bool
-	previewYesNo           int
-	focused                bool
+	companionUseMainModel int // 0 = no (configure separately), 1 = yes (use main model)
+	copyPrompts           bool
+	copyWorkflows         bool
+	previewYesNo          int
+	focused               bool
 
 	skillMode              int // 0 = sub-agent, 1 = inline
 	advancedMode           int // 0 = defaults, 1 = customize

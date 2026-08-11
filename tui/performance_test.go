@@ -23,7 +23,7 @@ func (r *renderCounter) Render(width int) []string {
 }
 
 func (r *renderCounter) HandleInput(string) {}
-func (r *renderCounter) Invalidate()       {}
+func (r *renderCounter) Invalidate()        {}
 
 // TestChatViewport_PerEntryCache proves that only the changed entry is
 // re-rendered during streaming-style updates, not the entire conversation.

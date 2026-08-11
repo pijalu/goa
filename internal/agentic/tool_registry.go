@@ -31,10 +31,10 @@ type ToolLookup interface {
 // It is the canonical ToolLookup implementation used by the agent and the MCP
 // publisher.
 type ToolRegistry struct {
-	tools    map[string]Tool
-	once     sync.Once
-	cached   []ToolSchema
-	hintsOnce sync.Once
+	tools       map[string]Tool
+	once        sync.Once
+	cached      []ToolSchema
+	hintsOnce   sync.Once
 	cachedHints map[string]ToolLoopHints
 }
 

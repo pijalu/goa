@@ -52,11 +52,15 @@ func (a *App) makeSubmitHandler(engine *tui.TUI, chat *tui.ChatViewport) func(st
 	}
 }
 
-// routeSteering checks the workflow, orchestrator, and main-agent steering
-// paths in order. It returns true if the input was consumed as steering.
+// routeSteering checks the command, workflow, orchestrator, and main-agent
+// steering paths in order. It returns true if the input was consumed as
+// steering.
 func (a *App) routeSteering(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
 	if strings.HasPrefix(text, "/") {
 		return false
+	}
+	if a.maybeSteerCommand(engine, chat, text) {
+		return true
 	}
 	if a.maybeSteerWorkflow(engine, chat, text) {
 		return true
@@ -68,6 +72,27 @@ func (a *App) routeSteering(engine *tui.TUI, chat *tui.ChatViewport, text string
 		return true
 	}
 	return false
+}
+
+// maybeSteerCommand buffers user input as steering while an async (long-running)
+// slash command is executing in the background. The enqueued text is delivered
+// as a follow-up agent message when the command completes (see
+// dispatchCommandSteering). It reuses the same steering queue and chrome as
+// agent-turn steering so the UI is consistent. Returns true if the input was
+// consumed as steering.
+func (a *App) maybeSteerCommand(engine *tui.TUI, chat *tui.ChatViewport, text string) bool {
+	subs := a.subs
+	if !a.commandBusy || subs.agentMgr == nil {
+		return false
+	}
+	if sq := subs.agentMgr.SteeringQueue(); sq != nil {
+		sq.Append(text)
+	}
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Add(text)
+	}
+	engine.RequestRender()
+	return true
 }
 
 // handlePendingMainInput consumes a value for a command that is waiting on
@@ -522,6 +547,17 @@ func (a *App) handleSlashCommand(input string) {
 	// that consists only of commands (e.g. /orchestrate) is not empty on reload.
 	a.recordCommandInSessionStore(result, input)
 
+	// Long-running commands (e.g. /compress:summarize) opt into async
+	// execution: Run in a background goroutine with a dedicated spinner,
+	// keeping the UI responsive and the input line live for steering. Doc
+	// suffixes (/cmd:?, /cmd:??) are instant and bypass this path.
+	if result.DocLevel == core.DocSuffixNone && result.Command != nil {
+		if label := core.AsyncHintOf(result.Command, result.Args); label != "" {
+			a.runAsyncCommand(result, input, trimmed, label)
+			return
+		}
+	}
+
 	// Immediate feedback for slow commands (bugs.md "Session: slow commands
 	// need an executing placeholder"): show the spinner line before the
 	// synchronous Run so there is no silent gap between submit and output.
@@ -543,6 +579,86 @@ func (a *App) handleSlashCommand(input string) {
 
 	a.postCommandBookkeeping(result, trimmed)
 	a.echoCommandResult(result, input, output)
+}
+
+// runAsyncCommand launches a long-running command in a background goroutine,
+// showing a dedicated spinner and keeping the input line live so the user can
+// enqueue steering until completion. On completion it clears the spinner,
+// renders the result, and delivers any enqueued steering as a follow-up agent
+// message. Guards against concurrent async commands: a second invocation while
+// one is running is rejected with a clear message rather than racing on shared
+// state (e.g. two concurrent compressions corrupting history).
+func (a *App) runAsyncCommand(result *core.RouteResult, input, trimmed, label string) {
+	subs := a.subs
+
+	if a.commandBusy {
+		subs.chat.AddSystemMessage(fmt.Sprintf("> %s", input))
+		subs.chat.AddSystemMessage("Another command is already running — please wait for it to finish.")
+		subs.tuiEngine.RequestRender()
+		return
+	}
+
+	a.commandBusy = true
+
+	// Show the spinner immediately so there is no silent gap between submit
+	// and the background work becoming visible.
+	subs.statusMsg.Reset()
+	subs.statusMsg.Show(label)
+	subs.tuiEngine.RequestRender()
+
+	ctx := coreContextForCommand(subs, a)
+
+	go func() {
+		var (
+			output string
+			err    error
+		)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("command panicked: %v", r)
+				}
+			}()
+			output, err = subs.cmdRouter.Execute(ctx, result)
+		}()
+
+		a.apply(func() {
+			a.commandBusy = false
+			subs.statusMsg.Clear()
+			if err != nil {
+				output = fmt.Sprintf("Error: %v", err)
+			}
+			a.postCommandBookkeeping(result, trimmed)
+			a.echoCommandResult(result, input, output)
+			a.dispatchCommandSteering()
+			subs.tuiEngine.RequestRender()
+		})
+	}()
+}
+
+// dispatchCommandSteering delivers any free-text enqueued during an async
+// command as a follow-up agent message. It clears the steering chrome and
+// queue, then sends the joined text to the agent so the user's mid-command
+// input is not lost. No-op when nothing was enqueued.
+func (a *App) dispatchCommandSteering() {
+	subs := a.subs
+	if subs.agentMgr == nil {
+		return
+	}
+	sq := subs.agentMgr.SteeringQueue()
+	if sq == nil {
+		return
+	}
+	pending := sq.Flush()
+	if len(pending) == 0 {
+		return
+	}
+	text := strings.Join(pending, "\n\n")
+	if subs.steeringChrome != nil {
+		subs.steeringChrome.Clear()
+	}
+	a.displayUserMessage(subs.chat, text, nil)
+	a.sendToAgent(text)
 }
 
 // postCommandBookkeeping applies post-execution side effects: pending input

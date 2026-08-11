@@ -667,6 +667,7 @@ func (c *GoalCommand) resumeFirstQueued(ctx core.Context) error {
 		CompletionCriterion: removed.CompletionCriterion,
 		VerifyCommand:       removed.VerifyCommand,
 		FreshContext:        removed.FreshContext,
+		Team:                removed.Team,
 		Handoff:             removed.Handoff,
 	}, goal.GoalActorUser); err != nil {
 		_, _ = c.Queue.Restore(*removed)
@@ -1409,6 +1410,12 @@ func (c *GoalCommand) permissionOptions(current internal.AutonomyLevel) []tui.Se
 }
 
 func (c *GoalCommand) doStartGoal(ctx core.Context, objective string, replace bool, fresh bool) error {
+	// Creation entry point: reject an oversized objective with the
+	// point-to-a-markdown-doc hint BEFORE it enters the system.
+	if err := goal.ValidateObjective(objective); err != nil {
+		ctx.Flash(err.Error())
+		return err
+	}
 	snap, err := c.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective:    objective,
 		Replace:      replace,

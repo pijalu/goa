@@ -16,10 +16,10 @@ import (
 // CompanionCoordinator manages the companion agent reference and triggers
 // framework-driven companion review after a main-agent turn completes.
 type CompanionCoordinator struct {
-	mu              sync.Mutex
-	companionAgent  *agentic.Agent
-	foregroundOrch  *multiagent.ForegroundOrchestrator
-	messageTimeout  time.Duration
+	mu             sync.Mutex
+	companionAgent *agentic.Agent
+	foregroundOrch *multiagent.ForegroundOrchestrator
+	messageTimeout time.Duration
 }
 
 // NewCompanionCoordinator creates a companion coordinator.

@@ -21,7 +21,7 @@ func (w *wizardComponent) saveConfig() {
 	w.applyExecutionMode()
 
 	// Save companion model and provider
-	if w.companionModelSelected {
+	if w.companionUseMainModel == 1 {
 		// Same provider/model as main
 		w.config.MultiAgent.CompanionModel = w.main.modelID
 		w.config.MultiAgent.CompanionProvider = w.main.providerID
@@ -89,7 +89,7 @@ func (w *wizardComponent) applyProviderConfig() {
 		},
 	}
 	_ = model
-	if w.companionModelSelected {
+	if w.companionUseMainModel == 1 {
 		w.config.MultiAgent.CompanionModel = w.main.modelID
 	}
 

@@ -268,7 +268,7 @@ func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat)
 				"type": "function",
 				"function": map[string]any{
 					"name":      block.ToolName,
-					"arguments": block.ToolArguments,
+					"arguments": schema.SafeToolArguments(block.ToolArguments),
 				},
 			})
 		}

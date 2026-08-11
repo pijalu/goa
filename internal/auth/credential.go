@@ -14,18 +14,18 @@ import (
 type Kind string
 
 const (
-	KindOAuth Kind = "oauth"
+	KindOAuth  Kind = "oauth"
 	KindAPIKey Kind = "apikey"
 )
 
 // Credential stores authentication material for a provider. Exactly one of
 // Tokens or APISecret is populated depending on Kind.
 type Credential struct {
-	Provider  string         `json:"provider"`
-	Kind      Kind           `json:"kind"`
-	APISecret string         `json:"api_secret,omitempty"`
-	Tokens    *oauth.Tokens  `json:"tokens,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
+	Provider  string        `json:"provider"`
+	Kind      Kind          `json:"kind"`
+	APISecret string        `json:"api_secret,omitempty"`
+	Tokens    *oauth.Tokens `json:"tokens,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
 }
 
 // NewOAuthCredential builds a credential backed by OAuth tokens.

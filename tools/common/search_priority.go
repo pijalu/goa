@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/pijalu/goa/internal"
 )
 
 //go:embed search_priority.json
@@ -54,8 +56,8 @@ func LoadEmbeddedPriority() SearchPriorityConfig {
 
 // MergeUserPriorityOverride merges a user override file into cfg.
 func MergeUserPriorityOverride(cfg *SearchPriorityConfig) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	home, ok := internal.GoaHome()
+	if !ok || home == "" {
 		return
 	}
 	userPath := filepath.Join(home, ".goa", "search_priority.json")

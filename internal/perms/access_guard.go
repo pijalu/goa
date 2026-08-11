@@ -81,13 +81,13 @@ func (g *AccessGuard) matchesRule(r GuardRule, toolName, input string) bool {
 
 func (g *AccessGuard) evalExpr(exprStr, toolName, path string) bool {
 	env := map[string]any{
-		"tool":      toolName,
-		"path":      path,
+		"tool":       toolName,
+		"path":       path,
 		"regexMatch": regexMatchFunc,
-		"contains":  strings.Contains,
-		"hasPrefix": strings.HasPrefix,
-		"hasSuffix": strings.HasSuffix,
-		"base":      filepath.Base,
+		"contains":   strings.Contains,
+		"hasPrefix":  strings.HasPrefix,
+		"hasSuffix":  strings.HasSuffix,
+		"base":       filepath.Base,
 	}
 	prog, err := expr.Compile(exprStr, expr.Env(env))
 	if err != nil {

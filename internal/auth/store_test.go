@@ -205,7 +205,9 @@ func TestStore_ConcurrentSaveNoRace(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool { return len(s) >= len(substr) && (s == substr || len(substr) == 0 || findSubstr(s, substr)) }
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || findSubstr(s, substr))
+}
 
 func findSubstr(s, substr string) bool {
 	for i := 0; i+len(substr) <= len(s); i++ {

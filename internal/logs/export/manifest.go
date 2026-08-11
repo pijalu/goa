@@ -106,19 +106,19 @@ func BuildManifest(m Metadata, present, missing []string) Manifest {
 func buildFilePaths(present []string) FilePaths {
 	files := FilePaths{}
 	setters := map[string]func(string){
-		"session/events.jsonl": func(p string) { files.SessionEvents = p },
-		"logs/goa.log":         func(p string) { files.AgentLog = p },
-		"logs/http.jsonl":      func(p string) { files.HTTPLog = p },
-		"logs/keys.log":        func(p string) { files.KeyLog = p },
-		"config/project.yaml":  func(p string) { files.ProjectConfig = p },
-		"config/user.yaml":     func(p string) { files.UserConfig = p },
-		"config/local.yaml":    func(p string) { files.LocalConfig = p },
-		"prompts/mode":         func(p string) { files.Modes = p },
-		"system/info.json":     func(p string) { files.SystemInfo = p },
+		"session/events.jsonl":   func(p string) { files.SessionEvents = p },
+		"logs/goa.log":           func(p string) { files.AgentLog = p },
+		"logs/http.jsonl":        func(p string) { files.HTTPLog = p },
+		"logs/keys.log":          func(p string) { files.KeyLog = p },
+		"config/project.yaml":    func(p string) { files.ProjectConfig = p },
+		"config/user.yaml":       func(p string) { files.UserConfig = p },
+		"config/local.yaml":      func(p string) { files.LocalConfig = p },
+		"prompts/mode":           func(p string) { files.Modes = p },
+		"system/info.json":       func(p string) { files.SystemInfo = p },
 		"diagnostics/trace.json": func(p string) { files.Trace = p },
-		"issue.md":             func(p string) { files.Issue = p },
-		"session.md":           func(p string) { files.Session = p },
-		"README.md":            func(p string) { files.Readme = p },
+		"issue.md":               func(p string) { files.Issue = p },
+		"session.md":             func(p string) { files.Session = p },
+		"README.md":              func(p string) { files.Readme = p },
 	}
 	for _, p := range present {
 		if set, ok := setters[p]; ok {

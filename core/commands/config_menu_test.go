@@ -6,6 +6,8 @@ package commands
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/multiagent"
+	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -81,7 +84,7 @@ func TestConfigMenu_RootShowsItems(t *testing.T) {
 	if sr.title != "Settings:" {
 		t.Errorf("title = %q, want Settings:", sr.title)
 	}
-	want := []string{"profile", "model", "provider", "models", "mode", "compression", "theme", "spinner", "spinner_location", "thinking_level", "thinking_blocks", "show_thinking", "multi_agent", "orchestrator", "tools", "bash", "mcp", "sandbox", "loop_detection", "skills", "goals"}
+	want := []string{"profile", "model", "provider", "models", "mode", "compression", "theme", "spinner", "spinner_location", "thinking_level", "thinking_blocks", "show_thinking", "multi_agent", "orchestrator", "teams", "tools", "bash", "mcp", "sandbox", "loop_detection", "skills", "goals"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d root items, got %d", len(want), len(sr.options))
 	}
@@ -89,6 +92,41 @@ func TestConfigMenu_RootShowsItems(t *testing.T) {
 		if sr.options[i].Value != w {
 			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
 		}
+	}
+}
+
+// TestConfigMenu_SkillsRowIsSubmenuHint verifies the top-level Skills row
+// does not read like a binary state toggle ("Skills inline"): it must show a
+// neutral submenu hint with per-source on-counts (bugs.md).
+func TestConfigMenu_SkillsRowIsSubmenuHint(t *testing.T) {
+	cfg := &config.Config{
+		Skills: config.SkillsConfig{ExecutionMode: "inline"},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
+		"review":    {Meta: skills.SkillMeta{Name: "review"}, Source: "embedded"},
+		"refactor":  {Meta: skills.SkillMeta{Name: "refactor"}, Source: "embedded"},
+		"local-one": {Meta: skills.SkillMeta{Name: "local-one"}, Source: "file"},
+	})
+
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+
+	var skillsRow *tui.SelectorItem
+	for i := range sr.options {
+		if sr.options[i].Value == "skills" {
+			skillsRow = &sr.options[i]
+			break
+		}
+	}
+	if skillsRow == nil {
+		t.Fatal("skills row not found in root menu")
+	}
+	if skillsRow.Description == "inline" || skillsRow.Description == "subagent" {
+		t.Errorf("skills row Description = %q (raw execution mode reads like a toggle); want a neutral submenu hint", skillsRow.Description)
+	}
+	if !strings.Contains(skillsRow.Description, "embedded") || !strings.Contains(skillsRow.Description, "local") {
+		t.Errorf("skills row Description = %q, want per-source hint mentioning embedded and local", skillsRow.Description)
 	}
 }
 
@@ -691,7 +729,7 @@ func TestModelManagerItems(t *testing.T) {
 func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			Strategy:         "micro",
 			ThresholdPercent: 80,
 			MaxTokens:        8192,
@@ -706,21 +744,40 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	if sr.title != "Compression settings:" {
 		t.Fatalf("title = %q, want Compression settings:", sr.title)
 	}
-	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard", "cache_gate", "max_tokens", "preserve_recent_turns", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
+	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard",
+		"_derived_eff_hard", "_derived_escalation", "_derived_deferral", "_derived_elision", "_derived_reactive_savings",
+		"cache_gate", "max_tokens", "preserve_recent_turns", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
 	if len(sr.options) != len(want) {
-		t.Fatalf("expected %d compression items, got %d", len(want), len(sr.options))
+		t.Fatalf("expected %d compression items, got %d: %+v", len(want), len(sr.options), sr.options)
 	}
 	for i, w := range want {
 		if sr.options[i].Value != w {
 			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
 		}
 	}
+	// CM:13 design rule 5: the derived limits must be VISIBLE in /config (no
+	// hidden 95%). With no hard ceiling configured, the effective hard defaults
+	// to 95 and the derived levels are computed from it.
+	descOf := func(v string) string {
+		for _, o := range sr.options {
+			if o.Value == v {
+				return o.Description
+			}
+		}
+		return ""
+	}
+	if got := descOf("_derived_eff_hard"); got != "95%" {
+		t.Errorf("effective hard ceiling = %q, want 95%% (default when unconfigured)", got)
+	}
+	if got := descOf("_derived_reactive_savings"); !strings.Contains(got, "50%") {
+		t.Errorf("reactive savings label = %q, want it to show 50%% savings", got)
+	}
 }
 
 func TestConfigMenu_CompressionStrategyChange(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			Strategy:         "micro",
 			ThresholdPercent: 80,
 		},
@@ -743,7 +800,7 @@ func TestConfigMenu_CompressionStrategyChange(t *testing.T) {
 func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled: true,
+			Enabled: boolPtr(true),
 			// Seed the tiered field (not the legacy ThresholdPercent alias,
 			// which would win over Thresholds.TriggerPercent on read-back).
 			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80},
@@ -771,7 +828,7 @@ func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:    true,
+			Enabled:    boolPtr(true),
 			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80},
 		},
 	}
@@ -809,7 +866,7 @@ func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 
 func TestConfigMenu_CompressionSoftChange(t *testing.T) {
 	cfg := &config.Config{
-		ContextCompression: config.ContextCompressionConfig{Enabled: true},
+		ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)},
 	}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
 
@@ -828,7 +885,7 @@ func TestConfigMenu_CompressionSoftChange(t *testing.T) {
 
 func TestConfigMenu_CompressionHardChange(t *testing.T) {
 	cfg := &config.Config{
-		ContextCompression: config.ContextCompressionConfig{Enabled: true},
+		ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)},
 	}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
 
@@ -873,7 +930,7 @@ func TestCompressionTriggerValue_LegacyAliasWins(t *testing.T) {
 func TestSetTriggerPercentClearLegacy(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			ThresholdPercent: 80, // stale legacy alias
 		},
 	}
@@ -902,7 +959,7 @@ func TestSetTriggerPercentClearLegacy(t *testing.T) {
 func TestConfigMenu_TriggerEditReflectsWithLegacyAlias(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			ThresholdPercent: 80, // stale legacy alias that would shadow the edit
 		},
 	}
@@ -954,12 +1011,13 @@ func TestConfigMenu_CompressionMaxTokensAuto(t *testing.T) {
 }
 
 func TestCompressionLabel(t *testing.T) {
-	if got := compressionLabel(&config.Config{}); got != "off" {
+	disabledCfg := &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(false)}}
+	if got := compressionLabel(disabledCfg); got != "off" {
 		t.Errorf("compressionLabel(disabled) = %q, want off", got)
 	}
 	got := compressionLabel(&config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          true,
+			Enabled:          boolPtr(true),
 			Strategy:         "micro",
 			ThresholdPercent: 80,
 		},
@@ -969,7 +1027,7 @@ func TestCompressionLabel(t *testing.T) {
 	}
 	// Empty strategy falls back to tool_elision for display.
 	got = compressionLabel(&config.Config{
-		ContextCompression: config.ContextCompressionConfig{Enabled: true, ThresholdPercent: 100},
+		ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true), ThresholdPercent: 100},
 	})
 	if !strings.Contains(got, "tool_elision") {
 		t.Errorf("compressionLabel with empty strategy = %q, want tool_elision fallback", got)
@@ -1112,5 +1170,86 @@ func TestDisabledThresholdLabel(t *testing.T) {
 				t.Errorf("disabledThresholdLabel(%d) = %q, want %q", tt.v, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestConfigMenu_OrchestratorSaveIsSectionScoped verifies the orchestrator
+// settings flow persists only the orchestrator section to ~/.goa/config.yaml
+// (bugs.md: Save full-dump baked merged project/embedded values into the home
+// file). A pre-existing unrelated home key must survive untouched, and
+// unrelated merged state (e.g. skills from the embedded layer) must not leak
+// into the home file.
+func TestConfigMenu_OrchestratorSaveIsSectionScoped(t *testing.T) {
+	cfg := &config.Config{
+		Orchestrator: config.OrchestratorConfig{
+			Roles: map[string]config.OrchestratorRole{"worker": {Model: "qwen"}},
+		},
+		// Merged state that must NOT leak into the home file on an
+		// orchestrator-section save.
+		Skills: config.SkillsConfig{ExecutionMode: "subagent"},
+	}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	// newMenuTestContext points HOME at an isolated temp dir; seed the home
+	// config there with a pre-existing unrelated key.
+	homePath := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
+	writeTestConfig(t, homePath, "skills:\n  execution_mode: inline\n")
+
+	menu := newConfigMenu(*ctx)
+	menu.openOrchestratorDefaults()
+	sr.onSel(config.OrchestratorTopologyFanout, true)
+
+	data := readTestFile(t, homePath)
+	if !strings.Contains(data, "topology: fanout") {
+		t.Errorf("orchestrator defaults not persisted, got:\n%s", data)
+	}
+	if !strings.Contains(data, "execution_mode: inline") {
+		t.Errorf("pre-existing home skills key was clobbered, got:\n%s", data)
+	}
+	if strings.Contains(data, "subagent") {
+		t.Errorf("merged in-memory skills state leaked into the home file, got:\n%s", data)
+	}
+	if strings.Contains(data, "active_provider") || strings.Contains(data, "providers:") {
+		t.Errorf("unrelated merged sections leaked into the home file, got:\n%s", data)
+	}
+}
+
+// TestConfigMenu_ModelSaveIsFieldScoped verifies the model-manager flow
+// (add/edit/remove model) persists via SaveHomeProvidersAndModels — provider
+// and model fields update in the home file, but unrelated merged state is
+// not dumped (bugs.md: Save full-dump contamination).
+func TestConfigMenu_ModelSaveIsFieldScoped(t *testing.T) {
+	cfg := &config.Config{
+		ActiveProvider: "p1",
+		Providers:      []config.ProviderConfig{{ID: "p1", Endpoint: "http://p1.example.com/v1"}},
+		Models:         []config.ModelConfig{{ID: "m1", ProviderID: "p1", Model: "m1"}},
+		// Merged state that must not leak.
+		Skills: config.SkillsConfig{ExecutionMode: "subagent"},
+	}
+	ctx, _, _, _ := newMenuTestContext(t, cfg)
+	homePath := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
+	writeTestConfig(t, homePath, `active_provider: p1
+providers:
+  - id: p1
+    endpoint: http://p1.example.com/v1
+models:
+  - id: m1
+    provider: p1
+    model: m1
+skills:
+  execution_mode: inline
+`)
+
+	menu := newConfigMenu(*ctx)
+	menu.addModel("p1", "m2", "m2")
+
+	data := readTestFile(t, homePath)
+	if !strings.Contains(data, "id: m2") {
+		t.Errorf("added model not persisted, got:\n%s", data)
+	}
+	if !strings.Contains(data, "execution_mode: inline") {
+		t.Errorf("pre-existing home skills key was clobbered, got:\n%s", data)
+	}
+	if strings.Contains(data, "subagent") {
+		t.Errorf("merged in-memory skills state leaked into the home file, got:\n%s", data)
 	}
 }

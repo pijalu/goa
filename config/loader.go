@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/pijalu/goa/internal"
 	"gopkg.in/yaml.v3"
@@ -84,12 +85,18 @@ type CascadeLoader struct {
 	projectDir   string
 	configPath   string // explicit --config path (overrides cascade for file)
 	cliOverrides map[string]string
+	// writeMu serializes every config-file read-modify-write cycle (Save*,
+	// editConfigFile). All writers mutate the same home/project config.yaml
+	// on disk; without exclusion, a concurrent field-scoped write (skill
+	// toggle) and a snapshot write (model switch, /goal:settings) interleave
+	// and silently lose entries (bugs.md: skills re-enable spontaneously).
+	writeMu sync.Mutex
 }
 
 // NewCascadeLoader creates a new cascade loader.
 // cliFlags is a map of flag names to values from cobra.
 func NewCascadeLoader(projectDir, explicitConfigPath string, cliFlags map[string]string) *CascadeLoader {
-	homeDir, _ := os.UserHomeDir()
+	homeDir, _ := internal.GoaHome()
 	return &CascadeLoader{
 		homeDir:      homeDir,
 		projectDir:   projectDir,
@@ -572,7 +579,8 @@ func (cl *CascadeLoader) applyCompressionCLIOverride(cfg *Config) {
 	}
 	switch compression {
 	case "true":
-		cfg.ContextCompression.Enabled = true
+		on := true
+		cfg.ContextCompression.Enabled = &on
 		if cfg.ContextCompression.MaxTokens == 0 {
 			cfg.ContextCompression.MaxTokens = 8192
 		}
@@ -580,7 +588,8 @@ func (cl *CascadeLoader) applyCompressionCLIOverride(cfg *Config) {
 			cfg.ContextCompression.Strategy = AgenticCompressionToolElision
 		}
 	case "false":
-		cfg.ContextCompression.Enabled = false
+		off := false
+		cfg.ContextCompression.Enabled = &off
 	}
 }
 
@@ -753,6 +762,8 @@ func (cl *CascadeLoader) Reload() (*Config, error) {
 
 // SaveProjectConfig writes the given config to .goa/config.yaml in the project directory.
 func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	projectConfigDir := filepath.Join(cl.projectDir, ".goa")
 	if err := os.MkdirAll(projectConfigDir, 0755); err != nil {
 		return fmt.Errorf("create project config dir: %w", err)
@@ -834,7 +845,43 @@ func persistableModels(models []ModelConfig) []ModelConfig {
 	return out
 }
 
+// HomeConfigPath returns the absolute path of the home config file
+// (<goa home>/.goa/config.yaml) this loader reads from and Save writes to.
+// The goa home honors --home / GOA_HOME overrides via internal.GoaHome.
+func (cl *CascadeLoader) HomeConfigPath() string {
+	return filepath.Join(cl.homeDir, ".goa", "config.yaml")
+}
+
+// skillListsOnDisk reads only the skills.enabled / skills.disabled lists from
+// the config file at path. ok=false when the file is missing or unreadable —
+// callers then leave the in-memory lists as-is rather than forcing a value.
+//
+// Snapshot writers (Save, SaveHomeProvidersAndModels, SaveProjectConfig) use
+// this to PRESERVE the on-disk skill lists instead of re-emitting the lists
+// from the in-memory config they were handed. Skill enable/disable is owned by
+// the field-scoped toggle write (persistSkillToggle), so the on-disk value is
+// authoritative and a stale in-memory snapshot must never overwrite it — that
+// lost update is what made disabled skills spontaneously re-enable (bugs.md).
+func skillListsOnDisk(path string) (enabled, disabled []string, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, false
+	}
+	var raw struct {
+		Skills struct {
+			Enabled  []string `yaml:"enabled"`
+			Disabled []string `yaml:"disabled"`
+		} `yaml:"skills"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, nil, false
+	}
+	return raw.Skills.Enabled, raw.Skills.Disabled, true
+}
+
 func (cl *CascadeLoader) Save(cfg *Config) error {
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	configDir := filepath.Join(cl.homeDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -845,14 +892,19 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 	saveCfg.FirstRun = false
 	saveCfg.ConfigDir = ""
 	saveCfg.Models = persistableModels(saveCfg.Models)
+	// Preserve on-disk skill lists: a stale in-memory snapshot must not
+	// resurrect a skill the user disabled (skills re-enable bug).
+	if en, dis, ok := skillListsOnDisk(cl.HomeConfigPath()); ok {
+		saveCfg.Skills.Enabled = en
+		saveCfg.Skills.Disabled = dis
+	}
 
 	data, err := yaml.Marshal(saveCfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	path := filepath.Join(configDir, "config.yaml")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(cl.HomeConfigPath(), data, 0644); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -864,6 +916,8 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 // It reads the existing home file (if any), applies the provider/model fields
 // from cfg, and writes the merged result back.
 func (cl *CascadeLoader) SaveHomeProvidersAndModels(cfg *Config) error {
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	configDir := filepath.Join(cl.homeDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -906,6 +960,8 @@ func (cl *CascadeLoader) SaveHomeProvidersAndModels(cfg *Config) error {
 // It reads the existing project file (if any), applies the provider/model fields
 // from cfg, and writes the merged result back.
 func (cl *CascadeLoader) SaveProjectProvidersAndModels(cfg *Config) error {
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	configDir := filepath.Join(cl.projectDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create project config dir: %w", err)
@@ -953,6 +1009,8 @@ func (cl *CascadeLoader) SaveHomeField(path []string, value any) error {
 		return fmt.Errorf("empty field path")
 	}
 
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	configDir := filepath.Join(cl.homeDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -1004,6 +1062,8 @@ func (cl *CascadeLoader) SaveProjectField(path []string, value any) error {
 		return fmt.Errorf("empty field path")
 	}
 
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	configDir := filepath.Join(cl.projectDir, ".goa")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create project config dir: %w", err)
@@ -1101,6 +1161,8 @@ func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) erro
 // document when missing), applies edit to the root mapping, and writes it
 // back. The label ("home"/"project") scopes error messages.
 func (cl *CascadeLoader) editConfigFile(configDir, label string, edit func(doc *yaml.Node) error) error {
+	cl.writeMu.Lock()
+	defer cl.writeMu.Unlock()
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create %s config dir: %w", label, err)
 	}

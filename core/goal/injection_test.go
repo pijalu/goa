@@ -134,19 +134,19 @@ func TestStaticGoalReminder_VerifyCommandAndHandover(t *testing.T) {
 
 func TestDynamicGoalProgress_Changes(t *testing.T) {
 	base := GoalSnapshot{
-		Objective:  "fix tests",
-		Status:     GoalActive,
-		TurnsUsed:  1,
-		TokensUsed: 100,
+		Objective:   "fix tests",
+		Status:      GoalActive,
+		TurnsUsed:   1,
+		TokensUsed:  100,
 		WallClockMs: 1000,
 	}
 	a := BuildDynamicGoalProgress(base)
 	b := BuildDynamicGoalProgress(GoalSnapshot{
 		Objective:   "fix tests",
-		Status:        GoalActive,
-		TurnsUsed:     2,
-		TokensUsed:    200,
-		WallClockMs:   2000,
+		Status:      GoalActive,
+		TurnsUsed:   2,
+		TokensUsed:  200,
+		WallClockMs: 2000,
 	})
 	if a == b {
 		t.Error("dynamic progress should differ across turns")
@@ -371,6 +371,7 @@ func TestFormatBudgetLines(t *testing.T) {
 func strPtr(s string) *string { return &s }
 func intPtr(i int) *int       { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
 // TestDynamicProgress_SurfacesTodos verifies the per-turn goal reminder
 // surfaces the managed todo list so the model works the next item (bugs.md:
 // framework-managed todo list for goals).

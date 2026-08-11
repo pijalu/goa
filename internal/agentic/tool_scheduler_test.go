@@ -6,6 +6,7 @@ package agentic
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -286,6 +287,56 @@ func TestToolScheduler_AllSameCategory_RunsSerially(t *testing.T) {
 	}
 	if maxActive > 1 {
 		t.Errorf("conflicting tasks ran in parallel: peak concurrent = %d", maxActive)
+	}
+}
+
+// TestToolScheduler_SameCategory_PreservesRequestOrder verifies the ordering
+// guarantee behind the goal-tool-call ordering bug (bugs.md must-fix #4):
+// when multiple tool calls share a conflict category, the scheduler must not
+// merely serialize them (no overlap) but execute them strictly in the order
+// the model requested them. A stateful tool like the goal tool depends on this:
+// a "create" then "update" must run create-first.
+func TestToolScheduler_SameCategory_PreservesRequestOrder(t *testing.T) {
+	s := NewToolScheduler(context.Background())
+	const n = 5
+	var mu sync.Mutex
+	order := make([]int, 0, n)
+
+	for i := 0; i < n; i++ {
+		i := i
+		s.Add(&ToolCallTask{
+			Name:   fmt.Sprintf("goal_%d", i),
+			Access: toolaccess.Access{Category: "goal"},
+			Execute: func(ctx context.Context) (ToolResult, error) {
+				// Sleep so completion order reflects start order, not scheduling
+				// noise. With serialization + order preservation, each task is
+				// the only one active, so recording here = execution order.
+				time.Sleep(5 * time.Millisecond)
+				mu.Lock()
+				order = append(order, i)
+				mu.Unlock()
+				return ToolResult{Output: fmt.Sprintf("done_%d", i)}, nil
+			},
+		})
+	}
+
+	results := s.Collect()
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", len(results), n)
+	}
+	// Execution order must be 0,1,2,...,n-1 — the request order.
+	for i, got := range order {
+		if got != i {
+			t.Fatalf("execution order broken: at position %d got task %d, want %d (full order: %v)",
+				i, got, i, order)
+		}
+	}
+	// Results are also returned in submission order.
+	for i, r := range results {
+		want := fmt.Sprintf("done_%d", i)
+		if r.Output != want {
+			t.Errorf("result[%d].Output = %q, want %q", i, r.Output, want)
+		}
 	}
 }
 

@@ -32,8 +32,8 @@ var indexSaveMu sync.Mutex
 // reindexing. Tools that write or edit files notify the tracker, and the
 // SmartSearch builder consumes those notifications on the next refresh.
 type ChangeTracker struct {
-	mu     sync.Mutex
-	paths  map[string]struct{}
+	mu    sync.Mutex
+	paths map[string]struct{}
 }
 
 // NewChangeTracker creates a ChangeTracker ready for use.

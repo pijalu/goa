@@ -26,6 +26,8 @@ type FooterData struct {
 	WorkflowActive         bool   // true when a multi-agent workflow is running
 	SteeringHint           string // shown when workflow is active (e.g. "type to steer")
 	SkillExecMode          string // "inline" or "sub-agent" for status line, empty when none
+	Team                   string // active team name, empty when none (TEAMS.md §8.2)
+	TeamDrifted            bool   // true when the active team has manual overrides (rendered with * marker)
 	ModelBusy              bool   // true when the main model is actively generating
 	CompanionBusy          bool   // true when the companion is reviewing
 	MainActivity           string // current main agent activity: "sending", "thinking", "tool", "streaming"
@@ -57,6 +59,20 @@ func preserveFooterData(prev, data FooterData) FooterData {
 	data = preserveFooterWorkflow(prev, data)
 	data = preserveFooterPluginSegments(prev, data)
 	data = preserveFooterGoal(prev, data)
+	data = preserveFooterTeam(prev, data)
+	return data
+}
+
+// preserveFooterTeam keeps the team badge across routine footer rebuilds
+// (token stats, activity) that construct a fresh FooterData without team
+// knowledge. SetTeam is the sole writer (mirroring SetGoalStatus): an
+// explicit clear goes through SetTeam, so the preserved value never goes
+// stale.
+func preserveFooterTeam(prev, data FooterData) FooterData {
+	if data.Team == "" {
+		data.Team = prev.Team
+		data.TeamDrifted = prev.TeamDrifted
+	}
 	return data
 }
 

@@ -107,7 +107,7 @@ func TestHandleToolCallPartial_AccumulatesMultipleDeltas(t *testing.T) {
 	})
 
 	_, _, _ = agent.handleStreamEvent(ctx, nil, provider.AssistantMessageEvent{
-		Type:  provider.EventToolCallDelta,
+		Type: provider.EventToolCallDelta,
 		Delta: `
 
 func main() {
@@ -116,9 +116,9 @@ func main() {
 		Partial: &provider.AssistantMessage{
 			Content: []provider.ContentBlock{
 				{
-					Type:          provider.ContentBlockToolCall,
-					ToolCallID:    "call_delta_test",
-					ToolName:      "write",
+					Type:       provider.ContentBlockToolCall,
+					ToolCallID: "call_delta_test",
+					ToolName:   "write",
 					ToolArguments: `{"path":"test.go","content":"package main
 
 func main() {

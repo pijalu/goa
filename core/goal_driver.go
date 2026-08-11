@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/pijalu/goa/core/goal"
@@ -56,6 +57,7 @@ const (
 	PauseModelConfig  = "Paused after model configuration error"
 	PauseRuntimeError = "Paused after runtime error"
 	PauseRunawayLoop  = "Paused after detecting a runaway response loop"
+	PauseSilentStop   = "Paused after model stopped mid-reasoning (send continue to resume)"
 )
 
 // RunawayRecoveryPrompt replaces the byte-identical ContinuationPrompt for
@@ -80,6 +82,23 @@ goal with action "update", status "blocked" with reason+expectation.`
 // even after the goal is cleared (bugs.md Issue 7: "goal cannot be
 // stopped").
 var ErrAgentBusy = errors.New("goal driver: agent busy with another turn")
+
+// ErrSilentStop is returned by runTurn when the turn completed without error
+// but the model stopped mid-reasoning (produced thinking but no answer content
+// or tool calls — a reasoning-token or output limit on the provider side). The
+// drive loop must pause the goal instead of auto-continuing, because the next
+// continuation turn would deterministically hit the same limit again. The user
+// is told to "send continue to resume", so the goal must wait for that resume.
+var ErrSilentStop = errors.New("goal driver: model stopped after reasoning without producing a reply")
+
+// SilentStopReporter is an optional interface that AgentRunner implementations
+// can implement to report whether the most recently completed turn ended with a
+// "silent stop" (model produced thinking/reasoning but no visible answer or
+// tool calls). The goal driver checks this after each turn to decide whether to
+// pause instead of auto-continuing into the same reasoning limit.
+type SilentStopReporter interface {
+	LastTurnSilentStop() bool
+}
 
 // AgentRunner is the subset of agentic.Agent used by GoalDriver.
 type AgentRunner interface {
@@ -139,6 +158,30 @@ type GoalDriver struct {
 	// Written by handleTurnError, consumed by runTurn — both run on the
 	// single Drive loop goroutine, so no extra locking is needed.
 	runawayPausedFor string
+
+	// TeamOverlay manages goal-scoped team overlays (TEAMS.md §5.2). When a
+	// team-bound goal is active, the drive loop applies the team's overlay for
+	// the goal's duration and removes it when the goal ends (mirrors
+	// FreshContext's per-goal tracking). overlayGoalID records which goal the
+	// overlay is currently bound to so it is applied once per goal. Nil =
+	// team overlays disabled (no TeamManager wired). Both fields are only
+	// touched from the single Drive loop.
+	TeamOverlay    TeamOverlayManager
+	overlayGoalID  string
+}
+
+// TeamOverlayManager is the subset of the TeamManager the goal drive loop needs
+// to apply/remove goal-scoped team overlays. It is defined here (in package
+// core) to avoid a core → core/team dependency cycle; the concrete
+// *team.Manager satisfies it.
+type TeamOverlayManager interface {
+	// ApplyOverlay applies the named team as a goal overlay (snapshotting the
+	// session state for later restore). It is idempotent-safe: re-applying the
+	// same overlay is a no-op when one is already active.
+	ApplyOverlay(name string) error
+	// RemoveOverlay tears down the active goal overlay, restoring the session.
+	// It is a no-op when no overlay is active.
+	RemoveOverlay() error
 }
 
 // stallChallengeLimit is the number of unanswered stall challenges after
@@ -183,8 +226,12 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 		}
 		active := d.Mode.GetActiveGoal()
 		if active == nil {
+			d.syncTeamOverlay(nil)
 			return nil
 		}
+		// Apply/remove the goal-scoped team overlay to match the active goal
+		// (TEAMS.md §5.2). Done once per goal before the first turn.
+		d.syncTeamOverlay(active)
 		if active.Budget.OverBudget {
 			reason := "A configured budget was reached"
 			d.Mode.MarkBlocked(goal.GoalReasonInput{Reason: &reason}, goal.GoalActorSystem)
@@ -211,6 +258,39 @@ func (d *GoalDriver) Drive(ctx context.Context) error {
 	}
 }
 
+// syncTeamOverlay keeps the goal-scoped team overlay aligned to the active goal
+// (TEAMS.md §5.2). When a team-bound goal is active and the overlay is not yet
+// bound to it, the team is applied for the goal's duration. When the active goal
+// clears (nil) or has no team, any lingering overlay is removed so the session
+// state is restored. It is a no-op when no TeamOverlay manager is wired. Errors
+// are logged via the overlay manager's own logging; the drive loop continues
+// (a missing/undefined team does not block the goal — it runs session-default).
+func (d *GoalDriver) syncTeamOverlay(active *goal.GoalSnapshot) {
+	if d.TeamOverlay == nil {
+		return
+	}
+	want := ""
+	wantID := ""
+	if active != nil {
+		want = strings.TrimSpace(active.Team)
+		wantID = active.GoalID
+	}
+	switch {
+	case want == "" && d.overlayGoalID != "":
+		// Active goal ended (or has no team): tear down the lingering overlay.
+		_ = d.TeamOverlay.RemoveOverlay()
+		d.overlayGoalID = ""
+	case want != "" && d.overlayGoalID != wantID:
+		// New team-bound goal: apply its overlay. RemoveOverlay is safe first
+		// (no-op when none) so a prior overlay for a different goal is cleared.
+		if d.overlayGoalID != "" {
+			_ = d.TeamOverlay.RemoveOverlay()
+		}
+		_ = d.TeamOverlay.ApplyOverlay(want)
+		d.overlayGoalID = wantID
+	}
+}
+
 // handleTurnError maps a turn failure to the drive-loop verdict. ErrAgentBusy
 // is a CLEAN stop (nil): another turn owns the agent, so the goal stays
 // active and the in-flight turn's post-turn hook re-starts the drive once
@@ -221,6 +301,9 @@ func (d *GoalDriver) handleTurnError(err error) error {
 		return nil
 	}
 	reason := mapDriverError(err)
+	if errors.Is(err, ErrSilentStop) {
+		reason = PauseSilentStop
+	}
 	pauseReason := reason
 	if reason == PauseRunawayLoop {
 		// The guardrail error carries the (elided) repeated sequence; keep it
@@ -278,16 +361,37 @@ func (d *GoalDriver) checkStall(current *goal.GoalSnapshot) {
 // the ordinary Run path against the current conversation.
 func (d *GoalDriver) runTurn(ctx context.Context, active *goal.GoalSnapshot) error {
 	prompt := d.turnPrompt(active)
+	var err error
 	if active.FreshContext {
 		if fr, ok := d.Agent.(FreshAgentRunner); ok {
 			begin := d.freshBegunFor != active.GoalID
 			d.freshBegunFor = active.GoalID
-			return fr.RunFresh(ctx, prompt, begin)
+			err = fr.RunFresh(ctx, prompt, begin)
+			if err != nil {
+				return err
+			}
+			return d.checkSilentStop()
 		}
 	}
-	// Any non-fresh turn (or a different goal) resets the begin tracker.
+	// Normal Run path (not fresh-context, or runner lacks fresh support).
+	// Any non-fresh turn resets the begin tracker.
 	d.freshBegunFor = ""
-	return d.Agent.Run(ctx, prompt)
+	err = d.Agent.Run(ctx, prompt)
+	if err != nil {
+		return err
+	}
+	return d.checkSilentStop()
+}
+
+// checkSilentStop returns ErrSilentStop when the agent reports that the just-
+// completed turn ended with a silent stop (model stopped mid-reasoning). The
+// goal driver pauses the goal so the user can resume with "continue" instead
+// of auto-continuing into the same reasoning limit.
+func (d *GoalDriver) checkSilentStop() error {
+	if sr, ok := d.Agent.(SilentStopReporter); ok && sr.LastTurnSilentStop() {
+		return ErrSilentStop
+	}
+	return nil
 }
 
 // turnPrompt picks the continuation prompt for this turn. The first turn

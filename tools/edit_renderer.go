@@ -25,8 +25,8 @@ type EditFileRenderer struct {
 const editDiffPreviewLines = 1000
 
 var (
-	_ tuirender.ToolRenderer        = (*EditFileRenderer)(nil)
-	_ tuirender.StreamingRenderer   = (*EditFileRenderer)(nil)
+	_ tuirender.ToolRenderer      = (*EditFileRenderer)(nil)
+	_ tuirender.StreamingRenderer = (*EditFileRenderer)(nil)
 )
 
 func NewEditFileRenderer() *EditFileRenderer {

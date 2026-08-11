@@ -145,7 +145,7 @@ func convertMistralAssistant(msg provider.Message) map[string]interface{} {
 				"type": "function",
 				"function": map[string]interface{}{
 					"name":      block.ToolName,
-					"arguments": block.ToolArguments,
+					"arguments": provider.SafeToolArguments(block.ToolArguments),
 				},
 			})
 		}

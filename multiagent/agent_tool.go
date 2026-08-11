@@ -245,7 +245,9 @@ func makeSubAgentStreamObserver(orch interface {
 // labeled updates to the orchestrator stream. Split from the closure to keep
 // each method under the complexity budget.
 type subAgentStreamer struct {
-	orch     interface{ Emit(from, to, content string) }
+	orch interface {
+		Emit(from, to, content string)
+	}
 	label    string
 	thinking strings.Builder
 	content  strings.Builder

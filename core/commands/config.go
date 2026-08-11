@@ -188,12 +188,13 @@ func (m *configMenu) showRoot() error {
 		{Value: "show_thinking", Label: "Show thinking", Description: boolLabel(cfg.TUI.Transparency.ShowThinking)},
 		{Value: "multi_agent", Label: "Multi-agent", Description: multiAgentLabel(cfg, m.ctx.ForegroundOrchestrator)},
 		{Value: "orchestrator", Label: "Orchestrator", Description: orchestratorLabel(cfg)},
+		{Value: "teams", Label: "Teams", Description: teamsLabel(cfg)},
 		{Value: "tools", Label: "Tools", Description: toolsEnabledLabel(cfg)},
 		{Value: "bash", Label: "Bash", Description: bashSettingsLabel(cfg)},
 		{Value: "mcp", Label: "MCP servers", Description: mcpServersLabel(cfg)},
 		{Value: "sandbox", Label: "Sandbox", Description: sandboxLabel(cfg)},
 		{Value: "loop_detection", Label: "Loop detection", Description: loopDetectionLabel(cfg)},
-		{Value: "skills", Label: "Skills", Description: skillsLabel(cfg)},
+		{Value: "skills", Label: "Skills", Description: skillsLabel(m.ctx.SkillRegistry, cfg)},
 		{Value: "goals", Label: "Goals", Description: goalsRetentionLabel(cfg.Goals.Retention)},
 	}
 	m.ctx.SelectOption("Settings:", items, "", func(selected string, ok bool) {
@@ -230,6 +231,7 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"show_thinking":    (*configMenu).toggleShowThinking,
 		"multi_agent":      (*configMenu).openMultiAgent,
 		"orchestrator":     (*configMenu).openOrchestrator,
+		"teams":            (*configMenu).openTeams,
 		"tools":            (*configMenu).openTools,
 		"bash":             (*configMenu).openBash,
 		"mcp":              (*configMenu).openMCP,
@@ -380,7 +382,7 @@ func (m *configMenu) runAddProviderWizard() {
 }
 
 func buildProviderPresetItems() []tui.SelectorItem {
-	presets := config.PresetProviders()
+	presets := config.AllProviderPresets()
 	items := make([]tui.SelectorItem, 0, len(presets)+1)
 	for _, p := range presets {
 		items = append(items, tui.SelectorItem{
@@ -417,10 +419,8 @@ func (m *configMenu) addProviderWizardHandler(v string, ok bool) {
 }
 
 func findPresetProvider(id string) (config.ProviderPreset, bool) {
-	for _, p := range config.PresetProviders() {
-		if p.ID == id {
-			return p, true
-		}
+	if p := config.FindPreset(id); p != nil {
+		return *p, true
 	}
 	return config.ProviderPreset{}, false
 }
@@ -897,12 +897,17 @@ func loopDetectionLabel(cfg *config.Config) string {
 	return fmt.Sprintf("warn:%d stop:%d", cfg.Execution.LoopWarning, cfg.Execution.LoopInterrupt)
 }
 
-// skillsLabel returns a short summary of skills configuration.
-func skillsLabel(cfg *config.Config) string {
-	if cfg.Skills.ExecutionMode != "" {
-		return cfg.Skills.ExecutionMode
+// skillsLabel returns a neutral submenu hint for the top-level Skills row:
+// per-source on-counts (embedded / local). Showing the raw execution-mode
+// value here ("Skills inline") read like a binary toggle, but the row opens
+// a submenu — the mode itself is editable inside it.
+func skillsLabel(reg core.SkillRegistry, cfg *config.Config) string {
+	if reg == nil {
+		return "settings"
 	}
-	return "inline"
+	return fmt.Sprintf("embedded %s · local %s",
+		skillSourceLabel(reg, "embedded", cfg),
+		skillSourceLabel(reg, "local", cfg))
 }
 
 // settingLoopDetection is the /config → Loop detection sub-menu.
@@ -1143,6 +1148,29 @@ func (m *configMenu) saveConfig() {
 		return
 	}
 	if err := m.ctx.ConfigSaver.Save(m.ctx.Config); err != nil {
+		m.flash("Failed to save config: " + err.Error())
+	}
+}
+
+// saveProvidersAndModels persists provider/model/active fields to the home
+// config without dumping the merged in-memory config (which would bake
+// project-layer and embedded values into ~/.goa/config.yaml).
+func (m *configMenu) saveProvidersAndModels() {
+	if m.ctx.ConfigSaver == nil {
+		return
+	}
+	if err := saveHomeProvidersAndModels(m.ctx.Config, m.ctx.ConfigSaver); err != nil {
+		m.flash("Failed to save config: " + err.Error())
+	}
+}
+
+// saveHomeSection persists one top-level config section (e.g. "orchestrator",
+// "goals") to the home config, preserving all other home settings.
+func (m *configMenu) saveHomeSection(path []string, value any) {
+	if m.ctx.ConfigSaver == nil {
+		return
+	}
+	if err := m.ctx.ConfigSaver.SaveHomeFieldValue(path, value); err != nil {
 		m.flash("Failed to save config: " + err.Error())
 	}
 }

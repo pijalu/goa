@@ -10,13 +10,13 @@ import "time"
 type PlanStatus string
 
 const (
-	PlanDraft     PlanStatus = "draft"      // planner is building
-	PlanInReview  PlanStatus = "in_review"  // submitted; user annotating
-	PlanApproved  PlanStatus = "approved"   // user confirmed; not yet started
-	PlanExecuting PlanStatus = "executing"  // orchestrator dispatching items
-	PlanDone      PlanStatus = "done"       // all items done/skipped
-	PlanBlocked   PlanStatus = "blocked"    // unrecoverable item failure
-	PlanFailed    PlanStatus = "failed"     // run error / abort
+	PlanDraft     PlanStatus = "draft"     // planner is building
+	PlanInReview  PlanStatus = "in_review" // submitted; user annotating
+	PlanApproved  PlanStatus = "approved"  // user confirmed; not yet started
+	PlanExecuting PlanStatus = "executing" // orchestrator dispatching items
+	PlanDone      PlanStatus = "done"      // all items done/skipped
+	PlanBlocked   PlanStatus = "blocked"   // unrecoverable item failure
+	PlanFailed    PlanStatus = "failed"    // run error / abort
 )
 
 // ItemStatus represents the state of a single plan item.
@@ -44,9 +44,9 @@ type PlanItem struct {
 // PlanComment is a user annotation anchored to a plan item or to the plan itself.
 type PlanComment struct {
 	ID        string    `json:"id"`
-	ItemID    string    `json:"item_id"`   // empty = plan-level comment
+	ItemID    string    `json:"item_id"` // empty = plan-level comment
 	Content   string    `json:"content"`
-	Revision  int       `json:"revision"`  // revision the comment was made on
+	Revision  int       `json:"revision"` // revision the comment was made on
 	Resolved  bool      `json:"resolved"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

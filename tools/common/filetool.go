@@ -18,6 +18,20 @@ type FileToolConfig struct {
 	// FuzzyMatch enables fuzzy file-name matching when the requested path
 	// does not exist. When nil (the default) fuzzy matching is enabled.
 	FuzzyMatch *bool `yaml:"fuzzy_match"`
+	// Dedup enables the read-dedup guard (E1.3, ENHANCE.md): re-reading
+	// byte-identical content returns a short hint instead of the full body, so
+	// an append-only context is not bloated with redundant file copies. When
+	// nil (the default) dedup is enabled. Only the read tool honours it.
+	Dedup *bool `yaml:"dedup"`
+}
+
+// FileToolDedupEnabled reports whether the read-dedup guard is active. The
+// zero value (nil Dedup pointer) means enabled, so the feature defaults to on.
+func FileToolDedupEnabled(cfg FileToolConfig) bool {
+	if cfg.Dedup == nil {
+		return true
+	}
+	return *cfg.Dedup
 }
 
 // ReadFileConfig is the historical name for FileToolConfig.

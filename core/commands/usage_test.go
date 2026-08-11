@@ -17,6 +17,7 @@ import (
 type fakeUsageStore struct {
 	stats     map[string][]usage.Stat // key: dim|project
 	sum       usage.Stat
+	busts     int
 	daily     []usage.DayCount
 	lastSince time.Time
 }
@@ -28,6 +29,9 @@ func (f *fakeUsageStore) Query(dim usage.Dimension, project string, since time.T
 func (f *fakeUsageStore) Sum(project string, since time.Time) (usage.Stat, error) {
 	f.lastSince = since
 	return f.sum, nil
+}
+func (f *fakeUsageStore) Busts(project string, since time.Time) (int, error) {
+	return f.busts, nil
 }
 func (f *fakeUsageStore) DailyCounts(project string, days int) ([]usage.DayCount, error) {
 	return f.daily, nil
@@ -148,8 +152,8 @@ func TestStatsCommand_Verbose(t *testing.T) {
 			dimKey(usage.ByProvider, "/a"): {{Key: "kimi", Turns: 2, PromptN: 150, PredictedN: 70}},
 			dimKey(usage.ByProvider, "/b"): {{Key: "openai", Turns: 1, PromptN: 60, PredictedN: 30}},
 			// Per-project model splits.
-			dimKey(usage.ByModel, "/a"):    {{Key: "k2", Turns: 2, PromptN: 150, PredictedN: 70}},
-			dimKey(usage.ByModel, "/b"):    {{Key: "gpt-5", Turns: 1, PromptN: 60, PredictedN: 30}},
+			dimKey(usage.ByModel, "/a"): {{Key: "k2", Turns: 2, PromptN: 150, PredictedN: 70}},
+			dimKey(usage.ByModel, "/b"): {{Key: "gpt-5", Turns: 1, PromptN: 60, PredictedN: 30}},
 		},
 	}
 	cmd := &StatsCommand{OpenStore: func() (usageStore, error) { return store, nil }, ProjectDir: "/a"}

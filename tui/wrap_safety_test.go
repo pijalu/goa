@@ -20,8 +20,8 @@ func TestCompositor_NoFullWidthRowDuringScroll(t *testing.T) {
 
 	// Chat content with lines that are EXACTLY terminal width (the wrap
 	// trigger) and longer, mixed with short lines, streamed past the screen.
-	wide := strings.Repeat("w", 40)  // exactly width
-	over := strings.Repeat("o", 60)   // over width (must be truncated)
+	wide := strings.Repeat("w", 40) // exactly width
+	over := strings.Repeat("o", 60) // over width (must be truncated)
 	var lines []string
 	scene := func() *Scene {
 		return &Scene{

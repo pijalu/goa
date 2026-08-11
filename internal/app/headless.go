@@ -437,6 +437,10 @@ func (h *HeadlessApp) startGoal(ctx context.Context, objective string) error {
 	if h.subs.goalManager == nil {
 		return fmt.Errorf("goal subsystem not available")
 	}
+	// Creation entry point: fail fast with the point-to-a-markdown-doc hint.
+	if err := goal.ValidateObjective(objective); err != nil {
+		return err
+	}
 	snap, err := h.subs.goalManager.Mode.CreateGoal(goal.CreateGoalInput{
 		Objective: objective,
 		Replace:   true,

@@ -19,12 +19,12 @@ import (
 // degrade gracefully (they receive an "api unavailable" string, matching the
 // existing handler-not-configured convention).
 type ExtendContext struct {
-	HTTP     *HTTPBridge
-	Storage  *StorageBridge
+	HTTP      *HTTPBridge
+	Storage   *StorageBridge
 	Scheduler *Scheduler
-	Browser  *BrowserBridge
-	Hotkeys  *HotkeyBridge
-	UI       *UIBridge
+	Browser   *BrowserBridge
+	Hotkeys   *HotkeyBridge
+	UI        *UIBridge
 	// Output writes a user-visible message to the chat viewport.
 	Output func(msg string)
 	// SessionUsage returns cumulative token stats for the local/inferred

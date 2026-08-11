@@ -118,7 +118,7 @@ type agenticToolMock struct {
 	name string
 }
 
-func (m *agenticToolMock) Schema() agentic.ToolSchema { return agentic.ToolSchema{Name: m.name} }
+func (m *agenticToolMock) Schema() agentic.ToolSchema           { return agentic.ToolSchema{Name: m.name} }
 func (m *agenticToolMock) Execute(input string) (string, error) { return "", nil }
 func (m *agenticToolMock) IsRetryable(err error) bool           { return false }
 
@@ -160,7 +160,7 @@ func TestAgentPool_GetOrCreate_InheritsGoaConfig(t *testing.T) {
 		Execution: config.ExecutionConfig{MaxToolRepeatTotal: 5},
 		Skills:    config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline},
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:             true,
+			Enabled:             &trueVal,
 			MaxTokens:           4096,
 			ThresholdPercent:    75,
 			OnContextError:      true,

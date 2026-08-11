@@ -56,8 +56,8 @@ func TestDefaultConfig_ContextCompressionMaxTokensAuto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if !cfg.ContextCompression.Enabled {
-		t.Fatalf("ContextCompression.Enabled = false, want true")
+	if !cfg.ContextCompression.EnabledValue() {
+		t.Fatalf("ContextCompression.EnabledValue() = false, want true")
 	}
 	if cfg.ContextCompression.MaxTokens != 0 {
 		t.Errorf("ContextCompression.MaxTokens = %d, want 0 (auto)", cfg.ContextCompression.MaxTokens)

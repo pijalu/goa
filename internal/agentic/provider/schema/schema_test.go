@@ -247,6 +247,7 @@ func TestEvalExpression(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 30, v)
 }
+
 // TestMergeProfiles_ReasoningContentFlagOR verifies mergeCompat carries the
 // reasoning-content requirement with OR semantics: an override can turn it
 // ON for DeepSeek-class models (bugs.md thinking-mode 400); a false override

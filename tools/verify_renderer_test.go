@@ -26,8 +26,8 @@ func TestVerifyRenderer_ShowsResolvedCommandAndTimeout(t *testing.T) {
 
 	// Auto-detected go + extra args + timeout → "go test -race ./pkg (timeout 30s)".
 	got := stripStyle(r.RenderCall(map[string]any{
-		"args":             []any{"-race", "./internal/app/..."},
-		"timeout_seconds":  30,
+		"args":            []any{"-race", "./internal/app/..."},
+		"timeout_seconds": 30,
 	}, tuirender.RenderContext{}))
 	if !strings.Contains(got, "go test -race ./internal/app/...") {
 		t.Errorf("missing resolved command in %q", got)
@@ -40,8 +40,8 @@ func TestVerifyRenderer_ShowsResolvedCommandAndTimeout(t *testing.T) {
 func TestVerifyRenderer_ExplicitCommand(t *testing.T) {
 	r := NewVerifyRenderer()
 	got := stripStyle(r.RenderCall(map[string]any{
-		"command":          "go test ./...",
-		"timeout_seconds":  15,
+		"command":         "go test ./...",
+		"timeout_seconds": 15,
 	}, tuirender.RenderContext{}))
 	if !strings.Contains(got, "go test ./...") {
 		t.Errorf("missing explicit command in %q", got)

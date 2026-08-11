@@ -31,9 +31,9 @@ type VerifyTool struct {
 
 // verifyInput is the JSON input expected by VerifyTool.
 type verifyInput struct {
-	Command string `json:"command,omitempty"`
+	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
-	Timeout int    `json:"timeout_seconds,omitempty"`
+	Timeout int      `json:"timeout_seconds,omitempty"`
 }
 
 // Schema returns the tool's metadata and parameter schema.
@@ -49,8 +49,8 @@ func (v *VerifyTool) Schema() agentic.ToolSchema {
 					"description": "test command (optional, auto-detected from go.mod/package.json)",
 				},
 				"args": map[string]any{
-					"type": "array",
-					"items": map[string]any{"type": "string"},
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
 					"description": "extra args for test command",
 				},
 				"timeout_seconds": map[string]any{

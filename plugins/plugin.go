@@ -52,14 +52,14 @@ type PluginContext struct {
 	// plugin always sees the LIVE config (e.g. after a provider/model switch).
 	// It takes precedence over the static Config snapshot, which is kept for
 	// tests and simple plugins.
-	ConfigFunc         func() map[string]any
-	Logger             LoggerAPI
-	RegisterTool       ToolHandler                             // called when JS calls goa.registerTool
-	RegisterCommand    CommandHandler                          // called when JS calls goa.registerCommand
-	RegisterObserver   ObserverHandler                         // called when JS calls goa.registerObserver
-	RegisterLifecycle  func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
-	CallTool           CallToolHandler                         // called when JS calls goa.callTool
-	EventBus           *EventBus
+	ConfigFunc        func() map[string]any
+	Logger            LoggerAPI
+	RegisterTool      ToolHandler                             // called when JS calls goa.registerTool
+	RegisterCommand   CommandHandler                          // called when JS calls goa.registerCommand
+	RegisterObserver  ObserverHandler                         // called when JS calls goa.registerObserver
+	RegisterLifecycle func(hook HookType, h LifecycleHandler) // called when JS calls goa.registerLifecycle
+	CallTool          CallToolHandler                         // called when JS calls goa.callTool
+	EventBus          *EventBus
 	// Extended carries optional bridges (http, storage, timers, ui, hotkeys,
 	// browser, output, sessionUsage). Nil disables those goa.* APIs.
 	Extended *ExtendContext

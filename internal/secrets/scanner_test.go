@@ -256,7 +256,6 @@ func TestScanner_DedupeAndSort_Single(t *testing.T) {
 	}
 }
 
-
 func regexpMust(expr string) *regexp.Regexp {
 	return regexp.MustCompile(expr)
 }

@@ -33,9 +33,9 @@ type wizardStep struct {
 type wizardDriver struct {
 	steps     []wizardStep
 	idx       int
-	selects   []string          // titles of each SelectOption shown
-	inputs    []string          // prompts of each ShowInput shown
-	optionLog [][]string        // values of options offered at each SelectOption
+	selects   []string   // titles of each SelectOption shown
+	inputs    []string   // prompts of each ShowInput shown
+	optionLog [][]string // values of options offered at each SelectOption
 	saver     *mcpRecordingSaver
 }
 
@@ -97,9 +97,9 @@ func newWizardCtx(t *testing.T, initial map[string]config.MCPServerConfig) (*cor
 func TestMCPWizard_AddRemoteServer(t *testing.T) {
 	ctx, d := newWizardCtx(t, nil)
 	d.steps = []wizardStep{
-		{selectValue: "__add__"},        // server list → add
-		{inputValue: "gh"},              // name
-		{selectValue: "remote"},         // type
+		{selectValue: "__add__"},                    // server list → add
+		{inputValue: "gh"},                          // name
+		{selectValue: "remote"},                     // type
 		{inputValue: "https://api.github.com/mcp/"}, // url
 		{inputValue: "Authorization=Bearer tok"},    // headers
 	}
@@ -168,11 +168,11 @@ func TestMCPWizard_EditServerChangeURL(t *testing.T) {
 	}
 	ctx, d := newWizardCtx(t, existing)
 	d.steps = []wizardStep{
-		{selectValue: "gh"},                 // pick the server
-		{selectValue: "edit"},               // edit action
-		{selectValue: "remote"},             // keep type
+		{selectValue: "gh"},                         // pick the server
+		{selectValue: "edit"},                       // edit action
+		{selectValue: "remote"},                     // keep type
 		{inputValue: "https://new.example.com/mcp"}, // new url
-		{inputValue: ""},                    // clear headers
+		{inputValue: ""},                            // clear headers
 	}
 	runMCPWizard(*ctx)
 

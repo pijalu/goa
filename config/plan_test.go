@@ -163,13 +163,13 @@ func TestOrchestratorRoleValidate(t *testing.T) {
 			cfg:  OrchestratorRole{Model: "gpt-4"},
 		},
 		{
-			name: "negative context_window rejected",
-			cfg:  OrchestratorRole{Model: "gpt-4", ContextWindow: -1},
+			name:    "negative context_window rejected",
+			cfg:     OrchestratorRole{Model: "gpt-4", ContextWindow: -1},
 			wantSub: "context_window",
 		},
 		{
-			name: "negative max_tokens rejected",
-			cfg:  OrchestratorRole{Model: "gpt-4", MaxTokens: -1},
+			name:    "negative max_tokens rejected",
+			cfg:     OrchestratorRole{Model: "gpt-4", MaxTokens: -1},
 			wantSub: "max_tokens",
 		},
 	}

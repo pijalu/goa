@@ -30,7 +30,7 @@ gather context → localize → smallest change → run real check → read actu
 
 ## Modes
 
-**debug** — Reproduce before editing. State exact failure (command+output). Localize to specific lines. One hypothesis at a time. Minimal fix. Verify against original failing command.
+**debug** — Reproduce before editing. State exact failure (command+output). Localize to specific lines. One hypothesis at a time. Minimal clean fix. Verify against original failing command.
 
 **fix** — Smallest possible diff. No opportunistic cleanup. No dependency changes unless required. Regression test when feasible. State residual risk.
 

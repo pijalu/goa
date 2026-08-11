@@ -47,11 +47,24 @@ func (a *Agent) enforceContextCeiling() {
 		return
 	}
 
-	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
+	// Use effectiveHard: the ceiling enforcer is a REACTIVE safety net that
+	// stays on even when proactive threshold compression is disabled (hard=0).
+	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	// The fixed per-turn cost (system prompt + tool schemas) is always present;
 	// history must fit in the remainder or the outgoing request still overflows.
 	historyCeiling := hardCeiling - a.fixedCostTokens()
+	// Reactive target (bugs.md CM:13 design rule 4): a destructive front-cut
+	// busts the provider prefix cache, so cut once to free ≥50% of the window
+	// rather than nibbling just under the ceiling (which re-busts every round).
+	// historyTarget is the token budget for retained history after the cut; the
+	// enforcer finds the smallest cut whose retained tail fits this lower target
+	// so one cache miss buys many rounds of headroom.
+	targetPercent := a.cfg.ContextCompression.resolveThresholds().reactiveTargetPercent()
+	historyTarget := maxTokens*targetPercent/100 - a.fixedCostTokens()
+	if historyTarget < 0 {
+		historyTarget = 0
+	}
 
 	// History is mutated here; hold the agent mutex for the whole transaction.
 	// The rest of the agent uniformly guards a.history with a.mu, and this
@@ -85,26 +98,66 @@ func (a *Agent) enforceContextCeiling() {
 	}
 
 	// Keep the system prompt (index 0) plus the most-recent contiguous tail
-	// whose tokens fit under the ceiling. Find the smallest cut k in [1, n]
-	// such that tok[0] + sum(tok[k:]) <= historyCeiling. This produces the same
-	// retained set as dropping oldest messages one at a time, but in one pass.
+	// whose tokens fit the reactive TARGET (≥50% savings), not just the ceiling.
+	// Find the smallest cut k in [1, n] such that tok[0] + sum(tok[k:]) <=
+	// historyTarget. Cutting to the lower target frees ≥ReactiveSavingsPercent
+	// of the window in one pass (design rule 4) so the next tool result does not
+	// immediately re-cross the ceiling and bust the cache again. If the target
+	// is unachievable (every cut still exceeds it), fall back to the hard
+	// ceiling as the safety bound so the request at least fits.
 	system := tok[0]
 	nonSystem := total - system // sum(tok[1:])
 	cut := len(hist)            // fall-back: keep only the system prompt
 	droppedTokens := 0
+	fittedCeiling := false
 	for k := 1; k < len(hist); k++ {
 		keptHere := system + (nonSystem - droppedTokens) // tok[0] + sum(tok[k:])
-		if keptHere <= historyCeiling {
+		if !fittedCeiling && keptHere <= historyCeiling {
+			fittedCeiling = true
+		}
+		if keptHere <= historyTarget {
 			cut = k
 			break
 		}
 		droppedTokens += tok[k]
+	}
+	// The target was unreachable even after dropping everything non-system:
+	// fall back to the smallest cut that fits the hard ceiling so the outgoing
+	// request still fits (the absolute safety guarantee of this enforcer).
+	if cut == len(hist) && fittedCeiling {
+		droppedTokens = 0
+		for k := 1; k < len(hist); k++ {
+			keptHere := system + (nonSystem - droppedTokens)
+			if keptHere <= historyCeiling {
+				cut = k
+				break
+			}
+			droppedTokens += tok[k]
+		}
+	}
+
+	// Advance past any tool results whose owning assistant(tool_calls) message
+	// was just dropped by the cut. A leading tool result with no preceding
+	// tool_calls is rejected by strict providers (OpenAI/DeepSeek HTTP 400:
+	// "Messages with role 'tool' must be a response to a preceding message
+	// with 'tool_calls'"). Dropping these orphans is the correct move for a
+	// last-resort safety net: they reference a call the model no longer sees,
+	// so they carry no useful information. This never widens backward (which
+	// could re-exceed the ceiling and cascade); it only drops more from the
+	// front, so the token budget invariant is preserved.
+	for cut < len(hist) && hist[cut].Role == ToolRole {
+		droppedTokens += tok[cut]
+		cut++
 	}
 
 	for _, m := range hist[1:cut] {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Warn, "Context ceiling enforced: dropped %s message (len=%d)", m.Role, len(m.Content))
 		}
+	}
+	if a.cfg.Logger != nil && droppedTokens > 0 {
+		a.cfg.Logger.Log(Warn, "Context ceiling enforced: reactive cut freed ~%d tokens (target %d%% of window, ≥%d%% savings per CM:13)",
+			droppedTokens, targetPercent, ReactiveSavingsPercent)
 	}
 
 	kept := append(hist[:1:1], hist[cut:]...)
@@ -169,7 +222,7 @@ func (a *Agent) checkContextLimit() error {
 	if maxTokens == 0 {
 		return nil
 	}
-	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().hard
+	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	a.mu.Lock()
 	estimated := a.estimateContextTokensLocked()

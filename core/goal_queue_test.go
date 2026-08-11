@@ -313,3 +313,40 @@ func TestGoalQueueStore_Handover(t *testing.T) {
 		t.Error("expected cap error for over-long handover")
 	}
 }
+
+// TestGoalQueueStore_InsertValidatesObjective: the queue is a CREATION
+// entry point — an oversized objective must be rejected NOW with the
+// markdown-pointer hint, never discovered later at promotion/resume time
+// (there must never be a stored goal that is "too big" to run).
+func TestGoalQueueStore_InsertValidatesObjective(t *testing.T) {
+	store := NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+
+	oversized := strings.Repeat("a", goal.MaxObjectiveLength+1)
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: oversized}); err == nil {
+		t.Fatal("AppendGoal must reject an oversized objective")
+	} else {
+		if !strings.Contains(err.Error(), "markdown") {
+			t.Errorf("rejection must hint at the markdown-document workaround: %v", err)
+		}
+	}
+	if _, err := store.PrependGoal(goal.UpcomingGoalInput{Objective: oversized}); err == nil {
+		t.Fatal("PrependGoal must reject an oversized objective")
+	}
+
+	// Rejections must leave the queue empty.
+	if goals, _ := store.Read(); len(goals) != 0 {
+		t.Fatalf("rejected inserts must not persist, queue has %d goals", len(goals))
+	}
+
+	// Exactly at the limit is accepted.
+	atLimit := strings.Repeat("a", goal.MaxObjectiveLength)
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: atLimit}); err != nil {
+		t.Fatalf("at-limit objective must be accepted: %v", err)
+	}
+
+	// Rune-vs-byte regression: 2275 box-drawing runes (6825 bytes) count as
+	// characters and must be accepted.
+	if _, err := store.AppendGoal(goal.UpcomingGoalInput{Objective: strings.Repeat("─", 2275)}); err != nil {
+		t.Fatalf("multibyte objective measured in characters must be accepted: %v", err)
+	}
+}

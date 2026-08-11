@@ -538,7 +538,6 @@ func TestBashTool_Truncation_ConfigurableBytes(t *testing.T) {
 	}
 }
 
-
 func TestFirstCommandToken(t *testing.T) {
 	tests := []struct {
 		name string
@@ -567,8 +566,8 @@ func TestFirstCommandToken(t *testing.T) {
 
 func TestAdvanceShellWord(t *testing.T) {
 	tests := []struct {
-		name string
-		cmd  string
+		name  string
+		cmd   string
 		start int
 		end   int
 	}{
@@ -585,8 +584,6 @@ func TestAdvanceShellWord(t *testing.T) {
 		})
 	}
 }
-
-
 
 func TestSkipQuoted(t *testing.T) {
 	tests := []struct {
@@ -635,7 +632,6 @@ func TestTruncateCommand(t *testing.T) {
 		})
 	}
 }
-
 
 func TestBashTool_CompressionResolver_Enabled(t *testing.T) {
 	// CompressionResolver returning true should trigger output compression.
@@ -1031,8 +1027,6 @@ func TestBashTool_Redactor_TypeLabels(t *testing.T) {
 		t.Errorf("expected type label, got: %q", result)
 	}
 }
-
-
 
 // TestBashTool_Execute_SanitizesControlBytes: command output is untrusted —
 // a command printing a clear-line escape sequence must reach the model/TUI as

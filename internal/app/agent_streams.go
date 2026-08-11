@@ -302,4 +302,3 @@ func (a *App) handleAgentToolResult(agentID, callID, text string, ok bool) {
 	// Fallback: render a plain tool result entry if no matching widget exists.
 	a.subs.chat.AddToolResult(text)
 }
-

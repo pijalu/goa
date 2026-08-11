@@ -194,19 +194,19 @@ func TestCascadeCLIOverride(t *testing.T) {
 
 func cliOverrideFlags() map[string]string {
 	return map[string]string{
-		"model":           "cli-model",
-		"profile":         "cli-profile",
-		"provider":        "openai",
+		"model":                 "cli-model",
+		"profile":               "cli-profile",
+		"provider":              "openai",
 		"endpoint":              "http://localhost:1234/v1",
 		"api_key":               "sk-test",
 		"temperature":           "0.7",
 		"max_tokens":            "2048",
 		"max_tool_repeat_total": "5",
 		"skill_mode":            "inline",
-		"reasoning":       "true",
-		"thinking_level":  "medium",
-		"compression":     "true",
-		"debug":           "true",
+		"reasoning":             "true",
+		"thinking_level":        "medium",
+		"compression":           "true",
+		"debug":                 "true",
 	}
 }
 
@@ -262,7 +262,7 @@ func assertCLIExecutionOverrides(t *testing.T, cfg *Config) {
 	if cfg.Skills.ExecutionMode != "inline" {
 		t.Errorf("Skills.ExecutionMode = %q, want inline", cfg.Skills.ExecutionMode)
 	}
-	if !cfg.ContextCompression.Enabled {
+	if !cfg.ContextCompression.EnabledValue() {
 		t.Error("ContextCompression should be enabled")
 	}
 }

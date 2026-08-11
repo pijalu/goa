@@ -5,8 +5,11 @@
 package models
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -40,6 +43,46 @@ const modelsDevFixture = `{
         "reasoning": true,
         "limit": {"context": 1000000, "output": 131072},
         "cost": {"input": 0, "output": 0}
+      }
+    }
+  }
+}`
+
+// modelsDevUnmappedFixture adds an unmapped provider (tensorx) that has no
+// hand-curated ProviderDef with a ModelsDevKey. The fallback path must
+// synthesize a mapping from the provider-level metadata so its models appear
+// in the runtime catalog.
+const modelsDevUnmappedFixture = `{
+  "zai": {
+    "models": {
+      "glm-5.2": {
+        "name": "GLM-5.2",
+        "tool_call": true,
+        "reasoning": true,
+        "limit": {"context": 1000000, "output": 131072},
+        "cost": {"input": 1.4, "output": 4.4}
+      }
+    }
+  },
+  "tensorx": {
+    "id": "tensorx",
+    "name": "TensorX",
+    "api": "https://api.tensorx.ai/v1",
+    "npm": "@ai-sdk/openai-compatible",
+    "env": ["TENSORX_API_KEY"],
+    "models": {
+      "deepseek/deepseek-v4-pro": {
+        "name": "DeepSeek V4 Pro",
+        "tool_call": true,
+        "reasoning": true,
+        "limit": {"context": 1002000, "output": 128000},
+        "cost": {"input": 1.74, "output": 3.48}
+      },
+      "qwen/qwen3-coder-30b-a3b-instruct": {
+        "name": "Qwen3-Coder 30B-A3B Instruct",
+        "tool_call": true,
+        "reasoning": false,
+        "limit": {"context": 131072, "output": 131072}
       }
     }
   }
@@ -188,5 +231,197 @@ func TestRuntimeCatalog_RefreshPopulatesFromFetcher(t *testing.T) {
 	}
 	if m := GetRuntimeModel(provider.ProviderZai, "glm-5.2"); m == nil {
 		t.Error("catalog not populated after refresh")
+	}
+}
+
+// TestParseModelsDev_UnmappedProviderFallback verifies that providers on
+// models.dev without a hand-curated ProviderDef mapping (e.g. tensorx) are
+// NOT silently dropped. The fallback must synthesize a mapping from the
+// provider-level metadata (api URL, npm protocol) so the models appear in
+// the runtime catalog under a provider identity matching the models.dev key.
+func TestParseModelsDev_UnmappedProviderFallback(t *testing.T) {
+	cat, err := parseModelsDev([]byte(modelsDevUnmappedFixture))
+	if err != nil {
+		t.Fatalf("parseModelsDev: %v", err)
+	}
+
+	// Mapped provider still works.
+	if findInCatalog(cat, provider.ProviderZaiApi, "glm-5.2") == nil {
+		t.Error("zai-api glm-5.2 missing — mapped provider broken by fallback")
+	}
+
+	// Unmapped provider tensorx must have its models in the catalog.
+	tensorxProv := provider.Provider("tensorx")
+	models := cat.byProv[tensorxProv]
+	if len(models) != 2 {
+		t.Fatalf("tensorx models = %d, want 2 (got: %v)", len(models), modelIDs(models))
+	}
+
+	deepseek := findInCatalog(cat, tensorxProv, "deepseek/deepseek-v4-pro")
+	if deepseek == nil {
+		t.Fatal("tensorx deepseek/deepseek-v4-pro missing from catalog")
+	}
+	if deepseek.Provider != tensorxProv {
+		t.Errorf("deepseek Provider = %q, want %q", deepseek.Provider, tensorxProv)
+	}
+	if deepseek.BaseURL != "https://api.tensorx.ai/v1" {
+		t.Errorf("deepseek BaseURL = %q, want https://api.tensorx.ai/v1", deepseek.BaseURL)
+	}
+	if deepseek.Api != provider.ApiOpenAICompletions {
+		t.Errorf("deepseek Api = %q, want openai-completions", deepseek.Api)
+	}
+	if !deepseek.Reasoning {
+		t.Error("deepseek Reasoning = false, want true")
+	}
+	if deepseek.ContextWindow != 1002000 {
+		t.Errorf("deepseek ContextWindow = %d, want 1002000", deepseek.ContextWindow)
+	}
+
+	// Non-reasoning model also present.
+	qwen := findInCatalog(cat, tensorxProv, "qwen/qwen3-coder-30b-a3b-instruct")
+	if qwen == nil {
+		t.Fatal("tensorx qwen/qwen3-coder-30b-a3b-instruct missing from catalog")
+	}
+
+	// Global ID index also has the models (first-wins).
+	if findGlobal(cat, "deepseek/deepseek-v4-pro") == nil {
+		t.Error("deepseek/deepseek-v4-pro not in global ID index")
+	}
+}
+
+func modelIDs(ms []provider.Model) []string {
+	ids := make([]string, len(ms))
+	for i, m := range ms {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// TestModelsDevProviders_CoversEveryToolCallingProvider verifies that the
+// canonical "all providers from models.dev" enumeration (ModelsDevProviders)
+// matches the raw embedded api.json: every provider key serving at least one
+// tool-calling model must be present with exactly that provider's tool-calling
+// model IDs, and providers with no tool-calling model must be excluded. This
+// pins the coverage claim used by the filmstrip validation (all models.dev
+// providers visible in the TUI).
+func TestModelsDevProviders_CoversEveryToolCallingProvider(t *testing.T) {
+	var top map[string]struct {
+		Models map[string]modelsDevModel `json:"models"`
+	}
+	if err := json.Unmarshal(embeddedAPIJSON, &top); err != nil {
+		t.Fatalf("embedded api.json decode: %v", err)
+	}
+
+	want := map[string][]string{}
+	for key, prov := range top {
+		var ids []string
+		for id, m := range prov.Models {
+			if m.ToolCall != nil && *m.ToolCall {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			sort.Strings(ids)
+			want[key] = ids
+		}
+	}
+
+	got := ModelsDevProviders()
+	if len(got) == 0 {
+		t.Fatal("ModelsDevProviders returned no providers")
+	}
+	if len(got) != len(want) {
+		t.Errorf("ModelsDevProviders = %d providers, raw api.json has %d tool-calling providers", len(got), len(want))
+	}
+	gotSet := map[string]ModelsDevProvider{}
+	for _, p := range got {
+		gotSet[p.Key] = p
+	}
+	for key, wantIDs := range want {
+		p, ok := gotSet[key]
+		if !ok {
+			t.Errorf("provider %q missing from ModelsDevProviders", key)
+			continue
+		}
+		if p.Identity == "" {
+			t.Errorf("provider %q has empty Identity", key)
+		}
+		if !slices.Equal(p.ModelIDs, wantIDs) {
+			t.Errorf("provider %q ModelIDs = %v, want %v", key, p.ModelIDs, wantIDs)
+		}
+	}
+	if len(got) == len(want) {
+		for _, p := range got {
+			if _, ok := want[p.Key]; !ok {
+				t.Errorf("provider %q listed but has no tool-calling model in api.json", p.Key)
+			}
+		}
+	}
+	// Sorted, stable order (assertion determinism).
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Key >= got[i].Key {
+			t.Fatalf("ModelsDevProviders not sorted by key at %d: %q >= %q", i, got[i-1].Key, got[i].Key)
+		}
+	}
+}
+
+func findGlobal(cat *runtimeCatalog, id string) *provider.Model {
+	m, ok := cat.models[id]
+	if !ok {
+		return nil
+	}
+	cp := m
+	return &cp
+}
+
+// TestModelsDevProviders_SurfaceAddableMetadata verifies the enumeration used
+// by the "/provider add" picker carries everything needed to build a preset:
+// display name, default base URL and wire API for BOTH mapped providers
+// (catalog identity) and unmapped providers (synthesized, e.g. tensorx).
+func TestModelsDevProviders_SurfaceAddableMetadata(t *testing.T) {
+	got := map[string]ModelsDevProvider{}
+	for _, p := range ModelsDevProviders() {
+		got[p.Key] = p
+	}
+
+	// Mapped provider: openai resolves to the catalog identity/base URL and the
+	// models.dev API override (responses), not the chat-completions fallback.
+	openai, ok := got["openai"]
+	if !ok {
+		t.Fatal("openai missing from ModelsDevProviders")
+	}
+	if openai.Identity != provider.ProviderOpenAI {
+		t.Errorf("openai Identity = %q, want %q", openai.Identity, provider.ProviderOpenAI)
+	}
+	if openai.Name == "" {
+		t.Error("openai Name empty, want display name")
+	}
+	if openai.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("openai BaseURL = %q, want catalog base URL", openai.BaseURL)
+	}
+	if openai.API != provider.ApiOpenAIResponses {
+		t.Errorf("openai API = %q, want %q", openai.API, provider.ApiOpenAIResponses)
+	}
+
+	// Unmapped provider: tensorx synthesizes identity from the models.dev key
+	// and derives base URL/API from the provider metadata.
+	tx, ok := got["tensorx"]
+	if !ok {
+		t.Fatal("tensorx missing from ModelsDevProviders")
+	}
+	if tx.Identity != provider.Provider("tensorx") {
+		t.Errorf("tensorx Identity = %q, want %q", tx.Identity, provider.Provider("tensorx"))
+	}
+	if tx.Name != "TensorX" {
+		t.Errorf("tensorx Name = %q, want %q", tx.Name, "TensorX")
+	}
+	if tx.BaseURL != "https://api.tensorx.ai/v1" {
+		t.Errorf("tensorx BaseURL = %q, want %q", tx.BaseURL, "https://api.tensorx.ai/v1")
+	}
+	if tx.API != provider.ApiOpenAICompletions {
+		t.Errorf("tensorx API = %q, want %q", tx.API, provider.ApiOpenAICompletions)
+	}
+	if len(tx.ModelIDs) == 0 {
+		t.Error("tensorx ModelIDs empty, want tool-calling models")
 	}
 }

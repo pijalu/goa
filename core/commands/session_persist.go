@@ -304,7 +304,6 @@ func showSessionPicker(
 	return nil
 }
 
-
 // filterSessionsWithModelTurn keeps only sessions holding an actual model
 // turn (bugs.md "Session command: must not list sessions without an actual
 // model turn"). Command-only sessions (e.g. /orchestrate) still appear in

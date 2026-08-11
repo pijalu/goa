@@ -67,7 +67,7 @@ func TestBashJail_Cd_UnsafePaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if !bashReferencesOutsidePath(tt.cmd, testBase) {
-			t.Errorf("bashReferencesOutsidePath(%q, %q) = false, want true", tt.cmd, testBase)
+				t.Errorf("bashReferencesOutsidePath(%q, %q) = false, want true", tt.cmd, testBase)
 			}
 		})
 	}

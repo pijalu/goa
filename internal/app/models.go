@@ -53,6 +53,16 @@ func companionThinkingLevel(subs *subsystems) string {
 	return string(subs.cfg.GetThinkingLevel("companion"))
 }
 
+// teamFooterInfo returns the footer team badge fields: the effective team
+// name (goal overlay wins, TEAMS.md §5.2) and the drift marker. Empty when
+// no team is active.
+func teamFooterInfo(subs *subsystems) (name string, drifted bool) {
+	if subs == nil || subs.teamManager == nil {
+		return "", false
+	}
+	return subs.teamManager.EffectiveTeam(), subs.teamManager.Drifted()
+}
+
 // companionModelDisplay returns the formatted companion model string.
 // The companion carries its OWN provider binding (MultiAgent.CompanionProvider),
 // not the active provider: resolving/prefixing against the active provider

@@ -142,5 +142,3 @@ func parseBashTruncationLine(line string) (string, bool) {
 	}
 	return strings.TrimSpace(matches[1]), true
 }
-
-

@@ -6,8 +6,10 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/ansi"
 )
 
@@ -41,6 +43,8 @@ func (w *wizardComponent) stepForState(st wizardState) int {
 	case stateModelSelect, stateModelSetup, stateModelAdvanced:
 		return 2
 	case stateWebFetchSummary:
+		return 3
+	case stateDreamModel:
 		return 3
 	case stateCompanionModel, stateCompanionProviderType, stateCompanionProviderEndpoint,
 		stateCompanionProviderKey, stateCompanionProviderTest,
@@ -305,7 +309,7 @@ func (w *wizardComponent) renderCompanionModel(width int) []string {
 	lines = append(lines, w.renderHeader("Companion Model", w.stepForState(w.state), 10)...)
 	lines = append(lines, fmt.Sprintf("  Use the same model (%s) for the companion agent?", w.main.modelName))
 	lines = append(lines, "")
-	if w.companionModelSelected {
+	if w.companionUseMainModel == 1 {
 		lines = append(lines, ansi.Bold+"  * Yes -- use "+w.main.modelName+" for companion"+ansi.Reset)
 		lines = append(lines, "    No  -- configure separately")
 	} else {
@@ -313,7 +317,7 @@ func (w *wizardComponent) renderCompanionModel(width int) []string {
 		lines = append(lines, ansi.Bold+"  * No  -- configure separately"+ansi.Reset)
 	}
 	lines = append(lines, "")
-	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back"+ansi.Reset)
+	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back  [1-2] Quick pick"+ansi.Reset)
 	return lines
 }
 
@@ -330,7 +334,7 @@ func (w *wizardComponent) renderDreamModel(width int) []string {
 		lines = append(lines, ansi.Bold+"  * No  -- disable memory dreams"+ansi.Reset)
 	}
 	lines = append(lines, "")
-	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back"+ansi.Reset)
+	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back  [1-2] Quick pick"+ansi.Reset)
 	return lines
 }
 
@@ -447,7 +451,7 @@ func (w *wizardComponent) renderPromptPreview(width int) []string {
 		lines = append(lines, ansi.Bold+"  * No  -- use embedded defaults"+ansi.Reset)
 	}
 	lines = append(lines, "")
-	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back"+ansi.Reset)
+	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back  [1-2] Quick pick"+ansi.Reset)
 	return lines
 }
 
@@ -468,8 +472,21 @@ func (w *wizardComponent) renderWorkflowPreview(width int) []string {
 		lines = append(lines, ansi.Bold+"  * No  -- use embedded defaults"+ansi.Reset)
 	}
 	lines = append(lines, "")
-	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back"+ansi.Reset)
+	lines = append(lines, ansi.Faint+"  [Up/Down] Navigate  [Enter] Confirm  [Esc] Back  [1-2] Quick pick"+ansi.Reset)
 	return lines
+}
+
+// savedConfigPath returns the absolute path of the home config file the
+// wizard wrote (honoring --home / GOA_HOME). Falls back to the conventional
+// display path when no loader is attached (unit tests).
+func (w *wizardComponent) savedConfigPath() string {
+	if w.loader != nil {
+		return w.loader.HomeConfigPath()
+	}
+	if home, ok := internal.GoaHome(); ok {
+		return filepath.Join(home, ".goa", "config.yaml")
+	}
+	return "~/.goa/config.yaml"
 }
 
 func (w *wizardComponent) renderDone(width int) []string {
@@ -483,7 +500,7 @@ func (w *wizardComponent) renderDone(width int) []string {
 	if w.selectedMode >= 0 && w.selectedMode < len(modeNames) {
 		lines = append(lines, fmt.Sprintf("  %s  Mode:      %s", check, modeNames[w.selectedMode]))
 	}
-	lines = append(lines, fmt.Sprintf("  %s  Config:    ~/.goa/config.yaml", check))
+	lines = append(lines, fmt.Sprintf("  %s  Config:    %s", check, w.savedConfigPath()))
 	lines = append(lines, "")
 	lines = append(lines, "  Use /profile anytime to switch persona.")
 	lines = append(lines, "")

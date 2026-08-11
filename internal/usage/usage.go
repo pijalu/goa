@@ -16,6 +16,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/pijalu/goa/internal"
 )
 
 // Record is one token-usage observation (a single model turn).
@@ -87,9 +88,9 @@ func Open(path string) (*Store, error) {
 
 // DefaultPath returns ~/.goa/usage.db.
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("usage: home dir: %w", err)
+	home, ok := internal.GoaHome()
+	if !ok {
+		return "", fmt.Errorf("usage: home dir unavailable")
 	}
 	return filepath.Join(home, ".goa", "usage.db"), nil
 }
@@ -158,6 +159,35 @@ func (s *Store) Query(dim Dimension, project string, since time.Time) ([]Stat, e
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+// Busts counts provider cache busts in the event stream for an optional
+// project/time filter. A bust is a turn reporting cache_read = 0 AFTER an
+// earlier turn of the SAME model established a warm cache (cache_read > 0):
+// the cheap cached re-read became expensive fresh input (provider TTL expiry
+// or prefix invalidation). This mirrors the zero-read rule of the live
+// cache-bust counter in internal/app/stats.go. Cold starts (cache never
+// established) and cache-less providers (always 0) do not count. Derived from
+// the existing cache_read column — no schema change.
+func (s *Store) Busts(project string, since time.Time) (int, error) {
+	where, args := usageWhere(project, since)
+	// usageWhere returns "" when there is no filter; the bust conditions need
+	// their own connector either way, and must reference the outer alias.
+	if where != "" {
+		where = strings.Replace(where, "project = ?", "cur.project = ?", 1)
+		where = strings.Replace(where, "created_at >= ?", "cur.created_at >= ?", 1)
+	}
+	connector := " WHERE "
+	if where != "" {
+		connector = where + " AND "
+	}
+	q := `SELECT COUNT(*) FROM usage_events cur` + connector + `cur.cache_read = 0 AND EXISTS (
+			SELECT 1 FROM usage_events prev
+			WHERE prev.model = cur.model AND prev.id < cur.id AND prev.cache_read > 0
+		)`
+	var n int
+	err := s.db.QueryRow(q, args...).Scan(&n)
+	return n, err
 }
 
 // Sum returns the grand total across an optional project/time filter.

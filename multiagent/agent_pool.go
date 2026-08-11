@@ -433,7 +433,7 @@ func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
 	ac.ToolCallLimitResetWindow = p.Config.Execution.ToolCallLimitResetWindow
 	ac.ToolResultAsUser = p.Config.GetToolResultAsUser()
 	ac.SkillExecutionMode = agentic.SkillExecutionMode(p.Config.Skills.ExecutionMode)
-	if p.Config.ContextCompression.Enabled || p.Config.ContextCompression.MaxTokens > 0 {
+	if p.Config.ContextCompression.EnabledValue() || p.Config.ContextCompression.MaxTokens > 0 {
 		ac.ContextCompression = agentic.ContextCompressionConfig{
 			MaxTokens:        p.Config.ContextCompression.MaxTokens,
 			ThresholdPercent: p.Config.ContextCompression.ThresholdPercent,

@@ -112,7 +112,7 @@ func convertGoogleParts(blocks []schema.ContentBlock, role schema.Role) []map[st
 			parts = append(parts, map[string]any{
 				"functionCall": map[string]any{
 					"name": b.ToolName,
-					"args": json.RawMessage(b.ToolArguments),
+					"args": json.RawMessage(schema.SafeToolArguments(b.ToolArguments)),
 				},
 			})
 		}

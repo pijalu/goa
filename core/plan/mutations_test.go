@@ -54,10 +54,10 @@ func TestMutAddItem(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name:        "insert_after_nonexistent",
-			title:       "Orphan",
-			after:       "item-99",
-			wantErr:     true,
+			name:    "insert_after_nonexistent",
+			title:   "Orphan",
+			after:   "item-99",
+			wantErr: true,
 		},
 	}
 

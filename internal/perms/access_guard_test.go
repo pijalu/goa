@@ -13,13 +13,13 @@ func plannerGuard() GuardConfig {
 	return GuardConfig{
 		Rules: []GuardRule{
 			{
-				Tools: []string{"write", "edit"},
-				Expr:  "regexMatch(path, `\\.goa/plan`) || regexMatch(path, `\\.agents/plan`) || regexMatch(path, `(?i)plan[^/]*\\.md$`)",
+				Tools:   []string{"write", "edit"},
+				Expr:    "regexMatch(path, `\\.goa/plan`) || regexMatch(path, `\\.agents/plan`) || regexMatch(path, `(?i)plan[^/]*\\.md$`)",
 				Message: "Planner mode restricts writes to plan directories (.goa/plan, .agents/plan) or markdown files with \"plan\" in the filename.",
 			},
 			{
-				Tools: []string{"bash"},
-				Expr:  "regexMatch(path, `\\.goa/plan`) || regexMatch(path, `\\.agents/plan`)",
+				Tools:   []string{"bash"},
+				Expr:    "regexMatch(path, `\\.goa/plan`) || regexMatch(path, `\\.agents/plan`)",
 				Message: "Planner mode restricts bash commands to plan directories (.goa/plan, .agents/plan).",
 			},
 		},

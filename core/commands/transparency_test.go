@@ -312,7 +312,10 @@ func TestStatsCommand_SessionRoutesToTurnHistory(t *testing.T) {
 }
 
 func TestIsNumeric(t *testing.T) {
-	for _, tc := range []struct{ in string; want bool }{
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
 		{"1", true}, {"42", true}, {"", false}, {"session", false}, {"1a", false},
 	} {
 		if got := isNumeric(tc.in); got != tc.want {

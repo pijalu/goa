@@ -526,4 +526,3 @@ func TestStatusMsg_ShowWithoutRunningLoopsDoesNotRace(t *testing.T) {
 		t.Fatal("Clear() did not hide status")
 	}
 }
-

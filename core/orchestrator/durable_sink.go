@@ -37,12 +37,12 @@ type flusher interface {
 // Ordering is preserved: a single FIFO channel feeds a single writer, so
 // events reach the store in emit order.
 type durableSink struct {
-	store    EventStore
-	flush    flusher
-	ch       chan Event
-	overflow atomic.Int64
-	quit     chan struct{}
-	done     chan struct{}
+	store     EventStore
+	flush     flusher
+	ch        chan Event
+	overflow  atomic.Int64
+	quit      chan struct{}
+	done      chan struct{}
 	closeOnce sync.Once
 }
 

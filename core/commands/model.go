@@ -94,6 +94,10 @@ func runModelCommand(host core.UIHost, pm core.ProviderManager, cfg *config.Conf
 	}
 
 	selected := args[0]
+	if isModelSentinel(selected) {
+		writeFmt(host, "Invalid model name: %s\n", selected)
+		return nil
+	}
 	if np := providerIDForModel(cfg, selected); np != "" && np != cfg.ActiveProvider {
 		if cfg.GetProviderByID(np) == nil {
 			writeFmt(host, "Cannot switch to %s: provider %q is not configured. Run /config to add it.\n", selected, np)
@@ -243,7 +247,12 @@ func pickModelFromProvider(host core.UIHost, cfg *config.Config, saver config.Co
 			if modelIndex(cfg.Models, mod.ID) >= 0 {
 				desc += " ✓ configured"
 			}
-			items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
+			items = append(items, tui.SelectorItem{
+				Value:       mod.ID,
+				Label:       mod.ID,
+				Description: desc,
+				SearchLabel: modelSearchLabel(mod.ID, providerID, mod.ID),
+			})
 		}
 		items = append(items, tui.SelectorItem{
 			Value: "__custom__", Label: "── custom model ──", Description: "type any model name",
@@ -279,6 +288,9 @@ func promptCustomModelName(host core.UIHost, cfg *config.Config, saver config.Co
 
 // addAndShowModel adds a model to config, persists, and re-shows the model selector.
 func addAndShowModel(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID, modelName string) {
+	if isModelSentinel(modelName) {
+		return
+	}
 	if modelIndex(cfg.Models, modelName) >= 0 {
 		host.Flash("Model " + modelName + " already configured.")
 		_ = showModelSelector(host, cfg, saver, cfg.GetProviderByID(providerID))
@@ -311,6 +323,15 @@ func configuredProviderItemsSimple(cfg *config.Config) []tui.SelectorItem {
 		items = append(items, tui.SelectorItem{Value: p.ID, Label: p.ID, Description: p.Name})
 	}
 	return items
+}
+
+// modelSearchLabel builds the SelectorItem.SearchLabel for a model row: the
+// only terms a user means when filtering the model picker — the model ID,
+// the provider ID, and the underlying model name. The visible Description
+// ("provider=X model=Y") stays out of the search space so typing "model" or
+// "provider" no longer matches every row.
+func modelSearchLabel(id, providerID, modelName string) string {
+	return id + " " + providerID + " " + modelName
 }
 
 // modelIndex returns the index of a model by ID, or -1 if not found.
@@ -405,7 +426,12 @@ func promptCustomModel(host core.UIHost, cfg *config.Config, saver config.Config
 		if entry.Model.ID == cfg.ActiveModel {
 			desc += " (active)"
 		}
-		items = append(items, tui.SelectorItem{Value: entry.Model.ID, Label: entry.Model.ID, Description: desc})
+		items = append(items, tui.SelectorItem{
+			Value:       entry.Model.ID,
+			Label:       entry.Model.ID,
+			Description: desc,
+			SearchLabel: modelSearchLabel(entry.Model.ID, entry.ProviderID, entry.Model.ID),
+		})
 	}
 	items = append(items, tui.SelectorItem{
 		Value: "__custom__", Label: "── custom model ──",
@@ -480,10 +506,22 @@ func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelIn
 	return models
 }
 
+// isModelSentinel reports whether v is a selector action/sentinel value that
+// leaked into the model-value space (e.g. "__delete__X" emitted by the
+// backspace/delete hotkey in a picker whose callback has no delete handler).
+// Such values must never become the active model or a configured model name
+// (bugs.md: the picker left the active model named "__delete__deepseek-v4-flash").
+func isModelSentinel(v string) bool {
+	return strings.HasPrefix(v, "__")
+}
+
 // applyModelSelection records the chosen model, follows its configured
 // provider when the model belongs to a different one, persists, and notifies
 // the UI. Extracted to keep showModelSelector within the complexity budget.
 func applyModelSelection(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, selected string) {
+	if isModelSentinel(selected) {
+		return
+	}
 	if np := providerIDForModel(cfg, selected); np != "" && np != cfg.ActiveProvider {
 		if cfg.GetProviderByID(np) == nil {
 			host.Flash(fmt.Sprintf("Provider %q is not configured. Run /config to add it.", np))
@@ -564,6 +602,7 @@ func configuredModelItemsFiltered(cfg *config.Config, activeModel string, active
 			Label:       m.ID,
 			Description: desc,
 			Color:       localModelColor(cfg, m.ProviderID),
+			SearchLabel: modelSearchLabel(m.ID, m.ProviderID, m.Model),
 		})
 	}
 	return items

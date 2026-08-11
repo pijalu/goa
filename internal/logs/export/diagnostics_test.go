@@ -31,9 +31,9 @@ func TestBuildLLMTrace_ToolResultFollowedUp(t *testing.T) {
 			FinishReason: "stop",
 			RequestSummary: summaryRef(transport.RequestSummary{
 				MessageCount: 7, LastRole: "assistant",
-				ToolCallBlocks:  1,
+				ToolCallBlocks:   1,
 				ToolResultBlocks: 1, // increased => tool result was forwarded
-				Roles:           []string{"assistant", "tool"},
+				Roles:            []string{"assistant", "tool"},
 			}),
 		},
 	}
@@ -61,7 +61,7 @@ func TestBuildLLMTrace_ToolResultNotForwarded(t *testing.T) {
 			StatusCode:   200,
 			FinishReason: "stop",
 			RequestSummary: summaryRef(transport.RequestSummary{
-				MessageCount: 6, // grew, but...
+				MessageCount:     6, // grew, but...
 				ToolResultBlocks: 0, // ...the tool result was NOT appended
 			}),
 		},

@@ -55,6 +55,13 @@ type Editor struct {
 	// input line and the footer below it do not jump up when the buffer shrinks.
 	stableMaxLines int
 
+	// shrinkPending is set by user deletion operations (backspace, delete,
+	// kill) to allow the reserved height to decay toward the content on the
+	// next layout. Programmatic SetText (history recall) does not set it, so
+	// browsing history keeps the layout stable (bugs.md: the height was
+	// ratcheted forever and never shrunk when content was deleted).
+	shrinkPending bool
+
 	// lastTerminalRows is used to detect terminal resizes and reset
 	// stableMaxLines when the screen dimensions change.
 	lastTerminalRows int
@@ -486,6 +493,7 @@ func (e *Editor) backspace() {
 	e.buf = append(e.buf[:startRune], e.buf[e.pos:]...)
 	e.pos = startRune
 	e.dirty = len(e.buf) > 0
+	e.shrinkPending = true
 	e.clearPreferredCol()
 	e.updateAutoComp()
 }
@@ -502,6 +510,7 @@ func (e *Editor) deleteForward() {
 	endRune := BytePosToRuneIndex(text, endByte)
 	e.buf = append(e.buf[:e.pos], e.buf[endRune:]...)
 	e.dirty = len(e.buf) > 0
+	e.shrinkPending = true
 }
 
 func (e *Editor) moveLeft() {

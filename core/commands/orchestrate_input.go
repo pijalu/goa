@@ -42,9 +42,10 @@ var orchestrateKnownKeys = map[string][]string{
 // are key=value pairs, either colon-separated or comma-separated.
 //
 // Examples:
-//   ["new", "topology=hub,objective=Build auth"]
-//   ["delete", "id=happy.hare", "confirm=true"]
-//   ["steer", "id=coder-1,message=fix the bug"]
+//
+//	["new", "topology=hub,objective=Build auth"]
+//	["delete", "id=happy.hare", "confirm=true"]
+//	["steer", "id=coder-1,message=fix the bug"]
 //
 // Values may contain commas as long as the comma is not followed by another
 // known key. The function returns an error for invalid syntax, not for

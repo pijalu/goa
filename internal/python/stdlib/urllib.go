@@ -380,5 +380,5 @@ func isUnreserved(c byte) bool {
 // Ensure ParseResult implements py.Object and __getattr__.
 var (
 	_ py.I__getattr__ = (*ParseResult)(nil)
-	_ py.Object        = (*ParseResult)(nil)
+	_ py.Object       = (*ParseResult)(nil)
 )

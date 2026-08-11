@@ -93,9 +93,9 @@ func TestAgent_ConfirmMode_CallsConfirmTool(t *testing.T) {
 	base := t.TempDir()
 	called := false
 	a := NewAgent(Config{
-		Model:      agenticprovider.Model{ID: "test"},
-		Tools:      []Tool{echoSoloTool{}},
-		ProjectDir: base,
+		Model:       agenticprovider.Model{ID: "test"},
+		Tools:       []Tool{echoSoloTool{}},
+		ProjectDir:  base,
 		GetAutonomy: func() internal.AutonomyLevel { return internal.AutonomyConfirm },
 		ConfirmTool: func(ctx context.Context, toolName, input string) (bool, error) {
 			called = true
@@ -116,9 +116,9 @@ func TestAgent_ConfirmMode_CallsConfirmTool(t *testing.T) {
 func TestAgent_ConfirmMode_DeniesWhenConfirmToolReturnsFalse(t *testing.T) {
 	base := t.TempDir()
 	a := NewAgent(Config{
-		Model:      agenticprovider.Model{ID: "test"},
-		Tools:      []Tool{echoSoloTool{}},
-		ProjectDir: base,
+		Model:       agenticprovider.Model{ID: "test"},
+		Tools:       []Tool{echoSoloTool{}},
+		ProjectDir:  base,
 		GetAutonomy: func() internal.AutonomyLevel { return internal.AutonomyConfirm },
 		ConfirmTool: func(ctx context.Context, toolName, input string) (bool, error) {
 			return false, nil
@@ -138,13 +138,13 @@ func plannerGuard() perms.GuardConfig {
 	return perms.GuardConfig{
 		Rules: []perms.GuardRule{
 			{
-				Tools: []string{"write", "edit"},
-				Expr:  `regexMatch(path, ` + "`" + `\.goa/plan` + "`" + `) || regexMatch(path, ` + "`" + `\.agents/plan` + "`" + `) || regexMatch(path, ` + "`" + `(?i)plan[^/]*\.md$` + "`" + `)`,
+				Tools:   []string{"write", "edit"},
+				Expr:    `regexMatch(path, ` + "`" + `\.goa/plan` + "`" + `) || regexMatch(path, ` + "`" + `\.agents/plan` + "`" + `) || regexMatch(path, ` + "`" + `(?i)plan[^/]*\.md$` + "`" + `)`,
 				Message: "Planner mode restricts writes to plan directories (.goa/plan, .agents/plan) or markdown files with \"plan\" in the filename.",
 			},
 			{
-				Tools: []string{"bash"},
-				Expr:  `regexMatch(path, ` + "`" + `\.goa/plan` + "`" + `) || regexMatch(path, ` + "`" + `\.agents/plan` + "`" + `)`,
+				Tools:   []string{"bash"},
+				Expr:    `regexMatch(path, ` + "`" + `\.goa/plan` + "`" + `) || regexMatch(path, ` + "`" + `\.agents/plan` + "`" + `)`,
 				Message: "Planner mode restricts bash commands to plan directories (.goa/plan, .agents/plan).",
 			},
 		},

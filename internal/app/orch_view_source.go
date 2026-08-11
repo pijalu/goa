@@ -82,8 +82,8 @@ func translateAgentThinking(ev orchestrator.Event) orchpanel.AgentViewEvent {
 
 func translateAgentToolCall(ev orchestrator.Event) orchpanel.AgentViewEvent {
 	return orchpanel.AgentViewEvent{
-		Kind:      orchpanel.EvAgentToolCall,
-		AgentID:   ev.AgentID, Role: ev.Role,
+		Kind:    orchpanel.EvAgentToolCall,
+		AgentID: ev.AgentID, Role: ev.Role,
 		Tool:      orchStr(ev.Payload, "tool"),
 		ToolInput: orchStr(ev.Payload, "input"),
 		CallID:    orchStr(ev.Payload, "call_id"),
@@ -103,8 +103,8 @@ func translateAgentToolResult(ev orchestrator.Event) orchpanel.AgentViewEvent {
 
 func translateAgentStats(ev orchestrator.Event) orchpanel.AgentViewEvent {
 	return orchpanel.AgentViewEvent{
-		Kind:     orchpanel.EvAgentStats,
-		AgentID:  ev.AgentID, Role: ev.Role,
+		Kind:    orchpanel.EvAgentStats,
+		AgentID: ev.AgentID, Role: ev.Role,
 		Status:   orchStr(ev.Payload, "status"),
 		Thinking: orchStr(ev.Payload, "thinking"),
 		Stats: &orchpanel.AgentStatsDelta{
@@ -140,8 +140,8 @@ func translateAgentFinished(ev orchestrator.Event) orchpanel.AgentViewEvent {
 
 func translateAskUser(ev orchestrator.Event) orchpanel.AgentViewEvent {
 	return orchpanel.AgentViewEvent{
-		Kind:     orchpanel.EvAskUser,
-		AgentID:  ev.AgentID, Role: ev.Role,
+		Kind:    orchpanel.EvAskUser,
+		AgentID: ev.AgentID, Role: ev.Role,
 		Question: orchStr(ev.Payload, "question"),
 	}
 }

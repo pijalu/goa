@@ -17,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/pijalu/goa/internal"
 )
 
 const (
@@ -45,9 +47,9 @@ type WorktreeResolver interface {
 // If root is empty, ~/.goa/sandbox is used.
 func NewManager(root string, worktreeMgr WorktreeResolver) (*Manager, error) {
 	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("sandbox: cannot resolve home dir: %w", err)
+		home, ok := internal.GoaHome()
+		if !ok {
+			return nil, fmt.Errorf("sandbox: cannot resolve home dir")
 		}
 		root = filepath.Join(home, ".goa", "sandbox")
 	}

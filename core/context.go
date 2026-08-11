@@ -177,6 +177,12 @@ type Context struct {
 	// to fetching synchronously then SelectOption.
 	SelectOptionAsyncFunc func(title string, fetch func() []tui.SelectorItem, onSelected func(selected string, ok bool))
 
+	// SetEditorTextFunc is an optional callback that replaces the main input
+	// editor's text. Used by /fork to prefill the selected user message for
+	// edit + resend (pi semantics). Optional; when nil, SetEditorText is a
+	// no-op.
+	SetEditorTextFunc func(text string)
+
 	// ShowInputFunc is an optional callback for a single-line text prompt.
 	// The onSubmit callback is invoked with the result when the user confirms
 	// or cancels. This is async-friendly: the caller returns immediately and
@@ -214,6 +220,12 @@ type Context struct {
 
 	// AgentPool creates and caches sub-agents for the Agent tool and workflows.
 	AgentPool *multiagent.AgentPool
+
+	// TeamManager applies named agent teams (main/companion pairings with a
+	// review policy) to the session; nil when teams are unavailable.
+	// Concrete type is *team.Manager — declared as any to avoid a core→team
+	// import cycle (team depends on core interfaces).
+	TeamManager any
 
 	// SkillSubAgentRunner executes a skill in a sub-agent and returns the result.
 	// When nil, sub-agent execution is unavailable.
@@ -486,6 +498,14 @@ func (c Context) SelectOptionAsync(title string, fetch func() []tui.SelectorItem
 	}
 	// Fallback: synchronous fetch, then a normal selector.
 	c.SelectOption(title, fetch(), "", onSelected)
+}
+
+// SetEditorText replaces the main input editor's text when a host callback is
+// configured; otherwise it is a no-op.
+func (c Context) SetEditorText(text string) {
+	if c.SetEditorTextFunc != nil {
+		c.SetEditorTextFunc(text)
+	}
 }
 
 // ShowInput shows a single-line input prompt and invokes onSubmit with the result.

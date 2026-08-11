@@ -24,9 +24,9 @@ type Builder interface {
 // commands that inject messages. At most one run is "active" at a time;
 // launching a new run replaces (and stops listening to) the previous.
 type ActiveRuntime struct {
-	mu      sync.Mutex
-	rt      *Runtime
-	notify  chan struct{}
+	mu     sync.Mutex
+	rt     *Runtime
+	notify chan struct{}
 }
 
 // NewActiveRuntime returns an empty holder.

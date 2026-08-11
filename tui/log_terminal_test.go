@@ -25,7 +25,7 @@ func (m *logTermMock) SetRaw() (restore func(), err error)         { return func
 func (m *logTermMock) HideCursor()                                 {}
 func (m *logTermMock) ShowCursor()                                 {}
 func (m *logTermMock) ClearScreen()                                {}
-func (m *logTermMock) SetTitle(title string)                      {}
+func (m *logTermMock) SetTitle(title string)                       {}
 
 func TestLogTerminal(t *testing.T) {
 	dir := t.TempDir()

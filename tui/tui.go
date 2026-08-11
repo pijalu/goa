@@ -375,13 +375,24 @@ func (t *TUI) Start() error {
 // terminal outputter) — the Actor model. Production calls this after Start();
 // tests do not, keeping them single-goroutine. After RunLoops, ALL state
 // mutations must go through Apply.
+//
+// Channel initialization happens BEFORE loopsRunning is set to true. This
+// ordering is critical: Apply checks loopsRunning to decide whether to send
+// on t.cmds or run inline. If loopsRunning were set first (as a naive Swap
+// would do), Apply could observe loopsRunning=true while t.cmds is still nil,
+// sending on a nil channel and blocking forever. By creating the channels
+// first and using CompareAndSwap, the happens-before chain guarantees Apply
+// always sees a fully-initialized engine when it observes loopsRunning=true.
 func (t *TUI) RunLoops() {
-	if t.loopsRunning.Swap(true) {
+	if t.loopsRunning.Load() {
 		return // already running
 	}
 	t.cmds = make(chan func(), 256)
 	t.snapReq = make(chan chan<- *Scene)
 	t.dirtyChan = make(chan struct{}, 1)
+	if !t.loopsRunning.CompareAndSwap(false, true) {
+		return // another caller won the race
+	}
 	go t.commandLoop()
 	go t.renderLoop()
 	go t.listenResize()

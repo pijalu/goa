@@ -445,4 +445,3 @@ func (o *OpenAICodexOAuth) Refresh(ctx context.Context, refreshToken string) (*T
 func (o *OpenAICodexOAuth) TokenSource(ctx context.Context, tokens *Tokens) (*TokenSource, error) {
 	return NewTokenSource(o, tokens), nil
 }
-

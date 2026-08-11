@@ -33,7 +33,7 @@ type AnalysisResult struct {
 	// Blocked is true when any command name matches an entry in Blocked.
 	Blocked bool
 
-// Allowed is false when Allowed is non-empty and no command name matches.
+	// Allowed is false when Allowed is non-empty and no command name matches.
 	Allowed bool
 
 	// Commands is the deduplicated list of command names found in the script.

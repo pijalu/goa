@@ -134,7 +134,7 @@ func convertAssistantMessage(msg provider.Message, compat provider.OpenAIComplet
 				"type": "function",
 				"function": map[string]interface{}{
 					"name":      block.ToolName,
-					"arguments": block.ToolArguments,
+					"arguments": provider.SafeToolArguments(block.ToolArguments),
 				},
 			})
 		}

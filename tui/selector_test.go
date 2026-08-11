@@ -263,6 +263,38 @@ func TestSelector_FilterMatchesDescription(t *testing.T) {
 	}
 }
 
+// TestSelector_FilterSearchLabelExcludesDescription verifies that an item
+// with SearchLabel set is matched ONLY against that label: terms present
+// solely in the Description (e.g. the model picker's "model=" prefix) must
+// not match, while terms in the SearchLabel (model name / provider name)
+// still do.
+func TestSelector_FilterSearchLabelExcludesDescription(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Select model:", []SelectorItem{
+		{Value: "a", Label: "alpha", Description: "model=alpha provider=p1", SearchLabel: "alpha p1 alpha"},
+		{Value: "b", Label: "beta", Description: "model=beta provider=p2", SearchLabel: "beta p2 beta"},
+	}, "", result)
+
+	// "model" appears in both Descriptions but in neither SearchLabel:
+	// without the fix both rows match; with SearchLabel nothing matches.
+	for _, r := range "model" {
+		s.HandleInput(string(r))
+	}
+	if len(s.filtered) != 0 {
+		t.Fatalf("SearchLabel must exclude Description: %d rows matched 'model', want 0", len(s.filtered))
+	}
+
+	// Clearing the filter and typing a provider name still matches its row.
+	for len(s.searchText) > 0 {
+		s.HandleInput("backspace")
+	}
+	s.HandleInput("p")
+	s.HandleInput("2")
+	if len(s.filtered) != 1 || s.filtered[0].Value != "b" {
+		t.Fatalf("SearchLabel provider match: got %v, want only b", s.filtered)
+	}
+}
+
 // TestSelector_MinusOnSentinelDoesNotSearch is the regression for "-' does
 // not work on provider, it types '-' in the search": pressing '-' while a
 // sentinel item (__add__/__remove__) is highlighted must not pollute the
@@ -369,6 +401,164 @@ func TestSelector_EditHotkeyFallsBackToFilter(t *testing.T) {
 	}
 	if len(s2.filtered) != 1 || s2.filtered[0].Value != "keep" {
 		t.Fatalf("filtered = %+v, want only keep", s2.filtered)
+	}
+}
+
+// TestSelector_BackspaceEmptyFilterConsumedNotDelete is the regression for
+// two reported bugs:
+//   - /config: type a filter char then Backspace (filter empties), then
+//     another Backspace — previously this emitted __delete__ on the
+//     highlighted row, which closed the menu. It must instead be a no-op.
+//   - /model: Backspace must never propose to delete; deletion is only the
+//     '-' hotkey or the Delete key.
+//
+// Backspace is exclusively the filter-editing key: with a non-empty filter it
+// removes a char; with an empty filter it is consumed without emitting.
+func TestSelector_BackspaceEmptyFilterConsumedNotDelete(t *testing.T) {
+	// Default keymap (the /model, /provider pickers).
+	t.Run("default keymap", func(t *testing.T) {
+		result := make(chan string, 1)
+		s := NewSelector("Test", []SelectorItem{
+			{Value: "__add__", Label: "— add —", PreserveOrder: true},
+			{Value: "zai", Label: "zai", PreserveOrder: true},
+		}, "zai", result) // cursor on the deletable item
+		expectNoEmit(t, s, result, KeyBackspace)
+	})
+
+	// Reorder keymap (/goal:manage).
+	t.Run("reorder keymap", func(t *testing.T) {
+		result := make(chan string, 1)
+		s := NewSelector("Test", []SelectorItem{
+			{Value: "qg1", Label: "a goal"},
+		}, "qg1", result)
+		s.SetKeymap(SelectorKeymap{ReorderMode: true})
+		expectNoEmit(t, s, result, KeyBackspace)
+	})
+}
+
+// TestSelector_BackspaceClearsFilterThenStaysOpen pins the full reported
+// interaction: type a filter char, Backspace removes it (filter empties, list
+// stays), a further Backspace is a no-op — the selector never emits and never
+// closes. This is the exact /config "typing a letter then backspace closes
+// the menu" scenario.
+func TestSelector_BackspaceClearsFilterThenStaysOpen(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Settings:", []SelectorItem{
+		{Value: "theme", Label: "Theme"},
+		{Value: "model", Label: "Active model"},
+	}, "", result)
+
+	// Type 'o' — only "Active model" contains it, so the filter narrows to 1.
+	s.HandleInput("o")
+	if s.searchText != "o" || len(s.filtered) != 1 {
+		t.Fatalf("after 'o': searchText=%q filtered=%d, want o / 1", s.searchText, len(s.filtered))
+	}
+
+	// Backspace clears the filter back to all items; nothing is emitted.
+	expectNoEmit(t, s, result, KeyBackspace)
+	if len(s.filtered) != 2 {
+		t.Fatalf("after clearing filter: filtered=%d, want 2", len(s.filtered))
+	}
+
+	// A second Backspace (now-empty filter) must also be a no-op — no delete,
+	// no close.
+	expectNoEmit(t, s, result, KeyBackspace)
+	if len(s.filtered) != 2 {
+		t.Fatalf("after empty-filter backspace: filtered=%d, want 2", len(s.filtered))
+	}
+}
+
+// TestSelector_DeleteKeyStillDeletesWithEmptyFilter ensures removing the
+// Backspace delete trigger did not disable the dedicated Delete key: with an
+// empty filter, Delete still emits __delete__+value on a non-sentinel row.
+func TestSelector_DeleteKeyStillDeletesWithEmptyFilter(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "__add__", Label: "— add —", PreserveOrder: true},
+		{Value: "zai", Label: "zai", PreserveOrder: true},
+	}, "zai", result)
+	if got := emitResult(t, s, result, KeyDelete); got != "__delete__zai" {
+		t.Errorf("emit = %q, want __delete__zai", got)
+	}
+}
+
+// selectorFrame renders the selector into an AgentFrame so the filmstrip can
+// diff the visible list across the interaction (the agent-testable view of
+// the widget, per filmstrip.go).
+func selectorFrame(s *Selector) AgentFrame {
+	lines := s.Render(60)
+	visible := make([]string, len(lines))
+	for i, l := range lines {
+		visible[i] = ansi.Strip(l)
+	}
+	return AgentFrame{Width: 60, Height: len(visible), Visible: visible}
+}
+
+// TestSelector_BackspaceFilmstripMenuStaysOpen is the filmstrip regression
+// for the two reported bugs: it captures a Snapshot of the selector at each
+// step of "type a filter letter → Backspace (clears the filter) → Backspace
+// (empty filter)" and asserts, as data, that the list never closes and
+// Backspace never emits a __delete__ — the rendered menu stays on screen
+// through the whole sequence.
+func TestSelector_BackspaceFilmstripMenuStaysOpen(t *testing.T) {
+	result := make(chan string, 1)
+	s := NewSelector("Select model:", []SelectorItem{
+		{Value: "gpt4", Label: "gpt-4"},
+		{Value: "claude", Label: "claude"},
+	}, "gpt4", result)
+
+	film := NewFilmstrip()
+	film.Capture("open", selectorFrame(s), "")
+
+	// Step 1: type 'g' — filter narrows to the matching row.
+	s.HandleInput("g")
+	film.Capture("type 'g'", selectorFrame(s), "")
+	if len(s.filtered) != 1 {
+		t.Fatalf("after 'g': filtered=%d, want 1\n%s", len(s.filtered), film.Render())
+	}
+
+	// Step 2: Backspace clears the filter — the full list reappears, nothing
+	// emitted (the /config "type a letter then backspace closes the menu" bug).
+	s.HandleInput(KeyBackspace)
+	restored := film.Capture("backspace clears filter", selectorFrame(s), "")
+	if len(s.filtered) != 2 {
+		t.Fatalf("after clearing backspace: filtered=%d, want 2 (menu must stay open)\n%s", len(s.filtered), film.Render())
+	}
+
+	// Step 3: a further Backspace on the now-empty filter must be a no-op —
+	// no __delete__ emit, no close (the /model "backspace proposes delete" bug).
+	before := len(film.Frames())
+	s.HandleInput(KeyBackspace)
+	film.Capture("backspace on empty filter", selectorFrame(s), "")
+	if len(film.Frames()) != before+1 {
+		t.Fatalf("expected a capture step, frames=%d", len(film.Frames()))
+	}
+
+	// No frame in the whole sequence may have delivered a result (which would
+	// hide the overlay / trigger delete).
+	select {
+	case v := <-result:
+		t.Fatalf("unexpected emit %q: backspace must never delete/close\n%s", v, film.Render())
+	default:
+	}
+
+	// The visible list still shows both rows after the full interaction.
+	last := film.Last()
+	if last == nil {
+		t.Fatal("filmstrip must have a last frame")
+	}
+	joined := joinLines(last.Frame.Visible)
+	for _, want := range []string{"Select model:", "gpt-4", "claude"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("final frame missing %q — the menu closed early\n%s", want, film.Render())
+		}
+	}
+
+	// The diff into "restored" must show claude reappearing (the filter
+	// widened), proving backspace widened rather than closed the list.
+	if !strings.Contains(joinLines(restored.Diff.AddedLines), "claude") {
+		t.Errorf("after clearing the filter 'claude' should reappear in the diff, added=%v\n%s",
+			restored.Diff.AddedLines, film.Render())
 	}
 }
 
@@ -855,28 +1045,18 @@ func TestSelector_ReorderModeSentinelsConsumed(t *testing.T) {
 	}
 }
 
-// TestSelector_ReorderModeDeleteStillEmits: Delete and Backspace (with an
-// empty search filter) keep emitting __delete__+value in reorder mode — the
-// manager turns that into a confirmed deletion.
+// TestSelector_ReorderModeDeleteStillEmits: the Delete key keeps emitting
+// __delete__+value in reorder mode — the manager turns that into a confirmed
+// deletion. Backspace no longer deletes (it only edits the filter); that is
+// pinned separately by TestSelector_BackspaceEmptyFilterConsumedNotDelete.
 func TestSelector_ReorderModeDeleteStillEmits(t *testing.T) {
-	cases := []struct {
-		name string
-		key  string
-	}{
-		{"delete key", KeyDelete},
-		{"backspace with empty filter", KeyBackspace},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := make(chan string, 1)
-			s := NewSelector("Test", []SelectorItem{
-				{Value: "qg1", Label: "a goal"},
-			}, "qg1", result)
-			s.SetKeymap(SelectorKeymap{ReorderMode: true})
-			if got := emitResult(t, s, result, tc.key); got != "__delete__qg1" {
-				t.Errorf("emit = %q, want __delete__qg1", got)
-			}
-		})
+	result := make(chan string, 1)
+	s := NewSelector("Test", []SelectorItem{
+		{Value: "qg1", Label: "a goal"},
+	}, "qg1", result)
+	s.SetKeymap(SelectorKeymap{ReorderMode: true})
+	if got := emitResult(t, s, result, KeyDelete); got != "__delete__qg1" {
+		t.Errorf("emit = %q, want __delete__qg1", got)
 	}
 }
 
@@ -904,7 +1084,9 @@ func TestSelector_GoalManagerSentinelsNotDeletable(t *testing.T) {
 // TestSelector_DefaultKeymapUnchanged is the regression guard for the
 // /provider and /model pickers after the per-instance keymap was added
 // (bugs.md goal manager): with the zero keymap, '+' emits __add__, '-'
-// emits __delete__+value, and Delete/Backspace emits __delete__+value.
+// emits __delete__+value, and the Delete key emits __delete__+value.
+// Backspace is no longer a delete trigger (it only edits the search filter);
+// see TestSelector_BackspaceEmptyFilterConsumedNotDelete.
 func TestSelector_DefaultKeymapUnchanged(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -915,7 +1097,6 @@ func TestSelector_DefaultKeymapUnchanged(t *testing.T) {
 		{"plus adds", "zai", "+", "__add__"},
 		{"minus deletes", "zai", "-", "__delete__zai"},
 		{"delete key deletes", "zai", KeyDelete, "__delete__zai"},
-		{"backspace deletes with empty filter", "zai", KeyBackspace, "__delete__zai"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -66,6 +66,10 @@ type GoalSnapshot struct {
 	// confirms completion, instead of trusting the evidence prose alone.
 	VerifyCommand *string `json:"verifyCommand,omitempty"`
 	FreshContext  bool    `json:"freshContext,omitempty"`
+	// Team binds this goal to an agent team (TEAMS.md §5.1): while the goal
+	// is active the bound team's members/review policy overlay the session;
+	// empty = run under the session state. Durable like FreshContext.
+	Team string `json:"team,omitempty"`
 	// PauseAfterComplete is the user-armed one-shot (/goal:pause:next): when
 	// this goal completes, the queued successor is promoted PAUSED instead of
 	// auto-started, so the user can review the completion evidence before the
@@ -103,6 +107,9 @@ type UpcomingGoal struct {
 	CompletionCriterion *string `json:"completionCriterion,omitempty"` // carried into the goal on promotion
 	VerifyCommand       *string `json:"verifyCommand,omitempty"`       // carried into the goal on promotion
 	FreshContext        bool    `json:"freshContext,omitempty"`        // run on a clean context when promoted
+	// Team is the bound agent team (TEAMS.md §5.1), carried into the goal
+	// on promotion; empty = inherit the session state.
+	Team string `json:"team,omitempty"`
 	// Handover is the continuity note stored with the queued goal. It is
 	// carried into the goal on promotion (postpone/promote/auto-promotion)
 	// unless the caller supplies an explicit handover at that moment.
@@ -118,6 +125,8 @@ type UpcomingGoalInput struct {
 	CompletionCriterion *string
 	VerifyCommand       *string
 	FreshContext        bool
+	// Team is the bound agent team (TEAMS.md §5.1); empty = inherit session.
+	Team string
 	// Handover is the continuity note to store with the queued goal (carried
 	// into the goal when it is promoted). Free text, untrusted data.
 	Handoff *string
@@ -174,6 +183,9 @@ type CreateGoalInput struct {
 	// the current conversation. History is preserved in the durable transcript;
 	// it is simply not sent to the new agent. Default false = reuse current.
 	FreshContext bool
+	// Team binds this goal to an agent team (TEAMS.md §5.1): while the goal
+	// is active, the named team's overlay is applied. Empty = inherit session.
+	Team string
 	// Handoff is an optional note from a predecessor goal (typically the
 	// evidence recorded at its completion), shown to the model as untrusted
 	// context in the goal reminder.
@@ -198,6 +210,7 @@ type goalStage struct {
 	completionCriterion *string
 	verifyCommand       *string
 	freshContext        bool
+	team                string
 	pauseAfterComplete  bool
 	handoff             *string
 	todos               []GoalTodoItem
@@ -246,6 +259,7 @@ type GoalEventRecord struct {
 	VerifyCommand       *string `json:"verifyCommand,omitempty"`
 	Handoff             *string `json:"handover,omitempty"`
 	FreshContext        *bool   `json:"freshContext,omitempty"`
+	Team                *string `json:"team,omitempty"`
 
 	// goal.update fields (patches)
 	Status       *string           `json:"status,omitempty"`

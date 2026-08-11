@@ -133,7 +133,6 @@ func TestUI_VisibleToolResultGetsNoEcho(t *testing.T) {
 	}
 }
 
-
 // TestUI_ScrolledVisibleToolResultGetsNoEcho is the regression test for the
 // spurious "← ✓ <output>" duplicates: a TALL transcript (header already in
 // scrollback) with parallel bash calls whose widgets sit INSIDE the visible

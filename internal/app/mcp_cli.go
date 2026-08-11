@@ -45,10 +45,10 @@ func runMCPCLI(args []string) bool {
 	mgr := mcp.NewManager(nil)
 	mgr.SetProjectDir(projectDir)
 	ctx := core.Context{
-		Config:       cfg,
-		ProjectDir:   projectDir,
-		ConfigSaver:  loader,
-		MCP:          mgr,
+		Config:      cfg,
+		ProjectDir:  projectDir,
+		ConfigSaver: loader,
+		MCP:         mgr,
 		// OutputBuffer nil → Writef prints to stdout.
 	}
 

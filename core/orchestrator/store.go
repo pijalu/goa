@@ -75,7 +75,7 @@ type FileEventStore struct {
 	path string
 	dir  string
 
-	mu sync.Mutex
+	mu  sync.Mutex
 	seq int64
 	f   *os.File
 }

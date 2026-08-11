@@ -598,7 +598,7 @@ func TestAgentManager_StartSession_ForwardsConfig(t *testing.T) {
 		},
 		Skills: config.SkillsConfig{ExecutionMode: config.AgenticSkillModeInline},
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:             true,
+			Enabled:             ccBoolPtr(true),
 			MaxTokens:           4096,
 			ThresholdPercent:    75,
 			OnContextError:      true,
@@ -1084,7 +1084,7 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 	newCfg := func() *config.Config {
 		return &config.Config{
 			ContextCompression: config.ContextCompressionConfig{
-				Enabled:             true,
+				Enabled:             ccBoolPtr(true),
 				MaxTokens:           0,
 				Strategy:            config.AgenticCompressionMicro,
 				PreserveRecentTurns: 4,
@@ -1172,13 +1172,55 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 	})
 }
 
+// TestAgentManager_BuildCompressionConfig_EnabledFalseDisablesProactive
+// verifies the Enabled toggle is honored end-to-end: an explicit
+// `enabled: false` zeroes every proactive threshold (soft/trigger/hard), so
+// no threshold-triggered compression fires — while the reactive on-error net
+// (OnContextError) is passed through untouched.
+func TestAgentManager_BuildCompressionConfig_EnabledFalseDisablesProactive(t *testing.T) {
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:        ccBoolPtr(false),
+			OnContextError: true,
+			Strategy:       config.AgenticCompressionToolElision,
+			Thresholds: config.CompressionThresholdsConfig{
+				SoftPercent:    30,
+				TriggerPercent: 80,
+				HardPercent:    95,
+			},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+
+	cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+	if cc.Thresholds.SoftPercent != 0 || cc.Thresholds.TriggerPercent != 0 || cc.Thresholds.HardPercent != 0 {
+		t.Errorf("enabled:false must zero proactive thresholds, got %+v", cc.Thresholds)
+	}
+	if !cc.OnContextError {
+		t.Error("enabled:false must not disable the reactive on_context_error net")
+	}
+
+	// Sanity: enabled (nil default) preserves the configured thresholds.
+	cfgOn := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Strategy:   config.AgenticCompressionToolElision,
+			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80},
+		},
+	}
+	amOn := NewAgentManager(cfgOn, nil, nil, nil, nil, "")
+	ccOn := amOn.buildCompressionConfig(cfgOn, "some-model", 32768)
+	if ccOn.Thresholds.TriggerPercent != 80 {
+		t.Errorf("enabled (default) must keep trigger=80, got %d", ccOn.Thresholds.TriggerPercent)
+	}
+}
+
 // TestAgentManager_SetModel_AppliesPerModelOverride verifies that switching
 // the model mid-session re-resolves the compression config so the new model's
 // per-model override takes effect (even with MaxTokens=0/auto).
 func TestAgentManager_SetModel_AppliesPerModelOverride(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:  true,
+			Enabled:  ccBoolPtr(true),
 			Strategy: config.AgenticCompressionToolElision,
 			Thresholds: config.CompressionThresholdsConfig{
 				TriggerPercent: 80,
@@ -1219,7 +1261,7 @@ func TestAgentManager_SetModel_AppliesPerModelOverride(t *testing.T) {
 func TestAgentManager_RefreshContextCompression(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:    true,
+			Enabled:    ccBoolPtr(true),
 			Thresholds: config.CompressionThresholdsConfig{TriggerPercent: 80, HardPercent: 95},
 		},
 	}

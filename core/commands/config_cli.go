@@ -456,6 +456,7 @@ var configSetters = map[string]configSetter{
 	"active_model":                                   setActiveModel,
 	"multi_agent.companion_model":                    setStringWithValidate(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionModel }, validateActiveModel),
 	"execution.mode":                                 setExecutionMode,
+	"execution.auto_save_model":                      setBool(func(cfg *config.Config) *bool { return &cfg.Execution.AutoSaveModel }),
 	"mode.plan_file_path":                            setString(func(cfg *config.Config) *string { return &cfg.Mode.PlanFilePath }),
 	"execution.max_tool_calls":                       setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolCalls }),
 	"execution.max_tool_repeat_total":                setInt(func(cfg *config.Config) *int { return &cfg.Execution.MaxToolRepeatTotal }),
@@ -472,7 +473,7 @@ var configSetters = map[string]configSetter{
 	"thinking_level":                                 setThinkingLevel,
 	"multi_agent.enabled":                            setBool(func(cfg *config.Config) *bool { return &cfg.MultiAgent.Enabled }),
 	"multi_agent.companion_provider":                 setString(func(cfg *config.Config) *string { return &cfg.MultiAgent.CompanionProvider }),
-	"context_compression.enabled":                    setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.Enabled }),
+	"context_compression.enabled":                    setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.Enabled }),
 	"context_compression.strategy":                   setCompressionStrategy,
 	"context_compression.threshold_percent":          setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.ThresholdPercent }, 0, 100),
 	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
@@ -558,6 +559,12 @@ func setActiveModel(cfg *config.Config, value string) error {
 // validateActiveModel rejects values that look like rendered footer display strings
 // (e.g., "llama3 \u2022 high | llama3 (companion) \u2022 medium") instead of bare model IDs.
 func validateActiveModel(value string) error {
+	// Selector sentinel values ("__delete__X", "__add__", …) must never be
+	// persisted as a model ID (bugs.md: active model ended up named
+	// "__delete__deepseek-v4-flash").
+	if strings.HasPrefix(value, "__") {
+		return fmt.Errorf("invalid model value: %q is a selector action value, not a model ID", value)
+	}
 	// Footer display strings contain " | " between main and companion model parts.
 	if strings.Contains(value, " | ") {
 		return fmt.Errorf("invalid model value: %q looks like a TUI footer display string, not a model ID", value)

@@ -189,7 +189,7 @@ func convertParts(blocks []provider.ContentBlock, role provider.Role) []map[stri
 			parts = append(parts, map[string]interface{}{
 				"functionCall": map[string]interface{}{
 					"name": b.ToolName,
-					"args": json.RawMessage(b.ToolArguments),
+					"args": json.RawMessage(provider.SafeToolArguments(b.ToolArguments)),
 				},
 			})
 		}

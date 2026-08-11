@@ -43,6 +43,7 @@ type ModelPricing struct {
 type usageStore interface {
 	Query(dim usage.Dimension, project string, since time.Time) ([]usage.Stat, error)
 	Sum(project string, since time.Time) (usage.Stat, error)
+	Busts(project string, since time.Time) (int, error)
 	DailyCounts(project string, days int) ([]usage.DayCount, error)
 	Close() error
 }
@@ -241,14 +242,43 @@ func writeUsageGlobal(b *strings.Builder, st usageStore, req usageRequest) {
 	// report cache writes (only Anthropic does), so a permanent "0 write"
 	// is noise, not signal (bugs.md "Stats: cache write is always 0").
 	if sum.CacheWrite > 0 {
-		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write\n\n",
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write\n",
 			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
 			humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite))
 	} else {
-		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read\n\n",
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read\n",
 			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
 			humanTokens(sum.CacheRead))
 	}
+	// E3 (ENHANCE.md): fresh-vs-cached spend health. Fresh input tokens are the
+	// expensive currency; cache-read tokens are cheap — the fresh share of
+	// (fresh + cache-read) and the per-turn ratio are the health metric.
+	fmt.Fprintf(b, "Fresh: %s fresh input (%s of fresh+cached, %s/turn fresh : %s/turn cached)\n",
+		humanTokens(sum.PromptN), freshSharePct(sum), perTurn(sum.PromptN, sum.Turns), perTurn(sum.CacheRead, sum.Turns))
+	// E2 (ENHANCE.md): provider cache-bust count for the range (best-effort).
+	if busts, err := st.Busts(req.project, req.since); err == nil {
+		fmt.Fprintf(b, "Busts: %d\n", busts)
+	}
+	b.WriteString("\n")
+}
+
+// freshSharePct renders the fresh (non-cached) share of total input tokens as
+// a percentage string. Total input = fresh prompt + cache-read; cache-write
+// is excluded (it is a one-time store cost, not a recurring re-read).
+func freshSharePct(sum usage.Stat) string {
+	total := sum.PromptN + sum.CacheRead
+	if total <= 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.1f%%", float64(sum.PromptN)/float64(total)*100)
+}
+
+// perTurn renders an average token count per turn in human form.
+func perTurn(tokens, turns int) string {
+	if turns <= 0 {
+		return humanTokens(0)
+	}
+	return humanTokens(tokens / turns)
 }
 
 func writeUsageSection(b *strings.Builder, st usageStore, dim usage.Dimension, req usageRequest, title string) {

@@ -54,9 +54,9 @@ func NewOkapi(cfg OkapiConfig) *Okapi {
 		cfg.B = 0.75
 	}
 	return &Okapi{
-		k1:       cfg.K1,
-		b:        cfg.B,
-		docFreq:  make(map[string]int),
+		k1:      cfg.K1,
+		b:       cfg.B,
+		docFreq: make(map[string]int),
 	}
 }
 
@@ -113,7 +113,7 @@ func (o *Okapi) AddDocument(tokens []string) int {
 	}
 
 	// Recalculate average document length.
-	totalLen := o.avgDocLen * float64(o.docCount-1) + float64(len(tokens))
+	totalLen := o.avgDocLen*float64(o.docCount-1) + float64(len(tokens))
 	o.avgDocLen = totalLen / float64(o.docCount)
 
 	return id
@@ -147,7 +147,7 @@ func (o *Okapi) RemoveDocument(id int) {
 	o.docCount--
 
 	// Recalculate average document length.
-	totalLen := o.avgDocLen * float64(o.docCount+1) - float64(docLen)
+	totalLen := o.avgDocLen*float64(o.docCount+1) - float64(docLen)
 	if o.docCount > 0 {
 		o.avgDocLen = totalLen / float64(o.docCount)
 	} else {

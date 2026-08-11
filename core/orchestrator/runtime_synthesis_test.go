@@ -17,11 +17,11 @@ import (
 // synthesisFixture holds the mutable state shared by the fake agents in the
 // synthesis regression tests.
 type synthesisFixture struct {
-	coderRuns     atomic.Int32
-	reviewerRuns  atomic.Int32
-	orchTurns     atomic.Int32
-	synthPrompt   string
-	rtRef         *Runtime
+	coderRuns    atomic.Int32
+	reviewerRuns atomic.Int32
+	orchTurns    atomic.Int32
+	synthPrompt  string
+	rtRef        *Runtime
 }
 
 // makeOrchestratorRun returns a fake orchestrator Run that delegates to the
@@ -167,11 +167,11 @@ func TestRuntime_HubLoopsSpecialistOutputs(t *testing.T) {
 
 // fanoutFixture holds the mutable state for the fanout no-synthesis test.
 type fanoutFixture struct {
-	coderRuns     atomic.Int32
-	reviewerRuns  atomic.Int32
-	orchTurns     atomic.Int32
-	synthPrompt   string
-	rtRef         *Runtime
+	coderRuns    atomic.Int32
+	reviewerRuns atomic.Int32
+	orchTurns    atomic.Int32
+	synthPrompt  string
+	rtRef        *Runtime
 }
 
 // makeFanoutAgentRun returns a fake Run for a fanout agent. The orchestrator

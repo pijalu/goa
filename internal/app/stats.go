@@ -695,6 +695,16 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 		// Streaming partial: keep a descriptive label until the call completes.
 		label = "Calling " + ev.ToolName + "..."
 	}
+	// E5 (ENHANCE.md): collapse identical re-emissions. A streaming tool call
+	// fires one EventToolCall per delta, each re-entering here with the same
+	// label; the status spinner dedupes internally, but the footer update and
+	// the status log still ran per delta (2026-08-05 export: 13 identical
+	// "Calling bash..." log lines in 0.4s). When the label is unchanged and
+	// the call is not newly created, the emission is a no-op: skip it.
+	unchanged := !created && label == oldText
+	if unchanged {
+		return
+	}
 	// Start the shared status spinner first so that the tool widget and
 	// footer observe a non-empty CurrentSpinnerFrame when they render.
 	a.subs.statusMsg.Show(label)
@@ -753,51 +763,42 @@ func (a *App) setWaitingForReplyStatus(pp *agentic.PromptProgress) {
 // TTL expiry) collapse reads by orders of magnitude more.
 const cacheBustDropToleranceTokens = 1024
 
+// turnStatsFingerprint identifies one applied round of token statistics so a
+// byte-identical re-emission within the same turn can be skipped.
+type turnStatsFingerprint struct {
+	promptN    int
+	predictedN int
+	cacheRead  int
+	cacheWrite int
+}
+
 func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	a.statsMu.Lock()
 	// Extract token counts from timings
+	appliedStats := false
 	if ev.Timings != nil {
 		a.turnStatsSeen = true
-		a.lastTurnPromptN = ev.Timings.PromptN
-		a.lastTurnPredictedN = ev.Timings.PredictedN
-		a.tokenPromptTotal += ev.Timings.PromptN
-		a.tokenPredictedTotal += ev.Timings.PredictedN
-
-		// Track cache tokens
-		prevCacheRead := a.lastTurnCacheRead
-		a.lastTurnCacheRead = ev.Timings.CacheReadTokens
-		a.lastTurnCacheWrite = ev.Timings.CacheWriteTokens
-		a.tokenCacheReadTotal += ev.Timings.CacheReadTokens
-		a.tokenCacheWriteTotal += ev.Timings.CacheWriteTokens
-		// Count cache busts two ways:
-		//  1. Zero cache reads AFTER the cache was established (provider TTL
-		//     expiry reports 0). The first request(s) of a session — or of a
-		//     fresh-context conversation (EventContextReset re-arms
-		//     cacheReadEstablished) — are cold by nature and not counted; a
-		//     provider reporting no cache stats never establishes, so the
-		//     counter stays hidden there. Establishment is tracked in
-		//     cacheReadEstablished rather than tokenCacheReadTotal because
-		//     the total is a session-level CH figure that must survive
-		//     mid-session context resets.
-		//  2. A significant DROP in cache reads: in an append-only
-		//     conversation the cached prefix grows monotonically, so a
-		//     collapse means the prefix was invalidated — e.g. in-place
-		//     history mutation (micro compaction) leaves a PARTIAL hit
-		//     (5,376 of ~113k tokens in the 2026-08-02 session export),
-		//     which the zero-read rule never catches. A tolerance absorbs
-		//     block-quantization wobble in provider reporting.
-		if ev.Timings.CacheReadTokens > 0 {
-			a.cacheReadEstablished = true
+		// Dedupe: emitTurnStats re-emits the unchanged providerUsage on
+		// consecutive round ends (its provider-usage path never sets
+		// turnStatsEmitted), delivering the SAME TokenTimings twice per turn.
+		// Skip the duplicate so session totals, the bust counter and the
+		// usage.db record count each round once. Identical values in a NEW turn
+		// (turnCount advanced) are a different turn and must count again.
+		fp := turnStatsFingerprint{
+			promptN:    ev.Timings.PromptN,
+			predictedN: ev.Timings.PredictedN,
+			cacheRead:  ev.Timings.CacheReadTokens,
+			cacheWrite: ev.Timings.CacheWriteTokens,
 		}
-		if (ev.Timings.CacheReadTokens == 0 && a.cacheReadEstablished) ||
-			(prevCacheRead > 0 && ev.Timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead) {
-			a.tokenCacheMisses++
-		}
-
-		// Capture last-turn output speed
-		a.lastTurnSpeed = ev.Timings.PredictedPerSecond
-		if a.lastTurnSpeed == 0 && ev.Timings.PredictedMs > 0 {
-			a.lastTurnSpeed = float64(ev.Timings.PredictedN) / (ev.Timings.PredictedMs / 1000.0)
+		isDuplicate := a.lastStatsDedupSet &&
+			a.lastStatsDedupTurn == a.turnCount &&
+			a.lastStatsDedup == fp
+		if !isDuplicate {
+			a.lastStatsDedup = fp
+			a.lastStatsDedupSet = true
+			a.lastStatsDedupTurn = a.turnCount
+			a.applyTokenTimingsLocked(ev.Timings)
+			appliedStats = true
 		}
 	}
 
@@ -808,7 +809,11 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	}
 
 	// Record per-turn usage to the global store (best-effort, non-fatal).
-	a.recordTurnUsageLocked()
+	// Only for genuinely new stats — a duplicate re-emission would append the
+	// same usage.db row twice.
+	if appliedStats {
+		a.recordTurnUsageLocked()
+	}
 
 	// Compute cost from active model's pricing config
 	stats := a.buildFooterStatsLocked()
@@ -826,6 +831,54 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 		ThinkingLevel:          mainThinkingLevel(subs),
 		CompanionThinkingLevel: companionThinkingLevel(subs),
 	})
+}
+
+// applyTokenTimingsLocked folds one round of provider token statistics into
+// the session accumulators, last-turn fields, and the cache-bust counter.
+// Called only for non-duplicate emissions (see the dedupe guard in
+// handleTokenStats). Requires a.statsMu to be held.
+func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
+	a.lastTurnPromptN = timings.PromptN
+	a.lastTurnPredictedN = timings.PredictedN
+	a.tokenPromptTotal += timings.PromptN
+	a.tokenPredictedTotal += timings.PredictedN
+
+	// Track cache tokens
+	prevCacheRead := a.lastTurnCacheRead
+	a.lastTurnCacheRead = timings.CacheReadTokens
+	a.lastTurnCacheWrite = timings.CacheWriteTokens
+	a.tokenCacheReadTotal += timings.CacheReadTokens
+	a.tokenCacheWriteTotal += timings.CacheWriteTokens
+	// Count cache busts two ways:
+	//  1. Zero cache reads AFTER the cache was established (provider TTL
+	//     expiry reports 0). The first request(s) of a session — or of a
+	//     fresh-context conversation (EventContextReset re-arms
+	//     cacheReadEstablished) — are cold by nature and not counted; a
+	//     provider reporting no cache stats never establishes, so the
+	//     counter stays hidden there. Establishment is tracked in
+	//     cacheReadEstablished rather than tokenCacheReadTotal because
+	//     the total is a session-level CH figure that must survive
+	//     mid-session context resets.
+	//  2. A significant DROP in cache reads: in an append-only
+	//     conversation the cached prefix grows monotonically, so a
+	//     collapse means the prefix was invalidated — e.g. in-place
+	//     history mutation (micro compaction) leaves a PARTIAL hit
+	//     (5,376 of ~113k tokens in the 2026-08-02 session export),
+	//     which the zero-read rule never catches. A tolerance absorbs
+	//     block-quantization wobble in provider reporting.
+	if timings.CacheReadTokens > 0 {
+		a.cacheReadEstablished = true
+	}
+	if (timings.CacheReadTokens == 0 && a.cacheReadEstablished) ||
+		(prevCacheRead > 0 && timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead) {
+		a.tokenCacheMisses++
+	}
+
+	// Capture last-turn output speed
+	a.lastTurnSpeed = timings.PredictedPerSecond
+	if a.lastTurnSpeed == 0 && timings.PredictedMs > 0 {
+		a.lastTurnSpeed = float64(timings.PredictedN) / (timings.PredictedMs / 1000.0)
+	}
 }
 
 // recordTurnUsageLocked appends the just-completed turn's token usage to the

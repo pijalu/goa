@@ -16,8 +16,8 @@ import (
 func TestAgentStream_ContentUpdatesExistingBlock(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"
@@ -53,8 +53,8 @@ func TestAgentStream_ContentUpdatesExistingBlock(t *testing.T) {
 func TestAgentStream_ThinkingThenContentDoesNotRepeat(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"
@@ -100,8 +100,8 @@ func TestAgentStream_ThinkingThenContentDoesNotRepeat(t *testing.T) {
 func TestAgentStream_PartialToolCallUpdatesExistingWidget(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"
@@ -131,8 +131,8 @@ func TestAgentStream_PartialToolCallUpdatesExistingWidget(t *testing.T) {
 func TestAgentStream_FullToolCallThenResultDoesNotDuplicate(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"
@@ -162,8 +162,8 @@ func TestAgentStream_FullToolCallThenResultDoesNotDuplicate(t *testing.T) {
 func TestAgentStream_DeltaToolCallFollowedByFinalCreatesOneWidget(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"
@@ -193,8 +193,8 @@ func TestAgentStream_DeltaToolCallFollowedByFinalCreatesOneWidget(t *testing.T) 
 func TestAgentStream_DeltaToolCallWithoutCallIDCreatesOneWidget(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"
@@ -224,8 +224,8 @@ func TestAgentStream_DeltaToolCallWithoutCallIDCreatesOneWidget(t *testing.T) {
 func TestAgentStream_NonDeltaToolCallWithExistingWidgetDoesNotDuplicate(t *testing.T) {
 	a := &App{}
 	a.subs = &subsystems{
-		chat:          tui.NewChatViewport(),
-		agentStreams:  newAgentStreamRegistry(),
+		chat:         tui.NewChatViewport(),
+		agentStreams: newAgentStreamRegistry(),
 	}
 
 	agentID := "orch-1"

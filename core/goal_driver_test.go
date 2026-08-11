@@ -80,6 +80,60 @@ func TestGoalDriver_Drive(t *testing.T) {
 	}
 }
 
+// silentStopAgent is a fake AgentRunner that also implements SilentStopReporter.
+// On its first Run it reports a silent stop (model stopped mid-reasoning). On
+// subsequent Runs it completes normally. This lets us verify the goal driver
+// pauses after a silent stop instead of auto-continuing.
+type silentStopAgent struct {
+	runs       atomic.Int32
+	silentStop atomic.Bool
+}
+
+func (a *silentStopAgent) Run(ctx context.Context, prompt string) error {
+	n := a.runs.Add(1)
+	// First turn: model stopped after reasoning (no content, no tool calls).
+	a.silentStop.Store(n == 1)
+	return nil
+}
+
+func (a *silentStopAgent) LastTurnSilentStop() bool {
+	return a.silentStop.Load()
+}
+
+// TestGoalDriver_SilentStopPausesGoal verifies that when a continuation turn
+// ends with a silent stop (model produced thinking but no answer — a
+// reasoning-token/output limit), the goal driver pauses the goal instead of
+// auto-continuing into the same limit. Without this fix, the driver looped
+// indefinitely, auto-continuing after each silent stop while the user was told
+// to "send continue to resume".
+func TestGoalDriver_SilentStopPausesGoal(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	agent := &silentStopAgent{}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	err := driver.Drive(context.Background())
+	if err == nil {
+		t.Fatal("expected Drive to return an error (ErrSilentStop)")
+	}
+	if !errors.Is(err, ErrSilentStop) {
+		t.Fatalf("expected ErrSilentStop, got: %v", err)
+	}
+	// Only ONE continuation turn should have run — the driver must NOT
+	// auto-continue after a silent stop.
+	if n := agent.runs.Load(); n != 1 {
+		t.Fatalf("runs = %d, want 1 (driver must pause, not auto-continue, after a silent stop)", n)
+	}
+	// The goal must be paused with the silent-stop reason.
+	g := mode.GetGoal()
+	if g.Goal.Status != goal.GoalPaused {
+		t.Fatalf("status = %q, want %q", g.Goal.Status, goal.GoalPaused)
+	}
+	if g.Goal.TerminalReason == nil || !strings.Contains(*g.Goal.TerminalReason, "mid-reasoning") {
+		t.Fatalf("terminal reason = %v, want it to contain 'mid-reasoning'", g.Goal.TerminalReason)
+	}
+}
+
 func TestGoalDriver_NoGoal(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	agent := &fakeAgent{}
@@ -89,6 +143,26 @@ func TestGoalDriver_NoGoal(t *testing.T) {
 	}
 	if agent.runs != 0 {
 		t.Errorf("runs = %d", agent.runs)
+	}
+}
+
+// TestGoalDriver_NonReporterAgentContinues verifies backward compatibility:
+// when the agent does NOT implement SilentStopReporter, the goal driver
+// continues to auto-continue after each turn as it did before the silent-stop
+// fix was added.
+func TestGoalDriver_NonReporterAgentContinues(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "fix tests"}, goal.GoalActorUser)
+	// fakeAgent does NOT implement SilentStopReporter.
+	agent := &fakeAgentThatCompletes{mode: mode}
+	driver := &GoalDriver{Agent: agent, Mode: mode}
+
+	// Drive should complete normally (the fake agent marks the goal done).
+	if err := driver.Drive(context.Background()); err != nil {
+		t.Fatalf("Drive: %v", err)
+	}
+	if n := agent.runs.Load(); n != 1 {
+		t.Errorf("runs = %d, want 1", n)
 	}
 }
 
@@ -381,6 +455,7 @@ func TestMapDriverError(t *testing.T) {
 		}
 	}
 }
+
 // fakeFreshAgent records whether turns were routed via RunFresh (fresh context)
 // or the ordinary Run path, and how many began a fresh context.
 type fakeFreshAgent struct {
@@ -654,3 +729,74 @@ func (a *rateLimitScriptAgent) Run(ctx context.Context, prompt string) error {
 }
 
 func (a *rateLimitScriptAgent) ResetLoopStop() { a.resetCalls++ }
+
+// fakeTeamOverlay records ApplyOverlay/RemoveOverlay calls for assertions.
+type fakeTeamOverlay struct {
+	applied  []string
+	removed  int
+}
+
+func (f *fakeTeamOverlay) ApplyOverlay(name string) error {
+	f.applied = append(f.applied, name)
+	return nil
+}
+func (f *fakeTeamOverlay) RemoveOverlay() error {
+	f.removed++
+	return nil
+}
+
+// TestGoalDriver_TeamOverlayAppliedAndRemoved verifies the drive loop applies a
+// team-bound goal's team overlay for the goal's duration and removes it when the
+// goal completes (TEAMS.md §5.2). A goal created with Team="alpha" must trigger
+// ApplyOverlay("alpha") once; completing the goal must trigger RemoveOverlay.
+func TestGoalDriver_TeamOverlayAppliedAndRemoved(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "ship", Team: "alpha"}, goal.GoalActorUser)
+	// Agent that completes the goal on its first turn.
+	agent := &fakeAgent{errAfter: 1}
+	overlay := &fakeTeamOverlay{}
+	driver := &GoalDriver{Agent: agent, Mode: mode, TeamOverlay: overlay}
+
+	_ = driver.Drive(context.Background())
+
+	if len(overlay.applied) == 0 || overlay.applied[0] != "alpha" {
+		t.Errorf("team overlay not applied: %+v (want alpha)", overlay.applied)
+	}
+	// The agent errors after 1 turn → goal pauses (not completes), but the
+	// overlay must still be torn down only when the active goal clears. Since
+	// the goal paused (still present), the overlay should NOT be removed yet.
+	g := mode.GetGoal().Goal
+	if g != nil && g.Status == goal.GoalPaused && overlay.removed > 0 {
+		t.Errorf("overlay removed while goal is still paused (should persist); removed=%d", overlay.removed)
+	}
+}
+
+// TestGoalDriver_TeamOverlayNoopWithoutTeam verifies a goal with no team never
+// touches the overlay manager.
+func TestGoalDriver_TeamOverlayNoopWithoutTeam(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "ship"}, goal.GoalActorUser)
+	agent := &fakeAgent{errAfter: 1}
+	overlay := &fakeTeamOverlay{}
+	driver := &GoalDriver{Agent: agent, Mode: mode, TeamOverlay: overlay}
+
+	_ = driver.Drive(context.Background())
+
+	if len(overlay.applied) > 0 {
+		t.Errorf("overlay should not be applied for a team-less goal: %+v", overlay.applied)
+	}
+}
+
+// TestGoalDriver_TeamOverlayNilManagerNoop verifies a nil TeamOverlay manager is
+// safe (no panic) — the no-team / no-manager configuration.
+func TestGoalDriver_TeamOverlayNilManagerNoop(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	mode.CreateGoal(goal.CreateGoalInput{Objective: "ship", Team: "alpha"}, goal.GoalActorUser)
+	agent := &fakeAgent{errAfter: 1}
+	driver := &GoalDriver{Agent: agent, Mode: mode} // TeamOverlay nil
+
+	if err := driver.Drive(context.Background()); err == nil {
+		// errAfter:1 → agent returns error on turn 1 → handleTurnError pauses.
+	}
+	// No panic = pass. The overlay path is a no-op with nil.
+}

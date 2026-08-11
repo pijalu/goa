@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/internal/toolaccess"
 )
 
 // newGoalTool builds a GoalTool with a controllable create gate.
@@ -1077,4 +1078,87 @@ func TestGoalTool_PromoteCarriesHandover(t *testing.T) {
 	if len(read) != 1 || read[0].Objective != "current" || read[0].Handoff == nil || *read[0].Handoff != "current handover" {
 		t.Errorf("demoted goal must keep its handover: %+v", read)
 	}
+}
+
+// TestGoalTool_CreateRejectsOversizedObjective: the tool's create is a
+// creation entry point — an oversized objective must be rejected with the
+// markdown-pointer hint so the model restructures (write doc, point at it)
+// instead of producing a stored goal that resume later refuses to start.
+func TestGoalTool_CreateRejectsOversizedObjective(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	oversized := strings.Repeat("a", goal.MaxObjectiveLength+1)
+
+	_, err := tool.Execute(`{"action":"create","objective":"` + oversized + `"}`)
+	if err == nil {
+		t.Fatal("expected rejection for oversized objective")
+	}
+	if !strings.Contains(err.Error(), "objective_too_long") {
+		t.Errorf("error type should be objective_too_long: %v", err)
+	}
+	if !strings.Contains(err.Error(), "markdown") {
+		t.Errorf("rejection must hint at the markdown-document workaround: %v", err)
+	}
+	if mode.GetGoal().Goal != nil {
+		t.Error("rejected create must not leave a goal behind")
+	}
+}
+
+// TestGoalTool_AccessSerializesConcurrentCalls is the regression test for the
+// goal-tool-call ordering bug (bugs.md must-fix #4): "When multiple goal tool
+// calls are executed, the request order should be kept." Because the goal tool
+// mutates shared goal-manager state, concurrent goal calls must be serialized
+// by the tool scheduler — which happens only when the tool declares an access
+// category that conflicts with itself. This asserts GoalTool is a toolaccess
+//.Accessor whose Access() returns a non-empty, self-conflicting category.
+func TestGoalTool_AccessSerializesConcurrentCalls(t *testing.T) {
+	var acc toolaccess.Accessor = &GoalTool{}
+	a := acc.Access(`{"action":"list"}`)
+	if a.Category == "" {
+		t.Fatalf("GoalTool must declare an access Category so the scheduler " +
+			"serializes concurrent goal calls in request order; got empty category")
+	}
+	// Two goal calls (any input) must conflict so they never run in parallel.
+	b := acc.Access(`{"action":"update","status":"complete"}`)
+	if !toolaccess.Conflict(a, b) {
+		t.Fatalf("goal tool calls must self-conflict (category=%q) so the "+
+			"scheduler serializes them; a=%+v b=%+v", a.Category, a, b)
+	}
+}
+
+// TestGoalTool_CreateWithTeam verifies the /goal tool threads the `team` arg
+// into the created goal (TEAMS.md §5.1 goal binding).
+func TestGoalTool_CreateWithTeam(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"ship it","team":"alpha"}`); err != nil {
+		t.Fatalf("create with team: %v", err)
+	}
+	g := mode.GetGoal().Goal
+	if g == nil {
+		t.Fatal("no goal created")
+	}
+	if g.Team != "alpha" {
+		t.Errorf("created goal Team = %q, want alpha", g.Team)
+	}
+}
+
+// TestGoalTool_CreateTeamTrimmed verifies the team name is trimmed of
+// surrounding whitespace before binding.
+func TestGoalTool_CreateTeamTrimmed(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	tool := newGoalTool(mode, func() bool { return true })
+	if _, err := tool.Execute(`{"action":"create","objective":"ship it","team":"  beta  "}`); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if g := mode.GetGoal().Goal; g == nil || g.Team != "beta" {
+		t.Errorf("trimmed Team = %q, want beta", goalTeam(g))
+	}
+}
+
+func goalTeam(g *goal.GoalSnapshot) string {
+	if g == nil {
+		return "<nil>"
+	}
+	return g.Team
 }

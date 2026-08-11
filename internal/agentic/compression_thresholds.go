@@ -5,26 +5,35 @@
 package agentic
 
 // CompressionThresholds defines the fill levels — percent of the effective
-// context window — at which compression behavior escalates. All fields are
-// optional; zero means "use the default" (soft: 80, trigger: 90, hard: 95).
+// context window — at which compression behavior escalates. Every layer is
+// OPT-IN: 0 disables that layer (the default is NO proactive, threshold-
+// triggered compression). Positive values enable the layer at that percent;
+// negative values are treated as 0 (disabled).
+//
+// Rationale: proactive compression (esp. tool_elision) busts the provider
+// prefix cache and re-bills most of the context for a modest headroom gain,
+// so it is OFF unless explicitly enabled. The reactive safety net — overflow
+// recovery on a context-length error (handleContextError → hybrid: elision →
+// selective → summarize) and the hard-ceiling message-drop enforcer — stays
+// on regardless and uses effectiveHard for its escalation math.
 //
 // The three layers, from lowest to highest:
 //
 //   - SoftPercent: early, cheap maintenance. At/above it, the soft-layer
 //     strategy (zero-LLM only: micro compaction or tool elision) runs, and
-//     only when the provider prefix cache is presumed cold. Never blocks,
-//     never calls the LLM. 0 = default 80; negative disables the layer.
+//     only when the provider prefix cache is presumed cold. 0 = disabled.
 //   - TriggerPercent: the trigger-layer (medium) strategy fires. This is
-//     the main trigger, equivalent to the legacy ThresholdPercent.
+//     the main trigger, equivalent to the legacy ThresholdPercent. 0 = disabled.
 //   - HardPercent: emergency ceiling. Cache gates are bypassed and the
-//     hard-layer strategy (default hybrid) fires; the ceiling enforcer
-//     drops oldest messages as a last resort.
+//     hard-layer strategy (default hybrid) fires proactively. 0 = disabled
+//     (the reactive ceiling enforcer and overflow recovery still protect the
+//     window; they use effectiveHard, not this value, when it is 0).
 type CompressionThresholds struct {
-	// SoftPercent is the early-maintenance level. 0 = default 80, negative = disabled.
+	// SoftPercent is the early-maintenance level. 0 = disabled (default).
 	SoftPercent int
-	// TriggerPercent is the main strategy trigger. 0 = default 90.
+	// TriggerPercent is the main strategy trigger. 0 = disabled (default).
 	TriggerPercent int
-	// HardPercent is the emergency ceiling. 0 = default 95.
+	// HardPercent is the proactive emergency ceiling. 0 = disabled (default).
 	HardPercent int
 }
 
@@ -41,13 +50,12 @@ type CompressionLayerStrategies struct {
 	Hard CompressionStrategy
 }
 
-// Default threshold values. DefaultTriggerPercent preserves the historical
-// SDK fallback; the app's embedded config sets an explicit 80.
-const (
-	DefaultSoftPercent    = 80
-	DefaultTriggerPercent = 90
-	DefaultHardPercent    = 95
-)
+// DefaultHardPercent is the fallback emergency ceiling used for escalation
+// math (escalationPercent, deferralCeiling, elisionTargetPercent) and the
+// reactive ceiling enforcer when no explicit hard ceiling is configured.
+// Proactive thresholds no longer default: 0 disables each layer (opt-in),
+// so there are no DefaultSoftPercent/DefaultTriggerPercent constants.
+const DefaultHardPercent = 95
 
 // resolvedThresholds is the fully-defaulted view of CompressionThresholds
 // used by every gate (proactive, micro, silent-overflow, ceiling, limit),
@@ -62,12 +70,23 @@ type resolvedThresholds struct {
 	hardStrategy    CompressionStrategy
 }
 
+// effectiveHard returns the hard ceiling to use for escalation math and the
+// reactive ceiling enforcer: the configured value, or DefaultHardPercent when
+// the proactive hard layer is disabled (0). This keeps the safety net working
+// even when proactive threshold compression is fully opt-in / off.
+func (t resolvedThresholds) effectiveHard() int {
+	if t.hard > 0 {
+		return t.hard
+	}
+	return DefaultHardPercent
+}
+
 // escalationPercent is the usage level above which cheap strategies (elision,
 // micro) escalate to selective message removal during overflow recovery. It
-// sits 5 points below the hard ceiling so the retry goes out with headroom;
-// with the default hard=95 this reproduces the historical fixed 90%.
+// sits 5 points below the effective hard ceiling so the retry goes out with
+// headroom; with the default hard=95 this reproduces the historical fixed 90%.
 func (t resolvedThresholds) escalationPercent() int {
-	e := t.hard - 5
+	e := t.effectiveHard() - 5
 	if e < 1 {
 		e = 1
 	}
@@ -82,7 +101,7 @@ func (t resolvedThresholds) escalationPercent() int {
 // way to a provider-side rejection at 100%. The ceiling sits 10 points below
 // the hard ceiling (never below the trigger, or deferral would be pointless).
 func (t resolvedThresholds) deferralCeiling() int {
-	c := t.hard - 10
+	c := t.effectiveHard() - 10
 	if c < t.trigger {
 		c = t.trigger
 	}
@@ -99,11 +118,73 @@ func (t resolvedThresholds) deferralCeiling() int {
 // history growth (bugs.md prefix-cache bust loop). Sits 20 points below the
 // hard ceiling (default ≈75%).
 func (t resolvedThresholds) elisionTargetPercent() int {
-	target := t.hard - 20
+	target := t.effectiveHard() - 20
 	if target < 1 {
 		target = 1
 	}
 	return target
+}
+
+// ReactiveSavingsPercent is the minimum fraction of the context window a
+// reactive ceiling pass must free, expressed as a percentage of the window
+// (bugs.md CM:13 design rule 4). The reactive enforcer (enforceContextCeiling)
+// is destructive: every front-cut busts the provider prefix cache. A nibble
+// that frees only enough to dip below the 95% ceiling re-busts on the very next
+// tool result (the CM:13 session showed 13 busts / 58 drops). Cutting once to
+// free ≥50% of the window buys many rounds of headroom per cache miss.
+const ReactiveSavingsPercent = 50
+
+// reactiveTargetPercent is the usage level the reactive ceiling enforcer cuts
+// history down TO: the hard ceiling minus ReactiveSavingsPercent, so one
+// destructive pass frees at least ReactiveSavingsPercent points of the window
+// (design rule 4). With the default hard=95 the target is 45%, giving one
+// cache bust ~50 points of headroom instead of re-busting every round. It never
+// exceeds effectiveHard (no-op when savings is 0) and never goes below 1%.
+func (t resolvedThresholds) reactiveTargetPercent() int {
+	target := t.effectiveHard() - ReactiveSavingsPercent
+	if target > t.effectiveHard() {
+		target = t.effectiveHard()
+	}
+	if target < 1 {
+		target = 1
+	}
+	return target
+}
+
+// --- Exported derived-percent helpers (bugs.md CM:13 design rule 5) ---
+//
+// These let non-agentic packages (e.g. /config display in core/commands) show
+// the derived compression limits — which are otherwise hidden because they are
+// computed from the hard ceiling rather than stored as config. Each takes the
+// raw configured hard percent (0 = disabled → DefaultHardPercent) so the caller
+// does not need to construct a resolvedThresholds.
+
+// EffectiveHardPercent returns the reactive ceiling actually in force for the
+// given configured hard percent: the value itself, or DefaultHardPercent when 0.
+func EffectiveHardPercent(hard int) int {
+	r := resolvedThresholds{hard: hard}
+	return r.effectiveHard()
+}
+
+// EscalationPercent returns the escalation level (effective hard − 5).
+func EscalationPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.escalationPercent()
+}
+
+// DeferralCeilingPercent returns the cache-hot deferral cutoff (effective hard − 10).
+func DeferralCeilingPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.deferralCeiling()
+}
+
+// ElisionTargetPercent returns the proactive elision hysteresis target (effective hard − 20).
+func ElisionTargetPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.elisionTargetPercent()
+}
+
+// ReactiveTargetPercent returns the level a reactive ceiling cut targets
+// (effective hard − ReactiveSavingsPercent).
+func ReactiveTargetPercent(hard int) int {
+	return resolvedThresholds{hard: hard}.reactiveTargetPercent()
 }
 
 // resolveThresholds folds the explicit Thresholds with the deprecated
@@ -120,16 +201,16 @@ func (c ContextCompressionConfig) resolveThresholds() resolvedThresholds {
 	if c.ThresholdPercent > 0 {
 		t.trigger = c.ThresholdPercent
 	}
-	if t.soft == 0 {
-		t.soft = DefaultSoftPercent
-	} else if t.soft < 0 {
-		t.soft = 0 // negative disables the soft layer
+	// Opt-in semantics: 0 (or negative) disables each layer. No level defaults
+	// to a positive value — proactive compression is off unless configured.
+	if t.soft < 0 {
+		t.soft = 0
 	}
-	if t.trigger <= 0 {
-		t.trigger = DefaultTriggerPercent
+	if t.trigger < 0 {
+		t.trigger = 0
 	}
-	if t.hard <= 0 {
-		t.hard = DefaultHardPercent
+	if t.hard < 0 {
+		t.hard = 0
 	}
 
 	// Layer strategies: explicit per-layer fields win; the legacy single
@@ -179,30 +260,30 @@ const (
 
 // proactiveTierLocked selects the compression tier for the current turn given
 // the usage percentage and the cache state. The caller must hold a.mu
-// (cacheAssumedColdForProactive reads lastTurnEnd).
+// (cacheAssumedColdForProactive reads lastTurnEnd). Every layer is opt-in: a
+// threshold of 0 disables that tier entirely, so with the default all-zero
+// thresholds this always returns tierNone (no proactive compression).
 //
-// Escalation rules:
-//   - usage >= hard → hard tier, cache gate bypassed (overflow risk beats
-//     cache churn).
+// Escalation rules (each gated on its threshold being enabled, > 0):
+//   - hard > 0 and usage >= hard → hard tier, cache gate bypassed.
 //   - cache hot and usage < deferralCeiling → defer everything (tierNone).
-//   - cache hot and usage >= deferralCeiling → trigger tier (too close to
-//     the window to keep protecting the cache).
-//   - usage >= trigger → trigger tier.
-//   - usage >= soft (and soft enabled) → soft tier.
+//   - cache hot, trigger > 0 and usage >= deferralCeiling → trigger tier.
+//   - trigger > 0 and usage >= trigger → trigger tier.
+//   - soft > 0 and usage >= soft → soft tier.
 func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) compressionTier {
-	if usagePercent >= rt.hard {
+	if rt.hard > 0 && usagePercent >= rt.hard {
 		return tierHard
 	}
 	if !a.cfg.ContextCompression.DisableCacheGate && !a.cacheAssumedColdForProactive() {
-		if usagePercent >= rt.deferralCeiling() {
+		if rt.trigger > 0 && usagePercent >= rt.deferralCeiling() {
 			return tierTrigger
 		}
-		if usagePercent >= rt.trigger {
+		if rt.trigger > 0 && usagePercent >= rt.trigger {
 			a.logDeferral(usagePercent)
 		}
 		return tierNone
 	}
-	if usagePercent >= rt.trigger {
+	if rt.trigger > 0 && usagePercent >= rt.trigger {
 		return tierTrigger
 	}
 	if rt.soft > 0 && usagePercent >= rt.soft {

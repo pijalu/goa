@@ -33,8 +33,8 @@ type LockEntry struct {
 // Lockfile tracks installed plugins and their content hashes. All methods
 // are safe for concurrent use.
 type Lockfile struct {
-	mu     sync.RWMutex
-	path   string
+	mu      sync.RWMutex
+	path    string
 	Plugins map[string]LockEntry `json:"plugins"`
 }
 

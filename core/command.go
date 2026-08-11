@@ -41,11 +41,41 @@ type InternalCommand interface {
 	IsInternal() bool
 }
 
+// AsyncCommand is an optional interface commands implement when Run may block
+// for a long time (e.g. it calls an LLM). When AsyncHint returns a non-empty
+// label, the host runs Run in a background goroutine instead of on the UI
+// event loop, shows a dedicated spinner with that label, and keeps the input
+// line live so the user can enqueue steering until the command completes. The
+// enqueued text is delivered as a follow-up agent message once the command
+// finishes.
+//
+// The args parameter lets a command opt in per-invocation: returning "" runs
+// synchronously as usual. For example, /compress:summarize returns a spinner
+// label (it calls the LLM), while /compress:tool_elision returns "" (in-memory,
+// instant).
+//
+// Doc-suffix lookups (/cmd:?, /cmd:??) bypass the async path and are always
+// synchronous.
+type AsyncCommand interface {
+	AsyncHint(args []string) string
+}
+
 // IsInternal reports whether a command should be hidden from the chat/LLM.
 // Commands that do not implement InternalCommand are treated as visible.
 func IsInternal(cmd Command) bool {
 	ic, ok := cmd.(InternalCommand)
 	return ok && ic.IsInternal()
+}
+
+// AsyncHintOf returns the spinner label for the command if it implements
+// AsyncCommand and opts in for the given args, otherwise "". It is the single
+// place the host asks "should I run this asynchronously?".
+func AsyncHintOf(cmd Command, args []string) string {
+	ac, ok := cmd.(AsyncCommand)
+	if !ok {
+		return ""
+	}
+	return ac.AsyncHint(args)
 }
 
 // StatusProvider is an optional interface commands implement to customize the

@@ -26,8 +26,13 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 		feed(a, 100) // establishes the cache
 		feed(a, 80)  // normal hit — no miss
 		feed(a, 0)   // bust 1
-		feed(a, 0)   // bust 2
-		feed(a, 60)  // cache back — no miss
+		// Bust 2 arrives in a NEW turn (turnCount advanced): the per-turn
+		// duplicate-stats dedupe (stats_dedup_test.go) otherwise collapses two
+		// byte-identical all-zero emissions into one, which is the re-emission
+		// artifact that guard exists to remove. Distinct-turn busts still count.
+		a.turnCount++
+		feed(a, 0)  // bust 2 (new turn)
+		feed(a, 60) // cache back — no miss
 		if a.tokenCacheMisses != 2 {
 			t.Errorf("tokenCacheMisses = %d, want 2", a.tokenCacheMisses)
 		}

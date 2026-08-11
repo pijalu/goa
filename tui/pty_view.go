@@ -18,7 +18,6 @@ import (
 // Concurrency: the commandLoop is the sole owner of PTYView state. The polling
 // goroutine forwards each tick back to the loop via TUI.Apply (Refresh runs on
 // the loop); Render/HandleInput also run on the loop. No mutex is required
-//
 type PTYView struct {
 	Container
 

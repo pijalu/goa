@@ -137,7 +137,6 @@ func startPipelineRun(ctx core.Context, selected *multiagent.Pipeline, input str
 	writeFmt(ctx, "Pipeline '%s' started%s. Use /pipeline:status to check progress.\n", selected.ID, inputMsg)
 }
 
-
 func backgroundRunPipeline(ctx core.Context, run *multiagent.PipelineRun) {
 	go func() {
 		if err := ctx.PipelineRunner.Run(run); err != nil {

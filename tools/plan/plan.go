@@ -124,9 +124,9 @@ func (t *PlanTool) ExecuteWithResult(input string) (agentic.ToolResult, error) {
 	handler, ok := t.handlers[actionOnly.Action]
 	if !ok {
 		return agentic.ToolResult{}, &internal.ToolError{
-			Tool:   "plan",
-			Type:   "invalid_action",
-			Detail: fmt.Sprintf("unknown action %q", actionOnly.Action),
+			Tool:     "plan",
+			Type:     "invalid_action",
+			Detail:   fmt.Sprintf("unknown action %q", actionOnly.Action),
 			HintText: fmt.Sprintf("Valid actions: %v", actionNames),
 		}
 	}
@@ -175,11 +175,11 @@ type addItemInput struct {
 }
 
 type updateItemInput struct {
-	ID          string   `json:"id"`
-	Title       *string  `json:"title,omitempty"`
-	Description *string  `json:"description,omitempty"`
+	ID          string    `json:"id"`
+	Title       *string   `json:"title,omitempty"`
+	Description *string   `json:"description,omitempty"`
 	DependsOn   *[]string `json:"depends_on,omitempty"`
-	Role        *string  `json:"role,omitempty"`
+	Role        *string   `json:"role,omitempty"`
 }
 
 type removeItemInput struct {

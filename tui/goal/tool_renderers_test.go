@@ -254,8 +254,8 @@ func TestGoalRenderer_SnapshotUsesShortName(t *testing.T) {
 			wantMissing: []string{"tcl.ParseCommands parser, complete"},
 		},
 		{
-			name:    "todo stats suffix intact with name",
-			payload: `{"goal":{"name":"fair.puma","objective":"` + longObjective + `","status":"active","turnsUsed":2,"tokensUsed":50,"wallClockMs":2000,"todos":[{"status":"done"},{"status":"pending"}]}}`,
+			name:         "todo stats suffix intact with name",
+			payload:      `{"goal":{"name":"fair.puma","objective":"` + longObjective + `","status":"active","turnsUsed":2,"tokensUsed":50,"wallClockMs":2000,"todos":[{"status":"done"},{"status":"pending"}]}}`,
 			wantContains: []string{"fair.puma", "todos 1/2"},
 			wantMissing:  []string{"Wire the go-lemon"},
 		},

@@ -72,6 +72,7 @@ func (m *configMenu) configuredModelItems() []tui.SelectorItem {
 			Label:       mod.ID,
 			Description: mod.Model,
 			Color:       localModelColor(m.ctx.Config, mod.ProviderID),
+			SearchLabel: modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
 		})
 	}
 	if len(items) == 0 {
@@ -129,7 +130,12 @@ func (m *configMenu) resolveModelFull(providerID, modelName string, onSelected f
 		if findModelIndex(m.ctx.Config.Models, mod.ID) >= 0 {
 			desc += " ✓ configured"
 		}
-		items = append(items, tui.SelectorItem{Value: mod.ID, Label: mod.ID, Description: desc})
+		items = append(items, tui.SelectorItem{
+			Value:       mod.ID,
+			Label:       mod.ID,
+			Description: desc,
+			SearchLabel: modelSearchLabel(mod.ID, providerID, mod.ID),
+		})
 	}
 	items = append(items, tui.SelectorItem{
 		Value:       "__custom__",
@@ -231,7 +237,7 @@ func (m *configMenu) addModel(providerID, modelID, modelName string) {
 		ProviderID: providerID,
 		Model:      modelName,
 	})
-	m.saveConfig()
+	m.saveProvidersAndModels()
 	m.flash(fmt.Sprintf("Model %q added.", modelID))
 	m.settingModels()
 }
@@ -291,7 +297,7 @@ func (m *configMenu) applyTemperature(idx int, value string) {
 		return
 	}
 	cfg.Models[idx].Temperature = temp
-	m.saveConfig()
+	m.saveProvidersAndModels()
 	m.flash(fmt.Sprintf("Model %q updated.", cfg.Models[idx].ID))
 }
 
@@ -335,7 +341,7 @@ func (m *configMenu) doRemoveModel(id string) {
 		if cfg.ActiveModel == id {
 			cfg.ActiveModel = ""
 		}
-		m.saveConfig()
+		m.saveProvidersAndModels()
 		m.flash(fmt.Sprintf("Model %q removed.", id))
 		m.settingModels()
 		return

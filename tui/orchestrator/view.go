@@ -116,7 +116,7 @@ type MultiAgentView struct {
 	logs        map[string]*AgentLog
 	order       []string // agentIDs in first-seen order (stable)
 	roleCount   map[string]int
-	steerTarget string   // empty means "all"; otherwise an AgentID from order
+	steerTarget string // empty means "all"; otherwise an AgentID from order
 }
 
 // NewMultiAgentView returns an empty view tagged with the given source label

@@ -346,19 +346,21 @@ func TestMicroCompactForced_ReducesTokensOnSmallHistory(t *testing.T) {
 }
 
 func TestCompressHybrid(t *testing.T) {
+	// Hybrid escalates elision → selective when usage is at/above the
+	// escalation level (effectiveHard−5). With an explicit HardPercent=15 the
+	// escalation level is 10%; the history below sits above it before hybrid
+	// and drops below it after selective, so hybrid stops before the summarize
+	// stage (which would need a live provider).
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           500,
-			ThresholdPercent:    10,
+			Thresholds:          CompressionThresholds{HardPercent: 15},
 			Strategy:            CompressionHybrid,
 			PreserveRecentTurns: 1,
 		},
 	})
 
-	// Build large history to exceed threshold. Message sizes are chosen so
-	// usage after the selective stage drops below the 10% trigger: hybrid
-	// then stops before the summarize stage (which would need a live provider).
 	var history []Message
 	history = append(history, Message{Type: Content, Role: System, Content: "You are helpful."})
 	for i := 0; i < 20; i++ {
@@ -801,6 +803,34 @@ func TestMigrateMessagesDropsElidedPairs(t *testing.T) {
 	}
 	if !liveFound || !liveResultFound {
 		t.Errorf("live tool pair damaged: call=%v result=%v", liveFound, liveResultFound)
+	}
+}
+
+// TestMigrateMessagesDropsResultsForMissingAssistant is the defense-in-depth
+// regression for the export-20260805-180955 bug: when the owning
+// assistant(tool_calls) message is removed entirely (not just elided) by
+// enforceContextCeiling or any other history mutation, migrateMessages must
+// drop the orphaned tool result — a tool message with no preceding tool_calls
+// is rejected by strict providers (HTTP 400).
+func TestMigrateMessagesDropsResultsForMissingAssistant(t *testing.T) {
+	// The assistant that issued "orphan_call" is absent from this snapshot;
+	// only its tool result survives. migrateMessages must drop it.
+	msgs := []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		// missing: Assistant with ToolCalls{ID:"orphan_call"}
+		{Type: Content, Role: ToolRole, Content: "result", ToolCallID: "orphan_call", ToolName: "read"},
+		{Type: Content, Role: Assistant, Content: "ok"},
+	}
+
+	out := migrateMessages(msgs)
+	assertToolPairingConsistent(t, out)
+
+	for _, m := range out {
+		for _, b := range m.Content {
+			if b.Type == provider.ContentBlockToolResult && b.ToolCallID == "orphan_call" {
+				t.Errorf("orphaned tool result for missing assistant leaked into payload")
+			}
+		}
 	}
 }
 
