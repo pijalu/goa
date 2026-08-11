@@ -70,7 +70,9 @@ func TestReviewPager_MainInputEditComment(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
-	s.AddComment("main.go", 2, "original")
+	// The cursor lands on the removed line (-func old) after "down", so the
+	// comment must be anchored to the old side to be found there.
+	s.AddComment("main.go", 2, review.SideOld, "original")
 	pager := NewReviewPager(s, diff)
 
 	pager.HandleInput("down")
@@ -111,7 +113,8 @@ func TestReviewPager_ConfirmCancel(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
-	s.AddComment("main.go", 2, "to delete")
+	// Cursor moves to the removed line below; anchor the comment to old side.
+	s.AddComment("main.go", 2, review.SideOld, "to delete")
 	pager := NewReviewPager(s, diff)
 
 	var captured string
@@ -149,7 +152,8 @@ func TestReviewPager_ConfirmDelete(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
-	s.AddComment("main.go", 2, "to delete")
+	// Cursor moves to the removed line below; anchor the comment to old side.
+	s.AddComment("main.go", 2, review.SideOld, "to delete")
 	pager := NewReviewPager(s, diff)
 
 	var resultCb func(yes bool)
@@ -217,7 +221,7 @@ func TestReviewPager_NoCallbackNoCrash(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
-	s.AddComment("main.go", 2, "x")
+	s.AddComment("main.go", 2, review.SideOld, "x")
 	pager := NewReviewPager(s, diff)
 	pager.HandleInput("down")
 	pager.HandleInput("d") // no OnConfirm wired

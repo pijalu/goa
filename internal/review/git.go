@@ -56,20 +56,33 @@ func HasUncommittedChanges(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// Diff returns a unified diff from baseRef to the current state.
-// When baseRef is "HEAD" and the working tree is dirty, it returns the
-// working-tree diff; otherwise it returns `git diff baseRef..HEAD`.
-func Diff(dir, baseRef string) (string, error) {
-	var args []string
+// DiffArgs returns the git argument list that produces the review diff for
+// baseRef. It is the single source of truth shared by Diff (which executes
+// it) and DiffCommand (which displays it), so the command shown to the user
+// or agent always matches what actually runs.
+func DiffArgs(baseRef string) []string {
 	if baseRef == "HEAD" {
 		// HEAD with no range shows working-tree changes when dirty and
 		// nothing when clean. This matches the user's expectation for
 		// uncommitted work.
-		args = []string{"diff", "HEAD"}
-	} else {
-		args = []string{"diff", baseRef + "..HEAD"}
+		return []string{"diff", "HEAD"}
 	}
-	out, err := gitOutput(dir, args...)
+	return []string{"diff", baseRef + "..HEAD"}
+}
+
+// DiffCommand returns the shell command that produces the review diff for
+// baseRef (e.g. "git diff HEAD^1..HEAD"). Review summaries point the agent
+// at this command instead of embedding diff content, keeping the submitted
+// context small.
+func DiffCommand(baseRef string) string {
+	return "git " + strings.Join(DiffArgs(baseRef), " ")
+}
+
+// Diff returns a unified diff from baseRef to the current state.
+// When baseRef is "HEAD" and the working tree is dirty, it returns the
+// working-tree diff; otherwise it returns `git diff baseRef..HEAD`.
+func Diff(dir, baseRef string) (string, error) {
+	out, err := gitOutput(dir, DiffArgs(baseRef)...)
 	if err != nil {
 		return "", fmt.Errorf("git diff: %w", err)
 	}

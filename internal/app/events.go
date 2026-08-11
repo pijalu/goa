@@ -736,7 +736,7 @@ func (a *App) makeReviewExportHandler(handlePtr **tui.OverlayHandle, pager *tui.
 			a.reviewSetTitle("Cannot export: " + err.Error())
 			return
 		}
-		if err := pager.Session.Export(pager.Diff, path); err != nil {
+		if err := pager.Session.Export(path); err != nil {
 			a.reviewSetTitle("Cannot export: " + err.Error())
 			return
 		}

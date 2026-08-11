@@ -44,7 +44,7 @@ type ReviewPager struct {
 	lines []review.DiffLine
 
 	// OnSubmitReview is called when the user confirms submission with 's'.
-	// The text passed is Session.MarkdownSummary(Diff) — the same content the
+	// The text passed is Session.MarkdownSummary() — the same content the
 	// 'x' export action writes to disk, so submit and export always agree.
 	OnSubmitReview func(text string)
 
@@ -190,20 +190,26 @@ func (p *ReviewPager) lineHasComment(i int) bool {
 	if i < 0 || i >= len(p.lines) {
 		return false
 	}
-	_, lineNum := commentTarget(p.lines[i])
-	if lineNum <= 0 {
-		return false
-	}
-	return len(p.Session.CommentsFor(p.lines[i].File, lineNum)) > 0
+	_, hasComment, _ := p.anchorCommentInfo(p.lines[i])
+	return hasComment
 }
 
 func (p *ReviewPager) lineCommentInfo(line review.DiffLine) (bool, int) {
-	_, lineNum := commentTarget(line)
-	if lineNum <= 0 {
-		return false, 0
+	_, hasComment, count := p.anchorCommentInfo(line)
+	return hasComment, count
+}
+
+// anchorCommentInfo resolves the line's comment anchor and reports whether
+// comments exist at that exact (file, line, side) position. The side-aware
+// lookup is what prevents a comment on an added line from leaking onto a
+// removed line whose old number collides with the commented new number.
+func (p *ReviewPager) anchorCommentInfo(line review.DiffLine) (review.LineAnchor, bool, int) {
+	anchor, ok := line.Anchor()
+	if !ok || anchor.LineNum <= 0 {
+		return anchor, false, 0
 	}
-	comments := p.Session.CommentsFor(line.File, lineNum)
-	return len(comments) > 0, len(comments)
+	comments := p.Session.CommentsFor(anchor.File, anchor.LineNum, anchor.Side)
+	return anchor, len(comments) > 0, len(comments)
 }
 
 func (p *ReviewPager) renderLine(line review.DiffLine, width int, hasComment bool) string {
@@ -292,28 +298,29 @@ func (p *ReviewPager) currentLine() review.DiffLine {
 }
 
 func (p *ReviewPager) requestAddComment() {
-	line := p.currentLine()
-	file, lineNum := commentTarget(line)
-	if file == "" || lineNum <= 0 {
+	anchor, ok := p.currentLine().Anchor()
+	if !ok || anchor.LineNum <= 0 {
 		return
 	}
 	if p.OnCommentRequest == nil {
 		return
 	}
-	prompt := fmt.Sprintf("Add comment on %s:%d:", file, lineNum)
+	prompt := fmt.Sprintf("Add comment on %s:", anchorLabel(anchor))
 	p.OnCommentRequest(prompt, "", func(text string) {
 		if text == "" {
 			return
 		}
-		p.Session.AddComment(file, lineNum, text)
+		p.Session.AddComment(anchor.File, anchor.LineNum, anchor.Side, text)
 		p.saveComments()
 	})
 }
 
 func (p *ReviewPager) requestEditComment() {
-	line := p.currentLine()
-	file, lineNum := commentTarget(line)
-	comments := p.Session.CommentsFor(file, lineNum)
+	anchor, ok := p.currentLine().Anchor()
+	if !ok {
+		return
+	}
+	comments := p.Session.CommentsFor(anchor.File, anchor.LineNum, anchor.Side)
 	if len(comments) == 0 {
 		return
 	}
@@ -321,7 +328,7 @@ func (p *ReviewPager) requestEditComment() {
 		return
 	}
 	c := comments[0]
-	prompt := fmt.Sprintf("Edit comment on %s:%d:", file, lineNum)
+	prompt := fmt.Sprintf("Edit comment on %s:", anchorLabel(anchor))
 	p.OnCommentRequest(prompt, c.Content, func(text string) {
 		if text == "" {
 			return
@@ -332,9 +339,11 @@ func (p *ReviewPager) requestEditComment() {
 }
 
 func (p *ReviewPager) requestDeleteComment() {
-	line := p.currentLine()
-	file, lineNum := commentTarget(line)
-	comments := p.Session.CommentsFor(file, lineNum)
+	anchor, ok := p.currentLine().Anchor()
+	if !ok {
+		return
+	}
+	comments := p.Session.CommentsFor(anchor.File, anchor.LineNum, anchor.Side)
 	if len(comments) == 0 {
 		return
 	}
@@ -342,7 +351,7 @@ func (p *ReviewPager) requestDeleteComment() {
 		return
 	}
 	c := comments[0]
-	question := fmt.Sprintf("Delete comment on %s:%d?", file, lineNum)
+	question := fmt.Sprintf("Delete comment on %s?", anchorLabel(anchor))
 	p.OnConfirm(question, func(yes bool) {
 		if !yes {
 			return
@@ -393,22 +402,14 @@ func (p *ReviewPager) saveComments() {
 	}
 }
 
-// commentTarget returns the file and line number to attach a comment to.
-// Only actual diff content lines (context, added, removed) can carry comments;
-// headers and file meta lines are not valid targets. Removed lines don't exist
-// in the new file, so their old line number is used.
-func commentTarget(line review.DiffLine) (string, int) {
-	if line.File == "" {
-		return "", 0
+// anchorLabel formats a comment anchor for prompts, marking removed-line
+// anchors so the user can tell old-side numbering from new-side numbering.
+func anchorLabel(a review.LineAnchor) string {
+	label := fmt.Sprintf("%s:%d", a.File, a.LineNum)
+	if a.Side == review.SideOld {
+		label += " (removed)"
 	}
-	switch line.Kind {
-	case review.DiffAdded, review.DiffContext:
-		return line.File, line.NewLineNum
-	case review.DiffRemoved:
-		return line.File, line.OldLineNum
-	default:
-		return "", 0
-	}
+	return label
 }
 
 // changeBase recomputes the diff against a new base commit. Runs on the
@@ -431,7 +432,7 @@ func (p *ReviewPager) submitReview() {
 	// MarkdownSummary is the single source of truth for the review body; the
 	// 'x' export action writes the exact same string to a file.
 	if p.OnSubmitReview != nil {
-		p.OnSubmitReview(p.Session.MarkdownSummary(p.Diff))
+		p.OnSubmitReview(p.Session.MarkdownSummary())
 	}
 	if p.OnClose != nil {
 		p.OnClose()

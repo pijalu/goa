@@ -14,7 +14,7 @@ func TestStore_SaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
 	s := &Session{ID: "abc123", ProjectDir: dir, BaseRef: "HEAD^1", HeadRef: "def"}
-	s.AddComment("main.go", 1, "looks good")
+	s.AddComment("main.go", 1, SideNew, "looks good")
 
 	if err := store.Save(s); err != nil {
 		t.Fatalf("Save failed: %v", err)

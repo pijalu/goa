@@ -178,18 +178,22 @@ func TestReviewPager_CommentIndicatorOnlyOnContentLines(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
-	s.AddComment("main.go", 2, "question")
+	s.AddComment("main.go", 2, review.SideNew, "question")
 	p := NewReviewPager(s, diff)
 
 	rendered := stripReviewANSi(strings.Join(p.Render(80), "\n"))
 	if !strings.Contains(rendered, "[1 comment(s)]") {
 		t.Fatalf("expected comment indicator on content line, got:\n%s", rendered)
 	}
-	// The comment attaches to line 2, which appears as both a removed and an
-	// added line, so the indicator is shown on both representations.
-	if strings.Count(rendered, "[1 comment(s)]") != 2 {
-		t.Errorf("comment indicator should appear on removed+added lines (2), got %d:\n%s",
+	// The comment attaches to NEW line 2 (the added line). Old line 2 (the
+	// removed line) is a different coordinate space and must NOT show the
+	// indicator — that numeric collision was the rogue-marker bug.
+	if strings.Count(rendered, "[1 comment(s)]") != 1 {
+		t.Errorf("comment indicator should appear only on the added line (1), got %d:\n%s",
 			strings.Count(rendered, "[1 comment(s)]"), rendered)
+	}
+	if !strings.Contains(rendered, "+func new() {} [1 comment(s)]") {
+		t.Errorf("comment indicator should be on the added line, got:\n%s", rendered)
 	}
 	// Hunk headers must not show the indicator.
 	for _, ln := range p.Render(80) {
@@ -197,6 +201,34 @@ func TestReviewPager_CommentIndicatorOnlyOnContentLines(t *testing.T) {
 		if strings.HasPrefix(stripped, "  @@") && strings.Contains(stripped, "[1 comment(s)]") {
 			t.Errorf("hunk header should not carry comment indicator: %q", stripped)
 		}
+	}
+}
+
+// TestReviewPager_RemovedLineCommentIndicator verifies a comment placed on a
+// removed line attaches to the old side only and does not leak onto the
+// added line that shares the same line number.
+func TestReviewPager_RemovedLineCommentIndicator(t *testing.T) {
+	diff := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,2 @@
+ package main
+-func old() {}
++func new() {}
+`
+	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
+	s.AddComment("main.go", 2, review.SideOld, "why remove this?")
+	p := NewReviewPager(s, diff)
+
+	rendered := stripReviewANSi(strings.Join(p.Render(80), "\n"))
+	if got := strings.Count(rendered, "[1 comment(s)]"); got != 1 {
+		t.Fatalf("comment indicator should appear only on the removed line (1), got %d:\n%s", got, rendered)
+	}
+	if !strings.Contains(rendered, "-func old() {} [1 comment(s)]") {
+		t.Errorf("comment indicator should be on the removed line, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "+func new() {} [1 comment(s)]") {
+		t.Errorf("comment indicator leaked onto the added line:\n%s", rendered)
 	}
 }
 
@@ -249,7 +281,7 @@ func TestReviewPager_CommentPipeAlignsWithCursor(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
-	s.AddComment("main.go", 2, "note")
+	s.AddComment("main.go", 2, review.SideNew, "note")
 	p := NewReviewPager(s, diff)
 	p.SetViewport(80, 12)
 
@@ -280,6 +312,80 @@ func TestReviewPager_CommentPipeAlignsWithCursor(t *testing.T) {
 	}
 }
 
+// TestReviewPager_CommentIndicatorDoesNotLeakAcrossSides is a regression test
+// for the rogue "[1 comment(s)]" marker on removed lines. The diff below has
+// two hunks: the first adds 13 lines, shifting the new-file line numbers. In
+// the second hunk, the comment is placed on the added line `if len(q) == 0 {`
+// (new line 23). The trailing removed blank line has OLD line number 23 — the
+// same numeric value, but a different coordinate space. The comment must only
+// render on the added line, not leak onto the removed line.
+func TestReviewPager_CommentIndicatorDoesNotLeakAcrossSides(t *testing.T) {
+	diff := `diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1,2 +1,15 @@
+ line1
++add1
++add2
++add3
++add4
++add5
++add6
++add7
++add8
++add9
++add10
++add11
++add12
++add13
+ line2
+@@ -10,14 +23,11 @@
++	if len(q) == 0 {
++		return c.Render(200, r.JSON(s))
++	}
++
+ 	tx, ok := c.Value("tx").(*pop.Connection)
+ 	if !ok {
+ 		return fmt.Errorf("no transaction found")
+ 	}
+ 
+-	var query *pop.Query
+ 	qroot := "SELECT DISTINCT Cage FROM animals"
++	query := tx.RawQuery(qroot+" AND Cage like ? ORDER BY 1 LIMIT 25", "%"+q+"%")
+-
+-	if len(q) > 0 {
+-		query = tx.RawQuery(qroot+" AND Cage like ?", "%"+q+"%")
+-	} else {
+-		query = tx.RawQuery(qroot)
+-	}
+-
+`
+	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1"}
+	// Comment on the added line `if len(q) == 0 {`, which is NEW line 23.
+	s.AddComment("main.go", 23, review.SideNew, "what if q is empty?")
+	p := NewReviewPager(s, diff)
+	p.SetViewport(80, 60)
+
+	rendered := stripReviewANSi(strings.Join(p.Render(80), "\n"))
+
+	// The marker must appear exactly once — on the added line only.
+	if got := strings.Count(rendered, "[1 comment(s)]"); got != 1 {
+		t.Errorf("comment indicator should appear exactly once (added line only), got %d:\n%s", got, rendered)
+	}
+	// Sanity: the marker is on the commented added line.
+	if !strings.Contains(rendered, "+ \tif len(q) == 0 { [1 comment(s)]") && !strings.Contains(rendered, "if len(q) == 0 { [1 comment(s)]") {
+		t.Errorf("comment indicator should be on the added 'if len(q) == 0' line, got:\n%s", rendered)
+	}
+	// The trailing removed blank line (old line 23) must NOT carry the marker.
+	// It renders as a bare "-" with no content; with the bug it shows "- [1 comment(s)]".
+	for _, ln := range strings.Split(rendered, "\n") {
+		trimmed := strings.TrimSpace(ln)
+		if strings.HasPrefix(trimmed, "-") && strings.Contains(trimmed, "[1 comment(s)]") && !strings.Contains(trimmed, "len(q)") {
+			t.Errorf("rogue comment indicator leaked onto a removed line: %q", trimmed)
+		}
+	}
+}
+
 func TestReviewPager_Export(t *testing.T) {
 	diff := `diff --git a/main.go b/main.go
 --- a/main.go
@@ -289,7 +395,7 @@ func TestReviewPager_Export(t *testing.T) {
 +func new() {}
 `
 	s := &review.Session{ID: "abc12345", BaseRef: "HEAD^1", ProjectDir: t.TempDir()}
-	s.AddComment("main.go", 1, "needs a test")
+	s.AddComment("main.go", 1, review.SideNew, "needs a test")
 	p := NewReviewPager(s, diff)
 
 	var exported, submitted string
@@ -300,7 +406,7 @@ func TestReviewPager_Export(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExportPath: %v", err)
 		}
-		if err := s.Export(p.Diff, path); err != nil {
+		if err := s.Export(path); err != nil {
 			t.Fatalf("Export: %v", err)
 		}
 		exported = path
@@ -326,7 +432,7 @@ func TestReviewPager_Export(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read export: %v", err)
 	}
-	if want := s.MarkdownSummary(p.Diff); string(body) != want {
+	if want := s.MarkdownSummary(); string(body) != want {
 		t.Errorf("export content differs from submit content\nwant:\n%s\ngot:\n%s", want, string(body))
 	}
 }

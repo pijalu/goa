@@ -109,7 +109,7 @@ func TestReviewCommand_Export(t *testing.T) {
 	dir := setupReviewExportRepo(t)
 	store := review.NewStore(dir)
 	session := &review.Session{ID: "abc12345", BaseRef: "HEAD^1", HeadRef: "def", ProjectDir: dir}
-	session.AddComment("a.txt", 1, "why change?")
+	session.AddComment("a.txt", 1, review.SideNew, "why change?")
 	if err := store.Save(session); err != nil {
 		t.Fatalf("Save failed: %v", err)
 	}
@@ -125,8 +125,12 @@ func TestReviewCommand_Export(t *testing.T) {
 	if !strings.Contains(content, "why change?") {
 		t.Errorf("expected comment in export, got:\n%s", content)
 	}
-	if !strings.Contains(content, "```diff") {
-		t.Errorf("expected diff block in export, got:\n%s", content)
+	// The export must point to the diff command, not embed diff content.
+	if !strings.Contains(content, "git diff HEAD^1..HEAD") {
+		t.Errorf("expected diff command pointer in export, got:\n%s", content)
+	}
+	if strings.Contains(content, "```diff") {
+		t.Errorf("export must not embed a diff code block, got:\n%s", content)
 	}
 }
 

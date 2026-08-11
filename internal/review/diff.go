@@ -31,6 +31,48 @@ type DiffLine struct {
 	OldLineNum int    // line number in the old (base) file
 }
 
+// Side identifies which side of a diff a line number belongs to. Old and new
+// line numbers are different coordinate spaces — a number alone does not
+// uniquely identify a diff line, so comments must carry the side alongside
+// the line number.
+type Side string
+
+const (
+	// SideOld is the base (pre-change) file; removed lines use its numbering.
+	SideOld Side = "old"
+	// SideNew is the current (post-change) file; added and context lines use
+	// its numbering.
+	SideNew Side = "new"
+)
+
+// LineAnchor identifies the exact position a comment attaches to: file, line
+// number, and the side of the diff the number belongs to. The side disam-
+// biguates the two coordinate spaces (see Side).
+type LineAnchor struct {
+	File    string
+	LineNum int
+	Side    Side
+}
+
+// Anchor returns the position a comment on this line attaches to. Only
+// content lines (added, removed, context) are valid comment targets; headers
+// and file meta lines report ok=false. Removed lines don't exist in the new
+// file, so they anchor to the old side; added and context lines anchor to
+// the new side.
+func (l DiffLine) Anchor() (LineAnchor, bool) {
+	if l.File == "" {
+		return LineAnchor{}, false
+	}
+	switch l.Kind {
+	case DiffAdded, DiffContext:
+		return LineAnchor{File: l.File, LineNum: l.NewLineNum, Side: SideNew}, true
+	case DiffRemoved:
+		return LineAnchor{File: l.File, LineNum: l.OldLineNum, Side: SideOld}, true
+	default:
+		return LineAnchor{}, false
+	}
+}
+
 // ParseDiff parses a unified diff into renderable lines with file and line
 // number metadata. It is intentionally minimal: it tracks the current file
 // and hunk line numbers so the pager can attach comments to the right place.

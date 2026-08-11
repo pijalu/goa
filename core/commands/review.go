@@ -128,18 +128,18 @@ func (c *ReviewCommand) showStatus(ctx core.Context) error {
 		}
 		writeFmt(ctx, "Review %s  base:%s  comments:%d\n", id, s.BaseRef, len(s.Comments))
 		for _, c := range s.Comments {
-			writeFmt(ctx, "  - %s:%d: %s\n", c.File, c.LineNum, truncateReviewText(c.Content, 60))
+			writeFmt(ctx, "  - %s: %s\n", c.AnchorLabel(), truncateReviewText(c.Content, 60))
 		}
 	}
 	return nil
 }
 
 func (c *ReviewCommand) submitReview(ctx core.Context) error {
-	s, diff, ok := c.loadLatestSession(ctx)
+	s, ok := c.loadLatestSession(ctx)
 	if !ok {
 		return nil
 	}
-	text := s.MarkdownSummary(diff)
+	text := s.MarkdownSummary()
 	if ctx.SubmitToAgent != nil {
 		ctx.SubmitToAgent(text)
 	} else {
@@ -149,7 +149,7 @@ func (c *ReviewCommand) submitReview(ctx core.Context) error {
 }
 
 func (c *ReviewCommand) exportReview(ctx core.Context) error {
-	s, diff, ok := c.loadLatestSession(ctx)
+	s, ok := c.loadLatestSession(ctx)
 	if !ok {
 		return nil
 	}
@@ -158,7 +158,7 @@ func (c *ReviewCommand) exportReview(ctx core.Context) error {
 		writeFmt(ctx, "Cannot build export path: %v\n", err)
 		return nil
 	}
-	if err := s.Export(diff, path); err != nil {
+	if err := s.Export(path); err != nil {
 		writeFmt(ctx, "Cannot export review: %v\n", err)
 		return nil
 	}
@@ -166,29 +166,28 @@ func (c *ReviewCommand) exportReview(ctx core.Context) error {
 	return nil
 }
 
-func (c *ReviewCommand) loadLatestSession(ctx core.Context) (*review.Session, string, bool) {
+// loadLatestSession loads the most recent stored review session. It does not
+// compute the diff: submit/export only need the session metadata and point
+// the agent at the diff command, so running a potentially huge `git diff`
+// here would be wasted work.
+func (c *ReviewCommand) loadLatestSession(ctx core.Context) (*review.Session, bool) {
 	store := review.NewStore(ctx.ProjectDir)
 	ids, err := store.List()
 	if err != nil {
 		writeFmt(ctx, "Cannot list reviews: %v\n", err)
-		return nil, "", false
+		return nil, false
 	}
 	if len(ids) == 0 {
 		writeStr(ctx, "No active review sessions. Start one with /review\n")
-		return nil, "", false
+		return nil, false
 	}
 	id := ids[len(ids)-1]
 	s, err := store.Load(id)
 	if err != nil {
 		writeFmt(ctx, "Cannot load review %s: %v\n", id, err)
-		return nil, "", false
+		return nil, false
 	}
-	diff, err := review.Diff(s.ProjectDir, s.BaseRef)
-	if err != nil {
-		writeFmt(ctx, "Cannot generate diff: %v\n", err)
-		return nil, "", false
-	}
-	return s, diff, true
+	return s, true
 }
 
 func truncateReviewText(s string, max int) string {
