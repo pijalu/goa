@@ -6,6 +6,7 @@ package commands
 
 import (
 	"os"
+	"strings"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
@@ -23,6 +24,62 @@ func (c *ReviewCommand) Name() string      { return "review" }
 func (c *ReviewCommand) Aliases() []string { return nil }
 func (c *ReviewCommand) ShortHelp() string { return "Review code changes with comments" }
 func (c *ReviewCommand) LongHelp() string  { return help.LongHelp(c.Name()) }
+
+// CompleteArgs implements core.ArgCompleter. It suggests diff bases for
+// /review:<base>: HEAD^N ancestry plus the most recent tags and branches.
+// With no prefix typed, "^1" (the default review base) leads the list so the
+// user sees the sensible default before providing more input; once the user
+// types, candidates filter to prefix-matching refs.
+func (c *ReviewCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
+	comps := reviewAncestryCompletions(prefix)
+	return append(comps, reviewRefCompletions(ctx.ProjectDir, prefix)...)
+}
+
+// reviewAncestryCompletions suggests HEAD^N bases. "^1" is the default and
+// always offered first; a few deeper ancestors are listed for convenience.
+func reviewAncestryCompletions(prefix string) []core.ArgCompletion {
+	ancestry := []core.ArgCompletion{
+		{Value: "^1", Description: "Default base — previous commit"},
+		{Value: "^2", Description: "2 commits back"},
+		{Value: "^3", Description: "3 commits back"},
+	}
+	return filterCompletions(ancestry, prefix)
+}
+
+// reviewRefCompletions lists the most recent tags and branches as named
+// checkpoints. Outside a git repository it yields nothing.
+func reviewRefCompletions(projectDir, prefix string) []core.ArgCompletion {
+	if projectDir == "" || !review.IsGitRepo(projectDir) {
+		return nil
+	}
+	refs, err := review.RecentRefs(projectDir, 15)
+	if err != nil {
+		return nil
+	}
+	candidates := make([]core.ArgCompletion, 0, len(refs))
+	for _, r := range refs {
+		candidates = append(candidates, core.ArgCompletion{
+			Value:       r.Name,
+			Description: "Review base (" + r.Kind + ")",
+		})
+	}
+	return filterCompletions(candidates, prefix)
+}
+
+// filterCompletions keeps candidates whose value starts with prefix. An
+// empty prefix keeps everything, preserving candidate order.
+func filterCompletions(candidates []core.ArgCompletion, prefix string) []core.ArgCompletion {
+	if prefix == "" {
+		return candidates
+	}
+	var out []core.ArgCompletion
+	for _, c := range candidates {
+		if strings.HasPrefix(c.Value, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 func (c *ReviewCommand) Run(ctx core.Context, args []string) error {
 	projectDir := ctx.ProjectDir

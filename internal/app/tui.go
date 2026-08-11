@@ -413,6 +413,7 @@ func (a *App) buildArgCompleter() func(cmdName, argPrefix string) []tui.Completi
 			return nil
 		}
 		ctx := core.Context{
+			ProjectDir:       a.subs.projectDir,
 			SkillRegistry:    a.subs.skillRegistry,
 			ToolRegistry:     a.subs.toolRegistry,
 			DocsProvider:     &DocsProvider{},
