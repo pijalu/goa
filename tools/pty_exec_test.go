@@ -268,6 +268,98 @@ func TestPTYExec_InvalidJSON_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestPTYExec_Read_StripsCarriageReturns: PTY streams carry termios ONLCR
+// line endings ("alpha\r\r\n") and progress-style bare '\r' rewrites. A '\r'
+// surviving into the tool result corrupts the TUI tool box (cursor returns
+// to column 0, padding overwrites the line start) — the "pty garbage" bug.
+// Read output must contain no carriage returns, and a rewritten line must
+// show its final visible state.
+func TestPTYExec_Read_StripsCarriageReturns(t *testing.T) {
+	mgr := internal.NewPTYManager()
+	defer mgr.Cleanup()
+	tool := &PTYExecTool{Mgr: mgr}
+
+	_, err := tool.Execute(`{"action": "start", "command": "printf 'alpha\\r\\nbeta\\r\\nprogress 1\\rprogress 2 done\\n'", "id": "cr1"}`)
+	if err != nil {
+		t.Fatalf("Start should succeed: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	result, err := tool.Execute(`{"action": "read", "id": "cr1"}`)
+	if err != nil {
+		t.Fatalf("Read should succeed: %v", err)
+	}
+	if strings.Contains(result, "\r") {
+		t.Errorf("Read output must not contain carriage returns, got: %q", result)
+	}
+	if !strings.Contains(result, "alpha\nbeta\n") {
+		t.Errorf("Read output should keep both lines, got: %q", result)
+	}
+	if !strings.Contains(result, "progress 2 done") {
+		t.Errorf("Read output should show the final rewritten line, got: %q", result)
+	}
+	if strings.Contains(result, "progress 1") {
+		t.Errorf("Overwritten progress prefix should be resolved away, got: %q", result)
+	}
+}
+
+// TestPTYExec_Read_SanitizesControlBytes: like bash/python/verify, tool
+// output must not leak terminal-corrupting control bytes (bell, backspace)
+// into the renderer.
+func TestPTYExec_Read_SanitizesControlBytes(t *testing.T) {
+	mgr := internal.NewPTYManager()
+	defer mgr.Cleanup()
+	tool := &PTYExecTool{Mgr: mgr}
+
+	_, err := tool.Execute(`{"action": "start", "command": "printf 'ding\\a back\\bspace\\n'", "id": "cb1"}`)
+	if err != nil {
+		t.Fatalf("Start should succeed: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	result, err := tool.Execute(`{"action": "read", "id": "cb1"}`)
+	if err != nil {
+		t.Fatalf("Read should succeed: %v", err)
+	}
+	for _, r := range result {
+		if r == '\a' || r == '\b' {
+			t.Errorf("Read output contains raw control byte %q: %q", r, result)
+		}
+	}
+	if !strings.Contains(result, "ding") || !strings.Contains(result, "space") {
+		t.Errorf("Read output should keep printable content, got: %q", result)
+	}
+}
+
+// TestNormalizePTYOutput covers the pure stream-to-text conversion: ONLCR
+// collapsing, progress rewrites, shorter overwrites leaving a tail, and
+// text without '\r' passing through untouched.
+func TestNormalizePTYOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no carriage returns", "plain\ntext\n", "plain\ntext\n"},
+		{"crlf collapses", "alpha\r\nbeta\r\n", "alpha\nbeta\n"},
+		{"doubled onlcr cr collapses", "alpha\r\r\nbeta\r\r\n", "alpha\nbeta\n"},
+		{"progress rewrite keeps final", "progress 1\rprogress 2 done", "progress 2 done"},
+		{"shorter overwrite leaves tail", "longer text\rshort", "shortr text"},
+		{"multiple rewrites keep last state", "aaa\rb\rcc", "cca"},
+		{"trailing cr alone", "text\r", "text"},
+		{"empty input", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizePTYOutput(tc.in); got != tc.want {
+				t.Errorf("normalizePTYOutput(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPTYExec_MultipleSessions_Independent(t *testing.T) {
 	mgr := internal.NewPTYManager()
 	defer mgr.Cleanup()

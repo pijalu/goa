@@ -148,11 +148,58 @@ func (t *PTYExecTool) ptyRead(p ptyParams) (string, error) {
 		}
 		output = "... [truncated to last 50000 bytes]\n" + output[start:]
 	}
-	// Strip ANSI for clean output (preserve newlines). Use the shared
-	// internal/ansi stripper so CSI and OSC sequences (e.g. window-title sets)
-	// are handled correctly.
-	clean := ansi.Strip(output)
+	// Resolve PTY carriage-return semantics, then sanitize. Raw PTY streams
+	// are full of '\r' (termios ONLCR even doubles them: "alpha\r\r\n"); a
+	// bare '\r' reaching the TUI renderer moves the cursor to column 0 so
+	// later text (and the tool box's background padding) overwrites the line
+	// start — the "garbage pty read" rendering bug. Strip runs first so the
+	// overwrite width is counted on plain text (escape-sequence bytes would
+	// otherwise count as columns and leave half-overwritten CSI text behind);
+	// normalizePTYOutput then resolves progress-style rewrites; Sanitize
+	// turns any residual control bytes (backspace, bell, ...) into visible
+	// '?' instead of terminal-corrupting output, matching bash/python/verify.
+	clean := ansi.Sanitize(normalizePTYOutput(ansi.Strip(output)))
 	return fmt.Sprintf("[pty_exec: read %s]\n%s\n", p.ID, clean), nil
+}
+
+// normalizePTYOutput converts a raw PTY output stream into displayable text.
+//   - "\r\n" (and doubled "\r\r\n" from termios ONLCR) collapses to "\n".
+//   - A bare '\r' is a carriage return: the following text overwrites the
+//     current line from column 0 (progress bars, spinners). The final
+//     visible line state is kept — overwritten-prefix remnants are dropped.
+func normalizePTYOutput(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if !strings.ContainsRune(line, '\r') {
+			continue
+		}
+		segments := strings.Split(line, "\r")
+		kept := ""
+		for _, seg := range segments {
+			kept = carriageReturnOverwrite(kept, seg)
+		}
+		lines[i] = kept
+	}
+	return strings.Join(lines, "\n")
+}
+
+// carriageReturnOverwrite applies one segment written after a carriage
+// return: it overwrites 'cur' from column 0, leaving any longer tail
+// untouched. Width is counted in runes (a display approximation — the
+// overwrite target is plain text, escape sequences having been stripped).
+func carriageReturnOverwrite(cur, seg string) string {
+	if seg == "" {
+		return cur
+	}
+	segRunes := []rune(seg)
+	curRunes := []rune(cur)
+	if len(segRunes) >= len(curRunes) {
+		return seg
+	}
+	return seg + string(curRunes[len(segRunes):])
 }
 
 func (t *PTYExecTool) ptyResize(p ptyParams) (string, error) {
