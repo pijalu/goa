@@ -503,8 +503,17 @@ func TestAgent_CompactEmitsCompactEvent(t *testing.T) {
 	if compactEvent == nil {
 		t.Fatal("expected compact event")
 	}
-	if !strings.Contains(compactEvent.Text, "Summary") {
-		t.Errorf("expected summary text, got %q", compactEvent.Text)
+	// The structured payload carries the strategy label and before/after
+	// usage; the summary text lives in Compaction.Detail so every surface can
+	// render the pass without parsing free text.
+	if compactEvent.Compaction == nil {
+		t.Fatalf("expected structured Compaction payload, got Text=%q", compactEvent.Text)
+	}
+	if compactEvent.Compaction.Strategy != "summarize" {
+		t.Errorf("Compaction.Strategy = %q, want summarize", compactEvent.Compaction.Strategy)
+	}
+	if !strings.Contains(compactEvent.Compaction.Detail, "Summary") {
+		t.Errorf("expected summary in Compaction.Detail, got %q", compactEvent.Compaction.Detail)
 	}
 }
 

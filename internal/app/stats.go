@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
@@ -75,6 +76,22 @@ type sessionStats struct {
 	MicroCompacts   int
 	Compacts        int
 	PrevCacheHitPct float64 // previous cache hit % for evolution comparison
+	// Compactions documents each completed compression round (strategy,
+	// before/after %, freed tokens, removed messages, time). The aggregate
+	// MicroCompacts/Compacts counters above feed the footer; this per-round
+	// record makes the session stats self-documenting (bugs.md "context
+	// compressions are invisible").
+	Compactions []CompactionRound
+}
+
+// CompactionRound documents one completed compression pass in the session.
+type CompactionRound struct {
+	Strategy    string    `json:"strategy"` // elision|selective|micro|summarize|hybrid|ceiling|overflow|truncation
+	BeforePct   int       `json:"before_pct"`
+	AfterPct    int       `json:"after_pct"`
+	FreedTokens int       `json:"freed_tokens,omitempty"`
+	Removed     int       `json:"removed,omitempty"`
+	At          time.Time `json:"at"` // when the round completed
 }
 
 func (a *App) handleAgentOutputEvent(ev *agentic.OutputEvent) {
@@ -115,20 +132,90 @@ func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
 	case agentic.EventContextReset:
 		a.resetCacheBustBaseline()
 	case agentic.EventCompact:
-		a.recordCompact(ev.Text)
+		a.recordCompact(ev)
+		a.showCompactionBubble(ev)
 	default:
 		a.handleTokenStats(ev)
 	}
 }
 
-func (a *App) recordCompact(kind string) {
+// recordCompact counts one completed compression pass and appends its
+// per-round record to the session stats. The strategy is read from the
+// structured Compaction payload, falling back to the free-text label for
+// events emitted by paths that predate the payload.
+func (a *App) recordCompact(ev *agentic.OutputEvent) {
+	strategy := ev.Text
+	if ev.Compaction != nil && ev.Compaction.Strategy != "" {
+		strategy = ev.Compaction.Strategy
+	}
 	a.statsMu.Lock()
 	defer a.statsMu.Unlock()
-	if kind == "micro" {
+	if strategy == "micro" {
 		a.microCompacts++
 	} else {
 		a.compacts++
 	}
+	a.compactions = append(a.compactions, compactionRoundFromEvent(ev, strategy))
+}
+
+// compactionRoundFromEvent builds the per-round session-stats record from an
+// EventCompact. Structured fields come from the Compaction payload; the time
+// is stamped now (the event carries no timestamp).
+func compactionRoundFromEvent(ev *agentic.OutputEvent, strategy string) CompactionRound {
+	r := CompactionRound{Strategy: strategy, At: time.Now()}
+	if ev.Compaction != nil {
+		r.BeforePct = ev.Compaction.BeforePct
+		r.AfterPct = ev.Compaction.AfterPct
+		r.FreedTokens = ev.Compaction.FreedTokens
+		r.Removed = ev.Compaction.Removed
+	}
+	return r
+}
+
+// showCompactionBubble renders a dedicated conversation element for a
+// completed compression pass so the user sees the drop instead of an
+// unexplained context reset (bugs.md "context compressions are invisible").
+// AddFlashMessage dedups a repeated same-strategy pass (a reactive ceiling
+// enforcer firing several turns in a row) by updating the last bubble in
+// place instead of stacking. It runs on the commandLoop via apply (the chat
+// single-owner invariant), guarded for headless/tests.
+func (a *App) showCompactionBubble(ev *agentic.OutputEvent) {
+	if a.subs == nil || a.subs.chat == nil {
+		return
+	}
+	a.subs.chat.AddFlashMessage(formatCompactionBubble(ev))
+}
+
+// formatCompactionBubble renders the one-line compaction bubble text. The ⚡
+// prefix + "Context compacted (<strategy>):" shape is the flash-dedup key
+// (flashKind), so repeated passes of the same strategy update in place.
+func formatCompactionBubble(ev *agentic.OutputEvent) string {
+	strategy := ev.Text
+	var ci *agentic.CompactionInfo
+	if ev.Compaction != nil {
+		ci = ev.Compaction
+		if ci.Strategy != "" {
+			strategy = ci.Strategy
+		}
+	}
+	if strategy == "" {
+		strategy = "unknown"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚡ Context compacted (%s)", strategy)
+	if ci != nil {
+		fmt.Fprintf(&b, ": %d%% → %d%%", ci.BeforePct, ci.AfterPct)
+		if ci.Removed > 0 {
+			fmt.Fprintf(&b, " · %d messages dropped", ci.Removed)
+		}
+		if ci.FreedTokens > 0 {
+			fmt.Fprintf(&b, " · ~%d tokens freed", ci.FreedTokens)
+		}
+		if ci.Detail != "" {
+			fmt.Fprintf(&b, "\n%s", ci.Detail)
+		}
+	}
+	return b.String()
 }
 
 func (a *App) clearStats() {
@@ -151,6 +238,7 @@ func (a *App) clearStats() {
 	a.turnStatsSeen = false
 	a.microCompacts = 0
 	a.compacts = 0
+	a.compactions = nil
 	a.toolCallsTotal = 0
 	a.toolCallWarningLevel = ToolCallNormal
 	a.prevCacheHitPct = 0
@@ -943,6 +1031,7 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
 	st.CacheMisses = a.tokenCacheMisses
+	st.Compactions = append([]CompactionRound(nil), a.compactions...)
 	return st
 }
 

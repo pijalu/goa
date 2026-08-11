@@ -41,10 +41,28 @@ func (a *Agent) effectiveMaxTokens() int {
 // drops the oldest non-system messages until usage is back under the ceiling.
 // This prevents runaway conversations from growing unbounded when compression
 // is disabled, misconfigured, or unable to keep up.
+//
+// The mutation runs under a.mu (enforceContextCeilingLocked); the structured
+// EventCompact is emitted after unlock so every visible surface — the
+// conversation bubble, the footer counter, and the session JSONL — records
+// the otherwise-silent reactive cut (bugs.md "context compressions are
+// invisible").
 func (a *Agent) enforceContextCeiling() {
+	before, res, ok := a.enforceContextCeilingLocked()
+	if !ok {
+		return
+	}
+	a.emitCompactionResult("ceiling", before, res, "")
+}
+
+// enforceContextCeilingLocked performs the reactive cut under a.mu and
+// returns the pre-cut stats plus the work done (messages dropped + tokens
+// freed). ok is false when nothing was cut (under ceiling, empty history, or
+// no configured window) so the caller emits no phantom event.
+func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compactionResult, ok bool) {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
-		return
+		return before, res, false
 	}
 
 	// Use effectiveHard: the ceiling enforcer is a REACTIVE safety net that
@@ -75,8 +93,9 @@ func (a *Agent) enforceContextCeiling() {
 
 	hist := a.history
 	if len(hist) <= 1 {
-		return
+		return before, res, false
 	}
+	before = a.computeContextStats()
 
 	// Compute each message's token cost once. The previous implementation
 	// removed the oldest non-system message one at a time, re-estimating the
@@ -94,7 +113,7 @@ func (a *Agent) enforceContextCeiling() {
 	// also fits the REAL window, not just the estimated one.
 	total = a.floorTokensAtProviderUsage(tok, total)
 	if total <= historyCeiling {
-		return
+		return before, res, false
 	}
 
 	// Keep the system prompt (index 0) plus the most-recent contiguous tail
@@ -168,6 +187,12 @@ func (a *Agent) enforceContextCeiling() {
 	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > historyCeiling {
 		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history + fixed cost exceeds %d tokens", hardCeiling)
 	}
+
+	// The cut dropped every non-system message before index cut. Report the
+	// round so the ceiling pass surfaces like every other compression.
+	res.removed = cut - 1
+	res.freedTokens = droppedTokens
+	return before, res, true
 }
 
 // floorTokensAtProviderUsage scales per-message token estimates up so their

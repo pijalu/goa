@@ -88,6 +88,27 @@ type PromptProgress struct {
 	TimeMs    int `json:"time_ms"`
 }
 
+// CompactionInfo describes a completed compression pass. It is attached to an
+// EventCompact OutputEvent so every visible surface (conversation bubble,
+// footer counter, session JSONL) can render/count/document the pass from a
+// single structured payload instead of inferring it from a free-text label.
+type CompactionInfo struct {
+	// Strategy names the compression pass that ran:
+	// elision|selective|micro|summarize|hybrid|ceiling|overflow|truncation.
+	Strategy string `json:"strategy"`
+	// BeforePct is the context usage percent before the pass.
+	BeforePct int `json:"before_pct"`
+	// AfterPct is the context usage percent after the pass.
+	AfterPct int `json:"after_pct"`
+	// FreedTokens is the estimated number of tokens freed (0 = unknown).
+	FreedTokens int `json:"freed_tokens,omitempty"`
+	// Removed is the number of messages dropped (0 = none / in-place edit).
+	Removed int `json:"removed,omitempty"`
+	// Detail carries the summarize summary text for CompressionSummarize,
+	// and is empty for all other strategies.
+	Detail string `json:"detail,omitempty"`
+}
+
 // OutputEvent is the unified event type broadcast to all observers.
 // The Type field determines which other fields are populated.
 type OutputEvent struct {
@@ -105,6 +126,11 @@ type OutputEvent struct {
 
 	// ContextStats carries context window usage when Type is EventContextStats.
 	ContextStats *ContextStats `json:"context_stats,omitempty"`
+
+	// Compaction carries the structured compression-pass record when Type is
+	// EventCompact. It is nil for EventCompact events emitted by code paths
+	// that predate the structured payload (treated as a bare signal).
+	Compaction *CompactionInfo `json:"compaction,omitempty"`
 
 	// Metadata is a set of opaque key/value strings attached to the event.
 	// It is NOT sent to the LLM, but is propagated through the observer

@@ -45,19 +45,23 @@ type MicroCompactionConfig struct {
 // can run even when usage is below the configured ratio.
 //
 // It self-manages the agent mutex: the history read, cache gate, and in-place
-// truncation run under a.mu; the EventCompact emission runs after unlock
-// (emitEvent acquires a.mu itself, so emitting under the lock would self-deadlock).
-func (a *Agent) microCompactForced(force bool) {
+// truncation run under a.mu; it returns the pre-pass stats plus the work done
+// so the CALLER emits the EventCompact after unlock (emitEvent acquires a.mu
+// itself, so emitting under the lock would self-deadlock). This moves the
+// single emission point to the top-level entry (compressHistoryWith /
+// compressHistoryWithStrategy), matching every other strategy.
+func (a *Agent) microCompactForced(force bool) (ContextStats, compactionResult) {
 	cfg := a.cfg.ContextCompression.MicroCompaction
 	a.mu.Lock()
+	before := a.computeContextStats()
 	if len(a.history) == 0 {
 		a.mu.Unlock()
-		return
+		return before, compactionResult{}
 	}
 	contextRatio := a.contextRatio()
 	if !force && contextRatio < cfg.MinContextRatio {
 		a.mu.Unlock()
-		return
+		return before, compactionResult{}
 	}
 
 	// Cache-aware gating (resurrects the previously-dead CacheMissThreshold).
@@ -78,20 +82,18 @@ func (a *Agent) microCompactForced(force bool) {
 				cfg.CacheMissThreshold, contextRatio*100, rt.deferralCeiling())
 		}
 		a.mu.Unlock()
-		return
+		return before, compactionResult{}
 	}
 
 	keepIdx := computeKeepIdx(a.history, cfg.KeepRecentMessages, force)
 	changed := a.truncateToolResults(a.history, keepIdx, cfg)
 	a.mu.Unlock()
 
-	if changed > 0 {
-		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Info, "Applied micro compaction: truncated %d tool results, keepIdx=%d, ratio=%.1f%%",
-				changed, keepIdx, contextRatio*100)
-		}
-		a.emitEvent(OutputEvent{Type: EventCompact, Text: "micro"})
+	if changed > 0 && a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "Applied micro compaction: truncated %d tool results, keepIdx=%d, ratio=%.1f%%",
+			changed, keepIdx, contextRatio*100)
 	}
+	return before, compactionResult{changed: changed}
 }
 
 // cacheAssumedCold reports whether the provider prefix cache is presumed cold

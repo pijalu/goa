@@ -116,6 +116,66 @@ func TestSessionListAndLoad(t *testing.T) {
 	}
 }
 
+// TestSessionCompactEventRoundTrip verifies an EventCompact carrying the
+// structured CompactionInfo payload survives the JSONL write/read round-trip,
+// so the session log documents compressions (bugs.md "context compressions
+// are invisible").
+func TestSessionCompactEventRoundTrip(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+	ss.StartSession()
+	// A real session mixes conversation content with compact events; a lone
+	// compact event (no user/assistant turn) is hidden from listings as an
+	// empty transcript, so seed one user message first.
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
+	ss.WriteEvent(agentic.OutputEvent{
+		Type: agentic.EventCompact,
+		Text: "ceiling",
+		Compaction: &agentic.CompactionInfo{
+			Strategy:    "ceiling",
+			BeforePct:   95,
+			AfterPct:    43,
+			FreedTokens: 105689,
+			Removed:     238,
+		},
+	})
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	sessions, err := ss.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+	events, err := ss.LoadSession(sessions[0].Name)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	var got *agentic.OutputEvent
+	for i := range events {
+		if events[i].Type == agentic.EventCompact {
+			got = &events[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("no compact event found after round-trip")
+	}
+	if got.Compaction == nil {
+		t.Fatal("Compaction payload did not survive the JSONL round-trip")
+	}
+	if got.Compaction.Strategy != "ceiling" || got.Compaction.BeforePct != 95 ||
+		got.Compaction.AfterPct != 43 || got.Compaction.FreedTokens != 105689 ||
+		got.Compaction.Removed != 238 {
+		t.Errorf("Compaction = %+v, want ceiling 95→43 freed=105689 removed=238", got.Compaction)
+	}
+}
+
 // TestSessionMultipleSessions verifies multiple sessions are independent.
 func TestSessionMultipleSessions(t *testing.T) {
 	dir, cleanup := setupTestSession(t)

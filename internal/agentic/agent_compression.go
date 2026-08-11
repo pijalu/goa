@@ -33,6 +33,7 @@ const elidedToolResultContent = "[tool result elided]"
 func (a *Agent) Compact(ctx context.Context) error {
 	a.mu.Lock()
 	empty := len(a.history) == 0
+	before := a.computeContextStats()
 	a.mu.Unlock()
 	if empty {
 		return nil
@@ -68,6 +69,10 @@ func (a *Agent) Compact(ctx context.Context) error {
 	// index-0 system skip, rejected by strict providers) and obliterated the
 	// provider's prompt cache by wholesale prefix replacement.
 	a.mu.Lock()
+	removed := len(a.history) - 2
+	if removed < 0 {
+		removed = 0
+	}
 	a.history = []Message{
 		{Type: Content, Role: User, Content: compactSummaryRequestPrompt},
 		{Type: Content, Role: Assistant, Content: summary},
@@ -76,7 +81,10 @@ func (a *Agent) Compact(ctx context.Context) error {
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 
-	a.emitEvent(OutputEvent{Type: EventCompact, Text: summary})
+	// Compact keeps its internal emission (public API contract +
+	// TestAgent_CompactEmitsCompactEvent), now enriched with the structured
+	// payload. Text stays the summary so existing consumers keep working.
+	a.emitCompaction("summarize", before, a.ContextStats(), removed, 0, summary)
 	return nil
 }
 
@@ -296,27 +304,89 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 
 	switch strategy {
 	case CompressionToolElision:
-		a.mu.Lock()
-		a.compressToolElision(force)
-		a.mu.Unlock()
+		before, res := a.runElision(force)
+		a.emitCompactionResult("elision", before, res, "")
 	case CompressionSelective:
-		a.mu.Lock()
-		a.compressSelective()
-		a.mu.Unlock()
+		before, res := a.runSelective()
+		a.emitCompactionResult("selective", before, res, "")
 	case CompressionSummarize:
 		return a.Compact(ctx)
 	case CompressionHybrid:
 		return a.compressHybrid(ctx)
 	case CompressionMicro:
-		// microCompactForced self-manages a.mu (it emits after unlock), so do
-		// not wrap it in a held lock here.
-		a.microCompactForced(force)
+		before, res := a.microCompactForced(force)
+		a.emitCompactionResult("micro", before, res, "")
 	default:
-		a.mu.Lock()
-		a.compressToolElision(force)
-		a.mu.Unlock()
+		before, res := a.runElision(force)
+		a.emitCompactionResult("elision", before, res, "")
 	}
 	return nil
+}
+
+// compactionResult is the outcome of a single in-memory compression step,
+// captured while the step held a.mu so callers can emit an accurate
+// EventCompact after unlock (emitEvent re-acquires a.mu, so it must never
+// run under the lock).
+type compactionResult struct {
+	removed     int // messages dropped from history
+	freedTokens int // estimated tokens freed (0 = unknown)
+	changed     int // messages mutated in place (elision / micro truncation)
+	escalated   bool // a cheaper step escalated into a harder one (elision→selective)
+}
+
+// didWork reports whether the pass changed history in any observable way.
+func (r compactionResult) didWork() bool {
+	return r.removed > 0 || r.changed > 0 || r.freedTokens > 0
+}
+
+// emitCompactionResult emits a single structured EventCompact after a
+// compression pass, measuring the post-pass usage off-lock. It emits nothing
+// when the pass did no work so observers never see a phantom compaction.
+func (a *Agent) emitCompactionResult(strategy string, before ContextStats, res compactionResult, detail string) {
+	if !res.didWork() {
+		return
+	}
+	a.emitCompaction(strategy, before, a.ContextStats(), res.removed, res.freedTokens, detail)
+}
+
+// emitCompaction emits the structured EventCompact shared by every
+// compression path. The Text label mirrors Compaction.Strategy so legacy
+// consumers keyed on Text (session JSONL greps, the footer classifier) keep
+// working while new consumers read the structured payload.
+func (a *Agent) emitCompaction(strategy string, before, after ContextStats, removed, freed int, detail string) {
+	a.emitEvent(OutputEvent{
+		Type: EventCompact,
+		Text: strategy,
+		Compaction: &CompactionInfo{
+			Strategy:    strategy,
+			BeforePct:   before.UsagePercent,
+			AfterPct:    after.UsagePercent,
+			FreedTokens: freed,
+			Removed:     removed,
+			Detail:      detail,
+		},
+	})
+}
+
+// runElision executes compressToolElision under a.mu and returns the
+// pre-pass stats plus the work done. The emission happens after unlock in
+// the caller.
+func (a *Agent) runElision(force bool) (ContextStats, compactionResult) {
+	a.mu.Lock()
+	before := a.computeContextStats()
+	res := a.compressToolElision(force)
+	a.mu.Unlock()
+	return before, res
+}
+
+// runSelective executes compressSelective under a.mu and returns the
+// pre-pass stats plus the work done.
+func (a *Agent) runSelective() (ContextStats, compactionResult) {
+	a.mu.Lock()
+	before := a.computeContextStats()
+	res := a.compressSelective()
+	a.mu.Unlock()
+	return before, res
 }
 
 // compressHybrid applies tool_elision then selective if still over threshold.
@@ -324,20 +394,30 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 // The "still too full" gate uses the escalation level (effectiveHard−5), not
 // the proactive trigger — so the last-resort summarize only fires when the
 // window is genuinely near full, independent of any opt-in trigger level.
+//
+// Emission: exactly one EventCompact per invocation. When the cheap steps
+// free enough, a single "hybrid" event fires; when they escalate to Compact,
+// Compact emits its own "summarize" event and no "hybrid" event fires (the
+// elision/selective work is subsumed by the summarize).
 func (a *Agent) compressHybrid(ctx context.Context) error {
 	threshold := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
 
 	a.mu.Lock()
-	a.compressToolElision(true)
+	before := a.computeContextStats()
+	res := a.compressToolElision(true)
 	stats := a.computeContextStats()
 	needMore := stats.UsagePercent >= threshold
 	if needMore {
-		a.compressSelective()
+		sel := a.compressSelective()
+		res.removed += sel.removed
+		res.changed += sel.changed
+		res.freedTokens += sel.freedTokens
 		stats = a.computeContextStats()
 		needMore = stats.UsagePercent >= threshold
 	}
 	a.mu.Unlock()
 	if !needMore {
+		a.emitCompactionResult("hybrid", before, res, "")
 		return nil
 	}
 	return a.Compact(ctx)
@@ -349,7 +429,11 @@ func (a *Agent) compressHybrid(ctx context.Context) error {
 // The proactive path (force=false) picks its boundary via
 // proactiveElisionBoundary: eager with a cold cache, token-budgeted with
 // hysteresis when the pass must bust a hot provider prefix cache.
-func (a *Agent) compressToolElision(force bool) {
+//
+// It returns the work done (messages mutated in place + estimated tokens
+// freed, plus any selective escalation) so the caller can emit one EventCompact
+// after unlock. The caller must hold a.mu.
+func (a *Agent) compressToolElision(force bool) compactionResult {
 	preserve := a.cfg.ContextCompression.PreserveRecentTurns
 	if preserve == 0 {
 		preserve = 2
@@ -364,7 +448,7 @@ func (a *Agent) compressToolElision(force bool) {
 	} else {
 		boundary, escalate = a.proactiveElisionBoundary(boundary)
 	}
-	a.elideToolMessages(boundary)
+	changed, freed := a.elideToolMessages(boundary)
 	if boundary > 1 {
 		// Tool payloads were replaced in place: the recorded provider prompt
 		// no longer matches the conversation.
@@ -373,6 +457,7 @@ func (a *Agent) compressToolElision(force bool) {
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "Applied tool_elision to messages before index %d", boundary)
 	}
+	res := compactionResult{changed: changed, freedTokens: freed}
 	if escalate {
 		// The elidable payload could not meet the hysteresis budget, so this
 		// hot-cache bust would repeat next round. Drop old turns instead so
@@ -380,8 +465,13 @@ func (a *Agent) compressToolElision(force bool) {
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Info, "tool_elision budget unmet: escalating to selective compression")
 		}
-		a.compressSelective()
+		sel := a.compressSelective()
+		res.removed += sel.removed
+		res.changed += sel.changed
+		res.freedTokens += sel.freedTokens
+		res.escalated = true
 	}
+	return res
 }
 
 // forcedElisionBoundary applies the forced-pass floor: keep only the two most
@@ -476,26 +566,39 @@ func computeElisionBoundary(histLen, preserve int) int {
 	return boundary
 }
 
-func (a *Agent) elideToolMessages(boundary int) {
+// elideToolMessages replaces tool payloads before boundary with placeholders.
+// It returns the number of messages mutated and the estimated tokens freed
+// (sum of the per-message reclaim). The caller must hold a.mu.
+func (a *Agent) elideToolMessages(boundary int) (changed, freed int) {
 	for i := 1; i < boundary && i < len(a.history); i++ {
 		msg := &a.history[i]
+		reclaim := 0
 		switch msg.Role {
 		case Assistant:
 			if len(msg.ToolCalls) > 0 {
 				for j := range msg.ToolCalls {
+					reclaim += estimateTokens(msg.ToolCalls[j].Arguments) - estimateTokens(elidedToolCallArguments)
 					msg.ToolCalls[j].Arguments = elidedToolCallArguments
 				}
 			}
 		case ToolRole:
 			// Always replace the tool result body with a compact placeholder,
 			// regardless of size, so tool_elision consistently frees tokens.
+			reclaim += estimateTokens(msg.Content) - estimateTokens(elidedToolResultContent)
 			msg.Content = elidedToolResultContent
 		}
+		if reclaim > 0 {
+			changed++
+			freed += reclaim
+		}
 	}
+	return changed, freed
 }
 
 // compressSelective drops oldest messages, keeping system + recent turns.
-func (a *Agent) compressSelective() {
+// It returns the number of messages removed so the caller can emit one
+// EventCompact after unlock. The caller must hold a.mu.
+func (a *Agent) compressSelective() compactionResult {
 	preserve := a.cfg.ContextCompression.PreserveRecentTurns
 	if preserve == 0 {
 		preserve = 2
@@ -519,6 +622,7 @@ func (a *Agent) compressSelective() {
 	if a.cfg.Logger != nil {
 		a.cfg.Logger.Log(Info, "Applied selective compression: removed %d messages", removed)
 	}
+	return compactionResult{removed: removed}
 }
 
 // findCompressionBoundary finds the oldest message index to keep, ensuring
@@ -618,19 +722,47 @@ func (a *Agent) maybeCompressAfterLengthTruncation() {
 	// Cheap strategies only touch tool payloads and cannot be trusted to free
 	// enough at the window edge. With the default (empty) strategy this reduces
 	// to tool_elision + selective; the explicit summarize/hybrid paths skip the
-	// LLM call here (no ctx) and run the same free-space steps directly.
-	if a.cfg.ContextCompression.Strategy == "" {
+	// LLM call here (no ctx) and run the same free-space steps directly. Micro
+	// compaction needs a lock-free emission boundary, so it runs off-lock via
+	// compressHistoryWithStrategy (which emits its own "micro" event); the
+	// selective follow-up then reports as "truncation".
+	strategy := a.cfg.ContextCompression.Strategy
+	if strategy == CompressionMicro {
+		a.compressHistoryWithStrategy(string(strategy), true)
 		a.mu.Lock()
-		a.compressToolElision(true)
-		a.compressSelective()
+		before := a.computeContextStats()
+		res := a.compressSelective()
 		a.mu.Unlock()
-	} else {
-		a.compressHistoryWithStrategy(string(a.cfg.ContextCompression.Strategy), true)
-		a.mu.Lock()
-		a.compressSelective()
-		a.mu.Unlock()
+		a.emitCompactionResult("truncation", before, res, "")
+		a.emitContextStats()
+		return
 	}
+	a.mu.Lock()
+	before := a.computeContextStats()
+	var res compactionResult
+	if strategy == "" {
+		e := a.compressToolElision(true)
+		s := a.compressSelective()
+		res = mergeCompaction(e, s)
+	} else {
+		res = a.compressHistoryWithStrategyLocked(string(strategy), true)
+		s := a.compressSelective()
+		res = mergeCompaction(res, s)
+	}
+	a.mu.Unlock()
+	a.emitCompactionResult("truncation", before, res, "")
 	a.emitContextStats()
+}
+
+// mergeCompaction folds the work of two in-memory steps into one record so a
+// multi-step pass emits a single EventCompact.
+func mergeCompaction(x, y compactionResult) compactionResult {
+	return compactionResult{
+		removed:     x.removed + y.removed,
+		freedTokens: x.freedTokens + y.freedTokens,
+		changed:     x.changed + y.changed,
+		escalated:   x.escalated || y.escalated,
+	}
 }
 
 // handleContextError checks if the error is a context-length error and, if
@@ -675,55 +807,71 @@ func (a *Agent) handleContextError(ctx context.Context, err error) {
 // selective message removal ALWAYS runs here to buy real headroom.
 func (a *Agent) compressOverflowRecovery(ctx context.Context) {
 	a.mu.Lock()
-	a.compressToolElision(true)
-	a.compressSelective()
+	before := a.computeContextStats()
+	e := a.compressToolElision(true)
+	s := a.compressSelective()
+	res := mergeCompaction(e, s)
 	stats := a.computeContextStats()
 	a.mu.Unlock()
 
 	// If the estimate still sits at the window edge, escalate to a summarize as
 	// the last resort (pi-style): the cheaper steps could not free enough.
+	// When it escalates, Compact emits its own "summarize" event, so the
+	// pre-escalation elision/selective work is NOT separately reported (it is
+	// subsumed by the summarize) — exactly one EventCompact per recovery.
 	threshold := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
 	if stats.UsagePercent >= threshold {
 		if err := a.Compact(ctx); err != nil && a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Error, "Context-overflow summarize failed: %v", err)
 		}
+	} else {
+		a.emitCompactionResult("overflow", before, res, "")
 	}
 	a.emitContextStats()
 }
 
 // compressHistoryWithStrategy applies the named compression strategy
 // directly (empty = tool_elision).  The force parameter bypasses internal
-// per-strategy thresholds.
+// per-strategy thresholds. Micro compaction self-manages its own lock (and
+// now reports through the caller's emission point).
 func (a *Agent) compressHistoryWithStrategy(strategy string, force bool) {
 	// Build a temporary Ctx-free strategy dispatch.  The summarization
 	// strategy needs a real context, so we skip it here (it is not a
 	// useful emergency strategy anyway since it costs an LLM call).
+	if CompressionStrategy(strategy) == CompressionMicro {
+		before, res := a.microCompactForced(force)
+		a.emitCompactionResult("micro", before, res, "")
+		return
+	}
+	a.mu.Lock()
+	a.compressHistoryWithStrategyLocked(strategy, force)
+	a.mu.Unlock()
+}
+
+// compressHistoryWithStrategyLocked is the a.mu-held core of
+// compressHistoryWithStrategy: in-memory strategies only (selective /
+// elision / hybrid's free-space steps). It returns the work done so the
+// caller can emit a single EventCompact after unlock. Micro compaction is
+// NOT handled here (it needs the lock-free emission boundary); the caller
+// must route CompressionMicro to microCompactForced before acquiring a.mu.
+func (a *Agent) compressHistoryWithStrategyLocked(strategy string, force bool) compactionResult {
 	switch CompressionStrategy(strategy) {
 	case CompressionSelective:
-		a.mu.Lock()
-		a.compressSelective()
-		a.mu.Unlock()
-	case CompressionToolElision:
-		a.mu.Lock()
-		a.compressToolElision(force)
-		a.mu.Unlock()
-	case CompressionMicro:
-		// microCompactForced self-manages a.mu (it emits after unlock).
-		a.microCompactForced(force)
+		return a.compressSelective()
 	case CompressionHybrid:
-		a.mu.Lock()
-		a.compressToolElision(true)
+		res := a.compressToolElision(true)
 		stats := a.computeContextStats()
 		maxTokens := a.effectiveMaxTokens()
 		escalation := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
 		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*escalation/100 {
-			a.compressSelective()
+			s := a.compressSelective()
+			res = mergeCompaction(res, s)
 		}
-		a.mu.Unlock()
+		return res
+	case CompressionToolElision:
+		return a.compressToolElision(force)
 	default:
-		a.mu.Lock()
-		a.compressToolElision(force)
-		a.mu.Unlock()
+		return a.compressToolElision(force)
 	}
 }
 
