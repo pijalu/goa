@@ -112,9 +112,12 @@ regular expression pattern, return a corresponding Match object.`),
  of Match objects (CPython returns a lazy iterator; see module doc).`),
 			py.MustNewMethod("sub", reSub, 0, `sub(pattern, repl, string, flags=0) -> str
 
-Return the string obtained by replacing the leftmost non-overlapping
-occurrences of pattern in string by the replacement repl. The repl
-is a literal string; backreferences ($1, \1) are not supported.`),
+	Return the string obtained by replacing the leftmost non-overlapping
+	occurrences of pattern in string by the replacement repl. If repl is
+	a string, \1/\g<1>/\g<name> group references and \\ escapes are
+	expanded (CPython template semantics). If repl is a callable, it is
+	invoked per match with the Match object and its return value is used
+	as the replacement.`),
 			py.MustNewMethod("split", reSplit, 0, `split(pattern, string, flags=0) -> list[str]
 
 Split string by the occurrences of pattern.`),
@@ -155,7 +158,9 @@ pattern, return a corresponding Match object.`)
 	patternType.Dict["sub"] = py.MustNewMethod("sub", patternSub, 0, `sub(repl, string) -> str
 
 Return the string obtained by replacing the leftmost non-overlapping
-occurrences of this pattern in string by the replacement repl.`)
+occurrences of this pattern in string by the replacement repl. repl
+may be a template string (\1, \g<1>, \g<name>) or a callable taking
+the Match object.`)
 	patternType.Dict["split"] = py.MustNewMethod("split", patternSplit, 0, `split(string) -> list[str]
 
 Split string by the occurrences of this pattern.`)
@@ -260,7 +265,9 @@ func finditerMatches(pp *Pattern, txt string) py.Object {
 	return py.NewListFromItems(items)
 }
 
-// reSub implements re.sub(pattern, repl, string, flags=0).
+// reSub implements re.sub(pattern, repl, string, flags=0). repl may be a
+// template string (with \1-style and \g<name> group references, CPython
+// semantics) or a callable taking a Match and returning the replacement.
 func reSub(self py.Object, args py.Tuple) (py.Object, error) {
 	var pattern, repl, str, flagsObj py.Object
 	if err := py.UnpackTuple(args, nil, "sub", 3, 4, &pattern, &repl, &str, &flagsObj); err != nil {
@@ -282,11 +289,7 @@ func reSub(self py.Object, args py.Tuple) (py.Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	replStr, err := compat.AsString(repl, "sub")
-	if err != nil {
-		return nil, err
-	}
-	return py.String(pp.re.ReplaceAllLiteralString(txt, replStr)), nil
+	return substituteAll(pp, txt, repl, "sub")
 }
 
 // reSplit implements re.split(pattern, string, flags=0).
@@ -378,6 +381,8 @@ func patternFinditer(self py.Object, args py.Tuple) (py.Object, error) {
 	return finditerMatches(pp, txt), nil
 }
 
+// patternSub implements Pattern.sub(repl, string); like re.sub, repl may be
+// a template string or a callable taking a Match.
 func patternSub(self py.Object, args py.Tuple) (py.Object, error) {
 	var repl, str py.Object
 	if err := py.UnpackTuple(args, nil, "sub", 2, 2, &repl, &str); err != nil {
@@ -391,11 +396,222 @@ func patternSub(self py.Object, args py.Tuple) (py.Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	replStr, err := compat.AsString(repl, "sub")
-	if err != nil {
-		return nil, err
+	return substituteAll(pp, txt, repl, "sub")
+}
+
+// substituteAll replaces every non-overlapping match of pp in txt. A
+// callable repl is invoked per match with the Match object and its return
+// value (coerced to str) is spliced in — exceptions propagate unchanged. A
+// str/bytes repl is expanded as a CPython replacement template (\1, \g<1>,
+// \g<name>); a template without escapes takes the literal fast path.
+func substituteAll(pp *Pattern, txt string, repl py.Object, fn string) (py.Object, error) {
+	if _, callable := repl.(py.I__call__); callable {
+		return substituteCallable(pp, txt, repl, fn)
 	}
-	return py.String(pp.re.ReplaceAllLiteralString(txt, replStr)), nil
+	tpl, err := compat.AsString(repl, fn)
+	if err != nil {
+		return nil, py.ExceptionNewf(py.TypeError,
+			"%s() repl must be a string or callable, not %s", fn, repl.Type().Name)
+	}
+	if !strings.ContainsRune(tpl, '\\') {
+		return py.String(pp.re.ReplaceAllLiteralString(txt, tpl)), nil
+	}
+	return substituteTemplate(pp, txt, tpl)
+}
+
+// substituteCallable calls repl(match) for each match of pp in txt and
+// splices the stringified results in place of the matched text.
+func substituteCallable(pp *Pattern, txt string, repl py.Object, fn string) (py.Object, error) {
+	matches := pp.re.FindAllStringSubmatchIndex(txt, -1)
+	if len(matches) == 0 {
+		return py.String(txt), nil
+	}
+	var b strings.Builder
+	b.Grow(len(txt))
+	last := 0
+	for _, indices := range matches {
+		b.WriteString(txt[last:indices[0]])
+		res, err := py.Call(repl, py.Tuple{&Match{pattern: pp, text: txt, indices: indices}}, nil)
+		if err != nil {
+			return nil, err
+		}
+		piece, err := compat.AsString(res, fn)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(piece)
+		last = indices[1]
+	}
+	b.WriteString(txt[last:])
+	return py.String(b.String()), nil
+}
+
+// substituteTemplate expands a CPython-style replacement template for each
+// match of pp in txt: \1..\99 reference groups by number, \g<N> and
+// \g<name> reference groups by number or name, \\ yields a literal
+// backslash, and \<ASCII-letter> otherwise raises CPython's 'bad escape'
+// error. Out-of-range groups raise CPython's 'invalid group reference'.
+func substituteTemplate(pp *Pattern, txt, tpl string) (py.Object, error) {
+	matches := pp.re.FindAllStringSubmatchIndex(txt, -1)
+	if len(matches) == 0 {
+		return py.String(txt), nil
+	}
+	var b strings.Builder
+	b.Grow(len(txt))
+	last := 0
+	for _, indices := range matches {
+		expanded, err := expandTemplate(pp, txt, tpl, indices)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(txt[last:indices[0]])
+		b.WriteString(expanded)
+		last = indices[1]
+	}
+	b.WriteString(txt[last:])
+	return py.String(b.String()), nil
+}
+
+// expandTemplate renders a single match's replacement from tpl.
+func expandTemplate(pp *Pattern, txt, tpl string, indices []int) (string, error) {
+	m := &Match{pattern: pp, text: txt, indices: indices}
+	var b strings.Builder
+	for i := 0; i < len(tpl); i++ {
+		consumed, err := expandTemplateByte(pp, m, tpl, i, &b)
+		if err != nil {
+			return "", err
+		}
+		i += consumed
+	}
+	return b.String(), nil
+}
+
+// expandTemplateByte writes the expansion of the template unit starting at
+// tpl[i] (a literal byte or a backslash escape) and returns how many extra
+// template bytes it consumed beyond the current one.
+func expandTemplateByte(pp *Pattern, m *Match, tpl string, i int, b *strings.Builder) (int, error) {
+	c := tpl[i]
+	if c != '\\' || i+1 >= len(tpl) {
+		// A trailing backslash is kept verbatim (RE2-subset pragmatism;
+		// CPython raises 'bad escape (end of pattern)').
+		b.WriteByte(c)
+		return 0, nil
+	}
+	switch n := tpl[i+1]; {
+	case n == '\\':
+		b.WriteByte('\\')
+		return 1, nil
+	case n == 'g':
+		consumed, err := expandGReference(pp, m, tpl, i, b)
+		if err != nil {
+			return 0, err
+		}
+		return consumed, nil
+	case n >= '0' && n <= '9':
+		consumed, err := expandNumericReference(pp, m, tpl, i, b)
+		if err != nil {
+			return 0, err
+		}
+		return consumed, nil
+	case isASCIILetter(n):
+		return 0, py.ExceptionNewf(py.ValueError,
+			"bad escape \\%c at position %d", n, i)
+	default:
+		// Non-letter, non-digit escapes (e.g. \n, \t) are kept verbatim,
+		// matching CPython.
+		b.WriteByte('\\')
+		b.WriteByte(n)
+		return 1, nil
+	}
+}
+
+// expandNumericReference expands a \N or \NN group reference at tpl[i]
+// (i points at the backslash) and returns the bytes consumed after it.
+func expandNumericReference(pp *Pattern, m *Match, tpl string, i int, b *strings.Builder) (int, error) {
+	num := int(tpl[i+1] - '0')
+	used := 1
+	if i+2 < len(tpl) && tpl[i+2] >= '0' && tpl[i+2] <= '9' {
+		num = num*10 + int(tpl[i+2]-'0')
+		used = 2
+	}
+	if err := writeTemplateGroup(pp, m, num, b); err != nil {
+		return 0, err
+	}
+	return used, nil
+}
+
+// expandGReference expands a \g<N> or \g<name> group reference starting at
+// the backslash at tpl[i]. It writes the referenced group text to b and
+// returns the number of template bytes consumed after the backslash
+// ("g<N>"), mirroring CPython's error wording for malformed references.
+func expandGReference(pp *Pattern, m *Match, tpl string, i int, b *strings.Builder) (int, error) {
+	if i+2 >= len(tpl) || tpl[i+2] != '<' {
+		return 0, py.ExceptionNewf(py.ValueError, "bad escape \\g at position %d", i)
+	}
+	close := strings.IndexByte(tpl[i+3:], '>')
+	if close < 0 {
+		return 0, py.ExceptionNewf(py.ValueError, "bad escape \\g at position %d", i)
+	}
+	name := tpl[i+3 : i+3+close]
+	if name == "" {
+		return 0, py.ExceptionNewf(py.ValueError, "missing group name at position %d", i+3)
+	}
+	if isASCIIAllDigits(name) {
+		num := 0
+		for _, d := range name {
+			num = num*10 + int(d-'0')
+		}
+		if err := writeTemplateGroup(pp, m, num, b); err != nil {
+			return 0, err
+		}
+		return 2 + close + 1, nil
+	}
+	num := groupIndexByName(pp, name)
+	if num < 0 {
+		return 0, py.ExceptionNewf(py.IndexError,
+			"unknown group name '%s' at position %d", name, i+3)
+	}
+	if err := writeTemplateGroup(pp, m, num, b); err != nil {
+		return 0, err
+	}
+	return 2 + close + 1, nil
+}
+
+// writeTemplateGroup writes the text of group num for match m to b,
+// validating the reference the way CPython does. Group 0 refers to the
+// whole match; an unmatched optional group expands to the empty string.
+func writeTemplateGroup(pp *Pattern, m *Match, num int, b *strings.Builder) error {
+	if num < 0 || num > pp.re.NumSubexp() {
+		return py.ExceptionNewf(py.IndexError,
+			"invalid group reference %d at position 1", num)
+	}
+	b.WriteString(m.getGroup(num))
+	return nil
+}
+
+// groupIndexByName returns the 1-based group index for a named group, or -1.
+func groupIndexByName(pp *Pattern, name string) int {
+	for i, n := range pp.re.SubexpNames() {
+		if i > 0 && n == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// isASCIILetter reports whether c is an ASCII letter.
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isASCIIAllDigits reports whether s is non-empty ASCII digits only.
+func isASCIIAllDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 func patternSplit(self py.Object, args py.Tuple) (py.Object, error) {

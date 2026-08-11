@@ -548,3 +548,211 @@ print("string_attr:", ms[0].string)
 		}
 	}
 }
+
+// TestReSubCallable replays the reported session failure: re.sub with a
+// callable replacement raised "TypeError: 'sub() argument must be str, not
+// function'". Callable repl must receive a Match and its return value is
+// spliced in per match.
+func TestReSubCallable(t *testing.T) {
+	code := `
+import re
+
+def sub_se(m):
+    return "skillEnabled(%s, %s, nil)" % (m.group(1), m.group(2))
+
+s2 = re.sub(r'skillEnabled\((cfg|got|fresh), (["a-zA-Z0-9_-]+|name)\)', sub_se,
+            'skillEnabled(cfg, "goal") and skillEnabled(got, name)')
+print(s2)
+print(re.sub(r'[0-9]+', lambda m: str(int(m.group(0)) * 2), 'a1 b22 c333'))
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	for _, want := range []string{
+		`skillEnabled(cfg, "goal", nil) and skillEnabled(got, name, nil)`,
+		"a2 b44 c666",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output, got: %s", want, out)
+		}
+	}
+}
+
+// TestReSubCallablePattern covers Pattern.sub with a callable replacement.
+func TestReSubCallablePattern(t *testing.T) {
+	code := `
+import re
+p = re.compile(r'(a)(b)?')
+print(p.sub(lambda m: '<' + m.group(1) + '>', 'ab a ab'))
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "<a> <a> <a>") {
+		t.Errorf("expected '<a> <a> <a>' in output, got: %s", out)
+	}
+}
+
+// TestReSubCallableNoMatch verifies the callback is never invoked when the
+// pattern does not match.
+func TestReSubCallableNoMatch(t *testing.T) {
+	code := `
+import re
+calls = []
+def cb(m):
+    calls.append(m.group(0))
+    return 'X'
+print(re.sub(r'z+', cb, 'abc'))
+print('calls:', len(calls))
+`
+	out, err := pyCode(t, code)
+	if err != nil {
+		t.Fatalf("error: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(out, "abc") || !strings.Contains(out, "calls: 0") {
+		t.Errorf("expected unchanged text and 0 calls, got: %s", out)
+	}
+}
+
+// TestReSubCallableException verifies an exception raised by the callback
+// propagates unchanged.
+func TestReSubCallableException(t *testing.T) {
+	code := `
+import re
+def boom(m):
+    raise ValueError('from callback')
+print(re.sub(r'a', boom, 'a'))
+`
+	out, err := pyCode(t, code)
+	if err == nil {
+		t.Fatalf("expected callback exception, got output: %s", out)
+	}
+	if !strings.Contains(err.Error(), "ValueError") || !strings.Contains(err.Error(), "from callback") {
+		t.Errorf("expected ValueError 'from callback' to propagate, got: %v", err)
+	}
+}
+
+// TestReSubTemplate covers CPython-style replacement templates: \1 numeric
+// references, \g<N>, \g<name>, literal backslash handling, and error cases.
+func TestReSubTemplate(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want string
+	}{
+		{
+			"numeric reference",
+			`import re
+print(re.sub(r'(\w+)@(\w+)', r'\2@\1', 'user@host'))`,
+			"host@user",
+		},
+		{
+			"g numeric reference",
+			`import re
+print(re.sub(r'(\w+)@(\w+)', r'\g<2>.\g<1>', 'user@host'))`,
+			"host.user",
+		},
+		{
+			"g named reference",
+			`import re
+print(re.sub(r'(?P<word>\w+)=(?P<val>\w+)', r'\g<val>:\g<word>', 'a=1'))`,
+			"1:a",
+		},
+		{
+			"group zero whole match",
+			`import re
+print(re.sub(r'\d+', r'[\g<0>]', 'a12b'))`,
+			"a[12]b",
+		},
+		{
+			"escaped backslash",
+			`import re
+print(re.sub(r'a', r'\\path\\', 'a a'))`,
+			`\path\ \path\`,
+		},
+		{
+			"literal backslash-n kept",
+			`import re
+print(re.sub(r'a', r'\\n', 'a'))`,
+			`\n`,
+		},
+		{
+			"mixed literal and reference",
+			`import re
+print(re.sub(r'x(\d)x', r'<\1>!', 'x1x x2x'))`,
+			"<1>! <2>!",
+		},
+		{
+			"no match returns original",
+			`import re
+print(re.sub(r'z(\d)', r'\1!', 'abc'))`,
+			"abc",
+		},
+		{
+			"pattern method template",
+			`import re
+p = re.compile(r'(\w)(\w)')
+print(p.sub(r'\2\1', 'ab cd'))`,
+			"ba dc",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := pyCode(t, tt.code)
+			if err != nil {
+				t.Fatalf("error: %v\noutput: %s", err, out)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("expected %q in output, got: %s", tt.want, out)
+			}
+		})
+	}
+}
+
+// TestReSubTemplateErrors covers template error cases: out-of-range group,
+// bad escape, unknown group name, and non-string non-callable repl.
+func TestReSubTemplateErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want string
+	}{
+		{
+			"out of range group",
+			`import re
+print(re.sub(r'(a)', r'\2', 'a'))`,
+			"invalid group reference",
+		},
+		{
+			"bad escape letter",
+			`import re
+print(re.sub(r'(a)', r'\q', 'a'))`,
+			"bad escape",
+		},
+		{
+			"unknown group name",
+			`import re
+print(re.sub(r'(a)', r'\g<nope>', 'a'))`,
+			"unknown group name",
+		},
+		{
+			"int repl rejected",
+			`import re
+print(re.sub(r'a', 42, 'a'))`,
+			"TypeError",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := pyCode(t, tt.code)
+			if err == nil {
+				t.Fatalf("expected error, got output: %s", out)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("expected error containing %q, got: %v", tt.want, err)
+			}
+		})
+	}
+}
