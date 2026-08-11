@@ -18,14 +18,20 @@ func TestGoat_Registered(t *testing.T) {
 	}
 }
 
-// TestGoat_FramesExact pins the spec verbatim: the four frames, in order —
-// two goats at the edges, closing in, the headbutt burst, and the sparkle.
+// TestGoat_FramesExact pins the spec verbatim: the goat charges the wall,
+// hits it, and the dust settles — all ten frames, in order.
 func TestGoat_FramesExact(t *testing.T) {
 	want := []string{
-		"🐐⠂⠂🐐", // two goats at the edges
-		"⠂🐐⠂🐐", // they close in
-		"⠂⠂💥⠂", // headbutt!
-		"⠂✨⠂⠂", // sparkle
+		"🧱⠂⠂🐐", // goat lines up at the far right
+		"🧱⠂🐐💨", // it charges, speed lines behind
+		"🧱🐐💨⠂", // closing in…
+		"💥🔥⠂⠂", // headbutt! boom + fire
+		"✨💫⠂⠂", // sparkle and stars
+		"💨🌫️⠂⠂", // the dust begins to clear
+		"🌫️🌫️⠂⠂", // a wall of fog
+		"⬜⠂⠂⠂", // the wall shows a crack
+		"🧱⠂⠂⠂", // and rebuilds
+		"🧱⠂⠂🐐", // the goat is back for another try
 	}
 	d := Goat()
 	if len(d.Frames) != len(want) {
@@ -40,36 +46,60 @@ func TestGoat_FramesExact(t *testing.T) {
 
 // TestGoat_FrameGeometry pins the layout constraints: interval in the same
 // 100-150 ms range as the Pac-Man animation and every frame exactly 4 cells
-// wide with the Braille-dot background.
+// wide with the Braille-dot background. Cell width counts grapheme clusters,
+// so emoji with a variation selector (🌫️ = 🌫 + U+FE0F) still count as one
+// cell.
 func TestGoat_FrameGeometry(t *testing.T) {
 	d := Goat()
 	if iv := d.IntervalMS(); iv < 100 || iv > 150 {
 		t.Errorf("goat interval = %dms, want 100-150ms", iv)
 	}
 	for i, f := range d.Frames {
-		if w := len([]rune(f)); w != 4 {
+		if w := visibleCells(f); w != 4 {
 			t.Errorf("goat frame[%d] width = %d cells, want exactly 4: %q", i, w, f)
 		}
 	}
 }
 
-// TestGoat_Choreography ensures the full story arc is present: the goats
-// appear in the first frame, the collision burst and the sparkle follow.
+// TestGoat_Choreography ensures the full story arc is present: the wall
+// frames the animation, the goat charges in, the headbutt bursts, and the
+// dust settles before the loop restarts.
 func TestGoat_Choreography(t *testing.T) {
 	d := Goat()
 	all := ""
 	for _, f := range d.Frames {
 		all += f
 	}
+	// The wall appears in 5 of the 10 frames (the charge frames plus the
+	// rebuild frames); the goat in 4 (the two edge frames plus the two charge
+	// frames).
+	if n := countRune(all, '🧱'); n != 5 {
+		t.Errorf("wall glyph appears %d times, want 5", n)
+	}
 	if n := countRune(all, '🐐'); n != 4 {
-		t.Errorf("goat glyph appears %d times across frames, want 4 (two per opening frame)", n)
+		t.Errorf("goat glyph appears %d times, want 4", n)
 	}
-	if !containsRune(all, '💥') {
-		t.Error("headbutt burst (💥) missing from the animation")
+	for _, r := range []rune{'💥', '🔥', '✨', '💫', '💨', '⬜'} {
+		if !containsRune(all, r) {
+			t.Errorf("story glyph %q missing from the animation", r)
+		}
 	}
-	if !containsRune(all, '✨') {
-		t.Error("sparkle (✨) missing from the animation")
+	if !containsRune(all, '🌫') {
+		t.Error("fog (🌫) missing from the animation")
 	}
+}
+
+// visibleCells counts the visible cells of a frame, treating emoji variation
+// selectors (U+FE0F) and zero-width joiners as non-spacing.
+func visibleCells(s string) int {
+	n := 0
+	for _, r := range s {
+		if r == '\uFE0F' || r == '\u200D' {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 func countRune(s string, r rune) int {

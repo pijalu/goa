@@ -4,14 +4,20 @@
 
 package spinner
 
-// Goat returns the "goat headbutt" waiting animation: two goats charge at
-// each other from the edges of a 4-cell line, collide with a burst, and leave
-// a sparkle before the loop restarts:
+// Goat returns the "goat vs. brick wall" waiting animation: a goat charges
+// headfirst into a brick wall on the left, hits it, and the dust settles
+// before the loop restarts:
 //
-//	🐐⠂⠂🐐   two goats at the edges
-//	⠂🐐⠂🐐   they close in
-//	⠂⠂💥⠂   headbutt!
-//	⠂✨⠂⠂   sparkle
+//	🧱⠂⠂🐐   goat lines up at the far right
+//	🧱⠂🐐💨   it charges, speed lines behind
+//	🧱🐐💨⠂   closing in…
+//	💥🔥⠂⠂   headbutt! boom + fire
+//	✨💫⠂⠂   sparkle and stars
+//	💨🌫️⠂⠂   the dust begins to clear
+//	🌫️🌫️⠂⠂   a wall of fog
+//	⬜⠂⠂⠂   the wall shows a crack
+//	🧱⠂⠂⠂   and rebuilds
+//	🧱⠂⠂🐐   the goat is back for another try
 //
 // The glyphs are colored emoji, so no ANSI styling is applied (terminal emoji
 // rendering ignores foreground SGR codes). Interval 120 ms, like the Pac-Man
@@ -20,10 +26,16 @@ func Goat() Definition {
 	return Definition{
 		Interval: 120,
 		Frames: []string{
-			"🐐⠂⠂🐐",
-			"⠂🐐⠂🐐",
-			"⠂⠂💥⠂",
-			"⠂✨⠂⠂",
+			"🧱⠂⠂🐐", // goat lines up at the far right
+			"🧱⠂🐐💨", // it charges, speed lines behind
+			"🧱🐐💨⠂", // closing in…
+			"💥🔥⠂⠂", // headbutt! boom + fire
+			"✨💫⠂⠂", // sparkle and stars
+			"💨🌫️⠂⠂", // the dust begins to clear
+			"🌫️🌫️⠂⠂", // a wall of fog
+			"⬜⠂⠂⠂", // the wall shows a crack
+			"🧱⠂⠂⠂", // and rebuilds
+			"🧱⠂⠂🐐", // the goat is back for another try
 		},
 	}
 }
