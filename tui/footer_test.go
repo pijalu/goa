@@ -581,7 +581,7 @@ func TestFooter_Render_GoalMarker(t *testing.T) {
 	}
 
 	// Explicit clear (the app clears goal state via SetGoalStatus).
-	f.SetGoalStatus("")
+	f.SetGoalStatus("", 0)
 	firstLine = ansi.Strip(f.Render(80)[0])
 	if strings.Contains(firstLine, "◈") {
 		t.Errorf("no goal → no ◈ marker, got %q", firstLine)
@@ -603,6 +603,50 @@ func TestFooter_Render_NoGoalDetail(t *testing.T) {
 			}
 			if i > 0 && strings.Contains(line, "◈") {
 				t.Errorf("goal status %q: line %d must not carry a goal segment: %q", status, i, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+// TestFooter_Render_GoalTodoMarkers (bugs.md Issue 4): an active goal shows
+// one ⬩ per pending todo after the profile label (max 3 glyphs, then a +n
+// counter for the overflow): "◈ coding-posture ⬩⬩⬩+2 │ YOLO".
+func TestFooter_Render_GoalTodoMarkers(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pending int
+		want    string
+	}{
+		{"zero", 0, "◈ p │ YOLO"},
+		{"one", 1, "◈ p ⬩ │ YOLO"},
+		{"two", 2, "◈ p ⬩⬩ │ YOLO"},
+		{"three", 3, "◈ p ⬩⬩⬩ │ YOLO"},
+		{"five", 5, "◈ p ⬩⬩⬩+2 │ YOLO"},
+		{"seven", 7, "◈ p ⬩⬩⬩+4 │ YOLO"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFooter()
+			f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+			f.SetGoalStatus("active", tc.pending)
+			firstLine := ansi.Strip(f.Render(80)[0])
+			if !strings.Contains(firstLine, tc.want) {
+				t.Errorf("pending=%d: want %q in first line, got %q", tc.pending, tc.want, firstLine)
+			}
+		})
+	}
+}
+
+// TestFooter_Render_TodoMarkersRequireGoal (bugs.md Issue 4): the ⬩ markers
+// decorate an ACTIVE goal only — no goal (or a paused/blocked goal) renders
+// no markers, even with pending todos recorded.
+func TestFooter_Render_TodoMarkersRequireGoal(t *testing.T) {
+	for _, status := range []string{"", "paused", "blocked"} {
+		f := NewFooter()
+		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+		f.SetGoalStatus(status, 4)
+		for i, line := range f.Render(80) {
+			if strings.Contains(line, "⬩") {
+				t.Errorf("goal status %q: line %d renders ⬩ markers: %q", status, i, ansi.Strip(line))
 			}
 		}
 	}

@@ -565,7 +565,22 @@ func (c *Compositor) Render(scene *Scene) {
 		// per-row repaint already replaces every row; see drawWindow).
 		c.drawWindow(canvas, scene.Cursor, width, height)
 	default: // frameDiff
-		c.renderDiff(canvas, scene.Cursor, width, height)
+		// Mid-window shift guard: the diff repaint (repaintWindow →
+		// unchangedRow) assumes the physical screen maps to the previous canvas
+		// by a PURE scroll (prevIdx = i - vt + c.vt). A tool widget growing or
+		// shrinking INSIDE the visible window inserts/deletes rows and shifts
+		// every row below it, breaking that mapping: the line-feed scroll moved
+		// the OLD layout, and unchangedRow then wrongly skips rows that are
+		// actually stale — leaving duplicate and lost rows around the
+		// history↔screen boundary (the reported tool-call duplicate bug). The
+		// scroll-off region is unaffected (the shift is below it), so scrollback
+		// needs no reset — but the window must be repainted in full rather than
+		// diffed. Route to drawWindow (repaints every row) for this frame.
+		if c.windowContentShifted(canvas, c.windowTop(len(canvas), height), height) {
+			c.drawWindow(canvas, scene.Cursor, width, height)
+		} else {
+			c.renderDiff(canvas, scene.Cursor, width, height)
+		}
 	}
 
 	c.prevLines = copySlice(canvas)
@@ -924,6 +939,68 @@ func (c *Compositor) scrollOffUnstable(canvas []string, to int) bool {
 		}
 		if j, ok := curIndex[prev]; ok && j != i {
 			return true // position shift: incremental scroll would mis-emit
+		}
+	}
+	return false
+}
+
+// windowContentShifted reports whether any row of the visible window
+// [vt, vt+height) moved POSITION since the previous frame — i.e. the window's
+// content is not a pure scroll of the previous canvas but has an internal
+// insertion/deletion (a tool widget growing or shrinking mid-window). In that
+// case repaintWindow's unchangedRow skip — which maps screen rows to the
+// previous canvas by the pure-scroll delta — is unsound and would leave stale
+// and duplicated rows, so the caller must repaint the whole window instead.
+//
+// Like scrollOffUnstable, only a POSITION shift counts: an in-place edit (a
+// live widget's ticking elapsed text) is benign — repaintWindow repaints that
+// row because its bytes differ at the SAME index. Blank rows and rows whose
+// previous content was in the (now displaced) chrome band are benign too. A
+// pure bottom-append stream does NOT trip the guard: the existing window rows
+// keep their pure-scroll indices (prev == cur), and the newly revealed bottom
+// rows map to indices that held chrome/blank last frame.
+func (c *Compositor) windowContentShifted(canvas []string, vt, height int) bool {
+	if c.prevLines == nil {
+		return false
+	}
+	// Only an insertion/deletion can shift a window row's canvas index; an
+	// in-place edit (no length change — a ticking widget, a same-height text
+	// update) leaves every row at its index and is handled correctly by the
+	// diff repaint. Bail out unless the transcript grew or shrank so the
+	// common in-place streaming/animation case is not misrouted to a full
+	// repaint.
+	if len(canvas)-c.chromeH == len(c.prevLines)-c.prevChromeH {
+		return false
+	}
+	prevContentEnd := len(c.prevLines) - c.prevChromeH
+	windowBottom := min(vt+height, len(canvas)-c.chromeH)
+	curIndex := map[string]int{} // lazily filled on the first in-window diff
+	for i := vt; i < windowBottom; i++ {
+		if i >= prevContentEnd {
+			break // at/above the old content end there was chrome or nothing
+		}
+		// Same-index comparison: under a pure scroll+append the transcript rows
+		// keep their canvas indices (new rows append at the bottom), so canvas[i]
+		// still holds prevLines[i]. A tool widget growing/shrinking INSIDE the
+		// window inserts/deletes rows and shifts every row below it, so canvas[i]
+		// no longer matches prevLines[i] there — the exact condition that breaks
+		// repaintWindow's unchangedRow skip and leaves duplicate/lost rows around
+		// the history↔screen boundary (the reported tool-call duplicate bug).
+		prev := strings.TrimSpace(ansi.Strip(c.prevLines[i]))
+		cur := strings.TrimSpace(ansi.Strip(canvas[i]))
+		if prev == "" || cur == "" || prev == cur {
+			continue
+		}
+		if len(curIndex) == 0 {
+			curIndex = indexCanvasRows(canvas, len(canvas)-c.chromeH)
+		}
+		// The previous content still exists in the transcript but MOVED to a
+		// different index (j != i): an internal insertion/deletion shifted it,
+		// so the window is not a pure scroll and the diff repaint is unsound.
+		// (If it no longer exists anywhere, it was an in-place edit — benign:
+		// repaintWindow repaints that row because its bytes differ at index i.)
+		if j, ok := curIndex[prev]; ok && j != i {
+			return true
 		}
 	}
 	return false

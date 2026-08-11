@@ -34,12 +34,13 @@ func (f *Footer) SetData(data FooterData) {
 // on or off so the footer reflects the change immediately.
 func (f *Footer) SetMinorMode(mode string) { f.data.MinorMode = mode }
 
-// SetGoalStatus explicitly sets or clears the goal status, bypassing
-// SetData's preservation logic — the goal equivalent of SetMinorMode.
-// updateGoalFooter is the sole caller; pass an empty status to clear the ◈
-// marker when no goal exists.
-func (f *Footer) SetGoalStatus(status string) {
+// SetGoalStatus explicitly sets or clears the goal status and pending-todo
+// count, bypassing SetData's preservation logic — the goal equivalent of
+// SetMinorMode. updateGoalFooter is the sole caller; pass an empty status to
+// clear the ◈ marker and ⬩ todo markers when no goal exists.
+func (f *Footer) SetGoalStatus(status string, pendingTodos int) {
 	f.data.GoalStatus = status
+	f.data.GoalPendingTodos = pendingTodos
 }
 
 // SetTeam explicitly sets or clears the team badge (name + drift marker),
