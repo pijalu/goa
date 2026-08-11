@@ -489,6 +489,7 @@ var configSetters = map[string]configSetter{
 	// Micro compaction knobs: no hidden configuration keys — the micro own
 	// gates (usage ratio, cold-cache threshold) change runtime behavior and
 	// must be visible/settable like every other compression knob.
+	"context_compression.micro_compaction.enabled":              setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.MicroCompaction.Enabled }),
 	"context_compression.micro_compaction.keep_recent_messages": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.MicroCompaction.KeepRecentMessages }, 0, 1000),
 	"context_compression.micro_compaction.min_content_tokens":   setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.MicroCompaction.MinContentTokens }, 0, 1000000),
 	"context_compression.micro_compaction.min_context_ratio":    setMicroMinContextRatio,

@@ -1045,6 +1045,12 @@ func (cc ContextCompressionConfig) EnabledValue() bool {
 
 // MicroCompactionSettings holds micro-specific config overrides.
 type MicroCompactionSettings struct {
+	// Enabled opts micro compaction in as a pre-summarize validation step.
+	// It is DISABLED by default so summarize stays the default compaction path.
+	// When enabled, micro runs first as a dry-run (no mutation) to validate it
+	// can meet the required shrink; summarize always runs on the original
+	// history, and micro is only applied for real if summarize overflows.
+	Enabled            *bool   `yaml:"enabled,omitempty"`
 	KeepRecentMessages int     `yaml:"keep_recent_messages,omitempty"`
 	MinContentTokens   int     `yaml:"min_content_tokens,omitempty"`
 	CacheMissThreshold string  `yaml:"cache_miss_threshold,omitempty"`

@@ -39,25 +39,34 @@ func (a *Agent) Compact(ctx context.Context) error {
 		return nil
 	}
 
-	// Pre-flight: summarizeHistory sends the entire non-system history to the
-	// model. If that input is itself near the window, the summarization request
-	// returns the same context_length_exceeded and Compact fails exactly when
-	// it is needed most. Shrink in-memory (selective) first so the summarize
-	// call operates on a smaller input. Reserve headroom for the summarization
-	// instruction plus the generated summary output.
-	if maxTokens := a.effectiveMaxTokens(); maxTokens > 0 {
-		const summarizeHeadroomPercent = 90
-		if a.summarizationInputTokens() > maxTokens*summarizeHeadroomPercent/100 {
-			if a.cfg.Logger != nil {
-				a.cfg.Logger.Log(Info, "Compact: pre-shrinking history (selective) before summarization to avoid self-overflow")
-			}
-			a.mu.Lock()
-			a.compressSelective()
-			a.mu.Unlock()
-		}
+	// Micro compaction is an OPT-IN step, disabled by default so summarize is
+	// always the default compaction path on a full window.
+	//
+	// Micro must NEVER fire as a first pass. When enabled it is run FIRST only
+	// as a DRY-RUN (estimation only, no mutation) to validate whether it could
+	// meet the required shrink — but the dry-run never mutates history and never
+	// short-circuits the summarize. The summarize below ALWAYS runs on the
+	// ORIGINAL, untouched history so the provider prefix cache is preserved.
+	//
+	// ONLY if that summarize fails with a context-overflow error (the input to
+	// summarize was itself too big for the window) do we apply micro compaction
+	// for real — to create enough room — then retry summarize on the shrunk
+	// input. That summarize-overflow path is the single place micro mutates.
+	if a.cfg.ContextCompression.MicroCompaction.Enabled {
+		a.microDryRunValidate()
 	}
 
 	summary, err := a.summarizeHistory(ctx)
+	if err != nil && isContextLengthError(err) && a.cfg.ContextCompression.MicroCompaction.Enabled {
+		// Summarize self-overflowed: the history to summarize was too big for
+		// the window. Now — and only now — apply micro compaction to create
+		// enough space, then retry summarize on the reduced input.
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "Compact: summarize overflowed (%v); applying micro compaction to make room and retrying", err)
+		}
+		a.applyMicroForSummarize()
+		summary, err = a.summarizeHistory(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -88,20 +97,64 @@ func (a *Agent) Compact(ctx context.Context) error {
 	return nil
 }
 
-// summarizationInputTokens estimates the token cost of the input
-// summarizeHistory will send to the model (all non-system history), snapshotted
-// under the mutex. Used by Compact's pre-flight overflow check.
-func (a *Agent) summarizationInputTokens() int {
-	a.mu.Lock()
-	snapshot := append([]Message(nil), a.history...)
-	a.mu.Unlock()
-	var total int
-	for i := range snapshot {
-		if snapshot[i].Role != System {
-			total += messageTokenCount(&snapshot[i])
-		}
+// microDryRunValidate runs the micro-compaction dry-run (estimation only — it
+// never mutates history) and logs whether micro could meet the required shrink
+// on its own. This is purely diagnostic: it validates micro's feasibility up
+// front WITHOUT letting micro become the first-pass action. The summarize that
+// follows always runs on the original history; micro is only ever applied for
+// real on the summarize-overflow fallback (applyMicroForSummarize).
+func (a *Agent) microDryRunValidate() {
+	cfg := a.cfg.ContextCompression.MicroCompaction
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 || a.cfg.Logger == nil {
+		return
 	}
-	return total
+	// The required shrink target: micro would need to bring estimated usage
+	// under the escalation level (effectiveHard−5), the same headroom the
+	// reactive paths reserve so the next request goes out with margin.
+	target := maxTokens * a.cfg.ContextCompression.resolveThresholds().escalationPercent() / 100
+
+	a.mu.Lock()
+	before := a.computeContextStats()
+	changed, freed := a.microCompactionDryRun(cfg, true)
+	meets := changed > 0 && before.EstimatedTokens-freed <= target
+	a.mu.Unlock()
+
+	if meets {
+		a.cfg.Logger.Log(Info, "Compact: micro dry-run COULD meet required shrink (would free ~%d tokens to reach %d); still summarizing original history to preserve cache", freed, target)
+	} else {
+		a.cfg.Logger.Log(Info, "Compact: micro dry-run cannot meet required shrink (would free ~%d tokens, need to reach %d); summarizing original history", freed, target)
+	}
+}
+
+// applyMicroForSummarize applies micro compaction unconditionally (the
+// summarize request just overflowed, so we need room regardless of any gate)
+// and emits the resulting EventCompact. This is the ONLY path on which micro
+// compaction mutates history during Compact — a last resort after summarize
+// itself failed with a context-overflow error.
+func (a *Agent) applyMicroForSummarize() {
+	cfg := a.cfg.ContextCompression.MicroCompaction
+	a.mu.Lock()
+	before := a.computeContextStats()
+	res := a.applyMicroLocked(cfg)
+	a.mu.Unlock()
+	a.emitCompactionResult("micro", before, res, "summarize overflow fallback")
+}
+
+// applyMicroLocked performs the real in-place micro compaction pass under a.mu
+// (forced: bypasses the ratio/cache gates — Compact already decided to shrink).
+// Returns the work record for the caller's EventCompact. The caller must hold
+// a.mu.
+func (a *Agent) applyMicroLocked(cfg MicroCompactionConfig) compactionResult {
+	if len(a.history) == 0 {
+		return compactionResult{}
+	}
+	keepIdx := computeKeepIdx(a.history, cfg.KeepRecentMessages, true)
+	changed := a.truncateToolResults(a.history, keepIdx, cfg)
+	if changed > 0 && a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "Applied micro compaction: truncated %d tool results (keepIdx=%d)", changed, keepIdx)
+	}
+	return compactionResult{changed: changed}
 }
 
 func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
@@ -328,9 +381,9 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 // EventCompact after unlock (emitEvent re-acquires a.mu, so it must never
 // run under the lock).
 type compactionResult struct {
-	removed     int // messages dropped from history
-	freedTokens int // estimated tokens freed (0 = unknown)
-	changed     int // messages mutated in place (elision / micro truncation)
+	removed     int  // messages dropped from history
+	freedTokens int  // estimated tokens freed (0 = unknown)
+	changed     int  // messages mutated in place (elision / micro truncation)
 	escalated   bool // a cheaper step escalated into a harder one (elision→selective)
 }
 

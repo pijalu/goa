@@ -45,16 +45,15 @@ func (p *summaryCapturingProvider) StreamSimple(model provider.Model, ctx provid
 	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
 }
 
-// TestCompact_PreShrinksBeforeSummarize verifies the pre-flight overflow guard:
-// when the history to summarize is itself near/over the window, Compact runs
-// selective compression first so the summarization request does not
-// self-overflow (which would make Compact fail exactly when it is needed most).
-func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
-	p := &summaryCapturingProvider{api: provider.Api("test-compact-preshrink-1")}
+// TestCompact_SummarizesOriginalHistory verifies the current contract: Compact
+// no longer pre-shrinks (selective) before summarizing — summarize runs on the
+// ORIGINAL history so the provider prefix cache is preserved. Self-overflow is
+// now handled by the micro-on-overflow fallback (see compact_micro_optional_test.go),
+// not by an unconditional pre-flight shrink.
+func TestCompact_SummarizesOriginalHistory(t *testing.T) {
+	p := &summaryCapturingProvider{api: provider.Api("test-compact-orig-1")}
 	provider.RegisterApiProvider(p)
 
-	// A history far over the 90% summarize-headroom threshold: many large
-	// user/assistant turns against a tiny MaxTokens window.
 	const turns = 30
 	hist := make([]Message, 0, turns*2+1)
 	hist = append(hist, Message{Type: Content, Role: User, Content: strings.Repeat("x", 200)})
@@ -68,17 +67,18 @@ func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
 		SystemPrompt: "You are helpful",
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:           800, // tiny: 90% headroom = 720; history >> that
-			Strategy:            CompressionSelective,
+			MaxTokens:           800,
+			Strategy:            CompressionSummarize,
 			PreserveRecentTurns: 2,
 		},
 	})
 	agent.mu.Lock()
 	agent.history = hist
+	origLen := len(agent.history)
 	agent.mu.Unlock()
 
 	if err := agent.Compact(context.Background()); err != nil {
-		t.Fatalf("Compact failed (should have pre-shrunk): %v", err)
+		t.Fatalf("Compact: %v", err)
 	}
 
 	p.mu.Lock()
@@ -89,11 +89,10 @@ func TestCompact_PreShrinksBeforeSummarize(t *testing.T) {
 	if !called {
 		t.Fatal("summarize was not called")
 	}
-	// Without pre-shrink the summarizer would receive ~all 61 messages; with
-	// pre-shrink (selective keeps PreserveRecentTurns) it must receive far fewer.
-	if received >= len(hist) {
-		t.Fatalf("pre-shrink did not reduce summarization input: summarizer received %d of %d messages",
-			received, len(hist))
+	// No pre-shrink: the summarizer receives the FULL original (non-system)
+	// history — there is no system message stored in history here.
+	if received != origLen {
+		t.Fatalf("summarize should run on original history (%d msgs), got %d", origLen, received)
 	}
 
 	// And the result is the valid [user, assistant] compact pair.

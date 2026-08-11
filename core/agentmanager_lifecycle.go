@@ -378,6 +378,12 @@ func compressionStrategy(s string) agentic.CompressionStrategy {
 
 func buildMicroCompactionConfig(m config.MicroCompactionSettings) agentic.MicroCompactionConfig {
 	microCfg := agentic.DefaultMicroCompactionConfig
+	// Enabled is opt-in (DefaultMicroCompactionConfig leaves it false): only an
+	// explicit `enabled: true` turns micro compaction on as the pre-summarize
+	// validation step. Summarize stays the default compaction path otherwise.
+	if m.Enabled != nil {
+		microCfg.Enabled = *m.Enabled
+	}
 	if m.KeepRecentMessages > 0 {
 		microCfg.KeepRecentMessages = m.KeepRecentMessages
 	}

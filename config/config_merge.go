@@ -717,6 +717,9 @@ func mergeCompressionStrategies(dst *CompressionLayerStrategiesConfig, src Compr
 // mergeMicroCompaction overlays micro-compaction settings field-wise so a
 // higher layer setting one key does not reset the others to zero.
 func mergeMicroCompaction(dst *MicroCompactionSettings, src MicroCompactionSettings) {
+	if src.Enabled != nil {
+		dst.Enabled = src.Enabled
+	}
 	if src.KeepRecentMessages != 0 {
 		dst.KeepRecentMessages = src.KeepRecentMessages
 	}

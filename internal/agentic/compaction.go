@@ -21,6 +21,12 @@ var DefaultMicroCompactionConfig = MicroCompactionConfig{
 
 // MicroCompactionConfig controls the micro compaction strategy.
 type MicroCompactionConfig struct {
+	// Enabled gates micro compaction as an explicit opt-in. It is DISABLED by
+	// default so the summarize strategy stays the default compaction path on a
+	// full window. When enabled, micro compaction runs as a dry-run first to
+	// validate it can meet the required shrink before any mutation; see Compact.
+	Enabled bool
+
 	// KeepRecentMessages is the number of most recent messages to never touch.
 	KeepRecentMessages int
 
@@ -248,4 +254,31 @@ func (a *Agent) truncateToolResults(history []Message, keepIdx int, cfg MicroCom
 		a.invalidateContextUsageLocked()
 	}
 	return changed
+}
+
+// microCompactionDryRun estimates the outcome of a micro compaction pass
+// WITHOUT mutating history. It mirrors truncateToolResults' selection exactly
+// (same keepIdx, same MinContentTokens gate, same marker) but only counts the
+// tokens that WOULD be freed, so the caller can validate — before committing
+// any in-place mutation — whether micro compaction can shrink usage below the
+// required level. Returns the number of tool results that would change and the
+// estimated tokens that would be reclaimed. The caller must hold a.mu.
+func (a *Agent) microCompactionDryRun(cfg MicroCompactionConfig, force bool) (changed, freedTokens int) {
+	keepIdx := computeKeepIdx(a.history, cfg.KeepRecentMessages, force)
+	markerTokens := len(cfg.TruncatedMarker) / 4
+	for i := 1; i < keepIdx && i < len(a.history); i++ {
+		msg := &a.history[i]
+		if msg.Role != ToolRole {
+			continue
+		}
+		contentTokens := len(msg.Content) / 4
+		if contentTokens < cfg.MinContentTokens {
+			continue
+		}
+		changed++
+		if d := contentTokens - markerTokens; d > 0 {
+			freedTokens += d
+		}
+	}
+	return changed, freedTokens
 }

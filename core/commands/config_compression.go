@@ -38,6 +38,7 @@ func (m *configMenu) settingCompression() {
 		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
 		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
 		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg)},
+		{Value: "micro_enabled", Label: "Micro: pre-summarize step (opt-in)", Description: microEnabledLabel(cfg)},
 		{Value: "micro_min_context_ratio", Label: "Micro: min context ratio (own gate)", Description: microMinContextRatioLabel(cfg)},
 		{Value: "micro_cache_miss_threshold", Label: "Micro: cache-miss threshold (cold-cache gate)", Description: microCacheMissThresholdLabel(cfg)},
 		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg)},
@@ -79,6 +80,9 @@ func (m *configMenu) settingCompression() {
 			m.settingCompression()
 		case "on_context_error":
 			m.applySet("context_compression.on_context_error", toggleBoolLabel(cfg.ContextCompression.OnContextError))
+			m.settingCompression()
+		case "micro_enabled":
+			m.applySet("context_compression.micro_compaction.enabled", toggleMicroEnabledValue(cfg))
 			m.settingCompression()
 		}
 	})
@@ -442,6 +446,25 @@ func microTruncatedMarkerLabel(cfg *config.Config) string {
 		return v
 	}
 	return "[Old tool result content cleared] (default)"
+}
+
+// microEnabledLabel renders the micro pre-summarize opt-in for the menu.
+// Micro compaction is DISABLED by default so summarize stays the default
+// compaction path; nil means "not explicitly set" (still off).
+func microEnabledLabel(cfg *config.Config) string {
+	if e := cfg.ContextCompression.MicroCompaction.Enabled; e != nil && *e {
+		return "on"
+	}
+	return "off (default)"
+}
+
+// toggleMicroEnabledValue flips the micro pre-summarize opt-in: on → off,
+// off/unset → on.
+func toggleMicroEnabledValue(cfg *config.Config) string {
+	if e := cfg.ContextCompression.MicroCompaction.Enabled; e != nil && *e {
+		return "false"
+	}
+	return "true"
 }
 
 // compressionLabel returns a one-line summary for the root /config menu.

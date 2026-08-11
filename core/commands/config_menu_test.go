@@ -746,7 +746,7 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	}
 	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard",
 		"_derived_eff_hard", "_derived_escalation", "_derived_deferral", "_derived_elision", "_derived_reactive_savings",
-		"cache_gate", "max_tokens", "preserve_recent_turns", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
+		"cache_gate", "max_tokens", "preserve_recent_turns", "micro_enabled", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "enabled", "on_context_error"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d compression items, got %d: %+v", len(want), len(sr.options), sr.options)
 	}

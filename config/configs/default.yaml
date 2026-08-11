@@ -93,6 +93,14 @@ context_compression:
   strategy: "micro"
   preserve_recent_turns: 4
   micro_compaction:
+    # OPT-IN (default: off). Micro compaction is a pre-summarize step on a full
+    # window. When OFF, summarize is always the default compaction path. When
+    # ON, micro first runs as a DRY-RUN (estimation only, never mutates) to
+    # validate it can meet the required shrink; summarize still runs on the
+    # ORIGINAL history (preserving the provider prefix cache), and micro is
+    # only applied for real if that summarize fails with a context-overflow
+    # error (to create enough room to compress).
+    enabled: false
     keep_recent_messages: 20
     min_content_tokens: 100
     cache_miss_threshold: "1h"
