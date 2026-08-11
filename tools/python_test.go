@@ -488,3 +488,30 @@ for m in re.finditer(r'func (flatten|formatValue|valStr|toStr)\(', "func flatten
 		t.Errorf("output = %q, want finditer matches with positions", out)
 	}
 }
+
+// TestPythonTool_Execute_ReSubCallable replays the reported session failure
+// (bugs.md): re.sub(pattern, fn, s) raised "TypeError: 'sub() argument must
+// be str, not function'" because the Go-backed re module coerced repl to a
+// string. The end-to-end rewrite from the export must now run to completion.
+func TestPythonTool_Execute_ReSubCallable(t *testing.T) {
+	tool := &PythonTool{}
+	code := `import re
+p = "/tmp/goa_config_skills_test_snippet.txt"
+s = "skillEnabled(cfg, \"goal\", nil)\nskillEnabled(got, name, nil)"
+
+def sub_se(m):
+    return "skillChecked(%s, %s, nil)" % (m.group(1), m.group(2))
+
+s2 = re.sub(r'skillEnabled\((cfg|got|fresh), (["a-zA-Z0-9_-]+|name), nil\)', sub_se, s)
+print(s2)
+print(re.sub(r"(\w+)@(\w+)", r"\g<2>.\g<1>", "user@host"))`
+	out, err := tool.Execute(fmt.Sprintf(`{"code": %q}`, code))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(out, `skillChecked(cfg, "goal", nil)`) ||
+		!strings.Contains(out, "skillChecked(got, name, nil)") ||
+		!strings.Contains(out, "host.user") {
+		t.Errorf("output = %q, want callable rewrite + template expansion", out)
+	}
+}
