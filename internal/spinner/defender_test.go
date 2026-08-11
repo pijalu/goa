@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	defHeroes  = []string{"🐐", "🦭", "🐊", "🦘", "🧑", "🐔", "🐢"}
+	defHeroes  = []string{"🐐", "🦭", "🐊", "🦘", "🧑", "🐔", "🧙", "🐢"}
 	defEnemies = map[string]bool{"🐛": true, "🐍": true, "🪨": true, "🧱": true, "🐟": true, "🕷️": true, "🦂": true, "👾": true}
 )
 
@@ -263,20 +263,17 @@ func TestDefender_EnemyKillsAreSmokeNoFire(t *testing.T) {
 	all := strings.Join(d.Frames, "")
 	count := func(r rune) int { return countRune(all, r) }
 
-	if n := count('💥'); n != 0 {
-		t.Errorf("explosion glyph appears %d times; enemy kills must be smoke, no fire", n)
-	}
 	if n := count('✨'); n != len(waves)*len(defEnemies) {
 		t.Errorf("spark count = %d, want %d (one per enemy kill)", n, len(waves)*len(defEnemies))
 	}
 	if n := count('💨'); n != len(waves)*len(defEnemies) {
 		t.Errorf("smoke count = %d, want %d (one per enemy kill)", n, len(waves)*len(defEnemies))
 	}
-	if n := count('🌫'); n != len(waves)*len(defEnemies)+len(waves) {
-		t.Errorf("dust count = %d, want %d (enemy dust + boss dust)", n, len(waves)*len(defEnemies)+len(waves))
+	if n := count('🌫'); n != len(waves)*len(defEnemies)+3*len(waves) {
+		t.Errorf("dust count = %d, want %d (enemy dust + boss dust + lingering afterglow)", n, len(waves)*len(defEnemies)+3*len(waves))
 	}
-	if n := count('🔥'); n != bombCycles {
-		t.Errorf("fire count = %d, want %d (fire ONLY in bomb deaths)", n, bombCycles)
+	if n := count('🔥'); n != 2*bombCycles {
+		t.Errorf("fire count = %d, want %d (fireball held two frames, ONLY in bomb deaths)", n, 2*bombCycles)
 	}
 	if n := count('☁'); n != len(waves) {
 		t.Errorf("smoke-cloud count = %d, want %d (one per boss death)", n, len(waves))
@@ -454,6 +451,96 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// TestDefender_BossDeathIsLongAndPauses pins the boss finale: a bomb sits,
+// ticks, flashes, and blasts with a held fireball — a long explosion (blasts
+// and flashes appear ONLY with bombs). After EVERY boss death the dust
+// lingers and the screen falls silent for exactly two frames before the next
+// hero steps up (it must not start too soon).
+func TestDefender_BossDeathIsLongAndPauses(t *testing.T) {
+	d := Defender()
+	waves := defenderWaves(d)
+	bombCycles := 0
+	for _, w := range waves {
+		if w.actors[len(defEnemies)] == "💣" {
+			bombCycles++
+		}
+	}
+	all := strings.Join(d.Frames, "")
+	if n := countRune(all, '💥'); n != 2*bombCycles {
+		t.Errorf("blast count = %d, want %d (blast held two frames, ONLY in bomb deaths)", n, 2*bombCycles)
+	}
+	if n := countRune(all, '⚡'); n != bombCycles {
+		t.Errorf("flash count = %d, want %d (detonation flash ONLY in bomb deaths)", n, bombCycles)
+	}
+	// The screen falls silent for exactly two frames after every boss death.
+	silence := 0
+	for _, f := range d.Frames {
+		quiet := true
+		for _, g := range defCells(f) {
+			if g != dot {
+				quiet = false
+				break
+			}
+		}
+		if quiet {
+			silence++
+		}
+	}
+	if want := len(waves) * 2; silence != want {
+		t.Errorf("silence frames = %d, want %d (a two-frame beat after each boss death)", silence, want)
+	}
+	// Every boss death is long and ends in silence before the new hero: walk
+	// from each boss's first approach frame to the next wave's hero intro
+	// (a hero with no actor beside it) and check the gap length and its
+	// silent tail.
+	prevBoss := false
+	for i, f := range d.Frames {
+		_, _, actor, ok := frameActors(f)
+		isBoss := ok && (actor == "☄️" || actor == "💣")
+		if isBoss && !prevBoss {
+			j := i + 1
+			for ; j < len(d.Frames); j++ {
+				h, _, a, ok2 := frameActors(d.Frames[j])
+				if ok2 && a == "" && h != "" {
+					break
+				}
+			}
+			minGap := 4 // comet: approach 3 + smoke 2 + afterglow 4 (lower bound)
+			if actor == "💣" {
+				minGap = 12 // bomb: tick 2 + flash 1 + blast 2 + fire 2 + cloud 3 + afterglow 4
+			}
+			if gap := j - i; gap < minGap {
+				t.Errorf("boss death gap = %d frames, want >= %d (the explosion must take longer)", gap, minGap)
+			}
+			for _, k := range []int{j - 1, j - 2} {
+				quiet := true
+				for _, g := range defCells(d.Frames[k]) {
+					if g != dot {
+						quiet = false
+						break
+					}
+				}
+				if !quiet {
+					t.Errorf("boss death at frame %d not followed by a silent pause before hero at frame %d", i, j)
+				}
+			}
+		}
+		prevBoss = isBoss
+	}
+}
+
+// TestDefender_DustIsLowerDots pins the dust glyph: the hero's advance dust
+// must ALWAYS be drawn with the lower dots of the braille cell (the bottom
+// row: dot 3 and/or dot 6) — never middle or top dots. (TestDefender_HeroDust
+// already pins that dust frames contain only the hero, the dust glyph, and
+// the background dot.)
+func TestDefender_DustIsLowerDots(t *testing.T) {
+	lower := map[string]bool{"⠄": true, "⠠": true, "⠤": true}
+	if !lower[dustDot] {
+		t.Errorf("dustDot = %q, want a lower-dot braille glyph (⠄ ⠠ or ⠤)", dustDot)
+	}
 }
 
 // TestDefender_SuspenseBreaks pins the suspense pauses: a quiet drum-roll

@@ -16,8 +16,8 @@ import "strings"
 //	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂   hero lines up near the right edge
 //	🐛⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂   enemy enters from the left…
 //	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂💨⠂   …killed with smoke, hero moves one left
-//	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠆⠆   dust kicks up at the hero's right side…
-//	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂⠆   …drifting right and settling
+//	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠤⠤   dust kicks up at the hero's right side…
+//	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂⠤   …drifting right and settling
 //	⠂🐍⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂⠂   next enemy, hero one place further left
 //
 // After every 3rd kill the moon crosses the sky: simulated with braille
@@ -25,21 +25,23 @@ import "strings"
 // goes under on the right — altering shape as it passes, slowly (each
 // position held for two frames), clearing the sky around it as it goes.
 // When the hero advances after a kill, small braille dust dots kick up at
-// his right side (the direction he came from), drift right, and settle.
-// From time to time the action pauses
+// his right side (the direction he came from), drift right, and settle —
+// always drawn with the LOWER dots of the braille cell (the bottom row,
+// like dust on the ground). From time to time the action pauses
 // for a suspense break — a quiet drum-roll of dots accumulating on the left
 // (before the 4th enemy and before the final boss) — then the next actor
 // strikes. After all eight enemy types have been used once, a final boss
-// (☄️ comet or 💣 bomb) reaches the hero. Only a BOMB kills with fire
-// (🔥 ☁️ ☢️ 🌫️); a comet kills with smoke (☁️ 🌫️). Either way the hero is
-// destroyed and the next hero resets to the right.
+// (☄️ comet or 💣 bomb) reaches the hero. A BOMB sits and ticks, then
+// detonates with a long explosion (💣 ⚡ 💥 🔥 ☁️ ☢️ 🌫️); a comet kills
+// with smoke (☁️ 🌫️). Either way the hero is destroyed, the dust lingers,
+// and the screen rests a beat before the next hero steps up at the right.
 //
-//	heroes:  🐐 goat → 🦭 seal → 🐊 crocodile → 🦘 kangaroo → 🧑 human → 🐔 chicken → 🐢 turtle
+//	heroes:  🐐 goat → 🦭 seal → 🐊 crocodile → 🦘 kangaroo → 🧑 human → 🐔 chicken → 🧙 wizard → 🐢 turtle
 //	enemies: 🐛 🐍 🪨 🧱 🐟 🕷️ 🦂 👾  (shuffled per cycle, no repeat until all used)
 //
 // The turtle 🐢 is slow: during its cycle every enemy advances at half speed
 // (each position is held for two frames), so it takes more time before the
-// turtle reaches its enemy. No hero repeats until all seven have been used; the animation loops forever at
+// turtle reaches its enemy. No hero repeats until all eight have been used; the animation loops forever at
 // 120 ms per frame. ANSI colors (color terminals render the emoji natively,
 // monochrome terminals pick the codes up): yellow sparks, gray smoke/dust,
 // red fire (bomb deaths only), green heroes.
@@ -51,7 +53,7 @@ const (
 	// Braille building blocks: the background is a single base dot; the moon
 	// and dust are drawn with denser braille cells made of the same dots.
 	blank    = "⠀" // U+2800 empty braille cell (cleared sky around the moon)
-	dustDot  = "⠆" // two-dot braille cell (kicked-up dust)
+	dustDot  = "⠤" // bottom-row braille dots 3+6 (kicked-up dust, always lower dots)
 	moonWax  = "⠒" // two diagonal dots (waxing / waning moon)
 	moonBig  = "⠶" // four dots (gibbous moon)
 	moonFull = "⠿" // all six dots (full moon)
@@ -71,7 +73,7 @@ type defenderCell struct {
 
 // Defender builds the complete looping story as one flat frame list.
 func Defender() Definition {
-	heroes := []string{"🐐", "🦭", "🐊", "🦘", "🧑", "🐔", "🐢"}
+	heroes := []string{"🐐", "🦭", "🐊", "🦘", "🧑", "🐔", "🧙", "🐢"}
 	enemies := []string{"🐛", "🐍", "🪨", "🧱", "🐟", "🕷️", "🦂", "👾"}
 	bosses := []string{"☄️", "💣"}
 
@@ -108,6 +110,8 @@ func Defender() Definition {
 		boss := bosses[int(lcg(uint64(cycle)+0xB055)%uint64(len(bosses)))]
 		frames = append(frames, approachFrames(hero, pos, boss, slow)...)
 		frames = append(frames, bossDeathFrames(boss, pos)...)
+		// The dust lingers and the screen rests before the next hero steps up.
+		frames = append(frames, afterglowFrames(pos)...)
 	}
 
 	return Definition{Interval: 120, Frames: frames}
@@ -207,19 +211,39 @@ func moonFrames() []string {
 }
 
 // bossDeathFrames renders the boss destroying the hero (and itself) at pos.
-// A bomb kills with FIRE (🔥 ☁️ ☢️ 🌫️); a comet kills with smoke only (☁️ 🌫️).
+// A bomb takes its time: it sits and ticks, then detonates with a flash,
+// blast, and a held fireball before the smoke — a long explosion. A comet
+// kills with smoke only (☁️ 🌫️).
 func bossDeathFrames(boss string, pos int) []string {
 	if boss == "💣" {
 		return []string{
-			defenderRow(map[int]defenderCell{pos: {"🔥", ansiRed}}),
-			defenderRow(map[int]defenderCell{pos: {"☁️", ansiGray}}),
-			defenderRow(map[int]defenderCell{pos: {"☢️", ansiRed}}),
-			defenderRow(map[int]defenderCell{pos: {"🌫️", ansiGray}}),
+			defenderRow(map[int]defenderCell{pos: {"💣", ""}}),         // the bomb sits…
+			defenderRow(map[int]defenderCell{pos: {"💣", ""}}),         // …and ticks
+			defenderRow(map[int]defenderCell{pos: {"⚡", ansiYellow}}), // detonation flash
+			defenderRow(map[int]defenderCell{pos: {"💥", ansiRed}}),    // blast
+			defenderRow(map[int]defenderCell{pos: {"💥", ansiRed}}),    // blast hangs
+			defenderRow(map[int]defenderCell{pos: {"🔥", ansiRed}}),    // fireball
+			defenderRow(map[int]defenderCell{pos: {"🔥", ansiRed}}),    // fireball burns
+			defenderRow(map[int]defenderCell{pos: {"☁️", ansiGray}}),  // smoke
+			defenderRow(map[int]defenderCell{pos: {"☢️", ansiRed}}),   // mushroom cloud
+			defenderRow(map[int]defenderCell{pos: {"🌫️", ansiGray}}),  // dust
 		}
 	}
 	return []string{
 		defenderRow(map[int]defenderCell{pos: {"☁️", ansiGray}}),
 		defenderRow(map[int]defenderCell{pos: {"🌫️", ansiGray}}),
+	}
+}
+
+// afterglowFrames renders the quiet moment after the boss is gone: the dust
+// lingers where the hero fell and drifts, then the screen falls silent for a
+// beat — the next hero does not step up too soon.
+func afterglowFrames(pos int) []string {
+	return []string{
+		defenderRow(map[int]defenderCell{pos: {"🌫️", ansiGray}}),
+		defenderRow(map[int]defenderCell{pos - 1: {"🌫️", ansiGray}}),
+		defenderRow(nil), // silence…
+		defenderRow(nil), // …a beat of rest
 	}
 }
 
