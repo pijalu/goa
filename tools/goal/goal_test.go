@@ -1162,3 +1162,40 @@ func goalTeam(g *goal.GoalSnapshot) string {
 	}
 	return g.Team
 }
+
+// TestGoalTool_CreateReportsTotalQueueDepth pins the create result's
+// totalQueued field: `queued` counts only the objectives queued by THIS call,
+// while totalQueued reports the TOTAL queue depth after the call so the TUI
+// can summarize the whole goal list ("2 queued (5 total)").
+func TestGoalTool_CreateReportsTotalQueueDepth(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	if _, err := tool.Execute(`{"action":"create","objective":"active one"}`); err != nil {
+		t.Fatalf("seed active: %v", err)
+	}
+	// Seed two pre-existing queued goals behind the active one.
+	if _, err := tool.Execute(`{"action":"create","objective":"old 1"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(`{"action":"create","objective":"old 2"}`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := tool.Execute(`{"action":"create","objectives":["new 1","new 2"]}`)
+	if err != nil {
+		t.Fatalf("batch create: %v", err)
+	}
+	var payload struct {
+		Queued      int `json:"queued"`
+		TotalQueued int `json:"totalQueued"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("result must stay JSON: %v (%q)", err, out)
+	}
+	if payload.Queued != 2 {
+		t.Errorf("queued = %d, want 2 (only this call's objectives)", payload.Queued)
+	}
+	if payload.TotalQueued != 4 {
+		t.Errorf("totalQueued = %d, want 4 (2 pre-existing + 2 new)", payload.TotalQueued)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
@@ -288,5 +289,83 @@ func TestGoalRenderer_ListActiveUsesShortName(t *testing.T) {
 	}
 	if strings.Contains(res, "Wire the go-lemon") {
 		t.Errorf("result %q must not contain the raw objective", res)
+	}
+}
+
+// TestGoalRenderer_CreateResultShowsQueueTotals pins the "total number of
+// goals" requirement: a create result carries queued (new this call) and
+// totalQueued (queue depth after the call); the summary must show both when
+// the queue already held goals, and stay unchanged when it did not.
+func TestGoalRenderer_CreateResultShowsQueueTotals(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{}
+
+	res := r.RenderResult(`{"goal":{"objective":"Main","status":"active"},"queued":2,"totalQueued":5}`, ctx)
+	if !strings.Contains(res, "2 queued (5 total)") {
+		t.Errorf("multi-create result must show total queue depth: %q", res)
+	}
+
+	res = r.RenderResult(`{"queued":2,"totalQueued":5}`, ctx)
+	if !strings.Contains(res, "2 goals queued (5 total)") {
+		t.Errorf("queued-only create result must show total queue depth: %q", res)
+	}
+
+	// No pre-existing queue: total equals the new count → classic summary.
+	res = r.RenderResult(`{"goal":{"objective":"Main","status":"active"},"queued":2,"totalQueued":2}`, ctx)
+	if !strings.Contains(res, "2 queued") || strings.Contains(res, "total") {
+		t.Errorf("create without pre-existing queue must not add a total: %q", res)
+	}
+}
+
+// TestGoalRenderer_FreshGoalOmitsZeroStats pins the elapsed-summary cleanup:
+// a freshly created goal (no turns/tokens/elapsed yet) must not render the
+// all-zero "· 0 turns · 0 tokens · 0s" noise; a goal that has run keeps its
+// elapsed stats.
+func TestGoalRenderer_FreshGoalOmitsZeroStats(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{}
+
+	res := r.RenderResult(`{"goal":{"name":"honest.zebra","objective":"Fix tests","status":"active","turnsUsed":0,"tokensUsed":0,"wallClockMs":0}}`, ctx)
+	if !strings.Contains(res, "honest.zebra") {
+		t.Errorf("fresh goal result = %q", res)
+	}
+	if strings.Contains(res, "0 turns") || strings.Contains(res, "0 tokens") {
+		t.Errorf("fresh goal must not show zero stats: %q", res)
+	}
+
+	res = r.RenderResult(`{"goal":{"name":"honest.zebra","objective":"Fix tests","status":"active","turnsUsed":3,"tokensUsed":1200,"wallClockMs":65000}}`, ctx)
+	for _, want := range []string{"3 turns", "1.2k tokens", "1m05s"} {
+		if !strings.Contains(res, want) {
+			t.Errorf("running goal must keep stat %q: %q", want, res)
+		}
+	}
+}
+
+// TestGoalRenderer_RenderPartial pins the streaming-progress preview: while a
+// goal call's arguments are still streaming, the body shows the objectives
+// received so far (numbered for batch creates) so progress is visible like
+// other streaming tools.
+func TestGoalRenderer_RenderPartial(t *testing.T) {
+	r := GoalRenderer{}
+	ctx := tuirender.RenderContext{IsPartial: true}
+	strip := func(args map[string]any) string {
+		return ansi.Strip(r.RenderPartial(args, ctx))
+	}
+
+	if got := strip(map[string]any{}); got != "" {
+		t.Errorf("no args yet must render nothing, got %q", got)
+	}
+	if got := strip(map[string]any{"action": "create"}); got != "" {
+		t.Errorf("create without objective must render nothing, got %q", got)
+	}
+	if got := strip(map[string]any{"action": "create", "objective": "Fix tests"}); got != "Fix tests" {
+		t.Errorf("single objective partial = %q", got)
+	}
+	got := strip(map[string]any{"action": "create", "objectives": []any{"Fix tests", "Run suite"}})
+	if !strings.Contains(got, "1. Fix tests") || !strings.Contains(got, "2. Run suite") {
+		t.Errorf("batch partial must number objectives: %q", got)
+	}
+	if got := strip(map[string]any{"action": "update", "status": "complete"}); !strings.Contains(got, "complete") {
+		t.Errorf("update partial = %q", got)
 	}
 }

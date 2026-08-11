@@ -464,15 +464,30 @@ func (t *GoalTool) enqueue(objective string, criterion *string, verifyCommand *s
 	return err
 }
 
-// createResult builds the create result, reporting the active goal and how
-// many objectives were queued.
+// createResult builds the create result, reporting the active goal, how many
+// objectives were queued by THIS call (queued) and the TOTAL queue depth after
+// the call (totalQueued) so the TUI can summarize the whole goal list.
 func (t *GoalTool) createResult(activated *goal.GoalSnapshot, queued int) (agentic.ToolResult, error) {
-	payload := map[string]any{"queued": queued}
+	payload := map[string]any{"queued": queued, "totalQueued": t.queueDepth()}
 	if activated != nil {
 		payload["goal"] = goal.ForModel(*activated)
 	}
 	out, _ := json.Marshal(payload)
 	return agentic.ToolResult{Output: string(out)}, nil
+}
+
+// queueDepth returns the current number of queued goals, 0 when no queue is
+// wired. A read error reports the depth as unknown → 0 (the summary is
+// informational; a failed queue read must not fail a successful create).
+func (t *GoalTool) queueDepth() int {
+	if t.Queue == nil {
+		return 0
+	}
+	goals, err := t.Queue.Read()
+	if err != nil {
+		return 0
+	}
+	return len(goals)
 }
 
 // handleList returns the active goal plus the queued goals as a todo-like list.

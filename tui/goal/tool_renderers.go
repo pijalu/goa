@@ -127,6 +127,61 @@ func (r GoalRenderer) RenderResult(output string, ctx tuirender.RenderContext) s
 	return renderGoalSummary(output)
 }
 
+// RenderPartial implements tuirender.StreamingRenderer so a goal call shows
+// progress while its arguments are still streaming, like other tools: the
+// body previews the objective(s) received so far for a create (numbered for
+// batch creates) or the requested transition for an update. Returns "" until
+// there is something worth showing (action/fields not yet arrived).
+var _ tuirender.StreamingRenderer = GoalRenderer{}
+
+func (r GoalRenderer) RenderPartial(args map[string]any, ctx tuirender.RenderContext) string {
+	if s := partialSummary(args); s != "" {
+		return ansiMuted(s)
+	}
+	return ""
+}
+
+// partialSummary builds the streaming-progress line for a goal call from the
+// arguments received so far.
+func partialSummary(args map[string]any) string {
+	switch extractArg(args, "action") {
+	case "create":
+		return createPartial(args)
+	case "update":
+		status := extractArg(args, "status")
+		if status == "" {
+			return ""
+		}
+		return "reporting " + status + "…"
+	}
+	return ""
+}
+
+// createPartial summarizes the objectives streamed so far: the single
+// objective, or a numbered list for a batch create (one line per objective
+// received, so progress is visible as the array streams in).
+func createPartial(args map[string]any) string {
+	if obj := extractArg(args, "objective"); obj != "" {
+		return obj
+	}
+	list, _ := args["objectives"].([]any)
+	if len(list) == 0 {
+		// Mid-stream the TUI's string-oriented partial-args scanner maps a
+		// still-open objectives array to its first element's growing string;
+		// show it as item 1 so batch creates stream too.
+		if first := extractArg(args, "objectives"); first != "" {
+			return "1. " + truncText(first, 80)
+		}
+		return ""
+	}
+	lines := make([]string, 0, len(list))
+	for i, o := range list {
+		s, _ := o.(string)
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, truncText(s, 80)))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // PreviewLines returns the number of preview lines.
 func (r GoalRenderer) PreviewLines() int { return 3 }
 
@@ -154,10 +209,10 @@ func renderGoalSummary(output string) string {
 		return renderGoalList(raw)
 	}
 	if v, ok := raw["goal"]; ok {
-		return renderGoalSnapshotLine(v, raw["queued"], output)
+		return renderGoalSnapshotLine(v, raw["queued"], raw["totalQueued"], output)
 	}
 	if v, ok := raw["queued"]; ok {
-		return renderQueue(v)
+		return renderQueue(v, raw["totalQueued"])
 	}
 	return output
 }
@@ -222,7 +277,9 @@ func renderCancelled(raw json.RawMessage) string {
 // renderGoalSnapshotLine summarizes results carrying a "goal" snapshot
 // (create / get / update_todo), appending todo progress and the queued count
 // when the payload carries them. A JSON null goal means "No current goal".
-func renderGoalSnapshotLine(raw, queued json.RawMessage, fallback string) string {
+// A fresh goal (no turns/tokens/elapsed yet) omits the all-zero stats — a
+// create summary must state the goal and queue totals, not "0 turns · 0s".
+func renderGoalSnapshotLine(raw, queued, totalQueued json.RawMessage, fallback string) string {
 	if string(raw) == "null" {
 		return "No current goal"
 	}
@@ -230,15 +287,31 @@ func renderGoalSnapshotLine(raw, queued json.RawMessage, fallback string) string
 	if err := json.Unmarshal(raw, &g); err != nil {
 		return fallback
 	}
-	line := fmt.Sprintf("Goal %s: %s · %d turns · %s tokens · %s",
-		g.Status, summaryLabel(g), g.TurnsUsed, formatTokens(g.TokensUsed), formatElapsed(g.WallClockMs))
+	line := fmt.Sprintf("Goal %s: %s", g.Status, summaryLabel(g))
+	if g.TurnsUsed > 0 || g.TokensUsed > 0 || g.WallClockMs > 0 {
+		line += fmt.Sprintf(" · %d turns · %s tokens · %s",
+			g.TurnsUsed, formatTokens(g.TokensUsed), formatElapsed(g.WallClockMs))
+	}
 	if done, total := todoProgress(g.Todos); total > 0 {
 		line += fmt.Sprintf(" · todos %d/%d", done, total)
 	}
-	if n, ok := queuedCount(queued); ok && n > 0 {
-		line += fmt.Sprintf(" · %d queued", n)
-	}
+	line += queueSuffix(queued, totalQueued)
 	return line
+}
+
+// queueSuffix renders the queued-count suffix for create results: " · N
+// queued" for the number queued by this call, extended to "(M total)" when
+// the payload reports the total queue depth after the call and it differs
+// (the queue already held goals before this create).
+func queueSuffix(queued, totalQueued json.RawMessage) string {
+	n, ok := queuedCount(queued)
+	if !ok || n <= 0 {
+		return ""
+	}
+	if total, ok := queuedCount(totalQueued); ok && total > n {
+		return fmt.Sprintf(" · %d queued (%d total)", n, total)
+	}
+	return fmt.Sprintf(" · %d queued", n)
 }
 
 // renderGoalList summarizes list's {"active":…, "queued":[…], "count":n}.
@@ -262,12 +335,17 @@ func renderGoalList(raw map[string]json.RawMessage) string {
 
 // renderQueue summarizes results that carry only "queued": a plain count
 // (create while another goal is active) or the goal list itself (reorder).
-func renderQueue(raw json.RawMessage) string {
+// totalQueued (create only) reports the TOTAL queue depth after the call.
+func renderQueue(raw, totalQueued json.RawMessage) string {
 	if n, ok := queuedCount(raw); ok {
-		if n == 1 {
-			return "1 goal queued"
+		line := "1 goal queued"
+		if n != 1 {
+			line = fmt.Sprintf("%d goals queued", n)
 		}
-		return fmt.Sprintf("%d goals queued", n)
+		if total, ok := queuedCount(totalQueued); ok && total > n {
+			line += fmt.Sprintf(" (%d total)", total)
+		}
+		return line
 	}
 	items := queuedItems(raw)
 	if len(items) == 0 {
