@@ -16,10 +16,17 @@ import "strings"
 //	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂   hero lines up near the right edge
 //	🐛⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂   enemy enters from the left…
 //	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂💨⠂   …killed with smoke, hero moves one left
+//	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠆⠆   dust kicks up at the hero's right side…
+//	⠂⠂⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂⠆   …drifting right and settling
 //	⠂🐍⠂⠂⠂⠂⠂⠂⠂⠂🐐⠂⠂   next enemy, hero one place further left
 //
-// After every 3rd kill the moon 🌙 comes up on the left horizon, arcs across
-// the sky, and goes under on the right. From time to time the action pauses
+// After every 3rd kill the moon crosses the sky: simulated with braille
+// dots, it waxes from a sliver to a full disc at the apex and wanes as it
+// goes under on the right — altering shape as it passes, slowly (each
+// position held for two frames), clearing the sky around it as it goes.
+// When the hero advances after a kill, small braille dust dots kick up at
+// his right side (the direction he came from), drift right, and settle.
+// From time to time the action pauses
 // for a suspense break — a quiet drum-roll of dots accumulating on the left
 // (before the 4th enemy and before the final boss) — then the next actor
 // strikes. After all eight enemy types have been used once, a final boss
@@ -39,7 +46,15 @@ import "strings"
 const (
 	defWidth     = 13 // animation area: 13 cells wide (a longer defender path)
 	defStartPos  = 11 // hero starts near the right edge
-	defMoonEvery = 3  // moon comes up and goes under after every 3rd kill
+	defMoonEvery = 3  // the moon crosses the sky after every 3rd kill
+
+	// Braille building blocks: the background is a single base dot; the moon
+	// and dust are drawn with denser braille cells made of the same dots.
+	blank    = "⠀" // U+2800 empty braille cell (cleared sky around the moon)
+	dustDot  = "⠆" // two-dot braille cell (kicked-up dust)
+	moonWax  = "⠒" // two diagonal dots (waxing / waning moon)
+	moonBig  = "⠶" // four dots (gibbous moon)
+	moonFull = "⠿" // all six dots (full moon)
 
 	ansiRed    = "\x1b[31m"
 	ansiYellow = "\x1b[33m"
@@ -76,10 +91,11 @@ func Defender() Definition {
 				frames = append(frames, suspenseFrames()...)
 			}
 			frames = append(frames, approachFrames(hero, pos, enemy, slow)...)
-			frames = append(frames, smokeKillFrames(pos)...) // ✨ 💨 🌫️ — no fire
-			pos--                                           // the hero advances one place left
+			frames = append(frames, smokeKillFrames(pos)...)     // ✨ 💨 🌫️ — no fire
+			pos--                                                // the hero advances one place left
+			frames = append(frames, advanceFrames(hero, pos)...) // dust of the movement
 			if (i+1)%defMoonEvery == 0 {
-				frames = append(frames, moonFrames()...) // moon rises and sets
+				frames = append(frames, moonFrames()...) // moon crosses the sky
 			}
 		}
 
@@ -134,6 +150,29 @@ func smokeKillFrames(pos int) []string {
 	}
 }
 
+// advanceFrames renders the hero having just stepped one position left:
+// small braille dust dots kick up at his right side (the direction he came
+// from), drift right, and settle — the dust of the movement.
+func advanceFrames(hero string, pos int) []string {
+	return []string{
+		defenderRow(map[int]defenderCell{
+			pos:     {hero, ansiGreen},
+			pos + 1: {dustDot, ansiGray},
+			pos + 2: {dustDot, ansiGray},
+			pos + 3: {dustDot, ansiGray},
+		}),
+		defenderRow(map[int]defenderCell{
+			pos:     {hero, ansiGreen},
+			pos + 2: {dustDot, ansiGray},
+			pos + 3: {dustDot, ansiGray},
+		}),
+		defenderRow(map[int]defenderCell{
+			pos:     {hero, ansiGreen},
+			pos + 3: {dustDot, ansiGray},
+		}),
+	}
+}
+
 // suspenseFrames renders a quiet suspense break: drum-roll dots accumulate
 // one at a time on the left — a small pause that builds anticipation before
 // the next actor strikes. The screen goes quiet (no hero shown).
@@ -145,14 +184,24 @@ func suspenseFrames() []string {
 	}
 }
 
-// moonFrames renders the moon coming up on the left horizon, arcing across
-// the sky, and going under on the right. A pure-sky interlude: the hero is
-// hidden while the moon passes (it would otherwise overlap the hero cell).
+// moonFrames renders the moon crossing the sky, simulated with braille dots:
+// a sliver that waxes to a full disc at the apex and wanes as it goes under —
+// the moon alters shape as it passes. Each position is held for two frames
+// (a slow, deliberate pass), and the sky clears to blanks around the moon so
+// its glow reads against the dot background. A pure-sky interlude: no hero.
 func moonFrames() []string {
-	positions := []int{0, 3, 6, 9, 12}
-	frames := make([]string, 0, len(positions))
-	for _, p := range positions {
-		frames = append(frames, defenderRow(map[int]defenderCell{p: {"🌙", ""}}))
+	positions := []int{0, 2, 4, 6, 8, 10, 12}
+	phases := []string{dot, moonWax, moonBig, moonFull, moonBig, moonWax, dot}
+	frames := make([]string, 0, len(positions)*2)
+	for i, p := range positions {
+		row := map[int]defenderCell{p: {phases[i], ""}}
+		if p > 0 {
+			row[p-1] = defenderCell{blank, ""}
+		}
+		if p < defWidth-1 {
+			row[p+1] = defenderCell{blank, ""}
+		}
+		frames = append(frames, defenderRow(row), defenderRow(row))
 	}
 	return frames
 }

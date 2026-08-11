@@ -95,10 +95,13 @@ func defenderWaves(d Definition) []defenderWave {
 			continue // kill / moon / suspense / boss-death frame
 		}
 		if actor == "" {
-			// hero intro: start a fresh wave
-			flush()
-			cur = defenderWave{hero: hero}
-			lastActor = ""
+			// Hero standing alone (intro, or resting with dust to his right
+			// after an advance): only a NEW hero starts a fresh wave.
+			if cur.hero != hero {
+				flush()
+				cur = defenderWave{hero: hero}
+				lastActor = ""
+			}
 			continue
 		}
 		if cur.hero != hero {
@@ -283,55 +286,174 @@ func TestDefender_EnemyKillsAreSmokeNoFire(t *testing.T) {
 	}
 }
 
-// TestDefender_MoonAfterEveryThirdKill pins the moon interlude: after every
-// 3rd enemy killed the moon comes up on the left horizon, arcs across the
-// sky, and goes under on the right — a pure-sky cutaway (no hero).
+// TestDefender_MoonAfterEveryThirdKill pins the braille moon interlude:
+// after every 3rd enemy killed the moon crosses the sky — a sliver that waxes
+// to a full disc at the apex and wanes, each position held twice (a slow
+// pass), with the sky cleared to blanks around it. A pure-sky cutaway.
 func TestDefender_MoonAfterEveryThirdKill(t *testing.T) {
+	wantPos := []int{0, 2, 4, 6, 8, 10, 12}
+	wantPhase := []string{dot, moonWax, moonBig, moonFull, moonBig, moonWax, dot}
+	var wantInterlude []string
+	for i, p := range wantPos {
+		row := map[int]defenderCell{p: {wantPhase[i], ""}}
+		if p > 0 {
+			row[p-1] = defenderCell{blank, ""}
+		}
+		if p < defWidth-1 {
+			row[p+1] = defenderCell{blank, ""}
+		}
+		wantInterlude = append(wantInterlude, defenderRow(row), defenderRow(row))
+	}
+
 	d := Defender()
-	want := []int{0, 3, 6, 9, 12}
-	var interludes [][]int
-	cur := []int{}
-	flush := func() {
-		if len(cur) > 0 {
-			interludes = append(interludes, cur)
-			cur = []int{}
-		}
-	}
-	for _, f := range d.Frames {
-		cells := defCells(f)
-		moonAt := -1
-		for i, g := range cells {
-			if g == "🌙" {
-				moonAt = i
+	interludes := 0
+	for i := 0; i < len(d.Frames); i++ {
+		// Moon frames are identifiable by their cleared-sky blanks and denser
+		// braille phases — nothing else in the story uses them.
+		isMoon := false
+		for _, g := range defCells(d.Frames[i]) {
+			if g == blank || g == moonWax || g == moonBig || g == moonFull {
+				isMoon = true
 			}
 		}
-		if moonAt >= 0 {
-			// Pure-sky cutaway: no hero may be on screen while the moon passes.
-			for _, g := range cells {
-				if isDefHero(g) {
-					t.Errorf("hero on screen during moon frame: %q", f)
-				}
-			}
-			cur = append(cur, moonAt)
-		} else {
-			flush()
-		}
-	}
-	flush()
-	if len(interludes) != len(defHeroes)*2 {
-		t.Errorf("moon interludes = %d, want %d (after kills 3 and 6, per hero)", len(interludes), len(defHeroes)*2)
-	}
-	for i, il := range interludes {
-		if len(il) != len(want) {
-			t.Errorf("interlude %d has %d frames, want %d: %v", i, len(il), len(want), il)
+		if !isMoon {
 			continue
 		}
-		for k, p := range il {
-			if p != want[k] {
-				t.Errorf("interlude %d frame %d moon at cell %d, want %d (rise→apex→set)", i, k, p, want[k])
+		if i+len(wantInterlude) > len(d.Frames) {
+			t.Fatalf("moon interlude truncated at frame %d", i)
+		}
+		for k, want := range wantInterlude {
+			if d.Frames[i+k] != want {
+				t.Errorf("moon interlude %d frame %d mismatch\n got %q\nwant %q", interludes, k, d.Frames[i+k], want)
+			}
+		}
+		interludes++
+		i += len(wantInterlude) - 1
+	}
+	if want := len(defHeroes) * 2; interludes != want {
+		t.Errorf("moon interludes = %d, want %d (after kills 3 and 6, per hero)", interludes, want)
+	}
+}
+
+// TestDefender_HeroDust pins the advance dust: after EVERY kill the hero
+// steps one position left and small braille dust dots kick up at his right
+// side, drift right, and settle — exactly three frames, the dots thinning
+// 3→2→1 (clipped at the right edge). The hero's advance positions march
+// defStartPos-1 → defStartPos-8 across each wave.
+func TestDefender_HeroDust(t *testing.T) {
+	type run struct {
+		hero   string
+		pos    int
+		frames []string
+	}
+	var runs []run
+	cur := run{}
+	flush := func() {
+		if len(cur.frames) > 0 {
+			runs = append(runs, cur)
+			cur = run{}
+		}
+	}
+	for _, f := range Defender().Frames {
+		cells := defCells(f)
+		hero, heroIdx := "", -1
+		var dust []int
+		bad := ""
+		for i, g := range cells {
+			switch {
+			case g == dot:
+			case isDefHero(g):
+				hero, heroIdx = g, i
+			case g == dustDot:
+				dust = append(dust, i)
+			default:
+				bad = g
+			}
+		}
+		// A dust frame: the hero plus at least one dust dot on his right.
+		if hero == "" || len(dust) == 0 {
+			flush()
+			continue
+		}
+		if bad != "" {
+			t.Errorf("unexpected glyph %q in dust frame %q", bad, f)
+		}
+		if cur.hero != hero {
+			flush()
+		}
+		cur.hero, cur.pos = hero, heroIdx
+		cur.frames = append(cur.frames, f)
+	}
+	flush()
+
+	want := len(defHeroes) * len(defEnemies) // one dust run per kill
+	if len(runs) != want {
+		t.Fatalf("dust runs = %d, want %d (one per kill)", len(runs), want)
+	}
+	for _, r := range runs {
+		wantDust := [][]int{
+			clipCells([]int{r.pos + 1, r.pos + 2, r.pos + 3}),
+			clipCells([]int{r.pos + 2, r.pos + 3}),
+			clipCells([]int{r.pos + 3}),
+		}
+		wantFrames := 3
+		if r.pos+3 >= defWidth {
+			// Right-edge advance: the settling dot falls off the edge, so only
+			// the kick-up and drift frames are visible.
+			wantFrames = 2
+		}
+		if len(r.frames) != wantFrames {
+			t.Errorf("%s dust run at pos %d has %d frames, want %d", r.hero, r.pos, len(r.frames), wantFrames)
+			continue
+		}
+		for k, f := range r.frames {
+			var got []int
+			for i, g := range defCells(f) {
+				if g == dustDot {
+					got = append(got, i)
+				}
+			}
+			if !equalInts(got, wantDust[k]) {
+				t.Errorf("%s dust run frame %d dots at %v, want %v (drifting right) in %q",
+					r.hero, k, got, wantDust[k], f)
 			}
 		}
 	}
+	// The advance positions march one step left per kill across each wave.
+	byWave := map[string][]int{}
+	for _, r := range runs {
+		byWave[r.hero] = append(byWave[r.hero], r.pos)
+	}
+	for hero, poss := range byWave {
+		for k, p := range poss {
+			if want := defStartPos - 1 - k; p != want {
+				t.Errorf("%s advance #%d at pos %d, want %d (one step left per kill)", hero, k, p, want)
+			}
+		}
+	}
+}
+
+// clipCells drops cells beyond the right edge of the animation area.
+func clipCells(cells []int) []int {
+	out := []int{}
+	for _, c := range cells {
+		if c < defWidth {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestDefender_SuspenseBreaks pins the suspense pauses: a quiet drum-roll
