@@ -104,3 +104,124 @@ Add `tools/python_string_methods.go` mirroring `python_file_methods.go`:
   separate, non-blocking follow-up.
 - Error classification (`execution_error` vs `syntax_error`) is unchanged;
   the reported `SyntaxError` was user code, not a tool defect.
+
+### BUG: python tool — `TypeError: 'sub() argument must be str, not function'` (gpython `re.sub` rejects a callable replacement)
+
+**Status:** analysis + fix plan (root cause confirmed; not yet implemented)
+
+**Source:** session export `.goa/exports/goa-export-20260811-151235.zip`
+(issue.md: "python issues"). The same export also reproduced the
+`str.splitlines` `AttributeError` already tracked above; the only *new*
+gpython failure in it is this one.
+
+#### 1. Symptom (observed in the exported session)
+
+The model attempted a routine, valid CPython idiom — a regex rewrite with a
+function computing each replacement from the match — and the `python` tool
+rejected it:
+
+```python
+import re
+p = "/Users/muaddib/dev/goa/core/commands/config_skills_test.go"
+s = open(p).read()
+
+def sub_se(m):
+    return "skillEnabled(%s, %s, nil)" % (m.group(1), m.group(2))
+s2 = re.sub(r'skillEnabled\((cfg|got|fresh), (["a-zA-Z0-9_-]+|name)\)', sub_se, s)
+```
+
+```
+Error: [python error: execution_error]
+Traceback (most recent call last):
+  File "<python>", line 7, in <module>
+TypeError: 'sub() argument must be str, not function'
+```
+
+`re.sub(pattern, repl_fn, string)` with a callable `repl` has been valid
+CPython since Python 2.7/3.x and is the standard way to compute
+replacements from match groups. The model burned a turn discovering the
+rejection, then fell back to `perl -0pi -e ...` via bash (its own words:
+"gpython's re.sub doesn't support function replacement either"). The error
+message gives no hint that callable replacement is simply unimplemented,
+nor that the documented substitute is a template string.
+
+#### 2. Root cause (confirmed)
+
+The `python` tool's `re` module is **goa's own Go-backed module**, not
+stock gpython: `internal/python/stdlib/re.go` (registered from
+`internal/python/stdlib/register.go`). Both entry points coerce `repl` to a
+Go string before substituting:
+
+- `reSub` (`re.go:263-289`): `py.UnpackTuple(args, nil, "sub", 3, 4,
+  &pattern, &repl, &str, &flagsObj)` then
+  `replStr, err := compat.AsString(repl, "sub")` and
+  `pp.re.ReplaceAllLiteralString(txt, replStr)`.
+- `patternSub` (`re.go:382-398`): same coercion for the bound
+  `Pattern.sub(repl, string)`.
+
+`compat.AsString` (`internal/python/compat/compat.go:15-23`) accepts only
+`py.String`/`py.Bytes` and otherwise raises exactly
+`TypeError: '%s() argument must be str, not %s'` — the observed message
+(`%s` = `sub`, type = `function`). Because substitution goes through Go
+`regexp.ReplaceAllLiteralString`, the replacement is treated **literally**:
+even the string form silently ignores group references (`\1`, `\g<name>`),
+a second silent divergence from CPython.
+
+Goa's own long-form tool doc already discloses the gap
+(`tools/python.long.md`: "`re.sub` uses literal replacement only"), but the
+model only sees the doc after the failure, and the short tool description
+("`stdlib beyond os/re/json/...`") implies full `re` parity.
+
+#### 3. Fix plan (clean/elegant — support callables + templates in the Go module)
+
+All changes in `internal/python/stdlib/re.go` (+ tests); no gpython fork
+needed:
+
+1. **Callable `repl`**: when `repl` is callable (`py.Callable` /
+   `py.Call(ctx, repl, ...)`), substitute per match: use
+   `pp.re.FindAllStringSubmatchIndex(txt, -1)`, build a `*Match` for each
+   hit (the module already constructs `Match` objects for
+   `search`/`match`/`findall` — reuse that constructor), call
+   `repl(match)`, coerce the result with `compat.AsString`, and splice
+   results into the output. Propagate exceptions raised by the callback
+   unchanged. Non-callable `repl` keeps the current fast path.
+2. **Template string `repl`**: expand `\1`-style numeric and `\g<name>`
+   group references in the string form (CPython semantics; unknown/invalid
+   references raise `error: bad escape`/IndexError as CPython does).
+   `regexp.ReplaceAllString` is NOT a drop-in (it expands `$name`, not
+   `\1`), so implement the small `\`-escape expander by hand or translate
+   to `$` form carefully (escaping literal `$`).
+3. **Error message**: when a non-callable, non-str/bytes `repl` arrives,
+   keep the `TypeError` but prefer the CPython wording
+   (`expected string or callable`) so the failure mode is discoverable.
+4. **Doc sync**: update the `re` row in `tools/python.long.md` and the
+   `sub` docstrings in `re.go` once callables/templates land.
+5. **Tests** (`internal/python/stdlib/re_test.go`, table-driven, and one
+   end-to-end case via the real `python` tool harness as in
+   `tools/python_test.go`):
+   - the reported transcript: `re.sub(pattern, fn, s)` with `m.group(1)`
+     in the callback performs the rewrite (no `TypeError`).
+   - `re.sub` and `Pattern.sub` with callable `repl`: single match,
+     multiple matches, no match (callback never invoked), callback raising
+     an exception (propagates).
+   - template string form: `\1`, `\g<1>`, literal backslash handling, and
+     out-of-range group → error.
+   - arg validation unchanged: `re.sub(p, 42, s)` still `TypeError`.
+
+#### 4. Validation steps
+
+- Reproduce the reported transcript against the fixed tool: the
+  `config_skills_test.go` rewrite runs to completion, no `TypeError`.
+- `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
+  `gocyclo -over 12 .`, `go test -count=1 -race -cover ./...` (each run
+  separately).
+
+#### 5. Residual risks / follow-ups (out of scope here)
+
+- Go's RE2 engine still means no lookarounds/backreferences in the
+  *pattern* itself — a separate, documented limitation not addressed here.
+- `re.subn` does not exist in the module at all (only `sub`); adding it is
+  a separate enhancement.
+- The callable-`repl` path runs one VM call per match; pathological inputs
+  (many matches) are slower than the literal fast path — acceptable, but
+  note it in the docstring.
