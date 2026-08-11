@@ -5,6 +5,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/config"
@@ -34,6 +35,45 @@ func TestInitSpinner_DefaultWhenEmpty(t *testing.T) {
 
 	if spinnerIsEmpty(t) {
 		t.Error("expected default spinner for empty config, got disabled")
+	}
+}
+
+// TestInitSpinner_DefaultIsPacman pins the waiting animation: with an empty
+// tui.spinner config, the busy indicator is the Pac-Man / ghost ping-pong
+// (the user-facing waiting animation while goa processes the request).
+func TestInitSpinner_DefaultIsPacman(t *testing.T) {
+	defer resetSpinnerState()
+
+	cfg := &config.Config{}
+	cfg.TUI.Spinner = ""
+	initSpinner(cfg)
+
+	sm := tui.NewStatusMsg()
+	sm.Show("x")
+	frame := sm.SpinnerText()
+	sm.Clear()
+
+	if !strings.Contains(frame, "ᗧ") && !strings.Contains(frame, "👻") {
+		t.Fatalf("default spinner is not the pacman animation: %q", frame)
+	}
+}
+
+// TestInitSpinner_ConfigurablePacman lets an explicit tui.spinner: pacman
+// select the animation too (equivalent to the default, but explicit).
+func TestInitSpinner_ConfigurablePacman(t *testing.T) {
+	defer resetSpinnerState()
+
+	cfg := &config.Config{}
+	cfg.TUI.Spinner = "pacman"
+	initSpinner(cfg)
+
+	sm := tui.NewStatusMsg()
+	sm.Show("x")
+	frame := sm.SpinnerText()
+	sm.Clear()
+
+	if !strings.Contains(frame, "ᗧ") && !strings.Contains(frame, "👻") {
+		t.Fatalf("spinner pacman did not activate: %q", frame)
 	}
 }
 
