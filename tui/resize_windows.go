@@ -7,10 +7,7 @@
 package tui
 
 import (
-	"os"
 	"time"
-
-	"golang.org/x/term"
 )
 
 // resizeEvents returns a channel that fires when the terminal size changes.
@@ -41,12 +38,13 @@ func resizeEvents(done <-chan struct{}) <-chan struct{} {
 	return out
 }
 
-// consoleSize returns the current console dimensions via x/term, which
-// abstracts the Windows console API (GetConsoleScreenBufferInfo).
+// consoleSize returns the current console dimensions via queryConsoleSize
+// (the same robust console-handle resolution ProcessTerminal.Size uses, so
+// the poller and the renderer always agree on the size source). On failure it
+// falls back to the historical 80x24 default.
 func consoleSize() (int, int) {
-	w, h, err := term.GetSize(int(os.Stdin.Fd()))
-	if err != nil {
-		return 80, 24
+	if w, h, ok := queryConsoleSize(); ok {
+		return w, h
 	}
-	return w, h
+	return 80, 24
 }
