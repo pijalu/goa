@@ -77,6 +77,25 @@ func TestInitSpinner_ConfigurablePacman(t *testing.T) {
 	}
 }
 
+// TestInitSpinner_ConfigurableDefender lets an explicit tui.spinner: defender
+// select the story animation.
+func TestInitSpinner_ConfigurableDefender(t *testing.T) {
+	defer resetSpinnerState()
+
+	cfg := &config.Config{}
+	cfg.TUI.Spinner = "defender"
+	initSpinner(cfg)
+
+	sm := tui.NewStatusMsg()
+	sm.Show("x")
+	frame := sm.SpinnerText()
+	sm.Clear()
+
+	if !strings.Contains(frame, "🐐") {
+		t.Fatalf("spinner defender did not activate: %q", frame)
+	}
+}
+
 func TestInitSpinner_DisabledForNone(t *testing.T) {
 	defer resetSpinnerState()
 

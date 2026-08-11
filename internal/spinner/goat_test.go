@@ -107,11 +107,13 @@ func TestGoat_Choreography(t *testing.T) {
 	}
 }
 
-// visibleCells counts the visible cells of a frame, treating emoji variation
-// selectors (U+FE0F) and zero-width joiners as non-spacing.
+// visibleCells counts the visible cells of a frame, ignoring ANSI styling and
+// treating emoji variation selectors (U+FE0F) and zero-width joiners as
+// non-spacing.
 func visibleCells(s string) int {
+	plain := stripANSI(s)
 	n := 0
-	for _, r := range s {
+	for _, r := range plain {
 		if r == '\uFE0F' || r == '\u200D' {
 			continue
 		}
