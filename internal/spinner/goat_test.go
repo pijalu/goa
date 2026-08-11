@@ -19,8 +19,9 @@ func TestGoat_Registered(t *testing.T) {
 }
 
 // TestGoat_FramesExact pins the spec verbatim: the goat charges the wall
-// across five positions, hits it, and the dust settles — all twelve frames,
-// in order.
+// across five positions, hits it, the ball escapes through the dust cloud
+// while it is still shown, and the wall rebuilds — all fourteen frames, in
+// order.
 func TestGoat_FramesExact(t *testing.T) {
 	want := []string{
 		"🧱⠂⠂⠂⠂🐐", // goat lines up at the far right
@@ -30,10 +31,12 @@ func TestGoat_FramesExact(t *testing.T) {
 		"🧱🐐💨⠂⠂⠂", // impact!
 		"💥🔥⠂⠂⠂⠂", // headbutt! boom + fire
 		"✨💫⠂⠂⠂⠂", // sparkle and stars
-		"💨🌫️⠂⠂⠂⠂", // the dust begins to clear
-		"🌫️🌫️⠂⠂⠂⠂", // a wall of fog
-		"⬜⠂⠂⠂⠂⠂", // the wall shows a crack
-		"🧱⠂⠂⠂⠂⠂", // and rebuilds
+		"💨🌫️⠂⠂⠂⠂", // the dust puffs up
+		"🌫️🌫️●⠂⠂⠂", // wall of fog — the ball escapes through it
+		"🌫️🌫️⠂●⠂⠂", // …
+		"🌫️🌫️⠂⠂●⠂", // …
+		"🌫️🌫️⠂⠂⠂●", // and rolls out of the frame
+		"🧱⠂⠂⠂⠂⠂", // the wall rebuilds
 		"🧱⠂⠂⠂⠂🐐", // the goat is back for another try
 	}
 	d := Goat()
@@ -82,13 +85,25 @@ func TestGoat_Choreography(t *testing.T) {
 	if n := countRune(all, '🐐'); n != 6 {
 		t.Errorf("goat glyph appears %d times, want 6", n)
 	}
-	for _, r := range []rune{'💥', '🔥', '✨', '💫', '💨', '⬜'} {
+	for _, r := range []rune{'💥', '🔥', '✨', '💫', '💨', '●'} {
 		if !containsRune(all, r) {
 			t.Errorf("story glyph %q missing from the animation", r)
 		}
 	}
 	if !containsRune(all, '🌫') {
 		t.Error("fog (🌫) missing from the animation")
+	}
+	// The ball escapes THROUGH the dust cloud: it appears once per cloud
+	// frame (moving from cell 2 to cell 5) while the fog is still on screen.
+	if n := countRune(all, '●'); n != 4 {
+		t.Errorf("ball glyph appears %d times, want 4 (one per cloud-escape frame)", n)
+	}
+	// The cloud must still be on screen during every ball frame: each
+	// ball-bearing frame also carries the fog.
+	for i, f := range d.Frames {
+		if containsRune(f, '●') && !containsRune(f, '🌫') {
+			t.Errorf("frame[%d] has the escaping ball but no cloud: %q", i, f)
+		}
 	}
 }
 
