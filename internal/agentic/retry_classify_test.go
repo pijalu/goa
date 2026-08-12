@@ -192,6 +192,23 @@ func TestFormatFatalStreamMessage(t *testing.T) {
 	assert.Contains(t, formatRetryMessage(errors.New("boom")), "- retrying")
 }
 
+// Regression (bug: temperature 400): a fixed-temperature rejection
+// ("invalid temperature: only 1 is allowed for this model") must render an
+// actionable hint telling the user which setting to change, not a bare 400.
+func TestFormatFatalStreamMessage_TemperatureHint(t *testing.T) {
+	body := `{"error":{"message":"invalid temperature: only 1 is allowed for this model","type":"invalid_request_error"}}`
+	provErr := (&hooks.ErrorContext{StatusCode: 400, Body: body}).ToError()
+
+	msg := formatFatalStreamMessage(provErr)
+	assert.Contains(t, msg, "invalid temperature", "should keep the provider message")
+	assert.Contains(t, msg, "temperature setting", "should append the actionable fix hint")
+	assert.Contains(t, msg, "/config", "should point at where to change it")
+
+	// A non-temperature 400 gets no hint.
+	other := (&hooks.ErrorContext{StatusCode: 400, Body: `{"error":{"message":"bad request"}}`}).ToError()
+	assert.NotContains(t, formatFatalStreamMessage(other), "temperature setting")
+}
+
 // TestFormatStreamMessage_NonHTTPProviderError pins the "Error: 0 -" defect:
 // a ProviderError with status 0 and an empty body (connection timeout,
 // refused, reset — no HTTP response ever arrived) must render the underlying

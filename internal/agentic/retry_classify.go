@@ -235,10 +235,25 @@ func formatStreamMessage(err error, retrying bool) string {
 		if msg == "" {
 			msg = body
 		}
+		msg += actionableHint(msg)
 		if code != "" {
 			return fmt.Sprintf("Error: %d - %s (%s)%s", status, msg, code, suffix)
 		}
 		return fmt.Sprintf("Error: %d - %s%s", status, msg, suffix)
 	}
 	return fmt.Sprintf("Error: %s%s", err.Error(), suffix)
+}
+
+// actionableHint appends a short, actionable fix hint for provider errors that
+// name a request parameter the user can change. Today it covers the
+// fixed-temperature rejection (e.g. kimi-code "invalid temperature: only 1 is
+// allowed for this model"): point the user at the exact setting to change
+// instead of leaving them with a bare 400.
+func actionableHint(msg string) string {
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "invalid temperature") ||
+		(strings.Contains(lower, "temperature") && strings.Contains(lower, "allowed")) {
+		return " — this endpoint only accepts its default temperature; remove the model's temperature setting (/config → Models) or set it to the allowed value"
+	}
+	return ""
 }

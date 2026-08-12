@@ -77,6 +77,9 @@ type openAICompletionsCompat struct {
 	SendSessionAffinityHeaders                  bool
 	SupportsLongCacheRetention                  bool
 	ToolResultAsUser                            bool
+	// SupportsTemperature false omits the temperature field (kimi-code
+	// rejects any value but its fixed default with HTTP 400).
+	SupportsTemperature bool
 }
 
 func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) openAICompletionsCompat {
@@ -95,6 +98,12 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	}
 	if profile.Compat.SupportsStore != nil {
 		c.SupportsStore = *profile.Compat.SupportsStore
+	}
+	// Temperature is supported unless the variant profile explicitly disables
+	// it (nil = supported, the standard behavior).
+	c.SupportsTemperature = true
+	if profile.Compat.SupportsTemperature != nil {
+		c.SupportsTemperature = *profile.Compat.SupportsTemperature
 	}
 	if profile.CachePolicy.Mode != "" && profile.CachePolicy.Mode != schema.CacheModeNone {
 		c.CacheControlFormat = "anthropic"
@@ -126,7 +135,10 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 	if opts.MaxTokens > 0 {
 		body[compat.MaxTokensField] = opts.MaxTokens
 	}
-	if opts.Temperature != nil {
+	// Omit temperature when the provider does not support it (e.g. kimi-code
+	// rejects any value but its fixed default with HTTP 400 "invalid
+	// temperature"): send nothing and let the endpoint apply its default.
+	if opts.Temperature != nil && compat.SupportsTemperature {
 		body["temperature"] = *opts.Temperature
 	}
 	if opts.TopP != nil {

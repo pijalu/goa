@@ -19,7 +19,8 @@
     "max_tokens_field": "max_tokens",
     "thinking_format": "openai",
     "supports_prompt_cache": false,
-    "stream_includes_usage": true
+    "stream_includes_usage": true,
+    "supports_temperature": false
   },
   "auth": {
     "method": "api_key",
