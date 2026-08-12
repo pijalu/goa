@@ -138,6 +138,12 @@ func (r *teamReviewController) ApplyReview(policy string, triggers []string) err
 	switch policy {
 	case team.ReviewApplyOff:
 		r.orch.SetMode(multiagent.WorkflowInactive)
+		// Fully tear down the companion/agent-driven state, not just the
+		// orchestrator mode: a prior agent/framework apply enabled agent-driven
+		// (persisted), and leaving it set re-asserts companion on every restart.
+		if err := r.am.SetAgentDrivenEnabled(false); err != nil {
+			return err
+		}
 		return r.am.InjectCompanionReview(false)
 	case team.ReviewApplyAgent:
 		r.orch.SetMode(multiagent.WorkflowAgentDriven)

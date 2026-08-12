@@ -1160,9 +1160,19 @@ func restoreSessionState(agentMgr *core.AgentManager, snap core.SessionStateSnap
 		}
 	})
 
-	if snap.MinorMode == "companion" || snap.AgentDrivenEnabled {
+	// Only an explicit companion minor mode restores the companion minor-mode
+	// label. A bare AgentDrivenEnabled (e.g. left over from a team review
+	// apply) must NOT force the companion minor mode — agent-driven tools
+	// being on is independent of the companion minor-mode display, and
+	// treating it as companion made it impossible to disable (bug).
+	if snap.MinorMode == "companion" {
 		if err := agentMgr.SetMinorMode("companion", true); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to restore minor mode: %v\n", err)
+		}
+	} else if snap.AgentDrivenEnabled {
+		// Restore agent-driven tool availability without the companion label.
+		if err := agentMgr.SetAgentDrivenEnabled(true); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to restore agent-driven state: %v\n", err)
 		}
 	}
 

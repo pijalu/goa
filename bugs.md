@@ -192,6 +192,36 @@ to disk so it re-appears on every restart.
 - Gates (each run separately): `go vet ./...` · `staticcheck ./...` ·
   `gocognit -over 15 .` · `gocyclo -over 12 .` · `go test -count=1 -race -cover ./...`.
 
+**Fix applied:**
+- `internal/app/team_adapters.go` (`teamReviewController.ApplyReview`): the
+  `ReviewApplyOff` path now also calls `SetAgentDrivenEnabled(false)` before
+  `InjectCompanionReview(false)`. Team deactivation / a `review: off` restore
+  therefore fully tears down the agent-driven companion state (and, because
+  `SetAgentDrivenEnabled` persists, stops writing the leftover
+  `AgentDrivenEnabled:true` that re-asserted companion on restart).
+- `internal/app/subsystems.go` (`restoreSessionState`): the startup guard now
+  only forces the companion minor mode from an explicit
+  `snap.MinorMode == "companion"`. A bare `snap.AgentDrivenEnabled` restores
+  agent-driven *tool availability* (`SetAgentDrivenEnabled(true)`) without
+  stamping the companion minor-mode label — agent-driven tools on ≠ companion
+  minor mode.
+- Tests (`internal/app/team_companion_teardown_test.go`):
+  `TestTeamReviewController_OffDisablesAgentDriven` (RED: off left
+  agent-driven=true), `TestRestoreSessionState_AgentDrivenAloneDoesNotForceCompanion`
+  (RED: bare flag forced companion), `TestRestoreSessionState_CompanionMinorModeRestores`
+  (guards the legit explicit-companion restore). All GREEN after the fix.
+- Gates green: `go vet` ✓ · `staticcheck ./internal/app` ✓ · `gocognit -over 15` /
+  `gocyclo -over 12` on changed files ✓ · `go test -count=1 -race -cover
+  ./internal/app` ✓ (55.3%) and `./core/team` ✓.
+
+**Note (footer label within a live session):** the footer only learns the
+minor-mode label via `SetMinorMode` (emitted by `/companion:on|off` and the
+startup restore), never by team apply. So a session that never ran
+`/companion:on` no longer shows `(companion)` from team use, and the stale
+label no longer survives a restart. Syncing the footer label live on team
+activate/deactivate is a possible follow-up polish, not required for the
+stuck-state fix.
+
 ---
 
 ## BUG: Config → Teams navigation never builds a history stack — ESC anywhere in Teams exits the whole menu to root
