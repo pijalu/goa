@@ -39,7 +39,7 @@ func (t *MementoTool) Schema() agentic.ToolSchema {
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
-					"type": "string", "description": "read|write|append|list|delete",
+					"type": "string",
 					"enum": []string{"read", "write", "append", "list", "delete"},
 				},
 				"name": map[string]any{

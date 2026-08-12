@@ -82,21 +82,20 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 					"description": "replacement text",
 				},
 				"operation": map[string]any{
-					"type":        "string",
-					"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
+					"type": "string",
 					"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
+					"description": "start line (1-indexed) for line ops",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "end line (1-indexed, for replace_lines/delete_lines)",
+					"description": "end line (1-indexed) for line ops",
 				},
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "regex for replace_pattern/insert_after/insert_before",
+					"description": "regex for pattern-based ops",
 				},
 				"pattern_flags": map[string]any{
 					"type":        "string",
@@ -108,18 +107,15 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"new_content": map[string]any{
 					"type":        "string",
-					"description": "replacement content for replace_lines/insert_after/insert_before",
+					"description": "replacement content for line ops",
 				},
 				"indent_mode": map[string]any{
-					"type":        "string",
-					"description": "preserve (default)|normalize|as-is",
+					"type": "string",
 					"enum":        []string{"preserve", "normalize", "as-is"},
 				},
 				"edits": map[string]any{
 					"type": "array",
-					"description": "batch of edits applied in order against the same file, atomically (all or nothing) in a single write. " +
-						"Each element takes the same fields as a single edit (operation/old_string/new_string, or operation + start_line/end_line/pattern/occurrence/new_content/indent_mode). " +
-						"Edits see the result of the previous ones, so line numbers in later edits refer to the already-edited content.",
+					"description": "Batch of edits to the same file, applied in order, atomically (all or nothing); each element mirrors single-edit fields and sees earlier results.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{

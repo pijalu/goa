@@ -63,7 +63,7 @@ func (t *AgentTool) Schema() agentic.ToolSchema {
 				},
 				"subagent_type": map[string]any{
 					"type":        "string",
-					"description": "Mode to use: coder (default), explore, or plan.",
+					"description": "coder (default)|explore|plan",
 					"enum":        []string{"coder", "explore", "plan"},
 				},
 				"resume": map[string]any{
@@ -72,7 +72,7 @@ func (t *AgentTool) Schema() agentic.ToolSchema {
 				},
 				"run_in_background": map[string]any{
 					"type":        "boolean",
-					"description": "If true, return immediately with a task_id; result delivered later.",
+					"description": "If true, return immediately with task_id; result later.",
 				},
 			},
 			"required": []string{"prompt", "description"},

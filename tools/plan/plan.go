@@ -82,7 +82,7 @@ func (t *PlanTool) registerHandlers() {
 func (t *PlanTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "plan",
-		Description: "Manage a structured work plan: add/update/reorder items, submit for review, and execute items.",
+		Description: "Manage a structured work plan (add/update/reorder, submit for review, execute).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -42,13 +42,13 @@ func (g *GoaCommandTool) SetContextFn(ctxFn func() Context) {
 func (g *GoaCommandTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "goa",
-		Description: "Execute a Goa command (like /help, /mode, /model, /config, /skills). Use this to query or change Goa's behavior.",
+		Description: "Execute a Goa command (/help, /mode, /model, /config, /skills).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"command_string": map[string]any{
 					"type":        "string",
-					"description": "The full command string, e.g., '/mode confirm' or '/help'",
+					"description": "Full command string, e.g. '/mode confirm'",
 				},
 			},
 			"required": []string{"command_string"},

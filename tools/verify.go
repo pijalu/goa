@@ -46,7 +46,7 @@ func (v *VerifyTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
-					"description": "test command (optional, auto-detected from go.mod/package.json)",
+					"description": "test command (auto-detected if empty)",
 				},
 				"args": map[string]any{
 					"type":        "array",

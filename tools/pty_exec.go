@@ -43,7 +43,7 @@ func (t *PTYExecTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"id":      map[string]any{"type": "string", "description": "session ID (auto-generated if empty)"},
 				"command": map[string]any{"type": "string", "description": "command to execute in the PTY"},
-				"action":  map[string]any{"type": "string", "description": "start|write|read|resize|stop|list", "enum": []string{"start", "write", "read", "resize", "stop", "list"}},
+				"action":  map[string]any{"type": "string", "enum": []string{"start", "write", "read", "resize", "stop", "list"}},
 				"input":   map[string]any{"type": "string", "description": "text to write to PTY stdin"},
 				"cols":    map[string]any{"type": "integer", "description": "PTY width in columns (default: 80)"},
 				"rows":    map[string]any{"type": "integer", "description": "PTY height in rows (default: 24)"},
