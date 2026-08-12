@@ -28,6 +28,13 @@ type teamSessionController struct {
 func (c *teamSessionController) SwitchModel(providerID, modelID string) error {
 	pid := providerID
 	if pid == "" {
+		// A team member with no explicit provider: binds on the provider its
+		// model is configured for (same semantics as /model's
+		// providerIDForModel); only when the model names no provider do we
+		// keep the session's current provider.
+		pid = providerIDForModelConfig(c.cfg, modelID)
+	}
+	if pid == "" {
 		pid = c.cfg.ActiveProvider
 	}
 	if _, ok := modelByID(c.cfg, modelID); !ok && modelID != c.cfg.ActiveModel {
@@ -91,6 +98,18 @@ func modelByID(cfg *config.Config, id string) (config.ModelConfig, bool) {
 		}
 	}
 	return config.ModelConfig{}, false
+}
+
+// providerIDForModelConfig returns the provider ID a model is configured
+// for (mirrors providerIDForModel in core/commands/model.go). Returns "" when
+// the model is not configured or names no provider — callers then fall back
+// to their legacy default.
+func providerIDForModelConfig(cfg *config.Config, modelID string) string {
+	m, ok := modelByID(cfg, modelID)
+	if !ok {
+		return ""
+	}
+	return m.ProviderID
 }
 
 // teamPoolConfigurer adapts *multiagent.AgentPool to team.PoolConfigurer.
@@ -193,9 +212,17 @@ func (a *teamMemberApplier) MemberConfig(def config.TeamDefinition, rm config.Re
 	if rm.Member.Model == "" {
 		return multiagent.AgentConfig{}, fmt.Errorf("member %q has no model", rm.Name)
 	}
+	// A member with no explicit provider: binds on the provider its model is
+	// configured for, so pool members land on the right endpoint. When the
+	// model names no provider either, ProviderID stays empty and the pool
+	// keeps its legacy default wiring.
+	providerID := rm.Member.Provider
+	if providerID == "" {
+		providerID = providerIDForModelConfig(a.cfg, rm.Member.Model)
+	}
 	ac := multiagent.AgentConfig{
 		ModelName:       rm.Member.Model,
-		ProviderID:      rm.Member.Provider,
+		ProviderID:      providerID,
 		ReasoningEffort: agentic.ReasoningEffort(a.cfg.TeamMemberThinking(def, rm)),
 	}
 	if rm.Member.Mode != "" && a.modeRegistry != nil {

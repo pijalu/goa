@@ -21,7 +21,7 @@ If new items are added, restart the process.
 
 ## BUG: Team/model activation binds a model whose temperature the endpoint rejects — hard 400 on first turn
 
-**Status:** PARTIALLY FIXED — the safety-net (capability + actionable error) is implemented & tested. The PRIMARY root cause (team provider resolution) is a separate OPEN bug below; this entry stays open until that lands and the e2e validation passes.
+**Status:** PARTIALLY FIXED — the safety-net (capability + actionable error) is implemented & tested, AND the PRIMARY root cause (team provider resolution, next entry) is now FIXED with unit tests. This entry stays open until the live e2e validation passes (VALIDATION REQUEST below).
 
 **Log:** `/Users/muaddib/dev/localtest/.goa/exports/goa-export-20260812-121044.zip`
 
@@ -125,8 +125,8 @@ provider-resolution bug, below):**
 - Gates green: `go vet ./internal/agentic/...` ✓ · `staticcheck` ✓ ·
   `gocognit -over 15` / `gocyclo -over 12` on changed files ✓ ·
   `go test -count=1 -race -cover ./internal/agentic/provider/protocol` ✓ (67.0%).
-- **Remaining for full close:** fix the PRIMARY team-provider-resolution bug
-  (next entry) + run the requested live e2e validation (last entry).
+- **Remaining for full close:** ~~fix the PRIMARY team-provider-resolution bug~~
+  (DONE — next entry) + run the requested live e2e validation (last entry).
 
 **Notes / open questions:**
 - The temperature constraint is per-endpoint-model on kimi-code; the
@@ -138,7 +138,8 @@ provider-resolution bug, below):**
 
 ## BUG: Team activation does not switch to the member model's provider — requests go to the wrong endpoint
 
-**Status:** OPEN — root cause confirmed; this is the PRIMARY cause of the
+**Status:** FIXED — implemented, tested, unit-validated. Live e2e validation
+pending (see VALIDATION REQUEST below); this is the PRIMARY cause of the
 temperature-400 bug above.
 
 **Symptom:** Activating a team whose main (or companion) member names a model
@@ -201,6 +202,36 @@ provider silently mis-routes the model and its parameters.
   `gocognit -over 15 .` · `gocyclo -over 12 .` · `go test -count=1 -race -cover ./...`.
 - Live e2e per the validation request entry below (gemma codes on lmstudio,
   qwen reviews).
+
+**Fix applied:**
+- `internal/app/team_adapters.go` (`teamSessionController.SwitchModel`):
+  when the member's provider is empty, resolve the model's own configured
+  provider via the new `providerIDForModelConfig` helper (mirrors
+  `providerIDForModel` semantics in `core/commands/model.go`); fall back to
+  `ActiveProvider` only when the model names no provider. Explicit member
+  `provider:` remains highest priority.
+- Same resolution in `teamMemberApplier.MemberConfig`: pool members with no
+  `provider:` now resolve their model's configured provider so the pool's
+  `ProviderModelFactory` lands companion/worker members on the right
+  endpoint; models with no configured provider keep `ProviderID` empty
+  (legacy pool default wiring preserved).
+- Restore path unaffected: snapshot/restore already records prior
+  provider+model.
+- Tests (`internal/app/team_provider_resolution_test.go`, RED→GREEN through
+  the full non-headless path with a recording ProviderManager):
+  `TestTeamSessionController_SwitchModelResolvesModelProvider` (gemma on
+  lmstudio activated from a kimi-code session → ActiveProvider==lmstudio,
+  SetActive(lmstudio, gemma-local)), `..._SwitchModelExplicitProviderWins`,
+  `..._SwitchModelFallsBackToActiveProvider` (model with no configured
+  provider), `TestTeamMemberApplier_MemberConfigResolvesModelProvider`
+  (companion), `..._MemberConfigExplicitProviderWins`,
+  `..._MemberConfigNoConfiguredProviderStaysEmpty`.
+- Gates green (each run separately): `go vet ./...` ✓ · `staticcheck ./...`
+  pre-existing only, none from changed files ✓ · `gocognit -over 15 .` /
+  `gocyclo -over 12 .` none on changed files ✓ · `go test -count=1 -race
+  -cover ./...` ✓ (81 packages ok, 0 FAIL; internal/app 55.7%, core/team
+  76.1%, core/commands 58.3%).
+- **Remaining for full close:** live e2e validation per the request below.
 
 ---
 
