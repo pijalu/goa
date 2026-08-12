@@ -65,7 +65,9 @@ func (m *configMenu) openTeams() {
 		case "active":
 			m.open(m.openTeamsActive)
 		default:
-			m.openTeamDetail(selected)
+			// Push the Teams list so ESC from the detail returns here (one
+			// level up) instead of closing the menu.
+			m.open(func() { m.openTeamDetail(selected) })
 		}
 	})
 }
@@ -119,17 +121,19 @@ func (m *configMenu) openTeamDetail(name string) {
 			m.back()
 			return
 		}
+		// Push the detail page so ESC from any sub-page returns here (one
+		// level up) instead of closing the menu.
 		switch field {
 		case "description":
-			m.promptTeamField(name, "description")
+			m.open(func() { m.promptTeamField(name, "description") })
 		case "review":
-			m.openTeamReviewPolicy(name)
+			m.open(func() { m.openTeamReviewPolicy(name) })
 		case "gates":
-			m.openTeamGates(name)
+			m.open(func() { m.openTeamGates(name) })
 		case "members":
-			m.openTeamMembers(name)
+			m.open(func() { m.openTeamMembers(name) })
 		case "remove":
-			m.confirmRemoveTeam(name)
+			m.open(func() { m.confirmRemoveTeam(name) })
 		}
 	})
 }
@@ -156,6 +160,7 @@ func teamMembersSummary(def config.TeamDefinition) string {
 
 // promptTeamField edits a scalar team field (description).
 func (m *configMenu) promptTeamField(name, field string) {
+	m.current = func() { m.promptTeamField(name, field) }
 	cfg := m.ctx.Config
 	def := cfg.Teams.Definitions[name]
 	m.ctx.ShowInput("Team "+field+":", def.Description, func(value string, ok bool) {
@@ -166,7 +171,8 @@ func (m *configMenu) promptTeamField(name, field string) {
 		def.Description = strings.TrimSpace(value)
 		cfg.Teams.Definitions[name] = def
 		m.saveTeamsSection()
-		m.openTeamDetail(name)
+		// Return to the (already-pushed) team detail page.
+		m.back()
 	})
 }
 
@@ -189,7 +195,8 @@ func (m *configMenu) openTeamReviewPolicy(name string) {
 		def.Review = v
 		cfg.Teams.Definitions[name] = def
 		m.saveTeamsSection()
-		m.openTeamDetail(name)
+		// Return to the (already-pushed) team detail page.
+		m.back()
 	})
 }
 
@@ -217,7 +224,8 @@ func (m *configMenu) openTeamGates(name string) {
 				def.ReviewGates.Triggers = splitTrim(value, ",")
 				cfg.Teams.Definitions[name] = def
 				m.saveTeamsSection()
-				m.openTeamDetail(name)
+				// Return to the (already-pushed) team detail page.
+				m.back()
 			})
 		case "quorum":
 			m.ctx.SelectOption("Quorum:", []tui.SelectorItem{
@@ -231,7 +239,8 @@ func (m *configMenu) openTeamGates(name string) {
 				def.ReviewGates.Quorum = q
 				cfg.Teams.Definitions[name] = def
 				m.saveTeamsSection()
-				m.openTeamDetail(name)
+				// Return to the (already-pushed) team detail page.
+				m.back()
 			})
 		}
 	})

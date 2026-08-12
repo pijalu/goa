@@ -196,7 +196,7 @@ to disk so it re-appears on every restart.
 
 ## BUG: Config → Teams navigation never builds a history stack — ESC anywhere in Teams exits the whole menu to root
 
-**Status:** OPEN — logged, root cause reproduced (RED), fix plan below.
+**Status:** FIXED — implemented, tested, validated.
 
 **Symptom:** In `/config` → Teams, drilling into a team (detail view) or its
 Description field and pressing ESC (or completing an edit and then navigating
@@ -260,3 +260,22 @@ unwrapped submenu) breaks that contract.
   root — never a hard exit to the TUI.
 - Gates (each run separately): `go vet ./...` · `staticcheck ./...` ·
   `gocognit -over 15 .` · `gocyclo -over 12 .` · `go test -count=1 -race -cover ./...`.
+
+**Fix applied:**
+- `core/commands/config.go`: added `openTeamsMenu` / `openOrchestratorMenu` /
+  `openGoalsMenu` wrappers that push the root page via `m.open(...)`; the
+  submenu handler map now points at them (previously `teams`/`orchestrator`/
+  `goals` bypassed `m.open`).
+- `core/commands/config_teams.go`: `openTeams` opens the team detail via
+  `m.open(...)`; `openTeamDetail` opens each sub-page (description / review /
+  gates / members / remove) via `m.open(...)`; `promptTeamField` now sets
+  `m.current` and returns via `m.back()`; the review/gates completion
+  callbacks return to the pushed detail via `m.back()` instead of re-invoking
+  `openTeamDetail` directly.
+- Tests: `TestConfigMenu_TeamsNavigationHistory`,
+  `TestConfigMenu_TeamDetailEscReturnsToList`,
+  `TestConfigMenu_TeamDescriptionEscReturnsToDetail` — all RED before the fix
+  (ESC exited the menu), GREEN after.
+- Gates green: `go vet ./...` ✓ · `staticcheck ./core/commands` ✓ ·
+  `gocognit -over 15` / `gocyclo -over 12` on changed files ✓ ·
+  `go test -count=1 -race -cover ./core/commands` ✓ (58.3%).

@@ -413,6 +413,95 @@ func TestConfigMenu_RootIncludesTeams(t *testing.T) {
 	}
 }
 
+// Regression (bug: Teams nav never built a history stack): drilling
+// root → Teams → team detail → description must push each page so ESC
+// (back) walks UP one level instead of exiting the whole menu to the TUI.
+// Every other submenu wraps with m.open; Teams (and its sub-pages) bypassed
+// it, leaving len(history)==0 so any back() closed the menu.
+func TestConfigMenu_TeamsNavigationHistory(t *testing.T) {
+	cfg := teamCmdConfig()
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+
+	// Enter via the real root path.
+	menu.open(func() { _ = menu.showRoot() })
+	menu.showSubMenu("teams")
+	if sr.title != "Teams:" {
+		t.Fatalf("after teams: title=%q, want Teams:", sr.title)
+	}
+	// Root must have been pushed so ESC from Teams returns to Settings root.
+	if len(menu.history) == 0 {
+		t.Fatalf("entering Teams pushed nothing onto history (len=0); ESC would exit the menu")
+	}
+
+	// ESC from the Teams list returns to the Settings root, not out of the menu.
+	sr.onSel("", false)
+	if menu.current == nil {
+		t.Fatal("ESC from Teams list closed the menu (current=nil); want Settings root")
+	}
+	if sr.title != "Settings:" {
+		t.Errorf("ESC from Teams list: title=%q, want Settings:", sr.title)
+	}
+}
+
+// ESC from a team detail must return to the Teams list (one level up), not
+// exit the menu.
+func TestConfigMenu_TeamDetailEscReturnsToList(t *testing.T) {
+	cfg := teamCmdConfig()
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+
+	menu.open(func() { _ = menu.showRoot() })
+	menu.showSubMenu("teams")
+	sr.onSel("alpha", true) // team detail
+	if sr.title != "Edit team alpha:" {
+		t.Fatalf("detail title=%q, want 'Edit team alpha:'", sr.title)
+	}
+
+	sr.onSel("", false) // ESC from detail
+	if menu.current == nil {
+		t.Fatal("ESC from team detail closed the menu (current=nil); want Teams list")
+	}
+	if sr.title != "Teams:" {
+		t.Errorf("ESC from team detail: title=%q, want Teams:", sr.title)
+	}
+}
+
+// ESC from the description input must return to the team detail (one level
+// up); submitting a description then ESC must also land back on the detail.
+func TestConfigMenu_TeamDescriptionEscReturnsToDetail(t *testing.T) {
+	cfg := teamCmdConfig()
+	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+
+	menu.open(func() { _ = menu.showRoot() })
+	menu.showSubMenu("teams")
+	sr.onSel("alpha", true)         // team detail
+	sr.onSel("description", true)   // description input shown
+	if ir.prompt == "" {
+		t.Fatal("expected the description input prompt")
+	}
+
+	// ESC on the input -> back to the team detail.
+	ir.onSub("", false)
+	if menu.current == nil {
+		t.Fatal("ESC from description closed the menu (current=nil); want team detail")
+	}
+	if sr.title != "Edit team alpha:" {
+		t.Errorf("ESC from description: title=%q, want 'Edit team alpha:'", sr.title)
+	}
+
+	// Submit a description, then ESC from the detail returns to the Teams list.
+	sr.onSel("description", true)
+	ir.onSub("my desc", true)
+	if sr.title != "Edit team alpha:" {
+		t.Fatalf("after submit: title=%q, want 'Edit team alpha:'", sr.title)
+	}
+	if cfg.Teams.Definitions["alpha"].Description != "my desc" {
+		t.Errorf("description not persisted: %q", cfg.Teams.Definitions["alpha"].Description)
+	}
+}
+
 // /config → Teams is wizard-forward (mirrors /config → Models): — add team —
 // first, then each defined team (select to edit), then the active-team row.
 func TestConfigMenu_TeamsRootIsWizardForward(t *testing.T) {

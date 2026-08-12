@@ -230,15 +230,15 @@ func (m *configMenu) subMenuHandlers() map[string]func(*configMenu) {
 		"thinking_blocks":  (*configMenu).toggleThinkingBlocks,
 		"show_thinking":    (*configMenu).toggleShowThinking,
 		"multi_agent":      (*configMenu).openMultiAgent,
-		"orchestrator":     (*configMenu).openOrchestrator,
-		"teams":            (*configMenu).openTeams,
+		"orchestrator":     (*configMenu).openOrchestratorMenu,
+		"teams":            (*configMenu).openTeamsMenu,
 		"tools":            (*configMenu).openTools,
 		"bash":             (*configMenu).openBash,
 		"mcp":              (*configMenu).openMCP,
 		"sandbox":          (*configMenu).openSandbox,
 		"loop_detection":   (*configMenu).openLoopDetection,
 		"skills":           (*configMenu).openSkills,
-		"goals":            (*configMenu).openGoalsRetention,
+		"goals":            (*configMenu).openGoalsMenu,
 	}
 }
 
@@ -256,6 +256,13 @@ func (m *configMenu) openBash()          { m.open(m.settingBash) }
 func (m *configMenu) openMCP()           { m.open(m.settingMCP) }
 func (m *configMenu) openLoopDetection() { m.open(m.settingLoopDetection) }
 func (m *configMenu) openSkills()        { m.open(m.settingSkills) }
+
+// Entry wrappers that push the root page onto history so ESC from the
+// submenu returns to Settings root instead of closing the menu (bug: Teams /
+// Orchestrator / Goals bypassed m.open, so back() exited to the TUI).
+func (m *configMenu) openTeamsMenu()        { m.open(m.openTeams) }
+func (m *configMenu) openOrchestratorMenu() { m.open(m.openOrchestrator) }
+func (m *configMenu) openGoalsMenu()        { m.open(m.openGoalsRetention) }
 
 func (m *configMenu) openActiveModel() {
 	m.open(func() {
