@@ -237,7 +237,7 @@ provider silently mis-routes the model and its parameters.
 
 ## BUG: Activating a team persists `teams.active` to the HOME config instead of the project (local) config
 
-**Status:** OPEN — logged, root cause identified.
+**Status:** FIXED.
 
 **Symptom:** Selecting/activating a team (`/team:<name>` or /config → Teams →
 Active team) writes `teams.active` to the **home** config
@@ -254,33 +254,61 @@ per-project team binding is the project (`.goa/config.yaml`) or local
 home by design (a global default), but a team is a project-scoped working
 set, so the same default is surprising.
 
-**Open design question (decide in plan):** should `teams.active` persist to
-the project `.goa/config.yaml` (shared, committed) or the local
-`.goa/config.local.yaml` (gitignored, per-developer)? A team is arguably
-per-project + per-developer; recommend the **local** layer
-(`config.local.yaml`) so it neither leaks across projects nor dirties the
-committed project config. Confirm the intended scope before implementing.
+**Design decision (recorded):** `teams.active` persists to the project
+**LOCAL** layer (`.goa/config.local.yaml` — gitignored, per-developer), NOT
+the committed project `.goa/config.yaml`. A team is a project-scoped +
+per-developer working set: the home layer leaks the selection across all
+projects, and the committed project layer would dirty shared config with a
+personal selection. Team *definitions* stay in the home config (user level).
 
-**Fix plan:**
-- Add a saver method for the project/local layer (the cascade loader already
-  supports layered writes for other fields) and point `persistActiveTeam` at
-  the chosen layer instead of home.
-- Keep `teams.active` resolution order unchanged (cascade already merges; the
-  most specific layer wins).
+**Fix applied:**
+- `config/loader.go`: new `SaveLocalFieldValue(path, value)` on
+  `ConfigSaver`/`CascadeLoader`, backed by a new `editLocalConfig`; the
+  shared `editConfigFile` helper gained a filename parameter so home
+  (`config.yaml`), project (`config.yaml`), and local (`config.local.yaml`)
+  edits share one read-modify-write path (same `writeMu` serialization,
+  minimal-document creation, field-scoped merge).
+- `core/commands/team.go`: `persistActiveTeam` now calls
+  `SaveLocalFieldValue(["teams","active"], name)` instead of
+  `SaveHomeFieldValue` (covers `/team:<name>` and `/team:off`).
+- `core/commands/config_teams.go`: `/config → Teams → Active team`
+  (`openTeamsActive`) had the same leak via `saveTeamsSection` (whole
+  "teams" section to home); it now persists only `teams.active` via the new
+  `saveTeamsActive` → local layer. Definition CRUD still saves the section
+  to home via `saveTeamsSection`.
+- Cascade resolution order unchanged: embedded → home → project → local →
+  env → flags; the local layer already wins for `teams.active` (most
+  specific). No migration of stale home-layer values (harmless shadowed
+  leftovers; the local layer overrides them on next activation).
+- Test fakes (`core/commands/config_test.go`, `core/agentmanager_test.go`)
+  gained `SaveLocalFieldValue` to satisfy the extended interface.
 
-**Test approach:**
-- Unit: after `teamActivate`, the value is written to the local/project layer
-  file and NOT to the home config (assert which file changed under a temp
-  HOME + temp project dir).
-- Unit: on startup the project/local `teams.active` resolves correctly through
-  the cascade.
+**Tests (RED→GREEN):**
+- `config/loader_local_save_test.go` (new): `TestSaveLocalFieldValueWritesLocalLayerOnly`
+  (local file carries the value; home + project configs untouched),
+  `TestSaveLocalFieldValueCreatesFile`,
+  `TestSaveLocalFieldValuePreservesOtherLocalSettings`,
+  `TestCascadeLocalTeamsActiveResolvesOnStartup` (startup cascade resolves
+  the local-layer value on reload).
+- `core/commands/team_test.go`: `TestTeamCommand_ActivatePersistsToLocalLayer`
+  (temp HOME + temp project dir: local file carries `active: alpha`; home
+  carries only definitions; committed project config untouched; reload
+  through the cascade resolves `alpha`),
+  `TestTeamCommand_OffPersistsToLocalLayer` (clears to `active: ""` locally,
+  home untouched),
+  `TestConfigMenu_TeamsActivePersistsToLocalLayer` (the /config Active-team
+  path writes only the local layer).
 
-**Validation steps:**
-- Interactive: in project A activate a team → `~/.goa/config.yaml` unchanged;
-  the project's `.goa/config.local.yaml` (or `.goa/config.yaml`) carries
-  `teams.active`; project B is unaffected.
-- Gates (each run separately): `go vet ./...` · `staticcheck ./...` ·
-  `gocognit -over 15 .` · `gocyclo -over 12 .` · `go test -count=1 -race -cover ./...`.
+**Validation:**
+- Gates (each run separately): `go vet ./...` exit 0 · `staticcheck ./...`
+  pre-existing findings only (none in changed files) · `gocognit -over 15 .`
+  0 findings in changed files (43 pre-existing elsewhere) · `gocyclo -over 12 .`
+  0 findings in changed files (64 pre-existing elsewhere) ·
+  `go test -count=1 -race -cover ./...` exit 0 (81 packages ok, 0 FAIL;
+  config 79.0%, core/commands 58.5%).
+- Interactive smoke (project A activate → home unchanged, project B
+  unaffected) not run; covered by the unit tests above (temp HOME +
+  per-project dirs).
 
 ---
 

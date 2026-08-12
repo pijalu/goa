@@ -67,6 +67,13 @@ type ConfigSaver interface {
 	// at the given path in ~/.goa/config.yaml, preserving other settings.
 	SaveHomeFieldValue(path []string, value any) error
 
+	// SaveLocalFieldValue writes an arbitrary value (including maps and slices)
+	// at the given path in .goa/config.local.yaml — the project LOCAL layer
+	// (gitignored, per-developer). Use for project-scoped, per-developer
+	// settings such as teams.active: they must neither leak across projects
+	// (home layer) nor dirty the committed project config.
+	SaveLocalFieldValue(path []string, value any) error
+
 	// DeleteProjectField removes the key at the given path from .goa/config.yaml.
 	DeleteProjectField(path []string) error
 
@@ -1134,6 +1141,15 @@ func (cl *CascadeLoader) SaveHomeFieldValue(path []string, value any) error {
 	})
 }
 
+// SaveLocalFieldValue writes an arbitrary value (including maps and slices) at
+// the given path in the project local layer .goa/config.local.yaml,
+// preserving other local settings.
+func (cl *CascadeLoader) SaveLocalFieldValue(path []string, value any) error {
+	return cl.editLocalConfig(func(doc *yaml.Node) error {
+		return setYamlNodeValue(doc, path, value)
+	})
+}
+
 // DeleteHomeField removes the key at the given path from ~/.goa/config.yaml.
 // It is a no-op when the key (or file) does not exist.
 func (cl *CascadeLoader) DeleteHomeField(path []string) error {
@@ -1148,25 +1164,32 @@ func (cl *CascadeLoader) DeleteHomeField(path []string) error {
 
 // editHomeConfig applies edit to ~/.goa/config.yaml (see editConfigFile).
 func (cl *CascadeLoader) editHomeConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.homeDir, ".goa"), "home", edit)
+	return cl.editConfigFile(filepath.Join(cl.homeDir, ".goa"), "config.yaml", "home", edit)
 }
 
-// editProjectConfig loads the project config (creating a minimal document when
-// missing), applies edit to the root mapping, and writes it back.
+// editProjectConfig applies edit to the project .goa/config.yaml (see
+// editConfigFile).
 func (cl *CascadeLoader) editProjectConfig(edit func(doc *yaml.Node) error) error {
-	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "project", edit)
+	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "config.yaml", "project", edit)
 }
 
-// editConfigFile loads the config.yaml under configDir (creating a minimal
-// document when missing), applies edit to the root mapping, and writes it
-// back. The label ("home"/"project") scopes error messages.
-func (cl *CascadeLoader) editConfigFile(configDir, label string, edit func(doc *yaml.Node) error) error {
+// editLocalConfig applies edit to the project local layer
+// .goa/config.local.yaml (see editConfigFile).
+func (cl *CascadeLoader) editLocalConfig(edit func(doc *yaml.Node) error) error {
+	return cl.editConfigFile(filepath.Join(cl.projectDir, ".goa"), "config.local.yaml", "local", edit)
+}
+
+// editConfigFile loads the named config file under configDir (creating a
+// minimal document when missing), applies edit to the root mapping, and
+// writes it back. The label ("home"/"project"/"local") scopes error
+// messages.
+func (cl *CascadeLoader) editConfigFile(configDir, fileName, label string, edit func(doc *yaml.Node) error) error {
 	cl.writeMu.Lock()
 	defer cl.writeMu.Unlock()
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("create %s config dir: %w", label, err)
 	}
-	pathYaml := filepath.Join(configDir, "config.yaml")
+	pathYaml := filepath.Join(configDir, fileName)
 
 	var root yaml.Node
 	data, err := os.ReadFile(pathYaml)

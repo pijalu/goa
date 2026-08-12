@@ -5,6 +5,8 @@
 package commands
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -89,6 +91,106 @@ func TestTeamCommand_ActivateDirect(t *testing.T) {
 	}
 	if cfg.Teams.Active != "alpha" {
 		t.Errorf("teams.active = %q, want alpha persisted", cfg.Teams.Active)
+	}
+}
+
+// Regression (bug: activating a team persisted teams.active to the HOME
+// config, leaking the selection across all projects): activation must write
+// to the project LOCAL layer (.goa/config.local.yaml — gitignored,
+// per-developer) and leave both the home config and the committed project
+// config untouched.
+func TestTeamCommand_ActivatePersistsToLocalLayer(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	projectDir := t.TempDir()
+
+	cfg := teamCmdConfig()
+	sess := &stubSession{providerID: "p0", modelID: "m0"}
+	m := team.NewManager(cfg, sess, nil, nil, nil, nil)
+	saver := config.NewCascadeLoader(projectDir, "", nil)
+	// Definitions persist to the home config at creation time; the reload
+	// below validates teams.active against the on-disk definitions.
+	if err := saver.SaveHomeFieldValue([]string{"teams", "definitions"}, cfg.Teams.Definitions); err != nil {
+		t.Fatalf("seed home definitions: %v", err)
+	}
+	ctx := core.Context{
+		Config:      cfg,
+		TeamManager: m,
+		ConfigSaver: saver,
+	}
+	var out strings.Builder
+	ctx.OutputBuffer = &out
+
+	if err := (&TeamCommand{}).Run(ctx, []string{"alpha"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The local layer file carries the value.
+	localPath := filepath.Join(projectDir, ".goa", "config.local.yaml")
+	localData, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("teams.active must be written to %s: %v", localPath, err)
+	}
+	if !strings.Contains(string(localData), "active: alpha") {
+		t.Errorf("local config = %q, want teams.active: alpha", string(localData))
+	}
+
+	// The home config carries the definitions but must NOT carry teams.active.
+	homePath := filepath.Join(homeDir, ".goa", "config.yaml")
+	if homeData, err := os.ReadFile(homePath); err == nil && strings.Contains(string(homeData), "active") {
+		t.Errorf("home config must not carry teams.active, got %q", string(homeData))
+	}
+
+	// The committed project config must NOT carry the value either.
+	projectPath := filepath.Join(projectDir, ".goa", "config.yaml")
+	if projectData, err := os.ReadFile(projectPath); err == nil && strings.Contains(string(projectData), "teams") {
+		t.Errorf("project config must not carry teams.active, got %q", string(projectData))
+	}
+
+	// A reload through the startup cascade resolves teams.active from the
+	// local layer.
+	reloaded, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.Teams.Active != "alpha" {
+		t.Errorf("Teams.Active = %q after reload, want %q from the local layer", reloaded.Teams.Active, "alpha")
+	}
+}
+
+// /team:off clears teams.active in the local layer, not the home config.
+func TestTeamCommand_OffPersistsToLocalLayer(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	projectDir := t.TempDir()
+
+	cfg := teamCmdConfig()
+	sess := &stubSession{providerID: "p0", modelID: "m0"}
+	m := team.NewManager(cfg, sess, nil, nil, nil, nil)
+	ctx := core.Context{
+		Config:      cfg,
+		TeamManager: m,
+		ConfigSaver: config.NewCascadeLoader(projectDir, "", nil),
+	}
+	var out strings.Builder
+	ctx.OutputBuffer = &out
+
+	_ = (&TeamCommand{}).Run(ctx, []string{"alpha"})
+	_ = (&TeamCommand{}).Run(ctx, []string{"off"})
+
+	localPath := filepath.Join(projectDir, ".goa", "config.local.yaml")
+	localData, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("teams.active must be written to %s: %v", localPath, err)
+	}
+	if !strings.Contains(string(localData), "active: \"\"") {
+		t.Errorf("local config = %q, want teams.active cleared", string(localData))
+	}
+	homePath := filepath.Join(homeDir, ".goa", "config.yaml")
+	if homeData, err := os.ReadFile(homePath); err == nil && strings.Contains(string(homeData), "teams") {
+		t.Errorf("home config must not carry teams.active, got %q", string(homeData))
 	}
 }
 
@@ -504,6 +606,57 @@ func TestConfigMenu_TeamDescriptionEscReturnsToDetail(t *testing.T) {
 
 // /config → Teams is wizard-forward (mirrors /config → Models): — add team —
 // first, then each defined team (select to edit), then the active-team row.
+
+// Regression: /config → Teams → Active team must persist teams.active to the
+// project LOCAL layer (.goa/config.local.yaml), while team definitions stay
+// in the home config (a team is a project-scoped, per-developer working set;
+// its definitions are user-level).
+func TestConfigMenu_TeamsActivePersistsToLocalLayer(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+	projectDir := t.TempDir()
+
+	cfg := teamCmdConfig()
+	sr := &selectRecorder{}
+	ctx := &core.Context{
+		Config:      cfg,
+		ConfigSaver: config.NewCascadeLoader(projectDir, "", nil),
+	}
+	ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, onSelected func(string, bool)) {
+		sr.title, sr.options, sr.current, sr.onSel = title, options, current, onSelected
+	}
+	menu := newConfigMenu(*ctx)
+	menu.openTeamsActive()
+	if sr.title != "Active team:" {
+		t.Fatalf("title = %q, want Active team:", sr.title)
+	}
+	sr.onSel("alpha", true)
+
+	// The local layer carries teams.active.
+	localPath := filepath.Join(projectDir, ".goa", "config.local.yaml")
+	localData, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("teams.active must be written to %s: %v", localPath, err)
+	}
+	if !strings.Contains(string(localData), "active: alpha") {
+		t.Errorf("local config = %q, want teams.active: alpha", string(localData))
+	}
+
+	// Selecting the active team writes ONLY the local layer: the home config
+	// must not carry teams.active (it was never written there).
+	homePath := filepath.Join(homeDir, ".goa", "config.yaml")
+	if homeData, err := os.ReadFile(homePath); err == nil && strings.Contains(string(homeData), "teams") {
+		t.Errorf("home config must not carry teams state after active-team selection, got %q", string(homeData))
+	}
+
+	// The committed project config must not carry the value either.
+	projectPath := filepath.Join(projectDir, ".goa", "config.yaml")
+	if projectData, err := os.ReadFile(projectPath); err == nil && strings.Contains(string(projectData), "teams") {
+		t.Errorf("project config must not carry teams.active, got %q", string(projectData))
+	}
+}
+
 func TestConfigMenu_TeamsRootIsWizardForward(t *testing.T) {
 	cfg := teamCmdConfig()
 	cfg.Teams.Active = "alpha"

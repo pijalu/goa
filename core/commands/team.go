@@ -400,14 +400,19 @@ func teamOneLiner(def config.TeamDefinition) string {
 	return b.String()
 }
 
-// persistActiveTeam records teams.active in the home config so the selection
-// survives restarts (like /model persisting active_model).
+// persistActiveTeam records teams.active in the project local layer
+// (.goa/config.local.yaml — gitignored, per-developer) so the selection
+// survives restarts without leaking across projects (home layer) or dirtying
+// the committed project config. Unlike /model's active_model (a global
+// default persisted to home by design), a team is a project-scoped working
+// set. The startup cascade (home → project → local) resolves the value with
+// no resolution-order change: the most specific layer wins.
 func persistActiveTeam(ctx core.Context, name string) {
 	if ctx.Config == nil || ctx.ConfigSaver == nil {
 		return
 	}
 	ctx.Config.Teams.Active = name
-	if err := ctx.ConfigSaver.SaveHomeFieldValue([]string{"teams", "active"}, name); err != nil {
+	if err := ctx.ConfigSaver.SaveLocalFieldValue([]string{"teams", "active"}, name); err != nil {
 		ctx.Flash("Failed to persist teams.active: " + err.Error())
 	}
 }

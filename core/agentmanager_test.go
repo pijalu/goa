@@ -1829,6 +1829,9 @@ func (f *recordingConfigSaver) SaveProjectFieldValue(path []string, value any) e
 func (f *recordingConfigSaver) SaveHomeFieldValue(path []string, value any) error {
 	return f.err
 }
+func (f *recordingConfigSaver) SaveLocalFieldValue(path []string, value any) error {
+	return f.err
+}
 func (f *recordingConfigSaver) DeleteProjectField(path []string) error { return f.err }
 func (f *recordingConfigSaver) DeleteHomeField(path []string) error    { return f.err }
 func (f *recordingConfigSaver) Reload() (*config.Config, error)        { return nil, f.err }

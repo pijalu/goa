@@ -36,6 +36,9 @@ func (f *fakeConfigSaver) SaveProjectFieldValue(path []string, value any) error 
 func (f *fakeConfigSaver) SaveHomeFieldValue(path []string, value any) error {
 	return nil
 }
+func (f *fakeConfigSaver) SaveLocalFieldValue(path []string, value any) error {
+	return nil
+}
 func (f *fakeConfigSaver) DeleteProjectField(path []string) error { return nil }
 func (f *fakeConfigSaver) DeleteHomeField(path []string) error    { return nil }
 func (f *fakeConfigSaver) Reload() (*config.Config, error)        { return f.savedCfg, nil }

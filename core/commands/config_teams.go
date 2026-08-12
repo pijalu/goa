@@ -15,8 +15,10 @@ import (
 )
 
 // /config → Teams: full team-definition CRUD (TEAMS.md §8.3), mirroring the
-// orchestrator-roles editor (config_orchestrator.go). All mutations persist
-// via saveHomeSection on the "teams" section and are revalidated per §3.5.
+// orchestrator-roles editor (config_orchestrator.go). Definition mutations
+// persist via saveHomeSection on the "teams" section and are revalidated
+// per §3.5; the active-team selection persists to the project LOCAL layer
+// (see saveTeamsActive).
 
 func teamsLabel(cfg *config.Config) string {
 	n := len(cfg.Teams.Definitions)
@@ -29,6 +31,23 @@ func teamsLabel(cfg *config.Config) string {
 // saveTeamsSection persists the teams config section to the home config.
 func (m *configMenu) saveTeamsSection() {
 	m.saveHomeSection([]string{"teams"}, m.ctx.Config.Teams)
+	if err := m.ctx.Config.Validate(); err != nil {
+		m.flash("Saved with validation warning: " + err.Error())
+	}
+}
+
+// saveTeamsActive persists ONLY teams.active to the project local layer
+// (.goa/config.local.yaml — gitignored, per-developer), matching /team
+// activation (persistActiveTeam): a team is a project-scoped working set, so
+// its selection must neither leak across projects (home layer) nor dirty the
+// committed project config.
+func (m *configMenu) saveTeamsActive() {
+	if m.ctx.ConfigSaver == nil {
+		return
+	}
+	if err := m.ctx.ConfigSaver.SaveLocalFieldValue([]string{"teams", "active"}, m.ctx.Config.Teams.Active); err != nil {
+		m.flash("Failed to save config: " + err.Error())
+	}
 	if err := m.ctx.Config.Validate(); err != nil {
 		m.flash("Saved with validation warning: " + err.Error())
 	}
@@ -94,7 +113,7 @@ func (m *configMenu) openTeamsActive() {
 			return
 		}
 		cfg.Teams.Active = selected
-		m.saveTeamsSection()
+		m.saveTeamsActive()
 		m.openTeams()
 	})
 }
