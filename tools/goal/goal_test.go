@@ -101,7 +101,7 @@ func TestGoalTool_UpdateCompleteSetsStopTurn(t *testing.T) {
 	}
 }
 
-// TestGoalTool_CompleteRemindsOpenTodos pins the bugs.md requirement: when a
+// TestGoalTool_CompleteRemindsOpenTodos pins the requirement: when a
 // goal is ACHIEVED with pending todos, the framework reminds the model of the
 // open items (todos die with the goal, but unfinished work must not vanish
 // silently — the model can schedule a follow-up goal if it is still needed).
@@ -196,7 +196,7 @@ func TestGoalTool_ActionFieldMismatch(t *testing.T) {
 	}
 }
 
-// TestGoalTool_ActionInferredWhenOmitted pins the bugs.md "Goal management
+// TestGoalTool_ActionInferredWhenOmitted pins the "Goal management
 // tool issue" fix: models frequently omit `action` and pass only the payload
 // fields (export goa-export-20260729-102137.zip: {"status":"blocked",...} →
 // invalid goal action ""). The tool must infer the intended action from the
@@ -315,7 +315,7 @@ func TestGoalTool_ActionInferredWhenOmitted(t *testing.T) {
 }
 
 // TestGoalTool_CreateQueuesBehindPausedOrBlockedGoal pins the second half of
-// the bugs.md "Goal management tool issue": with a PAUSED or BLOCKED goal,
+// the Goal management tool issue: with a PAUSED or BLOCKED goal,
 // create must ADD to the queue (todo-list semantics) instead of failing with
 // "a goal already exists" (GetActiveGoal filters status==active while
 // CreateGoal rejects any state — the trap the model hit in the export).
@@ -382,7 +382,7 @@ func TestGoalTool_CreateQueuesBehindPausedOrBlockedGoal(t *testing.T) {
 	})
 }
 
-// TestGoalTool_Postpone pins the bugs.md "Goal scheduling" feature: the
+// TestGoalTool_Postpone pins the Goal scheduling:feature: the
 // model's deprioritize primitive — demote the active goal to the BACK of the
 // queue so the next scheduled goal starts (the clear event drives the app's
 // auto-promotion, exactly as after a completion).
@@ -442,7 +442,7 @@ func TestGoalTool_Postpone(t *testing.T) {
 	})
 }
 
-// TestGoalTool_Promote pins the bugs.md "Goal scheduling" feature: the
+// TestGoalTool_Promote pins the Goal scheduling:feature: the
 // model's prioritize primitive — activate a queued goal NOW; the current goal
 // is demoted to the FRONT of the queue so it resumes right after.
 func TestGoalTool_Promote(t *testing.T) {
@@ -526,7 +526,7 @@ func TestGoalTool_SchemaListsSchedulingActions(t *testing.T) {
 
 // TestGoalTool_Create_FreshContext verifies the model-facing freshContext
 // argument is threaded into CreateGoalInput and surfaced on the goal snapshot
-// (bugs.md: per-goal clean-context flag).
+// (per-goal clean-context flag).
 func TestGoalTool_Create_FreshContext(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	tool := newGoalTool(mode, func() bool { return true })
@@ -543,7 +543,7 @@ func TestGoalTool_Create_FreshContext(t *testing.T) {
 }
 
 // TestGoalTool_TodoActions verifies the model can add and check off items in
-// the goal's framework-managed todo list via the goal tool (bugs.md:
+// the goal's framework-managed todo list via the goal tool
 // framework-managed todo list for goals).
 func TestGoalTool_TodoActions(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
@@ -871,7 +871,7 @@ func TestGoalTool_CancelNoActiveGoal(t *testing.T) {
 }
 
 // TestGoalTool_Create_FreshContextDefaultOn verifies the flipped default
-// (bugs.md Issue 24): a create WITHOUT freshContext now yields a clean-context
+// (Issue 24): a create WITHOUT freshContext now yields a clean-context
 // goal (default true); the model must explicitly pass false to keep context.
 func TestGoalTool_Create_FreshContextDefaultOn(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
@@ -1105,7 +1105,7 @@ func TestGoalTool_CreateRejectsOversizedObjective(t *testing.T) {
 }
 
 // TestGoalTool_AccessSerializesConcurrentCalls is the regression test for the
-// goal-tool-call ordering bug (bugs.md must-fix #4): "When multiple goal tool
+// goal-tool-call ordering bug (must-fix #4): "When multiple goal tool
 // calls are executed, the request order should be kept." Because the goal tool
 // mutates shared goal-manager state, concurrent goal calls must be serialized
 // by the tool scheduler — which happens only when the tool declares an access

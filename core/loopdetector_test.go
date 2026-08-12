@@ -72,7 +72,7 @@ func TestLoopDetectorReset(t *testing.T) {
 }
 
 // TestLoopDetector_LegitRebuildCycleDoesNotTrip replays the false-positive
-// incident from bugs.md ("Tool call loop detector"): a long frigolite
+// incident from ("Tool call loop detector"): a long frigolite
 // session ran the byte-identical `go build ./...` command 11 times across
 // dozens of turns (edit → build → edit → build …) and the lifetime-count
 // detector interrupted the agent at the 10th. Legitimate reuse of an

@@ -17,7 +17,7 @@ import (
 // picker delegates to the /model command instead of the former parallel picker
 // that silently dropped the selector's __delete__ / __add__ sentinels ('-' and
 // '+' keys did nothing). Regression test for "- key does not delete in the
-// /model picker" (bugs.md).
+// /model picker".
 func TestHandleChangeModel_RoutesToModelCommand(t *testing.T) {
 	registry := core.NewCommandRegistry()
 	if err := commands.RegisterAll(registry); err != nil {

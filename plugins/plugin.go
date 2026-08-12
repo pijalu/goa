@@ -95,7 +95,7 @@ var vmMu sync.Mutex
 // runOutsideVMLock does NOT decrement it). Scheduler timers use tryEnterVM
 // to detect that a synchronous command/tool is mid-execution and defer their
 // best-effort work instead of interleaving a second goja frame — the race
-// that made TestPluginCommandExecutesThroughRouter flaky (bugs.md item E).
+// that made TestPluginCommandExecutesThroughRouter flaky (item E).
 var vmActive int
 var vmActiveMu sync.Mutex
 

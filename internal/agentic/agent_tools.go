@@ -70,7 +70,7 @@ func (a *Agent) scheduleAndRunToolCalls(ctx context.Context, tcs []provider.Cont
 	defer sched.Shutdown()
 	// Surface true execution starts to the UI: a queued task (conflict or
 	// MaxParallel) shows "waiting" until the scheduler actually starts it
-	// (bugs.md Bug W). Emitted from scheduler goroutines like tool progress.
+	// (Bug W). Emitted from scheduler goroutines like tool progress.
 	names := make(map[string]string, len(tcs))
 	for i := range tcs {
 		names[tcs[i].ToolCallID] = tcs[i].ToolName

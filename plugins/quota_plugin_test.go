@@ -329,7 +329,7 @@ func TestQuota_CarouselPrefersAPIProvidersOverLocal(t *testing.T) {
 	}
 }
 
-// TestQuota_ProviderSwitchUpdatesSegment covers bugs.md "Quota": after
+// TestQuota_ProviderSwitchUpdatesSegment covers Quota: after
 // switching the active provider, the segment must track the new provider, not
 // keep showing the provider that was active at startup.
 func TestQuota_ProviderSwitchUpdatesSegment(t *testing.T) {
@@ -355,7 +355,7 @@ func TestQuota_ProviderSwitchUpdatesSegment(t *testing.T) {
 	}
 }
 
-// TestQuota_UnsupportedProviderStatesNotSupported covers bugs.md "Quota": when
+// TestQuota_UnsupportedProviderStatesNotSupported covers Quota: when
 // the active provider has no quota API, /quota must say so explicitly.
 func TestQuota_UnsupportedProviderStatesNotSupported(t *testing.T) {
 	env := newQuotaTestEnv(t)
@@ -472,7 +472,7 @@ func TestQuota_LocalProviderLMStudioTypeShowsInfinity(t *testing.T) {
 	}
 }
 
-// TestQuota_BudgetSummaryPlentyOfRoom covers bugs.md "Quota color": /quota
+// TestQuota_BudgetSummaryPlentyOfRoom covers Quota color: /quota
 // explains the budget status in words (e.g. "plenty of room").
 func TestQuota_BudgetSummaryPlentyOfRoom(t *testing.T) {
 	env := newQuotaTestEnv(t)

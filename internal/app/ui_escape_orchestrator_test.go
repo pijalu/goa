@@ -16,7 +16,7 @@ import (
 	"github.com/pijalu/goa/multiagent"
 )
 
-// TestHandleEscape_DrainsSteeringQueue is the bugs.md "ESC remainder:
+// TestHandleEscape_DrainsSteeringQueue is the "ESC remainder:
 // steering drain" regression: user input queued as steering while the agent
 // runs must NOT dispatch as a follow-up turn after ESC. handleEscape must
 // flush the queue so nothing survives the interrupt.
@@ -39,7 +39,7 @@ func TestHandleEscape_DrainsSteeringQueue(t *testing.T) {
 	}
 }
 
-// TestHandleEscape_OrchestratorsSafe covers the bugs.md "ESC remainder:
+// TestHandleEscape_OrchestratorsSafe covers the "ESC remainder:
 // orchestrator/swarm" wiring at the app boundary: handleEscape must call
 // ForegroundOrchestrator.Cancel (the single choke point that aborts every
 // in-flight run context — propagation itself is proven by multiagent's

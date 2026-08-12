@@ -279,7 +279,7 @@ type Context struct {
 
 	// ToolTeardown, when set, is called after /tools:name:off unregisters a
 	// tool so integrations tied to it can be torn down live (e.g. lsp closes
-	// its manager and detaches read/edit/write linking — bugs.md Issue LSP).
+	// its manager and detaches read/edit/write linking — Issue LSP).
 	ToolTeardown func(name string)
 
 	// SkillRegistry provides skill lookup (populated by M08).

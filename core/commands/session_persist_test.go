@@ -287,7 +287,7 @@ func TestBuildSessionItems_DuplicateMinuteGetsSeconds(t *testing.T) {
 }
 
 // TestFilterSessionsWithModelTurn pins the picker filter: sessions without an
-// assistant reply are hidden from the picker (bugs.md item B).
+// assistant reply are hidden from the picker (item B).
 func TestFilterSessionsWithModelTurn(t *testing.T) {
 	sessions := []core.SessionInfo{
 		{Name: "with-turn", HasModelTurn: true},

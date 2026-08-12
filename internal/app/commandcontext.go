@@ -249,7 +249,7 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 
 // makeToolTeardown returns the /tools:name:off hook tearing integrations
 // bound to a tool. For "lsp" it fully disables the integration: detaches the
-// manager from read/edit/write and closes every running server (bugs.md
+// manager from read/edit/write and closes every running server
 // Issue LSP — off must mean off, including background spawns).
 func makeToolTeardown(subs *subsystems) func(name string) {
 	return func(name string) {
@@ -268,7 +268,7 @@ func makeToolTeardown(subs *subsystems) func(name string) {
 
 // makeLSPToolRuntime builds the lsp tool for the /tools:lsp:on runtime path.
 // When LSP was fully off at bootstrap (tools.enabled.lsp: false → no manager,
-// per bugs.md Issue LSP), the manager is created now and wired into the
+// per Issue LSP), the manager is created now and wired into the
 // already-registered read/edit/write tools so the whole integration comes up
 // without a restart. Returns false only when the manager cannot exist (global
 // lsp: false in config).

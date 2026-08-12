@@ -8,7 +8,7 @@ import "testing"
 
 // TestEditor_UpArrow_DirtyInput_NoRecall verifies that pressing Up with typed
 // (unsent) content does NOT recall history — the in-progress text must never
-// be clobbered (bugs.md: history recall only on non-dirty input).
+// be clobbered (history recall only on non-dirty input).
 func TestEditor_UpArrow_DirtyInput_NoRecall(t *testing.T) {
 	ed := NewEditor()
 	ed.SetHistory([]string{"old-a", "old-b"})

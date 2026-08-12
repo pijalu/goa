@@ -26,7 +26,7 @@ func (m *configMenu) settingCompression() {
 		{Value: "soft", Label: "Soft threshold (early maintenance)", Description: percentLabel(cfg.ContextCompression.Thresholds.SoftPercent, "off (default)")},
 		{Value: "threshold", Label: "Trigger threshold", Description: trigger},
 		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "off (default)")},
-		// Derived limits (bugs.md CM:13 design rule 5: ALL compression-related
+		// Derived limits (CM:13 design rule 5: ALL compression-related
 		// limits must be visible in /config — no hidden 95%). These are computed
 		// from the hard ceiling and shown read-only so the user can see exactly
 		// where each reactive/proactive gate fires.
@@ -521,7 +521,7 @@ func percentLabel(v int, fallback string) string {
 
 // derivedPercentLabel renders a computed (always-present) compression limit.
 // Unlike percentLabel these values are never "off" — they are derived from the
-// hard ceiling (bugs.md CM:13 rule 5: no hidden limits).
+// hard ceiling (CM:13 rule 5: no hidden limits).
 func derivedPercentLabel(v int) string {
 	return fmt.Sprintf("%d%%", v)
 }

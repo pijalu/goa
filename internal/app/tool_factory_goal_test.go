@@ -12,7 +12,7 @@ import (
 	"github.com/pijalu/goa/core"
 )
 
-// Regression for bugs.md: /tools:goal:on reported "Tool goal could not be
+// Regression for /tools:goal:on reported "Tool goal could not be
 // instantiated at runtime. Restart Goa to apply the change." because
 // makeToolFactory had no "goal" case. The factory must build the goal tool
 // with the same GoalMode wiring used at startup.
@@ -55,7 +55,7 @@ func TestMakeToolFactory_Goal_ToolIsFunctional(t *testing.T) {
 	}
 }
 
-// Regression for bugs.md: "/tools:goal:on reports success but the goal tool
+// Regression for "/tools:goal:on reports success but the goal tool
 // still errors — ✗ ◆ Started goal Phase 1...". A successful create through the
 // runtime-built tool must return a nil error so the renderer draws ✓, not ✗.
 func TestMakeToolFactory_Goal_CreateIsNotErrorFlagged(t *testing.T) {

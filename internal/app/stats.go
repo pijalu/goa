@@ -79,7 +79,7 @@ type sessionStats struct {
 	// Compactions documents each completed compression round (strategy,
 	// before/after %, freed tokens, removed messages, time). The aggregate
 	// MicroCompacts/Compacts counters above feed the footer; this per-round
-	// record makes the session stats self-documenting (bugs.md "context
+	// record makes the session stats self-documenting ("context
 	// compressions are invisible").
 	Compactions []CompactionRound
 }
@@ -174,7 +174,7 @@ func compactionRoundFromEvent(ev *agentic.OutputEvent, strategy string) Compacti
 
 // showCompactionBubble renders a dedicated conversation element for a
 // completed compression pass so the user sees the drop instead of an
-// unexplained context reset (bugs.md "context compressions are invisible").
+// unexplained context reset (context compressions are invisible).
 // AddFlashMessage dedups a repeated same-strategy pass (a reactive ceiling
 // enforcer firing several turns in a row) by updating the last bubble in
 // place instead of stacking. It runs on the commandLoop via apply (the chat
@@ -314,7 +314,7 @@ func (a *App) handleUserOrSystemContent(ev *agentic.OutputEvent) {
 		// A stream-retry notification means the agent reset its content buffer
 		// and will re-stream the answer from scratch. Retract the orphaned
 		// in-progress assistant bubble so the partial pre-retry text does not
-		// linger next to the re-streamed bubble (bugs.md Issue 4 duplicates).
+		// linger next to the re-streamed bubble (Issue 4 duplicates).
 		if isStreamRetry(ev) {
 			a.subs.chat.RemoveLastMessageOfType(tui.ConsoleAssistantMessage, tui.ConsoleThinkingBlock)
 		}
@@ -460,7 +460,7 @@ func (a *App) handleToolResult(ev *agentic.OutputEvent) {
 // finishes while its widget is fully scrolled into terminal scrollback. The
 // compositor never repaints committed rows, so the widget's ✓/✗ transition
 // would be invisible and the frozen running rows would read as "still
-// ongoing" (bugs.md Issue 6: the first series of a parallel cancel batch
+// ongoing" (Issue 6: the first series of a parallel cancel batch
 // "stayed blue"). The echo renders the tool renderer's own summary (e.g.
 // "✓ Cancelled silky.nyala: G05 — …"), capped at a few lines, ANSI-free.
 func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
@@ -500,7 +500,7 @@ func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agenti
 // (elapsed) at the TRUE execution start: the scheduler started the task
 // (EventToolStart). Until this arrives a finalized call stays Pending and
 // shows "waiting Ns…" — never a fake elapsed that includes queue time
-// (bugs.md Bug W).
+// (Bug W).
 func (a *App) handleToolStart(ev *agentic.OutputEvent) {
 	a.toolTracker().OnStart(ev)
 }
@@ -539,7 +539,7 @@ func (a *App) setStreamingStatus() {
 // agent streams, or any orphan) so cancelled tools show ✗ instead of hanging.
 // A widget whose arguments never finished streaming was canceled BEFORE the
 // tool executed — it is labeled accordingly so the user does not think work
-// happened and its output was lost (bugs.md: "Tool call start a review but
+// happened and its output was lost ("Tool call start a review but
 // no output of work done").
 // The foreground tracker is reset so the next turn starts clean.
 func (a *App) failPendingTools() {
@@ -657,7 +657,7 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	// early rejection) emits no EventTokenStats; re-logging the previous
 	// turn's stale numbers produced byte-identical [stats] lines across
 	// consecutive turns that looked like impossible zero-progress repeats
-	// (bugs.md runaway-loop identical-stats anomaly). Say what happened.
+	// (runaway-loop identical-stats anomaly). Say what happened.
 	if !statsSeen {
 		a.subs.logger.Log(agentic.Info, fmt.Sprintf("[stats] turn %d: no LLM call (no token stats this turn)", turn))
 		return
@@ -799,7 +799,7 @@ func (a *App) handleToolCall(ev *agentic.OutputEvent) {
 	// NOTE: the widget is deliberately NOT stamped Running here. Stamping at
 	// args-complete starts every widget of a batch at the same instant, so
 	// queued (conflict-serialized) calls display a fake ticking "elapsed"
-	// (bugs.md "Multi-tool calling and timeout" + Bug W). The Running
+	// (Multi-tool calling and timeout+ Bug W). The Running
 	// transition happens on EventToolStart (true scheduler execution start)
 	// or, as a backstop, the call's first progress event.
 

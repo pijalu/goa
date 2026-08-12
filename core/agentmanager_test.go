@@ -1298,7 +1298,7 @@ func TestAgentManager_RefreshContextCompression(t *testing.T) {
 // TestAgentManager_HandleLoopWarningCriticalInterrupts guards STUB-2: the
 // TestAgentManager_ThinkingLoopInterrupts verifies that a thinking/reasoning
 // loop cancels the in-flight turn, mirroring the tool-loop interrupt path. This
-// reproduces the failure captured in bugs.md where the assistant repeated the
+// reproduces the failure captured in where the assistant repeated the
 // same reasoning paragraph many times with no loop protection firing.
 func TestAgentManager_ThinkingLoopInterrupts(t *testing.T) {
 	cfg := &config.Config{}
@@ -2102,7 +2102,7 @@ func (r *recordingRunner) RunWithImages(ctx context.Context, input string, image
 	return r.Run(ctx, input)
 }
 
-// TestAgentManager_StartSession_FreshConversationID covers bugs.md Issue 8: every
+// TestAgentManager_StartSession_FreshConversationID covers Issue 8: every
 // StartSession must give the agent a FRESH, non-empty StreamOptions.SessionID so
 // provider-side cache (prompt_cache_key / previous_response_id / session-affinity)
 // is cleared between sessions (/new, first start). Two consecutive sessions must not
@@ -2146,7 +2146,7 @@ func TestAgentManager_StartSession_FreshConversationID(t *testing.T) {
 	}
 }
 
-// TestAgentManager_ResetConversationID covers bugs.md Issue 8: rotating the
+// TestAgentManager_ResetConversationID covers Issue 8: rotating the
 // conversation id on a live session (fresh-context goal) must give the active
 // agent a NEW non-empty SessionID distinct from the previous one, so provider
 // cache is not carried into the clean context.
@@ -2191,7 +2191,7 @@ func (o *okRunner) RunWithImages(ctx context.Context, input string, images []str
 }
 
 // TestRunAgentTurn_PostTurnHookFiresAfterCleanup asserts the post-turn hook
-// observes the turn as fully ended (bugs.md Issue 7): the hook starts the
+// observes the turn as fully ended (Issue 7): the hook starts the
 // goal driver, and if it fired while the manager still marked the turn
 // running, the driver's agent-busy guard would always trip — or worse,
 // without the guard, the driver would queue-storm continuation prompts into
@@ -2326,7 +2326,7 @@ func TestAgentManager_LogCompanionStarted_WritesModelMarker(t *testing.T) {
 }
 
 // loopResetRunner tracks ResetLoopStop calls; used to verify that a genuine
-// new user turn clears the agent's runaway-loop latch (bugs.md runaway-loop
+// new user turn clears the agent's runaway-loop latch (runaway-loop
 // bricking) while runners without the optional interface are left alone.
 type loopResetRunner struct {
 	resetCalls int

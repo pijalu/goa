@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestGoalTurn_TokenStatsUpdateFooter is the discriminating test for bugs.md
+// TestGoalTurn_TokenStatsUpdateFooter is the discriminating test for
 // "Goal: no status line details". A goal continuation turn drives the agent
 // via agentManagerRunner.Run → agent.Run, NOT via SendUserInput — but the
 // agent emits EventTokenStats/EventContextStats regardless, and those reach

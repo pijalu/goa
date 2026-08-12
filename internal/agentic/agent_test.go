@@ -2344,7 +2344,7 @@ func TestAgent_RetriesStreamError_EmitsSystemNotification(t *testing.T) {
 			notifications = append(notifications, e)
 		}
 	}
-	// The retry lifecycle is fully visible (bugs.md Issue 17): the failure
+	// The retry lifecycle is fully visible (Issue 17): the failure
 	// bubble ("retrying") followed by the durable "Connection restored"
 	// confirmation once a retry succeeds.
 	if len(notifications) != 2 {
@@ -2523,7 +2523,7 @@ func TestAgent_RetriesInitialStreamError_408(t *testing.T) {
 	}
 }
 
-// TestAgent_RetryBudgetResetsAfterSuccess proves bugs.md Issue 17: once a
+// TestAgent_RetryBudgetResetsAfterSuccess proves Issue 17: once a
 // stream failure is recovered by a retry, a LATER failure — in the same turn
 // or the next turn — gets a full fresh retry budget (attempts restart at
 // 1/MaxRetries), and every episode is visible to the user (progress attempts

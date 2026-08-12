@@ -28,7 +28,7 @@ const streamLoopFPEvidence = "So the failure at line 196 is the \"3.5\" query (a
 	"3.4: a = 4 AND b BETWEEN 20 AND 80 -- Matches 80 rows\n AND\n c BETWEEN 150 AND 160 -- Matches 10 rows\n" +
 	"3.5: `a = 5 AND b BETWEEN 20 AND 80 -- Matches 1 row\n AND\n c BETWEEN 150 AND 160 -- Matches 10 rows"
 
-// Field fixtures for the count-based detector rework (bugs.md 2026-08-01):
+// Field fixtures for the count-based detector rework (2026-08-01):
 // a false positive on exploratory Option A/B/C thinking, and a false negative
 // on a ~90-copy paraphrase loop.
 
@@ -65,7 +65,7 @@ const streamLoopTPParaphrase = "No test.db cleanup in the preamble. Let me check
 	"Let me check the reopen pattern:"
 
 // TestStreamLoop_NoFalsePositiveOnExploratoryOptions is the FP regression
-// from the field (bugs.md): Option A/B/C analysis must never trip.
+// from the field: Option A/B/C analysis must never trip.
 func TestStreamLoop_NoFalsePositiveOnExploratoryOptions(t *testing.T) {
 	if streamLoopWouldDetect(streamLoopFPOptions, 3) {
 		t.Error("false positive: exploratory Option A/B/C analysis detected as a loop")
@@ -86,7 +86,7 @@ func TestStreamLoop_NoFalsePositiveOnExploratoryOptions(t *testing.T) {
 }
 
 // TestStreamLoop_ParaphraseLoopDetected is the TP regression from the field
-// (bugs.md): a high-count paraphrase loop MUST trip, even mid-stream.
+// a high-count paraphrase loop MUST trip, even mid-stream.
 func TestStreamLoop_ParaphraseLoopDetected(t *testing.T) {
 	if !streamLoopWouldDetect(streamLoopTPParaphrase, 3) {
 		t.Error("paraphrase loop not detected: ~13 drifting copies of the same intent")
@@ -223,7 +223,7 @@ func TestStreamLoop_ThresholdControlsDetection(t *testing.T) {
 
 // Three fuzzy copies of a long paragraph (small same-length variations, so no
 // two adjacent copies are byte-exact) must NOT trip: three similar paragraphs
-// can be analysis (the Option A/B/C false positive, bugs.md 2026-08-01) — the
+// can be analysis (the Option A/B/C false positive, 2026-08-01) — the
 // copy count, not the similarity, is the evidence. When the family keeps
 // growing, Detector B's shingle coverage confirms the loop.
 func TestStreamLoop_FuzzyCopiesNeedHighCount(t *testing.T) {
@@ -677,7 +677,7 @@ func TestThinkingStall_DisabledByHook(t *testing.T) {
 }
 
 // TestStreamLoop_TUIRepetitionSampleDetected is the exact flood from the
-// bugs.md "TUI shows unexpected repetition on normal messages" entry: the
+// TUI shows unexpected repetition on normal messages:entry: the
 // model repeated one accusation with walking casing/punctuation variants
 // ("is never called —" / "is NEVER called!" / "is NEVER CALLED."). After
 // case folding and punctuation stripping the copies are byte-exact, so the
@@ -705,7 +705,7 @@ func TestStreamLoop_TUIRepetitionSampleDetected(t *testing.T) {
 }
 
 // TestStreamLoop_NoFalsePositiveOnStructuredHeaders is the false-positive
-// validation for the runaway-loop visibility bug (bugs.md 2026-08-03): a
+// validation for the runaway-loop visibility bug (2026-08-03): a
 // long structured report whose sections share markdown headers and table
 // separators — but whose per-section content is genuinely varied — is
 // legitimate near-repetition, not a loop, and must never trip the detector

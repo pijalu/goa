@@ -42,7 +42,7 @@ func bigToolHistory() []Message {
 }
 
 // TestEnforceContextCeiling_EmitsCompactEvent is the regression test for
-// bugs.md "context compressions are invisible": the reactive ceiling enforcer
+// context compressions are invisible: the reactive ceiling enforcer
 // dropped messages with zero observable trace. It must now emit exactly one
 // structured EventCompact with Strategy="ceiling".
 func TestEnforceContextCeiling_EmitsCompactEvent(t *testing.T) {

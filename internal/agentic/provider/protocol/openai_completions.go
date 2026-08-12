@@ -86,7 +86,7 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 		CacheControlFormat: "",
 		// DeepSeek-class models (thinking mode) 400 when reasoning_content
 		// is not passed back. The variant profile carries the requirement
-		// (e.g. opencode.json) — it must reach the serializer (bugs.md
+		// (e.g. opencode.json) — it must reach the serializer
 		// thinking-mode 400).
 		RequiresReasoningContentOnAssistantMessages: profile.Compat.RequiresReasoningContentOnAssistantMessages,
 	}
@@ -397,7 +397,7 @@ func addOpenAICacheControlToLastTool(tools []map[string]any, cc *cacheControl) {
 // automatic longest-prefix caching, and a marker that jumps to the new last
 // message every round rewrites that history message's bytes, killing the
 // prefix match at that point and forcing a full re-parse of everything
-// after it (bugs.md "cache-hit-first": caught in the LM Studio request
+// after it (cache-hit-first: caught in the LM Studio request
 // capture — identical message text, only the marker moved). Pinned to the
 // opening turn, every request stays a strict append of the previous one.
 func addOpenAICacheControlToFirstConversationMessage(messages []map[string]any, cc *cacheControl) {

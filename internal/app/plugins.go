@@ -223,7 +223,7 @@ func pluginProvidersMap(s *subsystems) map[string]any {
 		// Fall back to the auth store (e.g. key set via /login) so providers
 		// authenticated outside ProviderConfig.APIKey are still seen as
 		// authenticated by plugins — otherwise the quota plugin drops them as
-		// no_api_key and they vanish from /quota (bugs.md z.ai #6).
+		// no_api_key and they vanish from /quota (z.ai #6).
 		if apiKey == "" && s.providerMgr != nil {
 			apiKey = s.providerMgr.ResolveAPIKey(p.ID)
 		}

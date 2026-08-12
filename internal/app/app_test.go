@@ -966,7 +966,7 @@ func TestSetupEventHandlers_DoneNotClosedBeforeEngineStop(t *testing.T) {
 }
 
 // TestLogTurnStats_NoStatsTurnAnnotated is the regression test for the
-// identical-stats anomaly (bugs.md runaway-loop entry): turns that never
+// identical-stats anomaly (runaway-loop entry): turns that never
 // reached the LLM (guardrail latch, connection error) must log a distinct
 // "no LLM call" line instead of re-logging the previous turn's stale,
 // byte-identical token counts.

@@ -93,12 +93,12 @@ type ToolExecutionComponent struct {
 	// startTime is the EXECUTION start used for the live "elapsed" display.
 	// It is set at widget creation and reset on the transition into
 	// ToolRunning so the displayed elapsed measures execution only — matching
-	// the tool timeout bound (bugs.md: widget showed "elapsed 213s" for a
+	// the tool timeout bound (widget showed "elapsed 213s" for a
 	// "timeout 120s" call because streaming/approval time was counted).
 	startTime time.Time
 	// waitStart stamps args completion: the "waiting Ns…" display for a
 	// queued (Pending + args-complete) call counts from here, so argument
-	// streaming time is not misreported as queue wait (bugs.md Bug W).
+	// streaming time is not misreported as queue wait (Bug W).
 	waitStart time.Time
 
 	// bodyVersion is bumped whenever a body-input changes (output, args,
@@ -340,7 +340,7 @@ func (tc *ToolExecutionComponent) computeBody(renderer ToolRenderer, ctx RenderC
 // directly. Durations of 0.01s or less are hidden to avoid noisy flicker for
 // instantaneous tools.
 //
-// Pending splits in two (bugs.md Bug W): args still streaming shows the
+// Pending splits in two (Bug W): args still streaming shows the
 // stream age ("elapsed"), but a finalized call QUEUED behind the scheduler
 // shows "waiting Ns…" — the elapsed clock must measure execution only and
 // starts at the Running transition (true execution start).
@@ -455,7 +455,7 @@ func (tc *ToolExecutionComponent) SetToolArgs(args string) {
 // SetArgsComplete marks the tool call arguments as fully received.
 // This triggers the renderer to show the final header (no longer streaming)
 // and starts the "waiting" clock shown while the call queues behind the
-// scheduler (bugs.md Bug W).
+// scheduler (Bug W).
 func (tc *ToolExecutionComponent) SetArgsComplete() {
 	tc.markArgsComplete()
 	tc.invalidateBody()
@@ -885,13 +885,13 @@ func (tc *ToolExecutionComponent) statusIcon() (icon string, color string) {
 		if tc.argsComplete {
 			// Queued behind the scheduler (conflict / MaxParallel): show the
 			// hourglass so the wait is visually distinct from execution
-			// (bugs.md Bug W: use ⧖ instead of the dots for waiting).
+			// (Bug W: use ⧖ instead of the dots for waiting).
 			return "⧖", TheTheme.ColorHex("tool_running")
 		}
 		return "◉", TheTheme.ColorHex("tool_running")
 	case ToolRunning:
 		// Static amber dot for the on-going marker — never the animated
-		// spinner frame (bugs.md: keep the yellow dot).
+		// spinner frame (keep the yellow dot).
 		return "●", TheTheme.ColorHex("tool_running")
 	case ToolSuccess:
 		return "✓", TheTheme.ColorHex("tool_success")

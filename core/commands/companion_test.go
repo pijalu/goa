@@ -46,7 +46,7 @@ func TestCompanionToggleCommand_CompleteArgs(t *testing.T) {
 	}
 }
 
-// TestCompanionToggleCommand_CompleteArgsWithoutOrchestrator is bugs.md Bug C:
+// TestCompanionToggleCommand_CompleteArgsWithoutOrchestrator is Bug C:
 // with the orchestrator absent (or unmirrored after session restore),
 // completion must read the agent manager's minor mode — companion enabled via
 // /companion:agent must flip the offer from ":on" to ":off".

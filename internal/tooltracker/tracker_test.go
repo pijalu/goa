@@ -107,7 +107,7 @@ func TestTracker_MultipleConcurrentEmptyID(t *testing.T) {
 // TestTracker_ProgressNeverRetires ensures EventToolProgress updates output but
 // leaves the widget tracked so the later result still resolves it.
 // TestTracker_BatchElapsedStartsAtOwnExecution is the regression test for
-// bugs.md "Multi-tool calling and timeout": three bash calls batched in one
+// Multi-tool calling and timeout: three bash calls batched in one
 // assistant message all showed "elapsed 37.2s". Args for all three complete
 // together at batch end (finalize stamps the same startTime); the tools then
 // execute SEQUENTIALLY ~12.4s each. The first progress event of each call —
@@ -211,7 +211,7 @@ func TestTracker_NilSafe(t *testing.T) {
 	tr.Reset()
 }
 
-// TestTracker_NamelessDeltaCreatesNoWidget reproduces bugs.md "Empty tool
+// TestTracker_NamelessDeltaCreatesNoWidget reproduces "Empty tool
 // TUI": an OpenAI-style stream ships the call id/index first and the tool
 // name in a later chunk. A nameless delta must NOT create a widget — one
 // appears at the first NAMED delta, and exactly one widget exists overall.
@@ -251,7 +251,7 @@ func TestTracker_NamelessDeltaCreatesNoWidget(t *testing.T) {
 }
 
 // TestTracker_OnStartFlipsPendingToRunning verifies the EventToolStart
-// transition (bugs.md Bug W): the widget flips Pending→Running at the true
+// transition (Bug W): the widget flips Pending→Running at the true
 // execution start, and a call that was never started stays Pending (waiting).
 func TestTracker_OnStartFlipsPendingToRunning(t *testing.T) {
 	tr, made := newTestTracker(t)

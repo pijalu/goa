@@ -16,7 +16,7 @@ import (
 
 // silentStreamProvider returns a stream that never pushes events and never
 // terminates — the "server sent headers then went silent" scenario the
-// event-stall watchdog exists for (bugs.md Issue 21).
+// event-stall watchdog exists for (Issue 21).
 type silentStreamProvider struct {
 	api   provider.Api
 	calls atomic.Int32

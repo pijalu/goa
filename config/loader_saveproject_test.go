@@ -68,7 +68,7 @@ func TestSaveProjectConfig_PreservesOnDiskToolFlags(t *testing.T) {
 }
 
 // TestSaveProjectConfig_NoExistingFile_WritesModeOnly is the regression test
-// for the stale-project-config shadowing bug (bugs.md): when the project has
+// for the stale-project-config shadowing bug: when the project has
 // no .goa/config.yaml yet, SaveProjectConfig must persist ONLY the mode
 // section — the documented field scope of this entry point (/mode, /autonomy,
 // autonomy-cycle hotkey). Previously it marshaled the ENTIRE merged in-memory

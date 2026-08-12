@@ -493,7 +493,7 @@ type GoalsConfig struct {
 	FreshContext *bool `yaml:"fresh_context,omitempty"`
 	// VerifyTimeout bounds a single verify-command execution at goal
 	// completion (e.g. "2m", "90s"). Empty/invalid = default (2m). The bound
-	// is displayed to the user in the completion evidence (bugs.md Bug A:
+	// is displayed to the user in the completion evidence (Bug A:
 	// "the goal complete should have a clear timeout").
 	VerifyTimeout string `yaml:"verify_timeout,omitempty"`
 }
@@ -587,7 +587,7 @@ type SkillsConfig struct {
 	// Load-time only: the system prompt is not rebuilt mid-session.
 	Disabled []string `yaml:"disabled,omitempty"`
 	// EmbeddedEnabled re-enables individual embedded skills that are OFF by
-	// default (bugs.md: all embedded skills except telegram). Unlike the
+	// default (all embedded skills except telegram). Unlike the
 	// global Enabled allowlist — which gates EVERY source and would suppress
 	// home/project/plugin file skills — this list is embedded-scoped: it only
 	// opts embedded skills back in, leaving file-based skills untouched.
@@ -669,7 +669,7 @@ type ToolEnabledConfig struct {
 	// config) so the model gets precise navigation unless the user disables it
 	// or the project has no language server.
 	LSP bool `yaml:"lsp"`
-	// Todo controls the standalone `todo_list` tool (bugs.md: "todo should be
+	// Todo controls the standalone `todo_list` tool ("todo should be
 	// available outside of goal"). Opt-OUT: defaults to true (set in the
 	// embedded default config) so the model can track work items without an
 	// active goal; when a goal is active the tool is linked to the goal's own
@@ -815,7 +815,7 @@ type BashConfig struct {
 	EnableComplexityAnalysis bool `yaml:"enable_complexity_analysis"`
 	// WarnFileEdits prepends a non-blocking hint to the output of shell commands
 	// that modify project files (redirects, sed -i, interpreter inline writes),
-	// steering the model to the edit tool (bugs.md). Never blocks. nil = enabled
+	// steering the model to the edit tool. Never blocks. nil = enabled
 	// (default); set false to silence the hint. Toggleable in /config.
 	WarnFileEdits *bool `yaml:"warn_file_edits,omitempty"`
 }
@@ -860,7 +860,7 @@ type TUIConfig struct {
 	// line; the animated frame shows only next to the model in the footer).
 	SpinnerLocation string `yaml:"spinner_location,omitempty"`
 	// AnimatedTitle animates the terminal window title with the spinner while
-	// the agent is working. Default false (bugs.md 2026-07-21: keep the static
+	// the agent is working. Default false (2026-07-21: keep the static
 	// hexagon title during activities); set to true to opt in.
 	AnimatedTitle *bool             `yaml:"animated_title,omitempty"`
 	Tools         ToolDisplayConfig `yaml:"tools"`

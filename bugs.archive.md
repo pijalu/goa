@@ -680,3 +680,181 @@ artifact matched a separately-fixed stream-retry duplication.
 
 - None blocking. If a concrete reproduction (specific timing/terminal)
   surfaces, reopen with the captured terminal output per guideline 5.
+
+---
+
+### BUG: `/` completion returns 352 options — typing delay and poor sub-parameter proposals
+
+**Status:** FIXED — implemented, tested, validated, archived.
+
+**Symptom:** Typing `/` opened a completion popup with 352 options and a
+noticeable delay. Sub-parameter (modifier) completions for often-used commands
+(e.g. `/goal`) were not proposed well — nested scopes like `/goal:cancel:current`
+never surfaced.
+
+**Root cause:** `tui/autocomplete.go` `(*CommandCompleter).Complete` built the
+modifier tier for **every** matched base command plus each command's nested
+args, unconditionally. Bare `/` matches every command (all share the `/`
+prefix), so the tier exploded to hundreds of options. Separately, the
+colon-triggered arg path only expanded level-2 when the level-1 value was an
+exact arg-completer result, so a partially-typed nested segment
+(`/goal:cancel`, argPrefix `cancel` with no trailing colon) completed to
+nothing at its own level and never reached the nested scope.
+
+**Fix:**
+1. Defer modifier expansion until the user has typed ≥2 chars after `/`
+   (`minCharsForModifiers`): bare `/` and `/x` return base commands (+Most
+   Used) only; a near-exact command prefix surfaces its sub-params.
+2. Bound the total option count (`maxCompletionOptions` = 100); the popup
+   already renders top rows with a "(N more)" hint, so the cap only removes
+   latency.
+3. Added a parent-scope fallback in the colon path (extracted `completeArgs` +
+   `expandArg`): when a partial nested segment completes to nothing, complete
+   the parent scope and keep entries that extend the typed text — so `/goal`
+   proposes `/goal:cancel` and `/goal:cancel:current`.
+
+**Tests:** `tui/completer_test.go` — `TestCommandCompleter_BareSlashLimitsAndDefersModifiers`,
+`..._SingleCharDefersModifiers`, `..._TwoCharsExpandsModifiers`,
+`..._GoalProposesSubParams` (faithful `/goal` router replica incl. nested
+scopes), `..._OptionCountBounded`. Two pre-existing tests
+(`ExpandsModifiersForPartial`, `MostUsedTier`) documented the old 1-char
+expansion contract and were updated to the new ≥2-char contract (their
+regression intent — modifiers still expand for partial prefixes — is
+preserved). `(*CommandCompleter).Complete` was refactored to keep gocognit in
+budget.
+
+**Validated:** completer unit tests green; real PTY terminal run —
+bare `/` shows only `── Commands ──` (no Modifiers tier, `(55 more)`), `/m`
+(1 char) shows base commands only, `/goal` shows `── Modifiers ──` with
+`/goal:new`, `/goal:next`, `/goal:next:first/last/fresh`, `(17 more)`.
+Gates (run separately): go vet ✓; staticcheck — fixed one new S1003
+(`strings.Contains`) in autocomplete.go; remaining warnings pre-existing and
+unrelated ✓; gocognit -over 15 — only pre-existing test/render functions ✓;
+gocyclo -over 12 — only pre-existing `scrollOffUnstable` ✓;
+go test -count=1 -race -cover ./tui ✓ (74.4%).
+
+---
+
+### BUG: `/new` after a long session — empty screen, no TUI redraw, input at top
+
+**Status:** FIXED — implemented, tested, validated, archived.
+
+**Symptom:** `/new` after a long session (or a few commands) intermittently
+left an empty screen: no TUI redraw, the input appearing at the top of the
+screen. Inconsistent — sometimes worked as expected.
+
+**Root cause (race):** `(*App).handleNewSession` runs on the TUI **commandLoop**
+(via `apply`), but `(*TUI).ClearTranscript` → `(*Compositor).Clear()` wrote the
+screen+scrollback wipe (`\x1b[2J\x1b[H\x1b[3J`) to the terminal **immediately**,
+while `renderLoop` → `(*Compositor).Render` paints frames on a separate
+goroutine. Both serialize on `c.mu`, but each frame is emitted as several
+terminal writes and the wipe was its own write outside any frame's CSI-2026
+sync. A wipe landing adjacent to an in-flight frame (built from pre-clear
+state) let that stale frame be painted after the clear; the next frame's
+`frameFirst`/`drawWindow` then repaints in place without a wipe, so a blank
+region the stale frame left behind persisted — the empty screen with the
+editor at the top.
+
+**Fix:** Removed the immediate wipe from `Clear()`. `Clear()` now only resets
+compositor state (scrollTop/vt/prevLines/regionBot) and sets a new
+`clearRequested` flag. The next `Render` consumes the flag and emits the wipe
+**atomically inside its own CSI-2026 sync** (`drawWindow(..., wipe=true)`),
+forcing `frameFirst` so the fresh canvas is fully repainted. Wipe and repaint
+commit as one frame — a stale pre-clear frame can never be painted on top.
+
+**Tests:** `tui/compositor_clear_race_test.go` —
+`TestCompositor_ClearNeverInterleavesWithFrame` (slow byte-serialized terminal,
+40 racing Render×Clear pairs, then fresh frame must write transcript content
+with no wipe spliced after the content) and
+`TestCompositor_ClearDoesNotCorruptNextFrame` (struct-invariant stress).
+Existing `internal/app/newsession_redraw_test.go` still green.
+
+**Validated:** new race tests pass 5× under `-race`; real PTY terminal run —
+typed `/help`, `/team:list`, then `/new`: screen redrew cleanly with the fresh
+mascot banner, editor at the bottom, footer present, no stale content, no
+blank screen. Gates (run separately): go vet ✓; staticcheck — pre-existing
+only ✓; gocognit -over 15 — pre-existing only ✓; gocyclo -over 12 — only
+pre-existing `scrollOffUnstable` ✓; go test -count=1 -race -cover ./tui
+./internal/app ✓ (74.4% / 55.2%).
+
+---
+
+### BUG: Goa teams UX — team creation not wizard-like; `/team` cannot add/remove like `/model`
+
+**Status:** FIXED — implemented, tested, validated, archived.
+
+**UX review (specialist pass, per the bug report):**
+- HIGH — `/team` could not add/remove. TEAMS.md §8.1 mandates "`/team` behaves
+  like `/model`", and `/model` supports inline add (`/model add`, `— add —` in
+  the picker) and remove (`__delete__`). `/team` only selected/showed/synced.
+- HIGH — Two divergent creation paths; creating a team required leaving the
+  command for `/config → Teams → definitions → — add team —` (4 levels).
+- MED — No in-place remove; `/config → Teams` split "active" from
+  "definitions" and buried creation under the definitions submenu.
+
+**Fix (mirroring `/model`):**
+1. `/team` picker gains `— add team —` → opens the add-team wizard; the
+   empty-state ("no teams defined") now offers `— add team —` instead of a
+   dead-end message.
+2. `/team:add` opens the same add-team wizard; `/team:remove:<name>` deletes a
+   definition after confirmation (refused for the active team). `add`/`list`/
+   `remove` work without an active team manager (like `/model add`). Completion
+   proposes `add` and `remove:<name>`.
+3. `/config → Teams` redesigned wizard-forward: one flat list — `— add team —`
+   first (the wizard), then each defined team (select to edit/remove, active
+   team annotated), then the Active-team row. The redundant `definitions`
+   submenu was removed.
+
+**Tests:** `core/commands/team_test.go` — `TestTeamCommand_AddOpensWizard`,
+`..._PickerAddOpensWizard`, `..._NoTeamsOffersAdd`, `..._RemoveConfirmed`,
+`..._RemoveActiveRefused`, `..._RemoveUnknown`, `..._CompleteArgs` (add +
+remove: entries), updated `..._SelectorItems` (add + none entries);
+`TestConfigMenu_TeamsRootIsWizardForward`. `(*TeamCommand).Run` was split into
+`teamConfigOnlyDispatch`/`teamManagedDispatch` to keep gocyclo in budget.
+
+**Validated:** 13 team-command tests + wizard-forward config test green; full
+`core/commands` + `config` packages green. (The interactive selector could not
+be driven blindly over a PTY — output is spinner-saturated — so the selector
+item contents and wizard/remove flows are asserted via `SelectOptionFunc`/
+`ShowInputFunc` in unit tests, which capture exactly what the user is shown.)
+Gates (run separately): go vet ✓; staticcheck — pre-existing only ✓;
+gocognit -over 15 ✓; gocyclo -over 12 ✓ (after Run split);
+go test -count=1 -race -cover ./core/commands ✓ (57.9%).
+
+---
+
+### BUG: Incorrect team configuration — Goa creates a team named `LocalTeam` it then refuses to start with
+
+**Status:** FIXED — implemented, tested, validated, archived.
+
+**Symptom:** Goa created this config, then refused to start:
+`teams.definitions.LocalTeam: team name must match [a-z0-9][a-z0-9-]{0,63}`.
+
+**Root cause:** The team add-team wizard (`config_teams.go addTeamWizard`) and
+the add-member flow (`addTeamMember`) accepted any typed name and persisted it
+without validating against the documented naming rule (`config.teamNamePattern`,
+TEAMS.md §3.5). A camelCase name like `LocalTeam` was written to the home
+config; the next startup's config validation then hard-failed on it. The
+config-level pattern is correct per spec — the bug was the missing input-side
+validation in Goa's own creation flows.
+
+**Fix:** Added exported `config.IsValidTeamName` and wired it into both entry
+points: an invalid name now flashes an error (`must match
+[a-z0-9][a-z0-9-]{0,63}`) and re-prompts instead of persisting. The wizard
+prompt hint now documents the exact rule. Config-level validation is unchanged
+(defense-in-depth).
+
+**Tests:** `config/teams_test.go TestIsValidTeamName` (table incl. `LocalTeam`,
+leading dash, 64/65-char boundary; trailing dash confirmed allowed by the
+pattern). `core/commands/team_test.go
+TestConfigMenu_TeamWizardRejectsInvalidName` + `..._AddMemberRejectsInvalidName`
+(RED-verified: both fail without the fix — invalid name persisted / wizard
+advanced to the model selector).
+
+**Validated:** unit tests green (RED confirmed by temporarily reverting).
+Real binary run: the reported `LocalTeam` config still correctly errors at
+startup (name validation preserved), and a corrected lowercase `local-team`
+config passes validation. Gates (run separately): go vet ✓; staticcheck —
+pre-existing only ✓; gocognit -over 15 — pre-existing only ✓; gocyclo -over
+12 — pre-existing only ✓; go test -count=1 -race -cover ./config
+./core/commands ✓ (78.7% / 57.5%).

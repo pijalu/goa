@@ -288,7 +288,7 @@ func swapStateStore(am *AgentManager, ss *StateStore) {
 
 // TestOverlayCompressionForModel_StrategiesAndCacheGate verifies per-model
 // overrides of the 3-layer strategies and the cache gate merge over the
-// global section, with inheritance for unset fields (bugs.md compression
+// global section, with inheritance for unset fields (compression
 // directive: cache management configurable globally and per model).
 func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
 	ccEnabled := true

@@ -133,7 +133,7 @@ func TestCanonicalize_NumericAndExact(t *testing.T) {
 	}
 }
 
-// TestExecute_FreeTextDefaultWithOptions pins the bugs.md "ask_user_question
+// TestExecute_FreeTextDefaultWithOptions pins the "ask_user_question
 // alternate response" fix: when the model provides options but omits
 // allow_free_text (schema default true), the user's alternate free-text answer
 // must be returned verbatim — never forced onto the closest option.

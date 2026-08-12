@@ -11,7 +11,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// Integration regression for bugs.md: the model ran the full test suite five
+// Integration regression for the model ran the full test suite five
 // times changing only the trailing `grep -c` pattern. The near-duplicate guard
 // must (a) NOT block execution — each grep genuinely returns a different count
 // — but (b) append a save-once-refilter hint to the re-run's result, and (c)

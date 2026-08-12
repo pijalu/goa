@@ -13,7 +13,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// thinkingToolProvider reproduces the bugs.md Issue 13 pattern (kimi-code k3):
+// thinkingToolProvider reproduces the Issue 13 pattern (kimi-code k3):
 // EVERY round streams thinking tokens and then a single tool call. Because each
 // round carries reasoning, the consecutive-tool-rounds streak must reset every
 // round and the forced-answer nudge must never fire — no matter how many rounds
@@ -175,7 +175,7 @@ func TestConsecutiveToolRounds_BatchThinking_NeverNudges(t *testing.T) {
 	}
 }
 
-// contentToolProvider reproduces the UI evidence in bugs.md Issue 13: each round
+// contentToolProvider reproduces the UI evidence in Issue 13: each round
 // the model emits a short "Let me ..." content message AND a tool call. There is
 // never a run of message-less tool calls, so the streak must stay reset.
 type contentToolProvider struct {

@@ -441,7 +441,7 @@ func TestPythonTool_FStringConversion(t *testing.T) {
 	}
 }
 
-// Regression for bugs.md: importing an unsupported stdlib module (e.g. struct)
+// Regression for importing an unsupported stdlib module (e.g. struct)
 // produced a cryptic FileNotFoundError: 'Failed to resolve "struct"'. The tool
 // must now return an actionable message naming the module and pointing to
 // bash python3.
@@ -473,7 +473,7 @@ func TestClarifyModuleError_Passthrough(t *testing.T) {
 
 // TestPythonTool_Execute_ReFinditer replays the session failure from
 // goa-export-20260803-113756.zip: re.finditer raised "'module' has no
-// attribute 'finditer'" (bugs.md re.finditer parity gap).
+// attribute 'finditer'" (re.finditer parity gap).
 func TestPythonTool_Execute_ReFinditer(t *testing.T) {
 	tool := &PythonTool{}
 	code := `import re
@@ -490,7 +490,7 @@ for m in re.finditer(r'func (flatten|formatValue|valStr|toStr)\(', "func flatten
 }
 
 // TestPythonTool_Execute_ReSubCallable replays the reported session failure
-// (bugs.md): re.sub(pattern, fn, s) raised "TypeError: 'sub() argument must
+// re.sub(pattern, fn, s) raised "TypeError: 'sub argument must
 // be str, not function'" because the Go-backed re module coerced repl to a
 // string. The end-to-end rewrite from the export must now run to completion.
 func TestPythonTool_Execute_ReSubCallable(t *testing.T) {

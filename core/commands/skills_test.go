@@ -134,7 +134,7 @@ func TestRunSkill_Inline(t *testing.T) {
 }
 
 // TestRunSkill_InlineStripsNoise verifies inline injection strips SPDX license
-// comment blocks and never emits the bare "[Skill:]" marker (bugs.md run_skill
+// comment blocks and never emits the bare "[Skill:]" marker (run_skill
 // Issue B), while framing the body as instructions to execute (Issue A).
 func TestRunSkill_InlineStripsNoise(t *testing.T) {
 	var buf strings.Builder

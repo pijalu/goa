@@ -1075,7 +1075,7 @@ func TestActive_NilReceiver(t *testing.T) {
 
 // TestResolveAPIKey_AuthStoreFallback verifies ResolveAPIKey returns the key
 // from the auth store when ProviderConfig.APIKey is empty (the /login case),
-// so plugins see the provider as authenticated (bugs.md z.ai #6).
+// so plugins see the provider as authenticated (z.ai #6).
 func TestResolveAPIKey_AuthStoreFallback(t *testing.T) {
 	cfg := &config.Config{
 		Providers: []config.ProviderConfig{{ID: "zai", Provider: "zai"}},

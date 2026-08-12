@@ -38,7 +38,7 @@ func fileToolLSP(t *testing.T, subs *subsystems) (read, write, edit tools.LSPDoc
 
 // TestLSPToggleOn_CreatesManagerAndWiresFileTools verifies /tools:lsp:on brings
 // the whole integration up live when bootstrap had it fully off: the manager
-// is created AND wired into read/edit/write (bugs.md Issue LSP).
+// is created AND wired into read/edit/write (Issue LSP).
 func TestLSPToggleOn_CreatesManagerAndWiresFileTools(t *testing.T) {
 	subs := lspToggleSubsystems(t)
 	if r, w, e := fileToolLSP(t, subs); r != nil || w != nil || e != nil {

@@ -85,7 +85,7 @@ type App struct {
 	// last turn end. Turns that never reached the LLM (latch errors,
 	// connection failures) log a distinct "no LLM call" line instead of
 	// re-logging the previous turn's byte-identical stale numbers
-	// (bugs.md runaway-loop identical-stats anomaly).
+	// (runaway-loop identical-stats anomaly).
 	turnStatsSeen bool
 
 	// usageStore records per-turn token usage to the global SQLite DB for

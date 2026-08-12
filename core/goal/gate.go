@@ -81,7 +81,7 @@ type CompleteResult struct {
 	Failure *VerifyFailure
 	// Verification carries the verify-command evidence whenever a command
 	// ran — on success too, so the user can follow exactly what was executed
-	// and what it printed (bugs.md Bug A: "goal complete must show the exact
+	// and what it printed (Bug A: "goal complete must show the exact
 	// command and the output").
 	Verification *VerifyEvidence
 }
@@ -111,7 +111,7 @@ type VerifyFailure struct {
 
 // CommandVerifier executes a goal's recorded verify command and reports
 // success. Implementations must bound execution time themselves and report
-// the bound they applied (TimeoutMs) so the UI can show it (bugs.md Bug A:
+// the bound they applied (TimeoutMs) so the UI can show it (Bug A:
 // "the goal complete should have a clear timeout").
 type CommandVerifier interface {
 	Verify(ctx context.Context, command string) VerifyOutcome

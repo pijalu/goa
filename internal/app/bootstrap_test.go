@@ -29,7 +29,7 @@ func TestRegisterTools_ClarifyDisabled(t *testing.T) {
 	}
 }
 
-// TestRegisterTools_HeadlessSkipsAskUser pins bugs.md Bug C: headless mode
+// TestRegisterTools_HeadlessSkipsAskUser pins Bug C: headless mode
 // has no user at the input line, so the ask_user_question tool must not be
 // registered — regardless of the clarify_disabled flag.
 func TestRegisterTools_HeadlessSkipsAskUser(t *testing.T) {

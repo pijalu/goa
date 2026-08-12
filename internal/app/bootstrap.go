@@ -464,7 +464,7 @@ func handleFirstRun(loader *config.CascadeLoader, cfg *config.Config, projectDir
 // registerTools registers the built-in filesystem and execution tools.
 // Optional tools are skipped when disabled in configuration. It also connects
 // configured MCP servers and returns their manager (nil when none configured).
-// headless suppresses interactive-only tools (bugs.md Bug C).
+// headless suppresses interactive-only tools (Bug C).
 func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandboxMgr *sandbox.Manager, projectDir string, cfg *config.Config, bgMgr *background.Manager, headless bool) (*lsp.Manager, *mcp.Manager) {
 	backupStager := tools.NewBackupStager(projectDir)
 
@@ -581,7 +581,7 @@ func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.
 
 // registerOptionalTools registers tools that are gated by configuration flags.
 // headless suppresses interactive-only tools: ask_user_question requires a
-// human at the input line, which headless mode has none of (bugs.md Bug C).
+// human at the input line, which headless mode has none of (Bug C).
 func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker, headless bool) {
 	if cfg.Tools.Enabled.Verify {
 		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
@@ -604,7 +604,7 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 	}
 	// ask_user_question is enabled BY DEFAULT (inverted flag) — except in
 	// headless mode, where there is no user at the input line to answer
-	// (bugs.md Bug C). The host callback (Clarify) is injected after the App
+	// (Bug C). The host callback (Clarify) is injected after the App
 	// is built — see internal/app attachClarifyTool.
 	if !cfg.Tools.Enabled.ClarifyDisabled && !headless {
 		reg.Register(&ask.AskUserQuestionTool{})
@@ -654,7 +654,7 @@ func defaultInt(val, defaultVal int) int {
 // newLSPManager builds a multi-language LSP manager from config. It returns
 // nil when LSP is disabled EITHER globally (`lsp: false`) OR via the
 // user-facing tool switch (`tools.enabled.lsp: false`) — off means off: no
-// manager, no file touches, no background server spawns (bugs.md Issue LSP:
+// manager, no file touches, no background server spawns (Issue LSP:
 // the tool flag used to gate only the model-facing tool while the manager
 // kept spawning servers, wedging reads for ~55s on cold npx downloads).
 // Servers spawn lazily per file (async, never blocking file tools), so Start

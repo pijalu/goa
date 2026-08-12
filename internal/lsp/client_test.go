@@ -207,7 +207,7 @@ func serveOneInitializeResponse(serverIn io.Reader, serverOut io.Writer, resultJ
 // initialize response: provider flags arrive as OBJECTS
 // ({"workDoneProgress":true}), which the LSP spec allows
 // (boolean | ProviderOptions). The strict-bool unmarshal used to fail the
-// whole handshake, breaking pyright spawns (bugs.md Issue LSP).
+// whole handshake, breaking pyright spawns (Issue LSP).
 func TestClient_Initialize_ObjectProviderCapabilities(t *testing.T) {
 	serverIn, clientOut := io.Pipe()
 	clientIn, serverOut := io.Pipe()

@@ -437,7 +437,7 @@ func (c *GoalCommand) showList(ctx core.Context) error {
 // with order number, placement and name, an optional metadata line, then the
 // complete untruncated objective on its own line. The parts are separated by
 // blank lines so the markdown renderer keeps them as DISTINCT blocks —
-// consecutive plain lines would soft-join into a single paragraph (bugs.md
+// consecutive plain lines would soft-join into a single paragraph
 // "Goal list issue"). Blank separator lines are dropped by the renderer, so
 // this costs no extra rows.
 func writeGoalListEntry(sb *strings.Builder, order int, placement, name, meta, objective string) {
@@ -1033,7 +1033,7 @@ func (c *GoalCommand) handleManagerSelection(ctx core.Context, selected string, 
 		// Generic '+' emit — only reachable through a host without the
 		// reorder keymap (SelectOptionKeyed fallback). Route it to the add
 		// flow: it previously fell through to the queue-action menu and
-		// failed with "queued goal … not found" (bugs.md goal manager).
+		// failed with "queued goal … not found" (goal manager).
 		c.promptCreateForPlacement(ctx, placementLast)
 	case "__active__":
 		ctx.Flash("The active goal is running — use /goal:pause, /goal:cancel or /goal:replace.")

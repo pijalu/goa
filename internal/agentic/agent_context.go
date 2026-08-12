@@ -45,7 +45,7 @@ func (a *Agent) effectiveMaxTokens() int {
 // The mutation runs under a.mu (enforceContextCeilingLocked); the structured
 // EventCompact is emitted after unlock so every visible surface — the
 // conversation bubble, the footer counter, and the session JSONL — records
-// the otherwise-silent reactive cut (bugs.md "context compressions are
+// the otherwise-silent reactive cut ("context compressions are
 // invisible").
 func (a *Agent) enforceContextCeiling() {
 	before, res, ok := a.enforceContextCeilingLocked()
@@ -72,7 +72,7 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 	// The fixed per-turn cost (system prompt + tool schemas) is always present;
 	// history must fit in the remainder or the outgoing request still overflows.
 	historyCeiling := hardCeiling - a.fixedCostTokens()
-	// Reactive target (bugs.md CM:13 design rule 4): a destructive front-cut
+	// Reactive target (CM:13 design rule 4): a destructive front-cut
 	// busts the provider prefix cache, so cut once to free ≥50% of the window
 	// rather than nibbling just under the ceiling (which re-busts every round).
 	// historyTarget is the token budget for retained history after the cut; the

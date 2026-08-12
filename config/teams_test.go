@@ -286,6 +286,32 @@ func TestValidateTeams(t *testing.T) {
 	}
 }
 
+func TestIsValidTeamName(t *testing.T) {
+	cases := []struct {
+		name  string
+		valid bool
+	}{
+		{"ok", true},
+		{"local-team", true},
+		{"a", true},
+		{"team-1", true},
+		{"0abc", true},
+		{"LocalTeam", false}, // camelCase: wizard must reject this at input time
+		{"Bad_Name", false},
+		{"-lead", false},
+		{"trail-", true}, // trailing dash allowed by [a-z0-9][a-z0-9-]{0,63}
+		{"has space", false},
+		{"", false},
+		{strings.Repeat("a", 64), true},
+		{strings.Repeat("a", 65), false},
+	}
+	for _, tc := range cases {
+		if got := IsValidTeamName(tc.name); got != tc.valid {
+			t.Errorf("IsValidTeamName(%q) = %v, want %v", tc.name, got, tc.valid)
+		}
+	}
+}
+
 func TestValidateTeams_SkipsModelCheckWhenNoModels(t *testing.T) {
 	// Early bootstrap: no models configured at all — validate like the
 	// orchestrator section does (mirrors validateOrchestrator).

@@ -373,7 +373,7 @@ func intPtr(i int) *int       { return &i }
 func int64Ptr(i int64) *int64 { return &i }
 
 // TestDynamicProgress_SurfacesTodos verifies the per-turn goal reminder
-// surfaces the managed todo list so the model works the next item (bugs.md:
+// surfaces the managed todo list so the model works the next item
 // framework-managed todo list for goals).
 func TestDynamicProgress_SurfacesTodos(t *testing.T) {
 	snap := GoalSnapshot{

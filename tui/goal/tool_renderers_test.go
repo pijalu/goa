@@ -176,7 +176,7 @@ func TestGoalRenderer_QueuedCreateResults(t *testing.T) {
 	}
 }
 
-// TestRenderGoalSummary_PlainTextPassthrough pins bugs.md Bug A: plain-text
+// TestRenderGoalSummary_PlainTextPassthrough pins Bug A: plain-text
 // results (e.g. "Goal marked complete." + the verification evidence block,
 // or "Goal blocked: …") must render as-is instead of disappearing behind
 // the JSON parse failure.
@@ -225,7 +225,7 @@ func TestFormatElapsed(t *testing.T) {
 }
 
 // TestGoalRenderer_SnapshotUsesShortName guards the timeline-flooding fix
-// (bugs.md): a goal snapshot must render the friendly short name, never the
+// a goal snapshot must render the friendly short name, never the
 // raw unbounded objective; the stats suffix stays intact.
 func TestGoalRenderer_SnapshotUsesShortName(t *testing.T) {
 	r := GoalRenderer{}

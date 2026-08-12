@@ -26,7 +26,7 @@ func setupTestSession(t *testing.T) (dir string, cleanup func()) {
 	return dir, func() { os.RemoveAll(dir) }
 }
 
-// TestSessionStartDistinctIDs covers bugs.md Issue 8: every new session must get a
+// TestSessionStartDistinctIDs covers Issue 8: every new session must get a
 // FRESH conversation id so provider-side cache (prompt_cache_key / previous_response_id /
 // session-affinity) is cleared and the new conversation does not inherit stale affinity.
 func TestSessionStartDistinctIDs(t *testing.T) {
@@ -118,7 +118,7 @@ func TestSessionListAndLoad(t *testing.T) {
 
 // TestSessionCompactEventRoundTrip verifies an EventCompact carrying the
 // structured CompactionInfo payload survives the JSONL write/read round-trip,
-// so the session log documents compressions (bugs.md "context compressions
+// so the session log documents compressions ("context compressions
 // are invisible").
 func TestSessionCompactEventRoundTrip(t *testing.T) {
 	dir, cleanup := setupTestSession(t)
@@ -244,7 +244,7 @@ func TestSessionListSessions_FiltersEmptySessions(t *testing.T) {
 // TestSessionListSessions_HasModelTurn verifies the model-turn marker: a
 // session with a user message but no assistant reply is still listed (the
 // store keeps it for export/dream flows) but reports HasModelTurn=false, so
-// the /session picker can hide it (bugs.md "Session command: must not list
+// the /session picker can hide it ("Session command: must not list
 // sessions without an actual model turn").
 func TestSessionListSessions_HasModelTurn(t *testing.T) {
 	dir, cleanup := setupTestSession(t)

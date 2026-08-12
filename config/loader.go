@@ -89,7 +89,7 @@ type CascadeLoader struct {
 	// editConfigFile). All writers mutate the same home/project config.yaml
 	// on disk; without exclusion, a concurrent field-scoped write (skill
 	// toggle) and a snapshot write (model switch, /goal:settings) interleave
-	// and silently lose entries (bugs.md: skills re-enable spontaneously).
+	// and silently lose entries (skills re-enable spontaneously).
 	writeMu sync.Mutex
 }
 
@@ -690,7 +690,7 @@ func (c *Config) repairActiveProviderModel() {
 // Two sentinel shapes are recognized:
 //   - bracketed: "__add__", "__custom__" (both prefix and suffix "__")
 //   - delete-prefixed: "__delete__<id>" — emitted by the picker's '-' hotkey
-//     and previously persisted verbatim as a model/provider ID (bugs.md
+// and previously persisted verbatim as a model/provider ID
 //     "Model delete"). This shape has no trailing "__" after the real ID, so
 //     it needs its own prefix check.
 func (c *Config) sanitizeSelectorSentinels() {
@@ -785,7 +785,7 @@ func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {
 		// No project file yet: persist ONLY the mode section this entry
 		// point owns. Writing the full merged config would bake embedded
 		// defaults and home-layer values into the project layer, where they
-		// silently shadow every later home-config edit (bugs.md: startup
+		// silently shadow every later home-config edit (startup
 		// /config showed the embedded default compression strategy "micro"
 		// instead of the home-config value on every launch).
 		return writeModeOnlyProjectConfig(path, cfg.Mode)
@@ -861,7 +861,7 @@ func (cl *CascadeLoader) HomeConfigPath() string {
 // from the in-memory config they were handed. Skill enable/disable is owned by
 // the field-scoped toggle write (persistSkillToggle), so the on-disk value is
 // authoritative and a stale in-memory snapshot must never overwrite it — that
-// lost update is what made disabled skills spontaneously re-enable (bugs.md).
+// lost update is what made disabled skills spontaneously re-enable.
 func skillListsOnDisk(path string) (enabled, disabled []string, ok bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {

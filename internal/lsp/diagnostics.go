@@ -16,7 +16,7 @@ type Diagnostic struct {
 	// Code is `any` because the LSP spec allows integer | string — tsserver
 	// sends numeric codes (2552) while pyright sends strings; a strict string
 	// field made the notification handler drop tsserver diagnostics entirely
-	// (bugs.md Issue LSP).
+	// (Issue LSP).
 	Code    any    `json:"code,omitempty"`
 	Source  string `json:"source,omitempty"`
 	Message string `json:"message"`

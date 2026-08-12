@@ -68,7 +68,7 @@ func (b *JSBridge) setupHTTP(goaObj *goja.Object, httpB *HTTPBridge) {
 		// endpoint can block for the full request timeout; holding vmMu
 		// across it starves every other JS entry point (segment renders,
 		// hotkeys, /quota) — the input freeze that landed exactly when the
-		// quota segment appeared (bugs.md Start-up). vmMu serializes goja
+		// quota segment appeared (Start-up). vmMu serializes goja
 		// access only; the bridge Do is pure Go and needs no VM.
 		// This function is only ever invoked from JS execution, which by
 		// contract holds vmMu, so the unlock/lock pair is balanced.

@@ -124,7 +124,7 @@ func looksLikePath(s string) string {
 	// ">/tmp/x", ">>/tmp/x", "2>/tmp/x", "&>/tmp/x", "</etc/y". Without this a
 	// redirect with no space before the target (`>/tmp/x`) produces a token
 	// that starts with '>' and is never treated as a path — a jail escape
-	// (bugs.md: SOLO allowed writes to /tmp via attached redirects).
+	// (SOLO allowed writes to /tmp via attached redirects).
 	s = stripRedirectPrefix(s)
 	if s == "" {
 		return ""

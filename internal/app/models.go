@@ -66,7 +66,7 @@ func teamFooterInfo(subs *subsystems) (name string, drifted bool) {
 // companionModelDisplay returns the formatted companion model string.
 // The companion carries its OWN provider binding (MultiAgent.CompanionProvider),
 // not the active provider: resolving/prefixing against the active provider
-// rendered "(opencode-go) glm-5.2" for a zai-bound companion (bugs.md Bug B).
+// rendered "(opencode-go) glm-5.2" for a zai-bound companion (Bug B).
 // Configs without a companion provider keep the legacy active-provider display.
 func companionModelDisplay(subs *subsystems) string {
 	modelID := subs.cfg.MultiAgent.CompanionModel

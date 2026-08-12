@@ -67,7 +67,7 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 	// compute. The toggle path (setSkillEnabledState) mutates this in-memory
 	// config and persists a per-source partition; reloading the merged lists
 	// here guarantees the running session and a parallel session see identical
-	// skill sets (bugs.md must-fix #5: skills enable/disable inconsistent
+	// skill sets (must-fix #5: skills enable/disable inconsistent
 	// across sessions). Only Enabled/Disabled are refreshed — Dirs,
 	// ExecutionMode, etc. stay from the live config.
 	if h.subs.loader != nil {

@@ -194,7 +194,7 @@ func applyConfigSet(ctx core.Context, key, value string) error {
 	// own range, but cross-field invariants (e.g. compression thresholds
 	// soft ≤ trigger ≤ hard) are enforced by Config.Validate. Without this
 	// gate /config could apply and persist a configuration that fails
-	// validation on the next start (bugs.md).
+	// validation on the next start.
 	candidate := ctx.Config.DeepCopy()
 	if err := setConfigField(candidate, path, value); err != nil {
 		writeFmt(ctx, "Invalid value for %s: %v\n", key, err)
@@ -326,7 +326,7 @@ func persistConfigValue(ctx core.Context, key string, path []string, value strin
 	// Setting the tiered trigger_percent clears the deprecated legacy
 	// threshold_percent alias (see setTriggerPercentClearLegacy); remove the
 	// legacy key from the home config too so it cannot re-shadow the tiered
-	// value after a reload (bugs.md Issue 2).
+	// value after a reload (Issue 2).
 	if key == "context_compression.thresholds.trigger_percent" {
 		if err := ctx.ConfigSaver.DeleteHomeField([]string{"context_compression", "threshold_percent"}); err != nil {
 			return fmt.Errorf("set %s = %s (in memory, but failed to clear legacy threshold_percent: %v)", key, value, err)
@@ -561,7 +561,7 @@ func setActiveModel(cfg *config.Config, value string) error {
 // (e.g., "llama3 \u2022 high | llama3 (companion) \u2022 medium") instead of bare model IDs.
 func validateActiveModel(value string) error {
 	// Selector sentinel values ("__delete__X", "__add__", …) must never be
-	// persisted as a model ID (bugs.md: active model ended up named
+	// persisted as a model ID (active model ended up named
 	// "__delete__deepseek-v4-flash").
 	if strings.HasPrefix(value, "__") {
 		return fmt.Errorf("invalid model value: %q is a selector action value, not a model ID", value)
@@ -735,7 +735,7 @@ func setMicroCacheMissThreshold(cfg *config.Config, value string) error {
 // Thresholds.TriggerPercent both in the menu display (compressionTriggerValue)
 // and at runtime (resolveAgenticThresholds), so a config file still carrying
 // `threshold_percent:` would permanently shadow any edit to the tiered field
-// (bugs.md Issue 2 — trigger threshold changes not reflected). Clearing it on an
+// (Issue 2 — trigger threshold changes not reflected). Clearing it on an
 // explicit edit makes the new value take effect while leaving untouched legacy
 // configs (which never run this setter) at their documented behavior.
 func setTriggerPercentClearLegacy(cfg *config.Config, value string) error {

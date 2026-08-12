@@ -26,7 +26,7 @@ func compactEvent(strategy string, before, after, freed, removed int, detail str
 }
 
 // TestHandleAgentOutputEvent_CompactRendersBubble verifies an EventCompact
-// surfaces a conversation bubble naming the strategy (bugs.md "context
+// surfaces a conversation bubble naming the strategy ("context
 // compressions are invisible").
 func TestHandleAgentOutputEvent_CompactRendersBubble(t *testing.T) {
 	app := New(testSubsystems())

@@ -8,7 +8,7 @@ import "testing"
 
 // TestEditor_DeleteShrinksHeightViaTUI drives the editor through the TUI
 // engine and verifies backspacing a multi-line input shrinks the editor node
-// (bugs.md: footer must not float up leaving a gap).
+// (footer must not float up leaving a gap).
 func TestEditor_DeleteShrinksHeightViaTUI(t *testing.T) {
 	term := &fakeTerminal{w: 40, h: 24}
 	engine := NewTUI(term)

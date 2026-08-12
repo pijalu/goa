@@ -171,20 +171,20 @@ func (a *App) handleEscape() {
 	subs := a.subs
 	if subs.agentMgr != nil {
 		subs.agentMgr.Interrupt()
-		// ESC is a hard stop (bugs.md S1): input queued as steering mid-turn
+		// ESC is a hard stop (S1): input queued as steering mid-turn
 		// must not dispatch as a follow-up turn after the interrupt — but it is
 		// the user's typed text, so restore it into the input line (and clear
 		// the pending bubble) instead of discarding it. Never auto-sends.
 		a.restoreSteeringToInput(subs.chat)
 	}
-	// ESC is a HARD STOP for all activities (bugs.md): without this, an
+	// ESC is a HARD STOP for all activities: without this, an
 	// active goal's drive loop — started on context.Background() by the
 	// /goal command — survived the turn interrupt and immediately launched
 	// the next continuation turn.
 	if subs.goalDriver != nil {
 		subs.goalDriver.Stop()
 	}
-	// Orchestrator/swarm runs (bugs.md "ESC remainder: orchestrator/swarm"):
+	// Orchestrator/swarm runs (ESC remainder: orchestrator/swarm):
 	// their contexts are detached from the main agent turn, so Interrupt()
 	// alone does not reach them. Cancel the foreground orchestrator's run
 	// context and any durable multi-agent runtime registered as active.
@@ -295,7 +295,7 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 	subs.bgPanel = bgPanel
 
 	// Drive the animated title from the status spinner: working → animate,
-	// idle → static contextual title (bugs.md "Animated title bar").
+	// idle → static contextual title (Animated title bar).
 	if a.titleCtl != nil && statusBar != nil {
 		statusBar.SetOnSpinStateChange(func(spinning bool) {
 			a.titleCtl.setWorking(spinning)
@@ -306,7 +306,7 @@ func (a *App) finalizeTUI(engine *tui.TUI, chat *tui.ChatViewport, agentContent 
 	tui.SetToolProjectDir(subs.projectDir)
 
 	// Restore the goal bubble + footer goal fields from the persisted goal
-	// (replayed from the durable store before the TUI existed — bugs.md
+	// (replayed from the durable store before the TUI existed —
 	// Issue 1: no live GoalUpdate event covers it, so seed it here).
 	a.seedGoalUI()
 }
@@ -472,7 +472,7 @@ func initFontStyles(cfg *config.Config) {
 }
 
 // initTitleController creates and starts the single window-title writer. It
-// shows the boot brand "g⬡a" immediately (bugs.md "Title bar startup
+// shows the boot brand "g⬡a" immediately ("Title bar startup
 // sequence"); the startup-done hook (fired after async plugin/history load,
 // or the 5s fallback) plays the transition, then the controller animates the
 // title with the spinner while the agent works ("Animated title bar").
@@ -486,7 +486,7 @@ func (a *App) initTitleController(engine *tui.TUI) {
 }
 
 // titleSpinnerDefFor resolves the spinner definition used to animate the
-// window title. The default is hexagon-black (⬢⬣, slow) per bugs.md "Create a
+// window title. The default is hexagon-black (⬢⬣, slow) per "Create a
 // hexagon-black sequence — use it as default for terminal title"; an explicit
 // tui.spinner value (other than the default hexagon) overrides it; "none"
 // disables the animation.

@@ -350,7 +350,7 @@ func TestOpenAICompletions_ZaiThinkingOffSendsDisabled(t *testing.T) {
 
 // TestOpenAICompletionsCacheMarkerPinnedAcrossRounds is the regression for
 // the moving-breakpoint cache bust found in the LM Studio request capture
-// (bugs.md "cache-hit-first"): the conversation cache_control marker must be
+// (cache-hit-first): the conversation cache_control marker must be
 // pinned to the FIRST user message so request N stays a byte-prefix of
 // request N+1. A last-message marker moved every round, rewriting one history
 // message's bytes and killing llama.cpp's longest-prefix cache match.

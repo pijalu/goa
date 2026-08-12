@@ -838,7 +838,7 @@ func (pm *ProviderManager) effectiveAPIKey(provider *config.ProviderConfig) stri
 // OAuth access token). Returns "" when no credential is available. Used by the
 // plugin bridge so providers authenticated via /login (key in the auth store,
 // not in ProviderConfig.APIKey) are still seen as authenticated — otherwise
-// the quota plugin treats them as no_api_key and drops them (bugs.md z.ai #6).
+// the quota plugin treats them as no_api_key and drops them (z.ai #6).
 func (pm *ProviderManager) ResolveAPIKey(providerID string) string {
 	if pm == nil || pm.cfg == nil {
 		return ""

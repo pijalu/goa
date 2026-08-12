@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestChatViewport_ToolWidgetDoneNotDuplicatedInScrollback reproduces bugs.md
+// TestChatViewport_ToolWidgetDoneNotDuplicatedInScrollback reproduces
 // item I with the REAL widget path: fill the viewport, run a tool widget
 // (spinner header), complete it (✓ header) so the widget scrolls, and assert
 // the completed widget's header row is not duplicated in scrollback. The

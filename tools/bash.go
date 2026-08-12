@@ -25,7 +25,7 @@ import (
 	"github.com/pijalu/goa/internal/secrets"
 )
 
-// Regexes backing detectShellFileEdit (the bash→edit guardrail, bugs.md).
+// Regexes backing detectShellFileEdit (the bash→edit guardrail).
 var (
 	// redirectRe captures a shell output redirect target: "> path", ">> path",
 	// "2> path", "tee path". Excludes fd-dup forms (>&2, 2>&1) via the target
@@ -79,7 +79,7 @@ type BashTool struct {
 	// WarnFileEdits, when true, prepends a non-blocking hint to the output of
 	// shell commands that modify project files (redirects, in-place editors,
 	// interpreter inline file writes), steering the model to the edit tool
-	// (bugs.md). Never blocks. Configurable via tools.bash.warn_file_edits.
+	// Never blocks. Configurable via tools.bash.warn_file_edits.
 	WarnFileEdits bool
 	// WarnFileEditsResolver, when non-nil, is called at execution time to
 	// decide whether the hint is active (live /config toggle). When nil,
@@ -106,7 +106,7 @@ func (t *BashTool) LoopHints() agentic.ToolLoopHints {
 func (t *BashTool) Schema() agentic.ToolSchema {
 	// The working-directory statement lives in the top-level description because
 	// that is the text the model actually reads; without it the model prepends a
-	// redundant "cd <project root> && " to every command (bugs.md).
+	// redundant "cd <project root> && " to every command.
 	const cwdNote = " The working directory is the project root by default — do not prepend `cd <project root>` unless a different directory is required."
 	description := "Run a shell command." + cwdNote
 	if t.EnableComplexity {
@@ -181,7 +181,7 @@ func (t *BashTool) ExecuteContext(ctx context.Context, input string) (string, er
 		return "", err
 	}
 
-	// Non-blocking nudge (bugs.md): if the command modifies a project file via
+	// Non-blocking nudge: if the command modifies a project file via
 	// the shell, we still run it but prepend a hint steering the model to the
 	// edit tool next time. Never block on this — bash is sometimes the only way.
 	fileEditHint := t.fileEditHint(p.Command)
@@ -392,7 +392,7 @@ func toolErr(tool, typ, detail string) *internal.ToolError {
 }
 
 // timeoutErr builds the timeout error with a timeout-specific actionable hint
-// (bugs.md "Timeout hint"): raise the `timeout` parameter when there is
+// (Timeout hint): raise the `timeout` parameter when there is
 // headroom, otherwise split the work — never the generic docs usage line.
 func timeoutErr(actualTimeout int) *internal.ToolError {
 	hint := fmt.Sprintf("The command exceeded the %ds timeout. Increase the \"timeout\" parameter (default: %ds, max: %ds) or split the command into smaller/faster steps.",
@@ -600,7 +600,7 @@ func (t *BashTool) checkAnalyzed(cmd string) error {
 
 // fileEditHint returns a non-blocking hint to prepend to the command output
 // when the command modifies a project file via the shell, steering the model to
-// the edit tool next time. It NEVER blocks — the command always runs (bugs.md:
+// the edit tool next time. It NEVER blocks — the command always runs
 // a hard block broke legitimate workflows; a visible nudge is enough). Returns
 // "" when the command looks read-only or the hint is disabled. Conservative:
 // on doubt it stays silent rather than nag.

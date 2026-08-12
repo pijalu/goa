@@ -73,7 +73,7 @@ type StatusMsg struct {
 	onFrameChange func()
 	// onSpinStateChange, when set, is invoked with the spinning state whenever
 	// it flips (Show starts, Clear stops). The app layer uses it to drive the
-	// animated window title (bugs.md "Animated title bar while working").
+	// animated window title (Animated title bar while working).
 	onSpinStateChange func(spinning bool)
 }
 

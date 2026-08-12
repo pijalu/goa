@@ -13,7 +13,7 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// These tests validate the open bugs.md item:
+// These tests validate the open item:
 //
 //	"edit/write do not show streaming — only final results are shown"
 //
@@ -165,7 +165,7 @@ func TestBugs_EditStreamingShowsDiffstatLive(t *testing.T) {
 	}
 }
 
-// TestBugs_DisconnectSurfacesNotification validates the open bugs.md item
+// TestBugs_DisconnectSurfacesNotification validates the open item
 // "disconnection/stop of work — no error/notification". A cancelled stream
 // must surface a visible "Generation stopped by user." message, and a stream
 // that dies with a connection error must surface a friendly hint — never a
@@ -197,7 +197,7 @@ func TestBugs_DisconnectSurfacesNotification(t *testing.T) {
 	})
 }
 
-// TestBugs_NoStuckWriteWidget_LateIDAdoption validates the open bugs.md item
+// TestBugs_NoStuckWriteWidget_LateIDAdoption validates the open item
 // "Write stuck" on the widget side: when a write streams with an EMPTY
 // ToolCallID and the completed call/result later arrives with the real id,
 // exactly one widget exists and it resolves to success (not stranded in
@@ -264,7 +264,7 @@ func TestBugs_NoStuckWriteWidget_StrandedMarkedInterrupted(t *testing.T) {
 	}
 }
 
-// TestBugs_CanceledMidToolCall_LabeledNeverRan reproduces the bugs.md item
+// TestBugs_CanceledMidToolCall_LabeledNeverRan reproduces the item
 // "Tool call start a review but no output of work done": the model streams an
 // agent tool call, the stream is canceled while the arguments are STILL
 // streaming (the tool never executes), and the widget must say the tool never
@@ -372,7 +372,7 @@ func TestBugs_WriteToolStatsShowsTotal(t *testing.T) {
 	}
 }
 
-// TestBugs_ProgressClearClearsStatus validates the bugs.md "stuck in
+// TestBugs_ProgressClearClearsStatus validates the "stuck in
 // sending" fix: the agent's cleanup path emits EventProgress with empty text
 // on every turn exit, and the app must translate it into a status-spinner
 // clear. Previously handleProgressEvent ignored empty-text events, so the

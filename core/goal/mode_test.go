@@ -264,7 +264,7 @@ func TestReplayCompletion(t *testing.T) {
 
 // TestCreateGoal_FreshContext verifies the per-goal clean-context flag is
 // captured on create, exposed on the snapshot, persisted to the event log, and
-// restored on replay (bugs.md: per-goal clean-context flag).
+// restored on replay (per-goal clean-context flag).
 func TestCreateGoal_FreshContext(t *testing.T) {
 	st := &testStore{}
 	mode := NewGoalMode(st, nil, nil, nil)

@@ -27,7 +27,7 @@ func padToWidth(s string, width int) string {
 // paragraphs are split first and wrapped independently; blank paragraphs keep
 // their empty row. Every returned row is guaranteed newline-free: a surviving
 // "\n" corrupts the TUI row model because raw-mode LF moves down without a
-// carriage return (bugs.md "Goal completion screen corruption" / "Corruption
+// carriage return (Goal completion screen corruption:/ "Corruption
 // on goal change").
 func wrapParagraphs(text string, width int) []string {
 	if width <= 0 {

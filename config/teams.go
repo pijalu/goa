@@ -52,6 +52,14 @@ const (
 // teamNamePattern matches team and member names (TEAMS.md §3.5 rule 1–2).
 var teamNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+// IsValidTeamName reports whether name satisfies the team/member naming rule
+// (TEAMS.md §3.5 rule 1–2). Interactive entry points (config menu, /team)
+// must reject a non-conforming name at input time instead of persisting a
+// definition that config validation would then refuse on the next startup.
+func IsValidTeamName(name string) bool {
+	return teamNamePattern.MatchString(name)
+}
+
 // TeamsConfig is the top-level `teams:` section (TEAMS.md §3): the session's
 // active team plus the named team definitions.
 type TeamsConfig struct {

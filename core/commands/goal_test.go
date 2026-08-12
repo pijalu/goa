@@ -602,7 +602,7 @@ func TestGoalCommand_NextAndReorder(t *testing.T) {
 
 // TestGoalCommand_ManageEmpty: with no active goal and an empty queue the
 // manager still opens — framed by the add-at-start/add-at-end sentinels and
-// the Done row — so goals can be created from it (bugs.md goal manager: the
+// the Done row — so goals can be created from it (goal manager: the
 // manager previously just printed "No queued goals.").
 func TestGoalCommand_ManageEmpty(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
@@ -858,7 +858,7 @@ func (a *fakeAgentSignalsRun) Run(ctx context.Context, prompt string) error {
 	return nil
 }
 
-// Regression for bugs.md: /goal:resume must re-activate a paused goal AND
+// Regression for /goal:resume must re-activate a paused goal AND
 // schedule a continuation turn with no user message. Previously resume only
 // flipped state to active; the goal sat idle until the user typed something.
 func TestGoalCommand_Resume_StartsDriver(t *testing.T) {
@@ -1661,7 +1661,7 @@ func TestGoalCommand_List(t *testing.T) {
 // TestGoalCommand_ListShowsAllInfo verifies /goal:list renders ALL recorded
 // goal information — context run type (fresh/reuse), completion criterion,
 // verify command, handover, budget, terminal state and todos — for both the
-// current and the queued goals (bugs.md: goal list shows all information).
+// current and the queued goals (goal list shows all information).
 func TestGoalCommand_ListShowsAllInfo(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
@@ -1869,11 +1869,11 @@ func assertManagerEditableItems(t *testing.T, items []tui.SelectorItem) {
 }
 
 // TestGoalCommand_ManageDeleteHotkey covers the Delete hotkey in /goal:manage
-// (bugs.md goal manager): the "__delete__"+id emit must open a confirmation
+// (goal manager): the "__delete__"+id emit must open a confirmation
 // selector and only "yes" removes the goal. Previously deletion fired
 // immediately; and before that, the sentinel-prefixed string reached
 // Queue.Remove and failed with "queued goal \"__delete__…\" not found"
-// (bugs.md Issue 23).
+// (Issue 23).
 func TestGoalCommand_ManageDeleteHotkey(t *testing.T) {
 	cmd, queue := newManagerCommand(t, "")
 	ids := appendQueued(t, queue, "first queued goal", "second queued goal")
@@ -2096,7 +2096,7 @@ func assertAllPreserveOrder(t *testing.T, items []tui.SelectorItem) {
 }
 
 // TestGoalCommand_ManageListExecutionOrder pins the manager's list layout
-// (bugs.md goal manager): the add-at-start sentinel, the ACTIVE goal
+// (goal manager): the add-at-start sentinel, the ACTIVE goal
 // (marked, not movable), the queued goals in run order, the add-at-end
 // sentinel and Done — every row PreserveOrder — and the manager requests
 // the reorder keymap ('+'/'-' = move up/down).
@@ -2326,7 +2326,7 @@ func runManageAddRowCase(t *testing.T, tc manageAddRowCase) {
 
 // TestGoalCommand_ManageGenericAddEmit is the regression for the generic
 // '__add__' emit reaching the queue-action menu and failing with
-// "queued goal … not found" (bugs.md goal manager item 4): it must open the
+// "queued goal … not found" (goal manager item 4): it must open the
 // create-goal flow instead. Reachable via a host without the reorder keymap
 // (SelectOptionKeyed fallback).
 func TestGoalCommand_ManageGenericAddEmit(t *testing.T) {
@@ -2405,7 +2405,7 @@ func TestGoalCommand_ManageEnterOnGoalRow(t *testing.T) {
 }
 
 // TestGoalCommand_ParseContextToken covers /goal:new:fresh|reuse parsing
-// (bugs.md Issue 24): the leading token selects the context mode, and /goal:new
+// (Issue 24): the leading token selects the context mode, and /goal:new
 // without a token defers to the configured default.
 func TestGoalCommand_ParseContextToken(t *testing.T) {
 	cmd := &GoalCommand{}

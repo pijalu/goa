@@ -11,7 +11,7 @@ import (
 )
 
 // TestCompositor_StreamingContentGrowthNoDuplication is the regression test for
-// bugs.md must-fix #6: "TUI tool-call rendering: duplicated history line on
+// must-fix #6: "TUI tool-call rendering: duplicated history line on
 // content-size change." When a tool call's rendered height grows across frames
 // (streaming arg growth, collapse→expand), a height delta at the history↔screen
 // boundary can double-emit the boundary line — once pushed into scrollback and

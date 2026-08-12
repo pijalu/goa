@@ -50,7 +50,7 @@ func (c *testPlaceholderCommand) Run(ctx core.Context, args []string) error {
 }
 
 // TestHandleSlashCommand_ShowsExecutingPlaceholder is the regression test for
-// bugs.md "Session: slow commands need an executing placeholder": the status
+// Session: slow commands need an executing placeholder: the status
 // line must show "executing /cmd ..." while the command runs and be cleared
 // once the result is delivered.
 func TestHandleSlashCommand_ShowsExecutingPlaceholder(t *testing.T) {

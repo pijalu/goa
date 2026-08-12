@@ -29,7 +29,7 @@ type LSPQueryManager interface {
 
 // LSPTool lets the model query the language server for precise code navigation:
 // go-to-definition, find-references, hover, and document symbols. This replaces
-// grep-and-guess with exact, compiler-grade locations (bugs.md Issue 7).
+// grep-and-guess with exact, compiler-grade locations (Issue 7).
 type LSPTool struct {
 	agentic.BaseTool
 	WorktreeMgr *internal.WorktreeManager

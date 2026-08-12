@@ -34,24 +34,38 @@ func (m *configMenu) saveTeamsSection() {
 	}
 }
 
-// openTeams is the entry point for /config → Teams.
+// openTeams is the entry point for /config → Teams. It presents one flat,
+// wizard-forward list (mirroring /config → Models): — add team — first (the
+// creation wizard), then every defined team (select to edit/remove), then the
+// active-team row. Creation is one tap instead of buried under a definitions
+// submenu; selecting a team opens its detail for edit/remove.
 func (m *configMenu) openTeams() {
 	m.current = m.openTeams
 	cfg := m.ctx.Config
 	items := []tui.SelectorItem{
-		{Value: "active", Label: "Active team", Description: orNone(cfg.Teams.Active)},
-		{Value: "definitions", Label: "Team definitions", Description: fmt.Sprintf("%d defined", len(cfg.Teams.Definitions))},
+		{Value: "__add__", Label: "— add team —", Description: "define a new team (wizard)"},
 	}
-	m.ctx.SelectOption("Teams settings:", items, "", func(selected string, ok bool) {
-		if !ok {
+	for _, name := range cfg.TeamNames() {
+		def := cfg.Teams.Definitions[name]
+		desc := teamOneLiner(def)
+		if cfg.Teams.Active == name {
+			desc += " · active"
+		}
+		items = append(items, tui.SelectorItem{Value: name, Label: name, Description: desc})
+	}
+	items = append(items, tui.SelectorItem{Value: "active", Label: "Active team", Description: orNone(cfg.Teams.Active)})
+	m.ctx.SelectOption("Teams:", items, "", func(selected string, ok bool) {
+		if !ok || selected == "" {
 			m.back()
 			return
 		}
 		switch selected {
+		case "__add__":
+			m.open(m.addTeamWizard)
 		case "active":
 			m.open(m.openTeamsActive)
-		case "definitions":
-			m.open(m.openTeamsDefinitions)
+		default:
+			m.openTeamDetail(selected)
 		}
 	})
 }
@@ -83,28 +97,6 @@ func (m *configMenu) openTeamsActive() {
 	})
 }
 
-// openTeamsDefinitions lists defined teams with add entry point.
-func (m *configMenu) openTeamsDefinitions() {
-	m.current = m.openTeamsDefinitions
-	cfg := m.ctx.Config
-	var items []tui.SelectorItem
-	for _, name := range cfg.TeamNames() {
-		def := cfg.Teams.Definitions[name]
-		items = append(items, tui.SelectorItem{Value: name, Label: name, Description: teamOneLiner(def)})
-	}
-	items = append(items, tui.SelectorItem{Value: "__add__", Label: "— add team —", Description: "define a new team"})
-	m.ctx.SelectOption("Team definitions:", items, "", func(v string, ok bool) {
-		if !ok || v == "" {
-			m.back()
-			return
-		}
-		if v == "__add__" {
-			m.open(m.addTeamWizard)
-			return
-		}
-		m.openTeamDetail(v)
-	})
-}
 
 // openTeamDetail edits one team definition.
 func (m *configMenu) openTeamDetail(name string) {
@@ -488,6 +480,11 @@ func (m *configMenu) addTeamMember(teamName string) {
 		name := strings.TrimSpace(value)
 		cfg := m.ctx.Config
 		def := cfg.Teams.Definitions[teamName]
+		if !config.IsValidTeamName(name) {
+			m.flash("Invalid member name " + name + " — must match [a-z0-9][a-z0-9-]{0,63}")
+			m.addTeamMember(teamName)
+			return
+		}
 		if _, exists := teamMemberByName(def, name); exists {
 			m.flash("Member " + name + " already exists")
 			m.openTeamMembers(teamName)
@@ -566,7 +563,7 @@ func (m *configMenu) confirmRemoveTeam(name string) {
 		}
 		delete(cfg.Teams.Definitions, name)
 		m.saveTeamsSection()
-		m.openTeamsDefinitions()
+		m.openTeams()
 	})
 }
 
@@ -575,16 +572,21 @@ func (m *configMenu) confirmRemoveTeam(name string) {
 // adding members afterwards in the detail view.
 func (m *configMenu) addTeamWizard() {
 	m.current = m.addTeamWizard
-	m.ctx.ShowInput("New team name ([a-z0-9-]):", "", func(name string, ok bool) {
+	m.ctx.ShowInput("New team name [a-z0-9][a-z0-9-]{0,63}:", "", func(name string, ok bool) {
 		if !ok {
 			m.back()
 			return
 		}
 		name = strings.TrimSpace(name)
 		cfg := m.ctx.Config
+		if !config.IsValidTeamName(name) {
+			m.flash("Invalid team name " + name + " — must match [a-z0-9][a-z0-9-]{0,63}")
+			m.addTeamWizard()
+			return
+		}
 		if _, exists := cfg.Teams.Definitions[name]; exists {
 			m.flash("Team " + name + " already exists")
-			m.openTeamsDefinitions()
+			m.openTeams()
 			return
 		}
 		m.wizardMainModel(name)

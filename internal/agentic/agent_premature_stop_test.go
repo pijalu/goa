@@ -87,7 +87,7 @@ func registerPrematureStopProvider(fragment string, alwaysTruncate bool) *premat
 // TestAgent_PrematureStopAutoContinues verifies that a finish_reason=stop with
 // mid-sentence content after real tool work is NOT treated as a turn end: goa
 // detects the truncated output and auto-continues, so the model finishes the
-// task without the user typing "continue" (bugs.md premature-stop).
+// task without the user typing "continue" (premature-stop).
 func TestAgent_PrematureStopAutoContinues(t *testing.T) {
 	p := registerPrematureStopProvider("Let me fix both the call site and the function:", false)
 	agent := newAgentWithMockTool(p.API(), 10)

@@ -364,6 +364,13 @@ type Compositor struct {
 	// emitting scrollback rows never moves the pinned chrome below the region.
 	regionBot int
 
+	// clearRequested is set by Clear(): the NEXT Render wipes the screen and
+	// scrollback atomically inside its own CSI-2026 sync, then repaints the
+	// fresh canvas. Deferring the wipe into the frame (instead of writing it
+	// immediately) removes the atomicity gap where a stale pre-clear frame
+	// could be painted after the wipe — the /new blank-screen race.
+	clearRequested bool
+
 	// lastScrollCount is the number of rows the current frame's scroll advance
 	// (emitSteadyScroll) wrote at the bottom of the transcript region. It is set
 	// immediately before repaintWindow runs and consumed only by it, then reset
@@ -474,11 +481,14 @@ func (c *Compositor) InitialClear() {
 func (c *Compositor) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.terminal.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[3J\x1b[?2026l"))
+	// Mark state cleared; the next Render performs the actual wipe atomically
+	// with its repaint (see clearRequested). No terminal write happens here, so
+	// a concurrent in-flight frame cannot interleave with the wipe.
 	c.scrollTop = 0
 	c.vt = 0
 	c.prevLines = nil
 	c.regionBot = 0
+	c.clearRequested = true
 }
 
 // Restore is called on shutdown: end synchronized output, reset SGR, move the
@@ -524,10 +534,20 @@ func (c *Compositor) Render(scene *Scene) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// A pending Clear() must be honored by THIS frame: wipe the screen and
+	// scrollback atomically inside the frame's sync, then repaint the fresh
+	// canvas. prevLines is already nil (Clear reset it), so classifyFrame
+	// returns frameFirst below and drawWindow repaints every row.
+	clearPending := c.clearRequested
+	c.clearRequested = false
+
 	kind := c.classifyFrame(scene, width, height)
 	canvas, _ := scene.compose(kind.cullFloor(c.scrollTop))
 	c.beginTrace(scene, canvas, width, height)
 	defer c.emitTrace()
+	if clearPending {
+		c.setTracePath("clear")
+	}
 
 	// Mid-transcript edit guard for the incremental paths: when content above
 	// the new window top changed identity since the previous frame (a
@@ -551,8 +571,10 @@ func (c *Compositor) Render(scene *Scene) {
 	switch kind {
 	case frameFirst:
 		// First frame: InitialClear already wiped screen+scrollback; drawWindow
-		// emits any off-screen rows into scrollback then draws the window.
-		c.drawWindow(canvas, scene.Cursor, width, height)
+		// emits any off-screen rows into scrollback then draws the window. When
+		// this first frame follows a Clear() the wipe has NOT happened yet, so
+		// drawWindow performs it atomically inside the frame's sync.
+		c.drawWindow(canvas, scene.Cursor, width, height, clearPending)
 	case frameGeometryReset:
 		// Width change: the terminal's scrollback no longer corresponds to
 		// the canvas layout (wrap reflowed), so the incremental diff cannot
@@ -563,7 +585,7 @@ func (c *Compositor) Render(scene *Scene) {
 		// Height-only resize or overlay: drawWindow emits scrolled-off rows
 		// then repaints the visible window in place (no screen wipe — the
 		// per-row repaint already replaces every row; see drawWindow).
-		c.drawWindow(canvas, scene.Cursor, width, height)
+		c.drawWindow(canvas, scene.Cursor, width, height, clearPending)
 	default: // frameDiff
 		// Mid-window shift guard: the diff repaint (repaintWindow →
 		// unchangedRow) assumes the physical screen maps to the previous canvas
@@ -577,7 +599,7 @@ func (c *Compositor) Render(scene *Scene) {
 		// needs no reset — but the window must be repainted in full rather than
 		// diffed. Route to drawWindow (repaints every row) for this frame.
 		if c.windowContentShifted(canvas, c.windowTop(len(canvas), height), height) {
-			c.drawWindow(canvas, scene.Cursor, width, height)
+			c.drawWindow(canvas, scene.Cursor, width, height, clearPending)
 		} else {
 			c.renderDiff(canvas, scene.Cursor, width, height)
 		}
@@ -606,7 +628,7 @@ const (
 // previous geometry).
 func (c *Compositor) classifyFrame(scene *Scene, width, height int) frameKind {
 	// Track the chrome-band height across frames: prevWindowFull consults
-	// prevChromeH to map the PREVIOUS canvas's content end (bugs.md "Slow
+	// prevChromeH to map the PREVIOUS canvas's content end ("Slow
 	// performance on very large conversations").
 	c.prevChromeH = c.chromeH
 	c.chromeH = max(scene.ChromeHeight, 0)
@@ -695,17 +717,23 @@ func (c *Compositor) appendOverflow(buf *strings.Builder, canvas []string, width
 // harmful: on real terminals it visibly blanks the screen before the
 // rewrite lands (even inside CSI 2026 on several emulators), which produced
 // the black flash / mascot-flicker seen on overlay frames during tool calls
-// (bugs.md "Mascot/logo redraw", HIGH). In-place row replacement — the same
+// (Mascot/logo redraw, HIGH). In-place row replacement — the same
 // strategy renderDiff uses — is flicker-free and leaves no stale content:
 // every row is overwritten, and a shorter canvas shifts the window bottom up
 // rather than leaving residue.
-func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int) {
+func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, height int, wipe bool) {
 	c.setTracePath("full")
 	c.fullRedrawCount++
 	vt := c.windowTop(len(canvas), height)
 
 	var buf strings.Builder
 	buf.WriteString("\x1b[?2026h")
+	if wipe {
+		// A Clear() requested a screen+scrollback wipe. Fold it into THIS frame's
+		// sync (instead of a separate immediate write) so it commits atomically
+		// with the repaint — a stale pre-clear frame can never be painted on top.
+		buf.WriteString("\x1b[2J\x1b[H\x1b[3J")
+	}
 	c.appendOverflow(&buf, canvas, width, height)
 	// drawWindow repaints every row (first frame / full repaint), so the scroll
 	// advance did not pre-write any bottom rows for repaintWindow to skip.
@@ -822,7 +850,7 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 	// when the window top moved but the watermark did NOT advance (canvas
 	// shrank then regrew, e.g. a stream finalizing mid-flip), the scroll wrote
 	// ZERO rows, and counting (target - c.vt) skips a bottom transcript row
-	// that was never repainted — leaving a stale row behind (bugs.md Bug D:
+	// that was never repainted — leaving a stale row behind (Bug D:
 	// a tool widget's last line kept the pending bg after success).
 	c.lastScrollCount = max(0, target-max(c.vt, c.scrollTop))
 	c.repaintWindow(&buf, canvas, vt, width, height)
@@ -899,7 +927,7 @@ func (c *Compositor) scrollTarget(vt, canvasLen int) int {
 // above the window — a streaming block that grows ABOVE later-appended
 // content, e.g. /quota landing mid-stream — shifts the region and the
 // emission would destroy unscrolled rows and emit shifted duplicates
-// (bugs.md "Slow performance on very large conversations": the quota-stream
+// (Slow performance on very large conversations: the quota-stream
 // regression only stayed hidden because every chrome change force-resynced).
 //
 // Only MALIGNANT instability counts: a row whose content MOVED to a

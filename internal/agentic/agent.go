@@ -87,7 +87,7 @@ type Agent struct {
 
 	// turnSawContent / turnSawThinking record whether the model produced any
 	// visible content or any thinking tokens at any earlier point in the current
-	// turn (bugs.md Issue 13). They let the consecutive-tool-rounds streak treat
+	// turn (Issue 13). They let the consecutive-tool-rounds streak treat
 	// a model that reasoned earlier in the turn as productive, rather than
 	// demanding fresh reasoning in every single round.
 	turnSawContent  bool
@@ -171,7 +171,7 @@ type Agent struct {
 	// steeringSource, when set, is polled between stream rounds (after a round's
 	// tool results are appended, before the next runStreamRound) so mid-turn
 	// steering is woven into the CURRENT turn instead of delivered as a late,
-	// separate turn (bugs.md steering-lateness; pi parity). Drained messages are
+	// separate turn (steering-lateness; pi parity). Drained messages are
 	// appended as user messages at the current history tail — a strict
 	// prefix-extension of the prior request (guideline #9 cache-safe).
 	steeringSource SteeringSource
@@ -233,7 +233,7 @@ type Agent struct {
 
 	// bashReuse detects when the model re-runs the same expensive upstream
 	// command (e.g. `go test ...`) within a single state epoch while only
-	// changing the trailing filter — a wasteful pattern (bugs.md). It resets
+	// changing the trailing filter — a wasteful pattern. It resets
 	// whenever the state epoch advances (a mutating tool succeeded), so
 	// re-running a test after an edit is never flagged. Keyed off bash calls
 	// as they are buffered; the flagged call IDs live in bashNearDup.
@@ -311,13 +311,13 @@ type Agent struct {
 	// turn END, so during a long single turn it goes stale and the idle-gap
 	// logic would flip the gate cold mid-turn while rounds still complete
 	// every few seconds — busting a provably hot cache BELOW the ceiling
-	// (bugs.md prefix-cache bust loop companion defect). lastTurnEnd stays
+	// (prefix-cache bust loop companion defect). lastTurnEnd stays
 	// for inter-turn idle bookkeeping. Cleared by Clear.
 	lastRoundActivity time.Time
 
 	// lastCacheReadTokens is the previous completed request's cache_read
 	// count, kept so the per-request debug log can show cache_read deltas
-	// (bugs.md round-17 anomaly forensics: discriminate provider-side
+	// (round-17 anomaly forensics: discriminate provider-side
 	// partial eviction from request-shape changes). Cleared by Clear.
 	lastCacheReadTokens int
 
@@ -336,7 +336,7 @@ type Agent struct {
 	// checkStreamLoop when the detector fired (one exact repeat unit for the
 	// exact-chain detector, the scanned tail for the paraphrase detector;
 	// normalized text) so the strike warning/stop messages can show WHAT was
-	// judged a loop (bugs.md runaway-loop visibility). Reset per round
+	// judged a loop (runaway-loop visibility). Reset per round
 	// alongside streamLoopDetected.
 	streamLoopSample string
 
@@ -358,7 +358,7 @@ type Agent struct {
 	// are rejected instead of continuing the runaway exchange. The latch is
 	// cleared by ResetLoopStop (genuine new user input / goal resume) and
 	// auto-expires after loopStopCooldown — a guardrail must never
-	// permanently brick a session (bugs.md runaway-loop bricking).
+	// permanently brick a session (runaway-loop bricking).
 	loopStopped bool
 	// loopStoppedAt records when the latch was set, for cooldown expiry.
 	loopStoppedAt time.Time
@@ -884,7 +884,7 @@ const metaSteeringDrained = "steering_drained"
 // InjectSystemMessage for durable runtime notices (tool changes).
 //
 // The message is also surfaced to the user as a durable chat bubble so every
-// nudge sent to the model is visible and part of the chat history (bugs.md:
+// nudge sent to the model is visible and part of the chat history
 // the user MUST be aware of nudges). Host control notes (prefixed "[goa-system]")
 // are emitted as a system-notification content event, which the app renders as
 // a persistent bubble (the same path used for "Error: 401" notices).
@@ -900,7 +900,7 @@ func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	a.mu.Unlock()
 
 	// Surface the FULL nudge text to the user as a persistent chat bubble
-	// (bugs.md: the user MUST be aware of every nudge sent to the model).
+	// (the user MUST be aware of every nudge sent to the model).
 	// Previously only a transient EventProgress ("System guardrail…") was shown,
 	// hiding the actual content/numbers and leaving the user unable to tell what
 	// the model was told. Now every host control note (prefixed "[goa-system]")
@@ -1247,7 +1247,7 @@ func (a *Agent) processTurn(ctx context.Context) error {
 // before auto-expiring. A guardrail stops a runaway exchange, never the
 // session: genuine recovery paths (ResetLoopStop on new user input or goal
 // resume) clear it immediately, and this backstop covers driven paths that
-// bypass both (bugs.md runaway-loop bricking).
+// bypass both (runaway-loop bricking).
 const loopStopCooldown = 10 * time.Minute
 
 // checkLoopStopped enforces the runaway-loop latch at turn start. The latch
@@ -1270,7 +1270,7 @@ func (a *Agent) checkLoopStopped() error {
 // called when a genuine new user message starts a turn (human input, or a
 // goal resumed after a runaway pause with a varied recovery prompt): the
 // pause/interrupt was the guardrail's stop, and the new input is a deliberate
-// attempt to recover — the session must be allowed to proceed (bugs.md).
+// attempt to recover — the session must be allowed to proceed.
 func (a *Agent) ResetLoopStop() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1294,13 +1294,13 @@ func (a *Agent) clearLoopStopLocked() {
 // the same meaningful message across consecutive turns without progress.
 // On the first repeat it injects a warning hint AND surfaces a visible TUI
 // warning naming the repeated response; on the second repeat it stops the
-// session with an error carrying the same evidence (bugs.md runaway-loop
+// session with an error carrying the same evidence (runaway-loop
 // visibility: the user must be able to judge whether the loop was real).
 //
 // The strike only counts when this turn produced a NEW assistant message:
 // when the last assistant message predates turnStartHistoryLen (stream
 // error, retry, pause), comparing the stale message against itself would
-// score a false strike with zero actual repetition (bugs.md).
+// score a false strike with zero actual repetition.
 func (a *Agent) checkProgressLoop() error {
 	warnSample, err := a.scanProgressLoop()
 	if warnSample != "" {

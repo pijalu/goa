@@ -90,7 +90,7 @@ func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 	// Neither the static reminder nor the dynamic progress may live in the
 	// system prompt: the prompt is the provider-cached prefix, and any goal
 	// text there busts the whole cache on goal create/destroy/status-flip
-	// (bugs.md CRITICAL: /goal destroy caching).
+	// (CRITICAL: /goal destroy caching).
 	if strings.Contains(pctx.SystemPrompt, "STATIC GOAL REMINDER") {
 		t.Errorf("system prompt must NOT contain static reminder (cached prefix): %q", pctx.SystemPrompt)
 	}
@@ -98,7 +98,7 @@ func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 		t.Errorf("system prompt should NOT contain dynamic progress, got %q", pctx.SystemPrompt)
 	}
 
-	// kimi-code parity (bugs.md 2026-07-21, design A): the goal context is
+	// kimi-code parity (2026-07-21, design A): the goal context is
 	// PERSISTED into the conversation once per turn as ordinary USER-role
 	// messages appended right after the turn's user message — static first,
 	// then dynamic. It is never merged per-request and never system role
@@ -220,7 +220,7 @@ func indexOfSlotContaining(msgs []provider.Message, needle string) int {
 
 // TestBuildProviderContext_GoalDestroyKeepsCachedPrefixStable is the core
 // regression for the goal-destroy cache contract under the persist-per-turn
-// design (bugs.md 2026-07-21, design A): destroying a goal must not rewrite
+// design (2026-07-21, design A): destroying a goal must not rewrite
 // any existing byte — turn 1's persisted reminder stays in history
 // (append-only, kimi-code parity) — and turn 2 must simply append NO new
 // goal text. The whole prefix stays cache-servable.

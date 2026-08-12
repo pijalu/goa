@@ -459,7 +459,7 @@ func (cv *ChatViewport) dirtyIndices() []int {
 // All entries render in chronological order. Previously running/pending tools
 // were sorted to a separate "active" zone at the bottom; that caused open tool
 // calls to stay pinned to the bottom while newer messages/thinking accumulated
-// above them. The FIFO layout requested in bugs.md keeps every entry in the
+// above them. The FIFO layout requested in keeps every entry in the
 // order it occurred, so a running tool moves up as newer content is appended.
 func (cv *ChatViewport) fullRebuild(width int) {
 	cv.renderCache.width = width
@@ -545,7 +545,7 @@ func (cv *ChatViewport) Children() []Component {
 // above the currently visible window (scrolled into terminal scrollback).
 // The compositor's scroll watermark never repaints committed rows
 // ("canvas rows are immutable"), so a later state change of c is INVISIBLE
-// on screen — the symptom behind bugs.md Issue 6 (a tool completing after
+// on screen — the symptom behind Issue 6 (a tool completing after
 // its running-state rows scrolled off leaves a frozen "◉" ghost). The app
 // uses this to append a compact completion echo for such tools.
 //
@@ -714,7 +714,7 @@ func (cv *ChatViewport) AddToolExecution(name, argsJSON string) *ToolExecutionCo
 		// the renderer will handle ArgsComplete=false via RenderContext.
 		tc.argsComplete = false
 	} else {
-		// Centralized transition: stamps the "waiting" clock (bugs.md Bug W).
+		// Centralized transition: stamps the "waiting" clock (Bug W).
 		tc.markArgsComplete()
 	}
 	tc.SetOnInvalidate(func() {
@@ -856,7 +856,7 @@ func (cv *ChatViewport) HasRunningToolWidgets() bool {
 // lines and the frame cache are patched in place, so the compositor never has
 // to reprocess the full chat history on every spinner tick. Live means
 // Running (elapsed ticking) OR Pending with complete args (the "waiting Ns…"
-// display of a queued call, bugs.md Bug W — it must tick too).
+// display of a queued call, Bug W — it must tick too).
 func (cv *ChatViewport) patchRunningToolWidgets(width int) {
 	if width == 0 || cv.renderCache.lines == nil {
 		return
@@ -873,7 +873,7 @@ func (cv *ChatViewport) patchRunningToolWidgets(width int) {
 }
 
 // isLiveToolWidget reports whether a tool widget has a ticking timer:
-// Running (elapsed) or args-complete Pending (waiting, bugs.md Bug W).
+// Running (elapsed) or args-complete Pending (waiting, Bug W).
 func isLiveToolWidget(tc *ToolExecutionComponent) bool {
 	return tc.Status() == ToolRunning ||
 		(tc.Status() == ToolPending && tc.ArgsComplete())

@@ -17,7 +17,7 @@ import (
 
 // TestApplyConfigSet_MicroCompactionKeys verifies the micro_compaction block
 // (and preserve_recent_turns) is settable via the generic config path — the
-// "no hidden configuration key" requirement (bugs.md): these gates change
+// "no hidden configuration key" requirement: these gates change
 // runtime behavior (the 2026-08-02 session compaction fired on
 // min_context_ratio) so they must not be YAML-only.
 func TestApplyConfigSet_MicroCompactionKeys(t *testing.T) {
@@ -90,7 +90,7 @@ func TestApplyConfigSet_MicroCompactionRejectsInvalid(t *testing.T) {
 }
 
 // TestApplyConfigSet_RejectsCrossFieldInvalidThresholds is the regression
-// test for the bugs.md entry "/config saves cross-field-invalid
+// test for the entry "/config saves cross-field-invalid
 // configuration": per-key setters only check their own range, so
 // applyConfigSet must run the whole-config Validate() before committing.
 // A change that breaks the compression threshold ordering

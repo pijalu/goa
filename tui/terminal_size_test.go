@@ -6,7 +6,7 @@ package tui
 
 import "testing"
 
-// TestProcessTerminal_SizeFiltersTransientBlip is the bugs.md "Mascot redraw"
+// TestProcessTerminal_SizeFiltersTransientBlip is the Mascot redraw:
 // regression: a single failed/degenerate TIOCGWINSZ read must NOT make Size()
 // fall back to 80x24 for one frame — that blip drove the compositor's
 // resize/full-repaint path and repainted the header mid-session. Once a

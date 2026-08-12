@@ -259,7 +259,7 @@ func (v *MultiAgentView) ensureBookendTabs() {
 	if len(v.tabs) > 0 {
 		return
 	}
-	// Tabs are ordered [Stats, Conversation, <agent>…] per bugs.md. Stats
+	// Tabs are ordered [Stats, Conversation, <agent>…] per. Stats
 	// is the default active tab so the overview is visible first; the user
 	// can switch to Conversation to see the transcript.
 	v.tabs = []AgentTab{

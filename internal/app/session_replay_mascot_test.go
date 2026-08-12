@@ -20,7 +20,7 @@ import (
 // event stream through the production render path (header + chat viewport +
 // tooltracker + compositor) and asserts that after the header/mascot has
 // scrolled off screen, no emitted write EVER paints mascot bytes into the
-// visible window again — the bugs.md "Mascot/logo redraw" regression
+// visible window again — the Mascot/logo redraw:regression
 // (mascot + empty screen flashing mid-session during tool calls).
 //
 // The replay mirrors App.handleAgentOutputEvent's semantics: content events

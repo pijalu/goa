@@ -525,7 +525,7 @@ func (t *EditFileTool) MutatesState() bool { return true }
 var editfileDocs embed.FS
 
 // notifyLSP forwards the edited document to its language server (any file
-// type the manager supports — bugs.md Issue LSP: not just .go) and returns a
+// type the manager supports — Issue LSP: not just.go) and returns a
 // formatted diagnostics block for the tool result. The notification never
 // blocks on a server start (async spawn); diagnostics appear once the server
 // is up and has processed the change.
@@ -538,7 +538,7 @@ func (t *EditFileTool) notifyLSP(ctx context.Context, resolvedPath string) strin
 		return ""
 	}
 	_ = t.LSPManager.DidChange(ctx, resolvedPath, string(content))
-	// Diagnostics are published asynchronously; poll until they settle (bugs.md L1).
+	// Diagnostics are published asynchronously; poll until they settle (L1).
 	diags := collectLSPDiagnostics(ctx, t.LSPManager, resolvedPath)
 	return formatLSPDiagnostics(resolvedPath, diags, t.LSPManager.ServerIDFor(resolvedPath))
 }
@@ -974,7 +974,7 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, matche
 			message = "Text %q not found in %s (tried exact, trailing whitespace, and fuzzy matching)"
 		}
 		detail := fmt.Sprintf(message, truncateStr(oldStr, 40), path)
-		// bugs.md: surface how much of the block actually matched so the model
+		// surface how much of the block actually matched so the model
 		// understands this is content drift (not a broken tool) and recovers by
 		// re-reading + making a smaller anchored edit, instead of switching to bash.
 		if total > 0 {

@@ -202,7 +202,7 @@ func (am *AgentManager) StartSession(mdl agenticprovider.Model, opts agenticprov
 
 	am.systemPrompt = finalPrompt
 	agent.AddObserver(am)
-	// Wire mid-turn steering (bugs.md steering-lateness; pi parity): the agent
+	// Wire mid-turn steering (steering-lateness; pi parity): the agent
 	// polls this queue between stream rounds and weaves steering into the
 	// current turn instead of delivering it as a late, separate turn.
 	if am.steering != nil {
@@ -306,7 +306,7 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	// re-drive goals (the agent may panic again). The hook itself runs in the
 	// cleanup defer — AFTER am.running is cleared and steering dispatched —
 	// because the goal driver started by the hook must never observe the
-	// agent as still busy with this turn (bugs.md Issue 7: a drive started
+	// agent as still busy with this turn (Issue 7: a drive started
 	// while the agent is mid-turn queue-storms continuation prompts).
 	turnEndedCleanly := false
 	defer am.recoverTurnPanic()
@@ -342,7 +342,7 @@ func (am *AgentManager) runAgentTurn(ctx context.Context, cancel context.CancelF
 	am.mu.Unlock()
 	// A genuine new user turn resets the agent's runaway-loop latch and
 	// repeat counters: the guardrail stops a runaway exchange, never the
-	// session (bugs.md runaway-loop bricking). Goal continuation turns
+	// session (runaway-loop bricking). Goal continuation turns
 	// bypass runAgentTurn and keep their guardrail state so cross-turn
 	// driver loops still latch. Optional interface: test runners need not
 	// implement it.
@@ -886,7 +886,7 @@ func (am *AgentManager) SetStreamOptions(opts agenticprovider.StreamOptions) {
 // would otherwise keep the prior SessionID. SessionID drives the provider cache
 // key (OpenAI prompt_cache_key / previous_response_id, session-affinity
 // headers), so without a reset the "clean" context would still be pinned to the
-// old conversation's cache / response chain (bugs.md Issue 8).
+// old conversation's cache / response chain (Issue 8).
 func (am *AgentManager) ResetConversationID() string {
 	am.mu.Lock()
 	defer am.mu.Unlock()

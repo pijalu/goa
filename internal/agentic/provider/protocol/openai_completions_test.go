@@ -13,7 +13,7 @@ import (
 )
 
 // TestResolveOpenAICompat_ReasoningContentFlagPropagation is the regression
-// test for the thinking-mode 400 (bugs.md): the opencode variant profile
+// test for the thinking-mode 400: the opencode variant profile
 // carries requires_reasoning_content_on_assistant_messages=true, but
 // resolveOpenAICompat dropped it, so proxied DeepSeek models 400'd with
 // "reasoning_content in the thinking mode must be passed back".

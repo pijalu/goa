@@ -73,7 +73,7 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 		return true, nil
 	}
 
-	// Convergence is message-driven, NOT a numeric round cap (bugs.md Issue 13).
+	// Convergence is message-driven, NOT a numeric round cap (Issue 13).
 	// trackToolCallingRound reports true only when the model has gone silent for
 	// the configured number of consecutive rounds (no message AND no thinking
 	// anywhere in the turn). A model still producing messages/reasoning never
@@ -162,7 +162,7 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		// Per-round compression gate: prepareTurn gates once per user turn,
 		// but a long tool-call turn can climb past the trigger/hard ceiling
 		// between rounds — a TC:436 session sailed past 100% unchecked until
-		// the provider rejected the request (bugs.md compression entry).
+		// the provider rejected the request (compression entry).
 		// Re-check before every re-stream so no request leaves oversized.
 		if err := a.maybeCompress(ctx); err != nil {
 			a.cfg.Logger.Log(Error, "per-round compression failed: %v", err)
@@ -476,7 +476,7 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	a.lastRoundActivity = time.Now()
 	if result.Usage != nil {
 		if a.cfg.Logger != nil {
-			// bugs.md round-17 anomaly forensics: correlate cache_read drops
+			// round-17 anomaly forensics: correlate cache_read drops
 			// with request-shape changes (tool-set re-registration changes
 			// tools_hash) vs provider-side eviction (hash stable).
 			a.cfg.Logger.Log(Debug, "request usage: cache_read %d -> %d, tools_hash=%08x",
@@ -507,7 +507,7 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 // (sorted schema names) so cache-drop forensics can discriminate provider-side
 // partial eviction from request-shape changes: a tool-set re-registration
 // alters the provider request shape and busts the prefix cache exactly like
-// an in-place history mutation (bugs.md round-17 anomaly). The caller must
+// an in-place history mutation (round-17 anomaly). The caller must
 // hold a.mu (reads a.cfg.Tools, replaced under mu by SetTools).
 func (a *Agent) toolListHashLocked() uint32 {
 	names := make([]string, 0, len(a.cfg.Tools))
@@ -979,7 +979,7 @@ func (a *Agent) handleToolCallPartial(tc provider.ContentBlock, contentIndex int
 	// Do not emit until the tool name is known: OpenAI-style streams ship the
 	// call id/index in the first chunk and the name only in a later one, and a
 	// nameless delta made the TUI create a blank-header tool widget that never
-	// updated (bugs.md "Empty tool TUI"). Args accumulate here and are emitted
+	// updated (Empty tool TUI). Args accumulate here and are emitted
 	// cumulative, so the first named delta carries the full prefix.
 	if emitName == "" {
 		return
@@ -1015,7 +1015,7 @@ func (a *Agent) handleToolCallDeltaByIndex(contentIndex int, delta string) {
 	emitName := ptc.toolName
 	a.mu.Unlock()
 
-	// Same nameless guard as handleToolCallPartial (bugs.md "Empty tool TUI").
+	// Same nameless guard as handleToolCallPartial (Empty tool TUI).
 	if emitName == "" {
 		return
 	}
@@ -1105,7 +1105,7 @@ func (a *Agent) checkStreamLoop(text string) {
 	if period, repeats, sample, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
 		a.streamLoopDetected = true
 		// Keep the repeated sequence as evidence so the strike warning/stop
-		// messages can show WHAT was judged a loop (bugs.md runaway-loop
+		// messages can show WHAT was judged a loop (runaway-loop
 		// visibility).
 		a.streamLoopSample = sample
 		a.cfg.Logger.Log(Warn, "Stream loop detected: %d-byte period repeated %d times", period, repeats)
@@ -1250,7 +1250,7 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 //
 // Detection policy (count-based rewrite after field failures in BOTH
 // directions — a false positive on exploratory Option A/B/C analysis and a
-// false negative on a ~90-copy paraphrase loop; see bugs.md 2026-08-01):
+// false negative on a ~90-copy paraphrase loop; see 2026-08-01):
 //
 //   - Detector A (exact chain): the trailing unit of length P
 //     (P ≥ streamLoopExactMinPeriod) is a loop when it repeats BYTE-EXACT
@@ -1269,7 +1269,7 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 //     per-delta cost.
 //
 // The returned sample is the repeated sequence evidence surfaced in
-// warning/stop messages (bugs.md runaway-loop visibility): for Detector A it
+// warning/stop messages (runaway-loop visibility): for Detector A it
 // is one byte-exact repeat unit; for Detector B — a paraphrase loop has no
 // exact unit — it is the scanned tail, which the hot shingles dominate.
 func streamLoopScan(clean string, maxRepeats int) (period, repeats int, sample string, ok bool) {
@@ -1636,7 +1636,7 @@ func (a *Agent) handleStreamFailure(ctx context.Context, streamErr error, model 
 	// bubble: this retry resets contentBuf and re-streams the answer from the
 	// start, so without a retraction the partial pre-retry bubble and the
 	// re-streamed bubble would both remain, duplicating the text on screen
-	// (bugs.md Issue 4 — streaming repeats that shift on scroll).
+	// (Issue 4 — streaming repeats that shift on scroll).
 	a.emitEvent(OutputEvent{
 		Type:     EventContent,
 		Role:     System,
@@ -1697,7 +1697,7 @@ func (a *Agent) retryStream(ctx context.Context, originalErr error, model provid
 			// Durable confirmation so the retry lifecycle is visible in chat
 			// history — failure bubble (episode start) + spinner attempts
 			// (live) + this restored bubble (success) — not only a transient
-			// spinner line (bugs.md Issue 17).
+			// spinner line (Issue 17).
 			a.emitEvent(OutputEvent{
 				Type:     EventContent,
 				Role:     System,
@@ -1770,7 +1770,7 @@ func (a *Agent) buildSystemPrompt() string {
 	// The system prompt is the provider-cached prefix: it must stay
 	// byte-identical across the whole session, including goal create/destroy/
 	// status-flips. Goal text therefore does NOT belong here — it is injected
-	// as volatile slot messages by mergeGoalProgress instead (bugs.md
+	// as volatile slot messages by mergeGoalProgress instead
 	// "CRITICAL: /goal destroy caching": a goal reminder in this prefix busted
 	// the entire prompt cache on every goal transition).
 	return a.cfg.SystemPrompt
@@ -1791,7 +1791,7 @@ func (a *Agent) buildSystemPrompt() string {
 // message after the first with HTTP 400 "System message must be at the
 // beginning".
 //
-// Trade-offs (decided 2026-07-21, bugs.md): reminders persist, so a
+// Trade-offs (decided 2026-07-21): reminders persist, so a
 // cancelled goal's text stays in history — accepted per kimi-code; the
 // engine already appends an explicit "Goal cancelled/paused" history note on
 // transitions, which supersedes them. Progress counters are per-turn fresh

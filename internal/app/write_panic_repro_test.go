@@ -46,7 +46,7 @@ func TestWritePanicRepro(t *testing.T) {
 	run("nil_lsp", &tools.WriteFileTool{}, goPayload("/tmp/zz_b.go"))
 
 	// C: live LSP, real content, .go file in the repo. The tool flag must be
-	// on for a manager to exist (bugs.md Issue LSP: off means off).
+	// on for a manager to exist (Issue LSP: off means off).
 	liveCfg := &config.Config{}
 	liveCfg.Tools.Enabled.LSP = true
 	live := newLSPManager(projectDir, liveCfg)

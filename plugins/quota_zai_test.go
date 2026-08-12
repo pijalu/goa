@@ -110,7 +110,7 @@ func TestQuota_ZaiAppearsInFullQuotaOutput(t *testing.T) {
 
 // TestQuota_ZaiKeylessShowsNoAPIKeyRow verifies a configured-but-keyless z.ai
 // provider surfaces a "no API key" status row in /quota instead of vanishing
-// silently (bugs.md: z.ai not visible in /quota).
+// silently (z.ai not visible in /quota).
 func TestQuota_ZaiKeylessShowsNoAPIKeyRow(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
@@ -132,7 +132,7 @@ func TestQuota_ZaiKeylessShowsNoAPIKeyRow(t *testing.T) {
 // entries). The z.ai row must still appear in /quota output.
 func TestQuota_ZaiIdOnlyConfigAppearsInFullQuotaOutput(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	// Exact user config shape from bugs.md: id only, no `provider:` key.
+	// Exact user config shape from id only, no `provider:` key.
 	env.setProvider("zai", map[string]any{"id": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
 	env.setActiveProvider("kimi-code")
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096}]}}`)
@@ -160,7 +160,7 @@ func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
 	// Exact shape returned by https://api.z.ai/api/monitor/usage/quota/limit
 	// (captured live 2026-07-21, level=pro). unit 3 = hours, 5 = months,
 	// 6 = weeks — verified from reset times: a unit:6/number:1 window resets
-	// +63.6h out (weekly cycle), never a "1d window" (bugs.md).
+	// +63.6h out (weekly cycle), never a "1d window".
 	env.respond("api.z.ai/api/monitor/usage/quota/limit", 200, `{"code":200,"data":{"level":"pro","limits":[
 		{"type":"TIME_LIMIT","unit":5,"number":1,"usage":1000,"currentValue":0,"remaining":1000,"percentage":0,"nextResetTime":1787122604987},
 		{"type":"TOKENS_LIMIT","unit":3,"number":5,"percentage":41,"nextResetTime":1784656400096},
@@ -198,7 +198,7 @@ func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
 // status bar showing "[0%|42%]" (monthly|session): the z.ai monitor API
 // returns limits monthly-first and the segment took the first two in emission
 // order. The segment must sort windows shortest-period first — session|weekly
-// — regardless of API order (bugs.md: z.ai status bar quota wrong).
+// — regardless of API order (z.ai status bar quota wrong).
 func TestQuota_ZaiSegmentOrdersWindowsShortToLong(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})

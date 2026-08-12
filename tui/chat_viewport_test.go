@@ -228,7 +228,7 @@ func TestChatViewport_InvalidateRunningToolWidgets(t *testing.T) {
 	if len(rendered2) < 2 {
 		t.Fatalf("tool widget rendered fewer than 2 lines: %v", rendered2)
 	}
-	// The on-going marker is a static dot (bugs.md: no spinner in the tool
+	// The on-going marker is a static dot (no spinner in the tool
 	// marker), so the header icon stays "●" across spinner ticks — the
 	// invalidation patches the frame in place regardless.
 	for i, r := range [][]string{rendered1, rendered2} {

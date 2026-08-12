@@ -11,7 +11,7 @@ import (
 )
 
 // TestHandleTokenStats_CacheMissCounter verifies the CM counter semantics
-// (bugs.md CM entry): a miss is counted only when a request reads ZERO cache
+// (CM entry): a miss is counted only when a request reads ZERO cache
 // tokens AFTER the cache was established; cold starts and cache-less
 // providers never count.
 func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
@@ -59,7 +59,7 @@ func TestHandleTokenStats_CacheMissCounter(t *testing.T) {
 }
 
 // TestHandleTokenStats_CacheMissPartialBust is the regression test for the
-// session-export finding (bugs.md): an in-place history mutation (micro
+// session-export finding: an in-place history mutation (micro
 // compaction truncating old tool results) invalidates the provider's cached
 // prefix, but the next request still reads the small unmutated head from
 // cache (5,376 of ~113k tokens) — the zero-read rule never fires, so the CM
@@ -99,7 +99,7 @@ func TestHandleTokenStats_CacheMissPartialBust(t *testing.T) {
 }
 
 // TestHandleTokenStats_CMReplaySessionExport replays the cache_read series
-// from the CM:13 session export (bugs.md "Provider prefix-cache bust loop"):
+// from the CM:13 session export (Provider prefix-cache bust loop):
 // the round-17 anomaly drop (30592→7552), the first elision pass
 // (169088→7552), and the advancing-floor busts (re-warm to ~164k, drop to an
 // advancing frontier) must count EXACTLY the 13 partial-drop misses the entry
@@ -137,7 +137,7 @@ func TestHandleTokenStats_CMReplaySessionExport(t *testing.T) {
 }
 
 // TestHandleTokenStats_CacheMissFreshContextReset is the regression test for
-// the fresh-context goal CM bug (bugs.md "Fresh-context goal start counted as
+// the fresh-context goal CM bug ("Fresh-context goal start counted as
 // a cache miss"): when a goal begins on a clean context, RunFresh clears the
 // live history AND rotates the provider cache key, so the first request of
 // the new conversation is cold by nature — zero or tiny cache reads on a

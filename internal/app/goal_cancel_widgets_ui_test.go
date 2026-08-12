@@ -15,7 +15,7 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// TestUI_CancelBatchNoStuckOrDuplicateWidgets reproduces bugs.md Issue 6:
+// TestUI_CancelBatchNoStuckOrDuplicateWidgets reproduces Issue 6:
 // "incorrect tool presentation on cancelling goals". A large parallel batch
 // of goal-cancel calls streams while the ACTIVE goal is cancelled mid-batch
 // (clearing the goal bubble = bottom-chrome shrink mid-scroll). The user saw
@@ -79,7 +79,7 @@ func TestUI_CancelBatchNoStuckOrDuplicateWidgets(t *testing.T) {
 	// while running keep their frozen "◉" rows (terminal scrollback is
 	// immutable without wiping user history), so the app appends a compact
 	// completion echo for any tool that finishes while fully scrolled off —
-	// no call may be left looking "ongoing" (bugs.md Issue 6).
+	// no call may be left looking "ongoing" (Issue 6).
 	joined := replayTerminal(sc, 20, 100)
 
 	if got := strings.Count(joined, announce); got != 1 {
@@ -97,7 +97,7 @@ func TestUI_CancelBatchNoStuckOrDuplicateWidgets(t *testing.T) {
 
 // TestUI_VisibleToolResultGetsNoEcho guards the echo's off condition: a tool
 // that completes while still visible must update in place ONLY — no extra
-// completion line (bugs.md Issue 6; the echo exists solely for tools whose
+// completion line (Issue 6; the echo exists solely for tools whose
 // widget scrolled into terminal scrollback).
 func TestUI_VisibleToolResultGetsNoEcho(t *testing.T) {
 	sc := newUIScenario(t, 100, 30)
@@ -189,7 +189,7 @@ func TestUI_ScrolledVisibleToolResultGetsNoEcho(t *testing.T) {
 // corrected geometry: a tool that completes while its widget is genuinely
 // scrolled into terminal scrollback (later content pushed it above the
 // visible band) MUST get a compact completion echo — otherwise its frozen
-// running rows read as "still ongoing" (bugs.md Issue 6).
+// running rows read as "still ongoing" (Issue 6).
 func TestUI_ScrolledOffToolResultGetsEcho(t *testing.T) {
 	sc := newUIScenario(t, 100, 20)
 

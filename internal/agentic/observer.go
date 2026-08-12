@@ -43,7 +43,7 @@ const (
 	// (the scheduler started its task). The UI flips the widget from the
 	// "waiting" state (⧖, queued behind conflicting/earlier calls) to the
 	// "elapsed" state at this moment — NOT at args-complete — so a queued
-	// call's timer measures execution only (bugs.md Bug W). It is transient
+	// call's timer measures execution only (Bug W). It is transient
 	// UI state: not sent to the model, not persisted to history.
 	EventToolStart EventType = "tool_start"
 	// EventEnd signals the end of a conversation turn.

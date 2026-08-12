@@ -371,7 +371,7 @@ func TestEnforceContextCeiling_NeverOrphansToolResults(t *testing.T) {
 }
 
 // TestEnforceContextCeiling_ReactiveCutFreesHalfWindow is the CM:13 regression
-// test (bugs.md must-fix #1): the reactive ceiling enforcer must NOT nibble —
+// test (must-fix #1): the reactive ceiling enforcer must NOT nibble —
 // dropping just enough to dip under the 95% ceiling re-busts the provider prefix
 // cache on the very next tool result (the CM:13 session: 13 busts / 58 drops).
 // Instead, a reactive cut must free ≥ReactiveSavingsPercent of the window in one

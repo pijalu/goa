@@ -75,7 +75,7 @@ func TestHandleEditSteering_NoPendingIsNoOp(t *testing.T) {
 	}
 }
 
-// TestHandleEscape_RestoresSteeringToInput covers bugs.md S1: on ESC with
+// TestHandleEscape_RestoresSteeringToInput covers S1: on ESC with
 // queued steering, the queued text is moved into the input line (not
 // discarded), the steering queue is emptied, and the pending bubble clears.
 func TestHandleEscape_RestoresSteeringToInput(t *testing.T) {

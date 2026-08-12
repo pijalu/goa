@@ -634,7 +634,7 @@ func (m *GoalMode) RemoveGoalTodo(id string, actor GoalActor) (GoalSnapshot, err
 // persistTodosLocked records the todo list to the event log and publishes a
 // state update. Caller must hold the lock. The publish is deliberate (not
 // Silent): the footer renders ⬩ pending-todo markers from goal snapshots, so
-// every todo mutation must refresh the status line (bugs.md Issue 4). The
+// every todo mutation must refresh the status line (Issue 4). The
 // update carries no Change, so no chat marker is emitted — only the bubble
 // and footer observe it.
 func (m *GoalMode) persistTodosLocked(state *goalStage, actor GoalActor) {

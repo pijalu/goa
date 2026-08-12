@@ -115,7 +115,7 @@ func (t resolvedThresholds) deferralCeiling() int {
 // pass elides down to: far enough below the deferral ceiling that one cache
 // bust buys many rounds of headroom (hysteresis), instead of re-busting the
 // hot prefix cache every round as the count-based boundary advances with
-// history growth (bugs.md prefix-cache bust loop). Sits 20 points below the
+// history growth (prefix-cache bust loop). Sits 20 points below the
 // hard ceiling (default ≈75%).
 func (t resolvedThresholds) elisionTargetPercent() int {
 	target := t.effectiveHard() - 20
@@ -127,7 +127,7 @@ func (t resolvedThresholds) elisionTargetPercent() int {
 
 // ReactiveSavingsPercent is the minimum fraction of the context window a
 // reactive ceiling pass must free, expressed as a percentage of the window
-// (bugs.md CM:13 design rule 4). The reactive enforcer (enforceContextCeiling)
+// (CM:13 design rule 4). The reactive enforcer (enforceContextCeiling)
 // is destructive: every front-cut busts the provider prefix cache. A nibble
 // that frees only enough to dip below the 95% ceiling re-busts on the very next
 // tool result (the CM:13 session showed 13 busts / 58 drops). Cutting once to
@@ -151,7 +151,7 @@ func (t resolvedThresholds) reactiveTargetPercent() int {
 	return target
 }
 
-// --- Exported derived-percent helpers (bugs.md CM:13 design rule 5) ---
+// --- Exported derived-percent helpers (CM:13 design rule 5) ---
 //
 // These let non-agentic packages (e.g. /config display in core/commands) show
 // the derived compression limits — which are otherwise hidden because they are

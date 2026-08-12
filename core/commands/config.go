@@ -724,7 +724,7 @@ func (m *configMenu) settingMultiAgent() {
 }
 
 // companionBindingSummary renders the companion provider+model binding for
-// the multi-agent settings row (bugs.md Bug B: the two are selected together
+// the multi-agent settings row (Bug B: the two are selected together
 // like /model — a model cannot be selected without its attached provider).
 func companionBindingSummary(cfg *config.Config) string {
 	model := cfg.MultiAgent.CompanionModel
@@ -741,7 +741,7 @@ func companionBindingSummary(cfg *config.Config) string {
 
 // settingCompanionModel picks the companion provider+model as ONE choice:
 // the selected model's provider is persisted alongside the model so the two
-// can never contradict (bugs.md Bug B).
+// can never contradict (Bug B).
 func (m *configMenu) settingCompanionModel() {
 	m.current = m.settingCompanionModel
 	m.selectModelPageFull("Select companion model:", m.ctx.Config.MultiAgent.CompanionModel, func(modelID, providerID string) {

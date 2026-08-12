@@ -151,7 +151,7 @@ func withNpxLookPath(t *testing.T) {
 
 // TestResolveCommand_NpxForm asserts the npx argv uses --package with the
 // declared Binary (not the bare package guess that broke pyright, vue, astro,
-// prisma and dockerfile servers — bugs.md Issue LSP).
+// prisma and dockerfile servers — Issue LSP).
 func TestResolveCommand_NpxForm(t *testing.T) {
 	withNpxLookPath(t)
 	spec := &ServerSpec{

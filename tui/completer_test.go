@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -80,10 +81,12 @@ func TestCommandCompleter_ExpandsModifiersForPartial(t *testing.T) {
 		return nil
 	})
 
-	// Typing /m should expand modifiers for matched commands
-	results := cc.Complete("/m")
+	// Typing /mo (2+ chars after /) should expand modifiers for matched
+	// commands. Sub-parameter expansion is deferred until 2 chars, so the
+	// single-char /m prefix intentionally shows base commands only.
+	results := cc.Complete("/mo")
 	if len(results) == 0 {
-		t.Fatal("expected completions for /m")
+		t.Fatal("expected completions for /mo")
 	}
 
 	// Should contain base commands AND modifier variants
@@ -101,7 +104,7 @@ func TestCommandCompleter_ExpandsModifiersForPartial(t *testing.T) {
 		t.Error("expected /mode in completions")
 	}
 	if !foundModeCoder {
-		t.Error("expected /mode:coder in completions for partial prefix /m")
+		t.Error("expected /mode:coder in completions for partial prefix /mo")
 	}
 }
 
@@ -185,7 +188,10 @@ func TestCommandCompleter_BasePresence(t *testing.T) {
 
 func TestCommandCompleter_MostUsedTier(t *testing.T) {
 	cc := newMostUsedCompleter()
-	results := cc.Complete("/")
+	// Complete with a 2-char prefix so the modifier tier is expanded (modifiers
+	// are deferred for bare "/" and 1-char prefixes); the Most Used tier must
+	// still surface the frequent /mode and /mode:coder entries.
+	results := cc.Complete("/mo")
 	if len(results) == 0 {
 		t.Fatal("expected completions")
 	}
@@ -371,6 +377,157 @@ func containsValue(results []Completion, value string) bool {
 		}
 	}
 	return false
+}
+
+// bigCompleter builds a realistic completer: many commands, each with args
+// and nested args — the shape that produced hundreds of options for bare "/".
+func bigCompleter(numCmds int) *CommandCompleter {
+	var cmds []string
+	descs := map[string]string{}
+	for i := 0; i < numCmds; i++ {
+		name := "/" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + "x"
+		cmds = append(cmds, name)
+		descs[name] = name + " desc"
+	}
+	cc := NewCommandCompleter(cmds, descs)
+	cc.SetArgCompleter(func(cmdName, argPrefix string) []Completion {
+		if argPrefix == "" {
+			return []Completion{{Value: "a1"}, {Value: "a2"}, {Value: "a3"}, {Value: "a4"}, {Value: "a5"}}
+		}
+		if !strings.Contains(argPrefix, ":") {
+			// nested level
+			return []Completion{{Value: argPrefix + ":n1"}, {Value: argPrefix + ":n2"}}
+		}
+		return nil
+	})
+	return cc
+}
+
+// Bare "/" must NOT expand every command's modifiers — it returns base
+// commands (+Most Used) only, bounded in count.
+func TestCommandCompleter_BareSlashLimitsAndDefersModifiers(t *testing.T) {
+	cc := bigCompleter(40)
+	results := cc.Complete("/")
+
+	for _, r := range results {
+		if r.Category == CatModifier {
+			t.Errorf("bare / must not propose modifiers yet, got %q", r.Value)
+		}
+		if strings.Count(r.Value, ":") > 0 {
+			t.Errorf("bare / must not propose sub-params, got %q", r.Value)
+		}
+	}
+	if len(results) > 60 {
+		t.Errorf("bare / returned %d options, want a bounded list (<=60)", len(results))
+	}
+	if len(results) == 0 {
+		t.Fatal("bare / should still propose base commands")
+	}
+}
+
+// With a single char after '/', still no sub-param expansion.
+func TestCommandCompleter_SingleCharDefersModifiers(t *testing.T) {
+	cc := bigCompleter(40)
+	results := cc.Complete("/a")
+	for _, r := range results {
+		if strings.Contains(r.Value, ":") {
+			t.Errorf("/a (1 char) must not propose sub-params yet, got %q", r.Value)
+		}
+	}
+	if !containsValue(results, "/aax") {
+		t.Errorf("/a should still propose matching base commands, got %v", results[:min(3, len(results))])
+	}
+}
+
+// After 2+ chars, sub-params for the matched commands appear; a near-exact
+// command prefix surfaces ITS sub-params (the /goal case).
+func TestCommandCompleter_TwoCharsExpandsModifiers(t *testing.T) {
+	cc := bigCompleter(40)
+	results := cc.Complete("/aax")
+	if !containsValue(results, "/aax:a1") {
+		t.Errorf("/aax (exact command) should propose its sub-params, got %v", results[:min(5, len(results))])
+	}
+}
+
+// A frequently-used command must propose its sub-parameters.
+// Simulates /goal with its real subcommand set.
+func TestCommandCompleter_GoalProposesSubParams(t *testing.T) {
+	cc := newGoalCompleter()
+
+	results := cc.Complete("/goal")
+	for _, want := range []string{"/goal:status", "/goal:cancel", "/goal:complete", "/goal:pause", "/goal:list"} {
+		if !containsValue(results, want) {
+			t.Errorf("/goal should propose sub-param %q, got %v", want, results)
+		}
+	}
+
+	// Nested: /goal:cancel expands to its scopes.
+	results = cc.Complete("/goal:cancel")
+	if !containsValue(results, "/goal:cancel:current") {
+		t.Errorf("/goal:cancel should propose nested scopes, got %v", results)
+	}
+}
+
+// newGoalCompleter builds a completer whose /goal arg completer faithfully
+// replicates the real /goal CompleteArgs router (goal.go): split on the first
+// colon; a known sub routes to its scope completer; otherwise a non-nested
+// partial filters the level-1 subcommand list.
+func newGoalCompleter() *CommandCompleter {
+	cmds := []string{"/goal", "/goals", "/help"}
+	descs := map[string]string{"/goal": "Manage goal", "/goals": "List goals", "/help": "Help"}
+	cc := NewCommandCompleter(cmds, descs)
+	goalSubs := []Completion{
+		{Value: "status", Description: "show goal status"},
+		{Value: "cancel", Description: "cancel a goal"},
+		{Value: "complete", Description: "mark complete"},
+		{Value: "pause", Description: "pause the goal"},
+		{Value: "list", Description: "list goals"},
+	}
+	cancelScopes := []Completion{{Value: "cancel:current"}, {Value: "cancel:all"}}
+	cc.SetArgCompleter(func(cmdName, argPrefix string) []Completion {
+		return goalArgCompletions(cmdName, argPrefix, goalSubs, cancelScopes)
+	})
+	return cc
+}
+
+func goalArgCompletions(cmdName, argPrefix string, goalSubs, cancelScopes []Completion) []Completion {
+	if cmdName != "/goal" {
+		return nil
+	}
+	if idx := strings.Index(argPrefix, ":"); idx >= 0 {
+		return goalNestedCompletions(argPrefix, idx, cancelScopes)
+	}
+	var out []Completion
+	for _, sc := range goalSubs {
+		if argPrefix == "" || strings.HasPrefix(sc.Value, argPrefix) {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+func goalNestedCompletions(argPrefix string, idx int, cancelScopes []Completion) []Completion {
+	if argPrefix[:idx] != "cancel" {
+		return nil
+	}
+	rest := argPrefix[idx+1:]
+	var out []Completion
+	for _, sc := range cancelScopes {
+		if rest == "" || strings.HasPrefix(strings.TrimPrefix(sc.Value, "cancel:"), rest) {
+			out = append(out, sc)
+		}
+	}
+	return out
+}
+
+// The total option count is always bounded, even mid-prefix.
+func TestCommandCompleter_OptionCountBounded(t *testing.T) {
+	cc := bigCompleter(40)
+	for _, prefix := range []string{"/", "/a", "/aa", "/aax"} {
+		if n := len(cc.Complete(prefix)); n > 100 {
+			t.Errorf("Complete(%q) returned %d options, want <=100", prefix, n)
+		}
+	}
 }
 
 // TestCommandCompleter_SetCommandsLateRegistration reproduces the /quota bug:

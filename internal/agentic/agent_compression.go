@@ -21,7 +21,7 @@ const compactSummaryRequestPrompt = "Summarize our conversation so far, preservi
 // elidedToolCallArguments is the in-history marker written by elideToolMessages
 // into the arguments of elided assistant tool calls. It is NOT valid JSON and
 // must never reach a provider: migrateMessage converts elided calls to a
-// plain-text note during provider-bound serialization (bugs.md: models imitate
+// plain-text note during provider-bound serialization (models imitate
 // the placeholder as call arguments, and strict providers 400 requests whose
 // function.arguments are not valid JSON — which broke /compress:summarize).
 const elidedToolCallArguments = "[elided]"
@@ -514,7 +514,7 @@ func (a *Agent) compressToolElision(force bool) compactionResult {
 	if escalate {
 		// The elidable payload could not meet the hysteresis budget, so this
 		// hot-cache bust would repeat next round. Drop old turns instead so
-		// the bust buys real headroom (bugs.md prefix-cache bust loop).
+		// the bust buys real headroom (prefix-cache bust loop).
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Info, "tool_elision budget unmet: escalating to selective compression")
 		}
@@ -550,7 +550,7 @@ func forcedElisionBoundary(boundary, histLen int) int {
 // oldest-first by token budget until the estimated usage drops to the
 // elision target (hard−20), so one cache bust buys many rounds of headroom
 // instead of re-busting every round as the count boundary advances with
-// history growth (bugs.md prefix-cache bust loop: the count boundary frees
+// history growth (prefix-cache bust loop: the count boundary frees
 // only the ~2 messages that crossed it per round while usage stays at the
 // ceiling, so the bust repeats every round and never converges). The budget
 // walk may extend past the count boundary into the preserve window but never

@@ -244,7 +244,7 @@ func TestGoalQueueStore_CompletionCriterion(t *testing.T) {
 }
 
 // TestGoalQueueStore_FreshContext verifies a queued goal carries its per-goal
-// clean-context flag through Append/persist/Read (bugs.md: goal queue +
+// clean-context flag through Append/persist/Read (goal queue +
 // per-goal clean-context flag).
 func TestGoalQueueStore_FreshContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "q.json")

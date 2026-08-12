@@ -285,9 +285,9 @@ func TestHandleToolCall_FooterBusyIndicator(t *testing.T) {
 }
 
 // TestHandleToolCall_ToolWidgetShowsRunningDot verifies the running tool
-// widget shows the static amber on-going dot (bugs.md: the spinner must not
+// widget shows the static amber on-going dot (the spinner must not
 // be used for the tool on-going marker — keep the yellow dot). The widget
-// goes Running on EventToolStart (true execution start, bugs.md Bug W).
+// goes Running on EventToolStart (true execution start, Bug W).
 func TestHandleToolCall_ToolWidgetShowsRunningSpinner(t *testing.T) {
 	_, def := spinner.Default()
 	tui.SetSpinner(def)
@@ -601,7 +601,7 @@ func TestHandleToolCall_IsDeltaCreatesPendingWidget(t *testing.T) {
 // TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning verifies the
 // widget lifecycle across a streamed call: Pending while args stream, still
 // Pending (waiting, ⧖) once args complete, and Running only on the
-// scheduler's EventToolStart (true execution start — bugs.md Bug W; the
+// scheduler's EventToolStart (true execution start — Bug W; the
 // final call event no longer pre-stamps Running).
 func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
 	app := New(testSubsystems())
@@ -648,7 +648,7 @@ func TestHandleToolCall_IsDeltaThenFinal_TransitionsToRunning(t *testing.T) {
 
 // TestHandleToolCall_NonDeltaCreatesWaitingWidget verifies a final (non-delta)
 // tool call creates the widget in Pending/waiting state — Running happens on
-// EventToolStart (bugs.md Bug W: stamping Running at args-complete made every
+// EventToolStart (Bug W: stamping Running at args-complete made every
 // queued call display a fake ticking elapsed).
 func TestHandleToolCall_NonDeltaCreatesWaitingWidget(t *testing.T) {
 	app := New(testSubsystems())

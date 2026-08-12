@@ -5,7 +5,7 @@ package agentic
 import "testing"
 
 // TestAgent_EmitContextReset verifies the fresh-context reset signal
-// (bugs.md: fresh-context goal start must not count as a cache miss):
+// (fresh-context goal start must not count as a cache miss):
 // exactly one EventContextReset reaches observers so downstream stats can
 // re-arm their per-conversation detector baselines.
 func TestAgent_EmitContextReset(t *testing.T) {

@@ -20,7 +20,7 @@ import (
 
 // TodoListTool manages an in-session todo list.
 //
-// Goal linkage (bugs.md): when a goal is ACTIVE the tool operates on the
+// Goal linkage: when a goal is ACTIVE the tool operates on the
 // goal's linked todo list instead of the session list — the goal starts with
 // a blank list, items added during it are contained by it (the stall
 // watchdog fingerprints their transitions and the completion reminder

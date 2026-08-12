@@ -97,7 +97,7 @@ func TestConfigMenu_RootShowsItems(t *testing.T) {
 
 // TestConfigMenu_SkillsRowIsSubmenuHint verifies the top-level Skills row
 // does not read like a binary state toggle ("Skills inline"): it must show a
-// neutral submenu hint with per-source on-counts (bugs.md).
+// neutral submenu hint with per-source on-counts.
 func TestConfigMenu_SkillsRowIsSubmenuHint(t *testing.T) {
 	cfg := &config.Config{
 		Skills: config.SkillsConfig{ExecutionMode: "inline"},
@@ -411,7 +411,7 @@ func TestConfigMenu_MultiAgentSubMenu(t *testing.T) {
 	if sr.title != "Multi-agent settings:" {
 		t.Fatalf("expected multi-agent menu, got %q", sr.title)
 	}
-	// bugs.md Bug B: companion provider+model is ONE row (selected together
+	// Bug B: companion provider+model is ONE row (selected together
 	// like /model); the separate companion_provider row is gone.
 	if len(sr.options) != 2 {
 		t.Fatalf("expected 2 multi-agent options, got %d", len(sr.options))
@@ -500,7 +500,7 @@ func TestConfiguredProviderItems_OnlyConfigured(t *testing.T) {
 	}
 }
 
-// TestConfigMenu_CompanionModelSetsProviderAndModel is bugs.md Bug B: the
+// TestConfigMenu_CompanionModelSetsProviderAndModel is Bug B: the
 // companion model picker must bind provider+model atomically (like /model)
 // instead of exposing a separate provider row that can contradict the model.
 func TestConfigMenu_CompanionModelSetsProviderAndModel(t *testing.T) {
@@ -924,7 +924,7 @@ func TestCompressionTriggerValue_LegacyAliasWins(t *testing.T) {
 
 // TestSetTriggerPercentClearLegacy verifies that explicitly setting the tiered
 // trigger_percent clears the deprecated legacy alias so the edit actually takes
-// effect (bugs.md Issue 2): without the clear, a config still carrying
+// effect (Issue 2): without the clear, a config still carrying
 // threshold_percent would keep shadowing the new tiered value on display
 // (compressionTriggerValue) and at runtime (resolveAgenticThresholds).
 func TestSetTriggerPercentClearLegacy(t *testing.T) {
@@ -954,7 +954,7 @@ func TestSetTriggerPercentClearLegacy(t *testing.T) {
 }
 
 // TestConfigMenu_TriggerEditReflectsWithLegacyAlias is the menu-level regression
-// for bugs.md Issue 2: with a stale legacy alias present, choosing a new trigger
+// for Issue 2: with a stale legacy alias present, choosing a new trigger
 // threshold in the menu must update both the tiered field and the displayed value.
 func TestConfigMenu_TriggerEditReflectsWithLegacyAlias(t *testing.T) {
 	cfg := &config.Config{
@@ -1175,7 +1175,7 @@ func TestDisabledThresholdLabel(t *testing.T) {
 
 // TestConfigMenu_OrchestratorSaveIsSectionScoped verifies the orchestrator
 // settings flow persists only the orchestrator section to ~/.goa/config.yaml
-// (bugs.md: Save full-dump baked merged project/embedded values into the home
+// (Save full-dump baked merged project/embedded values into the home
 // file). A pre-existing unrelated home key must survive untouched, and
 // unrelated merged state (e.g. skills from the embedded layer) must not leak
 // into the home file.
@@ -1216,7 +1216,7 @@ func TestConfigMenu_OrchestratorSaveIsSectionScoped(t *testing.T) {
 // TestConfigMenu_ModelSaveIsFieldScoped verifies the model-manager flow
 // (add/edit/remove model) persists via SaveHomeProvidersAndModels — provider
 // and model fields update in the home file, but unrelated merged state is
-// not dumped (bugs.md: Save full-dump contamination).
+// not dumped (Save full-dump contamination).
 func TestConfigMenu_ModelSaveIsFieldScoped(t *testing.T) {
 	cfg := &config.Config{
 		ActiveProvider: "p1",

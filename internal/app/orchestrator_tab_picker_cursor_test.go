@@ -11,7 +11,7 @@ import (
 )
 
 // TestOrchestratorTabPicker_HidesCursor is the RED regression for the bug
-// reported in bugs.md: when the switch-tab overlay is open, the hardware cursor
+// reported in when the switch-tab overlay is open, the hardware cursor
 // should not be visible at the underlying editor position (the user saw it
 // inside the switch tab list). A capturing overlay without a cursor should hide
 // the base editor's cursor.

@@ -156,7 +156,7 @@ func (a *Agent) cacheColdWithThreshold(threshold time.Duration) bool {
 // stale mid-turn — it advances only at turn END, so during a long single turn
 // the idle-gap logic would flip the gate cold while rounds still complete
 // every few seconds, busting a provably hot cache BELOW the deferral ceiling
-// (bugs.md prefix-cache bust loop companion defect). The caller must hold a.mu.
+// (prefix-cache bust loop companion defect). The caller must hold a.mu.
 func (a *Agent) lastProviderActivityLocked() time.Time {
 	last := a.lastTurnEnd
 	if a.lastRoundActivity.After(last) {

@@ -144,7 +144,7 @@ func TestProviderCommand_PickerAddRunsWizard(t *testing.T) {
 }
 
 // TestProviderCommand_PickerKeepsDefaultKeymap is a regression guard for the
-// /goal:manage selector rework (bugs.md goal manager): the /provider picker
+// /goal:manage selector rework (goal manager): the /provider picker
 // must keep the DEFAULT selector bindings — '+' = add, '-' = delete — and
 // must not request the per-instance reorder keymap.
 func TestProviderCommand_PickerKeepsDefaultKeymap(t *testing.T) {

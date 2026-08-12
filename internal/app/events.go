@@ -934,7 +934,7 @@ func (a *App) handleGoalUpdate(update *event.GoalUpdate) {
 // current state at startup. The durable goal store is replayed before the
 // TUI exists, so no GoalUpdate bus event covers an already-persisted goal —
 // without this seed the bubble stays hidden until the next live goal event
-// (bugs.md Issue 1).
+// (Issue 1).
 func (a *App) seedGoalUI() {
 	if a.subs.goalManager == nil {
 		return
@@ -955,7 +955,7 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	}
 	// SetGoalStatus is the explicit writer of the footer's goal fields
 	// (routine SetData rebuilds preserve them — a stats tick must never clear
-	// the ◈ marker, bugs.md Issues 3-4). The footer carries no other goal
+	// the ◈ marker, Issues 3-4). The footer carries no other goal
 	// detail: objective/status/todo titles are the goal bubble's job.
 	if update.Snapshot == nil {
 		a.subs.footer.SetGoalStatus("", 0)

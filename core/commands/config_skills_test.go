@@ -154,7 +154,7 @@ func TestConfigMenu_SkillToggleEmbeddedPersistsToHome(t *testing.T) {
 	}
 }
 
-// TestConfigMenu_SkillToggleSurvivesReload reproduces bugs.md "Skill
+// TestConfigMenu_SkillToggleSurvivesReload reproduces "Skill
 // enable/disable state is lost / unstable across sessions": a toggle must
 // round-trip through the cascade — persist, then a fresh load (simulated
 // restart) must reflect the same enabled state.
@@ -225,7 +225,7 @@ func TestConfigMenu_SkillToggleSurvivesReload(t *testing.T) {
 // unstable-across-sessions report for allow-list mode: with skills.enabled
 // set to a single skill, disabling then re-enabling it must restore the
 // allow-list — otherwise the merged config flips from "only this skill" to
-// "all skills on" (bugs.md: enabled/disabled state is lost/unstable).
+// "all skills on" (enabled/disabled state is lost/unstable).
 func TestConfigMenu_SkillAllowListSurvivesDisableReenable(t *testing.T) {
 	cfg := &config.Config{Skills: config.SkillsConfig{Enabled: []string{"refactor"}}}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
@@ -556,7 +556,7 @@ func TestSkillSourceForToggle(t *testing.T) {
 // TestSetSkillEnabled verifies the in-memory list transitions for toggles,
 // including allowlist (Enabled non-empty) semantics.
 // TestSetSkillEnabled_EmbeddedRouting verifies the embedded-scoped toggle
-// routing (bugs.md: embedded default-off except telegram): enabling a
+// routing (embedded default-off except telegram): enabling a
 // default-off embedded skill opts it in via EmbeddedEnabled WITHOUT touching
 // the global Enabled allowlist; disabling removes the opt-in; disabling the
 // default-ON telegram writes an explicit Disabled entry.
@@ -629,7 +629,7 @@ func TestSetSkillEnabled(t *testing.T) {
 	}
 }
 
-// TestSkillToggle_CrossSessionConsistency is the regression test for bugs.md
+// TestSkillToggle_CrossSessionConsistency is the regression test for
 // must-fix #5 (skills enable/disable inconsistent across sessions): after any
 // sequence of toggles in the running session (which mutate the in-memory config
 // and persist per-source partitions), a FRESH session — built from a clean

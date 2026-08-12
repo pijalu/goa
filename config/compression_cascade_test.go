@@ -12,7 +12,7 @@ import (
 
 // TestDeepMergeContextCompressionStrategies verifies that the per-layer
 // strategies block merges field-wise across cascade layers instead of being
-// silently dropped (bugs.md: strategies never merged).
+// silently dropped (strategies never merged).
 func TestDeepMergeContextCompressionStrategies(t *testing.T) {
 	base := &Config{ContextCompression: ContextCompressionConfig{
 		Enabled:    boolPtr(true),
@@ -38,7 +38,7 @@ func TestDeepMergeContextCompressionStrategies(t *testing.T) {
 
 // TestDeepMergeContextCompressionMicroCompactionFieldWise verifies that
 // micro_compaction merges field-wise: a higher layer setting one key does not
-// reset the others (bugs.md: micro_compaction replaced wholesale).
+// reset the others (micro_compaction replaced wholesale).
 func TestDeepMergeContextCompressionMicroCompactionFieldWise(t *testing.T) {
 	base := &Config{ContextCompression: ContextCompressionConfig{
 		Enabled:         boolPtr(true),
@@ -65,7 +65,7 @@ func TestDeepMergeContextCompressionMicroCompactionFieldWise(t *testing.T) {
 // TestDeepMergeContextCompressionEnabledTriState verifies that an explicit
 // enabled: false in a higher cascade layer disables compression, while a
 // layer that leaves enabled unset preserves the lower layer's value
-// (bugs.md: enabled: false ignored).
+// (enabled: false ignored).
 func TestDeepMergeContextCompressionEnabledTriState(t *testing.T) {
 	on := true
 	off := false
@@ -134,7 +134,7 @@ micro_compaction: {}
 
 // TestCascadeContextCompressionEnabledFalseDisables verifies that
 // context_compression.enabled: false in the home file disables compression
-// on load (bugs.md: enabled: false was a no-op).
+// on load (enabled: false was a no-op).
 func TestCascadeContextCompressionEnabledFalseDisables(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

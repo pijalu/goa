@@ -14,7 +14,7 @@ import (
 )
 
 // TestUI_GoalCompletion_MultiLineObjective is the filmstrip validation of
-// bugs.md "Goal completion screen corruption": a completion whose objective
+// Goal completion screen corruption: a completion whose objective
 // contains embedded newlines must render every row newline-free, within
 // width, and left-aligned — the pre-fix renderer let the continuation print
 // at the column where the first line ended (the misaligned "The goal ..."
@@ -67,7 +67,7 @@ func TestUI_GoalCompletion_MultiLineObjective(t *testing.T) {
 	}
 }
 
-// TestUI_GoalBubble_MultiLineObjective validates bugs.md "Corruption on goal
+// TestUI_GoalBubble_MultiLineObjective validates "Corruption on goal
 // change": the bubble above the input must render a multi-line objective as
 // proper rows (no embedded newlines), capped at 3 body lines between
 // separators.
@@ -122,7 +122,7 @@ func TestUI_GoalBubble_MultiLineObjective(t *testing.T) {
 }
 
 // TestUI_StreamingWithChromeChanges validates the compositor perf fix
-// (bugs.md "Slow performance"): streaming chunks while the steering bubble
+// (Slow performance): streaming chunks while the steering bubble
 // appears and clears must render without panic, keep input/footer pinned at
 // the bottom, and never wipe scrollback on chrome-only changes.
 func TestUI_StreamingWithChromeChanges(t *testing.T) {

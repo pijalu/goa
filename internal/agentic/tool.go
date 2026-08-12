@@ -66,7 +66,7 @@ type ContextTool interface {
 // needs BOTH the caller's context (progress emission, cancellation) AND the
 // ToolResult control signals (StopTurn). It is checked FIRST, before
 // ContextTool and ResultTool: without it, a tool implementing ContextTool
-// would silently lose its StopTurn signal (bugs.md Bug A: goal completions
+// would silently lose its StopTurn signal (Bug A: goal completions
 // must still stop the turn while announcing the verify command live).
 type ContextResultTool interface {
 	Tool

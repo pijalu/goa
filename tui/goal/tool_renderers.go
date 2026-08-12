@@ -13,7 +13,7 @@ import (
 	"github.com/pijalu/goa/internal/tuirender"
 )
 
-// GoalRenderer renders the unified `goal` tool calls and results (bugs.md S2).
+// GoalRenderer renders the unified `goal` tool calls and results (S2).
 // Call headers are action-specific past-tense one-liners carrying the call's
 // key argument (todo title, goal id, …); results decode the tool's per-action
 // JSON shapes into compact summaries so the timeline shows WHAT the goal tool
@@ -189,7 +189,7 @@ func (r GoalRenderer) PreviewLines() int { return 3 }
 func (r GoalRenderer) HideResultWhenCollapsed() bool { return false }
 
 // renderGoalSummary renders the goal tool result. Plain-text results (e.g.
-// "Goal marked complete." followed by the verification evidence — bugs.md
+// "Goal marked complete." followed by the verification evidence —
 // Bug A) pass through unchanged so the command, timeout and output tail stay
 // visible. JSON results dispatch on their shape: each action returns a
 // different payload (todo / goal / active+queued / cancelled / queued) and

@@ -592,7 +592,7 @@ type ___testErr string
 func (e ___testErr) Error() string { return string(e) }
 
 // ---------------------------------------------------------------------------
-// Elided tool-call serialization (bugs.md: "Model imitates the [elided]
+// Elided tool-call serialization ("Model imitates the [elided]
 // tool-call placeholder" and "/compress:summarize rejected by provider:
 // elided tool-call arguments are not valid JSON" — shared root cause).
 // ---------------------------------------------------------------------------
@@ -869,7 +869,7 @@ func TestSummarizeHistoryWithElidedPairs(t *testing.T) {
 	}
 }
 
-// --- bugs.md "Provider prefix-cache bust loop" (CM:13) regression tests ---
+// --- Provider prefix-cache bust loop:(CM:13) regression tests ---
 
 // appendElisionPair appends one assistant tool call plus its tool result of
 // the given size — the session shape that drives elision (a long single turn

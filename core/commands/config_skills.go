@@ -92,7 +92,7 @@ func buildSkillToggleItems(ctx core.Context, source string) []tui.SelectorItem {
 
 // skillSummariesForSource filters the registry's skills by origin for the
 // toggle menu. For source == "embedded" it enumerates EVERY discoverable
-// embedded skill (including default-off ones the loader skipped, bugs.md:
+// embedded skill (including default-off ones the loader skipped,
 // embedded default-off except telegram) so the user can re-enable them from
 // the menu; the agent still never sees them until enabled. For file sources
 // it keeps the loaded file-based skills.
@@ -155,7 +155,7 @@ func skillEnabled(cfg *config.Config, name string, reg core.SkillRegistry) bool 
 
 // setSkillEnabled updates the in-memory skills lists for a toggle.
 //
-// Embedded skills (bugs.md: default-off except telegram) are routed to the
+// Embedded skills (default-off except telegram) are routed to the
 // embedded-scoped skills.embedded_enabled list: enabling opts the skill back
 // in WITHOUT activating the global Enabled allowlist (which would suppress
 // file-based skills), and disabling removes it from that opt-in list so it
@@ -168,7 +168,7 @@ func skillEnabled(cfg *config.Config, name string, reg core.SkillRegistry) bool 
 // the default all-on state stays empty); disabling removes it from Enabled
 // and adds it to Disabled — except when the name is the last allowlist
 // member: removing it would collapse the allowlist to empty, which loads as
-// "all on" and silently destroys the user's allowlist mode (bugs.md: a
+// "all on" and silently destroys the user's allowlist mode (a
 // disable/re-enable round trip flipped every other skill on). A name in both
 // lists is disabled (explicit off wins), so keeping the membership is inert
 // until the skill is re-enabled.
@@ -389,7 +389,7 @@ func persistSkillToggle(ctx core.Context, source string, enabling bool) error {
 
 // saveSkillListsToLayer writes the skills lists to the home (global) or
 // project config layer, deleting keys when the lists are empty. The
-// embedded_enabled list (embedded-scoped opt-in, bugs.md) is written ONLY to
+// embedded_enabled list (embedded-scoped opt-in) is written ONLY to
 // the home layer: embedded skills are global, so their opt-in never belongs
 // to a project config.
 func saveSkillListsToLayer(ctx core.Context, home bool, enabled, disabled, embeddedEnabled []string) error {

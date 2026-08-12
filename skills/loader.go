@@ -145,7 +145,7 @@ type SkillRegistry struct {
 	disabled     map[string]bool
 	enabled      map[string]bool // non-nil → allowlist; only listed skills load
 	// embeddedDefaultDisabled lists embedded skills that are OFF by default
-	// (bugs.md: all embedded skills except telegram). A default-off skill
+	// (all embedded skills except telegram). A default-off skill
 	// loads only when the user explicitly opts it back in via the embedded
 	// opt-in list (embeddedEnabled) or the global Enabled allowlist. It
 	// applies ONLY to the embedded source — home/project/plugin file skills
@@ -532,7 +532,7 @@ func (r *SkillRegistry) IsEmbeddedDefaultOff(name string) bool {
 
 // DefaultOnEmbeddedSkill is the single agent-facing embedded skill that stays
 // ON by default; every other agent-facing embedded skill is OFF by default
-// (bugs.md).
+//
 const DefaultOnEmbeddedSkill = "telegram"
 
 // DefaultEmbeddedOffNames returns the names of all embedded skills that are

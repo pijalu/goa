@@ -15,7 +15,7 @@ import (
 // appearing or clearing) while the transcript scrolls used to double-write
 // rows (repaintWindow redrawing the row emitSteadyScroll just emitted).
 //
-// Invariant (updated for bugs.md "Slow performance on very large
+// Invariant (updated for "Slow performance on very large
 // conversations"): chrome changes no longer wipe scrollback (\x1b[3J) — the
 // old geometry reset destroyed the user's terminal history AND re-emitted the
 // whole transcript per keystroke. The incremental path keeps a small,

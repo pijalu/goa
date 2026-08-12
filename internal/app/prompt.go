@@ -334,7 +334,7 @@ func showStartupBanner(subs *subsystems, chat *tui.ChatViewport) {
 	}
 
 	// LSP (gopls) availability — surface start failures instead of staying
-	// silent so the user knows Go diagnostics are unavailable (bugs.md L1).
+	// silent so the user knows Go diagnostics are unavailable (L1).
 	showLSPBanner(subs, chat)
 }
 
@@ -426,7 +426,7 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 	}
 	// NOTE: no synchronous RefreshLocalContextWindow here — that performs up
 	// to 3 HTTP probes (5s timeout each) against the local server and would
-	// block startup before the first frame (bugs.md Start-up: no blocking
+	// block startup before the first frame (Start-up: no blocking
 	// HTTP/API on the startup path). The real loaded context length is
 	// re-detected asynchronously after the first response delta via
 	// AgentManager.maybeRefreshContextWindow, which updates the agent and

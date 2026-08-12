@@ -70,7 +70,7 @@ func goalToolsEnabled(cfg *config.Config, opts RuntimeOptions) bool {
 }
 
 // TestRegisterGoalTools_Directly verifies the helper registers the single
-// unified goal tool (bugs.md S2: one `goal` tool, always registered).
+// unified goal tool (S2: one `goal` tool, always registered).
 func TestRegisterGoalTools_Directly(t *testing.T) {
 	dir := t.TempDir()
 	gm := core.NewGoalManager(dir)

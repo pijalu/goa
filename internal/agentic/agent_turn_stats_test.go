@@ -13,7 +13,7 @@ import (
 // opens when the stream starts — not on the first mapped event. Providers
 // whose reasoning streams as unmapped deltas (e.g. z.ai GLM reasoning_content)
 // otherwise measure only the short content tail, producing absurd tok/s
-// (bugs.md z.ai Issue 7: 212864.6 tok/s for a 4.1K-token turn).
+// (z.ai Issue 7: 212864.6 tok/s for a 4.1K-token turn).
 func TestGenTiming_StartsAtStreamStart(t *testing.T) {
 	a := &Agent{}
 

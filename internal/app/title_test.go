@@ -77,7 +77,7 @@ func hexDef() spinner.Definition {
 	return spinner.Definition{Interval: 50, Frames: []string{"⬡", "⬢", "⬣", "⬢"}}
 }
 
-// TestTitleController_BootShowsBrand covers bugs.md "Title bar startup
+// TestTitleController_BootShowsBrand covers "Title bar startup
 // sequence": the boot title g⬡a is emitted as early as construction.
 func TestTitleController_BootShowsBrand(t *testing.T) {
 	sink := &titleSink{}
@@ -141,7 +141,7 @@ func TestTitleController_StartupDoneOnce(t *testing.T) {
 	}
 }
 
-// TestTitleController_WorkingAnimatesWithFrames covers bugs.md "Animated
+// TestTitleController_WorkingAnimatesWithFrames covers "Animated
 // title bar while working": in normal mode, working=true spins the title with
 // the spinner frames, preserving the contextual suffix; idle restores base.
 func TestTitleController_WorkingAnimatesWithFrames(t *testing.T) {
@@ -172,7 +172,7 @@ func TestTitleController_WorkingAnimatesWithFrames(t *testing.T) {
 }
 
 // TestTitleController_AnimatedOffStaysStatic verifies the config-off path:
-// working never animates the title (bugs.md: configurable, default on).
+// working never animates the title (configurable, default on).
 func TestTitleController_AnimatedOffStaysStatic(t *testing.T) {
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), false) // animated = false
@@ -224,7 +224,7 @@ func TestTitleController_WorkingBeforeStartupDone(t *testing.T) {
 	}
 }
 
-// TestTitleSpinnerDefFor_DefaultsToHexagonBlack covers bugs.md "hexagon-black
+// TestTitleSpinnerDefFor_DefaultsToHexagonBlack covers "hexagon-black
 // as default for terminal title": with no explicit spinner configured (or the
 // default hexagon status spinner), the title animation uses hexagon-black.
 func TestTitleSpinnerDefFor_DefaultsToHexagonBlack(t *testing.T) {
@@ -259,7 +259,7 @@ func TestTitleSpinnerDefFor_NoneDisables(t *testing.T) {
 }
 
 // TestTitleStartupHook_FiresOnBothLoadsDone is a filmstrip-style validation
-// of the startup sequence (bugs.md "startup sequence not working"): the boot
+// of the startup sequence (startup sequence not working): the boot
 // brand shows first, then when BOTH the plugin and history loads complete the
 // transition plays (g⬡a → g⬡ → ⬡) and the title settles on the base. It
 // proves the explicit startup-done hook drives the sequence end-to-end.

@@ -13,7 +13,7 @@ import (
 )
 
 // TestSteeringChrome_Filmstrip_IsChromeNotTranscript validates the steering
-// redesign (bugs.md "/quota request during streaming corrupts the TUI"):
+// redesign (/quota request during streaming corrupts the TUI):
 //
 //   - a queued steering message renders as a pinned bottom-chrome bubble, NOT
 //     as a chat transcript entry (the transcript stays append-only);

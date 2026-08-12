@@ -13,7 +13,7 @@ import (
 
 // TestProcessTerminal_TermLog verifies GOA_TERM_LOG captures the terminal
 // output stream to a file (the diagnostic for real-terminal rendering bugs,
-// bugs.md Issue 20). termLog.once is package-global, so this is the only
+// Issue 20). termLog.once is package-global, so this is the only
 // test that can exercise the capture — keep it that way.
 func TestProcessTerminal_TermLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "term.log")

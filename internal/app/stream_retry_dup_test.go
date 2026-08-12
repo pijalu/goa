@@ -9,7 +9,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestStreamRetryDoesNotDuplicateAssistantText reproduces bugs.md Issue 4: when a
+// TestStreamRetryDoesNotDuplicateAssistantText reproduces Issue 4: when a
 // stream error triggers the agent's retry path, the agent resets its contentBuf
 // and re-streams the SAME response from the start, while a system-notification
 // "Reconnecting…" message is shown. The chat viewport must NOT end up with the

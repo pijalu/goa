@@ -85,7 +85,7 @@ func modelsServer(t *testing.T, ids []string, fail bool) *httptest.Server {
 	}))
 }
 
-// TestModelValidator_TriState pins the bugs.md "Model list" fix: validity is a
+// TestModelValidator_TriState pins the Model list:fix: validity is a
 // TRI-STATE — unknown (never probed / probe failed), valid (provider lists the
 // model), invalid (provider answered but does not list the model). A probe
 // ERROR must never mark a model invalid (transient local outages, e.g. LM

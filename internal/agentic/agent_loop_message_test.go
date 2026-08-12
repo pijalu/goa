@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// Regression tests for the runaway-loop TUI visibility bug (bugs.md
+// Regression tests for the runaway-loop TUI visibility bug
 // 2026-08-03): the guardrail stopped a session without ever showing WHAT
 // was judged a loop, so the user could not tell a genuine loop from a false
 // positive. Every guardrail message — the soft stream-loop warning, the

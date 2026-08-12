@@ -47,7 +47,7 @@ func newVerifyingTool(t *testing.T, outcome goal.VerifyOutcome) (*GoalTool, *goa
 	return tool, mode
 }
 
-// TestGoalTool_Complete_AnnouncesAndReportsVerification is the bugs.md Bug A
+// TestGoalTool_Complete_AnnouncesAndReportsVerification is the Bug A
 // regression: the confirming completion ANNOUNCES the verify command live
 // (exact command + timeout) and the result carries the full evidence block
 // (command, elapsed, timeout, output tail) — the user can follow exactly what

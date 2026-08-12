@@ -82,7 +82,7 @@ func preserveFooterTeam(prev, data FooterData) FooterData {
 // knowledge. updateGoalFooter/SetGoalStatus is the sole writer of goal
 // state, so the preserved value never goes stale: an explicit clear goes
 // through SetGoalStatus, mirroring how SetMinorMode bypasses preservation
-// for its own field (bugs.md Issues 3-4: the ◈ marker must not flicker off
+// for its own field (Issues 3-4: the ◈ marker must not flicker off
 // on every stats tick).
 func preserveFooterGoal(prev, data FooterData) FooterData {
 	if data.GoalStatus == "" {

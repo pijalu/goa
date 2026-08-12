@@ -80,7 +80,7 @@ func TestEphemeralSystemMessage_TagNotSentToModel(t *testing.T) {
 
 // TestEphemeralSystemMessage_InModelHistoryAndUserBubble verifies that an
 // ephemeral host control nudge reaches the model's history AND is surfaced to
-// the user as a durable system-notification chat bubble (bugs.md: every nudge
+// the user as a durable system-notification chat bubble (every nudge
 // must be user-visible and part of chat history).
 func TestEphemeralSystemMessage_InModelHistoryAndUserBubble(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
@@ -112,7 +112,7 @@ func TestEphemeralSystemMessage_InModelHistoryAndUserBubble(t *testing.T) {
 
 // TestConsecutiveToolRounds_LimitReported verifies checkConsecutiveToolRounds
 // reports true exactly when the silent-round streak reaches the configured limit
-// (bugs.md Issue 13: convergence is now driven by this signal, not a self-resetting
+// (Issue 13: convergence is now driven by this signal, not a self-resetting
 // nudge, so the caller can run a recovery stream in the same round).
 func TestConsecutiveToolRounds_LimitReported(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 2})
@@ -212,7 +212,7 @@ func TestTrackToolCallingRound_LimitReachedWithoutThinking(t *testing.T) {
 	}
 }
 
-// TestTrackToolCallingRound_TurnReasoningResetsStreak is the bugs.md Issue 13
+// TestTrackToolCallingRound_TurnReasoningResetsStreak is the Issue 13
 // regression test: a model that reasoned (thinking/content) in an EARLIER round
 // of the same turn must NOT have its later message-less tool rounds counted as
 // silent — the streak resets on turn-level reasoning, not just same-round.
@@ -237,7 +237,7 @@ func TestTrackToolCallingRound_TurnReasoningResetsStreak(t *testing.T) {
 // control nudge ("[goa-system]…") is surfaced to the user as a durable
 // system-notification CONTENT event (rendered as a persistent chat bubble and
 // part of chat history) carrying the FULL nudge text — not a transient progress
-// line (bugs.md: the user MUST be aware of every nudge sent to the model).
+// line (the user MUST be aware of every nudge sent to the model).
 func TestInjectEphemeralSystemMessage_EmitsVisibleBubble(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
 	obs := &mockEventObserver{}

@@ -230,12 +230,12 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	swarmState := swarm.NewState()
 	taskBus := tasks.NewBus(tasks.NopStore{}, agentBundle.eventBus)
 	goalManager, goalDriver := initGoalSystem(cfg, projectDir, agentBundle.eventBus, agentBundle.agentMgr, swarmState, subs.providerMgr)
-	// Goal tools are always registered (stable tool array, bugs.md S2). The
+	// Goal tools are always registered (stable tool array, S2). The
 	// tools.enabled.goal flag gates only AUTONOMOUS creation at execution time:
 	// `create` is allowed when the flag is on OR a goal is already active.
 	registerGoalTools(subs.toolRegistry, goalManager, cfg.Tools.Enabled.Goal || opts.Goal, cfg.Goals.AutoUnblockEnabled, cfg.Goals.FreshContextEnabled,
 		func() time.Duration { return cfg.Goals.VerifyTimeoutOr(defaultGoalVerifyTimeout) })
-	// The standalone todo_list tool (bugs.md: available outside of goal). It is
+	// The standalone todo_list tool (available outside of goal). It is
 	// linked to the goal's own todo list while a goal is active and falls back
 	// to its session list otherwise; tools.enabled.todo gates registration.
 	if cfg.Tools.Enabled.Todo {
@@ -610,7 +610,7 @@ func wireDreamScheduler(agentMgr *core.AgentManager, scheduler *dreamScheduler) 
 }
 
 // goalEventPublisher delivers goal state changes to the app's Agent bus.
-// Delivery is lossless and ordered (bugs.md Issue 1): a non-blocking send
+// Delivery is lossless and ordered (Issue 1): a non-blocking send
 // used to silently drop updates when the bus was full — exactly the
 // mid-turn situation where a goal create/resume/complete happens — leaving
 // the goal bubble hidden (create dropped) or stale (clear dropped). When
@@ -688,7 +688,7 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 	// Never run a goal turn while a user turn owns the agent: agent.Run's
 	// queue-on-busy semantics would return instantly and the drive loop
 	// would hot-spin, queueing hundreds of phantom continuation prompts
-	// (bugs.md Issue 7). The in-flight turn's post-turn hook re-starts the
+	// (Issue 7). The in-flight turn's post-turn hook re-starts the
 	// drive once the agent is idle.
 	if r.agentMgr.IsRunning() {
 		return core.ErrAgentBusy
@@ -711,7 +711,7 @@ func (r *agentManagerRunner) Run(ctx context.Context, input string) error {
 // ResetLoopStop clears the runaway-loop latch on the active agent. The goal
 // driver calls this (via optional interface) when resuming a goal paused by
 // the loop guardrail, pairing the latch reset with its varied recovery
-// prompt (bugs.md runaway-loop bricking).
+// prompt (runaway-loop bricking).
 func (r *agentManagerRunner) ResetLoopStop() {
 	if agent := r.agentMgr.CurrentAgent(); agent != nil {
 		agent.ResetLoopStop()
@@ -729,7 +729,7 @@ func (r *agentManagerRunner) ResetLoopStop() {
 // the goal carries only its objective forward.
 func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin bool) error {
 	// Same busy guard as Run — a fresh-context goal must never queue-storm
-	// either (bugs.md Issue 7).
+	// either (Issue 7).
 	if r.agentMgr.IsRunning() {
 		return core.ErrAgentBusy
 	}
@@ -742,13 +742,13 @@ func (r *agentManagerRunner) RunFresh(ctx context.Context, input string, begin b
 		// Rotate the conversation id so the clean context also gets a fresh
 		// provider cache key (prompt_cache_key / previous_response_id /
 		// session-affinity) — a clean context pinned to the old SessionID would
-		// keep reading the prior conversation's cache (bugs.md Issue 8).
+		// keep reading the prior conversation's cache (Issue 8).
 		r.agentMgr.ResetConversationID()
 		r.agentMgr.InjectSystemMessage("⟡ Context reset: this goal is running on a clean context. The prior conversation is preserved in the transcript but is not sent to the agent for this goal.")
 		// Re-arm the cache-bust detector for the new conversation: its cold
 		// start (zero or tiny cache reads on the fresh provider cache key)
 		// must not count as a bust against the prior conversation's
-		// established cache (bugs.md: fresh-context goal start counted as a
+		// established cache (fresh-context goal start counted as a
 		// cache miss).
 		agent.EmitContextReset()
 	}
@@ -769,12 +769,12 @@ func registerGoalTools(toolRegistry *tools.ToolRegistry, manager *core.GoalManag
 // autoUnblock gates the auto-spawning of an unblocking investigation goal when
 // the model blocks a goal with justification (goals.auto_unblock; nil = on).
 // verifyTimeout feeds the live display of the verify-command bound at goal
-// completion (goals.verify_timeout; nil = default 2m) — bugs.md Bug A.
+// completion (goals.verify_timeout; nil = default 2m) — Bug A.
 func newGoalTool(manager *core.GoalManager, createFlagOn bool, autoUnblock func() bool, freshContextDefault func() bool, verifyTimeout func() time.Duration) agentic.Tool {
 	// Autonomous `create` is allowed when the feature flag is on, or whenever a
-	// goal exists (bugs.md S2: all goal actions work during a goal). Existence
+	// goal exists (S2: all goal actions work during a goal). Existence
 	// — not just active status — matters: a paused/blocked goal still means
-	// "during a goal", and the tool queues behind it (bugs.md "Goal management
+	// "during a goal", and the tool queues behind it ("Goal management
 	// tool issue").
 	createAllowed := func() bool {
 		return createFlagOn || manager.Mode.GetGoal().Goal != nil
@@ -881,7 +881,7 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	skillRegistry.SetTrustChecker(newSkillTrustChecker(trustMgr))
 	skillRegistry.SetDisabled(cfg.Skills.Disabled)
 	skillRegistry.SetEnabled(cfg.Skills.Enabled)
-	// Embedded skills are OFF by default except telegram (bugs.md); the user
+	// Embedded skills are OFF by default except telegram; the user
 	// opts individual ones back in via skills.embedded_enabled (or the global
 	// allowlist). File-based skills are never affected by the default-off set.
 	skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))

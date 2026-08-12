@@ -37,7 +37,7 @@ func TestAuthHookInjectsAPIKey(t *testing.T) {
 	assert.Contains(t, ctx.Headers["User-Agent"], "goa/")
 }
 
-// TestAuthHook_UnmatchedProviderInjectsKey is the regression test for bugs.md
+// TestAuthHook_UnmatchedProviderInjectsKey is the regression test for
 // Issue 9 (Poolside 401). A provider with no dedicated variant profile must still
 // get its configured API key injected as an Authorization header, because the
 // resolver now falls back to a default profile carrying standard Bearer auth.

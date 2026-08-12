@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDetectShellFileEdit covers the bash→edit guardrail detector (bugs.md):
+// TestDetectShellFileEdit covers the bash→edit guardrail detector:
 // commands that modify project files must be caught; read-only commands must pass.
 func TestDetectShellFileEdit(t *testing.T) {
 	cases := []struct {
@@ -56,7 +56,7 @@ func TestDetectShellFileEdit(t *testing.T) {
 }
 
 // TestBashTool_WarnFileEdits verifies the file-edit nudge is NON-BLOCKING
-// (bugs.md: never block, only hint): the command still runs and its output is
+// (never block, only hint): the command still runs and its output is
 // produced, with a hint prepended when the command edits a file via the shell.
 func TestBashTool_WarnFileEdits(t *testing.T) {
 	readCmd := `{"command": "echo hello"}`
@@ -101,7 +101,7 @@ func TestBashTool_WarnFileEdits(t *testing.T) {
 
 // TestEditNotFound_LineMatchDiagnostic verifies the not-found error now reports
 // how many old_string lines matched and steers toward smaller anchored edits
-// (bugs.md items 2+3), so the model doesn't assume the tool is broken and use bash.
+// (items 2+3), so the model doesn't assume the tool is broken and use bash.
 func TestEditNotFound_LineMatchDiagnostic(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "f.txt")

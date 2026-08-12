@@ -77,7 +77,7 @@ func TestMaybeCompress_ToolElision_DefersWhileCacheHot(t *testing.T) {
 			// First turn (zero lastTurnEnd): the cold presumption must expire
 			// once a completed request reports cache_read > 0 — otherwise the
 			// gate fails open for the entire first turn and churns a
-			// demonstrably hot cache (bugs.md "Micro-compaction cache gate
+			// demonstrably hot cache ("Micro-compaction cache gate
 			// fails open during the entire first turn").
 			name: "first turn with warm observation defers proactive elision",
 			// lastTurnEnd zero: still in the session's first turn, but round

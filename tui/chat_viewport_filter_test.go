@@ -43,7 +43,7 @@ func TestChatViewportAgentFilter_IsolatesOneAgent(t *testing.T) {
 }
 
 // TestChatViewportAgentFilter_IncludesToolWidgets is the RED regression for
-// bugs.md: per-agent tabs must show the agent's tool widgets, not only text
+// per-agent tabs must show the agent's tool widgets, not only text
 // blocks.
 func TestChatViewportAgentFilter_IncludesToolWidgets(t *testing.T) {
 	cv := NewChatViewport()

@@ -238,7 +238,7 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	thresholds := am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger)
 	// Honor the Enabled toggle: an explicit `enabled: false` disables all
 	// proactive threshold-triggered compression (soft/trigger/hard → 0), which
-	// was previously persisted but silently ignored (archived bugs.md). The
+	// was previously persisted but silently ignored (archived). The
 	// reactive safety net (on_context_error + the hard-ceiling enforcer) is
 	// unaffected and keeps protecting the window.
 	if !cfg.ContextCompression.EnabledValue() {

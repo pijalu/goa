@@ -29,7 +29,7 @@ const goalVerifyOutputCap = 4000
 // recorded verify command through the system shell in the project directory.
 // Output is sanitized (raw ESC bytes must never reach the model context or
 // the TUI) and capped. The timeout is explicit and configurable
-// (goals.verify_timeout, bugs.md Bug A) and reported in the outcome so the
+// (goals.verify_timeout, Bug A) and reported in the outcome so the
 // UI can display it.
 type execCommandVerifier struct {
 	dir     string

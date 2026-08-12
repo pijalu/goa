@@ -830,7 +830,7 @@ func TestToolExecution_RunningIconIsYellowDotNotSpinner(t *testing.T) {
 // the widget's "elapsed" measures EXECUTION time, starting when the call
 // transitions into ToolRunning — not widget creation. Before the fix, the
 // timer started at NewToolExecution (first streaming delta), so slow local
-// models showed "elapsed 213s" for a "timeout 120s" call (bugs.md).
+// models showed "elapsed 213s" for a "timeout 120s" call.
 func TestToolExecution_ElapsedStartsAtRunning(t *testing.T) {
 	tc := NewToolExecution("bash", `{"command":"go test","timeout":120}`)
 	// Simulate 93s of streaming/approval wait before execution starts.
@@ -853,7 +853,7 @@ func TestToolExecution_RunningAgainKeepsTimer(t *testing.T) {
 	}
 }
 
-// TestToolExecution_WaitingPresentation pins bugs.md Bug W: a queued call
+// TestToolExecution_WaitingPresentation pins Bug W: a queued call
 // (Pending with complete args) shows the ⧖ hourglass and "waiting Ns…",
 // NOT the running dot and "elapsed" — elapsed is execution-only.
 func TestToolExecution_WaitingPresentation(t *testing.T) {

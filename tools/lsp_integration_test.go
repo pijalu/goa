@@ -72,7 +72,7 @@ func TestWriteFileTool_LSPManager_Notify(t *testing.T) {
 
 // TestWriteFileTool_LSPManager_SkipsUnsupported verifies the tool skips files
 // whose TYPE has no language server (the manager decides per extension, not
-// the tool — bugs.md Issue LSP). The old behavior hardcoded a .go-only guard
+// the tool — Issue LSP). The old behavior hardcoded a.go-only guard
 // in the tool; selection now lives in ServerIDFor.
 func TestWriteFileTool_LSPManager_SkipsUnsupported(t *testing.T) {
 	dir := t.TempDir()
@@ -93,7 +93,7 @@ func TestWriteFileTool_LSPManager_SkipsUnsupported(t *testing.T) {
 }
 
 // TestWriteFileTool_LSPManager_NotifyPython verifies LSP wiring covers ALL
-// LSP-supported file types, not just .go (bugs.md Issue LSP user directive).
+// LSP-supported file types, not just.go (Issue LSP user directive).
 func TestWriteFileTool_LSPManager_NotifyPython(t *testing.T) {
 	dir := t.TempDir()
 	mgr := &fakeLSPManager{
@@ -208,7 +208,7 @@ func TestEditFileTool_LSPManager_SkipsUnsupported(t *testing.T) {
 }
 
 // TestEditFileTool_LSPManager_NotifyJavaScript verifies edit→LSP wiring for a
-// JS file (bugs.md Issue LSP user directive: js/py/go must all be wired).
+// JS file (Issue LSP user directive: js/py/go must all be wired).
 func TestEditFileTool_LSPManager_NotifyJavaScript(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.js")

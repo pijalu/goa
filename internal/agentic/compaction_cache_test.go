@@ -120,7 +120,7 @@ func TestCacheAssumedCold(t *testing.T) {
 	}
 }
 
-// Regression test for bugs.md "Micro-compaction cache gate fails open during
+// Regression test for "Micro-compaction cache gate fails open during
 // the entire first turn": lastTurnEnd is written only at turn END, so a
 // zero-lastTurnEnd gate presumed cold for the WHOLE first turn — at round 58
 // of turn 1 a micro compaction busted a cache that had been hot since round 2
@@ -140,7 +140,7 @@ func TestMicroCompact_FirstTurnDeferredWhenCacheWarmObserved(t *testing.T) {
 	a.microCompactForced(false)
 	if anyTruncated(a) {
 		t.Fatalf("first-turn micro compaction ran despite observed cache hits; " +
-			"the hot provider prefix cache would be churned (bugs.md first-turn gate)")
+			"the hot provider prefix cache would be churned (first-turn cache gate)")
 	}
 }
 
@@ -160,7 +160,7 @@ func TestMicroCompact_FirstTurnRunsWhenNoCacheWarmObserved(t *testing.T) {
 // TestCacheAssumedCold_WarmObservation pins the gate semantics: warm evidence
 // expires ONLY the first-turn (zero lastTurnEnd) presumption; the idle-gap
 // TTL logic is unchanged — a warm observation must not resurrect a cache that
-// sat idle past its TTL (provider TTL expiry is real, see the bugs.md note on
+// sat idle past its TTL (provider TTL expiry is real, see the note on
 // the 34-min idle-gap miss). Both gates (micro + proactive) must agree.
 func TestCacheAssumedCold_WarmObservation(t *testing.T) {
 	newAgent := func() *Agent {
@@ -262,7 +262,7 @@ func TestClear_ClearsCacheWarmObserved(t *testing.T) {
 	}
 }
 
-// --- bugs.md CM:13 companion defect: mid-turn gate clock ---
+// --- CM:13 companion defect: mid-turn gate clock ---
 
 // TestCacheGates_MidTurnRoundActivity is the regression for the CM:13
 // companion defect: cacheAssumedCold read lastTurnEnd, written only at turn
@@ -343,7 +343,7 @@ func TestMicroCompact_MidTurnDeferredWhenRoundsActive(t *testing.T) {
 	a.microCompactForced(false)
 	if anyTruncated(a) {
 		t.Fatalf("micro compaction truncated mid-turn on a stale lastTurnEnd; " +
-			"per-round activity must keep the hot cache deferred (bugs.md CM:13 companion defect)")
+			"per-round activity must keep the hot cache deferred (CM:13 companion defect)")
 	}
 }
 

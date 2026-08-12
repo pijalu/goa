@@ -62,7 +62,7 @@ func newTestGoalManager() *core.GoalManager {
 	return mgr
 }
 
-// TestFooterGoalFieldsSurviveStatsRebuild (bugs.md Issues 3-4): a routine
+// TestFooterGoalFieldsSurviveStatsRebuild (Issues 3-4): a routine
 // footer SetData (stats/activity tick without goal knowledge) must not wipe
 // the ◈ goal marker.
 func TestFooterGoalFieldsSurviveStatsRebuild(t *testing.T) {
@@ -88,7 +88,7 @@ func TestFooterGoalFieldsSurviveStatsRebuild(t *testing.T) {
 	}
 }
 
-// TestHandleGoalUpdate_CountsPendingTodos (bugs.md Issue 4): the footer
+// TestHandleGoalUpdate_CountsPendingTodos (Issue 4): the footer
 // pending-todo count tracks not-done todos from the snapshot (pending and
 // in_progress count, done does not); a clear event zeroes it.
 func TestHandleGoalUpdate_CountsPendingTodos(t *testing.T) {

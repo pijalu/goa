@@ -84,7 +84,7 @@ func contextText(ctx provider.Context) string {
 }
 
 // TestAgent_CompressionGateBetweenRounds guards the per-round compression
-// gate (bugs.md compression entry: a long tool-call turn climbed past 100%
+// gate (compression entry: a long tool-call turn climbed past 100%
 // unchecked because compression ran only at turn start, ending in a provider
 // 401). Tool results push usage past the trigger mid-turn; the stream AFTER
 // the per-round gate must go out compressed — with no gate, the raw payload
@@ -135,7 +135,7 @@ func TestAgent_CompressionGateBetweenRounds(t *testing.T) {
 	// elide the oldest tool results, so the final request carries the elision
 	// evidence and FEWER payload chars than the peak pre-gate request. Elided
 	// call/result pairs are now serialized as a plain-text assistant note
-	// (bugs.md: "[elided]" placeholder imitation + summarize 400), so the
+	// ("[elided]" placeholder imitation + summarize 400), so the
 	// observable marker is the note, not the dropped "[tool result elided]".
 	last := contextText(ctxs[len(ctxs)-1])
 	if !strings.Contains(last, "[earlier call to huge_tool elided]") {

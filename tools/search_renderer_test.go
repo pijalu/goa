@@ -139,7 +139,7 @@ main.go:10: // TODO: add tests`,
 	}
 }
 
-// TestSearchRenderer_ResultPatternNotDoubleEscaped is the bugs.md item J
+// TestSearchRenderer_ResultPatternNotDoubleEscaped is the item J
 // regression: the search tool emits its header pattern Go-quoted (%q), so a
 // regex pattern containing a backslash escape (e.g. `SelectOption\(`) must
 // render byte-identical in the summary — not with a doubled backslash.

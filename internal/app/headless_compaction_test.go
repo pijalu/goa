@@ -22,7 +22,7 @@ func statsWithCompactions() sessionStats {
 }
 
 // TestPlainRenderer_SummaryPrintsCompactionRounds verifies the headless
-// --plain summary documents each compression round (bugs.md "context
+// --plain summary documents each compression round ("context
 // compressions are invisible").
 func TestPlainRenderer_SummaryPrintsCompactionRounds(t *testing.T) {
 	var buf bytes.Buffer

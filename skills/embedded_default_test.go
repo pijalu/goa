@@ -64,7 +64,7 @@ func TestDefaultEmbeddedOffNames(t *testing.T) {
 }
 
 // TestEmbeddedDefaultOff_LoadsOnlyTelegramAndInternal is the regression test
-// for bugs.md "all embedded skills except telegram disabled by default": with
+// for all embedded skills except telegram disabled by default: with
 // the default-off set applied and no user opt-in, the agent-facing embedded
 // skills are off; only telegram (agent-facing) and dream (hidden/internal)
 // load.

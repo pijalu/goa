@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// seedPlansDir creates a plans/ tree mirroring bugs.md Issue 8: an exact
+// seedPlansDir creates a plans/ tree mirroring Issue 8: an exact
 // plan.md among many PLAN-*.md fuzzy matches.
 func seedPlansDir(t *testing.T) string {
 	t.Helper()
@@ -41,7 +41,7 @@ func completeFiles(t *testing.T, fc *FileCompleter, prefix string) []Completion 
 	return got
 }
 
-// TestFileCompleter_CategoryIsFiles (bugs.md Issue 8a): file completions must
+// TestFileCompleter_CategoryIsFiles (Issue 8a): file completions must
 // carry their own category — the zero value CatMostUsed used to render them
 // under a "── Most Used ──" header they have nothing to do with.
 func TestFileCompleter_CategoryIsFiles(t *testing.T) {
@@ -54,7 +54,7 @@ func TestFileCompleter_CategoryIsFiles(t *testing.T) {
 	}
 }
 
-// TestFileCompleter_ExactAndPrefixRankFirst (bugs.md Issue 8b): the exact
+// TestFileCompleter_ExactAndPrefixRankFirst (Issue 8b): the exact
 // match and case-insensitive prefix matches rank above fuzzy matches,
 // regardless of fd/readdir order — @plans/plan must offer plan.md first.
 func TestFileCompleter_ExactAndPrefixRankFirst(t *testing.T) {
@@ -94,7 +94,7 @@ func assertPlanRanksFirst(t *testing.T, fc *FileCompleter, fallback bool) {
 	}
 }
 
-// TestFileCompleter_ExactPathSuppressesPopup (bugs.md Issue 8c): when the
+// TestFileCompleter_ExactPathSuppressesPopup (Issue 8c): when the
 // typed token already names an existing file, completion is done — no
 // candidates, no popup.
 func TestFileCompleter_ExactPathSuppressesPopup(t *testing.T) {

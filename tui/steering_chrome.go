@@ -17,7 +17,7 @@ package tui
 // chunk, desyncing the scrollback watermark so already-scrolled rows (the
 // bubble's "(alt+e to edit)" box and trailing "└───┘" borders) were
 // re-emitted — the duplicated/garbled frames seen when a slash command such as
-// /quota landed mid-stream (bugs.md "/quota request during streaming corrupts
+// /quota landed mid-stream ("/quota request during streaming corrupts
 // the TUI"). As chrome, the bubble never enters the transcript canvas: the
 // watermark advances monotonically and nothing is re-emitted or lost.
 //

@@ -196,7 +196,7 @@ func (a *App) maybeSteerAgent(engine *tui.TUI, chat *tui.ChatViewport, text stri
 // resend / discard text they typed mid-turn. It is a no-op when there is no
 // agent, an empty queue, or no input editor. The restored text is NOT sent.
 // Shared by Alt+E (handleEditSteering) and ESC (handleEscape) so the two paths
-// cannot diverge (bugs.md S1).
+// cannot diverge (S1).
 func (a *App) restoreSteeringToInput(chat *tui.ChatViewport) {
 	subs := a.subs
 	if subs.agentMgr == nil {
@@ -558,7 +558,7 @@ func (a *App) handleSlashCommand(input string) {
 		}
 	}
 
-	// Immediate feedback for slow commands (bugs.md "Session: slow commands
+	// Immediate feedback for slow commands ("Session: slow commands
 	// need an executing placeholder"): show the spinner line before the
 	// synchronous Run so there is no silent gap between submit and output.
 	showPlaceholder := a.beginCommandPlaceholder(result, trimmed)

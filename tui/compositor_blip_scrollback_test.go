@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// TestCompositor_HeightBlipDoesNotDuplicateScrollback is the bugs.md item I
+// TestCompositor_HeightBlipDoesNotDuplicateScrollback is the item I
 // regression: "1st line of history/scroll is often a duplicated line". The
 // user's transcript showed a completed tool widget's header row emitted twice
 // at the top of the scroll region. The trigger is a one-frame terminal-height

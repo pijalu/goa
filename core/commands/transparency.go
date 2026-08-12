@@ -207,7 +207,7 @@ func (c *StatsCommand) LongHelp() string {
 }
 
 // CompleteArgs offers the /stats subcommands so "/stats:" and "/stats <tab>"
-// propose session/project drill-downs (bugs.md: /stats missing from
+// propose session/project drill-downs (/stats missing from
 // completion proposal).
 func (c *StatsCommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCompletion {
 	candidates := []core.ArgCompletion{

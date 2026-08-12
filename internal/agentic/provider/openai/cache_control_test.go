@@ -287,7 +287,7 @@ func TestCacheControlMarker_Marshaling(t *testing.T) {
 
 // TestBuildParams_CacheMarkerPinnedAcrossRounds is the regression for the
 // moving-breakpoint cache bust found in the LM Studio request capture
-// (bugs.md "cache-hit-first"): the conversation cache_control marker must be
+// (cache-hit-first): the conversation cache_control marker must be
 // pinned to the FIRST user message so request N stays a byte-prefix of
 // request N+1. With the marker on the last message it moved every round,
 // rewriting one history message's bytes and killing llama.cpp's

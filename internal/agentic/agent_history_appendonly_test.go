@@ -12,7 +12,7 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// The append-only history contract (bugs.md prefix-cache contract): every
+// The append-only history contract (prefix-cache contract): every
 // provider request must carry the previous request's history verbatim, and
 // the ONLY permitted in-place change is compression tool_elision — which may
 // rewrite each already-sent tool call/result exactly once (raw payload →

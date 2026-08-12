@@ -34,7 +34,7 @@ func TestSpinnerLocation(t *testing.T) {
 // TestFilmstrip_SpinnerLocation drives request events in both spinner-location
 // modes: "chat" (default) renders the in-chat "Thinking..." status line;
 // "statusbar" suppresses it from the chat timeline while the footer carries
-// the animated busy frame next to the model (bugs.md spinner-location entry).
+// the animated busy frame next to the model (spinner-location entry).
 func TestFilmstrip_SpinnerLocation(t *testing.T) {
 	events := []*agentic.OutputEvent{
 		{Type: agentic.EventStateChange, State: agentic.StateThinking},

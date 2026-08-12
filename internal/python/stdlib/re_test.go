@@ -483,7 +483,7 @@ print("verbose_escaped:", m6 is not None)
 
 // TestReFinditer covers module-level re.finditer: Match objects with correct
 // group(0)/start()/end() for a multi-match pattern, the empty case, flags,
-// and iteration/list() usage (bugs.md re.finditer parity gap).
+// and iteration/list usage (re.finditer parity gap).
 func TestReFinditer(t *testing.T) {
 	code := `
 import re

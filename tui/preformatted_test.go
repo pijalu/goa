@@ -113,7 +113,7 @@ func TestIsPreformatted_WideLines(t *testing.T) {
 	}
 }
 
-// TestIsPreformatted_GoalListMarkdown pins the bugs.md "Goal list issue" fix:
+// TestIsPreformatted_GoalListMarkdown pins the Goal list issue:fix:
 // /goal:list output opens with an h2 ("## Goals") and has long objective
 // lines. hasMDHeader only matched "# " (h1), so the wide objectives flipped
 // the text to preformatted — raw "##"/"**" shown, no wrapping. Any ATX header

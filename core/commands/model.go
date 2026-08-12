@@ -510,7 +510,7 @@ func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelIn
 // leaked into the model-value space (e.g. "__delete__X" emitted by the
 // backspace/delete hotkey in a picker whose callback has no delete handler).
 // Such values must never become the active model or a configured model name
-// (bugs.md: the picker left the active model named "__delete__deepseek-v4-flash").
+// (the picker left the active model named "__delete__deepseek-v4-flash").
 func isModelSentinel(v string) bool {
 	return strings.HasPrefix(v, "__")
 }

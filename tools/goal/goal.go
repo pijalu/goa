@@ -18,7 +18,7 @@ import (
 
 // Compile-time assertion that GoalTool declares its resource access so the
 // tool scheduler can serialize concurrent goal calls in request order
-// (bugs.md must-fix #4: "When multiple goal tool calls are executed, the
+// (must-fix #4: "When multiple goal tool calls are executed, the
 // request order should be kept"). Goal calls all mutate the same shared
 // goal-manager state, so they share a category and never run in parallel.
 var _ toolaccess.Accessor = (*GoalTool)(nil)
@@ -35,12 +35,12 @@ func (t *GoalTool) Access(_ string) toolaccess.Access {
 // GoalTool is the single goal-management tool exposed to the model. It
 // consolidates create / update / get / set_budget behind one `action`
 // dispatcher so the tool array stays small and stable for prompt caching
-// (bugs.md S2): one fixed schema instead of four.
+// (S2): one fixed schema instead of four.
 type GoalTool struct {
 	Mode *goal.GoalMode
 	// CreateAllowed reports whether autonomous goal creation is permitted. It
 	// gates only the `create` action and only when NO goal is currently active
-	// (bugs.md S2: all goal actions are allowed while a goal is running).
+	// (S2: all goal actions are allowed while a goal is running).
 	CreateAllowed func() bool
 	// AutoUnblock reports whether a model-blocked goal (with justification)
 	// should auto-spawn an unblocking investigation goal in front of it. Nil =
@@ -60,7 +60,7 @@ type GoalTool struct {
 	Queue GoalQueue
 	// VerifyTimeout reports the configured verify-command timeout
 	// (goals.verify_timeout) for the live progress display at completion.
-	// Nil = default 2m (bugs.md Bug A: the timeout must be clear to the user).
+	// Nil = default 2m (Bug A: the timeout must be clear to the user).
 	VerifyTimeout func() time.Duration
 	// challenged tracks that the previous complete request was intercepted
 	// by the done-gate, so the confirming call knows verification is about
@@ -243,7 +243,7 @@ func (t *GoalTool) Execute(input string) (string, error) {
 // ExecuteContextWithResult implements agentic.ContextResultTool: the ctx
 // carries the execution-progress emitter so a goal completion can ANNOUNCE
 // the verify command it is about to run (exact command + timeout) instead of
-// sitting silent for up to 2 minutes (bugs.md Bug A), while the ToolResult
+// sitting silent for up to 2 minutes (Bug A), while the ToolResult
 // keeps the StopTurn signal for terminal statuses.
 func (t *GoalTool) ExecuteContextWithResult(ctx context.Context, input string) (agentic.ToolResult, error) {
 	return t.executeWithResult(ctx, input)
@@ -296,7 +296,7 @@ func (t *GoalTool) actionHandlers() map[string]func(context.Context, goalArgs) (
 // when present; when omitted (a common model slip — e.g. sending only
 // {"status":"blocked",...}), the intended action is inferred from whichever
 // payload fields are set, so the call does what the model obviously meant
-// instead of erroring (bugs.md "Goal management tool issue").
+// instead of erroring (Goal management tool issue).
 func inferAction(args goalArgs) string {
 	if args.Action != "" {
 		return args.Action
@@ -361,7 +361,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 		return agentic.ToolResult{}, goalToolErr("goal", "invalid_input",
 			fmt.Errorf("action \"create\" requires \"objective\" or a non-empty \"objectives\" array"))
 	}
-	// Execution-time gate (bugs.md S2): autonomous creation is blocked only
+	// Execution-time gate (S2): autonomous creation is blocked only
 	// when the feature flag is off AND no goal is active. All actions are
 	// allowed while a goal is running.
 	if t.CreateAllowed != nil && !t.CreateAllowed() {
@@ -381,7 +381,7 @@ func (t *GoalTool) handleCreate(args goalArgs) (agentic.ToolResult, error) {
 	// (not just active status) matters: GetActiveGoal hides paused/blocked
 	// goals while CreateGoal rejects any existing state, so an active-only
 	// check makes create fail with "a goal already exists" behind a parked
-	// goal (bugs.md "Goal management tool issue").
+	// goal (Goal management tool issue).
 	var activated *goal.GoalSnapshot
 	queued := 0
 	for _, obj := range objectives {
@@ -600,7 +600,7 @@ func (t *GoalTool) handleReorder(args goalArgs) (agentic.ToolResult, error) {
 }
 
 // handlePostpone demotes the active goal to the BACK of the queue so the next
-// scheduled goal starts (bugs.md "Goal scheduling"). It is the model's
+// scheduled goal starts (Goal scheduling). It is the model's
 // deprioritize primitive: the demoted goal keeps its objective, criterion,
 // verify command and context mode, and the clear event drives the host's
 // auto-promotion of the new queue head — exactly as after a completion.
@@ -639,7 +639,7 @@ func (t *GoalTool) handlePostpone(args goalArgs) (agentic.ToolResult, error) {
 	}, nil
 }
 
-// handlePromote activates a queued goal NOW (bugs.md "Goal scheduling"): the
+// handlePromote activates a queued goal NOW (Goal scheduling): the
 // model's prioritize primitive. The current goal (if any) is demoted to the
 // FRONT of the queue so it resumes right after, and the chosen queued goal
 // becomes active atomically (replace semantics inside GoalMode).
@@ -873,7 +873,7 @@ Your ONLY job is to determine whether this blocker can be solved without user in
 // active with the failure detail, escalating to blocked at the configured
 // streak cap. Without a criterion (or gate off), completion is immediate.
 //
-// Transparency (bugs.md Bug A): the confirming call ANNOUNCES the verify
+// Transparency (Bug A): the confirming call ANNOUNCES the verify
 // command before running it (exact command + timeout, via the execution
 // progress emitter), and a successful completion returns the full evidence
 // block (command, exit, elapsed, timeout, output tail) so the user can
@@ -926,7 +926,7 @@ func (t *GoalTool) announceVerification(ctx context.Context) {
 }
 
 // formatOpenTodosReminder appends the open-todos reminder to a completion
-// result (bugs.md "when a goal is achieved: if there are pending todos, the
+// result ("when a goal is achieved: if there are pending todos, the
 // framework should remind the model of the open todos"). A gated completion
 // (recorded criterion) already requires every todo done, so this fires for
 // criterion-less completions. Todos are contained by the goal and die with

@@ -564,7 +564,7 @@ func TestFooter_Render_NoCompanionShowsMainOnly(t *testing.T) {
 	}
 }
 
-// TestFooter_Render_GoalMarker (bugs.md Issue 3): an active goal shows the ◈
+// TestFooter_Render_GoalMarker (Issue 3): an active goal shows the ◈
 // marker next to the mode ("◈ coding-posture │ YOLO"); no goal → no marker.
 func TestFooter_Render_GoalMarker(t *testing.T) {
 	f := NewFooter()
@@ -608,7 +608,7 @@ func TestFooter_Render_NoGoalDetail(t *testing.T) {
 	}
 }
 
-// TestFooter_Render_GoalTodoMarkers (bugs.md Issue 4): an active goal shows
+// TestFooter_Render_GoalTodoMarkers (Issue 4): an active goal shows
 // one ⬩ per pending todo after the profile label (max 3 glyphs, then a +n
 // counter for the overflow): "◈ coding-posture ⬩⬩⬩+2 │ YOLO".
 func TestFooter_Render_GoalTodoMarkers(t *testing.T) {
@@ -636,7 +636,7 @@ func TestFooter_Render_GoalTodoMarkers(t *testing.T) {
 	}
 }
 
-// TestFooter_Render_TodoMarkersRequireGoal (bugs.md Issue 4): the ⬩ markers
+// TestFooter_Render_TodoMarkersRequireGoal (Issue 4): the ⬩ markers
 // decorate an ACTIVE goal only — no goal (or a paused/blocked goal) renders
 // no markers, even with pending todos recorded.
 func TestFooter_Render_TodoMarkersRequireGoal(t *testing.T) {

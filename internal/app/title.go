@@ -27,7 +27,7 @@ const (
 )
 
 // startupTitleFrames is the ordered transition sequence played once startup
-// completes (bugs.md "Title bar startup sequence"): g⬡a → g⬡ → ⬡.
+// completes (Title bar startup sequence): g⬡a → g⬡ → ⬡.
 var startupTitleFrames = []string{"g⬡a", "g⬡", titleBrand}
 
 // titleStartupTransitionInterval is the (deliberately slow) frame rate of the
@@ -43,7 +43,7 @@ const titleStartupTransitionInterval = time.Second
 // settles into normal mode where it shows the base title while idle and the
 // spinner animation while the agent works (when animated titles are enabled).
 //
-// Concurrency (bugs.md "goa should not be frozen until completion of the
+// Concurrency ("goa should not be frozen until completion of the
 // title animation"): title writes NEVER run on the caller's goroutine (in
 // particular never on the TUI commandLoop, which drives input handling). All
 // writes are enqueued on a buffered, latest-wins channel consumed by a single
@@ -280,7 +280,7 @@ func (tc *titleController) stop() {
 
 // startupTitleFallback is the maximum time the boot brand stays up waiting
 // for the explicit startup-done hook; the transition plays at this deadline
-// even if async loads never signal (bugs.md: 5s fallback only).
+// even if async loads never signal (5s fallback only).
 const startupTitleFallback = 5 * time.Second
 
 // setBaseTitle updates the contextual window title, routing through the title
@@ -299,7 +299,7 @@ func (a *App) setBaseTitle(title string) {
 // startTitleStartupHook launches the startup-done watcher: it fires the title
 // transition when BOTH async startup loads (plugins + input history) have
 // completed, or when the 5s fallback deadline elapses — whichever comes first
-// (bugs.md "Title bar startup sequence": explicit hook, 5s fallback only).
+// (Title bar startup sequence explicit hook, 5s fallback only).
 // Nil/disabled loads count as already done. No-op without a controller.
 func (a *App) startTitleStartupHook() {
 	if a.titleCtl == nil {

@@ -16,7 +16,7 @@ import (
 
 // gatedFactory blocks every spawn on a channel so tests control exactly when
 // (and whether) the "server start" completes — simulating a slow npx download
-// or a wedged server (bugs.md "Read stuck").
+// or a wedged server (Read stuck).
 type gatedFactory struct {
 	mu      sync.Mutex
 	gate    chan struct{}
@@ -135,7 +135,7 @@ func startedAsyncManager(t *testing.T, factory func(ctx context.Context, cfg Ser
 	return m
 }
 
-// TestManager_TouchNeverBlocksOnSpawn is the bugs.md "Read stuck" regression:
+// TestManager_TouchNeverBlocksOnSpawn is the Read stuck:regression:
 // a DidChange touch must return immediately even when the server spawn hangs
 // forever (cold npx download / wedged server) — pre-fix the touch parked on
 // the synchronous spawn for its full duration (55s observed, potentially ∞).

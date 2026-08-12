@@ -1455,7 +1455,7 @@ func TestGoalsAutoUnblockEnabled(t *testing.T) {
 }
 
 // TestGoalsFreshContextEnabled verifies the tri-state fresh-context default
-// (bugs.md Issue 24): nil = on (clean context per goal), explicit false = reuse
+// (Issue 24): nil = on (clean context per goal), explicit false = reuse
 // conversation, and a higher-layer explicit value overrides in a DeepMerge.
 func TestGoalsFreshContextEnabled(t *testing.T) {
 	var def Config
@@ -1475,7 +1475,7 @@ func TestGoalsFreshContextEnabled(t *testing.T) {
 	}
 }
 
-// TestGoalsVerifyTimeoutOr verifies goals.verify_timeout parsing (bugs.md
+// TestGoalsVerifyTimeoutOr verifies goals.verify_timeout parsing
 // Bug A): empty/invalid falls back to the default; valid durations win.
 func TestGoalsVerifyTimeoutOr(t *testing.T) {
 	fallback := 2 * time.Minute

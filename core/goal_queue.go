@@ -103,7 +103,7 @@ func (s *GoalQueueStore) Append(objective string) ([]goal.UpcomingGoal, error) {
 // AppendGoal enqueues a goal, carrying its per-goal completion criterion,
 // verify command, and fresh-context flag so a queued goal keeps its full
 // done-condition and can be set to run on a clean context when promoted
-// (bugs.md: goal queue + per-goal clean-context flag).
+// (goal queue + per-goal clean-context flag).
 func (s *GoalQueueStore) AppendGoal(input goal.UpcomingGoalInput) ([]goal.UpcomingGoal, error) {
 	return s.insertGoal(input, false)
 }

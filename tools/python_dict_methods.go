@@ -22,7 +22,7 @@ import (
 // py.SetItem and py.SequenceContains dispatch to the native Go interface
 // methods M__setitem__ / M__contains__ on py.StringDict before ever
 // consulting the type's method table, so changing them requires forking
-// gpython (tracked as a follow-up in bugs.md).
+// gpython (tracked as a follow-up in).
 var pyDictMethodsOnce sync.Once
 
 // registerPyDictMethods patches the global py.StringDictType with a

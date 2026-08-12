@@ -10,7 +10,7 @@ import (
 	"github.com/pijalu/goa/internal/ansi"
 )
 
-// TestCompositor_ToolWidgetLastRowKeepsStatusBg reproduces bugs.md Issue 20:
+// TestCompositor_ToolWidgetLastRowKeepsStatusBg reproduces Issue 20:
 // a tool widget rendered as the LAST transcript content (directly above the
 // spinner/chrome) whose final line loses its status background. The widget's
 // own renderer paints every row (including the blank bottom pad) with the

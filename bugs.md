@@ -16,3 +16,5 @@
 
 At the end of the session - the bug list should be empty and this file should only contain the guidelines for bug reporting.
 If new items are added, restart the process.
+
+# TODO

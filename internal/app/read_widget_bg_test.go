@@ -14,7 +14,7 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
-// TestUI_ReadWidgetAllRowsKeepStatusBg is the bugs.md Bug D baseline: a read
+// TestUI_ReadWidgetAllRowsKeepStatusBg is the Bug D baseline: a read
 // tool call rendered as the LAST chat entry (directly above the spinner)
 // must flip ALL its rows to the success background — none may keep the
 // pending background. Driven through the real app event flow and replayed
