@@ -123,47 +123,23 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
+							// Field docs intentionally omitted: names/types/enums mirror the
+							// flat single-edit properties documented above (context budget).
 							"operation": map[string]any{
-								"type":        "string",
-								"description": "replace|replace_lines|replace_pattern|insert_after|insert_before|delete_lines",
-								"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+								"type": "string",
+								"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 							},
-							"old_string": map[string]any{
-								"type":        "string",
-								"description": "text to match (with new_string)",
-							},
-							"new_string": map[string]any{
-								"type":        "string",
-								"description": "replacement text",
-							},
-							"start_line": map[string]any{
-								"type":        "integer",
-								"description": "start line (1-indexed, for replace_lines/insert_after/insert_before)",
-							},
-							"end_line": map[string]any{
-								"type":        "integer",
-								"description": "end line (1-indexed, for replace_lines/delete_lines)",
-							},
-							"pattern": map[string]any{
-								"type":        "string",
-								"description": "regex for replace_pattern/insert_after/insert_before",
-							},
-							"pattern_flags": map[string]any{
-								"type":        "string",
-								"description": "regex flags (e.g. 'i')",
-							},
-							"occurrence": map[string]any{
-								"type":        "integer",
-								"description": "occurrence for replace_pattern (default: 1)",
-							},
-							"new_content": map[string]any{
-								"type":        "string",
-								"description": "replacement content for replace_lines/insert_after/insert_before",
-							},
+							"old_string":    map[string]any{"type": "string"},
+							"new_string":    map[string]any{"type": "string"},
+							"start_line":    map[string]any{"type": "integer"},
+							"end_line":      map[string]any{"type": "integer"},
+							"pattern":       map[string]any{"type": "string"},
+							"pattern_flags": map[string]any{"type": "string"},
+							"occurrence":    map[string]any{"type": "integer"},
+							"new_content":   map[string]any{"type": "string"},
 							"indent_mode": map[string]any{
-								"type":        "string",
-								"description": "preserve (default)|normalize|as-is",
-								"enum":        []string{"preserve", "normalize", "as-is"},
+								"type": "string",
+								"enum": []string{"preserve", "normalize", "as-is"},
 							},
 						},
 					},

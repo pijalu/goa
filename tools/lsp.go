@@ -59,7 +59,7 @@ func lspErr(errType, format string, args ...any) *internal.ToolError {
 func (t *LSPTool) Schema() agentic.ToolSchema {
 	return agentic.ToolSchema{
 		Name:        "lsp",
-		Description: "Language-server navigation: definition|references|hover|symbols. Any configured language (Go/gopls, Python/pyright, TS, Rust…); server auto-selected per file. Prefer over grep for exact symbol defs/refs.",
+		Description: "Language-server navigation: definition|references|hover|symbols. Any configured language; server auto-selected per file. Prefer over grep for exact symbol defs/refs.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

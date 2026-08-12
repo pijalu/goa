@@ -150,11 +150,11 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				"objectives": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "create: add several goals at once; first starts active if none is, rest queue.",
+					"description": "create: batch add; first starts active if none is, rest queue.",
 				},
 				"goalId": map[string]any{
 					"type":        "string",
-					"description": "cancel: target — omitted or \"current\" cancels the ACTIVE goal (a queued successor is promoted PAUSED, never auto-started), \"all\" also wipes the queue, otherwise the queued goal's ID or friendly name. reorder: the queued goal's ID or friendly name to act on.",
+					"description": "cancel/reorder: target goal ID or friendly name; omitted|\"current\" = ACTIVE; \"all\" also wipes the queue.",
 				},
 				"direction": map[string]any{
 					"type":        "string",
@@ -164,7 +164,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				"priority": map[string]any{
 					"type":        "string",
 					"enum":        []string{"front"},
-					"description": "create: \"front\" = insert at queue FRONT (promoted next) instead of appending; pushes an execution goal ahead of the one it unblocks.",
+					"description": "create: \"front\" = insert at queue FRONT (promoted next) instead of appending.",
 				},
 				"completionCriterion": map[string]any{
 					"type":        "string",
@@ -172,7 +172,7 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"verifyCommand": map[string]any{
 					"type":        "string",
-					"description": "create: machine-checkable done-condition (e.g. \"go test ./...\"). Done-gate runs it after confirmed completion: exit0=close, else stay active w/ output. Prefer over prose criterion when checkable by command.",
+					"description": "create: machine-checkable done-condition (e.g. \"go test ./...\"); run after confirmed completion, exit0=close else stay active. Prefer over prose criterion.",
 				},
 				"replace": map[string]any{
 					"type":        "boolean",
@@ -180,15 +180,15 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"freshContext": map[string]any{
 					"type":        "boolean",
-					"description": "create: run continuation turns on clean context (objective+handover only), not the current conversation; history kept in transcript, not sent to the agent. Default: goals.fresh_context config (true). false = keep current context.",
+					"description": "create: run continuation turns on clean context (objective+handover only; history kept in transcript). Default: goals.fresh_context config (true).",
 				},
 				"handover": map[string]any{
 					"type":        "string",
-					"description": "create: free-text continuity note for the successor goal — what makes clean context sufficient. Recommended structure: State (done/verified w/ evidence), Decisions (constraints), Next steps (first actions), Risks/open questions, Carried limits (budget, verify command, completion criterion). Shown to the next goal as untrusted data (\"<untrusted_handover>\"), never instructions. Max 4096 chars.",
+					"description": "create: continuity note for the successor goal — what makes clean context sufficient: State+evidence, Decisions, Next steps, Risks, Carried limits. Shown as untrusted data, never instructions. Max 4096 chars.",
 				},
 				"team": map[string]any{
 					"type":        "string",
-					"description": "create: bind this goal to a named agent team (TEAMS.md §5.1) — while active, the team's overlay is applied. Empty/omitted = inherit the session-level team.",
+					"description": "create: bind goal to a named agent team (TEAMS.md §5.1); omitted = inherit session team.",
 				},
 				"status": map[string]any{
 					"type":        "string",
@@ -197,11 +197,11 @@ func (t *GoalTool) Schema() agentic.ToolSchema {
 				},
 				"reason": map[string]any{
 					"type":        "string",
-					"description": "update: justification for the transition. REQUIRED for `paused` (why the goal must yield) and `blocked` (the concrete blocker). For `complete`, carries the verification evidence and is required when the done-gate asks for it.",
+					"description": "update: justification for the transition. REQUIRED for paused/blocked; for complete carries the verification evidence when the done-gate asks.",
 				},
 				"expectation": map[string]any{
 					"type":        "string",
-					"description": "update: REQUIRED for `blocked` — exactly what input or change from the user/environment will unblock the goal.",
+					"description": "update: REQUIRED for blocked — exactly what input or change will unblock the goal.",
 				},
 				"value": map[string]any{
 					"type":        "number",

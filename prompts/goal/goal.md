@@ -8,14 +8,14 @@ Goal list manager: 1 ACTIVE goal pursued autonomously across turns + queue auto-
 next on complete. Cancel NEVER auto-starts the next goal: it promotes PAUSED.
 
 action:
-- create: add goal(s); default ADD: none active→starts active, else QUEUED (never implicit
+- create: add goal(s); none active→starts active, else QUEUED (never implicit
   replace). objective | objectives[] (1st active if none is, rest queue). Opts:
   completionCriterion (all objectives incl queued), freshContext (clean ctx), replace:true
   (discard current, start this; single objective; sparingly), priority:"front" (queue
   FRONT; jump execution goal ahead of one it unblocks), verifyCommand (shell
   cmd run after confirmed completion: exit0=pass else reject w/ output tail; set when
   machine-checkable — tests/build/lint; keep passing; repeated
-  fails→auto-block for review), handover (free-text continuity note: State+evidence,
+  fails→auto-block for review), handover (continuity note: State+evidence,
   Decisions, Next steps, Risks, Carried limits; handover,
   not prior conversation, is the contract between goals; max 4096 chars). Create only on
   explicit user request for autonomous work or host intake prompt — never
@@ -44,7 +44,7 @@ action:
   reason/expectation,handover); {"goal": null} if none.
 - set_budget: hard limit. Req value(>0)+unit(turns|tokens|milliseconds|seconds|minutes|
   hours). Only explicit user runtime limit ("stop after 20 turns"); never invent;
-  compound→1 unit ("2h3m"→value:123,unit:"minutes"). Unreasonable→refuse+tell user.
+  compound→1 unit ("2h3m"→123 minutes). Unreasonable→refuse+tell user.
 - add_todo: add task. Req todoTitle. Multi-step→decompose into ordered todos up front
   (resurfaces each turn). Todos LINKED: blank at goal start, contained, closed w/ goal;
   never escape.
