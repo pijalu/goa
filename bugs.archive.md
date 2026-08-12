@@ -858,3 +858,94 @@ config passes validation. Gates (run separately): go vet ✓; staticcheck —
 pre-existing only ✓; gocognit -over 15 — pre-existing only ✓; gocyclo -over
 12 — pre-existing only ✓; go test -count=1 -race -cover ./config
 ./core/commands ✓ (78.7% / 57.5%).
+
+---
+
+### BUG: Companion minor mode sticks after team use — footer shows `mode(companion)` and it is impossible to disable
+
+**Status:** FIXED — implemented, tested, validated, archived.
+
+**Symptom:** After using a team (with a reviewer), the footer permanently
+showed companion state (`coding-posture(companion)` plus a companion model
+line) and it was impossible to disable: the indicator survived `/team:off`
+and returned on restart even after `/companion:off`.
+
+**Root cause:** (1) Team activation applied the review policy via
+`teamReviewController.ApplyReview` → `AgentManager.SetAgentDrivenEnabled(true)`
+(`core/agentmanager.go:1026`), which **persists** `AgentDrivenEnabled: true`
+to the session state store. (2) Deactivation (`restoreReviewLocked` →
+`ApplyReview(ReviewApplyOff)`) reset orchestrator mode +
+`InjectCompanionReview(false)` but never called
+`SetAgentDrivenEnabled(false)`, never cleared `modeMgr.currentMinor`, and
+never emitted `ev.MinorMode("")` — so the persisted flag and the footer label
+leaked. (3) On restart, `restoreSessionState`
+(`internal/app/subsystems.go:1163`) force-enabled companion from
+`snap.MinorMode == "companion" || snap.AgentDrivenEnabled`, so the leftover
+persisted flag re-asserted companion every startup.
+
+**Resolution:** (a) `internal/app/team_adapters.go`
+(`teamReviewController.ApplyReview`): the `ReviewApplyOff` path now also calls
+`SetAgentDrivenEnabled(false)` before `InjectCompanionReview(false)`, so team
+deactivation / a `review: off` restore fully tears down the agent-driven
+companion state (and, because `SetAgentDrivenEnabled` persists, stops writing
+the leftover `AgentDrivenEnabled:true` that re-asserted companion on
+restart). (b) `internal/app/subsystems.go` (`restoreSessionState`): the
+startup guard now only forces the companion minor mode from an explicit
+`snap.MinorMode == "companion"`; a bare `snap.AgentDrivenEnabled` restores
+agent-driven *tool availability* without stamping the companion minor-mode
+label (agent-driven tools on ≠ companion minor mode).
+
+Tests (`internal/app/team_companion_teardown_test.go`):
+`TestTeamReviewController_OffDisablesAgentDriven` (RED→GREEN),
+`TestRestoreSessionState_AgentDrivenAloneDoesNotForceCompanion` (RED→GREEN),
+`TestRestoreSessionState_CompanionMinorModeRestores` (guards the legit
+explicit-companion restore). Gates (run separately): go vet ✓; staticcheck
+./internal/app ✓; gocognit -over 15 / gocyclo -over 12 on changed files ✓;
+go test -count=1 -race -cover ./internal/app ✓ (55.3%) and ./core/team ✓.
+Commit `21e1198` ("fix(teams): companion no longer stuck on after team use /
+restart").
+
+**Follow-up (non-blocking):** the footer only learns the minor-mode label via
+`SetMinorMode` (emitted by `/companion:on|off` and startup restore), never by
+team apply — syncing the footer label live on team activate/deactivate is
+possible polish, not required for the stuck-state fix.
+
+---
+
+### BUG: Config → Teams navigation never builds a history stack — ESC anywhere in Teams exits the whole menu to root
+
+**Status:** FIXED — implemented, tested, validated, archived.
+
+**Symptom:** In `/config` → Teams, drilling into a team (detail view) or its
+Description field and pressing ESC (or completing an edit and navigating
+back) dropped the user **out of the config menu entirely** (back to the root
+TUI) instead of returning to the Teams list / team detail.
+
+**Root cause:** the config menu drives `back()` off a history stack
+(`configMenu.open()` pushes, `back()` pops), but the entire Teams flow never
+pushed onto it: `showSubMenu("teams")` called `openTeams` **directly**
+(handler map in `core/commands/config.go:218`), `openTeams` → team selection
+called `m.openTeamDetail(name)` directly, and `openTeamDetail` → "description"
+called `m.promptTeamField(...)` directly. Net effect: `len(m.history) == 0`
+for the whole Teams session, so any `m.back()` hit the empty-history branch →
+`m.current = nil` → menu closed to root. Same defect affected
+`openOrchestrator` and `openGoalsRetention`, which also bypassed `m.open(...)`.
+
+**Resolution:** (a) `core/commands/config.go`: added `openTeamsMenu` /
+`openOrchestratorMenu` / `openGoalsMenu` wrappers that push the root page via
+`m.open(...)`; the submenu handler map now points at them. (b)
+`core/commands/config_teams.go`: `openTeams` opens the team detail via
+`m.open(...)`; `openTeamDetail` opens each sub-page (description / review /
+gates / members / remove) via `m.open(...)`; `promptTeamField` now sets
+`m.current` and returns via `m.back()`; the review/gates completion callbacks
+return to the pushed detail via `m.back()` instead of re-invoking
+`openTeamDetail` directly.
+
+Tests: `TestConfigMenu_TeamsNavigationHistory`,
+`TestConfigMenu_TeamDetailEscReturnsToList`,
+`TestConfigMenu_TeamDescriptionEscReturnsToDetail` — all RED before (ESC
+exited the menu), GREEN after. Gates (run separately): go vet ./... ✓;
+staticcheck ./core/commands ✓; gocognit -over 15 / gocyclo -over 12 on
+changed files ✓; go test -count=1 -race -cover ./core/commands ✓ (58.3%).
+Commit `411600c` ("fix(config): Teams/Orchestrator/Goals submenus now build a
+back-history stack").
