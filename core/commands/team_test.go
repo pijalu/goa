@@ -279,6 +279,94 @@ func TestTeamCommand_RemoveUnknown(t *testing.T) {
 	}
 }
 
+// splitTeamArg must separate a leading sub-command keyword from the team
+// name, leaving an unrecognized argument whole (it is a team name). The
+// command router splits on ':' only, never whitespace, so a multi-word team
+// name arrives as a single trailing token.
+func TestSplitTeamArg(t *testing.T) {
+	cases := []struct {
+		arg      string
+		sub      string
+		rest     string
+	}{
+		{"", "", ""},
+		{"add", "add", ""},
+		{"list", "list", ""},
+		{"off", "off", ""},
+		{"remove:beta", "remove", "beta"},
+		{"show:alpha", "show", "alpha"},
+		{"use:beta", "use", "beta"},
+		{"remove:My Team", "remove", "My Team"},
+		{"show:My Team", "show", "My Team"},
+		{"alpha", "", "alpha"},          // plain team name → default activation
+		{"My Team", "", "My Team"},      // multi-word team name whole
+		{"beta-2", "", "beta-2"},        // hyphenated non-keyword is a name
+		{"statusquo", "", "statusquo"},  // keyword prefix but not keyword
+	}
+	for _, tc := range cases {
+		sub, rest := splitTeamArg(tc.arg)
+		if sub != tc.sub || rest != tc.rest {
+			t.Errorf("splitTeamArg(%q) = (%q,%q), want (%q,%q)", tc.arg, sub, rest, tc.sub, tc.rest)
+		}
+	}
+}
+
+// Regression: the production command router splits "/team:remove:beta" into
+// args ["remove","beta"] (it splits on every ':'). The command must
+// reassemble them so /team:remove:<name>, /team:show:<name> and /team:use:<name>
+// reach their handlers — previously only args[0] was read, so these silently
+// mis-dispatched. Team names with spaces must also survive.
+func TestTeamCommand_RouterSplitArgs(t *testing.T) {
+	// remove via router-shaped args ["remove","beta"]
+	t.Run("remove", func(t *testing.T) {
+		cfg := teamCmdConfig()
+		ctx := teamCmdContext(t, cfg)
+		var onSelected func(string, bool)
+		ctx.SelectOptionFunc = func(title string, options []tui.SelectorItem, current string, sel func(string, bool)) {
+			onSelected = sel
+		}
+		if err := (&TeamCommand{}).Run(ctx, []string{"remove", "beta"}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if onSelected == nil {
+			t.Fatal("remove via split args did not open the confirmation selector")
+		}
+		onSelected("yes", true)
+		if _, ok := cfg.Teams.Definitions["beta"]; ok {
+			t.Errorf("beta should be removed after router-shaped remove")
+		}
+	})
+
+	// show via router-shaped args ["show","alpha"]
+	t.Run("show", func(t *testing.T) {
+		cfg := teamCmdConfig()
+		ctx := teamCmdContext(t, cfg)
+		var out strings.Builder
+		ctx.OutputBuffer = &out
+		if err := (&TeamCommand{}).Run(ctx, []string{"show", "alpha"}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !strings.Contains(out.String(), "Team alpha") {
+			t.Errorf("show via split args out = %q, want the alpha definition", out.String())
+		}
+	})
+
+	// activate a multi-word team name via router-shaped args ["My Team"]
+	t.Run("activate multi-word", func(t *testing.T) {
+		cfg := teamCmdConfig()
+		cfg.Teams.Definitions["My Team"] = config.TeamDefinition{Main: &config.TeamMember{Model: "m9"}, Review: "off"}
+		ctx := teamCmdContext(t, cfg)
+		var out strings.Builder
+		ctx.OutputBuffer = &out
+		if err := (&TeamCommand{}).Run(ctx, []string{"My Team"}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !strings.Contains(out.String(), "My Team") {
+			t.Errorf("activate multi-word out = %q, want the team activated", out.String())
+		}
+	})
+}
+
 func TestTeamCommand_CompleteArgs(t *testing.T) {
 	cfg := teamCmdConfig()
 	ctx := core.Context{Config: cfg}
@@ -408,9 +496,28 @@ func TestConfigMenu_TeamWizardCreatesTeam(t *testing.T) {
 	}
 }
 
-// The wizard must reject a camelCase/invalid team name at input time instead
-// of persisting a definition that config validation would refuse on the next
-// startup (e.g. "LocalTeam").
+// Team names are user-facing display labels: mixed case and spaces are valid
+// (the router splits on ':' only, never whitespace). The wizard must accept
+// them and advance to the model selector rather than re-prompting.
+func TestConfigMenu_TeamWizardAcceptsFriendlyName(t *testing.T) {
+	for _, name := range []string{"LocalTeam", "My Team", "local-team"} {
+		cfg := teamCmdConfig()
+		ctx, sr, ir, _ := newMenuTestContext(t, cfg)
+		menu := newConfigMenu(*ctx)
+
+		menu.addTeamWizard()
+		sr.onSel = nil // detect advance to a selector (model pick)
+		ir.onSub(name, true)
+
+		if sr.onSel == nil {
+			t.Fatalf("friendly name %q did not advance to the main-model selector (prompt %q)", name, ir.prompt)
+		}
+	}
+}
+
+// The wizard must reject a genuinely invalid team name at input time instead
+// of persisting a definition config validation would refuse on the next
+// startup, and it must re-prompt with a normalized suggestion pre-filled.
 func TestConfigMenu_TeamWizardRejectsInvalidName(t *testing.T) {
 	cfg := teamCmdConfig()
 	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
@@ -418,9 +525,9 @@ func TestConfigMenu_TeamWizardRejectsInvalidName(t *testing.T) {
 
 	menu.addTeamWizard()
 	sr.onSel = nil // detect any advance to a selector (model pick)
-	ir.onSub("LocalTeam", true)
+	ir.onSub("-lead", true) // leading dash: must start alphanumeric
 
-	if _, exists := cfg.Teams.Definitions["LocalTeam"]; exists {
+	if _, exists := cfg.Teams.Definitions["-lead"]; exists {
 		t.Fatalf("invalid team name persisted: %v", cfg.Teams.Definitions)
 	}
 	// The wizard must re-prompt for a name, not advance to a selector.

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/pijalu/goa/internal"
 )
@@ -49,15 +50,84 @@ const (
 	TeamDelegationOff   = "off"
 )
 
-// teamNamePattern matches team and member names (TEAMS.md §3.5 rule 1–2).
-var teamNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+// memberNamePattern matches member names (TEAMS.md §3.5 rule 2). Member
+// names double as agent-pool roles: they are registered via
+// pool.SetConfig(role) and referenced by the main agent's delegation tools
+// (delegate_to role:"<member-name>"), so they keep the strict DNS-label
+// charset the LLM can reproduce reliably.
+var memberNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
-// IsValidTeamName reports whether name satisfies the team/member naming rule
-// (TEAMS.md §3.5 rule 1–2). Interactive entry points (config menu, /team)
-// must reject a non-conforming name at input time instead of persisting a
-// definition that config validation would then refuse on the next startup.
+// teamNamePattern matches team names (TEAMS.md §3.5 rule 1). Team names are
+// user-facing display labels: they only serve as config map keys and /team
+// command arguments (the command router splits on ':' only, never on
+// whitespace), so they allow a friendly charset — any letters, digits,
+// spaces, dots, underscores and dashes — as long as they start and end with
+// an alphanumeric and stay within 64 bytes.
+var teamNamePattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$`)
+
+// maxTeamNameLen bounds team names (bytes), mirroring the member rule.
+const maxTeamNameLen = 64
+
+// IsValidTeamName reports whether name satisfies the team naming rule
+// (TEAMS.md §3.5 rule 1). Team names are display labels (map keys + /team
+// args), so the charset is permissive: letters (either case), digits, spaces,
+// dots, underscores, dashes; must start and end alphanumeric; 1–64 bytes.
+// Interactive entry points (config menu, /team) must reject a non-conforming
+// name at input time instead of persisting a definition that config
+// validation would then refuse on the next startup.
 func IsValidTeamName(name string) bool {
-	return teamNamePattern.MatchString(name)
+	return len(name) <= maxTeamNameLen && teamNamePattern.MatchString(name)
+}
+
+// IsValidMemberName reports whether name satisfies the member naming rule
+// (TEAMS.md §3.5 rule 2): the strict DNS-label charset, because member names
+// double as agent-pool roles referenced by the delegation tools.
+func IsValidMemberName(name string) bool {
+	return memberNamePattern.MatchString(name)
+}
+
+// NormalizeTeamNameSlug converts a user-typed team name into a valid team
+// name: lowercase, whitespace collapsed to single dashes, unsupported
+// characters dropped, leading/trailing dashes trimmed, truncated to 64 bytes.
+// It returns "" when nothing usable remains (e.g. input was only symbols).
+// Interactive flows use it to suggest a corrected name instead of a bare
+// rejection.
+func NormalizeTeamNameSlug(name string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	b.Grow(len(name))
+	pendingDash := false
+	for _, r := range name {
+		lower, ok := slugRune(r)
+		if !ok {
+			// Separator or unsupported character: collapse any run into one dash,
+			// emitted lazily so a trailing separator never yields a trailing dash.
+			pendingDash = true
+			continue
+		}
+		if pendingDash && b.Len() > 0 {
+			b.WriteByte('-')
+		}
+		pendingDash = false
+		b.WriteRune(lower)
+	}
+	out := b.String()
+	if len(out) > maxTeamNameLen {
+		out = strings.TrimRight(out[:maxTeamNameLen], "-")
+	}
+	return out
+}
+
+// slugRune maps r to the lowercase rune kept in a team-name slug, or
+// ok=false when r is a separator/unsupported character (collapsed to a dash).
+func slugRune(r rune) (lower rune, ok bool) {
+	switch {
+	case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		return r, true
+	case r >= 'A' && r <= 'Z':
+		return r + ('a' - 'A'), true
+	}
+	return 0, false
 }
 
 // TeamsConfig is the top-level `teams:` section (TEAMS.md §3): the session's
@@ -248,8 +318,8 @@ func (c *Config) validateTeams(ve *internal.ValidationError) {
 // validateTeamDefinition validates one team definition.
 func (c *Config) validateTeamDefinition(ve *internal.ValidationError, name string, def TeamDefinition, skipModelCheck bool, knownModels, knownProviders map[string]struct{}) {
 	prefix := "teams.definitions." + name
-	if !teamNamePattern.MatchString(name) {
-		ve.Add(prefix + ": team name must match [a-z0-9][a-z0-9-]{0,63}")
+	if !IsValidTeamName(name) {
+		ve.Add(prefix + ": team name must be 1–64 chars of letters, digits, spaces, '.', '_' or '-', starting and ending alphanumeric")
 	}
 	members, err := def.ResolvedMembers()
 	if err != nil {
@@ -316,7 +386,7 @@ func (c *Config) validateTeamMembers(ve *internal.ValidationError, prefix string
 
 // validateTeamMember validates a single normalized member.
 func (c *Config) validateTeamMember(ve *internal.ValidationError, mp string, rm ResolvedMember, skipModelCheck bool, knownModels, knownProviders map[string]struct{}) {
-	if !teamNamePattern.MatchString(rm.Name) {
+	if !IsValidMemberName(rm.Name) {
 		ve.Add(mp + ": member name must match [a-z0-9][a-z0-9-]{0,63}")
 	}
 	switch rm.Member.Role {

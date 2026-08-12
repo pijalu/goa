@@ -76,54 +76,80 @@ func teamManager(ctx core.Context) *team.Manager {
 }
 
 func (c *TeamCommand) Run(ctx core.Context, args []string) error {
+	// The command router splits on every ':' (e.g. /team:remove:beta →
+	// ["remove","beta"]), so a team name containing spaces arrives as a single
+	// trailing arg while a sub-command may precede it. Reassemble the full
+	// argument, then split off a leading sub-command keyword.
+	arg := strings.Join(args, ":")
+	sub, rest := splitTeamArg(arg)
+
 	// Manager-free subcommands (like /model add): listing, adding, and
 	// removing definitions only need the config, not an active team manager.
-	if len(args) > 0 {
-		if handled, err := teamConfigOnlyDispatch(ctx, args[0]); handled {
-			return err
-		}
+	switch sub {
+	case "add":
+		return teamAdd(ctx)
+	case "list":
+		return teamList(ctx)
+	case "remove":
+		return teamRemove(ctx, teamManager(ctx), rest)
 	}
+
 	m := teamManager(ctx)
 	if m == nil {
 		writeStr(ctx, "Teams: unavailable (no team manager)\n")
 		return nil
 	}
-	if len(args) == 0 {
+	if arg == "" {
 		return showTeamSelector(ctx, m)
 	}
-	return teamManagedDispatch(ctx, m, args[0])
+	return teamManagedDispatch(ctx, m, sub, rest)
 }
 
-// teamConfigOnlyDispatch runs subcommands that do not need a team manager.
-// handled=false means the arg is not one of them.
-func teamConfigOnlyDispatch(ctx core.Context, arg string) (handled bool, err error) {
-	switch {
-	case arg == "add":
-		return true, teamAdd(ctx)
-	case arg == "list":
-		return true, teamList(ctx)
-	case strings.HasPrefix(arg, "remove:"):
-		return true, teamRemove(ctx, teamManager(ctx), strings.TrimPrefix(arg, "remove:"))
+// splitTeamArg splits a reassembled /team argument into a leading sub-command
+// keyword and the remaining team name. It recognizes the explicit
+// "sub:name" form (e.g. "remove:My Team") and, for backward compatibility,
+// the bare sub-command alone. When the whole argument is not a known
+// sub-command it is treated as a team name (default activation).
+func splitTeamArg(arg string) (sub, rest string) {
+	if i := strings.Index(arg, ":"); i >= 0 {
+		if kw := arg[:i]; isTeamSubCommand(kw) {
+			return kw, arg[i+1:]
+		}
+		return "", arg
 	}
-	return false, nil
+	if isTeamSubCommand(arg) {
+		return arg, ""
+	}
+	return "", arg
+}
+
+// isTeamSubCommand reports whether s is a /team sub-command keyword.
+func isTeamSubCommand(s string) bool {
+	switch s {
+	case "add", "list", "remove", "off", "status", "sync", "show", "use":
+		return true
+	}
+	return false
 }
 
 // teamManagedDispatch runs the subcommands that operate on the active session
 // team (they require a team manager).
-func teamManagedDispatch(ctx core.Context, m *team.Manager, arg string) error {
-	switch {
-	case arg == "off":
+func teamManagedDispatch(ctx core.Context, m *team.Manager, sub, rest string) error {
+	switch sub {
+	case "off":
 		return teamOff(ctx, m)
-	case arg == "status":
+	case "status":
 		return teamStatus(ctx, m)
-	case arg == "sync":
+	case "sync":
 		return teamSync(ctx, m)
-	case strings.HasPrefix(arg, "show:"):
-		return teamShow(ctx, strings.TrimPrefix(arg, "show:"))
-	case strings.HasPrefix(arg, "use:"):
-		return teamActivate(ctx, m, strings.TrimPrefix(arg, "use:"))
+	case "show":
+		return teamShow(ctx, rest)
+	case "use":
+		return teamActivate(ctx, m, rest)
 	default:
-		return teamActivate(ctx, m, arg)
+		// No recognized sub-command: rest holds the whole argument (the team
+		// name), per splitTeamArg's "", arg return.
+		return teamActivate(ctx, m, rest)
 	}
 }
 

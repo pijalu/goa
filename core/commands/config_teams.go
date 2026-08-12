@@ -480,8 +480,8 @@ func (m *configMenu) addTeamMember(teamName string) {
 		name := strings.TrimSpace(value)
 		cfg := m.ctx.Config
 		def := cfg.Teams.Definitions[teamName]
-		if !config.IsValidTeamName(name) {
-			m.flash("Invalid member name " + name + " — must match [a-z0-9][a-z0-9-]{0,63}")
+		if !config.IsValidMemberName(name) {
+			m.flash("Invalid member name " + name + " — must match [a-z0-9][a-z0-9-]{0,63} (members become pool roles)")
 			m.addTeamMember(teamName)
 			return
 		}
@@ -571,8 +571,16 @@ func (m *configMenu) confirmRemoveTeam(name string) {
 // model (when policy ≠ off) → save (§8.3). N-member teams are reachable by
 // adding members afterwards in the detail view.
 func (m *configMenu) addTeamWizard() {
+	m.addTeamWizardPrompt("")
+}
+
+// addTeamWizardPrompt asks for the team name, pre-filling the input with
+// prefill (a normalized suggestion after an invalid attempt). An invalid name
+// flashes the rule and re-prompts with the suggested correction so one Enter
+// accepts it.
+func (m *configMenu) addTeamWizardPrompt(prefill string) {
 	m.current = m.addTeamWizard
-	m.ctx.ShowInput("New team name [a-z0-9][a-z0-9-]{0,63}:", "", func(name string, ok bool) {
+	m.ctx.ShowInput("New team name (letters, digits, spaces, -, _, .):", prefill, func(name string, ok bool) {
 		if !ok {
 			m.back()
 			return
@@ -580,8 +588,14 @@ func (m *configMenu) addTeamWizard() {
 		name = strings.TrimSpace(name)
 		cfg := m.ctx.Config
 		if !config.IsValidTeamName(name) {
-			m.flash("Invalid team name " + name + " — must match [a-z0-9][a-z0-9-]{0,63}")
-			m.addTeamWizard()
+			slug := config.NormalizeTeamNameSlug(name)
+			if slug != "" && slug != name {
+				m.flash("Invalid team name " + name + " — suggested: " + slug)
+				m.addTeamWizardPrompt(slug)
+				return
+			}
+			m.flash("Invalid team name " + name + " — use letters, digits, spaces, -, _, . (start/end alphanumeric)")
+			m.addTeamWizardPrompt("")
 			return
 		}
 		if _, exists := cfg.Teams.Definitions[name]; exists {
