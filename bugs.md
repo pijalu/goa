@@ -287,7 +287,7 @@ terminal output (not just logs).
 
 ## BUG: Companion minor mode sticks after team use — footer shows `mode(companion)` and it is impossible to disable
 
-**Status:** OPEN — logged, root cause identified, fix plan below.
+**Status:** FIXED — implemented, tested, validated.
 
 **Symptom:** After using a team (with a reviewer) on a project, the footer
 permanently shows companion state, e.g.:
