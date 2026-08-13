@@ -2,6 +2,42 @@
 
 Completed entries moved here from bugs.md per guideline 4.
 
+### ENHANCEMENT: /config per-model compression settings — "select model / set compression parameters" UI
+
+**Status:** IMPLEMENTED — tested, validated, archived.
+
+**Gap:** the config FILE layer already supported `context_compression.per_model.<modelID>.*`
+(`ContextCompressionConfig.PerModel`, merged via `mergeCompressionPerModel`, validated via
+`validateCompressionOverride`, applied at runtime via `overlayCompressionForModel` /
+`buildCompressionConfig`, live-refreshed via `RefreshContextCompression`), but the /config
+Compression menu edited ONLY the global section — no model picker, no per-model override UI,
+and `applyConfigSet`/`setConfigField`/`persistConfigValue` handled only the fixed global keys.
+
+**Resolution:**
+- `core/commands/config_cli.go`: `setConfigField` now recognizes dynamic
+  `context_compression.per_model.<id>.<field>` keys (`parsePerModelCompressionKey`) and routes
+  to `setPerModelCompressionField` / `applyPerModelField` (strategy, strategies.{soft,trigger,hard},
+  thresholds.{soft,trigger,hard}_percent, max_tokens, cache_gate, preserve_recent_turns). Validation
+  mirrors the global setters: same strategy allow-list, soft layer stays zero-LLM, threshold levels
+  are 0/-1 or 10-95 in 5% steps (`setPerModelLevel`), cache_gate on/off. Empty value clears a field
+  to "inherit"; `persistConfigValue` persists clears as `DeleteHomeField` so override entries stay
+  clean. Cross-field invariants and the unknown-model-ID rejection are enforced by the existing
+  `candidate.Validate()` gate.
+- `core/commands/config_compression.go`: new "Per-model overrides" row in the Compression menu →
+  `settingCompressionPerModel` (configured-model picker showing override/inherit state) →
+  `settingCompressionPerModelEdit` (per-field editor with set + "inherit (clear)" + "clear all
+  overrides"). All edits go through `applySet`, so validation/persistence/live refresh match the
+  global settings.
+- Tests (`core/commands/config_compression_test.go`): per-field key setters, invalid-value rejection
+  (bad strategy, soft-LLM, bad-step/high thresholds, unknown model, unknown field), clear-to-inherit,
+  menu entry presence, full menu flow (picker → edit → set → clear), and a CascadeLoader
+  save+reload persistence round-trip. Updated `TestConfigMenu_CompressionSubmenu` item list for the
+  new `per_model` row.
+
+**Validated:** `go vet ./...` ✓; `staticcheck` — pre-existing `validatePercentRange` U1000 only
+(verified pre-existing on clean tree, not from this change) ✓; `gocognit -over 15` / `gocyclo -over 12`
+— no new functions over limit ✓; `go test -count=1 -race -cover ./...` — 81 packages ok, 0 failures ✓.
+
 ### BUG: python tool — `AttributeError: 'str' has no attribute 'splitlines'` (gpython does not implement `str.splitlines`)
 
 **Status:** FIXED — implemented, tested, validated, archived.

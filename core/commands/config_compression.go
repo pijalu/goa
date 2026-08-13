@@ -4,6 +4,7 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
@@ -44,10 +45,12 @@ func (m *configMenu) settingCompression() {
 		{Value: "micro_keep_recent_messages", Label: "Micro: keep recent messages", Description: microKeepRecentLabel(cfg)},
 		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg)},
 		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg)},
+		{Value: "per_model", Label: "Per-model overrides", Description: perModelCompressionLabel(cfg)},
 		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
 		{Value: "on_context_error", Label: "Compress on context error", Description: boolLabel(cfg.ContextCompression.OnContextError)},
 	}
 	openers := map[string]func(){
+		"per_model":                  m.settingCompressionPerModel,
 		"strategy":                   m.settingCompressionStrategy,
 		"soft_strategy":              m.settingCompressionSoftStrategy,
 		"hard_strategy":              m.settingCompressionHardStrategy,
@@ -532,4 +535,255 @@ func maxTokensLabel(v int) string {
 		return "auto"
 	}
 	return fmt.Sprintf("%d", v)
+}
+
+// --- per-model overrides ------------------------------------------------------
+
+// perModelCompressionLabel summarizes how many models carry a compression
+// override for the top-level menu row.
+func perModelCompressionLabel(cfg *config.Config) string {
+	n := len(cfg.ContextCompression.PerModel)
+	if n == 0 {
+		return "none (global only)"
+	}
+	return fmt.Sprintf("%d model(s) overridden", n)
+}
+
+// settingCompressionPerModel lists configured models and opens the override
+// editor for the chosen one. Only configured models are offered because
+// validation (validateCompressionOverride) rejects an override for an unknown
+// model ID.
+func (m *configMenu) settingCompressionPerModel() {
+	m.current = m.settingCompressionPerModel
+	cfg := m.ctx.Config
+	items := make([]tui.SelectorItem, 0, len(cfg.Models))
+	for _, mod := range cfg.Models {
+		if mod.Ephemeral {
+			continue
+		}
+		_, has := cfg.ContextCompression.PerModel[mod.ID]
+		desc := "inherits global"
+		if has {
+			desc = "override set"
+		}
+		items = append(items, tui.SelectorItem{
+			Value:       mod.ID,
+			Label:       mod.ID,
+			Description: desc,
+			Color:       localModelColor(cfg, mod.ProviderID),
+			SearchLabel: modelSearchLabel(mod.ID, mod.ProviderID, mod.Model),
+		})
+	}
+	if len(items) == 0 {
+		items = append(items, tui.SelectorItem{
+			Value:       "",
+			Label:       "(no models configured)",
+			Description: "add a model under /config models first",
+		})
+	}
+	m.ctx.SelectOption("Per-model compression overrides — pick a model:", items, "", func(modelID string, ok bool) {
+		if !ok || modelID == "" {
+			m.back()
+			return
+		}
+		m.open(func() { m.settingCompressionPerModelEdit(modelID) })
+	})
+}
+
+// settingCompressionPerModelEdit is the per-model override editor: it shows the
+// effective override value (or "inherit") for each settable field and lets the
+// user set or clear it. All edits route through applySet with the dynamic
+// context_compression.per_model.<id>.<field> key, so validation, persistence
+// and live runtime refresh are identical to the global settings.
+func (m *configMenu) settingCompressionPerModelEdit(modelID string) {
+	m.current = func() { m.settingCompressionPerModelEdit(modelID) }
+	cfg := m.ctx.Config
+	ov := cfg.ContextCompression.PerModel[modelID]
+	keyPrefix := "context_compression.per_model." + modelID + "."
+	items := []tui.SelectorItem{
+		{Value: "strategy", Label: "Trigger strategy", Description: perModelStrategyLabel(ov.Strategy)},
+		{Value: "strategies.soft", Label: "Soft strategy", Description: perModelStrategyLabel(ov.Strategies.Soft)},
+		{Value: "strategies.hard", Label: "Hard strategy", Description: perModelStrategyLabel(ov.Strategies.Hard)},
+		{Value: "thresholds.soft_percent", Label: "Soft threshold", Description: perModelPctLabel(ov.Thresholds.SoftPercent)},
+		{Value: "thresholds.trigger_percent", Label: "Trigger threshold", Description: perModelPctLabel(ov.Thresholds.TriggerPercent)},
+		{Value: "thresholds.hard_percent", Label: "Hard ceiling", Description: perModelPctLabel(ov.Thresholds.HardPercent)},
+		{Value: "max_tokens", Label: "Max tokens", Description: perModelMaxTokensLabel(ov.MaxTokens)},
+		{Value: "cache_gate", Label: "Cache gate", Description: perModelCacheGateLabel(ov.CacheGate)},
+		{Value: "preserve_recent_turns", Label: "Preserve recent turns", Description: perModelIntInheritLabel(ov.PreserveRecentTurns)},
+		{Value: "__clear__", Label: "— clear all overrides —", Description: "remove every per-model override for " + modelID},
+	}
+	m.ctx.SelectOption("Compression overrides for "+modelID+":", items, "", func(field string, ok bool) {
+		if !ok || field == "" {
+			m.back()
+			return
+		}
+		if field == "__clear__" {
+			m.clearPerModelCompression(modelID)
+			return
+		}
+		// Push the field selector so its apply/cancel (m.back) returns HERE, to
+		// the editor — matching how the global compression menu's openers are
+		// pushed via m.open and their sub-screens pop back to settingCompression.
+		m.open(func() { m.openPerModelCompressionField(modelID, keyPrefix, field) })
+	})
+}
+
+// openPerModelCompressionField opens the value selector for one override field.
+// An "inherit (clear)" option maps to the empty value, which applySet turns
+// into a field removal (the model then inherits the global section).
+func (m *configMenu) openPerModelCompressionField(modelID, keyPrefix, field string) {
+	m.current = func() { m.openPerModelCompressionField(modelID, keyPrefix, field) }
+	key := keyPrefix + field
+	switch field {
+	case "strategy":
+		m.selectPerModelValue("Strategy for "+modelID+":", key, compressionStrategyItems(true))
+	case "strategies.soft":
+		m.selectPerModelValue("Soft (zero-LLM) strategy for "+modelID+":", key, layerStrategyItems(true, true))
+	case "strategies.hard":
+		m.selectPerModelValue("Hard strategy for "+modelID+":", key, layerStrategyItems(true, false))
+	case "thresholds.soft_percent", "thresholds.trigger_percent", "thresholds.hard_percent":
+		m.selectPerModelValue(field+" for "+modelID+":", key, percentItemsWithInherit())
+	case "cache_gate":
+		m.selectPerModelValue("Cache gate for "+modelID+":", key, cacheGateItems())
+	case "max_tokens":
+		m.promptPerModelInput("Max tokens for "+modelID+" (empty = inherit):", key)
+	case "preserve_recent_turns":
+		m.promptPerModelInput("Preserve recent turns for "+modelID+" (empty = inherit):", key)
+	}
+}
+
+// selectPerModelValue shows a value picker and applies the choice via applySet.
+func (m *configMenu) selectPerModelValue(title, key string, items []tui.SelectorItem) {
+	m.ctx.SelectOption(title, items, "", func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet(key, v)
+		m.back()
+	})
+}
+
+// promptPerModelInput shows a free-text input for numeric override fields.
+func (m *configMenu) promptPerModelInput(prompt, key string) {
+	m.ctx.ShowInput(prompt, "", func(value string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet(key, strings.TrimSpace(value))
+		m.back()
+	})
+}
+
+// clearPerModelCompression removes every override field for a model, both from
+// the live config and from the persisted home config, then refreshes the agent.
+func (m *configMenu) clearPerModelCompression(modelID string) {
+	cc := &m.ctx.Config.ContextCompression
+	if cc.PerModel == nil {
+		m.back()
+		return
+	}
+	delete(cc.PerModel, modelID)
+	if m.ctx.ConfigSaver != nil {
+		if err := m.ctx.ConfigSaver.DeleteHomeField([]string{"context_compression", "per_model", modelID}); err != nil {
+			m.flash("cleared in memory, but failed to persist: " + err.Error())
+		}
+	}
+	if m.ctx.AgentManager != nil {
+		m.ctx.AgentManager.RefreshContextCompression()
+	}
+	m.back()
+}
+
+// --- per-model label / item helpers ------------------------------------------
+
+func perModelStrategyLabel(v string) string {
+	if v == "" {
+		return "inherit"
+	}
+	return v
+}
+
+func perModelPctLabel(v int) string {
+	if v == 0 {
+		return "inherit"
+	}
+	if v == -1 {
+		return "disabled"
+	}
+	return fmt.Sprintf("%d%%", v)
+}
+
+func perModelMaxTokensLabel(v int) string {
+	if v <= 0 {
+		return "inherit"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+func perModelCacheGateLabel(v string) string {
+	if v == "" {
+		return "inherit"
+	}
+	return v
+}
+
+func perModelIntInheritLabel(v int) string {
+	if v <= 0 {
+		return "inherit"
+	}
+	return fmt.Sprintf("%d", v)
+}
+
+// compressionStrategyItems returns the strategy picker options; withInherit
+// prepends the "inherit (clear)" row used by the per-model editor.
+func compressionStrategyItems(withInherit bool) []tui.SelectorItem {
+	items := []tui.SelectorItem{}
+	if withInherit {
+		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global compression strategy"})
+	}
+	return append(items,
+		tui.SelectorItem{Value: "micro", Label: "micro", Description: "truncate old tool result bodies (cache-friendly)"},
+		tui.SelectorItem{Value: "tool_elision", Label: "tool_elision", Description: "replace old tool args/results with placeholders"},
+		tui.SelectorItem{Value: "selective", Label: "selective", Description: "drop oldest messages, keep system + recent turns"},
+		tui.SelectorItem{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
+		tui.SelectorItem{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
+	)
+}
+
+// layerStrategyItems returns per-layer strategy options; soft restricts to the
+// zero-LLM strategies, mirroring the global soft-layer rule.
+func layerStrategyItems(withInherit, soft bool) []tui.SelectorItem {
+	items := []tui.SelectorItem{}
+	if withInherit {
+		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global layer strategy"})
+	}
+	items = append(items,
+		tui.SelectorItem{Value: "micro", Label: "micro", Description: "truncate old tool result bodies"},
+		tui.SelectorItem{Value: "tool_elision", Label: "tool_elision", Description: "replace old tool args/results with placeholders"},
+	)
+	if !soft {
+		items = append(items,
+			tui.SelectorItem{Value: "selective", Label: "selective", Description: "drop oldest messages"},
+			tui.SelectorItem{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
+			tui.SelectorItem{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
+		)
+	}
+	return items
+}
+
+// percentItemsWithInherit returns the 10-95% step options plus inherit (clear).
+func percentItemsWithInherit() []tui.SelectorItem {
+	items := []tui.SelectorItem{{Value: "", Label: "inherit (clear)", Description: "use the global threshold"}}
+	return append(items, percentStepItems()...)
+}
+
+// cacheGateItems returns the cache-gate options plus inherit (clear).
+func cacheGateItems() []tui.SelectorItem {
+	return []tui.SelectorItem{
+		{Value: "", Label: "inherit (clear)", Description: "use the global cache-gate setting"},
+		{Value: "on", Label: "on", Description: "defer compression while the cache is hot"},
+		{Value: "off", Label: "off", Description: "compress at the threshold regardless of cache"},
+	}
 }

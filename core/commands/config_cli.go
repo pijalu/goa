@@ -320,6 +320,16 @@ func persistConfigValue(ctx core.Context, key string, path []string, value strin
 	if override, ok := configSavePaths[key]; ok {
 		savePath = override
 	}
+	// Per-model compression overrides: an empty value means "clear this field so
+	// the model inherits the global section". Persist that as a key removal
+	// rather than writing an empty scalar, so the override entry stays clean
+	// (and disappears entirely once its last field is cleared).
+	if _, _, isPerModel := parsePerModelCompressionKey(path); isPerModel && value == "" {
+		if err := ctx.ConfigSaver.DeleteHomeField(savePath); err != nil {
+			return fmt.Errorf("cleared %s in memory, but failed to persist the clear: %v", key, err)
+		}
+		return nil
+	}
 	if err := ctx.ConfigSaver.SaveHomeField(savePath, scalarValue(value)); err != nil {
 		return fmt.Errorf("set %s = %s (in memory, but failed to persist: %v)", key, value, err)
 	}
@@ -699,6 +709,126 @@ func setCacheGate(cfg *config.Config, value string) error {
 	return fmt.Errorf("context_compression.cache_gate must be \"on\" or \"off\"")
 }
 
+// setPerModelCompressionField sets one compression override field for a single
+// model (context_compression.per_model.<modelID>.<field>), creating the
+// PerModel map / entry on demand. An empty value clears the field back to
+// "inherit from the global section". The validation rules mirror the global
+// setters (same allowed strategies, threshold ranges, on/off cache gate), so a
+// per-model override can never be set to a value the global field would reject.
+func setPerModelCompressionField(cfg *config.Config, modelID, field, value string) error {
+	pm := cfg.ContextCompression.PerModel
+	if pm == nil {
+		pm = map[string]config.ModelCompressionOverride{}
+		cfg.ContextCompression.PerModel = pm
+	}
+	ov := pm[modelID]
+	if err := applyPerModelField(&ov, field, value); err != nil {
+		return err
+	}
+	pm[modelID] = ov
+	return nil
+}
+
+// applyPerModelField validates and writes one per-model override field.
+func applyPerModelField(ov *config.ModelCompressionOverride, field, value string) error {
+	switch field {
+	case "strategy":
+		v := strings.ToLower(value)
+		switch v {
+		case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+			ov.Strategy = v
+			return nil
+		}
+		return fmt.Errorf("per-model strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+	case "strategies.soft", "strategies.trigger", "strategies.hard":
+		return setPerModelLayerStrategy(ov, field, value)
+	case "thresholds.soft_percent":
+		return setPerModelLevel(&ov.Thresholds.SoftPercent, field, value, true)
+	case "thresholds.trigger_percent":
+		return setPerModelLevel(&ov.Thresholds.TriggerPercent, field, value, false)
+	case "thresholds.hard_percent":
+		return setPerModelLevel(&ov.Thresholds.HardPercent, field, value, false)
+	case "max_tokens":
+		return setPerModelIntRange(&ov.MaxTokens, field, value, 0, 1<<30)
+	case "cache_gate":
+		v := strings.ToLower(value)
+		switch v {
+		case "", "on", "off":
+			ov.CacheGate = v
+			return nil
+		}
+		return fmt.Errorf("per-model cache_gate must be \"on\" or \"off\"")
+	case "preserve_recent_turns":
+		return setPerModelIntRange(&ov.PreserveRecentTurns, field, value, 0, 100)
+	}
+	return fmt.Errorf("unknown per-model compression field: %s", field)
+}
+
+// setPerModelLayerStrategy validates a per-layer strategy override; the soft
+// layer must stay zero-LLM (micro or tool_elision), mirroring the global rule.
+func setPerModelLayerStrategy(ov *config.ModelCompressionOverride, field, value string) error {
+	v := strings.ToLower(value)
+	switch v {
+	case "", "tool_elision", "micro":
+		// valid for every layer
+	case "selective", "summarize", "hybrid":
+		if field == "strategies.soft" {
+			return fmt.Errorf("soft layer strategy must be zero-LLM (micro or tool_elision)")
+		}
+	default:
+		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+	}
+	switch field {
+	case "strategies.soft":
+		ov.Strategies.Soft = v
+	case "strategies.trigger":
+		ov.Strategies.Trigger = v
+	case "strategies.hard":
+		ov.Strategies.Hard = v
+	}
+	return nil
+}
+
+// setPerModelIntRange parses an int override; empty clears it to 0 (inherit).
+func setPerModelIntRange(dst *int, field, value string, min, max int) error {
+	if value == "" {
+		*dst = 0
+		return nil
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	if v < min || v > max {
+		return fmt.Errorf("%s must be between %d and %d (got %d)", field, min, max, v)
+	}
+	*dst = v
+	return nil
+}
+
+// setPerModelLevel parses a threshold-level override, mirroring the global
+// validation (validateCompressionLevel): empty/0 = inherit, -1 = disable (soft
+// layer only), otherwise 10-95 in 5% increments.
+func setPerModelLevel(dst *int, field, value string, allowDisable bool) error {
+	if value == "" {
+		*dst = 0
+		return nil
+	}
+	v, err := strconv.Atoi(value)
+	if err != nil {
+		return err
+	}
+	if v == 0 || (allowDisable && v == -1) {
+		*dst = v
+		return nil
+	}
+	if v < 10 || v > 95 || v%5 != 0 {
+		return fmt.Errorf("%s must be 10-95 in 5%% increments (got %d)", field, v)
+	}
+	*dst = v
+	return nil
+}
+
 // setMicroMinContextRatio validates the micro-compaction usage gate: 0 (or
 // empty) clears to the SDK default (0.5); anything else must be a ratio in
 // (0, 1].
@@ -770,11 +900,31 @@ func setIntRange(getter func(*config.Config) *int, min, max int) configSetter {
 
 func setConfigField(cfg *config.Config, path []string, value string) error {
 	key := strings.Join(path, ".")
-	setter, ok := configSetters[key]
-	if !ok {
-		return fmt.Errorf("unknown config key: %s", key)
+	if setter, ok := configSetters[key]; ok {
+		return setter(cfg, value)
 	}
-	return setter(cfg, value)
+	// Dynamic per-model compression override keys:
+	// context_compression.per_model.<modelID>.<field> — the model ID is embedded
+	// in the path, so these cannot be listed in the static configSetters map.
+	if modelID, field, ok := parsePerModelCompressionKey(path); ok {
+		return setPerModelCompressionField(cfg, modelID, field, value)
+	}
+	return fmt.Errorf("unknown config key: %s", key)
+}
+
+// parsePerModelCompressionKey splits a context_compression.per_model.<modelID>.<field>
+// path into its model ID and field. ok is false for any other key shape.
+func parsePerModelCompressionKey(path []string) (modelID, field string, ok bool) {
+	// path = [context_compression, per_model, <modelID>, <field...>]
+	if len(path) < 4 || path[0] != "context_compression" || path[1] != "per_model" {
+		return "", "", false
+	}
+	modelID = path[2]
+	if modelID == "" {
+		return "", "", false
+	}
+	field = strings.Join(path[3:], ".")
+	return modelID, field, field != ""
 }
 
 func parseBool(value string) bool {
