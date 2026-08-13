@@ -738,8 +738,40 @@ func (c *Compositor) drawWindow(canvas []string, cursor *CursorPos, width, heigh
 	// drawWindow repaints every row (first frame / full repaint), so the scroll
 	// advance did not pre-write any bottom rows for repaintWindow to skip.
 	c.lastScrollCount = 0
-	for i := vt; i < len(canvas); i++ {
+	// Two-phase repaint: transcript in [1, windowH], chrome in [windowH+1, height].
+	// This keeps the chrome band pinned at the screen bottom even when vt is
+	// clamped above the natural anchor (windowTop's watermark clamp).
+	windowH := height - c.chromeH
+	if windowH < 1 {
+		windowH = 1
+	}
+	contentEnd := len(canvas) - c.chromeH
+	if contentEnd < 0 {
+		contentEnd = 0
+	}
+	transcriptEnd := vt + windowH
+	if transcriptEnd > contentEnd {
+		transcriptEnd = contentEnd
+	}
+	for i := vt; i < transcriptEnd; i++ {
 		screenRow := i - vt + 1
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		buf.WriteString(truncateToWidth(canvas[i], width, ""))
+		c.traceWroteRow(screenRow)
+	}
+	// Clear any stale transcript rows between the transcript end and the
+	// chrome band (a clamped window can leave rows the taller previous frame
+	// painted).
+	for screenRow := transcriptEnd - vt + 1; screenRow <= windowH; screenRow++ {
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		c.traceWroteRow(screenRow)
+	}
+	// Draw the pinned chrome band in the rows below the transcript region.
+	for i := contentEnd; i < len(canvas); i++ {
+		screenRow := windowH + (i - contentEnd) + 1
+		if screenRow > height {
+			break
+		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
 		buf.WriteString(truncateToWidth(canvas[i], width, ""))
 		c.traceWroteRow(screenRow)
@@ -869,29 +901,24 @@ func (c *Compositor) renderDiff(canvas []string, cursor *CursorPos, width, heigh
 // terminal of `height` rows, reconciling the natural bottom anchor with the
 // scrollback watermark.
 //
-// Two regimes:
+// The window top is ALWAYS clamped to the scrollback watermark: rows
+// [0, scrollTop) have been emitted into terminal scrollback exactly once and
+// the terminal offers no "unscroll" — repainting them onto the visible window
+// would duplicate them (the screen-glitching bug at the scrollback boundary).
 //
-//   - Canvas still taller than the terminal (canvasLen > height): the natural
-//     anchor len(canvas)-height is used even when it dips a few rows below
-//     scrollTop. A small mid-transcript shrink then repaints a handful of
-//     already-scrolled rows just above the viewport — imperceptible, since
-//     they read as ordinary scroll-back — and, crucially, keeps the window
-//     full. Clamping to scrollTop here would leave an orphaned blank row at
-//     the bottom of the screen (the "screen shrank one line" regression).
-//
-//   - Canvas fits on screen (canvasLen <= height): the whole canvas is
-//     visible, so rows [0, scrollTop) would visibly pop back onto the screen —
-//     the mascot/logo flash when a tall transcript collapsed to fit for one
-//     frame. Clamp the window top to scrollTop so already-scrolled rows are
-//     never repainted; the top of the window shows blanks until the canvas
-//     regrows.
+// When the natural anchor dips below the watermark — a mid-transcript shrink
+// (a thinking block finalized shorter) or a chrome-band shrink (goal bubble
+// cleared) — the clamped window shows blank rows at the top of the
+// transcript region. repaintWindow's two-phase layout keeps the chrome band
+// pinned at the screen bottom regardless, so the blanks are truthful empty
+// space, never displaced chrome.
 //
 // A deliberate transcript reset (/new, session switch) must call Clear first
 // to zero the watermark; otherwise a from-scratch canvas would be anchored at
 // a stale watermark instead of rendering fully.
 func (c *Compositor) windowTop(canvasLen, height int) int {
 	vt := max(0, canvasLen-height)
-	if canvasLen <= height && vt < c.scrollTop {
+	if vt < c.scrollTop {
 		vt = c.scrollTop
 	}
 	return vt
@@ -1064,42 +1091,66 @@ func (c *Compositor) advanceScrollback(buf *strings.Builder, canvas []string, ta
 // repaintWindow redraws the visible window with absolute CUP, skipping rows
 // whose bytes are unchanged since the previous frame.
 //
-// The window spans screen rows [1, height] starting at canvas row vt. When the
-// canvas is shorter than vt+height (it transiently shrank below the scrollback
-// watermark), canvas indices past the end render as blank rows — clearing the
-// stale rows the taller previous frame left on the lower screen, without
-// repainting the already-scrolled rows above vt.
+// The window is painted in two phases so the chrome band stays pinned at the
+// screen bottom even when vt is clamped above the natural bottom anchor (a
+// chrome-band shrink, where the watermark prevents revealing already-scrolled
+// rows):
+//
+//  1. Transcript region: screen rows [1, windowH], mapping to canvas rows
+//     [vt, vt+windowH). Rows past contentEnd render as blanks (the transcript
+//     genuinely shrank or the watermark clamped above the natural anchor).
+//  2. Chrome region: screen rows [windowH+1, height], mapping to canvas rows
+//     [contentEnd, len(canvas)). The chrome band is always at the bottom of
+//     the screen regardless of where vt lands.
+//
+// When the canvas is shorter than vt+windowH (it transiently shrank below the
+// scrollback watermark), canvas indices past the transcript end render as
+// blank rows — clearing the stale rows the taller previous frame left on the
+// lower screen, without repainting the already-scrolled rows above vt.
 func (c *Compositor) repaintWindow(buf *strings.Builder, canvas []string, vt, width, height int) {
-	// Skip the row(s) the scroll just wrote at the bottom of the transcript
-	// region: on a scrolling frame the last scrollCount transcript rows were
-	// already emitted by emitSteadyScroll (pushing the old top rows into
-	// scrollback). Redrawing them here would write the same content twice in
-	// one frame — once pushed into scrollback and once on screen — the
-	// transient duplicate-row bug seen at conversation start (and amplified
-	// when a chrome reset follows).
-	//
-	// The skip window is anchored at the transcript band end (contentEnd), NOT
-	// at the bottom of the whole canvas: emitSteadyScroll writes rows
-	// [writeFrom, writeTo) with writeTo clamped to contentEnd, so the freshly
-	// written rows are the last scrollCount rows BELOW the chrome band.
-	// Anchoring at len(canvas) instead would skip the bottom chrome rows
-	// (editor/footer) — which the scroll never wrote — suppressing their
-	// repaint whenever they change on a scrolling frame (e.g. the editor
-	// clearing on submit while the command echo scrolls the transcript: the
-	// stale command then stays visible until the next non-scrolling frame).
 	contentEnd := len(canvas) - c.chromeH
+	windowH := height - c.chromeH
+	if windowH < 1 {
+		windowH = 1
+	}
 	skipFrom := contentEnd - c.lastScrollCount
 	skipTo := contentEnd
-	for screenRow := 1; screenRow <= height; screenRow++ {
+
+	c.repaintTranscriptRows(buf, canvas, vt, windowH, contentEnd, skipFrom, skipTo, width)
+	c.repaintChromeRows(buf, canvas, windowH, height, contentEnd, width)
+}
+
+// repaintTranscriptRows paints screen rows [1, windowH] from canvas transcript
+// rows [vt, vt+windowH), skipping unchanged rows and the scroll-skip window.
+func (c *Compositor) repaintTranscriptRows(buf *strings.Builder, canvas []string, vt, windowH, contentEnd, skipFrom, skipTo, width int) {
+	for screenRow := 1; screenRow <= windowH; screenRow++ {
 		i := vt + screenRow - 1
 		line := ""
-		if i >= 0 && i < len(canvas) {
+		if i >= 0 && i < contentEnd {
 			line = canvas[i]
 		}
 		if c.lastScrollCount > 0 && i >= skipFrom && i < skipTo {
 			continue
 		}
-		if c.unchangedRow(canvas, i, vt) {
+		if c.unchangedRowTranscript(canvas, i, vt) {
+			continue
+		}
+		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
+		buf.WriteString(truncateToWidth(line, width, ""))
+		c.traceWroteRow(screenRow)
+	}
+}
+
+// repaintChromeRows paints screen rows [windowH+1, height] from the canvas
+// chrome band [contentEnd, len(canvas)), keeping chrome pinned at the bottom.
+func (c *Compositor) repaintChromeRows(buf *strings.Builder, canvas []string, windowH, height, contentEnd, width int) {
+	for screenRow := windowH + 1; screenRow <= height; screenRow++ {
+		i := contentEnd + (screenRow - windowH - 1)
+		line := ""
+		if i >= 0 && i < len(canvas) {
+			line = canvas[i]
+		}
+		if c.unchangedRowChrome(canvas, i, screenRow, windowH) {
 			continue
 		}
 		buf.WriteString(fmt.Sprintf("\x1b[%d;1H\x1b[2K", screenRow))
@@ -1288,18 +1339,41 @@ func (c *Compositor) resetScrollRegion(buf *strings.Builder) {
 	c.regionBot = 0
 }
 
-// unchangedRow reports whether canvas row i (in the current window at viewport
-// top vt) has the same bytes as the row the terminal currently shows there.
-// The previous frame's row that was shown at this screen position was
-// prevLines[i] adjusted by the viewport-top delta between frames.
-// An out-of-range i (canvas shrank below the window) is treated as a blank row.
-func (c *Compositor) unchangedRow(canvas []string, i, vt int) bool {
+// unchangedRowTranscript reports whether transcript canvas row i (at viewport
+// top vt) has the same bytes as the row the terminal currently shows at that
+// screen position. The previous frame's row at the same screen position was
+// prevLines[i - vt + c.vt].
+func (c *Compositor) unchangedRowTranscript(canvas []string, i, vt int) bool {
 	if c.prevLines == nil {
 		return false
 	}
-	// Canvas row i is at screen row i-vt. In the previous frame the same screen
-	// row showed prevLines[i - vt + c.vt].
 	prevIdx := i - vt + c.vt
+	if prevIdx < 0 || prevIdx >= len(c.prevLines) {
+		return false
+	}
+	cur := ""
+	if i >= 0 && i < len(canvas) {
+		cur = canvas[i]
+	}
+	return c.prevLines[prevIdx] == cur
+}
+
+// unchangedRowChrome reports whether chrome canvas row i (at screen row
+// screenRow) has the same bytes as the row the terminal currently shows
+// there. In the previous frame the chrome band was also pinned at the screen
+// bottom, so the same screen row held prevLines at the chrome offset in the
+// PREVIOUS canvas.
+func (c *Compositor) unchangedRowChrome(canvas []string, i, screenRow, windowH int) bool {
+	if c.prevLines == nil {
+		return false
+	}
+	prevChromeH := c.prevChromeH
+	prevWindowH := c.prevH - prevChromeH
+	if prevWindowH < 1 {
+		prevWindowH = 1
+	}
+	prevContentEnd := len(c.prevLines) - prevChromeH
+	prevIdx := prevContentEnd + (screenRow - prevWindowH - 1)
 	if prevIdx < 0 || prevIdx >= len(c.prevLines) {
 		return false
 	}
