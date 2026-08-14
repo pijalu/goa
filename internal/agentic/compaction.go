@@ -46,6 +46,34 @@ type MicroCompactionConfig struct {
 	MinContextRatio float64
 }
 
+// microFallbackConfig returns the micro settings for the summarize-overflow
+// fallback in Compact (applyMicroForSummarize). The fallback runs regardless
+// of MicroCompaction.Enabled — it is the escape hatch when summarize itself
+// overflows the window, not an opt-in maintenance pass — so Enabled is
+// irrelevant here and zero-valued truncation fields fall back to the
+// documented defaults: SDK callers that never configured micro still get a
+// sane pass (bounded keep window, minimum content size, readable marker)
+// instead of wiping every old tool result with an empty marker.
+func microFallbackConfig(cfg MicroCompactionConfig) MicroCompactionConfig {
+	def := DefaultMicroCompactionConfig
+	if cfg.KeepRecentMessages <= 0 {
+		cfg.KeepRecentMessages = def.KeepRecentMessages
+	}
+	if cfg.MinContentTokens <= 0 {
+		cfg.MinContentTokens = def.MinContentTokens
+	}
+	if cfg.TruncatedMarker == "" {
+		cfg.TruncatedMarker = def.TruncatedMarker
+	}
+	if cfg.MinContextRatio <= 0 {
+		cfg.MinContextRatio = def.MinContextRatio
+	}
+	if cfg.CacheMissThreshold <= 0 {
+		cfg.CacheMissThreshold = def.CacheMissThreshold
+	}
+	return cfg
+}
+
 // microCompactForced is the forced variant of micro compaction. When force is
 // true, the MinContextRatio check is skipped so a manual /compress invocation
 // can run even when usage is below the configured ratio.

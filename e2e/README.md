@@ -29,6 +29,36 @@ Artifacts (fake projects, configs, `events.jsonl`, headless logs, raw TUI
 captures, `results.tsv`) land under `$E2E_ROOT` (default
 `/tmp/goa-e2e/run-<ts>`; `run_all.sh` symlinks `/tmp/goa-e2e/last`).
 
+## Mock LLM (no LM Studio required)
+
+`mockllm/server.py` is a deterministic, dependency-free OpenAI-compatible
+server for scenarios that must not depend on a real model (e.g. compression
+validation):
+
+- **Normal turns**: streams ~30 KB of filler (`MOCK_FILLER_KB`), so history
+  grows past a small `context_compression.max_tokens` ceiling within a turn or
+  two.
+- **Summarize requests**: when the system prompt starts with `Summarize`, it
+  streams a short fixed reply so Compact produces a real summary.
+- Serves `GET /v1/models` (advertises `context_length: 32768`) and
+  `POST /v1/chat/completions` (SSE and non-streaming).
+
+```bash
+# via lib.sh helpers (readiness-wait + teardown):
+source e2e/lib.sh
+start_mock_llm /tmp/goa-e2e/mock-llm.log   # sets MOCK_LLM_URL, MOCK_LLM_PID
+# ... run goa against $MOCK_LLM_URL ...
+stop_mock_llm
+
+# or standalone:
+MOCK_LLM_PORT=8017 python3 e2e/mockllm/server.py &
+```
+
+Env: `MOCK_LLM_HOST`, `MOCK_LLM_PORT`, `MOCK_MODEL_ID`,
+`MOCK_CONTEXT_LENGTH`, `MOCK_FILLER_KB`, `MOCK_LLM_LOG` (request log path;
+unset = silent). Point a throwaway project at it with
+`providers: [{id: mock, endpoint: http://127.0.0.1:8017/v1}]`.
+
 ## Scenarios
 
 | Script | Feature combo | Path |

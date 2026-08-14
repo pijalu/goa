@@ -21,7 +21,52 @@ If new items are added, restart the process.
 
 (none)
 
+## Queued goals (from the goal queue — not started)
+1. **jade.bison — Session status totals view:** the session status should end with a clear TOTAL block showing, for each key element (input / cached-input / output), the number of tokens used, plus tool calls, compressions, and cache misses — rendered as a table/markdown after the per-round details, giving a clear summary view of the whole session.
+2. **happy.owl — Commit all changes and push.**
+
+Execution order when resumed: jade.bison, then happy.owl (commit+push LAST, covering everything).
+
 # Archive
+
+## Unexpected cache miss after destructive "ceiling" compaction (export goa-export-20260814-153156) — FIXED
+Review of the export bundle + all recent sessions for unexpected provider prefix-cache misses.
+
+**Findings (traced):**
+- Export logs one detected miss: `prev_cache_read 82496 → 0` at 2026-08-14T15:22:08 (zai/glm-5.3, session 1786713126_2wql4s85). The captured bust+preceding requests (seq 24/25, 6s apart) have IDENTICAL message prefixes (msgs 0–51 byte-equal, tools/model/thinking equal) — so that pair alone does not explain the miss by content. Remaining suspects for the pair: provider-side cache write timing (the 82k prefix was read but not re-established in time), or a byte-level serialization difference invisible in the re-marshaled capture.
+- The BIGGER, reproducible cache-buster: the session later crossed 95% usage and the reactive enforcer ran a DESTRUCTIVE ceiling cut — `⚡ Context compacted (ceiling): 96% → 44% · 120 messages dropped · ~107889 tokens freed` — which wholesale rewrites the history prefix. Every subsequent request then re-reads the full input at full price (cache bust by design of a front-cut). The user config has `context_compression.enabled: false`, yet the ceiling cut fired: the reactive `enforceContextCeiling` ignores the Enabled toggle and the destructive drop is the ONLY thing that acts at 95% under default config (proactive hard tier requires `hard_percent > 0`, which is 0 by default).
+
+**User-confirmed intended contract (now enforced):**
+- Default cache compression: ALL algorithms disabled EXCEPT **summarize at 95%** (the hard layer default).
+- When compression is disabled (`enabled: false`): soft/trigger layers off, but the hard 95% default STILL triggers summarize.
+- The only "hybrid" case, at 95%: if summarize cannot be executed (LLM error due to context overflow), a micro pre-compression is applied, then summarize retried. Micro is a fallback ONLY — never a first pass.
+- The destructive ceiling message-drop is a LAST RESORT only (summarize cannot run at all / still overflows after the micro fallback).
+- All of this remains **customizable per model** (`context_compression.per_model`): per-model thresholds (incl. hard_percent) and strategies (incl. hard strategy), zero fields inheriting the defaults.
+
+**Root cause (traced):**
+1. `resolveThresholds` (internal/agentic/compression_thresholds.go): default `hardStrategy` = `hybrid` (elision → selective → summarize), not `summarize`.
+2. `proactiveTierLocked`: hard tier required `rt.hard > 0`; with the default `hard_percent: 0` the tier never fired, so at 95% only the reactive ceiling drop (label "ceiling") acted — the exact observed banner.
+3. `Compact` (agent_compression.go): the summarize-overflow micro fallback was gated on `MicroCompaction.Enabled` — but per the contract it must run whenever summarize itself overflows, regardless of the micro opt-in.
+4. `buildCompressionConfig` (core/agentmanager_lifecycle.go) zeroed ALL thresholds on `enabled: false`, intending to disable everything; under the new semantics hard=0 must mean "default 95 on" so only soft/trigger are disabled.
+5. (Found live during the PTY repro; crash.log "ceiling cannot be enforced … 4750") `maybeCompress`: the legacy micro branch gated on `ContextStats().UsagePercent`, whose denominator is the runtime window (display stat), not the effective window (`context_compression.max_tokens`) — under a configured max_tokens the legacy gate fired below the real hard threshold and masked the tierHard path.
+
+**Fix:**
+1. `resolveThresholds`: default `hardStrategy = summarize`; negative `HardPercent` preserved = explicit disable; zero → default 95 ON.
+2. `proactiveTierLocked`: hard tier gate is `rt.hardEnabled() && usage >= effectiveHard()`.
+3. `Compact`: summarize-overflow micro fallback is now UNCONDITIONAL (no longer gated on `MicroCompaction.Enabled`).
+4. `compaction.go` `microFallbackConfig()`: field-wise defaults for a zero micro config.
+5. `maybeCompress` (agent_compression.go): computes `computeContextStatsForMax(maxTokens)` under `a.mu` so the legacy micro branch uses the effective window.
+6. Comments only: `core/agentmanager_lifecycle.go`, `config/config.go`, `config/configs/default.yaml` (documented "0 = default 95", negative = disable).
+
+**Tests (RED → GREEN, 10× flake-check):**
+- `internal/agentic/compression_default_summarize_test.go`: `TestResolveThresholds_DefaultHardIsSummarizeAt95`, `TestProactiveTier_HardFiresAtDefault95`, `TestMaybeCompress_DefaultHardCeilingRunsSummarizeNotCeiling`, `TestPreparePath_CeilingOnlyWhenSummarizeCannotRun`, `TestCompact_SummarizeOverflowAppliesMicroUnconditionally` (fail-once overflow provider), plus `LegacyMicroBranchUsesEffectiveWindow` and `LegacyMicroBranchStillSelfManagesBelowCeiling` (resized user/asst 2200 chars each, window 1000).
+- `internal/agentic/compression_thresholds_test.go`: hard −1 stays disabled; zero-thresholds hard ON at 95; wantHard → summarize.
+- `internal/agentic/compact_micro_optional_test.go`: overflow fallback via `registerOverflowProvider(name, 1)`; `PersistentOverflowPropagatesError` (failures=2).
+- `core/agentmanager_lifecycle_test.go`: `TestBuildCompressionConfig_PerModelHardOverridesDefaults` (per-model hard_percent/strategies override; zero fields inherit).
+
+**Validation:**
+- Mock-model e2e (no remote, mocked LLM): new in-repo deterministic OpenAI-compatible mock server `e2e/mockllm/server.py` (+ `start_mock_llm`/`stop_mock_llm` helpers in `e2e/lib.sh`, documented in `e2e/README.md`). Seeded-PRNG filler (~30 KB, loop-detector-safe: repeated lorem and even numbered lines trip goa's stream-loop guardrail — the server now varies word choices deterministically; also threaded + safe on system-less requests). PTY run against mock with `context_compression.max_tokens: 6500`, two "hi" turns: session JSONL contains exactly one compact event `strategy="summarize"` (237% → 72%, 3 messages dropped), ZERO `strategy="ceiling"` events, ZERO error events, no loop-detector notes.
+- Gates (each run separately): `go vet ./...` clean; `go test -count=1 -race -cover ./...` all green; `staticcheck ./...` identical set to pre-change baseline (22 pre-existing, e.g. `compressHistory` unused); `gocognit -over 15` identical (73 pre-existing); `gocyclo -over 12` identical set (`proactiveTierLocked` 13, `overlayCompressionForModel` 14 — pre-existing, untouched).
 
 ## Cursor jumps out of input during tool status redraw — FIXED
 Tool status changes trigger a cursor glitch: the cursor momentarily jumps out of the input box, then returns to the expected position on the next render.

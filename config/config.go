@@ -1010,13 +1010,15 @@ type CompressionThresholdsConfig struct {
 	SoftPercent int `yaml:"soft_percent,omitempty"`
 	// TriggerPercent is the main strategy trigger (0 = default).
 	TriggerPercent int `yaml:"trigger_percent,omitempty"`
-	// HardPercent is the emergency ceiling (0 = default 95).
+	// HardPercent is the emergency ceiling (0 = default 95, ON; negative =
+	// explicitly disable the proactive hard tier — the reactive safety net
+	// still uses the default 95).
 	HardPercent int `yaml:"hard_percent,omitempty"`
 }
 
 // CompressionLayerStrategiesConfig holds the per-layer compression strategies.
 // Empty fields inherit (from the global section for per-model overrides, from
-// the SDK defaults otherwise: soft=micro, trigger=tool_elision, hard=hybrid).
+// the SDK defaults otherwise: soft=micro, trigger=tool_elision, hard=summarize).
 type CompressionLayerStrategiesConfig struct {
 	Soft    string `yaml:"soft,omitempty"`
 	Trigger string `yaml:"trigger,omitempty"`

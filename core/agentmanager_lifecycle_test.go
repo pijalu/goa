@@ -352,3 +352,63 @@ func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
 		t.Errorf("agentic trigger = %q, want selective", ag.Trigger)
 	}
 }
+
+// TestBuildCompressionConfig_PerModelHardOverridesTheDefault verifies the
+// per-model contract for the hard layer (user-confirmed, export
+// goa-export-20260814-153156): per_model.<id>.thresholds.hard_percent and
+// per_model.<id>.strategies.hard override the defaults (hard default-on at
+// 95 with the summarize strategy), while zero fields inherit — including a
+// negative hard_percent as an explicit per-model opt-out of the proactive
+// hard tier (the reactive safety net still uses the default 95 via
+// effectiveHard).
+func TestBuildCompressionConfig_PerModelHardOverridesTheDefault(t *testing.T) {
+	ccEnabled := true
+	cfg := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled: &ccEnabled,
+			PerModel: map[string]config.ModelCompressionOverride{
+				"tight-model": {
+					Thresholds: config.CompressionThresholdsConfig{HardPercent: 85},
+					Strategies: config.CompressionLayerStrategiesConfig{Hard: "selective"},
+				},
+				"no-hard-model": {
+					Thresholds: config.CompressionThresholdsConfig{HardPercent: -1},
+				},
+			},
+		},
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+
+	// Per-model hard override: ceiling 85 + hard strategy selective; the
+	// other layers stay off (zero fields inherit the global zeros).
+	cc := am.buildCompressionConfig(cfg, "tight-model", 32768)
+	if cc.Thresholds.HardPercent != 85 {
+		t.Errorf("HardPercent = %d, want 85 (per-model override)", cc.Thresholds.HardPercent)
+	}
+	if cc.Strategies.Hard != agentic.CompressionSelective {
+		t.Errorf("hard strategy = %q, want selective (per-model override)", cc.Strategies.Hard)
+	}
+	if cc.Strategies.Soft != "" || cc.Strategies.Trigger != "" {
+		t.Errorf("soft/trigger strategies = %q/%q, want empty (inherited unset)", cc.Strategies.Soft, cc.Strategies.Trigger)
+	}
+	if cc.Thresholds.SoftPercent != 0 || cc.Thresholds.TriggerPercent != 0 {
+		t.Errorf("soft/trigger thresholds = %d/%d, want 0/0 (inherited global zeros, opt-in off)", cc.Thresholds.SoftPercent, cc.Thresholds.TriggerPercent)
+	}
+
+	// Negative per-model hard_percent: an explicit opt-out of the proactive
+	// hard tier (kept as a negative marker through the overlay).
+	ccNeg := am.buildCompressionConfig(cfg, "no-hard-model", 32768)
+	if ccNeg.Thresholds.HardPercent != -1 {
+		t.Errorf("HardPercent = %d, want -1 (per-model explicit opt-out)", ccNeg.Thresholds.HardPercent)
+	}
+
+	// Unknown model: global zeros — the SDK resolves hard=0 to the default
+	// 95 ceiling with the summarize strategy (default-on hard layer).
+	ccDef := am.buildCompressionConfig(cfg, "other-model", 32768)
+	if ccDef.Thresholds.HardPercent != 0 {
+		t.Errorf("HardPercent = %d, want 0 (inherited global zero)", ccDef.Thresholds.HardPercent)
+	}
+	if ccDef.Strategies.Hard != "" {
+		t.Errorf("hard strategy = %q, want empty (SDK default summarize applies)", ccDef.Strategies.Hard)
+	}
+}

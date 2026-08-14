@@ -267,11 +267,15 @@ func TestCompact_MicroEnabled_AppliedOnlyOnSummarizeOverflow(t *testing.T) {
 	}
 }
 
-// TestCompact_MicroEnabled_OverflowWithoutMicro_Fails verifies that when micro
-// is DISABLED, a summarize that overflows propagates the error (no micro
-// rescue) — micro is strictly opt-in.
-func TestCompact_MicroDisabled_OverflowPropagatesError(t *testing.T) {
-	p := registerOverflowProvider("micro-disabled-overflow", 1)
+// TestCompact_PersistentOverflowPropagatesError verifies that when the
+// summarize request STILL overflows after the micro fallback (the provider
+// keeps rejecting with a context-length error), Compact propagates the error
+// instead of looping — the last-resort reactive net (ceiling enforcer) then
+// takes over at the caller. The micro fallback itself is unconditional
+// (TestCompact_SummarizeOverflowAppliesMicroUnconditionally); this pins the
+// termination guarantee when even micro cannot make room.
+func TestCompact_PersistentOverflowPropagatesError(t *testing.T) {
+	p := registerOverflowProvider("persistent-overflow", 2) // still overflows after micro
 	agent := NewAgent(Config{
 		Model:        testModel(p.API()),
 		SystemPrompt: "sys",
@@ -279,7 +283,7 @@ func TestCompact_MicroDisabled_OverflowPropagatesError(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 4000,
 			Strategy:  CompressionSummarize,
-			// Micro disabled (default).
+			// Micro disabled (default) — irrelevant for the fallback path.
 		},
 	})
 	agent.mu.Lock()
@@ -288,7 +292,7 @@ func TestCompact_MicroDisabled_OverflowPropagatesError(t *testing.T) {
 
 	err := agent.Compact(context.Background())
 	if err == nil {
-		t.Fatal("expected summarize overflow error to propagate when micro is disabled")
+		t.Fatal("expected summarize overflow error to propagate when the overflow persists after the micro fallback")
 	}
 	if !isContextLengthError(err) {
 		t.Fatalf("expected context-length error, got %v", err)

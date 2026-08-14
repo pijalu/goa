@@ -24,9 +24,11 @@ func TestResolveThresholds(t *testing.T) {
 		wantHard    int
 	}{
 		{
-			name:        "zero config disables every proactive layer (opt-in)",
-			cfg:         ContextCompressionConfig{},
-			wantSoft:    0, // proactive compression is opt-in: 0 = disabled
+			name: "zero config: soft/trigger off, hard = default 95",
+			cfg:  ContextCompressionConfig{},
+			// soft/trigger are opt-in (0 = off); hard 0 resolves to the
+			// DefaultHardPercent ceiling (95) in the tier gate.
+			wantSoft:    0,
 			wantTrigger: 0,
 			wantHard:    0,
 		},
@@ -64,11 +66,15 @@ func TestResolveThresholds(t *testing.T) {
 			wantHard:    88,
 		},
 		{
-			name:        "negative values clamp to disabled",
-			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: -5, HardPercent: -1}},
+			name: "negative soft/trigger clamp to disabled; negative hard stays (explicit opt-out)",
+			cfg:  ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: -5, HardPercent: -1}},
+			// soft/trigger: negative = disabled (0). hard: the sign is kept —
+			// hardEnabled() treats <0 as an explicit disable of the proactive
+			// hard tier, while effectiveHard() still returns the default 95
+			// for the reactive safety net.
 			wantSoft:    0,
 			wantTrigger: 0,
-			wantHard:    0,
+			wantHard:    -1,
 		},
 	}
 	for _, tt := range tests {
@@ -132,21 +138,27 @@ func TestProactiveTier(t *testing.T) {
 	}
 }
 
-// TestProactiveTier_ZeroThresholdsDisableProactive guards the opt-in default:
-// with no thresholds configured (all 0), proactive compression NEVER fires —
-// even at 99% usage with a cold cache. Only the reactive error/ceiling net
-// protects the window.
-func TestProactiveTier_ZeroThresholdsDisableProactive(t *testing.T) {
+// TestProactiveTier_ZeroThresholdsOnlyHardDefaultFires guards the default
+// contract: with no thresholds configured (all 0), usage below the default
+// 95% ceiling does nothing (soft/trigger stay opt-in off) — only the default
+// hard tier fires at/above 95% (pinned by TestProactiveTier_HardFiresAtDefault95).
+func TestProactiveTier_ZeroThresholdsOnlyHardDefaultFires(t *testing.T) {
 	rt := ContextCompressionConfig{}.resolveThresholds()
 	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache: would fire if enabled
-	for _, usage := range []int{50, 80, 90, 95, 99} {
+	for _, usage := range []int{50, 80, 90, 94} {
 		a.mu.Lock()
 		got := a.proactiveTierLocked(usage, rt)
 		a.mu.Unlock()
 		if got != tierNone {
-			t.Errorf("proactiveTierLocked(%d%%, zero thresholds) = %v, want tierNone (proactive disabled by default)", usage, got)
+			t.Errorf("proactiveTierLocked(%d%%, zero thresholds) = %v, want tierNone (soft/trigger opt-in off)", usage, got)
 		}
+	}
+	a.mu.Lock()
+	got := a.proactiveTierLocked(95, rt)
+	a.mu.Unlock()
+	if got != tierHard {
+		t.Errorf("proactiveTierLocked(95%%, zero thresholds) = %v, want tierHard (default 95 ceiling on)", got)
 	}
 }
 
@@ -223,11 +235,11 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 		wantSoftPct int // expected resolved soft percent (0 = disabled; opt-in)
 	}{
 		{
-			name:        "defaults: micro / tool_elision / hybrid, all layers off",
+			name:        "defaults: micro / tool_elision / summarize, soft/trigger off",
 			cfg:         ContextCompressionConfig{},
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionToolElision,
-			wantHard:    CompressionHybrid,
+			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 		{
@@ -235,7 +247,7 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			cfg:         ContextCompressionConfig{Strategy: CompressionSummarize},
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionSummarize,
-			wantHard:    CompressionHybrid,
+			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 		{
@@ -256,7 +268,7 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			},
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionToolElision,
-			wantHard:    CompressionHybrid,
+			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 		{
@@ -264,7 +276,7 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			cfg:         ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1}},
 			wantSoft:    CompressionMicro,
 			wantTrigger: CompressionToolElision,
-			wantHard:    CompressionHybrid,
+			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
 		},
 	}

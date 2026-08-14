@@ -257,11 +257,14 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	ov := overlayCompressionForModel(cfg.ContextCompression, modelID)
 
 	thresholds := am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger)
-	// Honor the Enabled toggle: an explicit `enabled: false` disables all
-	// proactive threshold-triggered compression (soft/trigger/hard → 0), which
-	// was previously persisted but silently ignored (archived). The
-	// reactive safety net (on_context_error + the hard-ceiling enforcer) is
-	// unaffected and keeps protecting the window.
+	// Honor the Enabled toggle: an explicit `enabled: false` disables the
+	// opt-in proactive layers (soft/trigger → 0). HardPercent zeroes too, but
+	// under the SDK's default-on hard semantics 0 resolves to the documented
+	// default ceiling (95) with the hard-layer strategy (summarize) — the
+	// user-confirmed contract: with compression disabled the hard 95% default
+	// STILL triggers summarize; only the destructive ceiling message-drop
+	// remains as a last resort. The reactive safety net (on_context_error)
+	// is unaffected.
 	if !cfg.ContextCompression.EnabledValue() {
 		thresholds = agentic.CompressionThresholds{}
 	}
@@ -279,8 +282,8 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 }
 
 // agenticLayerStrategies maps the config layer strategies to the SDK type;
-// empty fields stay empty so the SDK defaults (micro/elision-or-legacy/hybrid)
-// apply.
+// empty fields stay empty so the SDK defaults (micro/elision-or-legacy/
+// summarize) apply.
 func agenticLayerStrategies(s config.CompressionLayerStrategiesConfig) agentic.CompressionLayerStrategies {
 	return agentic.CompressionLayerStrategies{
 		Soft:    agentic.CompressionStrategy(s.Soft),

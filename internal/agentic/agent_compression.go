@@ -39,8 +39,8 @@ func (a *Agent) Compact(ctx context.Context) error {
 		return nil
 	}
 
-	// Micro compaction is an OPT-IN step, disabled by default so summarize is
-	// always the default compaction path on a full window.
+	// Micro compaction is an OPT-IN maintenance step, disabled by default so
+	// summarize is always the default compaction path on a full window.
 	//
 	// Micro must NEVER fire as a first pass. When enabled it is run FIRST only
 	// as a DRY-RUN (estimation only, no mutation) to validate whether it could
@@ -51,13 +51,16 @@ func (a *Agent) Compact(ctx context.Context) error {
 	// ONLY if that summarize fails with a context-overflow error (the input to
 	// summarize was itself too big for the window) do we apply micro compaction
 	// for real — to create enough room — then retry summarize on the shrunk
-	// input. That summarize-overflow path is the single place micro mutates.
+	// input. That summarize-overflow path is the single place micro mutates,
+	// and it runs REGARDLESS of MicroCompaction.Enabled: it is the escape
+	// hatch for a summarize that cannot fit the window, not an opt-in
+	// maintenance pass.
 	if a.cfg.ContextCompression.MicroCompaction.Enabled {
 		a.microDryRunValidate()
 	}
 
 	summary, err := a.summarizeHistory(ctx)
-	if err != nil && isContextLengthError(err) && a.cfg.ContextCompression.MicroCompaction.Enabled {
+	if err != nil && isContextLengthError(err) {
 		// Summarize self-overflowed: the history to summarize was too big for
 		// the window. Now — and only now — apply micro compaction to create
 		// enough space, then retry summarize on the reduced input.
@@ -132,9 +135,13 @@ func (a *Agent) microDryRunValidate() {
 // summarize request just overflowed, so we need room regardless of any gate)
 // and emits the resulting EventCompact. This is the ONLY path on which micro
 // compaction mutates history during Compact — a last resort after summarize
-// itself failed with a context-overflow error.
+// itself failed with a context-overflow error. It runs regardless of
+// MicroCompaction.Enabled (the summarize-overflow escape hatch), so the
+// truncation settings are defaulted field-wise: SDK callers that never
+// configured micro still get a sane pass instead of wiping old tool results
+// with an empty marker.
 func (a *Agent) applyMicroForSummarize() {
-	cfg := a.cfg.ContextCompression.MicroCompaction
+	cfg := microFallbackConfig(a.cfg.ContextCompression.MicroCompaction)
 	a.mu.Lock()
 	before := a.computeContextStats()
 	res := a.applyMicroLocked(cfg)
@@ -258,10 +265,20 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 
 	// Legacy whole-strategy micro: micro compaction self-manages its internal
 	// thresholds, so skip the tier gate except at the emergency ceiling. Uses
-	// effectiveHard so a disabled proactive hard layer (0) still leaves the
-	// emergency branch reachable for the reactive paths.
+	// effectiveHard so a disabled proactive hard layer (0 or negative) still
+	// leaves the emergency branch reachable for the reactive paths.
+	//
+	// The gate MUST compare usage against the same effective window the tier
+	// gate and the ceiling use (computeContextStatsForMax(maxTokens)), not the
+	// display stats (ContextStats prefers the runtime model window): with a
+	// configured max_tokens far below the advertised window, the display
+	// percent stayed < hard and the micro self-management branch swallowed
+	// every turn, masking the hard tier until the reactive ceiling fired.
+	a.mu.Lock()
+	effective := a.computeContextStatsForMax(maxTokens)
+	a.mu.Unlock()
 	stats := a.ContextStats()
-	if rt.triggerStrategy == CompressionMicro && stats.UsagePercent < rt.effectiveHard() {
+	if rt.triggerStrategy == CompressionMicro && effective.UsagePercent < rt.effectiveHard() {
 		return a.compressAndReport(ctx)
 	}
 
