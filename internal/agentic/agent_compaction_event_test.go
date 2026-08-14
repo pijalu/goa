@@ -125,8 +125,8 @@ func TestCompressToolElision_EmitsCompactEvent(t *testing.T) {
 	if len(evs) != 1 {
 		t.Fatalf("expected exactly one EventCompact, got %d", len(evs))
 	}
-	if evs[0].Compaction == nil || evs[0].Compaction.Strategy != "elision" {
-		t.Errorf("Strategy = %+v, want elision", evs[0].Compaction)
+	if evs[0].Compaction == nil || evs[0].Compaction.Strategy != string(CompressionToolElision) {
+		t.Errorf("Strategy = %+v, want %s", evs[0].Compaction, CompressionToolElision)
 	}
 }
 

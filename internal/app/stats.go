@@ -139,18 +139,30 @@ func (a *App) handleAgentStatsEvent(ev *agentic.OutputEvent) {
 	}
 }
 
-// recordCompact counts one completed compression pass and appends its
-// per-round record to the session stats. The strategy is read from the
-// structured Compaction payload, falling back to the free-text label for
-// events emitted by paths that predate the payload.
-func (a *App) recordCompact(ev *agentic.OutputEvent) {
-	strategy := ev.Text
+// compactionStrategy extracts the strategy label from an EventCompact: the
+// structured Compaction payload wins, falling back to the free-text Text
+// label for events emitted by paths that predate the payload.
+func compactionStrategy(ev *agentic.OutputEvent) string {
 	if ev.Compaction != nil && ev.Compaction.Strategy != "" {
-		strategy = ev.Compaction.Strategy
+		return ev.Compaction.Strategy
 	}
+	return ev.Text
+}
+
+// isMicroCompaction reports whether a compression strategy label counts
+// toward the footer's micro bucket (the m in c:Xm-Y) rather than the
+// full-compact bucket.
+func isMicroCompaction(strategy string) bool {
+	return strategy == string(agentic.CompressionMicro)
+}
+
+// recordCompact counts one completed compression pass and appends its
+// per-round record to the session stats.
+func (a *App) recordCompact(ev *agentic.OutputEvent) {
+	strategy := compactionStrategy(ev)
 	a.statsMu.Lock()
 	defer a.statsMu.Unlock()
-	if strategy == "micro" {
+	if isMicroCompaction(strategy) {
 		a.microCompacts++
 	} else {
 		a.compacts++

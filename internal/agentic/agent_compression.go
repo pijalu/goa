@@ -91,9 +91,10 @@ func (a *Agent) Compact(ctx context.Context) error {
 	a.mu.Unlock()
 
 	// Compact keeps its internal emission (public API contract +
-	// TestAgent_CompactEmitsCompactEvent), now enriched with the structured
-	// payload. Text stays the summary so existing consumers keep working.
-	a.emitCompaction("summarize", before, a.ContextStats(), removed, 0, summary)
+	// TestAgent_CompactEmitsCompactEvent), enriched with the structured
+	// payload. The full summary rides in Compaction.Detail; Text carries the
+	// strategy label like every other compression path.
+	a.emitCompaction(string(CompressionSummarize), before, a.ContextStats(), removed, 0, summary)
 	return nil
 }
 
@@ -138,7 +139,7 @@ func (a *Agent) applyMicroForSummarize() {
 	before := a.computeContextStats()
 	res := a.applyMicroLocked(cfg)
 	a.mu.Unlock()
-	a.emitCompactionResult("micro", before, res, "summarize overflow fallback")
+	a.emitCompactionResult(string(CompressionMicro), before, res, "summarize overflow fallback")
 }
 
 // applyMicroLocked performs the real in-place micro compaction pass under a.mu
@@ -358,20 +359,20 @@ func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStr
 	switch strategy {
 	case CompressionToolElision:
 		before, res := a.runElision(force)
-		a.emitCompactionResult("elision", before, res, "")
+		a.emitCompactionResult(string(CompressionToolElision), before, res, "")
 	case CompressionSelective:
 		before, res := a.runSelective()
-		a.emitCompactionResult("selective", before, res, "")
+		a.emitCompactionResult(string(CompressionSelective), before, res, "")
 	case CompressionSummarize:
 		return a.Compact(ctx)
 	case CompressionHybrid:
 		return a.compressHybrid(ctx)
 	case CompressionMicro:
 		before, res := a.microCompactForced(force)
-		a.emitCompactionResult("micro", before, res, "")
+		a.emitCompactionResult(string(CompressionMicro), before, res, "")
 	default:
 		before, res := a.runElision(force)
-		a.emitCompactionResult("elision", before, res, "")
+		a.emitCompactionResult(string(CompressionToolElision), before, res, "")
 	}
 	return nil
 }
@@ -470,7 +471,7 @@ func (a *Agent) compressHybrid(ctx context.Context) error {
 	}
 	a.mu.Unlock()
 	if !needMore {
-		a.emitCompactionResult("hybrid", before, res, "")
+		a.emitCompactionResult(string(CompressionHybrid), before, res, "")
 		return nil
 	}
 	return a.Compact(ctx)
@@ -893,7 +894,7 @@ func (a *Agent) compressHistoryWithStrategy(strategy string, force bool) {
 	// useful emergency strategy anyway since it costs an LLM call).
 	if CompressionStrategy(strategy) == CompressionMicro {
 		before, res := a.microCompactForced(force)
-		a.emitCompactionResult("micro", before, res, "")
+		a.emitCompactionResult(string(CompressionMicro), before, res, "")
 		return
 	}
 	a.mu.Lock()

@@ -166,6 +166,10 @@ type HeadlessApp struct {
 	turnCount            int
 	microCompacts        int
 	compacts             int
+	// compactions documents each completed compression round (per-round
+	// session-stats record), mirroring App.compactions so headless summary
+	// output can list them. Guarded by statsMu like the counters above.
+	compactions          []CompactionRound
 	toolCallsTotal       int
 
 	stream headlessStreamState
@@ -695,7 +699,7 @@ func (h *HeadlessApp) handleAgentEvent(ev *agentic.OutputEvent) {
 	case agentic.EventTokenStats, agentic.EventContextStats:
 		h.handleStatsEvent(ev)
 	case agentic.EventCompact:
-		h.recordCompact(ev.Text)
+		h.recordCompact(ev)
 	case agentic.EventProgress:
 		// Progress/status messages are not rendered in headless mode.
 	}
@@ -835,14 +839,19 @@ func (h *HeadlessApp) handleStatsEvent(ev *agentic.OutputEvent) {
 	}
 }
 
-func (h *HeadlessApp) recordCompact(kind string) {
+// recordCompact counts one completed compression pass and appends its
+// per-round record, mirroring App.recordCompact so headless and TUI session
+// stats classify and document compressions identically.
+func (h *HeadlessApp) recordCompact(ev *agentic.OutputEvent) {
+	strategy := compactionStrategy(ev)
 	h.statsMu.Lock()
 	defer h.statsMu.Unlock()
-	if kind == "micro" {
+	if isMicroCompaction(strategy) {
 		h.microCompacts++
 	} else {
 		h.compacts++
 	}
+	h.compactions = append(h.compactions, compactionRoundFromEvent(ev, strategy))
 }
 
 func (h *HeadlessApp) endStream() {
@@ -870,8 +879,11 @@ func (h *HeadlessApp) buildStatsLocked() sessionStats {
 		ToolCalls:       h.toolCallsTotal,
 		MicroCompacts:   h.microCompacts,
 		Compacts:        h.compacts,
+		Compactions:     append([]CompactionRound(nil), h.compactions...),
 	}
-	applyPricing(&st, h.subs.cfg, h.subs.cfg.ActiveModel)
+	if h.subs != nil {
+		applyPricing(&st, h.subs.cfg, h.subs.cfg.ActiveModel)
+	}
 	return st
 }
 

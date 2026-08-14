@@ -151,3 +151,62 @@ func TestFormatCompactionBubble_DetailOnNewLine(t *testing.T) {
 		t.Errorf("bubble = %q, want detail on a new line", got)
 	}
 }
+
+// TestCompactionStrategy_StructuredWinsOverText verifies the resolver prefers
+// the structured payload when Text and Compaction.Strategy disagree.
+func TestCompactionStrategy_StructuredWinsOverText(t *testing.T) {
+	ev := &agentic.OutputEvent{
+		Type:       agentic.EventCompact,
+		Text:       "stale-text-label",
+		Compaction: &agentic.CompactionInfo{Strategy: "micro"},
+	}
+	if got := compactionStrategy(ev); got != "micro" {
+		t.Errorf("compactionStrategy = %q, want structured payload to win", got)
+	}
+}
+
+// TestRecordCompact_ClassifiesElisionLabels verifies both the canonical
+// "tool_elision" label and the legacy "elision" label (emitted before the
+// strategy rename, still present in old session logs) classify as full
+// compacts — elision is NOT micro compaction.
+func TestRecordCompact_ClassifiesElisionLabels(t *testing.T) {
+	for _, label := range []string{"tool_elision", "elision"} {
+		t.Run(label, func(t *testing.T) {
+			app := New(testSubsystems())
+			app.recordCompact(compactEvent(label, 90, 60, 0, 0, ""))
+			if app.compacts != 1 || app.microCompacts != 0 {
+				t.Errorf("label %q: compacts=%d micro=%d, want 1/0", label, app.compacts, app.microCompacts)
+			}
+			if got := app.compactions[0].Strategy; got != label {
+				t.Errorf("round strategy = %q, want %q (recorded verbatim)", got, label)
+			}
+		})
+	}
+}
+
+// TestHeadlessRecordCompact_MatchesAppClassification verifies the headless
+// path reads the structured payload (not just Text) and appends per-round
+// records exactly like App.recordCompact.
+func TestHeadlessRecordCompact_MatchesAppClassification(t *testing.T) {
+	h := &HeadlessApp{}
+	// Text deliberately disagrees with the structured strategy: headless must
+	// trust the payload like the TUI does.
+	h.recordCompact(&agentic.OutputEvent{
+		Type:       agentic.EventCompact,
+		Text:       "anything",
+		Compaction: &agentic.CompactionInfo{Strategy: "micro", BeforePct: 80, AfterPct: 70},
+	})
+	h.recordCompact(compactEvent("tool_elision", 90, 60, 500, 0, ""))
+
+	if h.microCompacts != 1 || h.compacts != 1 {
+		t.Errorf("headless counters = %dm/%d, want 1m/1", h.microCompacts, h.compacts)
+	}
+	st := h.buildStatsLocked()
+	if len(st.Compactions) != 2 {
+		t.Fatalf("headless Compactions = %d rounds, want 2", len(st.Compactions))
+	}
+	if st.Compactions[0].Strategy != "micro" || st.Compactions[1].Strategy != "tool_elision" {
+		t.Errorf("round strategies = %q,%q, want micro,tool_elision",
+			st.Compactions[0].Strategy, st.Compactions[1].Strategy)
+	}
+}
