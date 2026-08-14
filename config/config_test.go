@@ -1293,8 +1293,10 @@ tools:
 	}
 }
 
-// TestAgentToolsDefaultEnabled verifies the embedded default config ships the
-// sub-agent/swarm/goa tools enabled (opt-out), preserving current behavior.
+// TestAgentToolsDefaultEnabled verifies the embedded default config keeps
+// only the lean core tool set on by default (pty_exec, python, webfetch) and
+// ships the heavier agent-driven/sub-agent tools off — the tuned default
+// adopted from the maintainer config. Users opt in per tool via /tools.
 func TestAgentToolsDefaultEnabled(t *testing.T) {
 	yamlText, err := DefaultConfigYAML()
 	if err != nil {
@@ -1304,9 +1306,14 @@ func TestAgentToolsDefaultEnabled(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
 		t.Fatalf("Unmarshal embedded default failed: %v", err)
 	}
-	for _, name := range []string{"agent", "agent_swarm", "goa"} {
+	for _, name := range []string{"pty_exec", "python", "webfetch"} {
 		if !cfg.Tools.Enabled.GetEnabled(name) {
-			t.Errorf("embedded default should enable %s (opt-out)", name)
+			t.Errorf("embedded default should enable %s", name)
+		}
+	}
+	for _, name := range []string{"agent", "agent_swarm", "goa", "lsp", "todo_list", "verify", "delegate_to", "request_review", "bg_exec"} {
+		if cfg.Tools.Enabled.GetEnabled(name) {
+			t.Errorf("embedded default should disable %s (opt-in)", name)
 		}
 	}
 }

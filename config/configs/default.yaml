@@ -16,12 +16,12 @@ mode:
   defaults: {}
 
 execution:
-  mode: "solo"
-  retries: 5
+  mode: "yolo"
+  retries: 2
   token_warning: 70
   token_critical: 90
-  loop_warning: 3
-  loop_interrupt: 5
+  loop_warning: 10
+  loop_interrupt: 15
   activity_timeout: "30s"
   error_threshold: 0.5
   worktree_mode: "multi_agent"
@@ -37,7 +37,7 @@ execution:
   # rolling window below. Different tool calls do NOT count toward this limit.
   # The window only spans the current "state epoch": a successful edit/write/
   # shell call resets it, so legitimate re-runs after a change are not flagged.
-  max_tool_calls: 3
+  max_tool_calls: 200
   # Maximum number of CONSECUTIVE failing calls of the SAME tool (any args)
   # tolerated before a loop guard fires once, telling the model to stop and
   # change approach. This catches a model retrying one tool with ever-changing
@@ -57,7 +57,11 @@ execution:
   # markup inside content or reasoning streams instead of native tool_calls.
   # Auto-heal extracts and executes these malformed calls so the turn keeps
   # progressing.
-  auto_heal_tool_calls: true
+  auto_heal_tool_calls: false
+  # Stream-loop guard: number of stream-loop detections after which the
+  # turn is aborted. Code default is 3; the embedded default raises it to 5
+  # to tolerate chatty local models.
+  stream_loop_max_strikes: 5
 
 providers: []
 
@@ -95,7 +99,7 @@ context_compression:
   on_context_error: true
   on_error_strategy: "hybrid"
   strategy: ""
-  preserve_recent_turns: 4
+  preserve_recent_turns: 0
   micro_compaction:
     # OPT-IN (default: off). Micro compaction is a pre-summarize step on a full
     # window. When OFF, summarize is always the default compaction path. When
@@ -194,7 +198,7 @@ tools:
       - "*TOKEN*"
       - "*SECRET*"
       - "*PASSWORD*"
-    compress_output:  # null = auto-detect based on provider (local=on, remote=off)
+    compress_output: false
     jail: false
   ssh:
     hosts: []
@@ -239,20 +243,20 @@ tools:
       default_prompt: |
         Summarize the following web page in 3-5 concise paragraphs. Preserve key facts, names, numbers, and any URLs that are central to the content.
   enabled:
-    bg_exec: true
-    delegate_to: true
+    bg_exec: false
+    delegate_to: false
     memento: false
-    pty_exec: false
-    request_review: true
+    pty_exec: true
+    request_review: false
     ssh_bash: false
     webfetch: true
-    verify: true
+    verify: false
     python: true
-    agent: true
-    agent_swarm: true
-    goa: true
-    lsp: true
-    todo_list: true
+    agent: false
+    agent_swarm: false
+    goa: false
+    lsp: false
+    todo_list: false
   search:
     threads: 4
     max_results: 30

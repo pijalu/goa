@@ -45,12 +45,12 @@ tools:
 		t.Error("Goal = false, want true (home config sets a key absent from embedded defaults)")
 	}
 	// Keys not pinned by the home layer keep their embedded defaults
-	// (embedded: webfetch=true, pty_exec=false).
+	// (embedded: webfetch=true, pty_exec=true).
 	if !cfg.Tools.Enabled.WebFetch {
 		t.Error("WebFetch = false, want true (embedded default inherited when home is silent)")
 	}
-	if cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec = true, want false (embedded default inherited when home is silent)")
+	if !cfg.Tools.Enabled.PTYExec {
+		t.Error("PTYExec = false, want true (embedded default inherited when home is silent)")
 	}
 }
 

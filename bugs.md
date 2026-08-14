@@ -23,6 +23,9 @@ Commit at the end of each fix with a clear and descriptive commit message
 
 # Archive
 
+## default config (closed)
+Adopted maintainer-tuned values into embedded config/configs/default.yaml (scope agreed with owner: execution + tools + context_compression, minus providers/models/API keys): execution.mode yolo, retries 2, loop_warning 10, loop_interrupt 15, max_tool_calls 200, auto_heal_tool_calls false, stream_loop_max_strikes 5, bash.compress_output false; tools.enabled now lean (on: pty_exec/python/webfetch; off: bg_exec/delegate_to/request_review/verify/agent/agent_swarm/goa/lsp/todo_list); context_compression.preserve_recent_turns 0. Personal values (providers, models, modes, dream, memory, completion, teams) NOT adopted. Default tests updated to encode new defaults; docs/CONFIGURATION.md example synced. Smoke: fresh HOME/project PTY run starts in coder|YOLO with 12-tool lean set, no crash. Full go test ./... green.
+
 ## Sticky skill (closed)
 Fixed + validated: skills.sticky / skills.sticky_off config lists (project-level persist), registry SetStickyOverrides + FrontmatterSticky, /skill:sticky:<name> toggle + (sticky) marker in /skill listing, /config → Skills → Sticky skills toggle submenu, startup banner "⟡ Sticky skills (always-on): …", sticky provider re-bound to live subsystems (stale-registry latent bug fixed). Interactive PTY validation: banner at start, /skill listing marker, toggle off/on round trip, cross-session persistence via .goa/config.yaml. Gates: vet ✓, staticcheck (no new), gocognit/gocyclo (no new), go test -race 82 pkgs ok.
 
@@ -38,11 +41,7 @@ CLOSED — see Archive.
 ## default
 Review current ~/.goa config as a base for default goa config
 
-### Fix plan (in progress)
-- Scope decided with owner: FULL adoption of execution + tools + context_compression values from ~/.goa/config.yaml into config/configs/default.yaml, minus providers/models/API keys and null artifacts (dedup: keep struct default).
-- Values: execution.mode yolo, retries 2, loop_warning 10, loop_interrupt 15, max_tool_calls 200, auto_heal_tool_calls false, thinking_stall 0/0, stream-loop keys (5/5/10, detection on); tools: bash (compress_output false, max_output_bytes 0, complexity off), terminal.sandbox block (off), smartsearch block (off), python.jail false, enabled: bg_exec/delegate_to/request_review/verify/agent/agent_swarm/goa/lsp/todo_list false, pty_exec true, webfetch/python/true as user; context_compression: preserve_recent_turns 0 (rest equal).
-- Test approach: update config default tests asserting changed values; add test enumerating default.yaml execution/tools values against expected constants to prevent drift.
-- Validation: gates individually; fresh-config e2e smoke (goa starts, /config shows adopted values).
+CLOSED — see Archive.
 
 ## Compression
 compression config menu show "off" even if there are some compression enabled - remove the "off" / preview as it's too rich to be shown

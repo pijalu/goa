@@ -87,22 +87,22 @@ models:
     headers:                         # Per-model HTTP headers
       X-Model-Header: "1"
     compat: '{"toolResultAsUser":true}' # Provider-specific compat JSON
-    compress_output: null              # null = auto (local=on, remote=off) | true | false
+    compress_output: false              # false | true
 
 # ── Execution ──────────────────────────────────────────────────────
 execution:
   mode: yolo                         # yolo | confirm | review
-  retries: 5                         # Default max retries for provider stream requests (per-provider max_retries overrides)
+  retries: 2                         # Default max retries for provider stream requests (per-provider max_retries overrides)
   max_tool_repeat_total: 0          # Max identical tool calls in the entire turn (0 = disabled)
   max_tool_repeat_consecutive: 2    # Max consecutive identical tool calls (soft hint at 2, hard at limit)
-  max_tool_calls: 3                 # Max duplicate occurrences of the same call within the rolling window (0 = unlimited)
+  max_tool_calls: 200               # Max duplicate occurrences of the same call within the rolling window (0 = unlimited)
   tool_call_limit_reset_window: 10  # Number of recent calls inspected for the duplicate-window limit above
   token_warning: 70                  # % of budget → warning
-  token_critical: 85                 # % of budget → critical
-  loop_warning: 5                    # Consecutive same-tool calls before warning
-  loop_interrupt: 10                 # Consecutive same-tool calls → interrupt
-  activity_timeout: 120s             # No output → warning
-  error_threshold: 0.3               # Error rate % → mode auto-downgrade
+  token_critical: 90                  # % of budget → critical
+  loop_warning: 10                    # Consecutive same-tool calls before warning
+  loop_interrupt: 15                 # Consecutive same-tool calls → interrupt
+  activity_timeout: 30s              # No output → warning
+  error_threshold: 0.5               # Error rate % → mode auto-downgrade
   worktree_mode: multi_agent         # always | multi_agent
   auto_save_model: true              # Persist model changes
 
