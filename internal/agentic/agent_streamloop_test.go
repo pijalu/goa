@@ -420,6 +420,91 @@ func TestCheckStreamLoop_MaxRepeatsHook(t *testing.T) {
 	}
 }
 
+// The StreamLoopMinPeriod hook drives Detector A's minimum repeat-unit
+// length live: a 53-char unit (52 chars + joining space) repeated 3x trips
+// at the default floor of 50 but not at a reconfigured floor of 60.
+func TestCheckStreamLoop_MinPeriodHook(t *testing.T) {
+	unit := "the quick brown fox jumps over the lazy dog while go" // 52 chars
+	if len(unit) != 52 {
+		t.Fatalf("fixture unit must be 52 chars, got %d", len(unit))
+	}
+	text := unit + strings.Repeat(" "+unit, 5) // 6 copies: above the default maxRepeats of 5
+
+	minPeriod := 60
+	a := NewAgent(Config{
+		Model:               testModel(provider.ApiOpenAICompletions),
+		StreamLoopMinPeriod: func() int { return minPeriod },
+	})
+	a.checkStreamLoop(text)
+	if a.streamLoopDetected {
+		t.Error("53-char period must not trip a min period of 60")
+	}
+	minPeriod = 50
+	a.checkStreamLoop(text)
+	if !a.streamLoopDetected {
+		t.Error("53-char period must trip a min period of 50")
+	}
+}
+
+// TestCheckStreamLoop_MinPeriodDefaults: nil hook and out-of-range hook
+// values fall back to the built-in default of 50.
+func TestCheckStreamLoop_MinPeriodDefaults(t *testing.T) {
+	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
+	if got := a.streamLoopMinPeriod(); got != streamLoopExactMinPeriod {
+		t.Errorf("nil hook min period = %d, want default %d", got, streamLoopExactMinPeriod)
+	}
+	a.cfg.StreamLoopMinPeriod = func() int { return 0 }
+	if got := a.streamLoopMinPeriod(); got != streamLoopExactMinPeriod {
+		t.Errorf("0 hook min period = %d, want default %d", got, streamLoopExactMinPeriod)
+	}
+	a.cfg.StreamLoopMinPeriod = func() int { return 3 }
+	if got := a.streamLoopMinPeriod(); got != streamLoopExactMinPeriod {
+		t.Errorf("below-floor hook min period = %d, want default %d", got, streamLoopExactMinPeriod)
+	}
+	a.cfg.StreamLoopMinPeriod = func() int { return 42 }
+	if got := a.streamLoopMinPeriod(); got != 42 {
+		t.Errorf("hook min period = %d, want 42", got)
+	}
+}
+
+// TestStreamLoopScan_MinPeriodBelowFloor: a genuine micro unit (period 28,
+// distinct words) with only 4 copies is below Detector A's certainty bar at
+// every floor — periods ≥ minPeriod need max(maxRepeats, 3) copies, and the
+// configured floor only re-bands small periods, never large trailing
+// repeats (3 chained copies of any trailing 50 chars always fire).
+func TestStreamLoopScan_MinPeriodBelowFloor(t *testing.T) {
+	unit := distinctWordUnit(t, 24)
+	period := len(unit) + 1
+	text := streamLoopNormalize(unit + strings.Repeat(" "+unit, 3)) // 4 copies
+	if _, _, _, ok := streamLoopScan(text, 5, 50); ok {
+		t.Errorf("%d-char micro period x4 must not trip at maxRepeats 5", period)
+	}
+	// Lowering the floor does not rescue it either: 4 < 5 required copies.
+	if _, _, _, ok := streamLoopScan(text, 5, 20); ok {
+		t.Errorf("%d-char micro period x4 must not trip at maxRepeats 5 even at min period 20", period)
+	}
+	// But with 6 copies the lowered floor fires (6 >= 5 required).
+	text6 := streamLoopNormalize(unit + strings.Repeat(" "+unit, 5))
+	if _, _, _, ok := streamLoopScan(text6, 5, 20); !ok {
+		t.Errorf("%d-char period x6 must trip at maxRepeats 5 with min period 20", period)
+	}
+}
+
+// distinctWordUnit builds a space-joined unit of at least minLen chars from
+// pairwise-distinct words, so the only exact repeats in the joined copies
+// are the full-unit period and its multiples.
+func distinctWordUnit(t *testing.T, minLen int) string {
+	t.Helper()
+	words := make([]string, 0, minLen/4)
+	for i := 0; ; i++ {
+		words = append(words, fmt.Sprintf("w%dx", i))
+		unit := strings.Join(words, " ")
+		if len(unit) >= minLen {
+			return unit
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Graduated response: soft strikes warn the model and re-stream; only the
 // strike at the configured limit stops the turn. The counter resets after a

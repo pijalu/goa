@@ -279,14 +279,22 @@ func syncLoopDetectorConfig(ctx core.Context, key string) bool {
 		if ctx.LoopDetector != nil {
 			ctx.LoopDetector.SetLoopThresholds(exec.LoopWarning, exec.LoopInterrupt)
 		}
-	case "execution.stream_loop_max_repeats":
-		if ctx.LoopDetector != nil {
-			ctx.LoopDetector.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
-		}
+	case "execution.stream_loop_max_repeats", "execution.stream_loop_min_period":
+		syncStreamLoopThresholds(ctx.LoopDetector, exec)
 	default:
 		return false
 	}
 	return true
+}
+
+// syncStreamLoopThresholds pushes the stream-loop numeric knobs to the live
+// detector (nil-safe; invalid values restore detector defaults).
+func syncStreamLoopThresholds(ld *core.LoopDetector, exec config.ExecutionConfig) {
+	if ld == nil {
+		return
+	}
+	ld.SetStreamMaxRepeats(exec.StreamLoopMaxRepeats)
+	ld.SetStreamMinPeriod(exec.StreamLoopMinPeriod)
 }
 
 func syncRuntimeConfig(ctx core.Context, key, value string) error {
@@ -513,6 +521,7 @@ var configSetters = map[string]configSetter{
 	"execution.disable_stream_loop_detection":                   setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableStreamLoopDetection }),
 	"execution.disable_thinking_stall_detection":                setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingStallDetection }),
 	"execution.stream_loop_max_repeats":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxRepeats }),
+	"execution.stream_loop_min_period":                          setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMinPeriod }),
 	"execution.stream_loop_max_strikes":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopMaxStrikes }),
 	"execution.stream_loop_reset_after":                         setInt(func(cfg *config.Config) *int { return &cfg.Execution.StreamLoopResetAfter }),
 	"execution.disable_tool_budget":                             setBool(func(cfg *config.Config) *bool { return &cfg.Execution.DisableToolBudget }),

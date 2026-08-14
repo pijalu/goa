@@ -122,6 +122,13 @@ func (c *Config) validateTimeout(ve *internal.ValidationError) {
 }
 
 func (c *Config) validateLoopThresholds(ve *internal.ValidationError) {
+	c.validateLoopWarningOrder(ve)
+	c.validateToolRepeatThresholds(ve)
+	c.validateStreamLoopThresholds(ve)
+}
+
+// validateLoopWarningOrder checks warning < interrupt when both are set.
+func (c *Config) validateLoopWarningOrder(ve *internal.ValidationError) {
 	if c.Execution.LoopWarning <= 0 || c.Execution.LoopInterrupt <= 0 {
 		return
 	}
@@ -129,17 +136,31 @@ func (c *Config) validateLoopThresholds(ve *internal.ValidationError) {
 		ve.Add(fmt.Sprintf("execution.loop_warning (%d) must be less than loop_interrupt (%d)",
 			c.Execution.LoopWarning, c.Execution.LoopInterrupt))
 	}
-	// Validate tool repeat thresholds: consecutive must not exceed total.
+}
+
+// validateToolRepeatThresholds checks consecutive must not exceed total.
+func (c *Config) validateToolRepeatThresholds(ve *internal.ValidationError) {
 	if c.Execution.MaxToolRepeatConsecutive > 0 && c.Execution.MaxToolRepeatTotal > 0 &&
 		c.Execution.MaxToolRepeatConsecutive > c.Execution.MaxToolRepeatTotal {
 		ve.Add(fmt.Sprintf("execution.max_tool_repeat_consecutive (%d) must not exceed execution.max_tool_repeat_total (%d)",
 			c.Execution.MaxToolRepeatConsecutive, c.Execution.MaxToolRepeatTotal))
 	}
+}
+
+// validateStreamLoopThresholds checks the stream-loop detector knobs.
+func (c *Config) validateStreamLoopThresholds(ve *internal.ValidationError) {
 	// Stream-loop repeat threshold must be a sane repeat count when set
 	// (0 means "use the default"); a single occurrence can never be a loop.
 	if c.Execution.StreamLoopMaxRepeats != 0 && c.Execution.StreamLoopMaxRepeats < 2 {
 		ve.Add(fmt.Sprintf("execution.stream_loop_max_repeats (%d) must be 0 (default) or >= 2",
 			c.Execution.StreamLoopMaxRepeats))
+	}
+	// Stream-loop minimum period must stay at or above the detector's
+	// absolute scan floor (8 chars): below it periods are never scanned, so
+	// a smaller configured floor would silently do nothing.
+	if c.Execution.StreamLoopMinPeriod != 0 && c.Execution.StreamLoopMinPeriod < 8 {
+		ve.Add(fmt.Sprintf("execution.stream_loop_min_period (%d) must be 0 (default 50) or >= 8",
+			c.Execution.StreamLoopMinPeriod))
 	}
 }
 

@@ -1061,6 +1061,7 @@ func (m *configMenu) settingLoopThresholds() {
 		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: thresholdLabel(cfg.Execution.MaxToolCalls, 3)},
 		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
 		{Value: "stream_repeats", Label: "Stream-loop stop repeats", Description: thresholdLabel(cfg.Execution.StreamLoopMaxRepeats, 5)},
+		{Value: "stream_min_period", Label: "Stream-loop min unit length (chars)", Description: thresholdLabel(cfg.Execution.StreamLoopMinPeriod, 50)},
 		{Value: "stream_strikes", Label: "Stream-loop stop strikes", Description: thresholdLabel(cfg.Execution.StreamLoopMaxStrikes, 3)},
 		{Value: "stream_reset_after", Label: "Stream-loop strike reset (clean msgs/tool calls)", Description: thresholdLabel(cfg.Execution.StreamLoopResetAfter, 10)},
 	}
@@ -1117,6 +1118,7 @@ func (m *configMenu) handleLoopThresholdSetting(selected string) {
 		"max_tool_calls":          {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
 		"disable_tool_budget":     {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
 		"stream_repeats":          {key: "execution.stream_loop_max_repeats", prompt: "Stream-loop stop repeats (>=2):", intVal: &cfg.Execution.StreamLoopMaxRepeats},
+		"stream_min_period":       {key: "execution.stream_loop_min_period", prompt: "Stream-loop min repeated unit length in chars (>=8, 0 = default 50):", intVal: &cfg.Execution.StreamLoopMinPeriod},
 		"stream_strikes":          {key: "execution.stream_loop_max_strikes", prompt: "Stream-loop warnings before stop (>=1):", intVal: &cfg.Execution.StreamLoopMaxStrikes},
 		"stream_reset_after":      {key: "execution.stream_loop_reset_after", prompt: "Clean messages/tool calls to reset strikes (>=1):", intVal: &cfg.Execution.StreamLoopResetAfter},
 	}

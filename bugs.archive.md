@@ -2,6 +2,48 @@
 
 Completed entries moved here from bugs.md per guideline 4.
 
+### ENHANCEMENT: stream-loop minimum repeat-unit length configurable (execution.stream_loop_min_period)
+
+**Status:** IMPLEMENTED — tested, validated, archived.
+
+**Gap:** Detector A's smallest repeat unit was the hardcoded const
+`streamLoopExactMinPeriod = 60` in `internal/agentic/agent_streaming.go` — not configurable.
+
+**Resolution:**
+- Default changed 60 → 50 (`streamLoopExactMinPeriod = 50`), now the built-in default only.
+- New key `execution.stream_loop_min_period` (int, chars; 0 = default 50; validation rejects
+  < 8 = absolute scan floor `streamLoopSmallPeriod`, refined from the plan's "<10" because
+  periods below 8 are never scanned at all).
+- Wiring (follows `stream_loop_max_repeats` precedent, live per-scan so /config set applies
+  mid-stream): `config.ExecutionConfig.StreamLoopMinPeriod` → merge (`config_merge.go`) →
+  validation (`config_validate.go`) → `/config set` (`config_cli.go` setInt +
+  `syncStreamLoopThresholds`) → `core.LoopDetector` (`MinStreamPeriod`, `StreamMinPeriod()`/
+  `SetStreamMinPeriod`, default 50, floor 8) → `internal/app/subsystems.go` →
+  `core/agentmanager_lifecycle.go` closures (`streamLoopDisabled/MaxRepeats/MinPeriod`
+  helpers — also fixes a buildAgenticConfig gocognit regression 15→17 back to 15) →
+  agentic `Config.StreamLoopMinPeriod func() int` → `streamLoopMinPeriod()` resolver →
+  `streamLoopScan`/`streamExactChain`/`chainRules` take `minPeriod`.
+- Menu: `/config → Loop detection → Thresholds` new row "Stream-loop min unit length (chars)"
+  with value prompt (no dead row).
+
+**Tests:** `TestCheckStreamLoop_MinPeriodHook` (52-char unit + joining space, period 53:
+trips at floor 50, not at 60, live reconfigure), `TestCheckStreamLoop_MinPeriodDefaults`
+(nil/0/below-8 → 50; 42 honored), `TestStreamLoopScan_MinPeriodBelowFloor` (28-char micro
+unit: 4 copies never fire at maxRepeats 5 at any floor; 6 copies fire at floor 20),
+`TestLoopDetectorStreamMinPeriod` (default/set/reset/below-floor), `TestApplyConfigSet_StreamLoopMinPeriod`
+(end-to-end /config set → live detector), `TestConfigValidateStreamLoopMinPeriod` (0/8/50/4096 ok;
+7/1/-1 rejected), `TestDeepMergeStreamLoopMinPeriod` (overlay wins, base preserved),
+menu threshold tests updated (10 rows, "50 (default)" / configured verbatim).
+
+**Detector semantics discovered while testing (documented, unchanged):** the certainty band
+(≥ minPeriod) catches any trailing repeat of ≥ 3 copies once the text is ≥ ~3×floor long —
+the floor only re-bands *small* periods; repeated content ≥ 50 chars is always caught at the
+default. `chainCopies` boundary math yields copies−1 for space-joined repeats at exact period.
+
+**Validation:** go vet clean; staticcheck clean (only pre-existing U1000); gocognit >15 /
+gocyclo >12 no new violations (validateOrchestrator 19, mergeExecution 17/18 pre-exist on
+HEAD, verified via stash); `go test -count=1 -race -cover ./...` 81 pkgs ok, 0 FAIL.
+
 ### ENHANCEMENT: /config per-model compression settings — "select model / set compression parameters" UI
 
 **Status:** IMPLEMENTED — tested, validated, archived.

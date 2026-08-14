@@ -561,6 +561,12 @@ type Config struct {
 	// delta so runtime changes take effect mid-stream). Nil or values < 2
 	// mean the default of 5.
 	StreamLoopMaxRepeats func() int
+	// StreamLoopMinPeriod, when non-nil, returns the smallest repeated unit
+	// (in characters) the streaming loop detector treats as a loop
+	// (execution.stream_loop_min_period, queried per scan so runtime changes
+	// take effect mid-stream). Nil or values below the absolute scan floor
+	// mean the default of 50.
+	StreamLoopMinPeriod func() int
 	// StreamLoopMaxStrikes is the number of stream-loop detections after
 	// which the turn is stopped (execution.stream_loop_max_strikes). Earlier
 	// detections are soft: the looped round is abandoned, the model is

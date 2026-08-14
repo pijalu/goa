@@ -1102,7 +1102,7 @@ func (a *Agent) checkStreamLoop(text string) {
 	}
 	// Normalize: strip punctuation, symbols, box-drawing chars, collapse spaces
 	clean := streamLoopNormalize(text)
-	if period, repeats, sample, ok := streamLoopScan(clean, a.streamLoopMaxRepeats()); ok {
+	if period, repeats, sample, ok := streamLoopScan(clean, a.streamLoopMaxRepeats(), a.streamLoopMinPeriod()); ok {
 		a.streamLoopDetected = true
 		// Keep the repeated sequence as evidence so the strike warning/stop
 		// messages can show WHAT was judged a loop (runaway-loop
@@ -1124,6 +1124,20 @@ func (a *Agent) streamLoopMaxRepeats() int {
 		return n
 	}
 	return defaultMaxRepeats
+}
+
+// streamLoopMinPeriod resolves the smallest repeated unit Detector A treats
+// as a loop: the user-configured value (execution.stream_loop_min_period via
+// the live loop detector) when set, otherwise the built-in default. Values
+// below the absolute scan floor (streamLoopSmallPeriod) fall back to the
+// default because such periods are never scanned.
+func (a *Agent) streamLoopMinPeriod() int {
+	if a.cfg.StreamLoopMinPeriod != nil {
+		if n := a.cfg.StreamLoopMinPeriod(); n >= streamLoopSmallPeriod {
+			return n
+		}
+	}
+	return streamLoopExactMinPeriod
 }
 
 const (
@@ -1253,11 +1267,12 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 // false negative on a ~90-copy paraphrase loop; see 2026-08-01):
 //
 //   - Detector A (exact chain): the trailing unit of length P
-//     (P ≥ streamLoopExactMinPeriod) is a loop when it repeats BYTE-EXACT
-//     ≥ maxRepeats times (≥ 2 for P ≥ streamLoopLongPeriod), allowing ≤
-//     streamLoopMaxGap interlude bytes between copies. No fuzzy matching, no
-//     progression analysis: exploratory paragraphs never repeat 60+ exact
-//     bytes, and connector noise ("the the the …") lives below the floor.
+//     (P ≥ the configured min period, default streamLoopExactMinPeriod) is a
+//     loop when it repeats BYTE-EXACT ≥ maxRepeats times (≥ 2 for
+//     P ≥ streamLoopLongPeriod), allowing ≤ streamLoopMaxGap interlude bytes
+//     between copies. No fuzzy matching, no progression analysis: exploratory
+//     paragraphs never repeat 50+ exact bytes, and connector noise
+//     ("the the the …") lives below the floor.
 //   - Detector B (paraphrase coverage): a loop whose copies drift in wording
 //     has no exact unit, but its words are almost all inside a handful of
 //     repeated shingles. Fire when ≥ streamLoopMinHotShingles distinct
@@ -1272,7 +1287,7 @@ func (a *Agent) recoverFromStreamLoop(ctx context.Context, strike, maxStrikes in
 // warning/stop messages (runaway-loop visibility): for Detector A it
 // is one byte-exact repeat unit; for Detector B — a paraphrase loop has no
 // exact unit — it is the scanned tail, which the hot shingles dominate.
-func streamLoopScan(clean string, maxRepeats int) (period, repeats int, sample string, ok bool) {
+func streamLoopScan(clean string, maxRepeats, minPeriod int) (period, repeats int, sample string, ok bool) {
 	if maxRepeats < 2 {
 		maxRepeats = 2
 	}
@@ -1286,7 +1301,7 @@ func streamLoopScan(clean string, maxRepeats int) (period, repeats int, sample s
 		// least three distinct words to have an opinion.
 		return 0, 0, "", false
 	}
-	if period, repeats, ok := streamExactChain(tail, maxRepeats); ok {
+	if period, repeats, ok := streamExactChain(tail, maxRepeats, minPeriod); ok {
 		return period, repeats, exactChainSample(tail, period), true
 	}
 	if period, repeats, ok := streamParaphraseLoop(tail, maxRepeats); ok {
@@ -1309,12 +1324,13 @@ func uniqueWordCount(s string) int {
 }
 
 const (
-	// streamLoopExactMinPeriod is the smallest repeated unit Detector A
-	// considers: shorter exact repeats are punctuation/connector noise. All
-	// field false positives were NON-exact, so exact-only matching is safe
-	// at this floor; a genuine micro-loop with a shorter unit also repeats
+	// streamLoopExactMinPeriod is the default smallest repeated unit
+	// Detector A considers (execution.stream_loop_min_period overrides it):
+	// shorter exact repeats are punctuation/connector noise. All field
+	// false positives were NON-exact, so exact-only matching is safe at
+	// this floor; a genuine micro-loop with a shorter unit also repeats
 	// at a multiple of the unit, which qualifies.
-	streamLoopExactMinPeriod = 60
+	streamLoopExactMinPeriod = 50
 	// streamLoopLongPeriod is the unit size from which two byte-exact copies
 	// already count as a loop: nobody legitimately repeats a kilobyte twice.
 	streamLoopLongPeriod = 1024
@@ -1373,13 +1389,13 @@ func exactChainSample(tail string, period int) string {
 //
 // Required copy count (certainty rises with unit size and count):
 //   - P ≥ streamLoopLongPeriod: 2 copies (nobody repeats a kilobyte twice)
-//   - streamLoopExactMinPeriod ≤ P < long: max(maxRepeats, 3) — a pair of
+//   - minPeriod ≤ P < long: max(maxRepeats, 3) — a pair of
 //     sub-kilobyte quotes is evidence, not a loop, at any knob setting
-//   - streamLoopSmallPeriod ≤ P < exactMin: max(maxRepeats, 8) — micro-loops
+//   - streamLoopSmallPeriod ≤ P < minPeriod: max(maxRepeats, 8) — micro-loops
 //     need overwhelming count
-func streamExactChain(tail string, maxRepeats int) (period, repeats int, ok bool) {
+func streamExactChain(tail string, maxRepeats, minPeriod int) (period, repeats int, ok bool) {
 	for p := streamLoopSmallPeriod; p <= len(tail)/2; p++ {
-		required, gap, skip := chainRules(tail, p, maxRepeats)
+		required, gap, skip := chainRules(tail, p, maxRepeats, minPeriod)
 		if skip {
 			continue
 		}
@@ -1392,11 +1408,11 @@ func streamExactChain(tail string, maxRepeats int) (period, repeats int, ok bool
 
 // chainRules returns the required copy count and interlude gap for a
 // candidate period, and whether the period must be skipped entirely.
-func chainRules(tail string, p, maxRepeats int) (required, gap int, skip bool) {
+func chainRules(tail string, p, maxRepeats, minPeriod int) (required, gap int, skip bool) {
 	switch {
 	case p >= streamLoopLongPeriod:
 		return 2, streamLoopMaxGap, false
-	case p >= streamLoopExactMinPeriod:
+	case p >= minPeriod:
 		if maxRepeats < 3 {
 			maxRepeats = 3
 		}

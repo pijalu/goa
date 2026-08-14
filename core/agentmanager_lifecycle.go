@@ -204,18 +204,9 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		// The streaming text loop detector lives in the agent, but its
 		// enable/disable state and repeat threshold are shared with the other
 		// loop detectors (temp + persist overrides) via the core loop detector.
-		StreamLoopDisabled: func() bool {
-			if am.loopDetector == nil {
-				return false
-			}
-			return am.loopDetector.Disabled("stream")
-		},
-		StreamLoopMaxRepeats: func() int {
-			if am.loopDetector == nil {
-				return 0
-			}
-			return am.loopDetector.StreamMaxRepeats()
-		},
+		StreamLoopDisabled:   am.streamLoopDisabled,
+		StreamLoopMaxRepeats: am.streamLoopMaxRepeats,
+		StreamLoopMinPeriod:  am.streamLoopMinPeriod,
 		StreamLoopMaxStrikes: cfg.Execution.StreamLoopMaxStrikes,
 		StreamLoopResetAfter: cfg.Execution.StreamLoopResetAfter,
 		// The thinking-stall watchdog shares the temp + persist override
@@ -245,6 +236,33 @@ func (am *AgentManager) SetDisableToolBudget(disabled bool) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	am.disableToolBudget = disabled
+}
+
+// streamLoopDisabled reports whether the streaming loop detector is off
+// (nil-safe wrapper around the shared core loop detector).
+func (am *AgentManager) streamLoopDisabled() bool {
+	if am.loopDetector == nil {
+		return false
+	}
+	return am.loopDetector.Disabled("stream")
+}
+
+// streamLoopMaxRepeats returns the live stream-loop repeat threshold
+// (nil-safe; 0 lets the agent fall back to its default).
+func (am *AgentManager) streamLoopMaxRepeats() int {
+	if am.loopDetector == nil {
+		return 0
+	}
+	return am.loopDetector.StreamMaxRepeats()
+}
+
+// streamLoopMinPeriod returns the live stream-loop minimum repeat-unit
+// length (nil-safe; 0 lets the agent fall back to its default).
+func (am *AgentManager) streamLoopMinPeriod() int {
+	if am.loopDetector == nil {
+		return 0
+	}
+	return am.loopDetector.StreamMinPeriod()
 }
 
 func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID string, modelContextWindow int) agentic.ContextCompressionConfig {

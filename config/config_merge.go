@@ -167,6 +167,9 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	if src.StreamLoopMaxRepeats != 0 {
 		dst.StreamLoopMaxRepeats = src.StreamLoopMaxRepeats
 	}
+	if src.StreamLoopMinPeriod != 0 {
+		dst.StreamLoopMinPeriod = src.StreamLoopMinPeriod
+	}
 	if src.StreamLoopMaxStrikes != 0 {
 		dst.StreamLoopMaxStrikes = src.StreamLoopMaxStrikes
 	}

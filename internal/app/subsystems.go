@@ -396,6 +396,7 @@ func loopDetectorConfigFrom(cfg *config.Config) core.LoopDetectorConfig {
 		ldCfg.StallDisabled = true
 	}
 	ldCfg.MaxStreamRepeats = cfg.Execution.StreamLoopMaxRepeats
+	ldCfg.MinStreamPeriod = cfg.Execution.StreamLoopMinPeriod
 	return ldCfg
 }
 

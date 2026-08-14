@@ -167,6 +167,53 @@ func TestApplyConfigSet_StreamLoopMaxRepeats(t *testing.T) {
 	}
 }
 
+// TestLoopDetectorStreamMinPeriod verifies the stream-loop minimum period
+// defaults to 50 and follows live updates (0 or below-floor restores the
+// default).
+func TestLoopDetectorStreamMinPeriod(t *testing.T) {
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	if got := ld.StreamMinPeriod(); got != 50 {
+		t.Errorf("default StreamMinPeriod = %d, want 50", got)
+	}
+	ld.SetStreamMinPeriod(80)
+	if got := ld.StreamMinPeriod(); got != 80 {
+		t.Errorf("StreamMinPeriod = %d, want 80", got)
+	}
+	ld.SetStreamMinPeriod(0)
+	if got := ld.StreamMinPeriod(); got != 50 {
+		t.Errorf("StreamMinPeriod after 0 = %d, want default 50", got)
+	}
+	ld.SetStreamMinPeriod(3)
+	if got := ld.StreamMinPeriod(); got != 50 {
+		t.Errorf("StreamMinPeriod after below-floor 3 = %d, want default 50", got)
+	}
+
+	// A zero config value also defaults to 50 at construction.
+	ld = core.NewLoopDetector(core.LoopDetectorConfig{})
+	if got := ld.StreamMinPeriod(); got != 50 {
+		t.Errorf("zero-config StreamMinPeriod = %d, want default 50", got)
+	}
+}
+
+// TestApplyConfigSet_StreamLoopMinPeriod verifies /config set
+// execution.stream_loop_min_period syncs the live detector floor.
+func TestApplyConfigSet_StreamLoopMinPeriod(t *testing.T) {
+	ctx := newModeTestContext()
+	ld := core.NewLoopDetector(core.DefaultLoopDetectorConfig())
+	ctx.LoopDetector = ld
+	ctx.ConfigSaver = &fakeConfigSaver{}
+
+	if err := applyConfigSet(ctx, "execution.stream_loop_min_period", "80"); err != nil {
+		t.Fatalf("applyConfigSet: %v", err)
+	}
+	if got := ld.StreamMinPeriod(); got != 80 {
+		t.Errorf("StreamMinPeriod = %d, want 80 after config set", got)
+	}
+	if got := ctx.Config.Execution.StreamLoopMinPeriod; got != 80 {
+		t.Errorf("config value = %d, want 80", got)
+	}
+}
+
 // TestLoopDetectorPersistOverride verifies persistent disable/enable behaviour
 // independent of the session temp override.
 func TestLoopDetectorPersistOverride(t *testing.T) {

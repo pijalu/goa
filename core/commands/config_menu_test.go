@@ -1082,6 +1082,7 @@ func TestConfigMenu_LoopThresholdsShowEffectiveValues(t *testing.T) {
 		"max_tool_calls":          "3 (default)",
 		"disable_tool_budget":     "off",
 		"stream_repeats":          "5 (default)",
+		"stream_min_period":       "50 (default)",
 		"stream_strikes":          "3 (default)",
 		"stream_reset_after":      "10 (default)",
 	}
@@ -1111,6 +1112,7 @@ func TestConfigMenu_LoopThresholdsShowConfiguredValues(t *testing.T) {
 			MaxToolRepeatConsecutive: 4,
 			MaxToolCalls:             15,
 			StreamLoopMaxRepeats:     8,
+			StreamLoopMinPeriod:      72,
 			StreamLoopMaxStrikes:     6,
 			StreamLoopResetAfter:     20,
 		},
@@ -1129,6 +1131,7 @@ func TestConfigMenu_LoopThresholdsShowConfiguredValues(t *testing.T) {
 		"tool_repeat_consecutive": "4",
 		"max_tool_calls":          "15",
 		"stream_repeats":          "8",
+		"stream_min_period":       "72",
 		"stream_strikes":          "6",
 		"stream_reset_after":      "20",
 	}

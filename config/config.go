@@ -122,6 +122,11 @@ type ExecutionConfig struct {
 	// text block required before the streaming loop detector stops the turn
 	// (0 = default 5). Higher values tolerate more deliberate repetition.
 	StreamLoopMaxRepeats int `yaml:"stream_loop_max_repeats,omitempty"`
+	// StreamLoopMinPeriod is the smallest repeated unit (in characters) the
+	// streaming loop detector treats as a loop (0 = default 50). Shorter
+	// exact repeats are punctuation/connector noise. Values below 8 are
+	// rejected: periods under that floor are never scanned at all.
+	StreamLoopMinPeriod int `yaml:"stream_loop_min_period,omitempty"`
 	// StreamLoopMaxStrikes is the number of stream-loop detections after
 	// which the turn is stopped (0 = default 3). Earlier detections abandon
 	// the looped round, warn the model with an ephemeral hint, and re-stream.

@@ -120,6 +120,10 @@ type LoopDetector struct {
 	// maxStreamRepeats is the live repeat threshold for the streaming text
 	// loop detector (see LoopDetectorConfig.MaxStreamRepeats).
 	maxStreamRepeats int
+	// minStreamPeriod is the live minimum repeat-unit length (in characters)
+	// for the streaming text loop detector (see
+	// LoopDetectorConfig.MinStreamPeriod).
+	minStreamPeriod int
 }
 
 // LoopDetectorConfig holds configurable parameters for the loop detector.
@@ -152,6 +156,10 @@ type LoopDetectorConfig struct {
 	// block required before the streaming loop detector stops the turn
 	// (0 = default 5). From execution.stream_loop_max_repeats.
 	MaxStreamRepeats int
+	// MinStreamPeriod is the smallest repeated unit (in characters) the
+	// streaming loop detector treats as a loop (0 = default 50). From
+	// execution.stream_loop_min_period.
+	MinStreamPeriod int
 }
 
 // defaultStreamLoopMaxRepeats is the built-in repeat threshold for the
@@ -159,6 +167,12 @@ type LoopDetectorConfig struct {
 // repetition (quoting evidence, comparing similar snippets) while still
 // stopping a runaway loop after only a few hundred wasted tokens.
 const defaultStreamLoopMaxRepeats = 5
+
+// defaultStreamLoopMinPeriod is the built-in smallest repeated unit (in
+// characters) the streaming text loop detector treats as a loop. Shorter
+// exact repeats are punctuation/connector noise. The absolute scan floor is
+// 8: below it periods are never scanned at all.
+const defaultStreamLoopMinPeriod = 50
 
 // DefaultLoopDetectorConfig returns sensible defaults for the loop detector.
 func DefaultLoopDetectorConfig() LoopDetectorConfig {
@@ -203,6 +217,9 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 	if cfg.MaxStreamRepeats < 2 {
 		cfg.MaxStreamRepeats = defaultStreamLoopMaxRepeats
 	}
+	if cfg.MinStreamPeriod < 8 {
+		cfg.MinStreamPeriod = defaultStreamLoopMinPeriod
+	}
 	return &LoopDetector{
 		toolStreaks:             make(map[string]int),
 		errorHistory:            make([]bool, loopErrorHistorySize),
@@ -218,7 +235,29 @@ func NewLoopDetector(cfg LoopDetectorConfig) *LoopDetector {
 		persistStreamDisabled:   cfg.StreamDisabled,
 		persistStallDisabled:    cfg.StallDisabled,
 		maxStreamRepeats:        cfg.MaxStreamRepeats,
+		minStreamPeriod:         cfg.MinStreamPeriod,
 	}
+}
+
+// StreamMinPeriod returns the live minimum repeat-unit length (in
+// characters) for the streaming text loop detector.
+func (ld *LoopDetector) StreamMinPeriod() int {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	return ld.minStreamPeriod
+}
+
+// SetStreamMinPeriod updates the live minimum repeat-unit length for the
+// streaming text loop detector. Values below 8 (the absolute scan floor)
+// restore the default; called when execution.stream_loop_min_period changes
+// via /config set.
+func (ld *LoopDetector) SetStreamMinPeriod(n int) {
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
+	if n < 8 {
+		n = defaultStreamLoopMinPeriod
+	}
+	ld.minStreamPeriod = n
 }
 
 // StreamMaxRepeats returns the live repeat threshold for the streaming text

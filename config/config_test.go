@@ -150,6 +150,44 @@ nested_unknown:
 	}
 }
 
+// TestConfigValidateStreamLoopMinPeriod verifies execution.stream_loop_min_period
+// accepts 0 (default) and values >= 8, rejecting anything below the absolute
+// scan floor.
+func TestConfigValidateStreamLoopMinPeriod(t *testing.T) {
+	for _, tt := range []struct {
+		v       int
+		wantErr bool
+	}{
+		{0, false},   // default (50)
+		{8, false},   // absolute scan floor
+		{50, false},  // default value spelled out
+		{4096, false},
+		{7, true},
+		{1, true},
+		{-1, true},
+	} {
+		cfg := &Config{Execution: ExecutionConfig{StreamLoopMinPeriod: tt.v}}
+		err := cfg.Validate()
+		if gotErr := err != nil; gotErr != tt.wantErr {
+			t.Errorf("Validate(stream_loop_min_period=%d) err=%v, wantErr=%v", tt.v, err, tt.wantErr)
+		}
+	}
+}
+
+// TestDeepMergeStreamLoopMinPeriod verifies the overlay wins when non-zero
+// and the base is preserved otherwise.
+func TestDeepMergeStreamLoopMinPeriod(t *testing.T) {
+	base := &Config{Execution: ExecutionConfig{StreamLoopMinPeriod: 80}}
+	base.DeepMerge(&Config{Execution: ExecutionConfig{StreamLoopMinPeriod: 40}})
+	if base.Execution.StreamLoopMinPeriod != 40 {
+		t.Errorf("StreamLoopMinPeriod = %d, want 40", base.Execution.StreamLoopMinPeriod)
+	}
+	base.DeepMerge(&Config{})
+	if base.Execution.StreamLoopMinPeriod != 40 {
+		t.Errorf("StreamLoopMinPeriod after empty merge = %d, want 40 (preserved)", base.Execution.StreamLoopMinPeriod)
+	}
+}
+
 // TestConfigValidateMode verifies mode validation.
 func TestConfigValidateMode(t *testing.T) {
 	tests := []struct {
