@@ -28,6 +28,26 @@ func (am *AgentManager) SetGoalStateProvider(p agentic.GoalStateProvider) {
 	am.goalStateProvider = p
 }
 
+// SetStickyProvider sets the always-on instruction source (sticky knowledge
+// skills) wired into every session agent. Call before StartSession.
+func (am *AgentManager) SetStickyProvider(p agentic.StickyProvider) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.stickyProvider = p
+}
+
+// ActiveAgentStickyBlocks returns the sticky instruction blocks of the
+// active session agent, or nil when no session/provider is set. Used for
+// wiring verification and diagnostics.
+func (am *AgentManager) ActiveAgentStickyBlocks() []string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.activeAgent == nil {
+		return nil
+	}
+	return am.activeAgent.StickyBlocks()
+}
+
 // LifecycleRegistry is the minimal interface AgentManager needs to dispatch
 // plugin lifecycle events.
 type LifecycleRegistry interface {
@@ -164,6 +184,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		ToolResultAsUser:         cfg.GetToolResultAsUser(),
 		SkillExecutionMode:       agentic.SkillExecutionMode(cfg.Skills.ExecutionMode),
 		GoalStateProvider:        am.goalStateProvider,
+		StickyProvider:           am.stickyProvider,
 		ProjectDir:               am.projectDir,
 		GetAutonomy:              func() internal.AutonomyLevel { return am.CurrentMode().Autonomy },
 		GetGuardConfig: func() perms.GuardConfig {

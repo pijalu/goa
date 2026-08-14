@@ -9,6 +9,7 @@ category: knowledge
 command: telegram
 mode: coder
 temperature: 0.2
+sticky: true
 ---
 
 ## TELEGRAM THINKING RULES

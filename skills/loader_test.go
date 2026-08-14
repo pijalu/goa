@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -503,5 +504,103 @@ func TestSkillRegistryRequiresSubAgentForSubSkills(t *testing.T) {
 		if s.Name == "parent" && !s.RequiresSubAgent {
 			t.Error("expected parent to require sub-agent")
 		}
+	}
+}
+
+// TestParseSkillSticky verifies the sticky frontmatter flag parses.
+func TestParseSkillSticky(t *testing.T) {
+	content := `---
+name: sticky-skill
+description: A sticky knowledge skill
+inline: true
+category: knowledge
+sticky: true
+---
+
+Always-on instructions.`
+	skill := parseSkill("sticky-skill", content, "embedded", "")
+	if skill == nil {
+		t.Fatal("parseSkill returned nil")
+	}
+	if !skill.Meta.Sticky {
+		t.Error("Sticky should be true")
+	}
+}
+
+// TestParseSkillStickyDefaultFalse verifies sticky defaults to false.
+func TestParseSkillStickyDefaultFalse(t *testing.T) {
+	skill := parseSkill("plain", "---\nname: plain\ndescription: Plain\n---\nbody", "embedded", "")
+	if skill == nil {
+		t.Fatal("parseSkill returned nil")
+	}
+	if skill.Meta.Sticky {
+		t.Error("Sticky should default to false")
+	}
+}
+
+// TestSkillRegistryStickySkills verifies StickySkills returns only sticky
+// knowledge skills, sorted by name, excluding hidden and action skills.
+func TestSkillRegistryStickySkills(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, frontmatter string) {
+		sd := filepath.Join(dir, name)
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(frontmatter+"\nbody of "+name), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	write("sticky-b", "---\nname: sticky-b\ndescription: B\nsticky: true\n---")
+	write("sticky-a", "---\nname: sticky-a\ndescription: A\nsticky: true\n---")
+	write("not-sticky", "---\nname: not-sticky\ndescription: N\n---")
+	write("sticky-hidden", "---\nname: sticky-hidden\ndescription: H\nsticky: true\nhidden: true\n---")
+	write("sticky-action", "---\nname: sticky-action\ndescription: X\nsticky: true\ncategory: action\n---")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := reg.StickySkills()
+	var names []string
+	for _, s := range got {
+		names = append(names, s.Meta.Name)
+	}
+	want := []string{"sticky-a", "sticky-b"}
+	if len(names) != len(want) {
+		t.Fatalf("StickySkills = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("StickySkills = %v, want sorted %v", names, want)
+		}
+	}
+}
+
+// TestSkillRegistryStickyBodies verifies StickyBodies renders the dedup key
+// blocks: stable, name-labelled, byte-identical across calls.
+func TestSkillRegistryStickyBodies(t *testing.T) {
+	dir := t.TempDir()
+	sd := filepath.Join(dir, "myskill")
+	if err := os.MkdirAll(sd, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte("---\nname: myskill\ndescription: M\nsticky: true\n---\n\nAlways do X."), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	bodies := reg.StickyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("StickyBodies = %d blocks, want 1", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "myskill") || !strings.Contains(bodies[0], "Always do X.") {
+		t.Errorf("block missing name/body: %q", bodies[0])
+	}
+	again := reg.StickyBodies()
+	if again[0] != bodies[0] {
+		t.Errorf("StickyBodies not byte-stable across calls")
 	}
 }

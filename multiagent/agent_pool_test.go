@@ -247,3 +247,50 @@ func TestAgentPool_SetConfig_UsedOnGetOrCreate(t *testing.T) {
 		t.Errorf("expected model 'claude-3', got %q", resolvedModel)
 	}
 }
+
+// TestAgentPool_StickyProvider_Propagates verifies every pool creation path
+// (GetOrCreate, CreateTaskAgent, CreateEphemeralAgent) wires the pool's
+// StickyProvider into the new agent's config.
+func TestAgentPool_StickyProvider_Propagates(t *testing.T) {
+	sp := &stubStickyProvider{blocks: []string{"ALWAYS ON"}}
+	p := NewAgentPool(testModel("default"), provider.StreamOptions{}, nil)
+	p.SetStickyProvider(sp)
+
+	viaGet, err := p.GetOrCreate("reviewer")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	viaTask, err := p.CreateTaskAgent("coder", AgentConfig{})
+	if err != nil {
+		t.Fatalf("CreateTaskAgent: %v", err)
+	}
+	viaEphemeral, err := p.CreateEphemeralAgent("explore", AgentConfig{})
+	if err != nil {
+		t.Fatalf("CreateEphemeralAgent: %v", err)
+	}
+	for role, a := range map[string]*agentic.Agent{"get": viaGet, "task": viaTask, "ephemeral": viaEphemeral} {
+		if a == nil {
+			t.Fatalf("%s: nil agent", role)
+		}
+		if got := a.StickyBlocks(); len(got) != 1 || got[0] != "ALWAYS ON" {
+			t.Errorf("%s: StickyBlocks = %v, want [ALWAYS ON]", role, got)
+		}
+	}
+}
+
+// TestAgentPool_NoStickyProvider verifies agents get no sticky blocks when
+// the pool has no provider set.
+func TestAgentPool_NoStickyProvider(t *testing.T) {
+	p := NewAgentPool(testModel("default"), provider.StreamOptions{}, nil)
+	a, err := p.GetOrCreate("reviewer")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	if got := a.StickyBlocks(); len(got) != 0 {
+		t.Errorf("StickyBlocks = %v, want empty without provider", got)
+	}
+}
+
+type stubStickyProvider struct{ blocks []string }
+
+func (s *stubStickyProvider) StickyInstructions() []string { return s.blocks }

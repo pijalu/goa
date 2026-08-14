@@ -407,7 +407,14 @@ func (a *Agent) emitCompactionResult(strategy string, before ContextStats, res c
 // compression path. The Text label mirrors Compaction.Strategy so legacy
 // consumers keyed on Text (session JSONL greps, the footer classifier) keep
 // working while new consumers read the structured payload.
+//
+// Every emission implies history was just mutated (emitCompactionResult
+// only fires on didWork), so the sticky-instruction dedup state is reset
+// here: the previously persisted sticky message may have been elided or
+// dropped, and the next turn must re-persist it. Centralizing the reset at
+// this choke point means no compression path can forget it.
 func (a *Agent) emitCompaction(strategy string, before, after ContextStats, removed, freed int, detail string) {
+	a.InvalidateStickyInstructions()
 	a.emitEvent(OutputEvent{
 		Type: EventCompact,
 		Text: strategy,

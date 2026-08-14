@@ -37,6 +37,12 @@ type SkillMeta struct {
 	SubSkills   []string       `yaml:"sub-skills"`
 	InputSchema map[string]any `yaml:"input-schema"`
 	Hidden      bool           `yaml:"hidden"`
+	// Sticky marks a knowledge skill as always-on: its body is persisted into
+	// every agent's conversation history once per session (and re-persisted
+	// after any context compression that may have dropped it), instead of
+	// requiring explicit /skill:run activation. Restricted to
+	// knowledge-category skills — sticky action skills are ignored.
+	Sticky bool `yaml:"sticky"`
 }
 
 // Skill represents a fully loaded skill with metadata and instructions.
@@ -73,6 +79,42 @@ func (s *Skill) HasSubSkills() bool {
 func (r *SkillRegistry) IsInline(name string) bool {
 	s, ok := r.skills[name]
 	return ok && s.Meta.Inline
+}
+
+// IsSticky reports whether the named skill is sticky: an always-on knowledge
+// skill whose body is auto-persisted into agent history. Sticky is only
+// honored for knowledge-category skills; a sticky action skill is a config
+// error and reports false.
+func (s *Skill) IsSticky() bool {
+	return s.Meta.Sticky && s.Meta.Category != SkillCategoryAction && !s.Meta.Hidden
+}
+
+// StickySkills returns all sticky knowledge skills, sorted by name for
+// byte-stable rendering. Hidden and action-category skills are excluded even
+// when they declare sticky: true. Like the other registry accessors, this
+// reads the load-time map without locking — registries are populated by
+// LoadAll before use.
+func (r *SkillRegistry) StickySkills() []*Skill {
+	var out []*Skill
+	for _, s := range r.skills {
+		if s.IsSticky() {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Meta.Name < out[j].Meta.Name })
+	return out
+}
+
+// StickyBodies renders each sticky skill as a labelled instruction block for
+// history persistence, in sorted order. The output is byte-stable for an
+// unchanged registry so callers can dedup re-persistence by string compare.
+func (r *SkillRegistry) StickyBodies() []string {
+	sticky := r.StickySkills()
+	blocks := make([]string, 0, len(sticky))
+	for _, s := range sticky {
+		blocks = append(blocks, fmt.Sprintf("<sticky_skill name=%q>\n%s\n</sticky_skill>", s.Meta.Name, strings.TrimSpace(s.Body)))
+	}
+	return blocks
 }
 
 // SubSkills returns the sub-skills registered for the named skill, or nil

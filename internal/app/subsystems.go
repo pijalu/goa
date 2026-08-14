@@ -281,6 +281,14 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 			restoreSessionState(agentBundle.agentMgr, agentBundle.stateSnapshot, requestReviewTool, delegateTool, cfg)
 			wireAgentBus(agentBundle.agentMgr, agentPool, foregroundOrch, cfg.MultiAgent.MaxCompanionCycles)
 			attachAgentDrivenToolPools(agentDrivenTools, agentPool)
+			// Sticky knowledge skills (sticky: true frontmatter): always-on
+			// instruction blocks persisted into every agent's history — main
+			// agent and all pool-created sub-agents ("new context" agents).
+			// They survive /new (fresh persist), session restore (history-scan
+			// dedup), and context compression (re-persist via emitCompaction).
+			sticky := &stickySkillProvider{registry: skillBundle.skillRegistry}
+			agentBundle.agentMgr.SetStickyProvider(sticky)
+			agentPool.SetStickyProvider(sticky)
 		}
 	}
 

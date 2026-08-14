@@ -52,6 +52,27 @@ func TestAgentManager_LifecycleStartShutdown(t *testing.T) {
 	}
 }
 
+// stubStickyProvider supplies a fixed sticky instruction set.
+type stubStickyProvider struct{ blocks []string }
+
+func (s *stubStickyProvider) StickyInstructions() []string { return s.blocks }
+
+// TestAgentManager_StickyProvider_InheritedBySession verifies the manager's
+// sticky provider is wired into every session agent it builds.
+func TestAgentManager_StickyProvider_InheritedBySession(t *testing.T) {
+	cfg := &config.Config{}
+	am := NewAgentManager(cfg, nil, nil, NewSessionState(internal.ModeState{}), nil, "")
+	am.SetStickyProvider(&stubStickyProvider{blocks: []string{"ALWAYS ON"}})
+
+	if _, err := am.StartSession(agenticprovider.Model{}, agenticprovider.StreamOptions{}, "", nil, cfg); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	got := am.ActiveAgentStickyBlocks()
+	if len(got) != 1 || got[0] != "ALWAYS ON" {
+		t.Errorf("ActiveAgentStickyBlocks = %v, want [ALWAYS ON]", got)
+	}
+}
+
 func TestAgentManager_LifecycleModeEnter(t *testing.T) {
 	cfg := &config.Config{}
 	am := NewAgentManager(cfg, nil, nil, NewSessionState(internal.ModeState{}), nil, "")

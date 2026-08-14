@@ -1833,6 +1833,75 @@ func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.
 	return msgs
 }
 
+// persistStickyInstructions appends always-on instruction blocks (sticky
+// knowledge skills) to a.history as ordinary USER-role messages, using the
+// same kimi-code parity contract as persistGoalReminder: append-only history,
+// provider-cache-friendly, never system role (strict chat templates reject
+// mid-conversation system messages with HTTP 400; Anthropic/Google
+// serializers silently drop them).
+//
+// All blocks are joined into a single message and deduped by string compare:
+// re-appending is skipped while the sticky set is unchanged. Compression
+// passes call InvalidateStickyInstructions after mutating history so the
+// next turn re-persists the block when elision/selective/summarize dropped
+// it.
+func (a *Agent) persistStickyInstructions() {
+	p := a.cfg.StickyProvider
+	if p == nil {
+		return
+	}
+	joined := strings.Join(p.StickyInstructions(), "\n\n")
+	if joined == "" {
+		return
+	}
+	// Dedup against ACTUAL history, not just in-memory state: the append-only
+	// contract means a sticky block present anywhere in the conversation is
+	// still in effect (elision only mutates tool payloads, and selective/
+	// summarize/ceiling all reset lastPersistedSticky via emitCompaction).
+	// Scanning also covers session restore (SetHistory), where a restored
+	// history may already carry the identical block.
+	if a.lastPersistedSticky == joined || historyContains(a.history, joined) {
+		a.lastPersistedSticky = joined
+		return
+	}
+	msg := Message{Type: Content, Role: User, Content: "[sticky instructions — always active]\n" + joined}
+	a.history = append(a.history, msg)
+	a.emitMessage(msg)
+	a.lastPersistedSticky = joined
+}
+
+// historyContains reports whether any history message's content contains
+// the given text. Used for sticky-instruction dedup.
+func historyContains(history []Message, text string) bool {
+	for _, m := range history {
+		if strings.Contains(m.Content, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// InvalidateStickyInstructions resets the sticky dedup state so the next
+// turn re-persists the sticky blocks. Every compression pass that mutates
+// history (elision, selective, summarize, ceiling, overflow, truncation)
+// must call this — the previously persisted sticky message may have been
+// elided or dropped, and sticky skills must survive context compression.
+func (a *Agent) InvalidateStickyInstructions() {
+	a.lastPersistedSticky = ""
+}
+
+// StickyBlocks returns the sticky instruction blocks this agent was
+// configured with, or nil when no StickyProvider is set. Exposed for wiring
+// verification (pool propagation tests) and diagnostics.
+func (a *Agent) StickyBlocks() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg.StickyProvider == nil {
+		return nil
+	}
+	return a.cfg.StickyProvider.StickyInstructions()
+}
+
 // logProviderContext writes a concise summary of the context to the debug log.
 // This makes it possible to verify that tool calls and tool results are being
 // passed back to the LLM correctly.

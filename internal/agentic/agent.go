@@ -398,6 +398,11 @@ type Agent struct {
 	// contract), so re-appending it every turn just bloats the append-only
 	// context (E5, ENHANCE.md): it is re-persisted only when it changes.
 	lastPersistedGoalReminder string
+	// lastPersistedSticky is the joined sticky-instruction text most recently
+	// appended to history by persistStickyInstructions. Re-appending is
+	// skipped until the sticky set changes (skill enabled/disabled/edited)
+	// or a compression pass invalidates it via InvalidateStickyInstructions.
+	lastPersistedSticky string
 }
 
 // partialToolCall tracks a tool call whose arguments are still being
@@ -632,6 +637,11 @@ type Config struct {
 	// GoalStateProvider injects goal context into the system prompt at each
 	// turn boundary. Nil disables goal injection.
 	GoalStateProvider GoalStateProvider
+	// StickyProvider supplies always-on instruction blocks (sticky knowledge
+	// skills). Non-empty blocks are persisted into history as user-role
+	// messages once per content change — never into the system prompt, which
+	// is the provider-cached prefix. Nil disables sticky injection.
+	StickyProvider StickyProvider
 	// AutoHealToolCalls enables parsing of malformed XML tool calls emitted
 	// by local models.  When true, the agent extracts <tool_call> and
 	// <function=name> markup from the assistant text and treats it as a tool
@@ -733,7 +743,10 @@ func (a *Agent) SetHistory(history []Message) {
 
 	a.history = history
 	// History was replaced wholesale (session restore): any recorded provider
-	// prompt size belongs to the previous conversation.
+	// prompt size belongs to the previous conversation, and the sticky dedup
+	// state no longer reflects what's in history — re-persist on next turn
+	// when the restored conversation lacks the current sticky set.
+	a.lastPersistedSticky = ""
 	a.invalidateContextUsageLocked()
 }
 
@@ -1135,6 +1148,10 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 		// request sequence is strictly append-only and fully prefix-cacheable.
 		a.persistGoalReminder()
 
+		// Persist always-on sticky skill instructions under the same
+		// contract — deduped, user-role, re-persisted after compression.
+		a.persistStickyInstructions()
+
 		// Process one turn
 		err = a.processTurn(ctx)
 		if err != nil {
@@ -1433,6 +1450,7 @@ func (a *Agent) Clear() {
 	a.processing = false
 	a.lastRoundActivity = time.Time{}
 	a.lastCacheReadTokens = 0
+	a.lastPersistedSticky = ""
 	a.clearLoopStopLocked()
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()

@@ -119,6 +119,7 @@ type AgentManager struct {
 	pendingSteering      string // steering text saved during finalizeTurn, dispatched after am.running=false
 	companionBuf         strings.Builder
 	goalStateProvider    agentic.GoalStateProvider
+	stickyProvider       agentic.StickyProvider
 	postTurnHook         func()
 	lifecycleRegistry    LifecycleRegistry
 	projectDir           string
