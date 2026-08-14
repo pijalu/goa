@@ -506,39 +506,38 @@ func toggleMicroEnabledValue(cfg *config.Config) string {
 	return "true"
 }
 
-// compressionLabel returns a one-line summary for the root /config menu:
-// the enabled layers (soft N% · trigger N% · hard N% <method>) plus the
-// on-error net; nothing proactive and no net → "off".
+// compressionLabel returns a compact summary for the root /config menu row:
+// a COUNT of the enabled compression mechanisms (soft / trigger / hard /
+// on-error net / micro compaction). The rich per-layer preview was dropped —
+// too wide for the row — and the old preview-empty fallback "off" was wrong:
+// micro compaction alone left the label "off" while compression ran. The
+// master switch off is the only state spelled "disabled"; mechanisms on but
+// none configured reads "none active".
 func compressionLabel(cfg *config.Config) string {
 	cc := cfg.ContextCompression
 	if !cc.EnabledValue() {
-		return "off"
+		return "disabled"
 	}
-	var parts []string
-	if v := cc.Thresholds.SoftPercent; v > 0 {
-		parts = append(parts, fmt.Sprintf("soft %d%%", v))
+	active := 0
+	if cc.Thresholds.SoftPercent > 0 {
+		active++
 	}
-	if v := compressionTriggerValue(cfg); v > 0 {
-		parts = append(parts, fmt.Sprintf("trigger %d%%", v))
+	if compressionTriggerValue(cfg) > 0 {
+		active++
 	}
-	if v := cc.Thresholds.HardPercent; v > 0 {
-		method := cc.Strategies.Hard
-		if method == "" {
-			method = "summarize"
-		}
-		parts = append(parts, fmt.Sprintf("hard %d%% %s", v, method))
+	if cc.Thresholds.HardPercent > 0 {
+		active++
 	}
 	if cc.OnContextError {
-		s := cc.OnErrorStrategy
-		if s == "" {
-			s = "hybrid"
-		}
-		parts = append(parts, "on-error "+s)
+		active++
 	}
-	if len(parts) == 0 {
-		return "off"
+	if e := cc.MicroCompaction.Enabled; e != nil && *e {
+		active++
 	}
-	return strings.Join(parts, " · ")
+	if active == 0 {
+		return "none active"
+	}
+	return fmt.Sprintf("%d active", active)
 }
 
 // compressionTriggerValue resolves the effective trigger percent for display:

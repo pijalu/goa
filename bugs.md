@@ -23,6 +23,9 @@ Commit at the end of each fix with a clear and descriptive commit message
 
 # Archive
 
+## Compression (closed)
+Root-cause: compressionLabel built a rich per-layer preview and collapsed to "off" whenever the preview parts were empty — micro compaction (and any mechanism not in the preview) was invisible, showing "off" while compression ran. Fix: row is now a simple mechanism count — "disabled" (master off), "none active", or "N active" (soft/trigger/hard/on-error/micro). Rich preview removed (too wide for the row). Table test covers all cases incl. micro-only regression; interactive /config PTY check shows "Compression 2 active" with tuned defaults. Gates green (vet/staticcheck/gocognit/gocyclo no new; race tests ok).
+
 ## default config (closed)
 Adopted maintainer-tuned values into embedded config/configs/default.yaml (scope agreed with owner: execution + tools + context_compression, minus providers/models/API keys): execution.mode yolo, retries 2, loop_warning 10, loop_interrupt 15, max_tool_calls 200, auto_heal_tool_calls false, stream_loop_max_strikes 5, bash.compress_output false; tools.enabled now lean (on: pty_exec/python/webfetch; off: bg_exec/delegate_to/request_review/verify/agent/agent_swarm/goa/lsp/todo_list); context_compression.preserve_recent_turns 0. Personal values (providers, models, modes, dream, memory, completion, teams) NOT adopted. Default tests updated to encode new defaults; docs/CONFIGURATION.md example synced. Smoke: fresh HOME/project PTY run starts in coder|YOLO with 12-tool lean set, no crash. Full go test ./... green.
 
@@ -46,8 +49,4 @@ CLOSED — see Archive.
 ## Compression
 compression config menu show "off" even if there are some compression enabled - remove the "off" / preview as it's too rich to be shown
 
-### Fix plan (in progress)
-- Root cause: compressionLabel builds a rich preview (soft N% · trigger N% · hard N% method · on-error X) and collapses to "off" whenever the preview parts are empty — micro compaction and other enabled mechanisms are not counted, so "off" shows while compression is actually enabled.
-- Fix: replace root /config Compression row description with a simple count ("N active", N = soft + trigger + hard + on-error + micro mechanisms enabled; "none" when 0). No rich preview, no "off".
-- Test approach: table test on compressionLabel: all-off → none; micro-only → 1 active; user config (hard+on-error) → 2 active; update existing label tests.
-- Validation: gates individually; interactive /config check of the Compression row.
+CLOSED — see Archive.

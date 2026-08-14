@@ -1015,27 +1015,61 @@ func TestConfigMenu_CompressionMaxTokensAuto(t *testing.T) {
 }
 
 func TestCompressionLabel(t *testing.T) {
-	disabledCfg := &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(false)}}
-	if got := compressionLabel(disabledCfg); got != "off" {
-		t.Errorf("compressionLabel(disabled) = %q, want off", got)
-	}
-	// Enabled layers show up as soft/trigger/hard parts plus the on-error net.
-	got := compressionLabel(&config.Config{
-		ContextCompression: config.ContextCompressionConfig{
-			Enabled:        boolPtr(true),
-			Thresholds:     config.CompressionThresholdsConfig{SoftPercent: 40, TriggerPercent: 80, HardPercent: 95},
-			OnContextError: true,
+	// The root-menu row is a simple COUNT of enabled mechanisms — no rich
+	// preview (too wide for the row) and never a misleading "off" when some
+	// compression is actually enabled.
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "explicitly disabled",
+			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(false)}},
+			want: "disabled",
 		},
-	})
-	for _, want := range []string{"soft 40%", "trigger 80%", "hard 95% summarize", "on-error hybrid"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("compressionLabel = %q, want substring %q", got, want)
-		}
+		{
+			name: "nothing enabled",
+			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)}},
+			want: "none active",
+		},
+		{
+			// Micro compaction alone previously rendered "off" although
+			// compression was enabled (the bug behind this fix).
+			name: "micro only",
+			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{
+				Enabled:         boolPtr(true),
+				MicroCompaction: config.MicroCompactionSettings{Enabled: boolPtr(true)},
+			}},
+			want: "1 active",
+		},
+		{
+			name: "hard plus on-error (tuned default)",
+			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{
+				Enabled:         boolPtr(true),
+				Thresholds:      config.CompressionThresholdsConfig{HardPercent: 95},
+				OnContextError:  true,
+			}},
+			want: "2 active",
+		},
+		{
+			name: "all layers plus net plus micro",
+			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{
+				Enabled:         boolPtr(true),
+				Thresholds:      config.CompressionThresholdsConfig{SoftPercent: 40, TriggerPercent: 80, HardPercent: 95},
+				OnContextError:  true,
+				MicroCompaction: config.MicroCompactionSettings{Enabled: boolPtr(true)},
+			}},
+			want: "5 active",
+		},
 	}
-	// Nothing proactive and no net → off.
-	got = compressionLabel(&config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)}})
-	if got != "off" {
-		t.Errorf("compressionLabel(nothing enabled) = %q, want off", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := compressionLabel(tt.cfg)
+			if got != tt.want {
+				t.Errorf("compressionLabel = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
