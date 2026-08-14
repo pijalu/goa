@@ -64,6 +64,13 @@ type Scene struct {
 	// compose must materialize the FULL canvas (not just the visible window),
 	// because the scrollback reset re-emits every off-screen row from it.
 	WidthChanged bool
+
+	// ClearGen is the Compositor's clear generation at snapshot time. The
+	// snapshot's owner (TUI.buildSnapshot) stamps it from Compositor.ClearGen;
+	// Render DROPS scenes whose generation is older than the compositor's
+	// current one (they predate a Clear and would repaint stale content,
+	// swallowing the pending wipe — the /new blank-screen race).
+	ClearGen uint64
 }
 
 // compose builds the virtual-buffer canvas from the Scene's base layers, each
@@ -371,6 +378,15 @@ type Compositor struct {
 	// could be painted after the wipe — the /new blank-screen race.
 	clearRequested bool
 
+	// clearGen is the clear generation: Clear() increments it and Render drops
+	// any scene stamped with an older generation (Scene.ClearGen). A scene
+	// built BEFORE a Clear but rendered after it would repaint the old canvas,
+	// consume clearRequested, and restore the stale scrollback watermark —
+	// leaving a blank screen with the cursor clamped to row 1 until a resize
+	// (the reported /new bugs). Dropping it keeps the wipe pending for the
+	// next, fresh frame; Clear always requests one.
+	clearGen uint64
+
 	// lastScrollCount is the number of rows the current frame's scroll advance
 	// (emitSteadyScroll) wrote at the bottom of the transcript region. It is set
 	// immediately before repaintWindow runs and consumed only by it, then reset
@@ -488,7 +504,16 @@ func (c *Compositor) Clear() {
 	c.vt = 0
 	c.prevLines = nil
 	c.regionBot = 0
+	c.clearGen++
 	c.clearRequested = true
+}
+
+// ClearGen reports the current clear generation. Snapshot builders stamp it
+// into Scene.ClearGen; see the clearGen field docs for the stale-scene drop.
+func (c *Compositor) ClearGen() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.clearGen
 }
 
 // Restore is called on shutdown: end synchronized output, reset SGR, move the
@@ -533,6 +558,14 @@ func (c *Compositor) Render(scene *Scene) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// A scene older than the last Clear predates the wipe: rendering it would
+	// repaint stale content and swallow clearRequested (the /new race where the
+	// renderLoop holds a pre-clear snapshot across a session reset). Drop it —
+	// Clear's render request produces a fresh, correctly-wiped frame next.
+	if scene.ClearGen != c.clearGen {
+		return
+	}
 
 	// A pending Clear() must be honored by THIS frame: wipe the screen and
 	// scrollback atomically inside the frame's sync, then repaint the fresh
@@ -1387,6 +1420,15 @@ func (c *Compositor) unchangedRowChrome(canvas []string, i, screenRow, windowH i
 // appendCursorSeq writes the hardware-cursor positioning into the SAME
 // synced buffer as the frame content (absolute CUP, immune to auto-wrap drift),
 // plus a show/hide transition only when the visibility actually changes.
+//
+// The screen row uses the SAME two-phase mapping as the paint
+// (repaintWindow/drawWindow): transcript rows (below contentEnd) map linearly
+// in the viewport top, while the pinned chrome band maps to the screen
+// bottom regardless of where the window top lands. The two mappings coincide
+// only when vt is the natural bottom anchor (canvasLen == vt+height); during
+// a transient canvas shrink the watermark clamps vt above the anchor, and a
+// linear map would place the cursor ABOVE the editor row — the reported
+// "cursor one line too high / jumps out of the input box" glitches.
 func (c *Compositor) appendCursorSeq(buf *strings.Builder, cp *CursorPos, totalLines, width, vtop, height int) {
 	if cp == nil || totalLines <= 0 {
 		if c.cursorVisible {
@@ -1400,13 +1442,25 @@ func (c *Compositor) appendCursorSeq(buf *strings.Builder, cp *CursorPos, totalL
 	if width > 0 && targetCol >= width {
 		targetCol = width - 1
 	}
-	screenRow := clampRow(targetRow-vtop+1, height)
+	screenRow := clampRow(c.cursorScreenRow(targetRow, totalLines, vtop, height), height)
 	buf.WriteString(fmt.Sprintf("\x1b[%d;%dH", screenRow, targetCol+1))
 	if !c.cursorVisible {
 		buf.WriteString("\x1b[?25h")
 		c.cursorVisible = true
 	}
 	c.hardwareCursorRow = targetRow
+}
+
+// cursorScreenRow maps a canvas row to its 1-indexed screen row under the
+// two-phase layout: chrome-band rows (at/above the transcript end) are pinned
+// to the screen bottom, transcript rows scroll linearly with the viewport top.
+func (c *Compositor) cursorScreenRow(targetRow, totalLines, vtop, height int) int {
+	contentEnd := max(0, totalLines-c.chromeH)
+	if targetRow >= contentEnd && c.chromeH > 0 {
+		windowH := max(1, height-c.chromeH)
+		return windowH + (targetRow - contentEnd) + 1
+	}
+	return targetRow - vtop + 1
 }
 
 // clampRow clamps a 1-indexed screen row to [1, height].

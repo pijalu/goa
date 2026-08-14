@@ -102,6 +102,7 @@ func TestCompositor_ClearNeverInterleavesWithFrame(t *testing.T) {
 	// Final state: clear then render the fresh session. Whatever interleaving
 	// happened, the compositor must still be able to paint the fresh frame.
 	c.Clear()
+	small.ClearGen = c.ClearGen() // stamp the post-clear generation (as buildSnapshot does)
 	mark := len(term.String())
 	c.Render(small)
 	out := term.String()[mark:]
@@ -153,6 +154,7 @@ func TestCompositor_ClearDoesNotCorruptNextFrame(t *testing.T) {
 	// After the dust settles, render the fresh (short) session frame and
 	// confirm its transcript content actually reaches the terminal.
 	c.Clear()
+	small.ClearGen = c.ClearGen() // stamp the post-clear generation (as buildSnapshot does)
 	termStringBefore := len(term.String())
 	c.Render(small)
 	out := term.String()[termStringBefore:]

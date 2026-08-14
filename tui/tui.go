@@ -539,6 +539,9 @@ func (t *TUI) buildSnapshot() *Scene {
 	w, h := t.terminal.Size()
 	scene := t.buildScene(w, h)
 	t.publishSize(scene.TerminalW, scene.TerminalH)
+	// Stamp the clear generation so the compositor can drop this snapshot if a
+	// Clear() (e.g. /new) lands before it is rendered (the stale-scene race).
+	scene.ClearGen = t.compositor.ClearGen()
 	return scene
 }
 
@@ -1130,10 +1133,8 @@ func (t *TUI) renderNow() []string {
 		return nil
 	}
 
-	w, h := t.terminal.Size()
-	scene := t.buildScene(w, h)
+	scene := t.buildSnapshot()
 	t.compositor.Render(scene)
-	t.publishSize(scene.TerminalW, scene.TerminalH)
 	return t.compositor.Buffer()
 }
 

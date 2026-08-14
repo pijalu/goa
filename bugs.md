@@ -19,56 +19,51 @@ If new items are added, restart the process.
 
 # To fix
 
-## Cursor jumps out of input during tool status redraw
-Tool status changes trigger a cursor glitch: the cursor momentarily jumps out of the input box, then returns to the expected position on the next render.
-
-**Symptoms:** During a redraw caused by a tool status change, the cursor leaves the input line; it snaps back to the correct position on the following render (transient, not persistent).
-
-**Trigger (user-reported):** Tool status change — cursor should NOT move at all while the tool widget redraws; it only visually jumps out and back.
-
-**Likely cause:** Recently introduced TUI fixes to avoid the duplicated row at the scrollback boundary (4627094). The duplicated-row guard routes repaints through a path that skips or repositions the editor row carrying the cursor (see the "cursor one line too high" entry below for the traced cursor data flow); a skipped/rewritten row near the input can make the cursor appear detached from the input box during that frame.
-
-**Plan:** Reproduce in PTY with a tool status change (esp. `read` running → done), pin the repaint path for the frame where the cursor jumps (trace `full` vs `diff` vs `drawWindow` after the duplicated-row fix), assert the cursor row stays inside the input box across the transition, fix, add regression test, validate per bug guidelines (go vet, staticcheck, gocognit, gocyclo, go test -race -cover).
-
-## Input cursor occasionally redrawn one line too high
-Cursor on the input box is sometimes incorrectly redrawn one line above its true position (transient glitch, not persistent).
-
-**Symptoms:** After certain repaints/scrolls, the input cursor sits one line too high; next render usually snaps it back.
-
-**Trigger (user-reported):** Linked to tool calls / change of status — usually after a `read` tool completes (status running → done; widget collapses/updates in the chat viewport). The same issue gets WORSE after a user message is queued and sent: the transcript grows (new user row appended) at roughly the same time as the tool status flips, stacking two height changes (chat grows, tool widget collapses) in consecutive frames near the editor.
-
-**Cursor data flow (traced):**
-- Editor embeds `CURSOR_MARKER` in the focused input row (`renderEditorFrame` → `renderContentLine` with `hasCursor`).
-- `buildScene` → `extractCursorMarker` scans layers for the marker, strips it from the layer content, sets `Scene.Cursor{Row, Col}` absolute in canvas coords: `marker row + layer.Rect.Y` (`tui.go`).
-- Editor `Rect.Y` = accumulated base-layer Y; `buildBaseLayers` bottom-aligns via `totalH` (`Rect.Y = y + totalH - len(lines)`), so cursor row = bottom chrome position.
-- Compositor emits the hardware cursor in the same synced buffer: `appendCursorSeq` → `screenRow = cursorRow - vt + 1`, where `vt = windowTop(canvasLen, height)` (`compositor.go`).
-- Steady-state path is `renderDiff` (repaints changed rows only); tool-widget growth/shrink inside the window routes through `drawWindow` via `windowContentShifted` guard.
-
-**Working hypothesis:** the compositor's canvas MODEL and the actual SCREEN desync by one row during the tool-widget height change — either a row not repainted (unchangedRow skip) whose screen position moved, or `vt`/scroll delta disagreeing with the emitted line-feed scroll. Cursor is positioned per the model, so it lands one row above the visually stale input box.
-
-**Suspects (to investigate):**
-- Editor render path (tui/editor_render.go): cursor row computed against a stale viewport height / chrome height when the bottom chrome band changed (goal bubble, footer shrink) between frame builds.
-- Compositor repaint of the bottom chrome band vs. the input layer's cached cursor offset (tui/compositor.go two-phase repaint from the archived screen-glitching fix).
-- Differential render skipping the editor row that carries the cursor (CSI 2026 sync window) when only chrome height changed.
-- Tool widget collapse after `read` completes: height delta in the chat layer → canvas shrink → `vt`/cursor-row arithmetic; check `repaintWindow` unchangedRow mapping (`prevIdx = i - vt + c.vt`) for the shifted editor row.
-
-**Plan:** Reproduce in PTY with tool-call (esp. `read`) + status-change sequences, pin the exact repaint path (trace `full` vs `diff`), assert screen rows match canvas model after the transition, add regression test, validate per bug guidelines (go vet, staticcheck, gocognit, gocyclo, go test -race -cover).
-
-## Blank screen + cursor on first line after `/new`
-After issuing `/new`, the cursor lands on line 1 and the screen stays blank until the input line.
-
-**Symptoms:** Screen blank below top; only the input line is rendered; cursor sits at the first line.
-
-**Plan:** Reproduce in PTY (`/new` from an active session), trace `buildScene`/viewport height after session reset, determine why transcript rows are not rendered (stale canvas height, cleared layer, or `vt`/`windowTop` desync), fix, add regression test, validate per bug guidelines (go vet, staticcheck, gocognit, gocyclo, go test -race -cover).
-
-## Content not shown after `/new` until a resize
-After `/new`, no content is displayed at all until a window resize occurs, at which point everything appears.
-
-**Symptoms:** Screen shows only the input line (and possibly chrome), transcript empty; any resize repaints everything correctly. Distinct trigger from the cursor-at-first-line bug — recovery is a resize, not a repaint.
-
-**Plan:** Reproduce in PTY (`/new` then resize), trace whether a full repaint (`full` path) is emitted after session reset; check `dirty`/diff state after `reset`/`clear` (canvas reset may not invalidate scene rows, so nothing repaints until a resize forces a full render), fix invalidation on reset, add regression test, validate per bug guidelines (go vet, staticcheck, gocognit, gocyclo, go test -race -cover).
+(none)
 
 # Archive
+
+## Cursor jumps out of input during tool status redraw — FIXED
+Tool status changes trigger a cursor glitch: the cursor momentarily jumps out of the input box, then returns to the expected position on the next render.
+
+**Root cause (traced):** `appendCursorSeq` mapped the cursor row linearly (`screenRow = cursorRow - vt + 1`), but the paint layout is two-phase: transcript rows are linear in `vt`, while the chrome band (editor) is PINNED to the screen bottom (`screenRow = windowH + (cursorRow - contentEnd) + 1`). The two mappings agree only when `vt` equals the natural bottom anchor (`canvasLen - height`). During a tool-widget collapse (canvas shrinks by `d` while the scrollback watermark is still high) `windowTop` clamps `vt` above the natural anchor, and the cursor landed `d` rows ABOVE the editor row — outside the input box — until the canvas regrew (next streaming chunk) snapped it back.
+
+**Fix:** `appendCursorSeq` (`tui/compositor.go`) now maps through the same two-phase layout as the paint: extracted `cursorScreenRow(targetRow, totalLines, vtop, height)` computes `contentEnd = totalLines - chromeH`; cursor rows at/above `contentEnd` map to the pinned chrome band (`windowH + (row - contentEnd) + 1`), rows below map linearly. No Scene/layout changes — the paint split is purely by canvas row.
+
+**Tests:** `TestCompositor_CursorStaysOnEditor` (`tui/cursor_clamp_repro_test.go`, RED first): scrolled canvas with chrome, shrink transcript so `vt` clamps, explicit `Scene.Cursor` on the editor row; replayed through `screenEmulator`; asserts the hardware cursor row equals the painted editor row, not the linear map. `TestCompositor_CursorStaysOnEditorAcrossShrinkAndRegrow` covers the stacked shrink+regrow sequence (tool collapse + queued user message).
+
+**Validation:** PTY session (opencode-go/deepseek-v4-flash): `read` tool running→done collapse + streaming — editor/input stayed pinned at the screen bottom, no visible cursor detach. Gates: `go vet`, `staticcheck`, `gocognit -over 15`, `gocyclo -over 12`, `go test -count=1 -race -cover ./...` all pass (pre-existing warnings unrelated to the change: `tui/render_trace.go` U1000 unused `sceneLayersTrace`, `renderLoop` gocognit 16, `scrollOffUnstable` gocyclo 13 — all untouched).
+
+## Input cursor occasionally redrawn one line too high — FIXED
+Cursor on the input box was sometimes redrawn one line above its true position (transient), worst after a `read` tool completes and a user message is queued right after (two stacked height changes).
+
+**Root cause (traced):** same family as the cursor-jump bug. The frame where the tool widget collapses shrinks the canvas; `windowTop` clamps `vt` to the stale scrollback watermark (above the natural anchor); the two-phase repaint keeps the editor pinned at the screen bottom, but `appendCursorSeq` positioned the cursor with the linear mapping, placing it exactly `d` rows (the shrink delta) above the true editor row. A user message queued+sent regrows the canvas past the watermark on the next frame(s), re-aligning both mappings — the snap-back.
+
+**Fix:** same `cursorScreenRow` two-phase mapping as above (single fix covers both bugs).
+
+**Tests:** same regression tests, incl. the shrink+regrow sequence asserting the cursor row stays on the editor's painted row across consecutive renders.
+
+**Validation:** same gates + PTY repro as the cursor-jump bug — all green.
+
+## Blank screen + cursor on first line after `/new` — FIXED
+After `/new`, the cursor landed on line 1 and the screen stayed blank until the input line.
+
+**Root cause (traced):** the renderLoop requests a Scene snapshot from the commandLoop, then hands it to `compositor.Render`. `/new` (handleNewSession) runs `chat.Clear()` + `compositor.Clear()` on the commandLoop — which can land BETWEEN the snapshot and the Render. The stale pre-clear scene then consumed `clearRequested`, repainted the OLD canvas as a "first frame", and restored the stale `scrollTop`/`prevLines`. Every subsequent frame diffed against that stale baseline: `windowTop` clamped `vt` to the stale watermark far above the (now short) canvas, no transcript row was in range, and `appendCursorSeq` clamped the cursor to screen row 1 — blank window, cursor on line 1, chrome at the bottom.
+
+**Fix:** clear-generation epoch on the Compositor. `Clear()` increments `clearGen` under its mutex; `Scene.ClearGen` is stamped at snapshot time (`buildSnapshot`/`renderNow` in `tui/tui.go` read `compositor.ClearGen()`); `Render` drops any scene whose generation is older than the current one (the wipe stays pending for the next, fresh frame). Stale snapshots racing a `/new` can no longer repaint the dead session.
+
+**Tests:** `TestCompositor_RenderDropsStaleSceneAfterClear` (RED first): stale scene rendered after `Clear()` produces NO terminal writes and leaves the wipe pending; the next fresh frame wipes + paints. `TestTUI_ClearTranscriptNextFrameIsFresh`: full engine path — after `/new`-style Clear, the next frame contains no stale session rows and paints the fresh screen.
+
+**Validation:** PTY session: `/new` from an active scrolled session (↑4.7K scrollback) — fresh header/banners/input painted immediately, no blank screen, no cursor at line 1. Gates all pass as noted above.
+
+## Content not shown after `/new` until a resize — FIXED
+After `/new`, no content was displayed at all until a window resize occurred, at which point everything appeared.
+
+**Root cause (traced):** same stale-scene race as the blank-screen bug, without the visible cursor clamp: after the stale frame repainted the old canvas and restored the stale watermark, subsequent frames diffed against a baseline that no longer mapped onto the screen; nothing repainted the (short) fresh transcript because `windowTop` was clamped above it. A resize changed the width → `frameGeometryReset` → `drawWindowResetScrollback` reset `scrollTop`/`vt` to 0 and re-emitted everything — which is why a resize "fixed" it.
+
+**Fix:** covered by the clear-generation epoch (+ its regression tests, which assert the frame after a racy stale delivery still paints fresh content with no resize).
+
+**Validation:** same PTY `/new` repro (content visible without any resize) + gates as above — all green.
 
 ## Screen glitching — FIXED
 The screen history can have double line at boundaries.
