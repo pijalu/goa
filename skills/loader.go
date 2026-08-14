@@ -153,6 +153,10 @@ type SkillSummary struct {
 	Category         string
 	FilePath         string
 	RequiresSubAgent bool
+	// Sticky reports the EFFECTIVE always-on state (frontmatter sticky
+	// combined with the skills.sticky / skills.sticky_off config overrides)
+	// for banners and listings; the category/hidden gates of IsSticky apply.
+	Sticky bool
 	// Source is the origin of the skill: "embedded" for compiled-in skills,
 	// "file" for skills loaded from a directory (home/project/plugin dirs).
 	Source string
@@ -193,11 +197,17 @@ type SkillRegistry struct {
 	// applies ONLY to the embedded source — home/project/plugin file skills
 	// are never affected.
 	embeddedDefaultDisabled map[string]bool
-	// embeddedEnabled is the embedded-scoped opt-in list: names here re-enable
-	// a default-off embedded skill WITHOUT activating the global Enabled
-	// allowlist (which would suppress file-based skills). Populated from
-	// config skills.embedded_enabled.
+	// embeddedEnabled is the embedded-scoped opt-in list (skills.embedded_enabled).
 	embeddedEnabled map[string]bool
+	// stickyOn / stickyOff are the config-level sticky overrides
+	// (skills.sticky / skills.sticky_off): on forces a knowledge skill
+	// sticky, off forces a frontmatter-sticky skill back to on-demand (off
+	// wins). Applied to Meta.Sticky during LoadAll.
+	stickyOn map[string]bool
+	stickyOff map[string]bool
+	// stickyFront records the pristine frontmatter sticky flag per loaded
+	// skill (before overrides) so toggles can write the minimal config list.
+	stickyFront map[string]bool
 	homeDir         string          // home dir path for source labeling ("home")
 	projectDir      string          // project dir path for source labeling ("project")
 }
@@ -278,6 +288,58 @@ func (r *SkillRegistry) SetEmbeddedEnabled(names []string) {
 		r.embeddedEnabled[n] = true
 	}
 }
+
+// SetStickyOverrides installs the config-level sticky overrides applied
+// during LoadAll: names in off force a frontmatter-sticky skill back to
+// on-demand (off wins over on, mirroring the Disabled semantics), names in
+// on force a plain knowledge skill sticky. Only knowledge-category skills
+// are affected — the action/hidden gates of Skill.IsSticky still apply on
+// top. Must be called before LoadAll.
+func (r *SkillRegistry) SetStickyOverrides(on, off []string) {
+	if len(on) > 0 {
+		r.stickyOn = make(map[string]bool, len(on))
+		for _, n := range on {
+			r.stickyOn[n] = true
+		}
+	}
+	if len(off) > 0 {
+		r.stickyOff = make(map[string]bool, len(off))
+		for _, n := range off {
+			r.stickyOff[n] = true
+		}
+	}
+}
+
+// applyStickyOverride records the pristine frontmatter sticky flag of a
+// loaded skill (so toggles can decide which config list to edit) and then
+// applies the config overrides to the in-memory Meta.Sticky.
+func (r *SkillRegistry) applyStickyOverride(skill *Skill) {
+	if skill == nil {
+		return
+	}
+	if r.stickyFront == nil {
+		r.stickyFront = make(map[string]bool)
+	}
+	r.stickyFront[skill.Meta.Name] = skill.Meta.Sticky
+	switch {
+	case r.stickyOff[skill.Meta.Name]:
+		skill.Meta.Sticky = false
+	case r.stickyOn[skill.Meta.Name]:
+		skill.Meta.Sticky = true
+	}
+}
+
+// FrontmatterSticky reports the pristine frontmatter sticky flag recorded at
+// load time — BEFORE any skills.sticky / skills.sticky_off override was
+// applied — plus whether the name is known. The sticky toggle uses it to
+// write the minimal config entry: turning a frontmatter-sticky skill off
+// writes sticky_off (not removing a sticky entry that never existed), and
+// turning a plain skill on writes sticky.
+func (r *SkillRegistry) FrontmatterSticky(name string) (bool, bool) {
+	fm, ok := r.stickyFront[name]
+	return fm, ok
+}
+
 
 // embeddedDefaultOff reports whether an embedded skill is suppressed by the
 // default-off policy: it is in the default-disabled set AND the user has not
@@ -390,6 +452,7 @@ func (r *SkillRegistry) scanEmbeddedFS() error {
 		}
 		skill := parseSkill(name, string(data), "embedded", "skills/"+path)
 		if skill != nil {
+			r.applyStickyOverride(skill)
 			r.skills[name] = skill
 			r.scanEmbeddedSubSkills(name, path)
 		}
@@ -451,6 +514,7 @@ func (r *SkillRegistry) scanDir(dir, source string) error {
 		}
 		skill := parseSkill(name, string(data), source, skillPath)
 		if skill != nil {
+			r.applyStickyOverride(skill)
 			r.skills[name] = skill
 			r.scanSubSkills(dir, name, source)
 		}
@@ -643,6 +707,7 @@ func (r *SkillRegistry) List() []SkillSummary {
 			Category:         categoryOrDefault(s.Meta.Category),
 			FilePath:         s.FilePath,
 			RequiresSubAgent: r.hasAnySubSkill(s.Meta.Name),
+			Sticky:           s.IsSticky(),
 			Source:           s.Source,
 		})
 	}

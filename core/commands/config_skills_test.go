@@ -47,7 +47,7 @@ func TestConfigMenu_SkillsShowsSubmenus(t *testing.T) {
 	if sr.title != "Skills settings:" {
 		t.Fatalf("title = %q, want Skills settings:", sr.title)
 	}
-	want := []string{"execution_mode", "embedded", "local"}
+	want := []string{"execution_mode", "embedded", "local", "sticky"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d options, got %d: %+v", len(want), len(sr.options), sr.options)
 	}
@@ -378,6 +378,137 @@ func TestSkillEnableDisableCommand(t *testing.T) {
 	}
 	if !strings.Contains(string(projectData), "qa-e2e") {
 		t.Errorf("project config should disable qa-e2e, got:\n%s", projectData)
+	}
+}
+
+// knowledgeTestSkill returns a knowledge-category test skill (sticky applies
+// only to knowledge skills).
+func knowledgeTestSkill(name, desc string) *skills.Skill {
+	s := embeddedTestSkill(name, desc)
+	s.Meta.Category = skills.SkillCategoryKnowledge
+	return s
+}
+
+// TestSkillStickyToggleCommand verifies /skill:sticky flips the always-on
+// state and persists it at PROJECT level (skills.sticky / skills.sticky_off),
+// including the minimal-entry rule for frontmatter-sticky skills.
+func TestSkillStickyToggleCommand(t *testing.T) {
+	var buf strings.Builder
+	ctx := skillTestContext(&buf)
+	cfg := ctx.Config
+	projectDir := t.TempDir()
+	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
+
+	plain := knowledgeTestSkill("plain-k", "Plain knowledge")
+	always := knowledgeTestSkill("always-k", "Frontmatter sticky")
+	always.Meta.Sticky = true
+	action := embeddedTestSkill("refactor", "Action skill")
+	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
+		"plain-k":  plain,
+		"always-k": always,
+		"refactor": action,
+	})
+
+	cmd := &SkillsCommand{}
+	projectCfg := filepath.Join(projectDir, ".goa", "config.yaml")
+
+	// Turn a plain knowledge skill sticky → skills.sticky entry.
+	if err := cmd.Run(ctx, []string{"sticky", "plain-k"}); err != nil {
+		t.Fatalf("sticky plain-k: %v", err)
+	}
+	if !stringInSlice(cfg.Skills.Sticky, "plain-k") {
+		t.Error("plain-k should be in Skills.Sticky")
+	}
+	data, err := os.ReadFile(projectCfg)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if !strings.Contains(string(data), "sticky") || !strings.Contains(string(data), "plain-k") {
+		t.Errorf("project config should record plain-k sticky, got:\n%s", data)
+	}
+	if !skillStickyEffective(ctx, "plain-k") {
+		t.Error("plain-k should be sticky now")
+	}
+
+	// Turn it back off → entry removed, key deleted.
+	if err := cmd.Run(ctx, []string{"sticky", "plain-k"}); err != nil {
+		t.Fatalf("sticky plain-k off: %v", err)
+	}
+	if stringInSlice(cfg.Skills.Sticky, "plain-k") {
+		t.Error("plain-k should be out of Skills.Sticky")
+	}
+	data, err = os.ReadFile(projectCfg)
+	if err != nil {
+		t.Fatalf("re-read project config: %v", err)
+	}
+	if strings.Contains(string(data), "plain-k") {
+		t.Errorf("project config should no longer mention plain-k, got:\n%s", data)
+	}
+
+	// Turn a frontmatter-sticky skill off → skills.sticky_off entry.
+	if err := cmd.Run(ctx, []string{"sticky", "always-k"}); err != nil {
+		t.Fatalf("sticky always-k off: %v", err)
+	}
+	if !stringInSlice(cfg.Skills.StickyOff, "always-k") {
+		t.Error("always-k should be in Skills.StickyOff")
+	}
+	if skillStickyEffective(ctx, "always-k") {
+		t.Error("always-k should not be sticky now")
+	}
+	data, err = os.ReadFile(projectCfg)
+	if err != nil {
+		t.Fatalf("read project config after off: %v", err)
+	}
+	if !strings.Contains(string(data), "sticky_off") || !strings.Contains(string(data), "always-k") {
+		t.Errorf("project config should record always-k sticky_off, got:\n%s", data)
+	}
+
+	// Action skills are rejected.
+	buf.Reset()
+	if err := cmd.Run(ctx, []string{"sticky", "refactor"}); err == nil || !strings.Contains(err.Error(), "knowledge") {
+		t.Errorf("sticky on action skill should error about knowledge-only, got %v", err)
+	}
+
+	// Unknown skills are rejected.
+	if err := cmd.Run(ctx, []string{"sticky", "nope"}); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("sticky unknown skill should error, got %v", err)
+	}
+	if err := cmd.Run(ctx, []string{"sticky"}); err == nil || !strings.Contains(err.Error(), "usage:") {
+		t.Errorf("sticky with no args should return usage error, got %v", err)
+	}
+}
+
+// TestBuildStickyToggleItems verifies the /config sticky toggle list only
+// offers knowledge skills and reports the effective sticky state.
+func TestBuildStickyToggleItems(t *testing.T) {
+	var buf strings.Builder
+	ctx := skillTestContext(&buf)
+	ctx.Config.Skills.Sticky = []string{"plain-k"}
+	plain := knowledgeTestSkill("plain-k", "P")
+	other := knowledgeTestSkill("other-k", "O")
+	action := embeddedTestSkill("refactor", "Action")
+	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
+		"plain-k":  plain,
+		"other-k":  other,
+		"refactor": action,
+	})
+
+	items := buildStickyToggleItems(ctx)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 knowledge items, got %d: %+v", len(items), items)
+	}
+	byName := map[string]string{}
+	for _, it := range items {
+		byName[it.Value] = it.Description
+	}
+	if byName["plain-k"] != "on" {
+		t.Errorf("plain-k description = %q, want on", byName["plain-k"])
+	}
+	if byName["other-k"] != "off" {
+		t.Errorf("other-k description = %q, want off", byName["other-k"])
+	}
+	if _, ok := byName["refactor"]; ok {
+		t.Error("action skill must not appear in sticky toggle list")
 	}
 }
 

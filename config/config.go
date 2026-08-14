@@ -598,8 +598,20 @@ type SkillsConfig struct {
 	// opts embedded skills back in, leaving file-based skills untouched.
 	// Load-time only.
 	EmbeddedEnabled []string `yaml:"embedded_enabled,omitempty"`
+	// Sticky forces the named knowledge skills sticky-on regardless of their
+	// frontmatter (always-on: body persisted into every agent's history for
+	// the whole session). Toggled via /skill:sticky and /config Skills; the
+	// state is persisted at PROJECT level (skills.sticky in .goa/config.yaml)
+	// so it sticks across sessions per project. Action-category skills and
+	// disabled skills are never affected. Load-time only.
+	Sticky []string `yaml:"sticky,omitempty"`
+	// StickyOff overrides the frontmatter sticky:true of the named knowledge
+	// skills off, so a skill shipped always-on can be turned back to on-demand
+	// without editing its SKILL.md. A name in both Sticky and StickyOff is not
+	// sticky (explicit off wins, mirroring Disabled). Project-level; load-time
+	// only.
+	StickyOff []string `yaml:"sticky_off,omitempty"`
 }
-
 // ToolsConfig holds tool-specific sub-configurations.
 type ToolsConfig struct {
 	Bash        BashConfig           `yaml:"bash"`

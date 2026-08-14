@@ -25,6 +25,7 @@ func (m *configMenu) settingSkills() {
 		{Value: "execution_mode", Label: "Execution mode", Description: m.ctx.Config.Skills.ExecutionMode},
 		{Value: "embedded", Label: "Embedded skills (global)", Description: skillSourceLabel(m.ctx.SkillRegistry, "embedded", m.ctx.Config)},
 		{Value: "local", Label: "Local skills (per project)", Description: skillSourceLabel(m.ctx.SkillRegistry, "local", m.ctx.Config)},
+		{Value: "sticky", Label: "Sticky skills (per project)", Description: stickySkillsLabel(m.ctx)},
 	}
 	m.ctx.SelectOption("Skills settings:", items, "", func(selected string, ok bool) {
 		if !ok {
@@ -35,8 +36,176 @@ func (m *configMenu) settingSkills() {
 			m.handleSkillsSetting("execution_mode")
 			return
 		}
-		m.open(func() { m.settingSkillSource(selected) })
+		m.open(func() {
+			if selected == "sticky" {
+				m.settingStickySkills()
+				return
+			}
+			m.settingSkillSource(selected)
+		})
 	})
+}
+
+// settingStickySkills lists knowledge skills as sticky on/off toggles.
+// Sticky state is always persisted at PROJECT level (skills.sticky /
+// skills.sticky_off in .goa/config.yaml) so it survives sessions per project.
+func (m *configMenu) settingStickySkills() {
+	m.current = m.settingStickySkills
+	items := buildStickyToggleItems(m.ctx)
+	m.ctx.SelectOption("Sticky skills — always-on knowledge skills (toggle on/off):", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		next, err := nextSkillStickyState(m.ctx, selected)
+		if err != nil {
+			m.flash(err.Error())
+		} else if err := setSkillStickyState(m.ctx, selected, next); err != nil {
+			m.flash("Failed to save sticky config: " + err.Error())
+		} else {
+			m.reloadSkillsAfterToggle()
+			m.flash(fmt.Sprintf("Sticky %s for %s", boolLabel(next), selected))
+		}
+		m.settingStickySkills()
+	})
+}
+
+// buildStickyToggleItems returns one toggle item per loaded knowledge skill,
+// with the effective sticky state as the description.
+func buildStickyToggleItems(ctx core.Context) []tui.SelectorItem {
+	if ctx.SkillRegistry == nil {
+		return nil
+	}
+	var items []tui.SelectorItem
+	for _, s := range ctx.SkillRegistry.List() {
+		if s.Category != skills.SkillCategoryKnowledge {
+			continue
+		}
+		items = append(items, tui.SelectorItem{
+			Value:       s.Name,
+			Label:       s.Name,
+			Description: boolLabel(skillStickyEffective(ctx, s.Name)),
+		})
+	}
+	return items
+}
+
+// stickySkillsLabel summarizes the sticky state for the Skills sub-menu row:
+// "N/M sticky" (sticky knowledge skills of all loaded knowledge skills).
+func stickySkillsLabel(ctx core.Context) string {
+	if ctx.SkillRegistry == nil {
+		return "0/0 sticky"
+	}
+	total, on := 0, 0
+	for _, s := range ctx.SkillRegistry.List() {
+		if s.Category != skills.SkillCategoryKnowledge {
+			continue
+		}
+		total++
+		if skillStickyEffective(ctx, s.Name) {
+			on++
+		}
+	}
+	return fmt.Sprintf("%d/%d sticky", on, total)
+}
+
+// skillFrontmatterSticky reports the pristine frontmatter sticky flag of a
+// loaded skill (before config overrides). ok=false when unknown; for
+// non-concrete registries (test fakes) the loaded Meta.Sticky stands in,
+// since fakes never carry override records.
+func skillFrontmatterSticky(reg core.SkillRegistry, name string) (bool, bool) {
+	if r, ok := reg.(*skills.SkillRegistry); ok {
+		return r.FrontmatterSticky(name)
+	}
+	if s, ok := reg.Get(name); ok {
+		return s.Meta.Sticky, true
+	}
+	return false, false
+}
+
+// skillStickyEffective reports the effective sticky state of a loaded
+// knowledge skill from the config lists plus the frontmatter default:
+// sticky_off wins, then sticky, then the frontmatter flag. This mirrors the
+// loader's applyStickyOverride so the pre-reload state is already correct.
+func skillStickyEffective(ctx core.Context, name string) bool {
+	if ctx.Config == nil {
+		fm, ok := skillFrontmatterSticky(ctx.SkillRegistry, name)
+		return ok && fm
+	}
+	if stringInSlice(ctx.Config.Skills.StickyOff, name) {
+		return false
+	}
+	if stringInSlice(ctx.Config.Skills.Sticky, name) {
+		return true
+	}
+	fm, ok := skillFrontmatterSticky(ctx.SkillRegistry, name)
+	return ok && fm
+}
+
+// nextSkillStickyState validates that the named skill is a loaded knowledge
+// skill and returns the inverted sticky state for a toggle.
+func nextSkillStickyState(ctx core.Context, name string) (bool, error) {
+	if ctx.SkillRegistry == nil {
+		return false, fmt.Errorf("skill registry not available")
+	}
+	skill, ok := ctx.SkillRegistry.Get(name)
+	if !ok {
+		return false, fmt.Errorf("skill not found: %s", name)
+	}
+	if skill.Meta.Category != skills.SkillCategoryKnowledge {
+		return false, fmt.Errorf("sticky applies to knowledge skills only: %s is not a knowledge skill", name)
+	}
+	if skill.Meta.Hidden {
+		return false, fmt.Errorf("sticky applies to non-hidden skills only: %s is hidden", name)
+	}
+	return !skillStickyEffective(ctx, name), nil
+}
+
+// setSkillStickyState turns the sticky (always-on) state of a knowledge skill
+// on or off, persists BOTH override lists at PROJECT level, and reloads the
+// skill registry so the running session picks the change up. The minimal
+// entry is written: a frontmatter-sticky skill needs sticky_off to turn off
+// and nothing to turn on; a plain skill needs sticky to turn on and nothing
+// to turn off.
+func setSkillStickyState(ctx core.Context, name string, sticky bool) error {
+	if ctx.Config == nil {
+		return fmt.Errorf("configuration not available")
+	}
+	fm, fmKnown := skillFrontmatterSticky(ctx.SkillRegistry, name)
+	if sticky {
+		ctx.Config.Skills.StickyOff = removeString(ctx.Config.Skills.StickyOff, name)
+		if fmKnown && fm {
+			// Frontmatter already grants sticky; an explicit on entry is inert.
+			ctx.Config.Skills.Sticky = removeString(ctx.Config.Skills.Sticky, name)
+		} else {
+			ctx.Config.Skills.Sticky = appendUnique(ctx.Config.Skills.Sticky, name)
+		}
+	} else {
+		ctx.Config.Skills.Sticky = removeString(ctx.Config.Skills.Sticky, name)
+		if fmKnown && fm {
+			ctx.Config.Skills.StickyOff = appendUnique(ctx.Config.Skills.StickyOff, name)
+		} else {
+			ctx.Config.Skills.StickyOff = removeString(ctx.Config.Skills.StickyOff, name)
+		}
+	}
+	if err := persistSkillSticky(ctx); err != nil {
+		return err
+	}
+	reloadSkillsFor(ctx)
+	return nil
+}
+
+// persistSkillSticky writes the skills.sticky / skills.sticky_off lists to
+// the PROJECT config layer only (sticky state is per-project by design,
+// including embedded skills like telegram), deleting keys when empty.
+func persistSkillSticky(ctx core.Context) error {
+	if ctx.ConfigSaver == nil {
+		return nil
+	}
+	if err := saveSkillListField(ctx, false, "sticky", ctx.Config.Skills.Sticky); err != nil {
+		return err
+	}
+	return saveSkillListField(ctx, false, "sticky_off", ctx.Config.Skills.StickyOff)
 }
 
 // handleSkillsSetting handles the execution-mode entry of the Skills sub-menu.

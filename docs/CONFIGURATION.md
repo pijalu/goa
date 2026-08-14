@@ -161,6 +161,9 @@ skills:
     - .goa/skills
   embedded: true
   execution_mode: subagent           # subagent | inline
+  sticky:                            # Force knowledge skills always-on (project level)
+    - telegram
+  sticky_off: []                     # Turn frontmatter-sticky skills back to on-demand
 
 # ── Tools ──────────────────────────────────────────────────────────
 tools:

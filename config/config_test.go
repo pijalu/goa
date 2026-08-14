@@ -451,6 +451,33 @@ func TestDeepMergeSkillsEnabled(t *testing.T) {
 	}
 }
 
+// TestDeepMergeSkillsStickyLists verifies Skills.Sticky and Skills.StickyOff
+// concatenate with dedup across the config cascade, mirroring the
+// Enabled/Disabled semantics (project-level sticky state).
+func TestDeepMergeSkillsStickyLists(t *testing.T) {
+	base := &Config{Skills: SkillsConfig{Sticky: []string{"review"}, StickyOff: []string{"telegram"}}}
+	override := &Config{Skills: SkillsConfig{Sticky: []string{"refactor", "review"}, StickyOff: []string{"telegram", "dream"}}}
+	base.DeepMerge(override)
+	wantSticky := []string{"review", "refactor"}
+	wantOff := []string{"telegram", "dream"}
+	if len(base.Skills.Sticky) != len(wantSticky) {
+		t.Fatalf("Skills.Sticky = %v, want %v", base.Skills.Sticky, wantSticky)
+	}
+	for i, name := range wantSticky {
+		if base.Skills.Sticky[i] != name {
+			t.Errorf("Skills.Sticky[%d] = %q, want %q", i, base.Skills.Sticky[i], name)
+		}
+	}
+	if len(base.Skills.StickyOff) != len(wantOff) {
+		t.Fatalf("Skills.StickyOff = %v, want %v", base.Skills.StickyOff, wantOff)
+	}
+	for i, name := range wantOff {
+		if base.Skills.StickyOff[i] != name {
+			t.Errorf("Skills.StickyOff[%d] = %q, want %q", i, base.Skills.StickyOff[i], name)
+		}
+	}
+}
+
 // TestDeepCopy verifies that DeepCopy creates an independent copy.
 func TestDeepCopy(t *testing.T) {
 	original := &Config{ActiveProvider: "openai", ActiveModel: "gpt-4o"}

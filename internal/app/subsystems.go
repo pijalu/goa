@@ -286,7 +286,8 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 			// agent and all pool-created sub-agents ("new context" agents).
 			// They survive /new (fresh persist), session restore (history-scan
 			// dedup), and context compression (re-persist via emitCompaction).
-			sticky := &stickySkillProvider{registry: skillBundle.skillRegistry}
+			sticky := &stickySkillProvider{}
+			agentBundle.stickyProvider = sticky
 			agentBundle.agentMgr.SetStickyProvider(sticky)
 			agentPool.SetStickyProvider(sticky)
 		}
@@ -430,13 +431,14 @@ func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 }
 
 type agentBundle struct {
-	sessionStore  *core.SessionStore
-	stateStore    *core.StateStore
-	stateSnapshot core.SessionStateSnapshot
-	agentMgr      *core.AgentManager
-	execCtrl      *core.ExecutionController
-	eventBus      *event.Bus
-	agentLogger   *agentic.Logger
+	sessionStore   *core.SessionStore
+	stateStore     *core.StateStore
+	stateSnapshot  core.SessionStateSnapshot
+	agentMgr       *core.AgentManager
+	execCtrl       *core.ExecutionController
+	eventBus       *event.Bus
+	agentLogger    *agentic.Logger
+	stickyProvider *stickySkillProvider
 }
 
 func initAgentLogger(cfg *config.Config, projectDir string, agentMgr *core.AgentManager) *agentic.Logger {
@@ -895,6 +897,9 @@ func newSkillRegistry(cfg *config.Config, projectDir string, pluginMgr *plugins.
 	// allowlist). File-based skills are never affected by the default-off set.
 	skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
 	skillRegistry.SetEmbeddedEnabled(cfg.Skills.EmbeddedEnabled)
+	// Config-level sticky overrides (skills.sticky / skills.sticky_off),
+	// persisted at project level and toggled via /skill:sticky and /config.
+	skillRegistry.SetStickyOverrides(cfg.Skills.Sticky, cfg.Skills.StickyOff)
 	if err := skillRegistry.LoadAll(); err != nil {
 		log.Printf("Warning: failed to load skills: %v\n", err)
 	} else if n := len(skillRegistry.List()); n > 0 {
@@ -1279,6 +1284,13 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 	// applies the team's overlay for its duration). The driver no-ops the
 	// overlay when this is nil.
 	s.goalDriver.TeamOverlay = s.teamManager
+	// Re-bind the sticky skill provider to the assembled subsystems: it must
+	// read the LIVE registry (subsystem field), because /reload swaps the
+	// registry object and a provider pinned to the startup copy would keep
+	// serving a stale sticky set after a /skill:sticky toggle.
+	if ab.stickyProvider != nil {
+		ab.stickyProvider.subs = s
+	}
 	if sc.goaTool != nil {
 		sc.goaTool.SetContextFn(func() core.Context { return coreContextForCommand(s, nil) })
 	}

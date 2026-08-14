@@ -182,6 +182,29 @@ with the skill body as its system prompt, runs the task, and returns the
 final assistant content. Thinking tokens, intermediate tool calls, and
 metadata are filtered out, giving the parent agent a clean result.
 
+### Sticky Skills (always-on)
+
+A `knowledge` skill can be marked always-on: its body is persisted into every
+agent's conversation history (main agent and all sub-agents) once per session,
+re-persisted after context compression, and re-deduped on session restore.
+
+Two ways to make a skill sticky:
+
+- **Frontmatter**: `sticky: true` in SKILL.md (ships always-on).
+- **Config override**: `skills.sticky` (force a plain knowledge skill sticky)
+  and `skills.sticky_off` (turn a frontmatter-sticky skill back to on-demand).
+  A name in both lists is not sticky (explicit off wins). These lists are
+  persisted at PROJECT level (`.goa/config.yaml`) — sticky state is per
+  project and survives sessions, including embedded skills like `telegram`.
+
+Toggle and inspect:
+
+- `/skill:sticky <name>` — toggle the sticky state of a knowledge skill
+  (rejects action skills; persists to the project config and reloads).
+- `/skills` — sticky skills are marked `(sticky)` in the listing.
+- `/config` → Skills → **Sticky skills (per project)** — on/off toggle list.
+- Startup banner — `⟡ Sticky skills (always-on): telegram, ...`.
+
 ### User Commands
 
 Skills can also be executed directly via the `/skill:run:<name>` command,

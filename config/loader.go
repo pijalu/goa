@@ -859,31 +859,36 @@ func (cl *CascadeLoader) HomeConfigPath() string {
 	return filepath.Join(cl.homeDir, ".goa", "config.yaml")
 }
 
-// skillListsOnDisk reads only the skills.enabled / skills.disabled lists from
-// the config file at path. ok=false when the file is missing or unreadable —
-// callers then leave the in-memory lists as-is rather than forcing a value.
+// skillListsOnDisk reads only the skills list keys (enabled / disabled /
+// sticky / sticky_off) from the config file at path. ok=false when the file
+// is missing or unreadable — callers then leave the in-memory lists as-is
+// rather than forcing a value.
 //
 // Snapshot writers (Save, SaveHomeProvidersAndModels, SaveProjectConfig) use
 // this to PRESERVE the on-disk skill lists instead of re-emitting the lists
-// from the in-memory config they were handed. Skill enable/disable is owned by
-// the field-scoped toggle write (persistSkillToggle), so the on-disk value is
-// authoritative and a stale in-memory snapshot must never overwrite it — that
-// lost update is what made disabled skills spontaneously re-enable.
-func skillListsOnDisk(path string) (enabled, disabled []string, ok bool) {
+// from the in-memory config they were handed. Skill enable/disable and the
+// project-level sticky state are owned by field-scoped toggle writes
+// (persistSkillToggle / persistSkillSticky), so the on-disk value is
+// authoritative and a stale in-memory snapshot must never overwrite it —
+// notably Save() must not copy a project layer's sticky lists into the home
+// file (sticky is per-project by design).
+func skillListsOnDisk(path string) (enabled, disabled, sticky, stickyOff []string, ok bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, false
+		return nil, nil, nil, nil, false
 	}
 	var raw struct {
 		Skills struct {
-			Enabled  []string `yaml:"enabled"`
-			Disabled []string `yaml:"disabled"`
+			Enabled   []string `yaml:"enabled"`
+			Disabled  []string `yaml:"disabled"`
+			Sticky    []string `yaml:"sticky"`
+			StickyOff []string `yaml:"sticky_off"`
 		} `yaml:"skills"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, nil, false
+		return nil, nil, nil, nil, false
 	}
-	return raw.Skills.Enabled, raw.Skills.Disabled, true
+	return raw.Skills.Enabled, raw.Skills.Disabled, raw.Skills.Sticky, raw.Skills.StickyOff, true
 }
 
 func (cl *CascadeLoader) Save(cfg *Config) error {
@@ -900,10 +905,13 @@ func (cl *CascadeLoader) Save(cfg *Config) error {
 	saveCfg.ConfigDir = ""
 	saveCfg.Models = persistableModels(saveCfg.Models)
 	// Preserve on-disk skill lists: a stale in-memory snapshot must not
-	// resurrect a skill the user disabled (skills re-enable bug).
-	if en, dis, ok := skillListsOnDisk(cl.HomeConfigPath()); ok {
+	// resurrect a skill the user disabled (skills re-enable bug) nor copy a
+	// project layer's sticky state into the home file.
+	if en, dis, st, stOff, ok := skillListsOnDisk(cl.HomeConfigPath()); ok {
 		saveCfg.Skills.Enabled = en
 		saveCfg.Skills.Disabled = dis
+		saveCfg.Skills.Sticky = st
+		saveCfg.Skills.StickyOff = stOff
 	}
 
 	data, err := yaml.Marshal(saveCfg)

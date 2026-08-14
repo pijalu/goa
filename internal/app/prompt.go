@@ -368,6 +368,23 @@ func showSkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skill
 		chat.AddSystemMessage(fmt.Sprintf("⟡ %d skills (%d inline, %d sub-agent · mode: %s)",
 			len(skillList), inlineCount, subCount, globalMode))
 	}
+	showStickySkillBanner(subs, chat, skillList)
+}
+
+// showStickySkillBanner reports the always-on (sticky) knowledge skills at
+// startup: they are persisted into every agent's history, so the user must
+// see which ones are active (sticky skills visible at start).
+func showStickySkillBanner(subs *subsystems, chat *tui.ChatViewport, skillList []skills.SkillSummary) {
+	var names []string
+	for _, s := range skillList {
+		if s.Sticky {
+			names = append(names, s.Name)
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	chat.AddSystemMessage(fmt.Sprintf("⟡ Sticky skills (always-on): %s", strings.Join(names, ", ")))
 }
 
 // filterSkillsForMode removes skills that require a sub-agent when the global

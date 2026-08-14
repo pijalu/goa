@@ -538,6 +538,80 @@ func TestParseSkillStickyDefaultFalse(t *testing.T) {
 	}
 }
 
+// TestSkillRegistryStickyOverrides verifies config-level sticky overrides
+// (skills.sticky force-on, skills.sticky_off force-off) applied at load:
+//   - sticky_off wins over sticky and over frontmatter (explicit off wins),
+//   - sticky turns a plain knowledge skill sticky,
+//   - FrontmatterSticky still reports the pristine frontmatter value so
+//     toggles can decide which list to write,
+//   - SkillSummary.Sticky reflects the effective state.
+func TestSkillRegistryStickyOverrides(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, frontmatter string) {
+		sd := filepath.Join(dir, name)
+		if err := os.MkdirAll(sd, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(frontmatter+"\nbody"), 0644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	write("plain-k", "---\nname: plain-k\ndescription: P\ncategory: knowledge\n---")
+	write("fm-sticky", "---\nname: fm-sticky\ndescription: F\ncategory: knowledge\nsticky: true\n---")
+	write("forced-off", "---\nname: forced-off\ndescription: O\ncategory: knowledge\nsticky: true\n---")
+	write("off-wins", "---\nname: off-wins\ndescription: W\ncategory: knowledge\n---")
+	write("plain-action", "---\nname: plain-action\ndescription: A2\ncategory: action\n---")
+
+	reg := NewSkillRegistry([]string{dir})
+	reg.SetStickyOverrides([]string{"plain-k", "off-wins"}, []string{"forced-off", "off-wins"})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+
+	stickyNames := map[string]bool{}
+	for _, s := range reg.StickySkills() {
+		stickyNames[s.Meta.Name] = true
+	}
+	if !stickyNames["plain-k"] {
+		t.Error("plain-k should be sticky via skills.sticky override")
+	}
+	if !stickyNames["fm-sticky"] {
+		t.Error("fm-sticky should stay sticky from frontmatter")
+	}
+	if stickyNames["forced-off"] {
+		t.Error("forced-off should not be sticky (skills.sticky_off override)")
+	}
+	if stickyNames["off-wins"] {
+		t.Error("off-wins: sticky_off must win over sticky")
+	}
+	if stickyNames["plain-action"] {
+		t.Error("action skills are never sticky")
+	}
+
+	if fm, ok := reg.FrontmatterSticky("forced-off"); !ok || !fm {
+		t.Error("FrontmatterSticky(forced-off) = true, true; want the pristine frontmatter value")
+	}
+	if fm, ok := reg.FrontmatterSticky("plain-k"); !ok || fm {
+		t.Error("FrontmatterSticky(plain-k) = false, true; want the pristine frontmatter value")
+	}
+	if _, ok := reg.FrontmatterSticky("missing"); ok {
+		t.Error("FrontmatterSticky(missing) should report ok=false")
+	}
+
+	for _, s := range reg.List() {
+		switch s.Name {
+		case "plain-k", "fm-sticky":
+			if !s.Sticky {
+				t.Errorf("List() Sticky for %s should be true", s.Name)
+			}
+		case "forced-off", "off-wins", "plain-action":
+			if s.Sticky {
+				t.Errorf("List() Sticky for %s should be false", s.Name)
+			}
+		}
+	}
+}
+
 // TestSkillRegistryStickySkills verifies StickySkills returns only sticky
 // knowledge skills, sorted by name, excluding hidden and action skills.
 func TestSkillRegistryStickySkills(t *testing.T) {

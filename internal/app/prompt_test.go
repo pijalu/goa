@@ -22,6 +22,7 @@ import (
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tui"
 )
 
 func newTestSubsystems(dir string) *subsystems {
@@ -54,6 +55,37 @@ func TestPromptContextBanner(t *testing.T) {
 		toolBytes, toolBytes/4)
 	if got != want {
 		t.Errorf("promptContextBanner = %q, want %q", got, want)
+	}
+}
+
+// TestShowStickySkillBanner verifies the startup banner reports the
+// always-on (sticky) knowledge skills — sticky must be visible at start —
+// and stays silent when none are sticky.
+func TestShowStickySkillBanner(t *testing.T) {
+	build := func(sticky []bool) []string {
+		var list []skills.SkillSummary
+		for i, isSticky := range sticky {
+			list = append(list, skills.SkillSummary{
+				Name:     fmt.Sprintf("skill-%d", i),
+				Category: skills.SkillCategoryKnowledge,
+				Sticky:   isSticky,
+			})
+		}
+		chat := tui.NewChatViewport()
+		showStickySkillBanner(nil, chat, list)
+		return chat.Render(80)
+	}
+
+	lines := build([]bool{false, true, false, true})
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "Sticky skills (always-on): skill-1, skill-3") {
+		t.Errorf("banner should list sticky skills skill-1 and skill-3, got:\n%s", joined)
+	}
+
+	lines = build([]bool{false, false})
+	joined = strings.Join(lines, "\n")
+	if strings.Contains(joined, "Sticky skills") {
+		t.Errorf("banner should stay silent with no sticky skills, got:\n%s", joined)
 	}
 }
 

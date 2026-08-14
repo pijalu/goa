@@ -74,6 +74,8 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 		if fresh, err := h.subs.loader.Load(); err == nil {
 			h.subs.cfg.Skills.Enabled = fresh.Skills.Enabled
 			h.subs.cfg.Skills.Disabled = fresh.Skills.Disabled
+			h.subs.cfg.Skills.Sticky = fresh.Skills.Sticky
+			h.subs.cfg.Skills.StickyOff = fresh.Skills.StickyOff
 		}
 	}
 	// Rebuild skill dirs (default dirs + configured dirs)
@@ -85,6 +87,7 @@ func (h *ReloadHandler) ReloadSkills() (int, error) {
 	h.subs.skillRegistry.SetEnabled(h.subs.cfg.Skills.Enabled)
 	h.subs.skillRegistry.SetEmbeddedDefaultDisabled(skills.DefaultEmbeddedOffNames(skills.EmbeddedSkillsFS))
 	h.subs.skillRegistry.SetEmbeddedEnabled(h.subs.cfg.Skills.EmbeddedEnabled)
+	h.subs.skillRegistry.SetStickyOverrides(h.subs.cfg.Skills.Sticky, h.subs.cfg.Skills.StickyOff)
 	if err := h.subs.skillRegistry.LoadAll(); err != nil {
 		return 0, fmt.Errorf("reload skills: %w", err)
 	}

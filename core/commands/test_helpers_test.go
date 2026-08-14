@@ -264,6 +264,8 @@ func (f *fakeSkillRegistry) List() []skills.SkillSummary {
 			Name:        s.Meta.Name,
 			Description: s.Meta.Description,
 			Inline:      s.Meta.Inline,
+			Category:    s.Meta.Category,
+			Sticky:      s.IsSticky(),
 			Source:      s.Source,
 		})
 	}
