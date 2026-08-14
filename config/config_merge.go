@@ -676,6 +676,9 @@ func (c *Config) mergeContextCompression(other *Config) {
 	if cc.Strategy != "" {
 		c.ContextCompression.Strategy = cc.Strategy
 	}
+	if cc.OnErrorStrategy != "" {
+		c.ContextCompression.OnErrorStrategy = cc.OnErrorStrategy
+	}
 	if cc.CacheGate != "" {
 		c.ContextCompression.CacheGate = cc.CacheGate
 	}
@@ -694,6 +697,7 @@ func contextCompressionLayerEmpty(cc ContextCompressionConfig) bool {
 		cc.ThresholdPercent == 0 &&
 		cc.PreserveRecentTurns == 0 &&
 		cc.Strategy == "" &&
+		cc.OnErrorStrategy == "" &&
 		cc.CacheGate == "" &&
 		cc.Thresholds == (CompressionThresholdsConfig{}) &&
 		cc.Strategies == (CompressionLayerStrategiesConfig{}) &&

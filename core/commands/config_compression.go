@@ -7,35 +7,134 @@ import (
 	"strings"
 
 	"github.com/pijalu/goa/config"
-	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/tui"
 )
 
 func (m *configMenu) settingCompression() {
 	m.current = m.settingCompression
 	cfg := m.ctx.Config
-	strategy := cfg.ContextCompression.Strategy
-	if strategy == "" {
-		strategy = "tool_elision"
-	}
-	trigger := compressionTriggerDisplay(cfg)
-	hardPct := cfg.ContextCompression.Thresholds.HardPercent
 	items := []tui.SelectorItem{
-		{Value: "strategy", Label: "Trigger strategy", Description: strategy},
-		{Value: "soft_strategy", Label: "Soft strategy", Description: layerStrategyLabel(cfg.ContextCompression.Strategies.Soft, "micro")},
-		{Value: "hard_strategy", Label: "Hard strategy", Description: layerStrategyLabel(cfg.ContextCompression.Strategies.Hard, "hybrid")},
-		{Value: "soft", Label: "Soft threshold (early maintenance)", Description: percentLabel(cfg.ContextCompression.Thresholds.SoftPercent, "off (default)")},
-		{Value: "threshold", Label: "Trigger threshold", Description: trigger},
-		{Value: "hard", Label: "Hard ceiling", Description: percentLabel(cfg.ContextCompression.Thresholds.HardPercent, "off (default)")},
-		// Derived limits (CM:13 design rule 5: ALL compression-related
-		// limits must be visible in /config — no hidden 95%). These are computed
-		// from the hard ceiling and shown read-only so the user can see exactly
-		// where each reactive/proactive gate fires.
-		{Value: "_derived_eff_hard", Label: "  ↳ Effective hard ceiling (reactive)", Description: derivedPercentLabel(agentic.EffectiveHardPercent(hardPct))},
-		{Value: "_derived_escalation", Label: "  ↳ Escalation level (cheap→selective)", Description: derivedPercentLabel(agentic.EscalationPercent(hardPct))},
-		{Value: "_derived_deferral", Label: "  ↳ Deferral ceiling (cache-hot cutoff)", Description: derivedPercentLabel(agentic.DeferralCeilingPercent(hardPct))},
-		{Value: "_derived_elision", Label: "  ↳ Elision target (hysteresis)", Description: derivedPercentLabel(agentic.ElisionTargetPercent(hardPct))},
-		{Value: "_derived_reactive_savings", Label: "  ↳ Reactive savings target", Description: fmt.Sprintf("%d%% per pass (cut to %d%%)", agentic.ReactiveSavingsPercent, agentic.ReactiveTargetPercent(hardPct))},
+		{Value: "soft_percent", Label: "Soft ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.SoftPercent)},
+		{Value: "soft_method", Label: "Soft ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Soft, "micro")},
+		{Value: "hard_percent", Label: "Hard ceiling %", Description: ceilingPercentLabel(cfg.ContextCompression.Thresholds.HardPercent)},
+		{Value: "hard_method", Label: "Hard ceiling method", Description: layerMethodLabel(cfg.ContextCompression.Strategies.Hard, "summarize")},
+		{Value: "on_error", Label: "On error", Description: onErrorLabel(cfg)},
+		{Value: "advanced", Label: "Advanced…", Description: "trigger layer, cache gate, max tokens, micro, per-model"},
+	}
+	openers := map[string]func(){
+		"soft_percent": func() { m.settingCompressionCeiling("soft") },
+		"soft_method": func() { m.settingCompressionMethod("soft") },
+		"hard_percent": func() { m.settingCompressionCeiling("hard") },
+		"hard_method": func() { m.settingCompressionMethod("hard") },
+		"on_error":   m.settingCompressionOnError,
+		"advanced":   m.settingCompressionAdvanced,
+	}
+	m.ctx.SelectOption("Compression:", items, "", func(selected string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		// Zero dead rows: every selectable item must open a picker (the
+		// regression behind the "returns to main menu" bug report).
+		if open, found := openers[selected]; found {
+			m.open(open)
+		}
+	})
+}
+
+// settingCompressionCeiling is the percent picker for one proactive layer
+// (soft/hard): 0 = disabled, then 5..100 in 5% steps.
+func (m *configMenu) settingCompressionCeiling(layer string) {
+	m.current = func() { m.settingCompressionCeiling(layer) }
+	var current int
+	switch layer {
+	case "soft":
+		current = m.ctx.Config.ContextCompression.Thresholds.SoftPercent
+	default:
+		current = m.ctx.Config.ContextCompression.Thresholds.HardPercent
+	}
+	title := "Soft ceiling (% of max tokens, 0 = disabled):"
+	if layer != "soft" {
+		title = "Hard ceiling (% of max tokens, 0 = disabled):"
+	}
+	m.ctx.SelectOption(title, ceilingPercentItems(false), fmt.Sprintf("%d", current), func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.thresholds."+layer+"_percent", v)
+		m.back()
+	})
+}
+
+// settingCompressionMethod is the strategy picker for one layer; every
+// method is offered on every layer (all-methods soft included).
+func (m *configMenu) settingCompressionMethod(layer string) {
+	m.current = func() { m.settingCompressionMethod(layer) }
+	var current string
+	if layer == "soft" {
+		current = m.ctx.Config.ContextCompression.Strategies.Soft
+	} else {
+		current = m.ctx.Config.ContextCompression.Strategies.Hard
+	}
+	title := "Soft ceiling method:"
+	if layer != "soft" {
+		title = "Hard ceiling method:"
+	}
+	m.ctx.SelectOption(title, compressionStrategyItems(false), current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		m.applySet("context_compression.strategies."+layer, v)
+		m.back()
+	})
+}
+
+// settingCompressionOnError is the single on-context-error row: "off" turns
+// the reactive recovery net off; any method turns it on and selects the
+// recovery strategy (empty = hybrid).
+func (m *configMenu) settingCompressionOnError() {
+	m.current = m.settingCompressionOnError
+	cfg := m.ctx.Config
+	items := append([]tui.SelectorItem{{
+		Value:       "off",
+		Label:       "off",
+		Description: "no compression on context error",
+	}}, compressionStrategyItems(false)...)
+	current := "off"
+	if cfg.ContextCompression.OnContextError {
+		current = cfg.ContextCompression.OnErrorStrategy
+		if current == "" {
+			current = "hybrid"
+		}
+	}
+	m.ctx.SelectOption("On context error:", items, current, func(v string, ok bool) {
+		if !ok {
+			m.back()
+			return
+		}
+		if v == "off" {
+			m.applySet("context_compression.on_context_error", "false")
+		} else {
+			m.applySet("context_compression.on_context_error", "true")
+			m.applySet("context_compression.on_error_strategy", v)
+		}
+		m.back()
+	})
+}
+
+// settingCompressionAdvanced hosts the knobs that do not fit the 5 main
+// rows: trigger-layer settings, cache gate, max tokens, preserve window,
+// micro compaction, per-model overrides and the master enable. Every row is
+// actionable (opener or inline toggle) — no derived/read-only rows.
+func (m *configMenu) settingCompressionAdvanced() {
+	m.current = m.settingCompressionAdvanced
+	cfg := m.ctx.Config
+	items := []tui.SelectorItem{
+		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
+		{Value: "strategy", Label: "Trigger strategy", Description: layerMethodLabel(cfg.ContextCompression.Strategy, "tool_elision")},
+		{Value: "threshold", Label: "Trigger threshold", Description: compressionTriggerDisplay(cfg)},
 		{Value: "cache_gate", Label: "Cache gate (defer compression for hot cache)", Description: cacheGateLabel(cfg.ContextCompression.CacheGate)},
 		{Value: "max_tokens", Label: "Max tokens", Description: maxTokensLabel(cfg.ContextCompression.MaxTokens)},
 		{Value: "preserve_recent_turns", Label: "Preserve recent turns (selective/hybrid)", Description: preserveRecentTurnsLabel(cfg)},
@@ -46,17 +145,11 @@ func (m *configMenu) settingCompression() {
 		{Value: "micro_min_content_tokens", Label: "Micro: min content tokens", Description: microMinContentTokensLabel(cfg)},
 		{Value: "micro_truncated_marker", Label: "Micro: truncation marker", Description: microTruncatedMarkerLabel(cfg)},
 		{Value: "per_model", Label: "Per-model overrides", Description: perModelCompressionLabel(cfg)},
-		{Value: "enabled", Label: "Enabled", Description: boolLabel(cfg.ContextCompression.EnabledValue())},
-		{Value: "on_context_error", Label: "Compress on context error", Description: boolLabel(cfg.ContextCompression.OnContextError)},
 	}
 	openers := map[string]func(){
 		"per_model":                  m.settingCompressionPerModel,
 		"strategy":                   m.settingCompressionStrategy,
-		"soft_strategy":              m.settingCompressionSoftStrategy,
-		"hard_strategy":              m.settingCompressionHardStrategy,
-		"soft":                       m.settingCompressionSoft,
 		"threshold":                  m.settingCompressionThreshold,
-		"hard":                       m.settingCompressionHard,
 		"max_tokens":                 m.settingCompressionMaxTokens,
 		"preserve_recent_turns":      m.settingCompressionPreserveRecentTurns,
 		"micro_min_context_ratio":    m.settingCompressionMicroRatio,
@@ -65,7 +158,7 @@ func (m *configMenu) settingCompression() {
 		"micro_min_content_tokens":   m.settingCompressionMicroMinContent,
 		"micro_truncated_marker":     m.settingCompressionMicroMarker,
 	}
-	m.ctx.SelectOption("Compression settings:", items, "", func(selected string, ok bool) {
+	m.ctx.SelectOption("Compression — advanced:", items, "", func(selected string, ok bool) {
 		if !ok {
 			m.back()
 			return
@@ -75,20 +168,45 @@ func (m *configMenu) settingCompression() {
 			return
 		}
 		switch selected {
-		case "cache_gate":
-			m.applySet("context_compression.cache_gate", toggleCacheGateValue(cfg.ContextCompression.CacheGate))
-			m.settingCompression()
 		case "enabled":
 			m.applySet("context_compression.enabled", toggleBoolLabel(cfg.ContextCompression.EnabledValue()))
-			m.settingCompression()
-		case "on_context_error":
-			m.applySet("context_compression.on_context_error", toggleBoolLabel(cfg.ContextCompression.OnContextError))
-			m.settingCompression()
+		case "cache_gate":
+			m.applySet("context_compression.cache_gate", toggleCacheGateValue(cfg.ContextCompression.CacheGate))
 		case "micro_enabled":
 			m.applySet("context_compression.micro_compaction.enabled", toggleMicroEnabledValue(cfg))
-			m.settingCompression()
+		default:
+			return // unknown row: never close the menu silently
 		}
+		m.settingCompressionAdvanced()
 	})
+}
+
+// ceilingPercentLabel renders a layer ceiling: N% or the explicit disabled
+// spelling (0 = disabled under the opt-in semantics).
+func ceilingPercentLabel(v int) string {
+	if v <= 0 {
+		return "0% (disabled)"
+	}
+	return fmt.Sprintf("%d%%", v)
+}
+
+// layerMethodLabel renders a layer method with its default when unset.
+func layerMethodLabel(v, def string) string {
+	if v == "" {
+		return def + " (default)"
+	}
+	return v
+}
+
+// onErrorLabel renders the On error row: the recovery method, or off.
+func onErrorLabel(cfg *config.Config) string {
+	if !cfg.ContextCompression.OnContextError {
+		return "off"
+	}
+	if s := cfg.ContextCompression.OnErrorStrategy; s != "" {
+		return s
+	}
+	return "hybrid"
 }
 
 func (m *configMenu) settingCompressionStrategy() {
@@ -117,12 +235,8 @@ func (m *configMenu) settingCompressionStrategy() {
 func (m *configMenu) settingCompressionThreshold() {
 	m.current = m.settingCompressionThreshold
 	// 0 = off (default: no proactive trigger); the settable range in 5% steps.
-	items := []tui.SelectorItem{
-		{Value: "0", Label: "off (default)", Description: "no proactive trigger — compress only on context error"},
-	}
-	items = append(items, percentStepItems()...)
 	current := fmt.Sprintf("%d", compressionTriggerValue(m.ctx.Config))
-	m.ctx.SelectOption("Trigger threshold (% of max tokens):", items, current, func(v string, ok bool) {
+	m.ctx.SelectOption("Trigger threshold (% of max tokens):", ceilingPercentItems(false), current, func(v string, ok bool) {
 		if !ok {
 			m.back()
 			return
@@ -130,15 +244,6 @@ func (m *configMenu) settingCompressionThreshold() {
 		m.applySet("context_compression.thresholds.trigger_percent", v)
 		m.back()
 	})
-}
-
-// layerStrategyLabel renders a per-layer strategy for the menu, showing the
-// SDK default when unset.
-func layerStrategyLabel(v, def string) string {
-	if v == "" {
-		return def + " (default)"
-	}
-	return v
 }
 
 // cacheGateLabel renders the cache-gate toggle state for the menu.
@@ -157,84 +262,15 @@ func toggleCacheGateValue(v string) string {
 	return "off"
 }
 
-func (m *configMenu) settingCompressionSoftStrategy() {
-	m.current = m.settingCompressionSoftStrategy
-	// The soft layer is zero-LLM only: no LLM call, no message drops.
-	items := []tui.SelectorItem{
-		{Value: "micro", Label: "micro (default)", Description: "truncate old tool result bodies (cache-friendly)"},
-		{Value: "tool_elision", Label: "tool_elision", Description: "replace old tool args/results with placeholders"},
+// ceilingPercentItems builds the ceiling picker: 0 (disabled) plus 5..100
+// in 5% steps. withInherit prepends the per-model "inherit (clear)" row.
+func ceilingPercentItems(withInherit bool) []tui.SelectorItem {
+	items := make([]tui.SelectorItem, 0, 21)
+	if withInherit {
+		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global threshold"})
 	}
-	current := m.ctx.Config.ContextCompression.Strategies.Soft
-	m.ctx.SelectOption("Soft-layer strategy (early maintenance, zero-LLM only):", items, current, func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.applySet("context_compression.strategies.soft", v)
-		m.back()
-	})
-}
-
-func (m *configMenu) settingCompressionHardStrategy() {
-	m.current = m.settingCompressionHardStrategy
-	items := []tui.SelectorItem{
-		{Value: "hybrid", Label: "hybrid (default)", Description: "tool_elision → selective → summarize"},
-		{Value: "tool_elision", Label: "tool_elision", Description: "replace old tool args/results with placeholders"},
-		{Value: "selective", Label: "selective", Description: "drop oldest messages, keep system + recent turns"},
-		{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
-		{Value: "micro", Label: "micro", Description: "truncate old tool result bodies (cache-friendly)"},
-	}
-	current := m.ctx.Config.ContextCompression.Strategies.Hard
-	m.ctx.SelectOption("Hard-layer strategy (emergency, cache gate bypassed):", items, current, func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.applySet("context_compression.strategies.hard", v)
-		m.back()
-	})
-}
-
-func (m *configMenu) settingCompressionSoft() {
-	m.current = m.settingCompressionSoft
-	// 0 = off (default: no early maintenance); levels in 5% steps 10-95.
-	items := []tui.SelectorItem{
-		{Value: "0", Label: "off (default)", Description: "no early maintenance"},
-	}
-	items = append(items, percentStepItems()...)
-	current := fmt.Sprintf("%d", m.ctx.Config.ContextCompression.Thresholds.SoftPercent)
-	m.ctx.SelectOption("Soft threshold — cheap zero-LLM maintenance when cache is cold:", items, current, func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.applySet("context_compression.thresholds.soft_percent", v)
-		m.back()
-	})
-}
-
-func (m *configMenu) settingCompressionHard() {
-	m.current = m.settingCompressionHard
-	items := []tui.SelectorItem{
-		{Value: "0", Label: "off (default)", Description: "no proactive ceiling — the reactive error/ceiling net stays on"},
-	}
-	items = append(items, percentStepItems()...)
-	current := fmt.Sprintf("%d", compressionHardValue(m.ctx.Config))
-	m.ctx.SelectOption("Hard ceiling (emergency: bypass cache, hard-layer strategy fires):", items, current, func(v string, ok bool) {
-		if !ok {
-			m.back()
-			return
-		}
-		m.applySet("context_compression.thresholds.hard_percent", v)
-		m.back()
-	})
-}
-
-// percentStepItems builds the 10–95% selector items in 5% increments (the
-// user-settable range for every compression level).
-func percentStepItems() []tui.SelectorItem {
-	items := make([]tui.SelectorItem, 0, 18)
-	for pct := 10; pct <= 95; pct += 5 {
+	items = append(items, tui.SelectorItem{Value: "0", Label: "0% (disabled)", Description: "layer off"})
+	for pct := 5; pct <= 100; pct += 5 {
 		items = append(items, tui.SelectorItem{
 			Value: fmt.Sprintf("%d", pct),
 			Label: fmt.Sprintf("%d%%", pct),
@@ -470,24 +506,39 @@ func toggleMicroEnabledValue(cfg *config.Config) string {
 	return "true"
 }
 
-// compressionLabel returns a one-line summary for the root /config menu.
-// With proactive compression off (the default), it surfaces the reactive
-// on-error net instead of a misleading "strategy @ 0%".
+// compressionLabel returns a one-line summary for the root /config menu:
+// the enabled layers (soft N% · trigger N% · hard N% <method>) plus the
+// on-error net; nothing proactive and no net → "off".
 func compressionLabel(cfg *config.Config) string {
-	if !cfg.ContextCompression.EnabledValue() {
+	cc := cfg.ContextCompression
+	if !cc.EnabledValue() {
 		return "off"
 	}
-	if compressionTriggerValue(cfg) <= 0 {
-		if cfg.ContextCompression.OnContextError {
-			return "on-error (hybrid)"
+	var parts []string
+	if v := cc.Thresholds.SoftPercent; v > 0 {
+		parts = append(parts, fmt.Sprintf("soft %d%%", v))
+	}
+	if v := compressionTriggerValue(cfg); v > 0 {
+		parts = append(parts, fmt.Sprintf("trigger %d%%", v))
+	}
+	if v := cc.Thresholds.HardPercent; v > 0 {
+		method := cc.Strategies.Hard
+		if method == "" {
+			method = "summarize"
 		}
+		parts = append(parts, fmt.Sprintf("hard %d%% %s", v, method))
+	}
+	if cc.OnContextError {
+		s := cc.OnErrorStrategy
+		if s == "" {
+			s = "hybrid"
+		}
+		parts = append(parts, "on-error "+s)
+	}
+	if len(parts) == 0 {
 		return "off"
 	}
-	strategy := cfg.ContextCompression.Strategy
-	if strategy == "" {
-		strategy = "tool_elision"
-	}
-	return fmt.Sprintf("%s @ %d%%", strategy, compressionTriggerValue(cfg))
+	return strings.Join(parts, " · ")
 }
 
 // compressionTriggerValue resolves the effective trigger percent for display:
@@ -506,27 +557,6 @@ func compressionTriggerDisplay(cfg *config.Config) string {
 		return fmt.Sprintf("%d%%", v)
 	}
 	return "off (default)"
-}
-
-// compressionHardValue resolves the effective hard ceiling for display
-// (0 = proactive ceiling off; the reactive net still protects the window).
-func compressionHardValue(cfg *config.Config) int {
-	return cfg.ContextCompression.Thresholds.HardPercent
-}
-
-// percentLabel renders an optional percent value with a fallback label.
-func percentLabel(v int, fallback string) string {
-	if v <= 0 {
-		return fallback
-	}
-	return fmt.Sprintf("%d%%", v)
-}
-
-// derivedPercentLabel renders a computed (always-present) compression limit.
-// Unlike percentLabel these values are never "off" — they are derived from the
-// hard ceiling (CM:13 rule 5: no hidden limits).
-func derivedPercentLabel(v int) string {
-	return fmt.Sprintf("%d%%", v)
 }
 
 // maxTokensLabel renders the compression max_tokens value for display.
@@ -752,31 +782,27 @@ func compressionStrategyItems(withInherit bool) []tui.SelectorItem {
 	)
 }
 
-// layerStrategyItems returns per-layer strategy options; soft restricts to the
-// zero-LLM strategies, mirroring the global soft-layer rule.
+// layerStrategyItems returns per-layer strategy options: every method is
+// offered on every layer (the all-methods soft rework); soft just tunes the
+// title flavor in the per-model editor.
 func layerStrategyItems(withInherit, soft bool) []tui.SelectorItem {
 	items := []tui.SelectorItem{}
 	if withInherit {
 		items = append(items, tui.SelectorItem{Value: "", Label: "inherit (clear)", Description: "use the global layer strategy"})
 	}
-	items = append(items,
+	_ = soft // all methods on all layers; kept for call-site stability
+	return append(items,
 		tui.SelectorItem{Value: "micro", Label: "micro", Description: "truncate old tool result bodies"},
 		tui.SelectorItem{Value: "tool_elision", Label: "tool_elision", Description: "replace old tool args/results with placeholders"},
+		tui.SelectorItem{Value: "selective", Label: "selective", Description: "drop oldest messages"},
+		tui.SelectorItem{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
+		tui.SelectorItem{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
 	)
-	if !soft {
-		items = append(items,
-			tui.SelectorItem{Value: "selective", Label: "selective", Description: "drop oldest messages"},
-			tui.SelectorItem{Value: "hybrid", Label: "hybrid", Description: "tool_elision → selective → summarize"},
-			tui.SelectorItem{Value: "summarize", Label: "summarize", Description: "ask the LLM to summarize older turns"},
-		)
-	}
-	return items
 }
 
-// percentItemsWithInherit returns the 10-95% step options plus inherit (clear).
+// percentItemsWithInherit returns the ceiling options plus inherit (clear).
 func percentItemsWithInherit() []tui.SelectorItem {
-	items := []tui.SelectorItem{{Value: "", Label: "inherit (clear)", Description: "use the global threshold"}}
-	return append(items, percentStepItems()...)
+	return ceilingPercentItems(true)
 }
 
 // cacheGateItems returns the cache-gate options plus inherit (clear).

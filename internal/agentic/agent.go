@@ -479,8 +479,10 @@ const (
 
 // ContextCompressionConfig controls automatic conversation history compression.
 //
-// A zero value disables automatic compression. Use this to manage context
-// window limits, especially important when using inline skill execution mode.
+// A zero value disables automatic compression entirely: every layer is
+// opt-in, so the thresholds default to disabled and no reactive recovery
+// runs (OnContextError false). Use this to manage context window limits,
+// especially important when using inline skill execution mode.
 type ContextCompressionConfig struct {
 	// MaxTokens is the context window limit. When estimated tokens
 	// exceed ThresholdPercent of this, compression is triggered.
@@ -516,6 +518,11 @@ type ContextCompressionConfig struct {
 	// OnContextError triggers compression when the LLM returns a
 	// context-length / token-limit error. Default: true.
 	OnContextError bool
+
+	// OnErrorStrategy selects the strategy applied by the on-context-error
+	// recovery (see handleContextError). Empty = CompressionHybrid
+	// (tool_elision → selective → summarize as last resort).
+	OnErrorStrategy CompressionStrategy
 
 	// MicroCompaction configures the micro compaction strategy.
 	// Only used when Strategy == CompressionMicro.

@@ -68,35 +68,33 @@ context_compression:
   # 0 means "auto": use the active model's advertised context window.
   max_tokens: 0
   # Fill levels (percent of the effective window) at which PROACTIVE
-  # compression escalates. soft/trigger are OPT-IN (0 = disabled): proactive
-  # threshold compression busts the provider prefix cache and re-bills most
-  # of the context for modest headroom, so they are OFF by default.
-  # The hard layer is the exception — it is ON by default:
-  #   hard_percent: 0 → default 95; a negative value explicitly disables even
-  #   the proactive hard tier (the reactive safety net stays on).
-  # At the hard ceiling the hard-layer strategy (strategies.hard, default
-  # "summarize") runs with the cache gate bypassed: the default actor at 95%
-  # is a full-window LLM summarize. If that summarize itself overflows the
-  # window, a micro pre-compression is applied and the summarize retried; the
-  # destructive message-drop ("ceiling") is only a last resort when
-  # summarize cannot run at all.
+  # compression escalates. Every layer is OPT-IN: 0 disables it — there is
+  # no implicit engine default. The embedded default enables only the hard
+  # ceiling: at 95% the hard-layer strategy (strategies.hard, default
+  # "summarize") runs with the cache gate bypassed — a full-window LLM
+  # summarize. If that summarize itself overflows the window, a micro
+  # pre-compression is applied and the summarize retried; the destructive
+  # message-drop ("ceiling") is only a last resort when summarize cannot
+  # run at all.
   # The legacy "threshold_percent" key still works and, when set, overrides
   # thresholds.trigger_percent (backwards compatibility).
   thresholds:
     soft_percent: 0
     trigger_percent: 0
-    hard_percent: 0
+    hard_percent: 95
   # Optional per-model overrides keyed by models[].id, e.g.:
   # per_model:
   #   "local-qwen3-8b":
   #     max_tokens: 24576
   #     strategy: "hybrid"
   #     thresholds: { soft_percent: 40, trigger_percent: 65, hard_percent: 90 }
-  # Reactive safety net (always on): on a context-length error the hybrid
-  # strategy runs — tool_elision → selective → summarize (last resort) — and
-  # the hard-ceiling enforcer drops oldest messages to keep the request valid.
+  # Reactive safety net: on a context-length error the on-error strategy
+  # runs — "hybrid" means tool_elision → selective → summarize (last
+  # resort) — and the hard-ceiling enforcer drops oldest messages to keep
+  # the request valid.
   on_context_error: true
-  strategy: "micro"
+  on_error_strategy: "hybrid"
+  strategy: ""
   preserve_recent_turns: 4
   micro_compaction:
     # OPT-IN (default: off). Micro compaction is a pre-summarize step on a full

@@ -257,14 +257,10 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 	ov := overlayCompressionForModel(cfg.ContextCompression, modelID)
 
 	thresholds := am.resolveAgenticThresholds(cfg, ov.thresholds, ov.legacyTrigger)
-	// Honor the Enabled toggle: an explicit `enabled: false` disables the
-	// opt-in proactive layers (soft/trigger → 0). HardPercent zeroes too, but
-	// under the SDK's default-on hard semantics 0 resolves to the documented
-	// default ceiling (95) with the hard-layer strategy (summarize) — the
-	// user-confirmed contract: with compression disabled the hard 95% default
-	// STILL triggers summarize; only the destructive ceiling message-drop
-	// remains as a last resort. The reactive safety net (on_context_error)
-	// is unaffected.
+	// Honor the Enabled toggle: an explicit `enabled: false` disables every
+	// proactive layer (all thresholds zeroed — with the opt-in semantics 0
+	// disables each layer including the hard ceiling). The reactive safety
+	// net (on_context_error / on_error_strategy) is unaffected.
 	if !cfg.ContextCompression.EnabledValue() {
 		thresholds = agentic.CompressionThresholds{}
 	}
@@ -273,6 +269,7 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		MaxTokens:           ov.maxTokens,
 		Thresholds:          thresholds,
 		OnContextError:      cfg.ContextCompression.OnContextError,
+		OnErrorStrategy:     agentic.CompressionStrategy(cfg.ContextCompression.OnErrorStrategy),
 		Strategy:            compressionStrategy(ov.strategy),
 		Strategies:          agenticLayerStrategies(ov.strategies),
 		DisableCacheGate:    ov.cacheGate == "off",

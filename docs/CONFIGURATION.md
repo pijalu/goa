@@ -109,12 +109,28 @@ execution:
 # ── Context Compression ────────────────────────────────────────────
 context_compression:
   enabled: true
-  max_tokens: 8192                   # Target context window
-  threshold_percent: 80              # Compress when usage exceeds this %
-  on_context_error: true             # On error → fall back to tool elision
-  strategy: micro                    # Default: micro compaction after 1h idle
-                                     # Options: tool_elision | selective |
-                                     #          summarize | hybrid | micro
+  max_tokens: 8192                   # Target context window (0 = auto: model window)
+  # Proactive fill levels (% of the effective window). Every layer is
+  # OPT-IN: 0 disables it — there is no implicit engine default-on. The
+  # embedded default.yaml enables only the hard ceiling (95, summarize).
+  # Valid values: 0 (disabled), -1 (legacy disable spelling), or 5..100
+  # in 5% steps.
+  thresholds:
+    soft_percent: 0                  # Early-maintenance layer (0 = off)
+    trigger_percent: 0               # Trigger layer (0 = off)
+    hard_percent: 95                 # Emergency ceiling (0 = off)
+  # Per-layer methods. Any method works on any layer; empty = SDK default
+  # (micro / tool_elision / summarize for soft/trigger/hard).
+  strategies:
+    soft: ""
+    trigger: ""
+    hard: ""                         # Options: micro | tool_elision |
+                                     #          selective | hybrid | summarize
+  on_context_error: true             # Reactive net: compress on context-length errors
+  on_error_strategy: hybrid          # Recovery method: hybrid (elision →
+                                     # selective → summarize) | summarize |
+                                     # tool_elision | selective | micro
+  strategy: ""                       # Legacy trigger-layer strategy alias
   preserve_recent_turns: 4           # Keep last N turns uncompressed
   micro_compaction:
     keep_recent_messages: 20         # Messages to never truncate

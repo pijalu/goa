@@ -1,128 +1,247 @@
-# Bug and feature Tracking
+# Compression config rework — bugs & plan (IN PROGRESS)
 
-## Guideline
-1. Create a detailed fix plan for each bug - the plan must contain test approach and validation steps - execute the plan and validate the fix when all elements are in place.
-2. Any issues found must be fixed and the fix plan must be updated accordingly.
-3. Issues found during testing must be fixed and the fix plan must be updated accordingly.
-4. Each bug should be moved to archive when tested and closed as the associated plan.
-5. Use interactive shell to validate the output of the tool - you must verify the actual terminal output.
-6. Check code quality with each tool run separately (do not chain them with `;` or `&&`):
-    - `go vet ./...`
-    - `staticcheck ./...`
-    - `gocognit -over 15 .`
-    - `gocyclo -over 12 .`
-    - `go test -count=1 -race -cover ./...`
-    Fix any new issues introduced by the change. Pre-existing warnings are acceptable only if they are unrelated to the change and explicitly noted.
+Meta: mid-implementation. Engine/config/CLI edits landed (uncommitted). Menu rewrite + test fallout remain.
+This file is the single source of truth; work from here, not from chat history.
 
-At the end of the session - the bug list should be empty and this file should only contain the guidelines for bug reporting.
-If new items are added, restart the process.
+---
 
-# To fix
+## 1. Original user report
 
-(none)
+- All compression should be disabled by default (later refined, see decisions).
+- Compression config menu unclear (too many rows, derived values mixed with settings).
+- Bug: selecting a percentage-looking row "returns to main menu" instead of opening a picker.
+- Expected menu:
+  ```
+  Soft ceiling %: XX% (0% => disabled)
+  Soft ceiling method: micro
+  Hard ceiling %: XX%
+  Hard ceiling method: summarize
+  On error: hybrid   (picker incl. "off")
+  ```
+  - Method rows: picker from ALL methods (micro/tool_elision/selective/hybrid/summarize).
+  - Ceiling rows: picker of percentages 0,5,...,100 (step 5); 0 = disabled.
 
-## Queued goals (from the goal queue — not started)
-1. **jade.bison — Session status totals view:** the session status should end with a clear TOTAL block showing, for each key element (input / cached-input / output), the number of tokens used, plus tool calls, compressions, and cache misses — rendered as a table/markdown after the per-round details, giving a clear summary view of the whole session.
-2. **happy.owl — Commit all changes and push.**
+## 2. User decisions (from clarification round)
 
-Execution order when resumed: jade.bison, then happy.owl (commit+push LAST, covering everything).
+| Question | Decision |
+|---|---|
+| Defaults | Keep ON: hard ceiling 95% + method summarize, and on-context-error recovery (hybrid). Off: soft (0), trigger (0, hidden in Advanced). No implicit engine default-on — default.yaml sets `hard_percent: 95` explicitly. |
+| Menu rows | 5 main rows: Soft ceiling % / Soft method / Hard ceiling % / Hard method / On error (single method picker where "off" = disabled). Plus "Advanced…" entry. |
+| Percent list | 0,5,10,...,100 (step 5), 0 = disabled. |
+| Soft method list | ALL methods on every layer (engine restriction removed). |
+| Advanced settings | Keep functional, tucked under "Advanced…" submenu — "make sure functional and does not overcomplexify general params". |
 
-# Archive
+## 3. Root cause of "returns to main menu" bug
 
-## Unexpected cache miss after destructive "ceiling" compaction (export goa-export-20260814-153156) — FIXED
-Review of the export bundle + all recent sessions for unexpected provider prefix-cache misses.
+- `core/commands/config_compression.go` old menu had read-only derived rows
+  (`_derived_deferral`, `_derived_effective_hard`, `_derived_elision_target`,
+  `_derived_escalation`, `_derived_reactive_savings`) with Values starting `_derived_`.
+- Selecting such a row: `openers` map misses, `switch` misses → callback does nothing.
+  TUI Selector on selection: emit(value) → done → overlay HIDE. No new overlay opened →
+  user falls back to previous screen → looks like "returned to main menu".
+  User screenshot cursor was on "↳ Deferral ceiling (cache-hot cutoff) 85%" — exactly such a dead row.
+- Secondary trap: `ctx.SelectOption` wrapper treats empty-string Value as CANCEL
+  (`ok := selected != ""`); any picker item with empty Value would act as cancel → `m.back()`.
+  Rule: never use empty Value for selectable rows.
+- Fix: new menu has zero dead rows; regression test must assert every row either opens
+  a picker or applies a set.
 
-**Findings (traced):**
-- Export logs one detected miss: `prev_cache_read 82496 → 0` at 2026-08-14T15:22:08 (zai/glm-5.3, session 1786713126_2wql4s85). The captured bust+preceding requests (seq 24/25, 6s apart) have IDENTICAL message prefixes (msgs 0–51 byte-equal, tools/model/thinking equal) — so that pair alone does not explain the miss by content. Remaining suspects for the pair: provider-side cache write timing (the 82k prefix was read but not re-established in time), or a byte-level serialization difference invisible in the re-marshaled capture.
-- The BIGGER, reproducible cache-buster: the session later crossed 95% usage and the reactive enforcer ran a DESTRUCTIVE ceiling cut — `⚡ Context compacted (ceiling): 96% → 44% · 120 messages dropped · ~107889 tokens freed` — which wholesale rewrites the history prefix. Every subsequent request then re-reads the full input at full price (cache bust by design of a front-cut). The user config has `context_compression.enabled: false`, yet the ceiling cut fired: the reactive `enforceContextCeiling` ignores the Enabled toggle and the destructive drop is the ONLY thing that acts at 95% under default config (proactive hard tier requires `hard_percent > 0`, which is 0 by default).
+## 4. Semantics change (old → new)
 
-**User-confirmed intended contract (now enforced):**
-- Default cache compression: ALL algorithms disabled EXCEPT **summarize at 95%** (the hard layer default).
-- When compression is disabled (`enabled: false`): soft/trigger layers off, but the hard 95% default STILL triggers summarize.
-- The only "hybrid" case, at 95%: if summarize cannot be executed (LLM error due to context overflow), a micro pre-compression is applied, then summarize retried. Micro is a fallback ONLY — never a first pass.
-- The destructive ceiling message-drop is a LAST RESORT only (summarize cannot run at all / still overflows after the micro fallback).
-- All of this remains **customizable per model** (`context_compression.per_model`): per-model thresholds (incl. hard_percent) and strategies (incl. hard strategy), zero fields inheriting the defaults.
+| Item | Old | New |
+|---|---|---|
+| hard_percent 0 (global) | default 95, hard tier ON | DISABLED (0 = off everywhere) |
+| hard_percent negative | explicit opt-out | still accepted = disabled (legacy spelling) |
+| hard default 95 | engine implicit (DefaultHardPercent) | explicit in `config/configs/default.yaml` (`hard_percent: 95`) |
+| soft strategy | forced zero-LLM (micro/tool_elision), others silently degraded to micro | any strategy honored; empty → micro |
+| on-error strategy | hardcoded hybrid (elision → selective → maybe Compact) | configurable `on_error_strategy`; empty = hybrid (same behavior) |
+| config validation levels | 10–95 step 5, 0=inherit, -1 soft-only | 0 or -1 = disabled; else 5–100 step 5 |
+| default.yaml `strategy` | "micro" | "" (legacy trigger-layer strategy unset; nothing proactive beyond hard 95) |
+| enabled:false | zeroed thresholds but hard still defaulted ON via engine | zeroes ALL proactive layers incl. hard (0=disabled semantics) |
+| SDK zero-value ContextCompressionConfig | hard tier on at 95 | fully disabled (matches its doc comment) |
 
-**Root cause (traced):**
-1. `resolveThresholds` (internal/agentic/compression_thresholds.go): default `hardStrategy` = `hybrid` (elision → selective → summarize), not `summarize`.
-2. `proactiveTierLocked`: hard tier required `rt.hard > 0`; with the default `hard_percent: 0` the tier never fired, so at 95% only the reactive ceiling drop (label "ceiling") acted — the exact observed banner.
-3. `Compact` (agent_compression.go): the summarize-overflow micro fallback was gated on `MicroCompaction.Enabled` — but per the contract it must run whenever summarize itself overflows, regardless of the micro opt-in.
-4. `buildCompressionConfig` (core/agentmanager_lifecycle.go) zeroed ALL thresholds on `enabled: false`, intending to disable everything; under the new semantics hard=0 must mean "default 95 on" so only soft/trigger are disabled.
-5. (Found live during the PTY repro; crash.log "ceiling cannot be enforced … 4750") `maybeCompress`: the legacy micro branch gated on `ContextStats().UsagePercent`, whose denominator is the runtime window (display stat), not the effective window (`context_compression.max_tokens`) — under a configured max_tokens the legacy gate fired below the real hard threshold and masked the tierHard path.
+Reactive safety net unchanged in spirit: `on_context_error: true` + hybrid default;
+escalation-to-Compact tail preserved for hybrid/micro/tool_elision/selective;
+`summarize` on-error goes straight to Compact.
 
-**Fix:**
-1. `resolveThresholds`: default `hardStrategy = summarize`; negative `HardPercent` preserved = explicit disable; zero → default 95 ON.
-2. `proactiveTierLocked`: hard tier gate is `rt.hardEnabled() && usage >= effectiveHard()`.
-3. `Compact`: summarize-overflow micro fallback is now UNCONDITIONAL (no longer gated on `MicroCompaction.Enabled`).
-4. `compaction.go` `microFallbackConfig()`: field-wise defaults for a zero micro config.
-5. `maybeCompress` (agent_compression.go): computes `computeContextStatsForMax(maxTokens)` under `a.mu` so the legacy micro branch uses the effective window.
-6. Comments only: `core/agentmanager_lifecycle.go`, `config/config.go`, `config/configs/default.yaml` (documented "0 = default 95", negative = disable).
+## 5. Already-done edits (uncommitted, in working tree)
 
-**Tests (RED → GREEN, 10× flake-check):**
-- `internal/agentic/compression_default_summarize_test.go`: `TestResolveThresholds_DefaultHardIsSummarizeAt95`, `TestProactiveTier_HardFiresAtDefault95`, `TestMaybeCompress_DefaultHardCeilingRunsSummarizeNotCeiling`, `TestPreparePath_CeilingOnlyWhenSummarizeCannotRun`, `TestCompact_SummarizeOverflowAppliesMicroUnconditionally` (fail-once overflow provider), plus `LegacyMicroBranchUsesEffectiveWindow` and `LegacyMicroBranchStillSelfManagesBelowCeiling` (resized user/asst 2200 chars each, window 1000).
-- `internal/agentic/compression_thresholds_test.go`: hard −1 stays disabled; zero-thresholds hard ON at 95; wantHard → summarize.
-- `internal/agentic/compact_micro_optional_test.go`: overflow fallback via `registerOverflowProvider(name, 1)`; `PersistentOverflowPropagatesError` (failures=2).
-- `core/agentmanager_lifecycle_test.go`: `TestBuildCompressionConfig_PerModelHardOverridesDefaults` (per-model hard_percent/strategies override; zero fields inherit).
+1. `internal/agentic/compression_thresholds.go`
+   - Docs: every layer opt-in, 0/negative = disabled; DefaultHardPercent = reactive-math fallback only.
+   - `hardEnabled()` → `hard > 0`.
+   - `resolveThresholds`: `softStrategy = c.Strategies.Soft; if "" → micro` (no degradation).
+   - Removed `zeroLLMStrategy` helper.
+2. `internal/agentic/agent.go`
+   - `ContextCompressionConfig` += `OnErrorStrategy CompressionStrategy` (empty = hybrid).
+   - Doc: zero value disables automatic compression entirely.
+3. `internal/agentic/agent_compression.go`
+   - `handleContextError` logs resolved strategy.
+   - New `onErrorStrategy()` resolver.
+   - `compressOverflowRecovery`: dispatch — summarize → Compact; else
+     `overflowRecoveryInMemory(strategy)` (hybrid: elision+selective under one lock, unchanged;
+     micro: `microCompactForced(true)` lock-free; selective/tool_elision: single op under lock)
+     then escalate-to-Compact tail when `stats.UsagePercent >= escalationPercent()`, else emit
+     "overflow" compaction result; emitContextStats at end.
+4. `config/config.go`
+   - `ContextCompressionConfig` += `OnErrorStrategy string` yaml `on_error_strategy,omitempty`.
+   - Thresholds doc comments updated (0 = disabled global; negative legacy).
+5. `config/configs/default.yaml`
+   - `hard_percent: 95`, `on_error_strategy: "hybrid"`, `strategy: ""`, comments rewritten.
+6. `config/config_validate.go`
+   - validates `on_error_strategy` via `validCompressionStrategy`.
+   - `validateLayerStrategies`: soft restriction removed.
+   - `validateCompressionLevel(ve, path, v)`: 0/-1 pass; else 5..100 %5==0; msg updated.
+     (signature changed — dropped `allowDisable bool`; all 3 call sites updated.)
+7. `config/config_merge.go`
+   - merges `OnErrorStrategy` (non-empty wins); added to `contextCompressionLayerEmpty`.
+8. `core/commands/config_cli.go`
+   - new `setOnErrorStrategy`; key `context_compression.on_error_strategy`.
+   - `setLayerStrategy` dropped `soft` param (any strategy any layer); 3 call sites updated.
+9. `core/agentmanager_lifecycle.go`
+   - maps `OnErrorStrategy` into agentic config; enabled:false comment updated.
 
-**Validation:**
-- Mock-model e2e (no remote, mocked LLM): new in-repo deterministic OpenAI-compatible mock server `e2e/mockllm/server.py` (+ `start_mock_llm`/`stop_mock_llm` helpers in `e2e/lib.sh`, documented in `e2e/README.md`). Seeded-PRNG filler (~30 KB, loop-detector-safe: repeated lorem and even numbered lines trip goa's stream-loop guardrail — the server now varies word choices deterministically; also threaded + safe on system-less requests). PTY run against mock with `context_compression.max_tokens: 6500`, two "hi" turns: session JSONL contains exactly one compact event `strategy="summarize"` (237% → 72%, 3 messages dropped), ZERO `strategy="ceiling"` events, ZERO error events, no loop-detector notes.
-- Gates (each run separately): `go vet ./...` clean; `go test -count=1 -race -cover ./...` all green; `staticcheck ./...` identical set to pre-change baseline (22 pre-existing, e.g. `compressHistory` unused); `gocognit -over 15` identical (73 pre-existing); `gocyclo -over 12` identical set (`proactiveTierLocked` 13, `overlayCompressionForModel` 14 — pre-existing, untouched).
+NOT yet compiled/tested since these edits — expect build fallout first (task 01).
 
-## Cursor jumps out of input during tool status redraw — FIXED
-Tool status changes trigger a cursor glitch: the cursor momentarily jumps out of the input box, then returns to the expected position on the next render.
+## 6. Remaining work — micro-tasks (ordered)
 
-**Root cause (traced):** `appendCursorSeq` mapped the cursor row linearly (`screenRow = cursorRow - vt + 1`), but the paint layout is two-phase: transcript rows are linear in `vt`, while the chrome band (editor) is PINNED to the screen bottom (`screenRow = windowH + (cursorRow - contentEnd) + 1`). The two mappings agree only when `vt` equals the natural bottom anchor (`canvasLen - height`). During a tool-widget collapse (canvas shrinks by `d` while the scrollback watermark is still high) `windowTop` clamps `vt` above the natural anchor, and the cursor landed `d` rows ABOVE the editor row — outside the input box — until the canvas regrew (next streaming chunk) snapped it back.
+**STATUS 2026-08-14: ALL DONE (01–09).** Evidence: `go vet ./...` clean;
+`go test -count=1 -race -cover ./...` green (81 pkgs ok, 0 FAIL); verify cmd
+(`go vet + go test ./config/... ./core/commands/... ./internal/agentic/...`) rc=0.
+Extra beyond plan: on-error dispatch table tests
+(`internal/agentic/agent_onerror_dispatch_test.go`), dead-row regression
+(`core/commands/config_compression_deadrow_test.go`), filmstrip UI validation
+(`internal/app/config_compression_filmstrip_test.go`, race-clean ×3 full-pkg
+runs; includes engine fix `tui.RenderNow` now snapshots via ApplySync).
+gocognit/gocyclo: no new violations — all >15 findings pre-exist on HEAD
+(verified via stash: validateOrchestrator 19, mergeExecution 16/17,
+renderLoop 16). Docs updated (CONFIGURATION.md, PROVIDER-CONNECTIVITY.md,
+stale zero-LLM comments in agent_compression.go).
 
-**Fix:** `appendCursorSeq` (`tui/compositor.go`) now maps through the same two-phase layout as the paint: extracted `cursorScreenRow(targetRow, totalLines, vtop, height)` computes `contentEnd = totalLines - chromeH`; cursor rows at/above `contentEnd` map to the pinned chrome band (`windowH + (row - contentEnd) + 1`), rows below map linearly. No Scene/layout changes — the paint split is purely by canvas row.
+### 01 — Restore build
+- `go build ./...` then `go vet ./...`; fix only compile errors from §5 edits
+  (e.g. leftover references to removed helpers, signature changes).
+- Acceptance: build + vet clean.
 
-**Tests:** `TestCompositor_CursorStaysOnEditor` (`tui/cursor_clamp_repro_test.go`, RED first): scrolled canvas with chrome, shrink transcript so `vt` clamps, explicit `Scene.Cursor` on the editor row; replayed through `screenEmulator`; asserts the hardware cursor row equals the painted editor row, not the linear map. `TestCompositor_CursorStaysOnEditorAcrossShrinkAndRegrow` covers the stacked shrink+regrow sequence (tool collapse + queued user message).
+### 02 — internal/agentic threshold/strategy tests
+Files: `internal/agentic/compression_thresholds_test.go`,
+`internal/agentic/compression_default_summarize_test.go`.
+- hard 0 → tierNone at ANY usage (was: hard@95). Tests previously relying on default-95
+  hard tier with zero config: set `HardPercent: 95` explicitly.
+- hard -1 → disabled (same as 0).
+- soft strategy: explicit `selective`/`summarize`/`hybrid` now honored (no degradation to micro).
+- `zeroLLMStrategy` references removed.
+- Acceptance: `go test ./internal/agentic/ -run 'Threshold|Tier|Summarize'` green.
 
-**Validation:** PTY session (opencode-go/deepseek-v4-flash): `read` tool running→done collapse + streaming — editor/input stayed pinned at the screen bottom, no visible cursor detach. Gates: `go vet`, `staticcheck`, `gocognit -over 15`, `gocyclo -over 12`, `go test -count=1 -race -cover ./...` all pass (pre-existing warnings unrelated to the change: `tui/render_trace.go` U1000 unused `sceneLayersTrace`, `renderLoop` gocognit 16, `scrollOffUnstable` gocyclo 13 — all untouched).
+### 03 — internal/agentic cache-gate + overflow recovery tests
+Files: `internal/agentic/agent_compression_cache_gate_test.go`,
+`internal/agentic/compaction_cache_test.go`,
+`internal/agentic/agent_overflow_recovery_test.go`.
+- Any zero-config case expecting hard-tier/reactive fire at 95: set explicit 95.
+- NEW: on-error dispatch table tests — for OnErrorStrategy summarize → Compact called, no
+  elision; tool_elision → elision only; selective → selective only; micro → micro forced;
+  hybrid → elision+selective then Compact only when still ≥ escalation.
+- Acceptance: package tests green incl. new cases.
 
-## Input cursor occasionally redrawn one line too high — FIXED
-Cursor on the input box was sometimes redrawn one line above its true position (transient), worst after a `read` tool completes and a user message is queued right after (two stacked height changes).
+### 04 — config package tests
+Files: `config/compression_test.go`, `config/config_validate_test.go` (or wherever level/
+strategy validation tests live), merge tests.
+- Defaults from embedded default.yaml: HardPercent 95, OnErrorStrategy "hybrid",
+  Strategy "" (was "micro").
+- Validation: level cases → 0 ok, -1 ok, 5 ok (new), 100 ok (new), 4/7/101 rejected,
+  97 rejected (not %5); soft layer now accepts all strategies; unknown on_error_strategy rejected.
+- Merge: on_error_strategy overlay + contextCompressionLayerEmpty.
+- Acceptance: `go test ./config/` green.
 
-**Root cause (traced):** same family as the cursor-jump bug. The frame where the tool widget collapses shrinks the canvas; `windowTop` clamps `vt` to the stale scrollback watermark (above the natural anchor); the two-phase repaint keeps the editor pinned at the screen bottom, but `appendCursorSeq` positioned the cursor with the linear mapping, placing it exactly `d` rows (the shrink delta) above the true editor row. A user message queued+sent regrows the canvas past the watermark on the next frame(s), re-aligning both mappings — the snap-back.
+### 05 — Menu rewrite (core/commands/config_compression.go) — THE UX PIECE
+Replace `settingCompression` + old pickers with:
 
-**Fix:** same `cursorScreenRow` two-phase mapping as above (single fix covers both bugs).
+Main menu (title "Compression:"):
+```
+Soft ceiling %        → desc: "N%" or "0% (disabled)"
+Soft ceiling method   → desc: strategy or "micro (default)"
+Hard ceiling %        → desc: "N%" or "0% (disabled)"
+Hard ceiling method   → desc: strategy or "summarize (default)"
+On error              → desc: strategy or "off"
+Advanced…             → desc: "trigger layer, cache gate, max tokens, micro, per-model"
+```
 
-**Tests:** same regression tests, incl. the shrink+regrow sequence asserting the cursor row stays on the editor's painted row across consecutive renders.
+- `settingCompressionCeiling(layer)`: picker items = "0" (label "0% (disabled)") + 5..100
+  step 5; current = configured value as string; on select → `m.applySet("context_compression.thresholds.<layer>_percent", v)` → `m.back()` (returns to Compression menu, redrawn).
+- `settingCompressionMethod(layer)`: items = all strategies (micro, tool_elision, selective,
+  hybrid, summarize); current = configured; applySet `context_compression.strategies.<layer>` → back.
+- `settingCompressionOnError`: items = "off" (desc: no compression on context error) + all
+  strategies; current = "off" if !OnContextError else OnErrorStrategy or "hybrid";
+  select off → applySet on_context_error=false; else → applySet on_context_error=true AND
+  applySet on_error_strategy=<v>; then back. (Two applySet calls OK.)
+- `settingCompressionAdvanced`: rows = trigger strategy (reuse `settingCompressionStrategy`),
+  trigger threshold (`settingCompressionThreshold`), cache gate toggle (inline applySet
+  cache_gate on/off), max tokens (`settingCompressionMaxTokens`), preserve recent turns,
+  micro:* rows (reuse existing micro sub-screens), per-model (reuse existing), "Enabled" toggle
+  row + "Compress on context error" is NOT here (it's the On error row in main menu).
+  Every row must have opener or inline handler — ZERO dead rows.
+- Delete: derived `_derived_*` rows and their label helpers, old `settingCompressionSoft`/
+  `settingCompressionHard`, `percentStepItems` (10..95 step5) if unused → replace with new
+  ceiling items builder shared with per-model picker (`percentItemsWithInherit` → inherit +
+  new items). Remove unused helpers (percentLabel, derivedPercentLabel, compressionHardValue)
+  — check usages first.
+- `compressionLabel(cfg)` (root menu desc) rewrite:
+  !EnabledValue → "off"; else parts: soft N% · trigger N% · hard N% <method> · on-error <method>;
+  empty parts → "off". Keep short.
+- Empty-Value rule: never selectable item with Value "".
 
-**Validation:** same gates + PTY repro as the cursor-jump bug — all green.
+### 06 — Menu tests (core/commands)
+Files: `core/commands/config_menu_test.go` (compression section),
+`core/commands/config_compression_test.go`.
+- Update expected rows to new 6-row menu; old derived-row tests removed.
+- NEW regression (the reported bug): drive `settingCompression`, select EACH item,
+  assert a new SelectOption is shown (picker opened) or config applied — no silent close.
+- On-error picker: select "off" → OnContextError false; select "summarize" → OnContextError
+  true + OnErrorStrategy "summarize".
+- Ceiling picker: select "60" → Thresholds.SoftPercent/HardPercent 60 (per layer).
+- Advanced menu rows all actionable.
+- Acceptance: `go test ./core/commands/ -run 'Compression'` green.
 
-## Blank screen + cursor on first line after `/new` — FIXED
-After `/new`, the cursor landed on line 1 and the screen stayed blank until the input line.
+### 07 — core/agentmanager tests
+Files: agentmanager tests touching buildCompressionConfig / compression (search
+`buildCompressionConfig`, `HardPercent`, `resolveAgenticThresholds` in core/*_test.go).
+- enabled:false → ALL thresholds 0 (hard no longer implicit 95).
+- embedded default path → hard 95 summarize; OnErrorStrategy mapped ("hybrid").
+- Acceptance: `go test ./core/...` green.
 
-**Root cause (traced):** the renderLoop requests a Scene snapshot from the commandLoop, then hands it to `compositor.Render`. `/new` (handleNewSession) runs `chat.Clear()` + `compositor.Clear()` on the commandLoop — which can land BETWEEN the snapshot and the Render. The stale pre-clear scene then consumed `clearRequested`, repainted the OLD canvas as a "first frame", and restored the stale `scrollTop`/`prevLines`. Every subsequent frame diffed against that stale baseline: `windowTop` clamped `vt` to the stale watermark far above the (now short) canvas, no transcript row was in range, and `appendCursorSeq` clamped the cursor to screen row 1 — blank window, cursor on line 1, chrome at the bottom.
+### 08 — Docs
+- Search embedded docs for compression semantics (`goa://CONFIGURATION`, docs/*.md):
+  update "hard 0 = default 95" phrasing → "0 = disabled; default config sets 95";
+  mention on_error_strategy; menu rows changed.
+- Acceptance: no stale "default 95"/"zero-LLM soft" claims in docs.
 
-**Fix:** clear-generation epoch on the Compositor. `Clear()` increments `clearGen` under its mutex; `Scene.ClearGen` is stamped at snapshot time (`buildSnapshot`/`renderNow` in `tui/tui.go` read `compositor.ClearGen()`); `Render` drops any scene whose generation is older than the current one (the wipe stays pending for the next, fresh frame). Stale snapshots racing a `/new` can no longer repaint the dead session.
+### 09 — Full gate
+- `go vet ./...`
+- `go test -count=1 -race -cover ./...`
+- `gocognit -over 15` / `gocyclo -over 12` on changed files (config_compression.go TUI budget 18/12).
+- Fix fallout. Then done.
 
-**Tests:** `TestCompositor_RenderDropsStaleSceneAfterClear` (RED first): stale scene rendered after `Clear()` produces NO terminal writes and leaves the wipe pending; the next fresh frame wipes + paints. `TestTUI_ClearTranscriptNextFrameIsFresh`: full engine path — after `/new`-style Clear, the next frame contains no stale session rows and paints the fresh screen.
+## 7. Key file map
 
-**Validation:** PTY session: `/new` from an active scrolled session (↑4.7K scrollback) — fresh header/banners/input painted immediately, no blank screen, no cursor at line 1. Gates all pass as noted above.
+- Engine: `internal/agentic/compression_thresholds.go`, `agent_compression.go`, `agent.go`
+- Config: `config/config.go`, `config/configs/default.yaml`, `config/config_validate.go`, `config/config_merge.go`
+- Wiring: `core/agentmanager_lifecycle.go` (buildCompressionConfig), `core/agentmanager.go` (RefreshContextCompression)
+- Menu/CLI: `core/commands/config_compression.go`, `core/commands/config_cli.go`, `core/commands/config.go` (open/back/applySet)
+- TUI selector: `tui/tui.go` ShowSelector/ShowOverlay; `internal/app/commandcontext.go` SelectOptionFunc (empty Value ⇒ treated as cancel!)
 
-## Content not shown after `/new` until a resize — FIXED
-After `/new`, no content was displayed at all until a window resize occurred, at which point everything appeared.
+## 9. Tooling note (agent workflow)
 
-**Root cause (traced):** same stale-scene race as the blank-screen bug, without the visible cursor clamp: after the stale frame repainted the old canvas and restored the stale watermark, subsequent frames diffed against a baseline that no longer mapped onto the screen; nothing repainted the (short) fresh transcript because `windowTop` was clamped above it. A resize changed the width → `frameGeometryReset` → `drawWindowResetScrollback` reset `scrollTop`/`vt` to 0 and re-emitted everything — which is why a resize "fixed" it.
+- Todo list: ONLY micro-tasks that need shared context within this goal.
+- Goals: separate units of work that can run on a fresh context (handover via notes like this file).
 
-**Fix:** covered by the clear-generation epoch (+ its regression tests, which assert the frame after a racy stale delivery still paints fresh content with no resize).
+---
 
-**Validation:** same PTY `/new` repro (content visible without any resize) + gates as above — all green.
+## 8. Risks / notes
 
-## Screen glitching — FIXED
-The screen history can have double line at boundaries.
-
-**Root cause:** When the chrome band shrinks (goal bubble clears), the canvas shortens by the chrome delta. `windowTop` used the natural bottom anchor (`canvasLen - height`) without clamping to the scrollback watermark, so `vt` dipped below `scrollTop`. Rows already emitted into terminal scrollback were repainted on screen — appearing twice: once in scrollback, once at the top of the visible window.
-
-**Fix (2 parts):**
-1. `windowTop` (`compositor.go`): Always clamp `vt >= scrollTop`. A scrolled-off row must never reappear on screen — the terminal offers no "unscroll", so repainting it would duplicate it.
-2. `repaintWindow` / `drawWindow` (`compositor.go`): Two-phase repaint — transcript rows in screen rows [1, windowH], chrome rows in [windowH+1, height]. This keeps the chrome band pinned at the screen bottom even when `vt` is clamped above the natural anchor, preventing the "chrome in the middle with blank rows below" problem that the original partial clamp (commit 6921104) was working around.
-
-**Tests:**
-- `TestCompositor_ChromeShrinkNoDuplicate` (`tui/compositor_boundary_dup_repro_test.go`): reproduces the exact bug — chrome grows then shrinks while the transcript is scrolled, asserts no row appears twice across scrollback+screen.
-- `TestCompositor_OneRowShrinkNoDuplicate` (`tui/compositor_partial_shrink_test.go`, replaces `TestCompositor_OneRowShrinkNoBlankBottom`): verifies a 1-row transcript shrink leaves a truthful blank row instead of duplicating a scrolled-off row.
-
-**Validation:** `go vet`, `staticcheck`, `gocognit`, `gocyclo`, `go test -race -cover ./...` — all pass, no new warnings.
-
-Log: /Users/muaddib/dev/creaves.project/.goa/exports/goa-export-20260813-204324.zip
+- Behavior change: configs with hard_percent unset (0) lose implicit 95 hard tier — must set 95.
+  Accepted per user decisions (default.yaml now explicit).
+- `microCompactForced` must NOT run under a.mu (self-manages lock) — honored in
+  overflowRecoveryInMemory.
+- escalate-to-Compact threshold = resolveThresholds().escalationPercent() (effectiveHard-5,
+  effectiveHard falls back to 95 when hard unset) — unchanged.
+- Two applySet in on-error picker → two RefreshContextCompression calls; harmless.
+- Per-model overlay: 0 = inherit (merge semantics) — unchanged; -1 = disable — unchanged.

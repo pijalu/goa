@@ -489,12 +489,13 @@ var configSetters = map[string]configSetter{
 	"context_compression.thresholds.soft_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.SoftPercent }, 0, 100),
 	"context_compression.thresholds.trigger_percent": setTriggerPercentClearLegacy,
 	"context_compression.thresholds.hard_percent":    setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.Thresholds.HardPercent }, 0, 100),
-	"context_compression.strategies.soft":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }, true),
-	"context_compression.strategies.trigger":         setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }, false),
-	"context_compression.strategies.hard":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }, false),
+	"context_compression.strategies.soft":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Soft }),
+	"context_compression.strategies.trigger":         setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Trigger }),
+	"context_compression.strategies.hard":            setLayerStrategy(func(cfg *config.Config) *string { return &cfg.ContextCompression.Strategies.Hard }),
 	"context_compression.cache_gate":                 setCacheGate,
 	"context_compression.max_tokens":                 setInt(func(cfg *config.Config) *int { return &cfg.ContextCompression.MaxTokens }),
 	"context_compression.on_context_error":           setBool(func(cfg *config.Config) *bool { return &cfg.ContextCompression.OnContextError }),
+	"context_compression.on_error_strategy":          setOnErrorStrategy,
 	"context_compression.preserve_recent_turns":      setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.PreserveRecentTurns }, 0, 100),
 	// Micro compaction knobs: no hidden configuration keys — the micro own
 	// gates (usage ratio, cold-cache threshold) change runtime behavior and
@@ -678,24 +679,29 @@ func setCompressionStrategy(cfg *config.Config, value string) error {
 	return fmt.Errorf("context_compression.strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
 }
 
+// setOnErrorStrategy validates and sets the on-error recovery strategy
+// (context_compression.on_error_strategy). Empty resets to the default
+// (hybrid).
+func setOnErrorStrategy(cfg *config.Config, value string) error {
+	switch strings.ToLower(value) {
+	case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+		cfg.ContextCompression.OnErrorStrategy = strings.ToLower(value)
+		return nil
+	}
+	return fmt.Errorf("context_compression.on_error_strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+}
+
 // setLayerStrategy validates and sets one per-layer compression strategy
-// (strategies.soft|trigger|hard). The soft layer is zero-LLM only
-// (micro|tool_elision); anything else is rejected at the CLI layer too.
-func setLayerStrategy(field func(cfg *config.Config) *string, soft bool) func(cfg *config.Config, value string) error {
+// (strategies.soft|trigger|hard). Any strategy is allowed on any layer.
+func setLayerStrategy(field func(cfg *config.Config) *string) func(cfg *config.Config, value string) error {
 	return func(cfg *config.Config, value string) error {
 		v := strings.ToLower(value)
 		switch v {
-		case "", "tool_elision", "micro":
-			// valid for every layer
-		case "selective", "summarize", "hybrid":
-			if soft {
-				return fmt.Errorf("soft layer strategy must be zero-LLM (micro or tool_elision)")
-			}
-		default:
-			return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+		case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+			*field(cfg) = v
+			return nil
 		}
-		*field(cfg) = v
-		return nil
+		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
 	}
 }
 

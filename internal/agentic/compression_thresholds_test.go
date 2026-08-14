@@ -24,10 +24,10 @@ func TestResolveThresholds(t *testing.T) {
 		wantHard    int
 	}{
 		{
-			name: "zero config: soft/trigger off, hard = default 95",
+			name: "zero config: all tiers off (0 = disabled)",
 			cfg:  ContextCompressionConfig{},
-			// soft/trigger are opt-in (0 = off); hard 0 resolves to the
-			// DefaultHardPercent ceiling (95) in the tier gate.
+			// soft/trigger/hard are opt-in (0 = disabled); the shipped default
+			// config sets hard 95 explicitly — a zero SDK config is fully off.
 			wantSoft:    0,
 			wantTrigger: 0,
 			wantHard:    0,
@@ -66,12 +66,11 @@ func TestResolveThresholds(t *testing.T) {
 			wantHard:    88,
 		},
 		{
-			name: "negative soft/trigger clamp to disabled; negative hard stays (explicit opt-out)",
+			name: "negative soft/trigger clamp to disabled; negative hard stays (legacy disable spelling)",
 			cfg:  ContextCompressionConfig{Thresholds: CompressionThresholds{SoftPercent: -1, TriggerPercent: -5, HardPercent: -1}},
-			// soft/trigger: negative = disabled (0). hard: the sign is kept —
-			// hardEnabled() treats <0 as an explicit disable of the proactive
-			// hard tier, while effectiveHard() still returns the default 95
-			// for the reactive safety net.
+			// soft/trigger: negative = disabled (0). hard: negative is the legacy
+			// explicit-disable spelling — hardEnabled() treats <=0 as disabled;
+			// effectiveHard() still falls back to 95 for the reactive math only.
 			wantSoft:    0,
 			wantTrigger: 0,
 			wantHard:    -1,
@@ -138,27 +137,20 @@ func TestProactiveTier(t *testing.T) {
 	}
 }
 
-// TestProactiveTier_ZeroThresholdsOnlyHardDefaultFires guards the default
-// contract: with no thresholds configured (all 0), usage below the default
-// 95% ceiling does nothing (soft/trigger stay opt-in off) — only the default
-// hard tier fires at/above 95% (pinned by TestProactiveTier_HardFiresAtDefault95).
-func TestProactiveTier_ZeroThresholdsOnlyHardDefaultFires(t *testing.T) {
+// TestProactiveTier_ZeroConfigAllTiersOff guards the opt-in contract: with
+// no thresholds configured (all 0), NO proactive tier fires at any usage —
+// soft/trigger/hard are all opt-in (0 = disabled).
+func TestProactiveTier_ZeroConfigAllTiersOff(t *testing.T) {
 	rt := ContextCompressionConfig{}.resolveThresholds()
 	a := NewAgent(Config{Model: testModel(provider.ApiOpenAICompletions)})
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache: would fire if enabled
-	for _, usage := range []int{50, 80, 90, 94} {
+	for _, usage := range []int{50, 80, 90, 94, 95, 99} {
 		a.mu.Lock()
 		got := a.proactiveTierLocked(usage, rt)
 		a.mu.Unlock()
 		if got != tierNone {
-			t.Errorf("proactiveTierLocked(%d%%, zero thresholds) = %v, want tierNone (soft/trigger opt-in off)", usage, got)
+			t.Errorf("proactiveTierLocked(%d%%, zero config) = %v, want tierNone (all tiers opt-in off)", usage, got)
 		}
-	}
-	a.mu.Lock()
-	got := a.proactiveTierLocked(95, rt)
-	a.mu.Unlock()
-	if got != tierHard {
-		t.Errorf("proactiveTierLocked(95%%, zero thresholds) = %v, want tierHard (default 95 ceiling on)", got)
 	}
 }
 
@@ -200,28 +192,6 @@ func TestProactiveTier_SoftDisabledWhenNegative(t *testing.T) {
 	}
 }
 
-// --- Soft-layer strategy validation ---
-
-func TestZeroLLMStrategy(t *testing.T) {
-	tests := []struct {
-		configured CompressionStrategy
-		want       CompressionStrategy
-	}{
-		{CompressionToolElision, CompressionToolElision},
-		{CompressionSummarize, CompressionMicro}, // never LLM at soft layer
-		{CompressionHybrid, CompressionMicro},
-		{CompressionSelective, CompressionMicro}, // too destructive for early maintenance
-		{CompressionMicro, CompressionMicro},
-		{"", CompressionMicro}, // empty → fallback (micro per the 3-layer defaults)
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.configured), func(t *testing.T) {
-			if got := zeroLLMStrategy(tt.configured, CompressionMicro); got != tt.want {
-				t.Errorf("zeroLLMStrategy(%q) = %q, want %q", tt.configured, got, tt.want)
-			}
-		})
-	}
-}
 
 // --- Per-layer strategy resolution ---
 
@@ -262,11 +232,11 @@ func TestResolveThresholdsStrategies(t *testing.T) {
 			wantSoftPct: 0,
 		},
 		{
-			name: "soft layer degrades LLM strategies to micro",
+			name: "soft layer honors any configured strategy",
 			cfg: ContextCompressionConfig{
 				Strategies: CompressionLayerStrategies{Soft: CompressionSummarize},
 			},
-			wantSoft:    CompressionMicro,
+			wantSoft:    CompressionSummarize,
 			wantTrigger: CompressionToolElision,
 			wantHard:    CompressionSummarize,
 			wantSoftPct: 0,
@@ -362,35 +332,28 @@ func TestMaybeCompress_SoftTierDefersWhenCacheHot(t *testing.T) {
 	}
 }
 
-func TestMaybeCompress_SoftTierNeverSummarizes(t *testing.T) {
-	// With a summarize strategy configured, the soft tier must run micro
-	// (zero-LLM), never the LLM summarization. A summarize attempt would fail
-	// in tests (no provider), so success here proves no LLM call happened.
+// TestMaybeCompress_SoftTierHonorsSummarize pins the all-methods soft
+// layer: an explicit summarize strategy at the soft tier must run the LLM
+// summarization (no degradation to micro). The history becomes the
+// [summary-request, summary] pair.
+func TestMaybeCompress_SoftTierHonorsSummarize(t *testing.T) {
+	p := textEventProvider("Summary: soft tier summary.")
 	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
+		Model: testModel(p.API()),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  20000,
-			Strategy:   CompressionSummarize,
+			Strategies: CompressionLayerStrategies{Soft: CompressionSummarize},
 			Thresholds: CompressionThresholds{SoftPercent: 10, TriggerPercent: 80, HardPercent: 95},
-			MicroCompaction: MicroCompactionConfig{
-				KeepRecentMessages: 2,
-				MinContentTokens:   10,
-				MinContextRatio:    0.05, // below soft band so micro can act
-				TruncatedMarker:    "[cleared]",
-			},
 		},
 	})
 	a.history = softTierTestHistory()
 	a.lastTurnEnd = time.Now().Add(-2 * time.Hour) // cold cache
 
 	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress at soft tier must not invoke LLM summarization: %v", err)
+		t.Fatalf("maybeCompress at soft tier with summarize: %v", err)
 	}
-	if a.history[2].Content != "[cleared]" {
-		t.Errorf("soft tier with summarize strategy should run micro truncation, got content %q", a.history[2].Content[:min(20, len(a.history[2].Content))])
-	}
-	if len(a.history) != 11 {
-		t.Errorf("soft tier must not drop messages, history len = %d, want 11", len(a.history))
+	if n := len(a.history); n != 2 {
+		t.Errorf("soft tier with summarize must compact to the [summary-request, summary] pair, got %d messages", n)
 	}
 }
 

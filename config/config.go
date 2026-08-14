@@ -992,7 +992,11 @@ type ContextCompressionConfig struct {
 	Strategies       CompressionLayerStrategiesConfig    `yaml:"strategies,omitempty"`
 	PerModel         map[string]ModelCompressionOverride `yaml:"per_model,omitempty"`
 	OnContextError   bool                                `yaml:"on_context_error"`
-	Strategy         string                              `yaml:"strategy"`
+	// OnErrorStrategy selects the strategy applied when a context-length
+	// error triggers recovery (used when on_context_error is true). Empty =
+	// "hybrid" (tool_elision → selective → summarize as last resort).
+	OnErrorStrategy   string                              `yaml:"on_error_strategy,omitempty"`
+	Strategy          string                              `yaml:"strategy"`
 	// CacheGate controls the prefix-cache gate that defers proactive
 	// compression while the provider cache is presumed hot: "on" (default)
 	// or "off". Per-model overrides win over the global value. Turn it off
@@ -1004,21 +1008,23 @@ type ContextCompressionConfig struct {
 
 // CompressionThresholdsConfig holds the fill levels (percent of the effective
 // context window) at which compression escalates. Zero fields mean "inherit"
-// (from the global section for per-model overrides, from defaults otherwise).
+// (from the global section for per-model overrides); 0 in the global section
+// DISABLES that layer — there is no implicit engine default-on ceiling (the
+// embedded default config sets hard_percent: 95 explicitly).
 type CompressionThresholdsConfig struct {
-	// SoftPercent is the early cheap-maintenance level (0 = disabled).
+	// SoftPercent is the early maintenance level (0 = disabled).
 	SoftPercent int `yaml:"soft_percent,omitempty"`
-	// TriggerPercent is the main strategy trigger (0 = default).
+	// TriggerPercent is the main strategy trigger (0 = disabled).
 	TriggerPercent int `yaml:"trigger_percent,omitempty"`
-	// HardPercent is the emergency ceiling (0 = default 95, ON; negative =
-	// explicitly disable the proactive hard tier — the reactive safety net
-	// still uses the default 95).
+	// HardPercent is the emergency ceiling (0 = disabled; negative values are
+	// accepted and also disable the layer — legacy opt-out spelling).
 	HardPercent int `yaml:"hard_percent,omitempty"`
 }
 
 // CompressionLayerStrategiesConfig holds the per-layer compression strategies.
 // Empty fields inherit (from the global section for per-model overrides, from
 // the SDK defaults otherwise: soft=micro, trigger=tool_elision, hard=summarize).
+// Any strategy is allowed on any layer.
 type CompressionLayerStrategiesConfig struct {
 	Soft    string `yaml:"soft,omitempty"`
 	Trigger string `yaml:"trigger,omitempty"`

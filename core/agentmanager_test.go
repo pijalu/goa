@@ -2359,3 +2359,82 @@ func TestAgentManager_UserTurnResetsLoopStop(t *testing.T) {
 		t.Fatalf("ResetLoopStop called %d times, want 1", runner.resetCalls)
 	}
 }
+
+// TestAgentManager_BuildCompressionConfig_OnErrorStrategyMapping pins the
+// on-error wiring: config on_error_strategy maps into the agentic config
+// verbatim (empty stays empty → the SDK hybrid default), and enabled:false
+// does not touch the reactive net fields.
+func TestAgentManager_BuildCompressionConfig_OnErrorStrategyMapping(t *testing.T) {
+	mk := func(onErr string) agentic.ContextCompressionConfig {
+		cfg := &config.Config{
+			ContextCompression: config.ContextCompressionConfig{
+				Enabled:          ccBoolPtr(true),
+				OnContextError:   true,
+				OnErrorStrategy:  onErr,
+				Thresholds:       config.CompressionThresholdsConfig{HardPercent: 95},
+			},
+		}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		return am.buildCompressionConfig(cfg, "some-model", 32768)
+	}
+
+	if got := mk("summarize").OnErrorStrategy; got != agentic.CompressionSummarize {
+		t.Errorf("OnErrorStrategy = %q, want summarize", got)
+	}
+	if got := mk("").OnErrorStrategy; got != "" {
+		t.Errorf("empty OnErrorStrategy mapped to %q, want empty (SDK hybrid default)", got)
+	}
+
+	// enabled:false zeroes every proactive layer INCLUDING the hard ceiling
+	// (0 = disabled under the opt-in semantics) but keeps the reactive net.
+	cfgOff := &config.Config{
+		ContextCompression: config.ContextCompressionConfig{
+			Enabled:         ccBoolPtr(false),
+			OnContextError:  true,
+			OnErrorStrategy: "selective",
+			Thresholds:      config.CompressionThresholdsConfig{HardPercent: 95},
+		},
+	}
+	amOff := NewAgentManager(cfgOff, nil, nil, nil, nil, "")
+	off := amOff.buildCompressionConfig(cfgOff, "some-model", 32768)
+	if off.Thresholds.HardPercent != 0 {
+		t.Errorf("enabled:false must zero hard too, got %d (0 = disabled semantics)", off.Thresholds.HardPercent)
+	}
+	if !off.OnContextError || off.OnErrorStrategy != agentic.CompressionSelective {
+		t.Errorf("enabled:false must keep the reactive net, got on_error=%v strategy=%q", off.OnContextError, off.OnErrorStrategy)
+	}
+}
+
+// TestAgentManager_BuildCompressionConfig_EmbeddedDefaultHardSummarize pins
+// the shipped-default path: the embedded default.yaml sets hard 95 explicitly
+// and leaves the layer strategies unset, so the SDK resolves the hard tier at
+// 95 with summarize (soft/trigger opt-in off).
+func TestAgentManager_BuildCompressionConfig_EmbeddedDefaultHardSummarize(t *testing.T) {
+	// Isolate from the user's home config so only embedded defaults apply.
+	t.Setenv("HOME", t.TempDir())
+	loader := config.NewCascadeLoader(t.TempDir(), "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ContextCompression.Thresholds.HardPercent != 95 {
+		t.Fatalf("test setup: embedded default hard = %d, want 95", cfg.ContextCompression.Thresholds.HardPercent)
+	}
+	am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+	cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+
+	if cc.Thresholds.HardPercent != 95 {
+		t.Errorf("HardPercent = %d, want 95 (explicit embedded default)", cc.Thresholds.HardPercent)
+	}
+	if cc.Strategies.Hard != "" {
+		t.Errorf("Strategies.Hard = %q, want empty (SDK resolves unset hard to summarize)", cc.Strategies.Hard)
+	}
+	// NOTE: soft stays opt-in off; trigger may be auto-derived from the
+	// legacy execution.token_critical default (90) — out of scope here.
+	if cc.Thresholds.SoftPercent != 0 {
+		t.Errorf("soft must stay opt-in off, got soft=%d", cc.Thresholds.SoftPercent)
+	}
+	if cc.OnErrorStrategy != agentic.CompressionHybrid {
+		t.Errorf("OnErrorStrategy = %q, want hybrid (embedded default)", cc.OnErrorStrategy)
+	}
+}

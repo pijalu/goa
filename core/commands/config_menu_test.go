@@ -741,12 +741,11 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
 
-	if sr.title != "Compression settings:" {
-		t.Fatalf("title = %q, want Compression settings:", sr.title)
+	if sr.title != "Compression:" {
+		t.Fatalf("title = %q, want Compression:", sr.title)
 	}
-	want := []string{"strategy", "soft_strategy", "hard_strategy", "soft", "threshold", "hard",
-		"_derived_eff_hard", "_derived_escalation", "_derived_deferral", "_derived_elision", "_derived_reactive_savings",
-		"cache_gate", "max_tokens", "preserve_recent_turns", "micro_enabled", "micro_min_context_ratio", "micro_cache_miss_threshold", "micro_keep_recent_messages", "micro_min_content_tokens", "micro_truncated_marker", "per_model", "enabled", "on_context_error"}
+	// 5 main rows + Advanced… — no derived/read-only rows.
+	want := []string{"soft_percent", "soft_method", "hard_percent", "hard_method", "on_error", "advanced"}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d compression items, got %d: %+v", len(want), len(sr.options), sr.options)
 	}
@@ -755,9 +754,7 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 			t.Errorf("item[%d].Value = %q, want %q", i, sr.options[i].Value, w)
 		}
 	}
-	// CM:13 design rule 5: the derived limits must be VISIBLE in /config (no
-	// hidden 95%). With no hard ceiling configured, the effective hard defaults
-	// to 95 and the derived levels are computed from it.
+	// Effective values must be visible on the main rows.
 	descOf := func(v string) string {
 		for _, o := range sr.options {
 			if o.Value == v {
@@ -766,11 +763,14 @@ func TestConfigMenu_CompressionSubmenu(t *testing.T) {
 		}
 		return ""
 	}
-	if got := descOf("_derived_eff_hard"); got != "95%" {
-		t.Errorf("effective hard ceiling = %q, want 95%% (default when unconfigured)", got)
+	if got := descOf("soft_percent"); got != "0% (disabled)" {
+		t.Errorf("soft_percent description = %q, want 0%% (disabled)", got)
 	}
-	if got := descOf("_derived_reactive_savings"); !strings.Contains(got, "50%") {
-		t.Errorf("reactive savings label = %q, want it to show 50%% savings", got)
+	if got := descOf("soft_method"); got != "micro (default)" {
+		t.Errorf("soft_method description = %q, want micro (default)", got)
+	}
+	if got := descOf("hard_method"); got != "summarize (default)" {
+		t.Errorf("hard_method description = %q, want summarize (default)", got)
 	}
 }
 
@@ -787,6 +787,7 @@ func TestConfigMenu_CompressionStrategyChange(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
+	sr.onSel("advanced", true)
 	sr.onSel("strategy", true)
 	if sr.title != "Compression strategy:" {
 		t.Fatalf("title = %q, want Compression strategy:", sr.title)
@@ -811,6 +812,7 @@ func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
+	sr.onSel("advanced", true)
 	sr.onSel("threshold", true)
 	if sr.title != "Trigger threshold (% of max tokens):" {
 		t.Fatalf("title = %q", sr.title)
@@ -822,9 +824,8 @@ func TestConfigMenu_CompressionThresholdChange(t *testing.T) {
 }
 
 // TestConfigMenu_CompressionThresholdOptions verifies the trigger threshold menu
-// offers the SDK default plus every level from 10% to 95% in 5% increments
-// (the user-settable range per the 3-layer directive), and that selecting a
-// non-preset value like 30 persists it.
+// offers 0 (disabled) plus every level from 5% to 100% in 5% increments (the
+// opt-in range), and that selecting a value like 30 persists it.
 func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 	cfg := &config.Config{
 		ContextCompression: config.ContextCompressionConfig{
@@ -837,19 +838,20 @@ func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
+	sr.onSel("advanced", true)
 	sr.onSel("threshold", true)
 	if sr.title != "Trigger threshold (% of max tokens):" {
 		t.Fatalf("title = %q", sr.title)
 	}
-	// Expect "0" (default) then 10,15,...,95 in order.
-	if len(sr.options) != 19 {
-		t.Fatalf("expected 19 threshold options (default + 10..95 step 5), got %d", len(sr.options))
+	// Expect "0" (disabled) then 5,10,...,100 in order.
+	if len(sr.options) != 21 {
+		t.Fatalf("expected 21 threshold options (0 + 5..100 step 5), got %d", len(sr.options))
 	}
 	if sr.options[0].Value != "0" {
-		t.Errorf("option[0].Value = %q, want \"0\" (default)", sr.options[0].Value)
+		t.Errorf("option[0].Value = %q, want \"0\" (disabled)", sr.options[0].Value)
 	}
 	for i, opt := range sr.options[1:] {
-		want := fmt.Sprintf("%d", 10+i*5)
+		want := fmt.Sprintf("%d", 5+i*5)
 		if opt.Value != want {
 			t.Errorf("option[%d].Value = %q, want %q", i+1, opt.Value, want)
 		}
@@ -857,7 +859,7 @@ func TestConfigMenu_CompressionThresholdOptions(t *testing.T) {
 			t.Errorf("option[%d].Label = %q, want %q", i+1, opt.Label, want+"%")
 		}
 	}
-	// Selecting a non-preset value (30) must persist it.
+	// Selecting a value (30) must persist it.
 	sr.onSel("30", true)
 	if cfg.ContextCompression.Thresholds.TriggerPercent != 30 {
 		t.Errorf("Thresholds.TriggerPercent = %d, want 30", cfg.ContextCompression.Thresholds.TriggerPercent)
@@ -873,8 +875,8 @@ func TestConfigMenu_CompressionSoftChange(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
-	sr.onSel("soft", true)
-	if sr.title != "Soft threshold — cheap zero-LLM maintenance when cache is cold:" {
+	sr.onSel("soft_percent", true)
+	if sr.title != "Soft ceiling (% of max tokens, 0 = disabled):" {
 		t.Fatalf("title = %q", sr.title)
 	}
 	sr.onSel("40", true)
@@ -892,8 +894,8 @@ func TestConfigMenu_CompressionHardChange(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
-	sr.onSel("hard", true)
-	if sr.title != "Hard ceiling (emergency: bypass cache, hard-layer strategy fires):" {
+	sr.onSel("hard_percent", true)
+	if sr.title != "Hard ceiling (% of max tokens, 0 = disabled):" {
 		t.Fatalf("title = %q", sr.title)
 	}
 	sr.onSel("90", true)
@@ -968,6 +970,7 @@ func TestConfigMenu_TriggerEditReflectsWithLegacyAlias(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
+	sr.onSel("advanced", true)
 	sr.onSel("threshold", true)
 	sr.onSel("50", true)
 
@@ -1003,6 +1006,7 @@ func TestConfigMenu_CompressionMaxTokensAuto(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	_ = menu.showRoot()
 	sr.onSel("compression", true)
+	sr.onSel("advanced", true)
 	sr.onSel("max_tokens", true)
 	sr.onSel("0", true)
 	if cfg.ContextCompression.MaxTokens != 0 {
@@ -1015,22 +1019,23 @@ func TestCompressionLabel(t *testing.T) {
 	if got := compressionLabel(disabledCfg); got != "off" {
 		t.Errorf("compressionLabel(disabled) = %q, want off", got)
 	}
+	// Enabled layers show up as soft/trigger/hard parts plus the on-error net.
 	got := compressionLabel(&config.Config{
 		ContextCompression: config.ContextCompressionConfig{
-			Enabled:          boolPtr(true),
-			Strategy:         "micro",
-			ThresholdPercent: 80,
+			Enabled:        boolPtr(true),
+			Thresholds:     config.CompressionThresholdsConfig{SoftPercent: 40, TriggerPercent: 80, HardPercent: 95},
+			OnContextError: true,
 		},
 	})
-	if !strings.Contains(got, "micro") || !strings.Contains(got, "80%") {
-		t.Errorf("compressionLabel = %q, want substring micro and 80%%", got)
+	for _, want := range []string{"soft 40%", "trigger 80%", "hard 95% summarize", "on-error hybrid"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("compressionLabel = %q, want substring %q", got, want)
+		}
 	}
-	// Empty strategy falls back to tool_elision for display.
-	got = compressionLabel(&config.Config{
-		ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true), ThresholdPercent: 100},
-	})
-	if !strings.Contains(got, "tool_elision") {
-		t.Errorf("compressionLabel with empty strategy = %q, want tool_elision fallback", got)
+	// Nothing proactive and no net → off.
+	got = compressionLabel(&config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)}})
+	if got != "off" {
+		t.Errorf("compressionLabel(nothing enabled) = %q, want off", got)
 	}
 }
 

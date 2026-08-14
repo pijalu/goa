@@ -254,7 +254,7 @@ func (a *Agent) MaybeCompressWith(ctx context.Context, strategy CompressionStrat
 // maybeCompress checks context usage and triggers compression if needed.
 // The escalation layer (soft/trigger/hard/none) is selected from the
 // configured thresholds and the cache gate; each layer runs its own resolved
-// strategy (the soft layer only zero-LLM strategies).
+// strategy (any method, per the all-methods layers rework).
 func (a *Agent) maybeCompress(ctx context.Context) error {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens == 0 {
@@ -324,8 +324,8 @@ func (a *Agent) compressAndReportWith(ctx context.Context, strategy CompressionS
 	return nil
 }
 
-// compressSoftAndReport applies the soft-layer (zero-LLM) strategy and emits
-// fresh stats. It never calls the LLM and never drops messages.
+// compressSoftAndReport applies the soft-layer strategy and emits fresh
+// stats. The configured method runs verbatim (empty = micro).
 func (a *Agent) compressSoftAndReport(ctx context.Context, strategy CompressionStrategy) error {
 	if err := a.compressHistoryWith(ctx, strategy, false); err != nil {
 		if a.cfg.Logger != nil {
@@ -844,12 +844,13 @@ func mergeCompaction(x, y compactionResult) compactionResult {
 }
 
 // handleContextError checks if the error is a context-length error and, if
-// OnContextError is enabled, applies the hybrid compression strategy to free
-// context space: tool_elision → selective (message removal) → summarize as a
-// last resort (pi-style). This is the reactive safety net that stays on when
-// proactive threshold compression is disabled (the default): cheap steps run
-// first, and only if the window is still near full does it escalate — ending
-// in a Compact (LLM summarize) when nothing cheaper freed enough.
+// OnContextError is enabled, applies the configured on-error strategy to free
+// context space. Default strategy: hybrid — tool_elision → selective (message
+// removal) → summarize as a last resort (pi-style). This is the reactive
+// safety net that stays on when proactive threshold compression is disabled
+// (the default): cheap steps run first, and only if the window is still near
+// full does it escalate — ending in a Compact (LLM summarize) when nothing
+// cheaper freed enough.
 func (a *Agent) handleContextError(ctx context.Context, err error) {
 	if !isContextLengthError(err) {
 		return
@@ -870,27 +871,41 @@ func (a *Agent) handleContextError(ctx context.Context, err error) {
 	}
 
 	if a.cfg.Logger != nil {
-		a.cfg.Logger.Log(Info, "Context length error — applying hybrid compression (elision → selective → summarize)")
+		a.cfg.Logger.Log(Info, "Context length error — applying on-error compression (%s)", a.onErrorStrategy())
 	}
 	a.compressOverflowRecovery(ctx)
 }
 
-// compressOverflowRecovery applies the hybrid strategy for a PROVEN context
-// overflow: tool_elision → selective (unconditional) → summarize (only if the
-// estimate still sits at the window edge). Unlike compressHybrid (which gates
-// selective behind the escalation level), a provider rejection proves the
-// request exceeded the window — and the local estimate provably under-counts
-// (a deepseek-v4 session overflowed at 84% estimated / 100% actual, and
-// gating selective behind the estimate made the retry fail identically). So
-// selective message removal ALWAYS runs here to buy real headroom.
+// onErrorStrategy resolves the configured on-error recovery strategy
+// (empty = hybrid, the documented default).
+func (a *Agent) onErrorStrategy() CompressionStrategy {
+	if s := a.cfg.ContextCompression.OnErrorStrategy; s != "" {
+		return s
+	}
+	return CompressionHybrid
+}
+
+// compressOverflowRecovery applies the on-error strategy for a PROVEN context
+// overflow. With the default hybrid it runs tool_elision → selective
+// (unconditional) → summarize (only if the estimate still sits at the window
+// edge). Unlike compressHybrid (which gates selective behind the escalation
+// level), a provider rejection proves the request exceeded the window — and
+// the local estimate provably under-counts (a deepseek-v4 session overflowed
+// at 84% estimated / 100% actual, and gating selective behind the estimate
+// made the retry fail identically). So selective message removal ALWAYS runs
+// here to buy real headroom. A dedicated summarize strategy skips straight
+// to Compact; micro/tool_elision/selective run their own pass and still get
+// the escalate-to-Compact tail when the estimate remains at the window edge.
 func (a *Agent) compressOverflowRecovery(ctx context.Context) {
-	a.mu.Lock()
-	before := a.computeContextStats()
-	e := a.compressToolElision(true)
-	s := a.compressSelective()
-	res := mergeCompaction(e, s)
-	stats := a.computeContextStats()
-	a.mu.Unlock()
+	strategy := a.onErrorStrategy()
+	if strategy == CompressionSummarize {
+		if err := a.Compact(ctx); err != nil && a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Error, "Context-overflow summarize failed: %v", err)
+		}
+		a.emitContextStats()
+		return
+	}
+	before, res, stats := a.overflowRecoveryInMemory(strategy)
 
 	// If the estimate still sits at the window edge, escalate to a summarize as
 	// the last resort (pi-style): the cheaper steps could not free enough.
@@ -906,6 +921,34 @@ func (a *Agent) compressOverflowRecovery(ctx context.Context) {
 		a.emitCompactionResult("overflow", before, res, "")
 	}
 	a.emitContextStats()
+}
+
+// overflowRecoveryInMemory runs the in-memory part of the on-error recovery
+// (everything except the LLM Compact) and returns the pre-pass stats, the
+// work done, and the post-pass stats for the escalate-to-Compact decision.
+// The hybrid default keeps the historical lock discipline: both steps plus
+// the stats snapshot happen under one a.mu hold.
+func (a *Agent) overflowRecoveryInMemory(strategy CompressionStrategy) (before ContextStats, res compactionResult, stats ContextStats) {
+	if strategy == CompressionMicro {
+		// Micro self-manages its lock (and its own emission boundary), so it
+		// cannot run under a.mu; forced because the overflow is proven.
+		b, r := a.microCompactForced(true)
+		return b, r, a.ContextStats()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	before = a.computeContextStats()
+	switch strategy {
+	case CompressionSelective:
+		res = a.compressSelective()
+	case CompressionToolElision:
+		res = a.compressToolElision(true)
+	default: // hybrid: elision → selective (unconditional)
+		e := a.compressToolElision(true)
+		s := a.compressSelective()
+		res = mergeCompaction(e, s)
+	}
+	return before, res, a.computeContextStats()
 }
 
 // compressHistoryWithStrategy applies the named compression strategy

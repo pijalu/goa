@@ -1355,3 +1355,39 @@ live PTY capture):
    breaking the main flow.
 
 ---
+
+### BUGFIX: Compression config rework — opt-in semantics, menu rewrite, dead-row bug (bugs.md §1–§9)
+
+**Status:** IMPLEMENTED — all micro-tasks 01–09 done, gates green, archived.
+
+**Problem:** the compression engine treated an all-zero SDK config as "hard tier ON at the implicit
+default 95%" and degraded the soft layer to zero-LLM micro; the shipped default.yaml relied on that
+implicit behavior; the /config Compression menu was a 23-row grab-bag with read-only derived rows
+(`_derived_*`) whose selection fell through the opener map and silently closed the overlay back to
+the main menu (the "dead row" regression); on-error recovery strategy was not user-configurable.
+
+**Resolution:**
+- **Opt-in semantics:** every proactive layer is 0 = disabled (no implicit default-on); the
+  embedded `config/configs/default.yaml` now sets `thresholds.hard_percent: 95` explicitly with
+  summarize as the hard method; negative values remain the legacy disable spelling; valid levels are
+  0/-1 or 5..100 in 5% steps.
+- **All-methods soft layer:** the soft layer accepts any strategy (`micro`/`tool_elision`/`selective`/
+  `hybrid`/`summarize`); the SDK default when unset is still micro.
+- **Configurable on-error strategy:** `context_compression.on_error_strategy` (default hybrid) with
+  dispatch: summarize → Compact only; tool_elision → elision only; selective → selective only; micro
+  → forced micro; hybrid → elision+selective then Compact only when still ≥ escalation.
+- **Menu rewrite:** `settingCompression` now shows exactly 5 main rows (Soft ceiling %, Soft ceiling
+  method, Hard ceiling %, Hard ceiling method, On error) + Advanced… submenu (trigger layer, cache
+  gate, max tokens, preserve recent turns, micro gates, per-model overrides, Enabled toggle); all
+  derived rows removed; ceiling pickers are 0 + 5..100 step 5; method pickers offer all 5 strategies;
+  On error picker offers off + 5 strategies (off → `on_context_error=false`). Every row opens a
+  picker or applies a set — zero dead rows.
+- **Tests:** on-error dispatch table (`internal/agentic/agent_onerror_dispatch_test.go`), dead-row
+  regression (`core/commands/config_compression_deadrow_test.go`), filmstrip UI validation
+  (`internal/app/config_compression_filmstrip_test.go`) proving the 6-row menu renders and every row
+  opens its picker (race-clean ×3 full-package runs).
+- **Engine fix:** `tui.RenderNow` snapshots via `ApplySync` so test-goroutine renders cannot
+  interleave with async selector apply-callbacks that add overlays via `engine.Apply`.
+
+**Validation:** `go vet ./...` clean; `go test -count=1 -race -cover ./...` green (81 pkgs ok, 0 FAIL);
+verify command exit 0; gocognit/gocyclo no new violations (all >15 findings pre-exist on HEAD).

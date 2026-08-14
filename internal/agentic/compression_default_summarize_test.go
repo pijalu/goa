@@ -11,24 +11,26 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
-// These tests pin the DEFAULT cache-compression contract (user-reported
-// regression, export goa-export-20260814-153156):
+// These tests pin the compression contracts after the opt-in rework:
 //
-//   - With the default (all-zero) context_compression config, every proactive
-//     algorithm is DISABLED except the hard layer: SUMMARIZE at 95% of the
-//     effective window (DefaultHardPercent). The destructive reactive
-//     message-drop ("ceiling") is only a last-resort fallback, not the default
-//     actor at 95%.
-//   - The only "hybrid" case is at 95%: if summarize cannot be executed
-//     (its own request overflows the window), micro compaction is applied as
-//     a pre-compression to make room — and ONLY then.
+//   - Every proactive layer is opt-in (0 = disabled). The shipped default
+//     config (config/configs/default.yaml) sets hard_percent: 95 explicitly,
+//     so the default UX is "hard tier ON at 95 with summarize" — but an
+//     all-zero ContextCompressionConfig is fully disabled.
+//   - With hard enabled (explicit 95), the actor at the hard tier is SUMMARIZE
+//     (LLM); the destructive reactive message-drop ("ceiling") is only a
+//     last-resort fallback, not the default actor.
+//   - The only "hybrid" case is at the hard ceiling: if summarize cannot be
+//     executed (its own request overflows the window), micro compaction is
+//     applied as a pre-compression to make room — and ONLY then.
 //   - ceiling / tool_elision / selective / micro must NOT fire proactively
-//     under the default config.
-
-// TestResolveThresholds_DefaultHardIsSummarizeAt95 pins the resolved defaults
-// of an all-zero ContextCompressionConfig: the hard-layer strategy is
-// summarize (not hybrid, not elision) and the hard tier is reachable at 95%.
-func TestResolveThresholds_DefaultHardIsSummarizeAt95(t *testing.T) {
+//     under a zero config.
+// TestResolveThresholds_DefaultHardStrategyIsSummarize pins the resolved
+// defaults of an all-zero ContextCompressionConfig: the hard-layer strategy is
+// summarize (not hybrid, not elision) whenever the hard tier is enabled, and
+// soft/trigger stay opt-in off (zero config disables every tier — see
+// TestProactiveTier_ZeroConfigAllTiersOff).
+func TestResolveThresholds_DefaultHardStrategyIsSummarize(t *testing.T) {
 	rt := ContextCompressionConfig{}.resolveThresholds()
 
 	if rt.hardStrategy != CompressionSummarize {
@@ -42,14 +44,13 @@ func TestResolveThresholds_DefaultHardIsSummarizeAt95(t *testing.T) {
 	}
 }
 
-// TestProactiveTier_HardFiresAtDefault95 pins the tier math under the default
-// config: with HardPercent unset (0), usage at/above the DEFAULT 95% ceiling
-// selects the hard tier — cache-hot or not (overflow risk beats cache churn) —
-// while usage below it does nothing. A negative HardPercent explicitly
-// disables even the hard tier.
-func TestProactiveTier_HardFiresAtDefault95(t *testing.T) {
-	rt := ContextCompressionConfig{}.resolveThresholds()
-
+// TestProactiveTier_HardFiresAt95 guards the opt-in contract: an explicit
+// HardPercent 95 selects the hard tier at 95% usage — cache-hot or not
+// (overflow risk beats cache churn) — while usage below it does nothing
+// (soft/trigger still opt-in off). A negative HardPercent explicitly disables
+// even the hard tier; zero config disables all tiers.
+func TestProactiveTier_HardFiresAt95(t *testing.T) {
+	rt := ContextCompressionConfig{Thresholds: CompressionThresholds{HardPercent: 95}}.resolveThresholds()
 	cases := []struct {
 		name      string
 		usage     int
@@ -109,8 +110,9 @@ func TestMaybeCompress_LegacyMicroBranchUsesEffectiveWindow(t *testing.T) {
 		Model: testModel(p.API()),
 		// Legacy whole-strategy micro, as shipped in default.yaml.
 		ContextCompression: ContextCompressionConfig{
-			Strategy:  CompressionMicro,
-			MaxTokens: 1000,
+			Strategy:   CompressionMicro,
+			MaxTokens:  1000,
+			Thresholds: CompressionThresholds{HardPercent: 95}, // shipped-default hard tier
 			MicroCompaction: MicroCompactionConfig{
 				Enabled: false, // as in default.yaml: micro self-management only
 			},
@@ -231,7 +233,10 @@ func TestMaybeCompress_DefaultHardCeilingRunsSummarizeNotCeiling(t *testing.T) {
 		Model:        testModel(p.API()),
 		SystemPrompt: "sys",
 		Logger:       NewLogger(Error),
-		// All-zero compression config: the DEFAULT contract under test.
+		// Shipped-default equivalent: hard tier explicitly enabled at 95.
+		ContextCompression: ContextCompressionConfig{
+			Thresholds: CompressionThresholds{HardPercent: 95},
+		},
 	})
 	// Tiny window so the history is ≥95% full (chars/3.3 estimate: 4400 ascii
 	// chars ≈ 1333 tokens + 3×4 message overhead ≈ 134% of 1000).

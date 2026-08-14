@@ -207,6 +207,9 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	if !validCompressionStrategy(cc.Strategy) {
 		ve.Add(fmt.Sprintf("context_compression.strategy: unknown strategy %q", cc.Strategy))
 	}
+	if !validCompressionStrategy(cc.OnErrorStrategy) {
+		ve.Add(fmt.Sprintf("context_compression.on_error_strategy: unknown strategy %q", cc.OnErrorStrategy))
+	}
 	validateLayerStrategies(ve, "context_compression.strategies", cc.Strategies)
 	validateCacheGate(ve, "context_compression.cache_gate", cc.CacheGate)
 	if cc.ThresholdPercent < 0 || cc.ThresholdPercent > 100 {
@@ -218,13 +221,11 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	}
 }
 
-// validateLayerStrategies checks the per-layer strategy names; the soft
-// layer additionally must be zero-LLM (micro|tool_elision|inherit).
+// validateLayerStrategies checks the per-layer strategy names; any strategy
+// is allowed on any layer (the soft layer defaults to micro).
 func validateLayerStrategies(ve *internal.ValidationError, path string, s CompressionLayerStrategiesConfig) {
 	if !validCompressionStrategy(s.Soft) {
 		ve.Add(fmt.Sprintf("%s.soft: unknown strategy %q", path, s.Soft))
-	} else if s.Soft != "" && s.Soft != AgenticCompressionMicro && s.Soft != AgenticCompressionToolElision {
-		ve.Add(fmt.Sprintf("%s.soft: soft layer must be zero-LLM (micro or tool_elision, got %q)", path, s.Soft))
 	}
 	if !validCompressionStrategy(s.Trigger) {
 		ve.Add(fmt.Sprintf("%s.trigger: unknown strategy %q", path, s.Trigger))
@@ -268,26 +269,26 @@ func (c *Config) validateCompressionOverride(ve *internal.ValidationError, id st
 	}
 }
 
-// validateCompressionThresholds checks levels (10-95 in 5% increments, or 0
-// to inherit the SDK default; soft additionally accepts -1 to disable the
-// layer) and ordering (soft ≤ trigger ≤ hard) for a thresholds block.
+// validateCompressionThresholds checks levels (5-100 in 5% increments, 0 to
+// disable the layer, -1 accepted as a legacy disable spelling) and ordering
+// (soft ≤ trigger ≤ hard) for a thresholds block.
 func validateCompressionThresholds(ve *internal.ValidationError, path string, t CompressionThresholdsConfig) {
-	validateCompressionLevel(ve, path+".soft_percent", t.SoftPercent, true)
-	validateCompressionLevel(ve, path+".trigger_percent", t.TriggerPercent, false)
-	validateCompressionLevel(ve, path+".hard_percent", t.HardPercent, false)
+	validateCompressionLevel(ve, path+".soft_percent", t.SoftPercent)
+	validateCompressionLevel(ve, path+".trigger_percent", t.TriggerPercent)
+	validateCompressionLevel(ve, path+".hard_percent", t.HardPercent)
 	validateThresholdOrder(ve, path, "soft_percent", t.SoftPercent, "trigger_percent", t.TriggerPercent)
 	validateThresholdOrder(ve, path, "trigger_percent", t.TriggerPercent, "hard_percent", t.HardPercent)
 	validateThresholdOrder(ve, path, "soft_percent", t.SoftPercent, "hard_percent", t.HardPercent)
 }
 
-// validateCompressionLevel checks one compression level: 0 = inherit, -1 =
-// disable (soft layer only), otherwise 10-95 in 5% increments.
-func validateCompressionLevel(ve *internal.ValidationError, path string, v int, allowDisable bool) {
-	if v == 0 || (allowDisable && v == -1) {
+// validateCompressionLevel checks one compression level: 0 disables the
+// layer, -1 is a legacy disable spelling, otherwise 5-100 in 5% increments.
+func validateCompressionLevel(ve *internal.ValidationError, path string, v int) {
+	if v == 0 || v == -1 {
 		return
 	}
-	if v < 10 || v > 95 || v%5 != 0 {
-		ve.Add(fmt.Sprintf("%s: must be 10-95 in 5%% increments (got %d)", path, v))
+	if v < 5 || v > 100 || v%5 != 0 {
+		ve.Add(fmt.Sprintf("%s: must be 5-100 in 5%% increments, 0 to disable (got %d)", path, v))
 	}
 }
 

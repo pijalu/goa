@@ -90,9 +90,10 @@ func TestSaveProjectConfig_NoExistingFile_WritesModeOnly(t *testing.T) {
 	}
 	// Precondition: the merged in-memory config carries embedded defaults
 	// (context_compression) — the values that must NOT be baked into the
-	// project layer.
-	if cfg.ContextCompression.Strategy == "" {
-		t.Fatalf("precondition: embedded compression strategy should be set")
+	// project layer. The embedded default now sets hard 95 + hybrid on-error
+	// (the legacy `strategy` is empty by default).
+	if cfg.ContextCompression.Thresholds.HardPercent != 95 || cfg.ContextCompression.OnErrorStrategy == "" {
+		t.Fatalf("precondition: embedded compression defaults should be set")
 	}
 	// The caller's legitimate change (what /mode and /autonomy persist).
 	cfg.Mode.Default.Major = "oracle"

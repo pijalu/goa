@@ -255,6 +255,8 @@ func TestConfigMenu_CompressionShowsMicroGateKeys(t *testing.T) {
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
 	menu := newConfigMenu(*ctx)
 	menu.settingCompression()
+	// The micro gates live under Advanced… now.
+	sr.onSel("advanced", true)
 
 	values := make(map[string]string, len(sr.options))
 	for _, it := range sr.options {
@@ -270,7 +272,7 @@ func TestConfigMenu_CompressionShowsMicroGateKeys(t *testing.T) {
 		"preserve_recent_turns",
 	} {
 		if _, ok := values[key]; !ok {
-			t.Errorf("compression menu missing %q (got %v)", key, values)
+			t.Errorf("advanced compression menu missing %q (got %v)", key, values)
 		}
 	}
 	// Effective values must be visible: configured 0.7 shows as 70%, an unset
@@ -291,6 +293,7 @@ func TestConfigMenu_MicroRatioSelectionApplies(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 	menu.settingCompression()
 
+	sr.onSel("advanced", true)
 	sr.onSel("micro_min_context_ratio", true)
 	// The recorder now holds the ratio selector's state.
 	found := false
@@ -366,7 +369,6 @@ func TestApplyConfigSet_PerModelRejectsInvalid(t *testing.T) {
 		value string
 	}{
 		{"bad strategy", "context_compression.per_model.qwen.strategy", "bogus"},
-		{"soft LLM strategy", "context_compression.per_model.qwen.strategies.soft", "summarize"},
 		{"trigger not 5-step", "context_compression.per_model.qwen.thresholds.trigger_percent", "63"},
 		{"hard too high", "context_compression.per_model.qwen.thresholds.hard_percent", "99"},
 		{"unknown model", "context_compression.per_model.ghost.strategy", "hybrid"},
@@ -415,6 +417,7 @@ func TestConfigMenu_CompressionShowsPerModelEntry(t *testing.T) {
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
 	menu := newConfigMenu(*ctx)
 	menu.settingCompression()
+	sr.onSel("advanced", true)
 	found := false
 	for _, it := range sr.options {
 		if it.Value == "per_model" {
@@ -422,7 +425,7 @@ func TestConfigMenu_CompressionShowsPerModelEntry(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("compression menu missing per_model entry, got %v", sr.options)
+		t.Fatalf("advanced compression menu missing per_model entry, got %v", sr.options)
 	}
 }
 
