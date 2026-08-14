@@ -7,7 +7,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/ansi"
 )
 
@@ -72,5 +74,48 @@ func TestFormatFooterLine_StatsOnlyNoModel(t *testing.T) {
 	line := ansi.Strip(FormatFooterLine("↑1", "", "", "", "", false, false))
 	if !strings.Contains(line, "↑1") {
 		t.Errorf("stats-only line should keep stats: %q", line)
+	}
+}
+
+// TestFormatFooterLine_PeakColor pins the peak indicator on the
+// provider+model name: red inside the provider's peak window, orange in the
+// 5-minute grace margin around it, green otherwise. The provider prefix
+// shares the model's peak color.
+func TestFormatFooterLine_PeakColor(t *testing.T) {
+	thu := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC) // Thursday
+	red := ansi.Fg("#f85149")
+	orange := ansi.Fg("#d29922")
+	green := ansi.Fg("#3fb950")
+
+	on := formatFooterLineAt("", "deepseek-chat", "deepseek", "", "", false, true, thu.Add(2*time.Hour))
+	if !strings.Contains(on, red) || !strings.Contains(on, red+"(deepseek)") {
+		t.Errorf("peak window should be red incl. prefix, got %q", on)
+	}
+
+	near := formatFooterLineAt("", "deepseek-chat", "deepseek", "", "", false, true, thu.Add(5*time.Hour+55*time.Minute))
+	if !strings.Contains(near, orange) {
+		t.Errorf("grace margin should be orange, got %q", near)
+	}
+
+	off := formatFooterLineAt("", "deepseek-chat", "deepseek", "", "", false, true, thu.Add(11*time.Hour))
+	if !strings.Contains(off, green) {
+		t.Errorf("off-peak active model should be green, got %q", off)
+	}
+}
+
+// TestFormatModelPart_PeakStatusColors verifies the shared formatter colors
+// the name by peak status independently of the active flag.
+func TestFormatModelPart_PeakStatusColors(t *testing.T) {
+	if got := FormatModelPart("m", "", "", false, false, schema.PeakOn); !strings.Contains(got, ansi.Fg("#f85149")) {
+		t.Errorf("PeakOn should be red, got %q", got)
+	}
+	if got := FormatModelPart("m", "", "", false, false, schema.PeakNear); !strings.Contains(got, ansi.Fg("#d29922")) {
+		t.Errorf("PeakNear should be orange, got %q", got)
+	}
+	if got := FormatModelPart("m", "", "", false, true, schema.PeakOff); !strings.Contains(got, ansi.Fg("#3fb950")) {
+		t.Errorf("PeakOff active should be green, got %q", got)
+	}
+	if got := FormatModelPart("m", "", "", false, false, schema.PeakOff); !strings.Contains(got, ansi.Faint) {
+		t.Errorf("PeakOff idle should be faint, got %q", got)
 	}
 }

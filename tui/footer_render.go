@@ -9,7 +9,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/ansi"
 )
 
@@ -275,7 +277,7 @@ func (f *Footer) buildMainModelDisplay(fg string, availWidth int) string {
 		if showLevel {
 			level = f.data.ThinkingLevel
 		}
-		part := FormatModelPart(modelName, level, f.data.MainActivity, f.data.ModelBusy, true)
+		part := FormatModelPart(modelName, level, f.data.MainActivity, f.data.ModelBusy, true, peakStatusForProvider(f.data.Provider, time.Now()))
 		right2 = part
 	} else {
 		right2 = "no-model"
@@ -435,7 +437,7 @@ func (f *Footer) buildCompanionMainPart(vis companionVis) string {
 		mainLevel = f.data.ThinkingLevel
 	}
 	mainActive := !f.data.CompanionBusy
-	return FormatModelPart(mainModel, mainLevel, f.data.MainActivity, f.data.ModelBusy, mainActive)
+	return FormatModelPart(mainModel, mainLevel, f.data.MainActivity, f.data.ModelBusy, mainActive, peakStatusForProvider(f.data.Provider, time.Now()))
 }
 
 func (f *Footer) buildCompanionSubPart(vis companionVis) string {
@@ -451,7 +453,7 @@ func (f *Footer) buildCompanionSubPart(vis companionVis) string {
 	if vis.showThinking {
 		compLevel = f.data.CompanionThinkingLevel
 	}
-	return FormatModelPart(companionDisplay, compLevel, f.data.CompanionActivity, f.data.CompanionBusy, f.data.CompanionBusy)
+	return FormatModelPart(companionDisplay, compLevel, f.data.CompanionActivity, f.data.CompanionBusy, f.data.CompanionBusy, peakStatusForProvider(f.data.Provider, time.Now()))
 }
 
 func (f *Footer) applyCompanionProviderPrefix(companionDisplay string, showProvider bool) string {
@@ -478,10 +480,38 @@ func (f *Footer) companionCycleText(vis companionVis) string {
 	return fmt.Sprintf(" [%d/%d]", f.data.CompanionCycleCount, f.data.CompanionCycleMax)
 }
 
+// modelColor resolves the model-name color from the active flag and the
+// provider peak status: red inside a peak window, orange within the 5-minute
+// grace margin around one, and otherwise green when active (faint when idle).
+func modelColor(active bool, peak schema.PeakStatus) string {
+	switch peak {
+	case schema.PeakOn:
+		return ansi.Fg("#f85149")
+	case schema.PeakNear:
+		return ansi.Fg("#d29922")
+	}
+	if active {
+		return ansi.Fg("#3fb950")
+	}
+	return ansi.Faint
+}
+
+// peakStatusForProvider returns the peak status for the given provider ID at
+// now. Unknown/empty provider IDs (and providers without peak windows) are
+// always PeakOff so the color falls back to the plain active/idle scheme.
+func peakStatusForProvider(providerID string, now time.Time) schema.PeakStatus {
+	if def := schema.LookupProviderDefByID(providerID); def != nil {
+		return def.PeakStatusAt(now)
+	}
+	return schema.PeakOff
+}
+
 // FormatModelPart renders a model name with busy indicator and highlight.
 // It is the package-level shared formatter used by both the normal footer
-// and the per-agent orchestration lines.
-func FormatModelPart(model, level, activity string, busy, active bool) string {
+// and the per-agent orchestration lines. The peak status colors the name red
+// during the provider's peak window, orange in the 5-minute grace margin
+// around it, and green (or faint when idle) otherwise.
+func FormatModelPart(model, level, activity string, busy, active bool, peak schema.PeakStatus) string {
 	busyPrefix := ""
 	if busy {
 		if frame := CurrentSpinnerFrame(); frame != "" {
@@ -490,10 +520,7 @@ func FormatModelPart(model, level, activity string, busy, active bool) string {
 			busyPrefix = ansi.Fg("#d29922") + "⟳ " + ansi.Reset
 		}
 	}
-	color := ansi.Faint
-	if active {
-		color = ansi.Fg("#3fb950")
-	}
+	color := modelColor(active, peak)
 	part := busyPrefix + color + model + ansi.Reset + ansi.Fg("#8b949e")
 	if activity != "" && busy {
 		part += " " + ansi.Fg("#d29922") + activity + ansi.Reset + ansi.Fg("#8b949e")
@@ -517,7 +544,14 @@ func FormatModelPart(model, level, activity string, busy, active bool) string {
 //
 // Returns the full styled line (SGR-encoded), width-capped by the caller.
 func FormatFooterLine(stats, model, provider, thinking, activity string, busy, active bool) string {
-	modelPart := FormatModelPart(model, thinking, activity, busy, active)
+	return formatFooterLineAt(stats, model, provider, thinking, activity, busy, active, time.Now())
+}
+
+// formatFooterLineAt is the time-injectable core of FormatFooterLine so the
+// peak-window coloring can be tested deterministically.
+func formatFooterLineAt(stats, model, provider, thinking, activity string, busy, active bool, now time.Time) string {
+	peak := peakStatusForProvider(provider, now)
+	modelPart := FormatModelPart(model, thinking, activity, busy, active, peak)
 	var b strings.Builder
 	if stats != "" {
 		b.WriteString(stats)
@@ -525,7 +559,7 @@ func FormatFooterLine(stats, model, provider, thinking, activity string, busy, a
 	}
 	b.WriteString("- ")
 	if provider != "" && !strings.Contains(model, "(") && !strings.Contains(model, provider+"/") {
-		b.WriteString("(" + provider + ") ")
+		b.WriteString(modelColor(active, peak) + "(" + provider + ") " + ansi.Reset)
 	}
 	b.WriteString(modelPart)
 	return b.String()

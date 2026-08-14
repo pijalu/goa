@@ -4,6 +4,8 @@
 
 package schema
 
+import "time"
+
 // catalog.go — single source of truth for known LLM providers.
 //
 // Every provider Goa knows about is declared ONCE here as a ProviderDef.
@@ -14,12 +16,41 @@ package schema
 //   - endpoint → identity heuristics       (provider/manager.go)
 //   - valid-provider validation            (config/agentic_constants.go)
 //   - models.dev catalog mapping           (internal/agentic/provider/models/modelsdev.go)
+//   - peak-pricing windows for the TUI peak indicator (tui/footer_render.go)
 //
 // Adding a provider = adding one ProviderDef entry. No other code changes.
 //
 // The Compat field carries the wire-level quirks as DATA (not code), so a new
 // OpenAI-compatible provider with unusual behavior is a template entry, not a
 // fingerprint branch.
+
+// PeakWindow is one recurring daily peak-price window in UTC.
+type PeakWindow struct {
+	// StartMin and EndMin bound the window as minutes since midnight UTC.
+	// EndMin must be greater than StartMin (windows do not wrap past midnight).
+	StartMin int
+	EndMin   int
+	// Weekdays restricts the window to the given UTC weekdays; nil means every day.
+	Weekdays []time.Weekday
+}
+
+// PeakStatus classifies a time relative to a provider's peak windows.
+type PeakStatus int
+
+const (
+	// PeakOff is outside every peak window and its grace margin (green).
+	PeakOff PeakStatus = iota
+	// PeakNear is within peakNearMargin of a window boundary (orange).
+	PeakNear
+	// PeakOn is inside a peak window (red).
+	PeakOn
+)
+
+// peakNearMargin is the orange grace margin before/after a peak window, in minutes.
+const peakNearMargin = 5
+
+// hhmm converts hours and minutes to minutes since midnight (catalog shorthand).
+func hhmm(h, m int) int { return h*60 + m }
 
 // ProviderCompat describes the wire-level behavior of a provider as data.
 // The zero value is a fully standard OpenAI-compatible provider.
@@ -75,10 +106,65 @@ type ProviderDef struct {
 	Compat ProviderCompat
 	// Extra holds per-provider request overrides forwarded at stream time.
 	Extra map[string]any
+	// PeakHours lists the provider's peak-pricing windows in UTC, rendered by
+	// the TUI as red inside a window, orange within the grace margin, green
+	// otherwise. Empty = no peak indicator (always green).
+	PeakHours []PeakWindow
 }
 
 // NeedsAPIKey reports whether this provider requires an API key.
 func (d ProviderDef) NeedsAPIKey() bool { return !d.Compat.Local }
+
+// zaiPeakHours is the Z.ai weekday peak window, declared once and shared by
+// the "zai" (coding) and "zai-api" (general) catalog entries: Z.ai peak hours
+// are Monday to Friday 14:00–18:00 SGT (UTC+8) == 06:00–10:00 UTC Mon–Fri.
+var zaiPeakHours = []PeakWindow{
+	{
+		StartMin: hhmm(6, 0), EndMin: hhmm(10, 0),
+		Weekdays: []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday},
+	},
+}
+
+// PeakStatusAt classifies t relative to the provider's peak windows: PeakOn
+// inside a window, PeakNear within peakNearMargin minutes before its start or
+// after its end, PeakOff otherwise. Providers without PeakHours are always
+// PeakOff (no peak indicator).
+func (d ProviderDef) PeakStatusAt(t time.Time) PeakStatus {
+	if len(d.PeakHours) == 0 {
+		return PeakOff
+	}
+	t = t.UTC()
+	min := t.Hour()*60 + t.Minute()
+	wd := t.Weekday()
+	for _, w := range d.PeakHours {
+		if !w.activeOn(wd) {
+			continue
+		}
+		switch {
+		case min >= w.StartMin && min < w.EndMin:
+			return PeakOn
+		case min >= w.StartMin-peakNearMargin && min < w.StartMin:
+			return PeakNear
+		case min >= w.EndMin && min < w.EndMin+peakNearMargin:
+			return PeakNear
+		}
+	}
+	return PeakOff
+}
+
+// activeOn reports whether the window applies on the given UTC weekday.
+// A nil Weekdays slice means the window applies every day.
+func (w PeakWindow) activeOn(wd time.Weekday) bool {
+	if len(w.Weekdays) == 0 {
+		return true
+	}
+	for _, d := range w.Weekdays {
+		if d == wd {
+			return true
+		}
+	}
+	return false
+}
 
 // providerCatalog is the ordered list of known providers. Order matters for
 // the setup wizard (preset numbering) and for endpoint-heuristic precedence
@@ -136,6 +222,10 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.deepseek.com",
 		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"DEEPSEEK_API_KEY"}, ModelsDevKey: "deepseek",
 		URLPatterns: []string{"deepseek.com"},
+		PeakHours: []PeakWindow{
+			{StartMin: hhmm(1, 0), EndMin: hhmm(4, 0)},  // 01:00–04:00 UTC daily
+			{StartMin: hhmm(6, 0), EndMin: hhmm(10, 0)}, // 06:00–10:00 UTC daily
+		},
 		Compat: ProviderCompat{
 			ThinkingFormat: "deepseek", NonStandard: true,
 			RequiresReasoningContentOnAssistantMessages: true,
@@ -175,6 +265,7 @@ var providerCatalog = []ProviderDef{
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai-coding-plan",
 		URLPatterns: []string{"api.z.ai/api/coding", "open.bigmodel.cn/api/coding", "zai-coding", "zai-coding-cn", "zai-coding-plan"},
 		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+		PeakHours:   zaiPeakHours,
 	},
 	{
 		ID: "zai-api", Name: "Z.ai", Provider: ProviderZaiApi,
@@ -182,6 +273,7 @@ var providerCatalog = []ProviderDef{
 		DefaultModel: "glm-5.2", EnvKeys: []string{"ZAI_API_KEY"}, ModelsDevKey: "zai",
 		URLPatterns: []string{"api.z.ai", "open.bigmodel.cn"},
 		Compat:      ProviderCompat{ThinkingFormat: "zai", NonStandard: true, NoReasoningEffort: true},
+		PeakHours:   zaiPeakHours,
 	},
 	{
 		ID: "poolside", Name: "Poolside", Provider: ProviderPoolside,

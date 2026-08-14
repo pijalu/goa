@@ -17,6 +17,7 @@ import (
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/plan"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/internal/review"
 	"github.com/pijalu/goa/multiagent"
@@ -37,6 +38,7 @@ func (a *App) setupEventHandlers(engine *tui.TUI, chat *tui.ChatViewport, inp *t
 	go a.runChatEventReader(done, bus.Chat)
 	go a.runFooterEventReader(done, bus.Footer)
 	go a.runGitRefreshLoop(done, gitRefreshInterval)
+	go a.runPeakRefreshLoop(done, peakRefreshInterval)
 
 	// Forward foreground orchestrator events to the TUI event bus, so that
 	// companion post-turn output and other orchestrator-managed workflows
@@ -187,6 +189,11 @@ func (a *App) runFooterEventReader(done chan struct{}, ch <-chan event.FooterEve
 // so branch switches or commits done outside goa show up without a restart.
 const gitRefreshInterval = 2 * time.Second
 
+// peakRefreshInterval is how often the footer re-checks the provider peak
+// window coloring so the red/orange/green transitions appear at window edges
+// even when no other event forces a redraw.
+const peakRefreshInterval = 30 * time.Second
+
 // runGitRefreshLoop periodically refreshes the footer's git branch/dirty
 // state. Gathering spawns git subprocesses, so it runs off the commandLoop;
 // the result is applied on the loop only when it actually changed.
@@ -225,6 +232,46 @@ func (a *App) refreshFooterGitOnce(footer *tui.Footer, dir string) {
 			a.subs.tuiEngine.RequestRender()
 		}
 	})
+}
+
+// runPeakRefreshLoop periodically requests a footer re-render so the provider
+// peak indicator stays current. It is a no-op (no render request) when the
+// active provider has no peak windows, so sessions on other providers never
+// tick. The render itself re-evaluates time.Now() and is differential, so a
+// request with unchanged peak color costs one no-op frame.
+func (a *App) runPeakRefreshLoop(done chan struct{}, interval time.Duration) {
+	footer := a.subs.footer
+	if footer == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if !a.activeProviderHasPeak() {
+				continue
+			}
+			a.apply(func() {
+				if a.subs.tuiEngine != nil {
+					a.subs.tuiEngine.RequestRender()
+				}
+			})
+		}
+	}
+}
+
+// activeProviderHasPeak reports whether the active provider is one of the
+// catalog entries with peak-pricing windows, i.e. the footer peak indicator
+// can actually change color over time.
+func (a *App) activeProviderHasPeak() bool {
+	if a.subs == nil || a.subs.cfg == nil {
+		return false
+	}
+	def := schema.LookupProviderDefByID(a.subs.cfg.ActiveProvider)
+	return def != nil && len(def.PeakHours) > 0
 }
 
 func (a *App) handleControlEvent(ev event.ControlEvent) bool {

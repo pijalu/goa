@@ -4,7 +4,86 @@
 
 package schema
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// TestPeakStatusAt_DeepSeek pins the DeepSeek peak windows (01:00–04:00 and
+// 06:00–10:00 UTC daily) including the 5-minute orange grace margin.
+func TestPeakStatusAt_DeepSeek(t *testing.T) {
+	def := LookupProviderDefByID("deepseek")
+	if def == nil {
+		t.Fatal("deepseek not in catalog")
+	}
+	// 2026-01-15 is a Thursday (UTC).
+	at := func(h, m int) time.Time { return time.Date(2026, 1, 15, h, m, 0, 0, time.UTC) }
+	cases := []struct {
+		name string
+		h, m int
+		want PeakStatus
+	}{
+		{"inside first window", 1, 0, PeakOn},
+		{"inside first window late", 3, 59, PeakOn},
+		{"inside second window", 6, 0, PeakOn},
+		{"inside second window late", 9, 59, PeakOn},
+		{"just before first window", 0, 57, PeakNear},
+		{"just after first window", 4, 3, PeakNear},
+		{"just before second window", 5, 57, PeakNear},
+		{"just after second window", 10, 3, PeakNear},
+		{"far before", 0, 30, PeakOff},
+		{"gap between windows", 5, 0, PeakOff},
+		{"far after", 23, 0, PeakOff},
+	}
+	for _, tc := range cases {
+		if got := def.PeakStatusAt(at(tc.h, tc.m)); got != tc.want {
+			t.Errorf("%s: PeakStatusAt(%02d:%02d) = %v, want %v", tc.name, tc.h, tc.m, got, tc.want)
+		}
+	}
+}
+
+// TestPeakStatusAt_Zai pins the Z.ai weekday peak window (Mon–Fri 14:00–18:00
+// SGT == 06:00–10:00 UTC) for both catalog entries, including the weekend and
+// the weekday-only grace-margin behavior.
+func TestPeakStatusAt_Zai(t *testing.T) {
+	for _, id := range []string{"zai", "zai-api"} {
+		def := LookupProviderDefByID(id)
+		if def == nil {
+			t.Fatalf("%s not in catalog", id)
+		}
+		// 2026-01-15 is a Thursday, 2026-01-18 a Sunday (UTC).
+		thu := time.Date(2026, 1, 15, 7, 0, 0, 0, time.UTC)
+		if got := def.PeakStatusAt(thu); got != PeakOn {
+			t.Errorf("%s: Thursday 07:00 UTC = %v, want PeakOn", id, got)
+		}
+		sun := time.Date(2026, 1, 18, 7, 0, 0, 0, time.UTC)
+		if got := def.PeakStatusAt(sun); got != PeakOff {
+			t.Errorf("%s: Sunday 07:00 UTC = %v, want PeakOff", id, got)
+		}
+		// Near margins apply on a weekday (05:55–06:00 before the window).
+		near := time.Date(2026, 1, 15, 5, 57, 0, 0, time.UTC)
+		if got := def.PeakStatusAt(near); got != PeakNear {
+			t.Errorf("%s: Thursday 05:57 UTC = %v, want PeakNear", id, got)
+		}
+		// The same wall-clock time on Saturday must NOT be near (weekday-only).
+		satNear := time.Date(2026, 1, 17, 5, 57, 0, 0, time.UTC)
+		if got := def.PeakStatusAt(satNear); got != PeakOff {
+			t.Errorf("%s: Saturday 05:57 UTC = %v, want PeakOff", id, got)
+		}
+	}
+}
+
+// TestPeakStatusAt_NoPeakWindows verifies providers without peak windows are
+// always PeakOff regardless of the current time.
+func TestPeakStatusAt_NoPeakWindows(t *testing.T) {
+	def := LookupProviderDefByID("google")
+	if def == nil {
+		t.Fatal("google not in catalog")
+	}
+	if got := def.PeakStatusAt(time.Now()); got != PeakOff {
+		t.Errorf("google PeakStatusAt(now) = %v, want PeakOff", got)
+	}
+}
 
 // TestProviderCatalog_NoDuplicateIDs ensures the catalog is a valid single
 // source of truth: no two entries share an ID or Provider identity.
