@@ -19,6 +19,12 @@ import (
 // (modelsdev.go) refreshes it at startup, but the embed guarantees every
 // provider and model is available even on first run with no network.
 //
+// Refresh the snapshot with `go generate ./internal/agentic/provider/models/`
+// (runs cmd/genmodels: fetch models.dev, slim, rewrite api.json); the CI build
+// regenerates it before compiling so released binaries embed the latest
+// catalog.
+//
+//go:generate go run github.com/pijalu/goa/cmd/genmodels -out api.json
 //go:embed api.json
 var embeddedAPIJSON []byte
 
