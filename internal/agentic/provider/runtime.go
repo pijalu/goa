@@ -21,7 +21,19 @@ import (
 // GenericStream initiates a streaming LLM request using the generic provider
 // pipeline. It resolves the variant profile, runs the hook pipeline, builds the
 // wire request, executes it via the transport, and parses the response.
+//
+// The request runs through the canonical StreamInterceptor chain
+// (StreamInterceptors), so every protocol-backed call is observable and
+// modifiable at the seam before the transport executes.
 func GenericStream(model schema.Model, ctx schema.Context, opts schema.StreamOptions) (*schema.AssistantMessageEventStream, error) {
+	return streamWithInterceptors(model, ctx, opts, StreamInterceptors()...)
+}
+
+// streamWithInterceptors is the generic streaming pipeline with an explicit
+// interceptor chain (waterfall: first = outermost) applied around the terminal
+// transport handler. GenericStream uses the canonical chain; tests and future
+// consumers can pass an explicit chain to observe or modify a call.
+func streamWithInterceptors(model schema.Model, ctx schema.Context, opts schema.StreamOptions, interceptors ...StreamInterceptor) (*schema.AssistantMessageEventStream, error) {
 	profile := schema.ResolveProfile(model)
 	profile = applyEnvOverrides(profile, model)
 
@@ -56,11 +68,23 @@ func GenericStream(model schema.Model, ctx schema.Context, opts schema.StreamOpt
 		reqCtx.Headers[k] = v
 	}
 
-	stream := schema.NewAssistantMessageEventStream(256)
-	go CloseStreamOnCancel(ctx.GoContext(), stream)
-	go executeRequest(ctx.GoContext(), p, reqCtx, body, stream, profile)
+	req := &StreamRequest{
+		Model:   model,
+		Context: reqCtx.Context,
+		Options: reqCtx.Options,
+		Profile: profile,
+		Headers: reqCtx.Headers,
+		Body:    body,
+		URL:     resolveURL(model, profile),
+	}
 
-	return stream, nil
+	handler := ApplyStreamInterceptors(func(goCtx context.Context, r *StreamRequest) (*schema.AssistantMessageEventStream, error) {
+		stream := schema.NewAssistantMessageEventStream(256)
+		go CloseStreamOnCancel(goCtx, stream)
+		go executeRequest(goCtx, r, pipeline, stream)
+		return stream, nil
+	}, interceptors...)
+	return handler(ctx.GoContext(), req)
 }
 
 func applyEnvOverrides(profile schema.VariantProfile, model schema.Model) schema.VariantProfile {
@@ -83,84 +107,79 @@ func cloneStringMap(src map[string]string) map[string]string {
 
 func executeRequest(
 	goCtx context.Context,
-	p protocol.Protocol,
-	reqCtx *hooks.RequestContext,
-	body []byte,
+	req *StreamRequest,
+	pipeline *hooks.Pipeline,
 	stream *schema.AssistantMessageEventStream,
-	profile schema.VariantProfile,
 ) {
-	url := resolveURL(reqCtx.Model, profile)
+	url := req.URL
 	if url == "" {
-		_ = p.ParseResponse(bytes.NewReader(nil), stream)
+		if p := protocol.ForAPI(req.Model.Api); p != nil {
+			_ = p.ParseResponse(bytes.NewReader(nil), stream)
+		}
 		return
 	}
 
-	tr := selectTransport(reqCtx.Options)
+	tr := selectTransport(req.Options)
 
-	req := &transport.TransportRequest{
+	tReq := &transport.TransportRequest{
 		Method:  "POST",
 		URL:     url,
-		Headers: reqCtx.Headers,
-		Body:    body,
+		Headers: req.Headers,
+		Body:    req.Body,
 	}
-	if timeout := reqCtx.Options.Timeout; timeout > 0 {
-		req.Timeout = int64(timeout / time.Millisecond)
+	if timeout := req.Options.Timeout; timeout > 0 {
+		tReq.Timeout = int64(timeout / time.Millisecond)
 	}
-	if reqCtx.Options.Transport == schema.TransportWebSocket {
-		req.Headers["X-Session-ID"] = reqCtx.Options.SessionID
+	if req.Options.Transport == schema.TransportWebSocket {
+		tReq.Headers["X-Session-ID"] = req.Options.SessionID
 	}
 
-	// Record the complete request in the cache-forensics journal BEFORE it
-	// goes out; the response usage (attached on every exit path via defer)
-	// drives per-sequence cache-miss detection. Only the requests around a
-	// detected miss are retained as reports — never every request.
-	forensicsRec := recordCacheForensicsRequest(reqCtx.Model, reqCtx.Options.SessionID, reqCtx.Context.SystemPrompt, url, req.Body)
-	defer func() { forensicsRec.complete(streamResultUsage(stream)) }()
-
-	resp, err := tr.Do(goCtx, req)
+	resp, err := tr.Do(goCtx, tReq)
 	if err != nil {
 		errCtx := &hooks.ErrorContext{
-			Model:      reqCtx.Model,
-			Profile:    profile,
+			Model:      req.Model,
+			Profile:    req.Profile,
 			Err:        err,
 			StatusCode: 0,
 		}
-		_ = reqCtx.Pipeline.ApplyError(errCtx)
+		_ = pipeline.ApplyError(errCtx)
 		stream.CloseWithError(errCtx.ToError())
 		return
 	}
 
-	if reqCtx.Options.OnResponse != nil {
-		reqCtx.Options.OnResponse(resp.StatusCode, resp.Headers)
+	if req.OnResponse != nil {
+		req.OnResponse(resp.StatusCode, resp.Headers)
 	}
 
 	if resp.StatusCode >= 400 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		errCtx := &hooks.ErrorContext{
-			Model:      reqCtx.Model,
-			Profile:    profile,
+			Model:      req.Model,
+			Profile:    req.Profile,
 			StatusCode: resp.StatusCode,
 			Body:       string(bodyBytes),
 			Headers:    resp.Headers,
 		}
-		_ = reqCtx.Pipeline.ApplyError(errCtx)
+		_ = pipeline.ApplyError(errCtx)
 		stream.CloseWithError(errCtx.ToError())
 		return
 	}
 
 	reader := resp.Body
-	if reqCtx.Options.Transport != schema.TransportWebSocket {
-		idleTimeout := reqCtx.Options.IdleTimeout
+	if req.Options.Transport != schema.TransportWebSocket {
+		idleTimeout := req.Options.IdleTimeout
 		if idleTimeout <= 0 {
 			idleTimeout = DefaultStreamIdleTimeout
 		}
 		reader = NewIdleTimeoutReader(reader, idleTimeout)
 	}
 
-	if err := p.ParseResponse(reader, stream); err != nil {
-		stream.CloseWithError(err)
-		return
+	if p := protocol.ForAPI(req.Model.Api); p != nil {
+		if err := p.ParseResponse(reader, stream); err != nil {
+			stream.CloseWithError(err)
+			return
+		}
 	}
 }
 

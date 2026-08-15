@@ -5,6 +5,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -367,4 +368,28 @@ func ResetCacheForensicsBaseline() {
 // reports, notices). Primarily for tests.
 func ResetCacheForensics() {
 	cacheForensics.reset()
+}
+
+// CacheForensicsInterceptor records each complete wire request in the
+// cache-forensics journal before the transport round-trip and completes it
+// with the response usage once the stream terminates. It preserves the
+// historical inline behavior of the generic runtime: requests with no
+// resolved URL are never recorded, and failed requests remain in the ring
+// without usage (so they never trigger miss detection). It is the "caching"
+// consumer of the StreamInterceptor seam (dsh's `llm/stream` waterfall).
+func CacheForensicsInterceptor(next StreamHandler) StreamHandler {
+	return func(ctx context.Context, req *StreamRequest) (*schema.AssistantMessageEventStream, error) {
+		if req.URL == "" {
+			return next(ctx, req)
+		}
+		rec := recordCacheForensicsRequest(req.Model, req.Options.SessionID, req.Context.SystemPrompt, req.URL, req.Body)
+		stream, err := next(ctx, req)
+		if err != nil || stream == nil {
+			return stream, err
+		}
+		go func() {
+			rec.complete(streamResultUsage(stream))
+		}()
+		return stream, nil
+	}
 }

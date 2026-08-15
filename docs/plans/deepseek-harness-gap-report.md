@@ -34,7 +34,7 @@ missing · Medium = useful hardening/tunability · Low = polish/observability.
 | CA1 | ~~**Compaction summarize call does not reuse the warm KV prefix.**~~ **FIXED (P1).** Goa's `summarizeHistory` used to swap in a *different* system prompt and drop tools, so the summarize request missed the provider prefix cache from token 0 — a full cold-cache call over the largest history of the session. It now replays the conversation prefix (system prompt + tools + history) via the shared `buildProviderContext` and appends the instruction as the final user message. | `internal/agentic/agent_compression.go` (`summarizeInstruction`, `summarizeHistory`); wire proof in `TestSummarizeRequestIsStrictAppendOfConversation` | `packages/compaction/compaction-basic/src/summarizer.ts:21-58` — same design: replay verbatim, instruction as final user message | ~~High~~ **Closed** |
 | CA2 | **No purpose attribution on auxiliary LLM calls.** Compaction / title-generation traffic is indistinguishable from conversation traffic on the provider side. | No `purpose` field on the summarize request (`agent_compression.go:191-205`); no purpose headers anywhere in `internal/agentic/provider/` | `GenerateOptions.purpose: 'compaction'` → header `x-deepseek-harness-compact: 1` (`packages/llm/llm-deepseek/README.md` §App attribution); `purpose: 'session-title'` also forces thinking off to reserve output budget | **Low** |
 | CA3 | **No request/session correlation headers.** Provider-side debugging and abuse-correlation have no stable anonymous user id / session id on requests. | Only a generic `User-Agent: goa (<os>)` in `internal/agentic/provider/hooks/auth.go:126` | `x-deepseek-harness-user-id` (stable anonymous id) + `x-deepseek-harness-session-id` per request (`packages/llm/llm-deepseek/README.md` §App attribution; `packages/identity/anonymous-user-id`) | **Low** |
-| CA4 | **No `llm/stream`-style interception seam around model calls.** dsh exposes a waterfall event over every streaming call for caching/logging/routing wrappers; goa's `provider.Stream` is a direct call with hooks only for auth/transport. | `internal/agentic/provider/stream.go`, hooks limited to `internal/agentic/provider/hooks/` (auth, retry classify) | `ctx.llm.stream` + `llm/stream` waterfall event (`packages/llm/llm/README.md` §Events) — explicitly documented as the mount point "for caching, logging, or routing" | **Medium** |
+| CA4 | ~~**No `llm/stream`-style interception seam around model calls.**~~ **FIXED (P12).** Goa now exposes a `StreamInterceptor` waterfall (`StreamRequest`/`StreamHandler` in `internal/agentic/provider/stream.go`): each wrapper sees/modifies the resolved request (URL, headers, body) and may observe/wrap the event stream before the transport executes. Cache forensics and the `OnResponse` metrics callback are re-implemented as interceptors; `RegisterStreamInterceptor` is the extension point for further consumers (purpose headers, CA2/CA3). | `internal/agentic/provider/stream.go` (chain + registry), `runtime.go` (`streamWithInterceptors`/terminal handler), `internal/agentic/provider/cache_forensics.go` + `interceptors.go` (consumers); wire proof in `TestStreamInterceptorObservesAndTagsCall` and parity in `TestCacheForensicsEndToEnd` / `TestMetricsInterceptorPreservesOnResponse` | `ctx.llm.stream` + `llm/stream` waterfall event (`packages/llm/llm/README.md` §Events) — explicitly documented as the mount point "for caching, logging, or routing" | ~~Medium~~ **Closed** |
 
 ### 1.2 DeepSeek-model-specific
 
@@ -260,16 +260,43 @@ approval through `internal/perms`.
 **Acceptance:** non-sandboxed builds hide the fields; a denied write can be retried
 wider only post-approval; non-widening requests fail without prompting.
 
-### P12 — LLM-call interception seam (CA4) — MEDIUM · effort M
+### P12 — LLM-call interception seam (CA4) — MEDIUM · effort M — ✅ DONE
 
-**Change:** a `StreamInterceptor` chain in `internal/agentic/provider/stream.go`
-(waterfall: each wrapper sees/modifies the request context and the event stream),
-replacing ad-hoc wraps; first consumers: cache forensics, metrics, purpose headers.
-**Files:** `internal/agentic/provider/stream.go`, `runtime.go`,
-`internal/agentic/provider/hooks/`.
-**dsh reference:** `packages/llm/llm/README.md` §Events.
-**Acceptance:** existing forensics/metrics re-implemented as interceptors with no
-behavior change (parity tests); a test interceptor can observe and tag a call.
+**Status:** implemented and verified (2026-08-15). The `StreamInterceptor`
+chain lives in `internal/agentic/provider/stream.go` — `StreamRequest` (resolved
+model/context/options/profile/headers/body/URL) is handed down a waterfall of
+`StreamHandler` wrappers (`ApplyStreamInterceptors`), with a canonical chain
+(`RegisterStreamInterceptor`/`StreamInterceptors`) applied inside
+`GenericStream` (`runtime.go`, `streamWithInterceptors`). The terminal handler
+runs the transport and parses the response; interceptors see/modify the request
+before the transport executes and may observe/wrap the returned event stream.
+The historical ad-hoc wraps are re-implemented as consumers:
+`CacheForensicsInterceptor` (`cache_forensics.go`, moved out of
+`executeRequest`) and `MetricsInterceptor` (`interceptors.go`, preserves the
+`StreamOptions.OnResponse` status/headers callback via
+`StreamRequest.OnResponse`). The spec's `hooks/` file was not changed: the
+interceptor types and consumers must live in the provider package (provider
+imports hooks, so hooks cannot reference `provider.StreamInterceptor` — same
+adaptation note as P11's file placement). Purpose headers are the next consumer
+(P13, CA2/CA3) and are demonstrated by the header-tagging acceptance test.
+
+**Verification (no live model):**
+- `TestApplyStreamInterceptorsOrder` — waterfall semantics (first = outermost).
+- `TestStreamInterceptorObservesAndTagsCall` — **acceptance**: a test
+  interceptor sees the resolved model/URL/wire body and tags the call with a
+  header that reaches the transport.
+- `TestStreamInterceptorObservesEventStream` — an interceptor reads terminal
+  usage from the wrapped stream.
+- `TestCacheForensicsEndToEnd` (existing, unchanged) — forensics parity through
+  the canonical chain.
+- `TestMetricsInterceptorPreservesOnResponse` / `...FiresOnErrorStatus` —
+  metrics parity: the `OnResponse` callback fires with status/headers on
+  success and HTTP-error paths.
+- `TestRegisterStreamInterceptorAppendsToCanonicalChain`,
+  `TestStreamInterceptorsSnapshotIsIsolated` — registry semantics.
+- Gate: `go vet ./...` clean; `go test -count=1 ./...` green;
+  `-race -cover` on the provider package 85.7%; `gocognit`/`gocyclo` within
+  budget on all touched files.
 
 ### P13 — Purpose attribution + request correlation headers (CA2, CA3) — LOW · effort S
 
