@@ -744,6 +744,18 @@ func (a *App) echoCommandResult(result *core.RouteResult, input, output string) 
 	}
 
 	if output != "" {
+		// Finalize any in-progress streaming block before the command result
+		// lands, so the result is appended AFTER a complete block and the
+		// next streamed content starts a fresh block after it. Without this,
+		// a screen-filling result (e.g. /goal:list with complete objectives)
+		// echoed mid-stream leaves the streaming block buried under it; the
+		// stream keeps growing that off-screen block, and every chunk forces
+		// the compositor's mid-transcript scrollback-reset path — CPU >100%
+		// and repeated terminal viewport yanks until a new block finally
+		// starts after the result. Ending the block here makes the very next
+		// stream chunk start after the result (bottom append — the fast,
+		// O(viewport) path).
+		a.endCurrentStream()
 		subs.chat.AddSystemMessage(fmt.Sprintf("> %s", input))
 		subs.chat.AddSystemMessage(output)
 		subs.tuiEngine.RequestRender()

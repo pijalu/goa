@@ -263,6 +263,12 @@ func (cv *ChatViewport) SetSuppressed(b bool) {
 // IsSuppressed reports whether the viewport is currently hidden.
 func (cv *ChatViewport) IsSuppressed() bool { return cv.suppressed }
 
+// Generation returns the mutation generation: it increments on every chat
+// mutation (append, update, invalidate). The TUI stamps it into
+// Scene.MutationGen so the compositor can detect when the conversation has
+// settled (no mutation since the last frame).
+func (cv *ChatViewport) Generation() int { return cv.generation }
+
 // SetAllocatedHeight is called by the layout pass (buildScene) with the
 // vertical budget reserved for this viewport. See HeightAllocated.
 func (cv *ChatViewport) SetAllocatedHeight(height int) { cv.allocatedHeight = height }

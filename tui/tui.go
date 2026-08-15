@@ -542,6 +542,12 @@ func (t *TUI) buildSnapshot() *Scene {
 	// Stamp the clear generation so the compositor can drop this snapshot if a
 	// Clear() (e.g. /new) lands before it is rendered (the stale-scene race).
 	scene.ClearGen = t.compositor.ClearGen()
+	// Stamp the chat viewport's mutation generation so the compositor can
+	// detect when the conversation has settled (no mutation since the last
+	// frame) and re-sync a deferred scrollback exactly once.
+	if cv := t.findChatViewport(); cv != nil {
+		scene.MutationGen = uint64(cv.Generation())
+	}
 	return scene
 }
 
