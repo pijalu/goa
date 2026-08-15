@@ -59,24 +59,67 @@ const (
 	ToolCallStopped ToolCallLevel = 2 // red — budget exceeded, force-stopped
 )
 
+// cacheHitWindowSize is the number of recent cache-hit rates kept for the
+// rolling average shown in the footer CH:<avg>% segment.
+const cacheHitWindowSize = 10
+
 // CacheHitTrend bundles a cache-hit rate with its previous value so the
 // footer can color it by evolution: bold green when growing, green when
 // stable/slightly growing, orange on a slight drop (< 5 points), red on a
 // drop (>= 5 points). Seen gates display (no cache activity yet); HasPrev
 // gates delta coloring (first observation has no baseline and renders as
 // stable).
+//
+// The trend also maintains a rolling window of the last cacheHitWindowSize
+// rates for the average (CH:<avg>%) — the avg and last values are colored
+// independently, each only shifting to orange/red on a >= 5-point change.
 type CacheHitTrend struct {
-	Pct     float64
-	PrevPct float64
-	Seen    bool
-	HasPrev bool
+	Pct     float64   // last completion's cache-hit rate
+	PrevPct float64   // previous value (for delta coloring)
+	Seen    bool      // at least one cache-active round observed
+	HasPrev bool      // at least two observations (delta coloring armed)
+	window  []float64 // rolling window of recent rates (max cacheHitWindowSize)
 }
 
 // observe folds one new cache-hit rate into the trend: the current value
-// becomes the previous baseline and pct becomes current.
+// becomes the previous baseline and pct becomes current. The rate is also
+// appended to the rolling window (capped at cacheHitWindowSize).
 func (t *CacheHitTrend) observe(pct float64) {
 	t.PrevPct, t.HasPrev = t.Pct, t.Seen
 	t.Pct, t.Seen = pct, true
+	t.window = append(t.window, pct)
+	if len(t.window) > cacheHitWindowSize {
+		t.window = t.window[len(t.window)-cacheHitWindowSize:]
+	}
+}
+
+// AvgPct returns the rolling average of the last cacheHitWindowSize
+// cache-hit rates. Returns 0 when no observations exist.
+func (t *CacheHitTrend) AvgPct() float64 {
+	if len(t.window) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, v := range t.window {
+		sum += v
+	}
+	return sum / float64(len(t.window))
+}
+
+// AvgPrevPct returns the average of the window *before* the most recent
+// observation — the baseline for delta coloring the average. Returns 0 when
+// fewer than 2 observations exist.
+func (t *CacheHitTrend) AvgPrevPct() float64 {
+	if len(t.window) < 2 {
+		return 0
+	}
+	// Compute avg of window[0:len-1] (exclude the latest).
+	prev := t.window[:len(t.window)-1]
+	sum := 0.0
+	for _, v := range prev {
+		sum += v
+	}
+	return sum / float64(len(prev))
 }
 
 // cacheHitTrendFromTotals builds a display-only trend from aggregate token
@@ -106,10 +149,10 @@ type sessionStats struct {
 	ToolCallLevel   ToolCallLevel // 0=normal, 1=warning, 2=stopped
 	MicroCompacts   int
 	Compacts        int
-	// LastCacheHit is the most recent completion's cache-hit trend — the
-	// pi-style per-call rate (▸x.x%). It is the ONLY cache-hit rate in the
-	// status bar: the cumulative session rate was removed as noise (user
-	// request: keep the last completion CH, no global).
+	// LastCacheHit is the most recent completion's cache-hit trend —
+	// rendered as CH:<avg>%▸<last>% where <avg> is the rolling average
+	// of the last 10 observations and <last> is the most recent rate.
+	// Each element is colored independently by its own evolution.
 	LastCacheHit CacheHitTrend
 	// Compactions documents each completed compression round (strategy,
 	// before/after %, freed tokens, removed messages, time). The aggregate
@@ -1302,10 +1345,10 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.SpeedTokPerSec > 0 {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
 	}
-	// Cache hit percentage: the pi-style per-completion rate of the last
-	// provider round (▸) — the status bar shows only this, no cumulative
-	// session rate. See CacheHitPct for the formula; the trend carries its
-	// previous value for coloring.
+	// Cache hit percentage: CH:<avg>%▸<last>% where <avg> is the rolling
+	// average of the last 10 cache-hit observations and <last> is the most
+	// recent per-completion rate. See CacheHitPct for the formula; each
+	// element carries its own previous baseline for delta coloring.
 	if s.LastCacheHit.Seen {
 		parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
 	}
@@ -1351,45 +1394,58 @@ func formatContextUsage(estimate, max int) string {
 }
 
 // Cache-hit evolution thresholds, in percentage points of delta from the
-// previous value.
+// previous value. Colors only shift on significant changes (>=5pt drop):
+// minor fluctuations stay green to avoid alarm fatigue.
 const (
 	cacheHitGrowDelta = 1.0  // >= this: growing (bold green)
-	cacheHitDropDelta = -5.0 // <= this: drop (red); between 0 and this: slight drop (orange)
+	cacheHitDropDelta = -5.0 // <= this: significant drop (red); between 0 and this: stable (green)
 )
 
-// formatLastCacheHitPart renders the pi-style per-completion cache hit
-// rate of the last provider round (▸x.x%) — the only cache-hit rate in
-// the status bar — with color coding based on evolution from the
-// previous value:
-//   - Growing (>=+1pt):        bold green (#3fb950)
-//   - Stable / slight grow:    green (#3fb950)
-//   - Slight drop (< 5pts):    orange (#d29922)
-//   - Drop (>= 5pts):          red (#f85149)
+// formatLastCacheHitPart renders the cache hit rate segment of the status
+// bar: CH:<avg>%▸<last>% where <avg> is the rolling average of the last
+// cacheHitWindowSize observations and <last> is the most recent one.
+//
+// Each element is colored independently based on its evolution from its
+// own previous baseline (significant changes only — >=5pt drop for red):
+//   - Growing (>=+1pt):           bold green (#3fb950)
+//   - Stable / minor change:      green (#3fb950) — any delta > -5pts
+//   - Significant drop (>=5pts):  red (#f85149)
 //
 // The first observation (no previous baseline) renders as stable green.
 func formatLastCacheHitPart(t CacheHitTrend) string {
-	return cacheHitColor(t) + fmt.Sprintf("▸%.1f%%", t.Pct) + ansi.Reset
+	avg := t.AvgPct()
+	avgPrev := t.AvgPrevPct()
+	avgColor := cacheHitColorFor(avg, avgPrev, t.HasPrev)
+	lastColor := cacheHitColorFor(t.Pct, t.PrevPct, t.HasPrev)
+	return fmt.Sprintf("%sCH:%.1f%%%s%s▸%.1f%%%s",
+		avgColor, avg, ansi.Reset,
+		lastColor, t.Pct, ansi.Reset)
 }
 
-// cacheHitColor resolves the SGR prefix (color + optional bold) for a
-// cache-hit trend based on its delta from the previous value.
-func cacheHitColor(t CacheHitTrend) string {
+
+// cacheHitColorFor resolves the SGR prefix (color + optional bold) for a
+// cache-hit element (avg or last) based on its delta from the previous
+// baseline. hasPrev=false renders as stable green (no baseline).
+//
+// Color scheme (per the bug report: emphasize significant changes, not minor
+// fluctuations):
+//   - Growing (>=+1pt):        bold green (#3fb950)
+//   - Stable / minor change:   green (#3fb950) — any delta > -5pts
+//   - Significant drop:        red (#f85149) — delta <= -5pts
+func cacheHitColorFor(pct, prevPct float64, hasPrev bool) string {
 	const (
-		green  = "#3fb950"
-		orange = "#d29922"
-		red    = "#f85149"
+		green = "#3fb950"
+		red   = "#f85149"
 	)
-	delta := t.Pct - t.PrevPct
+	delta := pct - prevPct
 	switch {
-	case !t.HasPrev:
+	case !hasPrev:
 		// No baseline yet — first observation reads as stable.
 		return ansi.Fg(green)
 	case delta >= cacheHitGrowDelta:
 		return ansi.Bold + ansi.Fg(green)
-	case delta >= 0:
-		return ansi.Fg(green)
 	case delta > cacheHitDropDelta:
-		return ansi.Fg(orange)
+		return ansi.Fg(green)
 	default:
 		return ansi.Fg(red)
 	}

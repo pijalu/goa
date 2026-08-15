@@ -77,6 +77,16 @@ func hexDef() spinner.Definition {
 	return spinner.Definition{Interval: 50, Frames: []string{"⬡", "⬢", "⬣", "⬢"}}
 }
 
+// skipSlowTitleTest skips title animation tests under -race: they use
+// real 1s-per-frame transition timing, and the accumulated suite time
+// under race detection exceeds the 30s unit-test timeout.
+func skipSlowTitleTest(t *testing.T) {
+	t.Helper()
+	if isRaceDetector() {
+		t.Skip("skipping slow title animation test under -race (2s+ transition timing)")
+	}
+}
+
 // TestTitleController_BootShowsBrand covers "Title bar startup
 // sequence": the boot title g⬡a is emitted as early as construction.
 func TestTitleController_BootShowsBrand(t *testing.T) {
@@ -92,6 +102,7 @@ func TestTitleController_BootShowsBrand(t *testing.T) {
 // g⬡a → g⬡ → ⬡ transition at startup completion, ending in normal mode on
 // the base title.
 func TestTitleController_StartupDonePlaysTransition(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), true)
 	defer tc.stop()
@@ -121,6 +132,7 @@ func TestTitleController_StartupDonePlaysTransition(t *testing.T) {
 // TestTitleController_StartupDoneOnce verifies a second startupDone call is a
 // no-op (the fallback timer and the explicit hook may both fire).
 func TestTitleController_StartupDoneOnce(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), true)
 	defer tc.stop()
@@ -145,6 +157,7 @@ func TestTitleController_StartupDoneOnce(t *testing.T) {
 // title bar while working": in normal mode, working=true spins the title with
 // the spinner frames, preserving the contextual suffix; idle restores base.
 func TestTitleController_WorkingAnimatesWithFrames(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), true)
 	defer tc.stop()
@@ -174,6 +187,7 @@ func TestTitleController_WorkingAnimatesWithFrames(t *testing.T) {
 // TestTitleController_AnimatedOffStaysStatic verifies the config-off path:
 // working never animates the title (configurable, default on).
 func TestTitleController_AnimatedOffStaysStatic(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), false) // animated = false
 	defer tc.stop()
@@ -197,6 +211,7 @@ func TestTitleController_AnimatedOffStaysStatic(t *testing.T) {
 // recorded (not lost) when set during the startup/transition phase and
 // applied once normal mode begins.
 func TestTitleController_WorkingBeforeStartupDone(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	tc := newTitleController(sink.set, hexDef(), true)
 	defer tc.stop()
@@ -264,6 +279,7 @@ func TestTitleSpinnerDefFor_NoneDisables(t *testing.T) {
 // transition plays (g⬡a → g⬡ → ⬡) and the title settles on the base. It
 // proves the explicit startup-done hook drives the sequence end-to-end.
 func TestTitleStartupHook_FiresOnBothLoadsDone(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	a := New(testSubsystems())
 	a.titleCtl = newTitleController(sink.set, hexDef(), true)
@@ -303,6 +319,7 @@ func TestTitleStartupHook_FiresOnBothLoadsDone(t *testing.T) {
 // feasible here, so this asserts the hook fires when channels are nil = both
 // already done).
 func TestTitleStartupHook_NilChannelsFireImmediately(t *testing.T) {
+	skipSlowTitleTest(t)
 	sink := &titleSink{}
 	a := New(testSubsystems())
 	a.titleCtl = newTitleController(sink.set, hexDef(), true)

@@ -168,8 +168,9 @@ func writeCacheView(b *strings.Builder, rows []usage.Record, scope string) {
 
 // writeCacheChart renders one bar per bucket: timestamp, a bar whose length
 // is the hit rate, the numeric rate, and the completion count. Bar color
-// follows the footer's CH coloring: bold green growing, green stable, orange
-// slight drop (< 5pts), red drop (>= 5pts) — delta vs the previous bucket.
+// follows the footer's CH coloring: bold green growing, green stable/minor
+// change (< 5pts drop), red significant drop (>= 5pts) — delta vs the
+// previous bucket.
 func writeCacheChart(b *strings.Builder, buckets []cacheBucket) {
 	const barWidth = 24
 	prev := -1.0
@@ -192,13 +193,13 @@ func writeCacheChart(b *strings.Builder, buckets []cacheBucket) {
 }
 
 // cacheBarColor maps a bucket's delta vs the previous bucket onto the CH
-// color scheme (see cacheHitColor in internal/app/stats.go). The first
-// bucket is stable green.
+// color scheme (see cacheHitColorFor in internal/app/stats.go). The first
+// bucket is stable green. Only significant changes (>=5pt drop) shift the
+// color — minor fluctuations stay green.
 func cacheBarColor(pct, prev float64) string {
 	const (
-		green  = "#3fb950"
-		orange = "#d29922"
-		red    = "#f85149"
+		green = "#3fb950"
+		red   = "#f85149"
 	)
 	if prev < 0 {
 		return ansi.Fg(green)
@@ -206,10 +207,8 @@ func cacheBarColor(pct, prev float64) string {
 	switch delta := pct - prev; {
 	case delta >= 1.0:
 		return ansi.Bold + ansi.Fg(green)
-	case delta >= 0:
-		return ansi.Fg(green)
 	case delta > -cacheDropThresholdPts:
-		return ansi.Fg(orange)
+		return ansi.Fg(green)
 	default:
 		return ansi.Fg(red)
 	}

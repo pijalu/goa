@@ -24,3 +24,13 @@ Commit at the end of each fix with a clear and descriptive commit message
 ## Report format
 Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
+
+# TODO
+## Cache HIT
+The status bar should show CH for cache hits - use CH:<avg last 10>%▸<last>%
+
+Color scheme change: Per elements (avg/last) - Orange/Red should only change for >=5% change in cache hit rate: the color should emphasize significant changes - not minor fluctuations
+
+## stats:cache
+- Stats cache should *only* be used on current session (all agent calls)
+- All other stats: Include a average cache hit rate

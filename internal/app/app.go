@@ -114,10 +114,9 @@ type App struct {
 	// session-stats record). Guarded by statsMu like the counters above.
 	compactions []CompactionRound
 
-	// Cache hit rate trend for the footer CH% stat: the last completion's
-	// rate with its previous value for evolution coloring
-	// (growing/stable/dropping). The cumulative session rate was removed
-	// from the status bar (user request: last completion only, no global).
+	// Cache hit rate trend for the footer CH stat: the last completion's
+	// rate plus a rolling window of the last 10 rates for the CH:<avg>%
+	// segment. Each element is colored independently by its own evolution.
 	lastCacheHit CacheHitTrend
 
 	// Status tracking for granular footer/status messages.
