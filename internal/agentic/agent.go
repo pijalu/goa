@@ -708,6 +708,10 @@ type Config struct {
 	// messages once per content change — never into the system prompt, which
 	// is the provider-cached prefix. Nil disables sticky injection.
 	StickyProvider StickyProvider
+	// PreTurnProvider supplies additional user-role content delivered at the
+	// start of every turn ahead of the user message (e.g. due schedule
+	// reminders). Nil disables pre-turn delivery.
+	PreTurnProvider PreTurnProvider
 	// AutoHealToolCalls enables parsing of malformed XML tool calls emitted
 	// by local models.  When true, the agent extracts <tool_call> and
 	// <function=name> markup from the assistant text and treats it as a tool
@@ -1225,6 +1229,10 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 		// One turn per user input; the temporal-context reading (CX6) uses
 		// the count in its "turn N" label.
 		a.turnCounter++
+		// Deliver pre-turn provider content (e.g. due schedule reminders) as
+		// user-role messages ahead of the user's actual input. The provider
+		// claims what it returns, so each delivery happens exactly once.
+		a.deliverPreTurnMessages()
 		// Add user message to history and emit event
 		userMsg := Message{
 			Type:     Content,

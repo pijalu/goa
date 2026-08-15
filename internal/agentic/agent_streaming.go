@@ -2122,6 +2122,29 @@ func mergeGoalProgress(msgs []provider.Message, p GoalStateProvider) []provider.
 	return msgs
 }
 
+// deliverPreTurnMessages appends the PreTurnProvider's claimed user-role
+// content to history ahead of the current turn's user message. The provider is
+// expected to consume what it returns (the schedule store claims due jobs
+// atomically), so a provider that returns content is only invoked once per
+// delivery — a second call in the same turn returns nothing.
+//
+// Concurrency: caller holds no lock (same as the user-message append);
+// emitMessage is invoked outside a.mu like the neighboring call.
+func (a *Agent) deliverPreTurnMessages() {
+	p := a.cfg.PreTurnProvider
+	if p == nil {
+		return
+	}
+	for _, text := range p.PreTurnMessages() {
+		if text == "" {
+			continue
+		}
+		msg := Message{Type: Content, Role: User, Content: text}
+		a.history = append(a.history, msg)
+		a.emitMessage(msg)
+	}
+}
+
 // persistStickyInstructions appends always-on instruction blocks (sticky
 // knowledge skills) to a.history as ordinary USER-role messages, using the
 // same kimi-code parity contract as persistGoalReminder: append-only history,

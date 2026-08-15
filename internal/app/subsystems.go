@@ -206,6 +206,10 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	agentBundle := initAgentBundle(cfg, projectDir)
 	initHookEngine(cfg, projectDir, agentBundle.agentMgr)
 
+	// Scheduler delivery (P18/TL2): due jobs become user messages at the
+	// start of the next turn (user turns and goal continuation turns alike).
+	wireScheduleDelivery(agentBundle.agentMgr, subs.scheduleStore)
+
 	// Steering queue: shared between AgentManager (consumes at turn end) and
 	// TUI submit handler (appends while a turn is running).
 	steeringQueue := core.NewSteeringQueue()
@@ -330,6 +334,15 @@ func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) ba
 		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
 	}
 
+	// Scheduler tools (P18/TL2): persistent job store + model-facing
+	// schedule_create/delete/list. Always registered — they are harmless
+	// read/write tools over a durable file, matching the dsh schedule package
+	// which exposes them for every session.
+	scheduleStore := newScheduleStore(scheduleStorePath(projectDir))
+	toolRegistry.Register(&tools.ScheduleCreateTool{Store: scheduleStore})
+	toolRegistry.Register(&tools.ScheduleDeleteTool{Store: scheduleStore})
+	toolRegistry.Register(&tools.ScheduleListTool{Store: scheduleStore})
+
 	return baseSubsystems{
 		worktreeMgr:       worktreeMgr,
 		ptyMgr:            ptyMgr,
@@ -342,6 +355,7 @@ func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) ba
 		bgMgr:             bgMgr,
 		lspMgr:            lspMgr,
 		mcpManager:        mcpMgr,
+		scheduleStore:     scheduleStore,
 	}
 }
 
@@ -357,6 +371,7 @@ type baseSubsystems struct {
 	bgMgr             *background.Manager
 	lspMgr            *lsp.Manager
 	mcpManager        *mcp.Manager
+	scheduleStore     tools.ScheduleStore
 }
 
 func createBackgroundManager(projectDir string) *background.Manager {

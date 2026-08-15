@@ -30,6 +30,9 @@ func init() {
 	RegisterToolRenderer("agent_swarm", &swarm.AgentSwarmRenderer{})
 	RegisterToolRenderer("plan", &plantools.PlanToolRenderer{})
 	RegisterToolRenderer("task_outcome", &plantools.TaskOutcomeRenderer{})
+	RegisterToolRenderer("schedule_create", &tools.ScheduleRenderer{})
+	RegisterToolRenderer("schedule_delete", &tools.ScheduleRenderer{})
+	RegisterToolRenderer("schedule_list", &tools.ScheduleRenderer{})
 }
 
 // SyncToolTheme updates the theme provider used by tool renderers. Call this

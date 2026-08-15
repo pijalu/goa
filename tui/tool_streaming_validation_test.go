@@ -45,6 +45,9 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"task_outcome", map[string]any{"status": "done", "summary": "completed"}, map[string]any{"status": "done"}, `{"status":"done","summary":"completed"}`, nil},
 		{"session_search", map[string]any{"query": "postgres"}, map[string]any{"query": "post"}, "Session search results (1):\n1. Session s1\n", nil},
 		{"session_event_read", map[string]any{"session_id": "s1", "seq": float64(2), "before": float64(1)}, map[string]any{"seq": float64(2)}, "Session s1\nTarget event seq 2:\n```json\n{}", nil},
+		{"schedule_create", map[string]any{"prompt": "commit", "after_seconds": float64(60)}, map[string]any{"prompt": "com"}, `{"id":"schedule-1","state":"scheduled"}`, nil},
+		{"schedule_delete", map[string]any{"id": "schedule-1"}, map[string]any{"id": "schedule"}, `{"id":"schedule-1","deleted":true}`, nil},
+		{"schedule_list", map[string]any{}, map[string]any{}, `[]`, nil},
 	}
 
 	for _, tc := range cases {
@@ -95,6 +98,7 @@ func TestToolStreaming_RegistryIsComplete(t *testing.T) {
 		"read", "write", "edit", "bash", "python", "verify", "terminal",
 		"webfetch", "search", "smartsearch", "goal", "agent", "agent_swarm",
 		"plan", "task_outcome", "session_search", "session_event_read",
+		"schedule_create", "schedule_delete", "schedule_list",
 	}
 	for _, name := range cases {
 		if _, ok := required[name]; !ok {

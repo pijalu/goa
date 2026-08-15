@@ -46,6 +46,15 @@ func (am *AgentManager) SetStickyProvider(p agentic.StickyProvider) {
 	am.stickyProvider = p
 }
 
+// SetPreTurnProvider sets the provider that delivers user-role content at the
+// start of every turn ahead of the user message (e.g. due schedule reminders).
+// Call before StartSession.
+func (am *AgentManager) SetPreTurnProvider(p agentic.PreTurnProvider) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.preTurnProvider = p
+}
+
 // ActiveAgentStickyBlocks returns the sticky instruction blocks of the
 // active session agent, or nil when no session/provider is set. Used for
 // wiring verification and diagnostics.
@@ -195,6 +204,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		SkillExecutionMode:       agentic.SkillExecutionMode(cfg.Skills.ExecutionMode),
 		GoalStateProvider:        am.goalStateProvider,
 		StickyProvider:           am.stickyProvider,
+		PreTurnProvider:          am.preTurnProvider,
 		ProjectDir:               am.projectDir,
 		SessionID:                opts.SessionID,
 		GetAutonomy:              func() internal.AutonomyLevel { return am.CurrentMode().Autonomy },
