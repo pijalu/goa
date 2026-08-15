@@ -296,11 +296,47 @@ func (a *App) sendToAgentWithImages(input string, images []string) {
 	input = a.expandSkillInput(input)
 	// Expand @file references to absolute paths so the model can read them.
 	input = a.expandAtRefs(input)
+	// Expand @[label](goa-session:<id>) cross-session references (P24 / CX7)
+	// into a bounded, read-only, untrusted snapshot prepended to the model
+	// message. Invalid references reject the send (dsh: any invalid
+	// reference, failed read, or budget failure rejects before the host
+	// calls followup).
+	var err error
+	input, err = expandSessionReferences(subs, input)
+	if err != nil {
+		a.handleSendError(err)
+		return
+	}
 
 	a.showSendingStatus(modelName)
 	if err := subs.agentMgr.SendUserInputWithImages(input, images); err != nil {
 		a.handleSendError(err)
 	}
+}
+
+// expandSessionReferences parses @[label](goa-session:<id>) mentions in the
+// input, resolves each referenced session to a bounded read-only snapshot,
+// and prepends the untrusted <referenced-sessions> warning frame to the
+// model-facing message. The TUI bubble keeps showing the raw user text; the
+// snapshot is model-facing only (dsh model-hidden display content). Returns
+// the input unchanged when the session store is unavailable or no references
+// are present.
+func expandSessionReferences(subs *subsystems, input string) (string, error) {
+	if subs.sessionStore == nil {
+		return input, nil
+	}
+	currentSessionID := ""
+	if subs.agentMgr != nil {
+		currentSessionID = subs.agentMgr.SessionID()
+	}
+	rewritten, frame, err := subs.sessionStore.ResolveSessionReferenceMentions(input, currentSessionID)
+	if err != nil {
+		return "", err
+	}
+	if frame == "" {
+		return rewritten, nil
+	}
+	return frame + "\n\n" + rewritten, nil
 }
 
 // recordInputHistory records a user input in the current session's input

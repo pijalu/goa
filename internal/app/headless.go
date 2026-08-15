@@ -290,7 +290,13 @@ func (h *HeadlessApp) startWork(ctx context.Context, dc *doneCloser, prompt stri
 		return h.startGoal(ctx, prompt)
 	}
 	go h.waitForIdle(ctx, dc)
-	if err := h.subs.agentMgr.SendUserInput(prompt); err != nil {
+	// Expand @[label](goa-session:<id>) cross-session references (P24 / CX7)
+	// the same way the interactive prompt intake does.
+	expanded, err := expandSessionReferences(h.subs, prompt)
+	if err != nil {
+		return fmt.Errorf("session reference error: %w", err)
+	}
+	if err := h.subs.agentMgr.SendUserInput(expanded); err != nil {
 		return fmt.Errorf("send error: %w", err)
 	}
 	return nil
