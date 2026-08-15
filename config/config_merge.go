@@ -693,6 +693,7 @@ func (c *Config) mergeContextCompression(other *Config) {
 	mergeCompressionStrategies(&c.ContextCompression.Strategies, cc.Strategies)
 	mergeCompressionPerModel(&c.ContextCompression.PerModel, cc.PerModel)
 	mergeMicroCompaction(&c.ContextCompression.MicroCompaction, cc.MicroCompaction)
+	mergeToolResultPruning(&c.ContextCompression.ToolResultPruning, cc.ToolResultPruning)
 }
 
 // contextCompressionLayerEmpty reports whether a cascade layer carries no
@@ -709,7 +710,8 @@ func contextCompressionLayerEmpty(cc ContextCompressionConfig) bool {
 		cc.Thresholds == (CompressionThresholdsConfig{}) &&
 		cc.Strategies == (CompressionLayerStrategiesConfig{}) &&
 		len(cc.PerModel) == 0 &&
-		cc.MicroCompaction == (MicroCompactionSettings{})
+		cc.MicroCompaction == (MicroCompactionSettings{}) &&
+		cc.ToolResultPruning == (ToolResultPruningSettings{})
 }
 
 // mergeCompressionStrategies overlays non-empty per-layer strategy fields.
@@ -745,6 +747,20 @@ func mergeMicroCompaction(dst *MicroCompactionSettings, src MicroCompactionSetti
 	}
 	if src.MinContextRatio != 0 {
 		dst.MinContextRatio = src.MinContextRatio
+	}
+}
+
+// mergeToolResultPruning overlays tool-result pruner settings field-wise so a
+// higher layer setting one key does not reset the others to zero.
+func mergeToolResultPruning(dst *ToolResultPruningSettings, src ToolResultPruningSettings) {
+	if src.ThresholdChars != 0 {
+		dst.ThresholdChars = src.ThresholdChars
+	}
+	if src.HeadChars != 0 {
+		dst.HeadChars = src.HeadChars
+	}
+	if src.TailChars != 0 {
+		dst.TailChars = src.TailChars
 	}
 }
 

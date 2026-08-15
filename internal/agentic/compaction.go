@@ -46,6 +46,65 @@ type MicroCompactionConfig struct {
 	MinContextRatio float64
 }
 
+// PruneMarker is the fixed in-place marker substituted for the removed middle
+// span of an over-budget tool result by the pre-compaction tool-result pruner.
+// Its cost counts against the pruning budget: a valid configuration keeps
+// HeadChars + len(PruneMarker) + TailChars within ThresholdChars so every
+// pruned result fits the threshold and a second pass emits nothing.
+const PruneMarker = "\n\n[... tool result middle pruned ...]\n\n"
+
+// DefaultToolResultPruningConfig is the default configuration for the
+// pre-compaction tool-result pruner (dsh compaction-tool-result-pruner parity:
+// 8192/4096/1024 Unicode code points).
+var DefaultToolResultPruningConfig = ToolResultPruningConfig{
+	ThresholdChars: 8192,
+	HeadChars:      4096,
+	TailChars:      1024,
+}
+
+// ToolResultPruningConfig controls the pre-compaction tool-result pruner: a
+// model-free pass that runs ahead of summarizeHistory and rewrites over-budget
+// historical tool results in place to head + PruneMarker + tail. Character
+// budgets are in Unicode code points (runes), matching the dsh reference.
+type ToolResultPruningConfig struct {
+	// ThresholdChars prunes a tool result when its content exceeds this many
+	// Unicode code points. <= 0 falls back to the default (8192).
+	ThresholdChars int
+
+	// HeadChars is the number of leading Unicode code points retained.
+	// <= 0 falls back to the default (4096).
+	HeadChars int
+
+	// TailChars is the number of trailing Unicode code points retained.
+	// <= 0 falls back to the default (1024).
+	TailChars int
+}
+
+// resolve returns the effective pruning configuration: zero or negative
+// fields inherit the defaults so an SDK caller that never configured pruning
+// (or set only one field) still gets a sane pass — the same field-wise
+// fallback convention as microFallbackConfig. A combination whose head +
+// marker + tail exceeds the threshold cannot prune without growth (the dsh
+// config rejects it at construction); resolve falls the whole triple back to
+// the defaults so the pruned output is always within threshold and strictly
+// smaller than its input.
+func (c ToolResultPruningConfig) resolve() ToolResultPruningConfig {
+	def := DefaultToolResultPruningConfig
+	if c.ThresholdChars <= 0 {
+		c.ThresholdChars = def.ThresholdChars
+	}
+	if c.HeadChars <= 0 {
+		c.HeadChars = def.HeadChars
+	}
+	if c.TailChars <= 0 {
+		c.TailChars = def.TailChars
+	}
+	if c.HeadChars+len([]rune(PruneMarker))+c.TailChars > c.ThresholdChars {
+		return def
+	}
+	return c
+}
+
 // microFallbackConfig returns the micro settings for the summarize-overflow
 // fallback in Compact (applyMicroForSummarize). The fallback runs regardless
 // of MicroCompaction.Enabled — it is the escape hatch when summarize itself

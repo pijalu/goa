@@ -1172,6 +1172,46 @@ func TestAgentManager_BuildCompressionConfig_PerModelOverlay(t *testing.T) {
 	})
 }
 
+// TestAgentManager_BuildCompressionConfig_ToolResultPruning verifies the CX1
+// pruner settings flow from YAML config into the SDK compression config:
+// explicit values win, zero values inherit the documented defaults.
+func TestAgentManager_BuildCompressionConfig_ToolResultPruning(t *testing.T) {
+	t.Run("explicit values win", func(t *testing.T) {
+		cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+			ToolResultPruning: config.ToolResultPruningSettings{
+				ThresholdChars: 4096, HeadChars: 2048, TailChars: 512,
+			},
+		}}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+		want := agentic.ToolResultPruningConfig{ThresholdChars: 4096, HeadChars: 2048, TailChars: 512}
+		if cc.ToolResultPruning != want {
+			t.Errorf("ToolResultPruning = %+v, want %+v", cc.ToolResultPruning, want)
+		}
+	})
+
+	t.Run("zero inherits SDK defaults", func(t *testing.T) {
+		cfg := &config.Config{}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+		if cc.ToolResultPruning != agentic.DefaultToolResultPruningConfig {
+			t.Errorf("ToolResultPruning = %+v, want defaults %+v", cc.ToolResultPruning, agentic.DefaultToolResultPruningConfig)
+		}
+	})
+
+	t.Run("partial override inherits per field", func(t *testing.T) {
+		cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
+			ToolResultPruning: config.ToolResultPruningSettings{ThresholdChars: 4096},
+		}}
+		am := NewAgentManager(cfg, nil, nil, nil, nil, "")
+		cc := am.buildCompressionConfig(cfg, "some-model", 32768)
+		want := agentic.ToolResultPruningConfig{ThresholdChars: 4096, HeadChars: 4096, TailChars: 1024}
+		if cc.ToolResultPruning != want {
+			t.Errorf("ToolResultPruning = %+v, want %+v", cc.ToolResultPruning, want)
+		}
+	})
+}
+
 // TestAgentManager_BuildCompressionConfig_EnabledFalseDisablesProactive
 // verifies the Enabled toggle is honored end-to-end: an explicit
 // `enabled: false` zeroes every proactive threshold (soft/trigger/hard), so

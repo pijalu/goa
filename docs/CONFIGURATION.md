@@ -138,6 +138,10 @@ context_compression:
     cache_miss_threshold: "1h"       # Idle time before micro triggers
     truncated_marker: "[Old tool result content cleared]"
     min_context_ratio: 0.5           # Min context usage to trigger (0.0-1.0)
+  tool_result_pruning:               # CX1: pre-compaction pruner (ahead of summarize)
+    threshold_chars: 8192            # Prune tool results over this many Unicode code points
+    head_chars: 4096                 # Leading code points retained
+    tail_chars: 1024                 # Trailing code points retained
 
 # ── Mode ─────────────────────────────────────────────────────────
 mode:

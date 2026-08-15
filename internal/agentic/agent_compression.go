@@ -39,6 +39,19 @@ func (a *Agent) Compact(ctx context.Context) error {
 		return nil
 	}
 
+	// CX1: pre-compaction tool-result pruning runs AHEAD of summarize range
+	// selection (the micro dry-run below and summarizeHistory itself are the
+	// range consumers). It rewrites over-budget historical tool results in
+	// place to a bounded head + PruneMarker + tail — model-free, so when the
+	// re-measured estimate drops under the escalation level we skip the
+	// summarize LLM call entirely (the pruned history stays as-is).
+	skip, pruneBefore, pruneRes := a.pruneToolResultsPreCompact()
+	if skip {
+		a.emitCompactionResult("tool_result_pruning", pruneBefore, pruneRes, "pruning resolved context pressure; summarize skipped")
+		a.emitContextStats()
+		return nil
+	}
+
 	// Micro compaction is an OPT-IN maintenance step, disabled by default so
 	// summarize is always the default compaction path on a full window.
 	//
@@ -240,6 +253,94 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 	}
 
 	return summary.String(), nil
+}
+
+// --- Pre-compaction tool-result pruning (CX1) ---
+
+// pruneToolResultsPreCompact runs the model-free tool-result pruning pass
+// ahead of summarizeHistory (CX1): every over-budget ToolRole message in
+// history is rewritten in place to head + PruneMarker + tail (Unicode code
+// points), preserving the tool-call/result pairing (ToolCallID, ToolName and
+// every field except Content are untouched).
+//
+// The pass then re-measures the context estimate: when pruning dropped usage
+// under the escalation level, the caller SKIPS the summarize LLM call (the
+// pruned history already fits). It returns skip=true only in that case, plus
+// the pre-pass stats and work record for the caller's EventCompact. The pass
+// is idempotent: a second invocation prunes nothing (every emitted result is
+// within the threshold and strictly smaller than its triggering input).
+func (a *Agent) pruneToolResultsPreCompact() (skip bool, before ContextStats, res compactionResult) {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 {
+		return false, before, res
+	}
+	cfg := a.cfg.ContextCompression.ToolResultPruning.resolve()
+
+	a.mu.Lock()
+	before = a.computeContextStats()
+	changed := a.pruneToolResultsLocked(cfg)
+	skip = changed > 0 &&
+		a.computeContextStatsForMax(maxTokens).UsagePercent < a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+	a.mu.Unlock()
+
+	if changed > 0 && a.cfg.Logger != nil {
+		note := ""
+		if skip {
+			note = "; pressure resolved, skipping summarize"
+		}
+		a.cfg.Logger.Log(Info, "tool-result pruner: pruned %d over-budget tool result(s) (threshold=%d chars)%s",
+			changed, cfg.ThresholdChars, note)
+	}
+	return skip, before, compactionResult{changed: changed}
+}
+
+// pruneToolResultsLocked rewrites every over-budget tool result in history to
+// head + PruneMarker + tail under a.mu. It returns the number of results
+// pruned. A result already within the threshold (including one pruned by an
+// earlier pass) is left untouched, making the pass idempotent.
+func (a *Agent) pruneToolResultsLocked(cfg ToolResultPruningConfig) int {
+	changed := 0
+	for i := range a.history {
+		msg := &a.history[i]
+		if msg.Role != ToolRole {
+			continue
+		}
+		pruned, ok := pruneToolResultContent(msg.Content, cfg)
+		if !ok {
+			continue
+		}
+		msg.Content = pruned
+		changed++
+	}
+	if changed > 0 {
+		// Tool payloads were replaced in place: the recorded provider prompt
+		// no longer matches the conversation.
+		a.invalidateContextUsageLocked()
+	}
+	return changed
+}
+
+// pruneToolResultContent returns the bounded replacement for an over-budget
+// tool result body: head + PruneMarker + tail in Unicode code points (runes),
+// or ok=false when the content is within the threshold. Slicing by rune
+// never splits a UTF-8 multi-byte sequence (the dsh code-point rule). A valid
+// configuration keeps head + marker + tail within the threshold, so the
+// replacement is at most ThresholdChars runes and strictly smaller than the
+// triggering input.
+func pruneToolResultContent(content string, cfg ToolResultPruningConfig) (string, bool) {
+	runes := []rune(content)
+	if len(runes) <= cfg.ThresholdChars {
+		return "", false
+	}
+	head := cfg.HeadChars
+	if head > len(runes) {
+		head = len(runes)
+	}
+	tail := cfg.TailChars
+	if tail > len(runes)-head {
+		tail = len(runes) - head
+	}
+	return string(runes[:head]) + PruneMarker + string(runes[len(runes)-tail:]), true
 }
 
 // --- Context Compression ---

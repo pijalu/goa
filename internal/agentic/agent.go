@@ -544,6 +544,13 @@ type ContextCompressionConfig struct {
 	// Only used when Strategy == CompressionMicro.
 	MicroCompaction MicroCompactionConfig
 
+	// ToolResultPruning configures the pre-compaction tool-result pruner:
+	// a model-free pass that runs ahead of summarizeHistory and rewrites
+	// over-budget historical tool results in place (head + marker + tail),
+	// so a compaction-triggering request can fall back under pressure without
+	// an LLM call when pruning alone resolves it. Zero value = defaults.
+	ToolResultPruning ToolResultPruningConfig
+
 	// Strategy selects the compression algorithm.
 	// Default: CompressionToolElision.
 	Strategy CompressionStrategy

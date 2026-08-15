@@ -1026,6 +1026,10 @@ type ContextCompressionConfig struct {
 	CacheGate           string                  `yaml:"cache_gate,omitempty"`
 	PreserveRecentTurns int                     `yaml:"preserve_recent_turns"`
 	MicroCompaction     MicroCompactionSettings `yaml:"micro_compaction,omitempty"`
+	// ToolResultPruning configures the pre-compaction tool-result pruner
+	// (CX1): a model-free pass ahead of summarization that rewrites
+	// over-budget historical tool results to head + marker + tail.
+	ToolResultPruning ToolResultPruningSettings `yaml:"tool_result_pruning,omitempty"`
 }
 
 // CompressionThresholdsConfig holds the fill levels (percent of the effective
@@ -1086,6 +1090,21 @@ type MicroCompactionSettings struct {
 	CacheMissThreshold string  `yaml:"cache_miss_threshold,omitempty"`
 	TruncatedMarker    string  `yaml:"truncated_marker,omitempty"`
 	MinContextRatio    float64 `yaml:"min_context_ratio,omitempty"`
+}
+
+// ToolResultPruningSettings holds tool-result pruner config overrides (CX1).
+// Character budgets are in Unicode code points; zero fields inherit the
+// defaults (threshold 8192, head 4096, tail 1024).
+type ToolResultPruningSettings struct {
+	// ThresholdChars prunes a tool result when its content exceeds this many
+	// Unicode code points (default 8192).
+	ThresholdChars int `yaml:"threshold_chars,omitempty"`
+	// HeadChars is the number of leading Unicode code points retained
+	// (default 4096).
+	HeadChars int `yaml:"head_chars,omitempty"`
+	// TailChars is the number of trailing Unicode code points retained
+	// (default 1024).
+	TailChars int `yaml:"tail_chars,omitempty"`
 }
 
 // TelegramConfig controls the telegram talk style system prompt injection.

@@ -246,8 +246,32 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 		ve.Add(fmt.Sprintf("context_compression.threshold_percent: must be 0-100 (got %d)", cc.ThresholdPercent))
 	}
 	validateCompressionThresholds(ve, "context_compression.thresholds", cc.Thresholds)
+	validateToolResultPruning(ve, "context_compression.tool_result_pruning", cc.ToolResultPruning)
 	for id, o := range cc.PerModel {
 		c.validateCompressionOverride(ve, id, o)
+	}
+}
+
+// validateToolResultPruning checks the tool-result pruner budgets (CX1):
+// negative values are rejected, and head + marker + tail must fit within the
+// threshold so every pruned result lands within budget and the pass stays
+// idempotent (dsh compaction-tool-result-pruner config rule). The marker is
+// 39 runes ("\n\n[... tool result middle pruned ...]\n\n"); the constant
+// mirrors agentic.PruneMarker to keep config free of an SDK import.
+func validateToolResultPruning(ve *internal.ValidationError, path string, s ToolResultPruningSettings) {
+	const markerChars = 39
+	if s.ThresholdChars < 0 || s.HeadChars < 0 || s.TailChars < 0 {
+		ve.Add(fmt.Sprintf("%s: values must be non-negative (got threshold=%d head=%d tail=%d)",
+			path, s.ThresholdChars, s.HeadChars, s.TailChars))
+		return
+	}
+	threshold := s.ThresholdChars
+	if threshold == 0 {
+		threshold = 8192
+	}
+	if s.HeadChars+markerChars+s.TailChars > threshold {
+		ve.Add(fmt.Sprintf("%s: head_chars + marker + tail_chars (%d) must be at most threshold_chars (%d)",
+			path, s.HeadChars+markerChars+s.TailChars, threshold))
 	}
 }
 

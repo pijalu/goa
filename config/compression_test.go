@@ -338,3 +338,81 @@ func TestDefaultConfig_CompressionThresholds(t *testing.T) {
 		t.Errorf("legacy ThresholdPercent = %d, want 0 (migrated to thresholds block)", cc.ThresholdPercent)
 	}
 }
+
+// TestDeepMergeContextCompressionToolResultPruning verifies the pruner
+// settings (CX1) merge field-wise across cascade layers: a higher layer
+// setting one key does not reset the others.
+func TestDeepMergeContextCompressionToolResultPruning(t *testing.T) {
+	base := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:           boolPtr(true),
+		ToolResultPruning: ToolResultPruningSettings{ThresholdChars: 4096, HeadChars: 2048},
+	}}
+	override := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:           boolPtr(true),
+		ToolResultPruning: ToolResultPruningSettings{TailChars: 256},
+	}}
+	base.DeepMerge(override)
+	got := base.ContextCompression.ToolResultPruning
+	if got.ThresholdChars != 4096 || got.HeadChars != 2048 || got.TailChars != 256 {
+		t.Errorf("ToolResultPruning = %+v, want {4096 2048 256} (field-wise merge)", got)
+	}
+}
+
+// TestConfigValidateToolResultPruning covers the CX1 budget validation:
+// negative values are rejected and head + marker + tail must fit within the
+// threshold (dsh compaction-tool-result-pruner config rule; the marker is 39
+// runes).
+func TestConfigValidateToolResultPruning(t *testing.T) {
+	tests := []struct {
+		name    string
+		pruning ToolResultPruningSettings
+		wantErr string // substring; empty = valid
+	}{
+		{name: "zero inherits defaults", pruning: ToolResultPruningSettings{}},
+		{
+			name:    "valid custom budgets",
+			pruning: ToolResultPruningSettings{ThresholdChars: 4096, HeadChars: 2048, TailChars: 512},
+		},
+		{
+			name:    "negative threshold rejected",
+			pruning: ToolResultPruningSettings{ThresholdChars: -1},
+			wantErr: "must be non-negative",
+		},
+		{
+			name:    "negative head rejected",
+			pruning: ToolResultPruningSettings{HeadChars: -5},
+			wantErr: "must be non-negative",
+		},
+		{
+			name:    "head+marker+tail over threshold rejected",
+			pruning: ToolResultPruningSettings{ThresholdChars: 100, HeadChars: 90, TailChars: 50},
+			wantErr: "must be at most threshold_chars",
+		},
+		{
+			// 4096 + 39 + 1024 = 5159 ≤ 8192 (the default threshold).
+			name:    "explicit head/tail fit the default threshold",
+			pruning: ToolResultPruningSettings{HeadChars: 4096, TailChars: 1024},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{ContextCompression: ContextCompressionConfig{
+				Enabled:           boolPtr(true),
+				ToolResultPruning: tt.pruning,
+			}}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}

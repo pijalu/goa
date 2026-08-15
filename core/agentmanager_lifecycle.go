@@ -308,7 +308,26 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		DisableCacheGate:    ov.cacheGate == "off",
 		PreserveRecentTurns: ov.preserveRecentTurns,
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
+		ToolResultPruning:   buildToolResultPruningConfig(cfg.ContextCompression.ToolResultPruning),
 	}
+}
+
+// buildToolResultPruningConfig maps the YAML tool-result pruner settings to
+// the SDK config. Zero fields inherit the SDK defaults (threshold 8192, head
+// 4096, tail 1024 Unicode code points); negative head/tail also reset to the
+// default so a misconfigured cascade cannot produce a zero-budget pass.
+func buildToolResultPruningConfig(s config.ToolResultPruningSettings) agentic.ToolResultPruningConfig {
+	out := agentic.DefaultToolResultPruningConfig
+	if s.ThresholdChars > 0 {
+		out.ThresholdChars = s.ThresholdChars
+	}
+	if s.HeadChars > 0 {
+		out.HeadChars = s.HeadChars
+	}
+	if s.TailChars > 0 {
+		out.TailChars = s.TailChars
+	}
+	return out
 }
 
 // agenticLayerStrategies maps the config layer strategies to the SDK type;
