@@ -260,15 +260,8 @@ func TestSkillSchemaValidation(t *testing.T) {
 
 	props := schema.Schema["properties"].(map[string]interface{})
 	skillNameProp := props["skill_name"].(map[string]interface{})
-	enum := skillNameProp["enum"].([]string)
-	if len(enum) != 1 || enum[0] != "genSentence" {
-		t.Errorf("Top-level enum = %v, want [genSentence]", enum)
-	}
-
-	for _, name := range enum {
-		if name == "genSubject" || name == "genVerb" || name == "genObject" {
-			t.Errorf("Sub-skill %q should not appear in top-level schema", name)
-		}
+	if _, hasEnum := skillNameProp["enum"]; hasEnum {
+		t.Errorf("run_skill schema must not contain a skill_name enum (catalog-only discovery)")
 	}
 }
 

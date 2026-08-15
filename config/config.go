@@ -626,9 +626,9 @@ type SkillsConfig struct {
 	Enabled []string `yaml:"enabled,omitempty"`
 	// Disabled lists skill names to turn off (any source: embedded and
 	// file-based). Disabled skills are not registered, so they never appear in
-	// the system prompt listing, the skills banner, or the run_skill enum. A
-	// name in both Enabled and Disabled is disabled (explicit off wins).
-	// Load-time only: the system prompt is not rebuilt mid-session.
+	// the system prompt listing, the skills banner, or the <available_skills>
+	// catalog. A name in both Enabled and Disabled is disabled (explicit off
+	// wins). Load-time only: the system prompt is not rebuilt mid-session.
 	Disabled []string `yaml:"disabled,omitempty"`
 	// EmbeddedEnabled re-enables individual embedded skills that are OFF by
 	// default (all embedded skills except telegram). Unlike the

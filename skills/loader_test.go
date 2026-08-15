@@ -194,9 +194,9 @@ func TestSkillRegistryListSource(t *testing.T) {
 
 // TestSkillRegistrySetDisabled verifies skills can be disabled via
 // configuration for ALL sources: disabled built-ins and disabled file-based
-// skills are never registered (prompt listing, banner, run_skill enum all read
-// from this registry). A disabled built-in can no longer be shadowed by a
-// same-named file skill — the explicit off wins.
+// skills are never registered (prompt listing, banner, <available_skills>
+// catalog all read from this registry). A disabled built-in can no longer be
+// shadowed by a same-named file skill — the explicit off wins.
 func TestSkillRegistrySetDisabled(t *testing.T) {
 	// Disabled embedded skill is gone.
 	reg := NewSkillRegistry(nil)

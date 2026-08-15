@@ -5,6 +5,7 @@
 package skills
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -34,11 +35,28 @@ func ToSkillSummaries(skills []*Skill) []SkillSummary {
 	return out
 }
 
+// availableSkillsBudget bounds the bytes spent listing individual skills in
+// <available_skills> so a workspace with an extreme number of skills can't
+// bloat every turn's prompt. Skills past the budget are summarized as a count
+// (…and N more) rather than dropped silently — the model can still load any of
+// them by name, and an unknown name returns the full list from run_skill. The
+// first skill is always listed, so a skill set is never rendered as empty.
+const availableSkillsBudget = 4096
+
+// maxSkillDescriptionRunes caps each skill's one-line description so a single
+// verbose description can't dominate the skills-list budget. The cap is roomy
+// on purpose: the description carries the skill's trigger conditions ("use
+// when…"), and truncating those is what stops the model from ever invoking the
+// skill.
+const maxSkillDescriptionRunes = 200
+
 // availableSkillsData is the template payload for the <available_skills>
-// prompt section: the skills plus the mode-dependent header line.
+// prompt section: the skills plus the mode-dependent header line and, when the
+// catalog is over-budget, a count-summary line.
 type availableSkillsData struct {
-	Header string
-	Skills []safeSkill
+	Header  string
+	Skills  []safeSkill
+	Summary string
 }
 
 // RenderAvailableSkills renders the <available_skills> prompt via the given
@@ -52,6 +70,10 @@ type availableSkillsData struct {
 // model-invocable (model_invocable:false, or user_invocable:false per the
 // P16 acceptance that a user-non-invocable skill never appears in the
 // model's tool schema) are filtered out before rendering.
+//
+// The catalog is budgeted (availableSkillsBudget): descriptions are truncated
+// to maxSkillDescriptionRunes, and skills past the budget are summarized as a
+// count instead of being dropped silently.
 func RenderAvailableSkills(renderer PromptRenderer, skills []SkillSummary, runSkillAvailable bool) string {
 	if len(skills) == 0 || renderer == nil {
 		return ""
@@ -60,15 +82,58 @@ func RenderAvailableSkills(renderer PromptRenderer, skills []SkillSummary, runSk
 	if len(skills) == 0 {
 		return ""
 	}
+	safe := escapeSkills(skills, runSkillAvailable)
+	listed, omitted := budgetSkills(safe)
 	data := availableSkillsData{
-		Header: availableSkillsHeader(runSkillAvailable),
-		Skills: escapeSkills(skills, runSkillAvailable),
+		Header:  availableSkillsHeader(runSkillAvailable),
+		Skills:  listed,
+		Summary: availableSkillsSummary(omitted, runSkillAvailable),
 	}
 	result, err := renderer.Render("available_skills", data)
 	if err != nil {
 		return ""
 	}
 	return result
+}
+
+// budgetSkills keeps the first skill unconditionally (never silently drop a
+// skill set to zero), then lists skills while their rendered lines fit
+// availableSkillsBudget; the rest are counted as omitted so the caller can
+// summarize them. Line costs are computed on the XML-escaped fields the
+// template actually renders, matching the byte cost of the prompt.
+func budgetSkills(skills []safeSkill) (listed []safeSkill, omitted int) {
+	spent := 0
+	for i, s := range skills {
+		// The embedded template emits "\n  <skill …>…</skill>\n" per skill.
+		line := 4 + len(skillLine(s))
+		if i > 0 && spent+line > availableSkillsBudget {
+			omitted++
+			continue
+		}
+		listed = append(listed, s)
+		spent += line
+	}
+	return listed, omitted
+}
+
+// skillLine mirrors the per-skill line of the embedded available_skills
+// template so budgetSkills can account for exactly what gets rendered.
+func skillLine(s safeSkill) string {
+	return `<skill name="` + s.Name + `" category="` + s.Category + `" tool="` + s.ExecuteTool + `" location="` + s.FilePath + `">` + s.Description + `</skill>`
+}
+
+// availableSkillsSummary renders the count-summary line for skills past the
+// budget. It is mode-aware like the header: with run_skill registered the
+// model calls it by name; without it (inline execution mode) the model
+// invokes /skill:run:<name>.
+func availableSkillsSummary(omitted int, runSkillAvailable bool) string {
+	if omitted <= 0 {
+		return ""
+	}
+	if runSkillAvailable {
+		return fmt.Sprintf("…and %d more (call run_skill with a name; unknown names list all)", omitted)
+	}
+	return fmt.Sprintf("…and %d more (invoke with /skill:run:<name>; unknown names list all)", omitted)
 }
 
 // filterModelInvocable returns only the skills the model may invoke,
@@ -171,7 +236,7 @@ func escapeSkills(skills []SkillSummary, runSkillAvailable bool) []safeSkill {
 		}
 		out[i] = safeSkill{
 			Name:             escapeXML(s.Name),
-			Description:      escapeXML(s.Description),
+			Description:      escapeXML(truncateSkillDescription(s.Description)),
 			Category:         escapeXML(s.Category),
 			FilePath:         escapeXML(s.FilePath),
 			ExecuteTool:      executeTool,
@@ -179,6 +244,18 @@ func escapeSkills(skills []SkillSummary, runSkillAvailable bool) []safeSkill {
 		}
 	}
 	return out
+}
+
+// truncateSkillDescription keeps a skill's one-line description short so a
+// single verbose description can't dominate the skills-list budget. The
+// ellipsis is reserved inside the cap, so the result is at most
+// maxSkillDescriptionRunes runes.
+func truncateSkillDescription(desc string) string {
+	runes := []rune(desc)
+	if len(runes) <= maxSkillDescriptionRunes {
+		return desc
+	}
+	return strings.TrimSpace(string(runes[:maxSkillDescriptionRunes-1])) + "…"
 }
 
 func escapeXML(s string) string {

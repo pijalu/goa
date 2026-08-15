@@ -306,14 +306,6 @@ func (r *Runner) GetAllSkills() []*Skill {
 func (r *Runner) IsRetryable(err error) bool { return false }
 
 func (r *Runner) Schema() agentic.ToolSchema {
-	// Build enum of skill names
-	r.mu.RLock()
-	skillNames := make([]string, 0, len(r.skills))
-	for name := range r.skills {
-		skillNames = append(skillNames, name)
-	}
-	r.mu.RUnlock()
-
 	return agentic.ToolSchema{
 		Name:        "run_skill",
 		Description: "Execute a loaded skill with a given task. Available skills are listed in the system prompt.",
@@ -323,7 +315,6 @@ func (r *Runner) Schema() agentic.ToolSchema {
 				"skill_name": map[string]interface{}{
 					"type":        "string",
 					"description": "Name of the skill to execute",
-					"enum":        skillNames,
 				},
 				"task": map[string]interface{}{
 					"type":        []string{"string", "object", "null"},

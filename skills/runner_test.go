@@ -5,6 +5,7 @@
 package skills
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,14 +100,21 @@ func TestSkillRunnerTool_SubAgentModeRequiresPool(t *testing.T) {
 }
 
 // TestSkillRunnerTool_UnknownSkill verifies the error path is identical in
-// both modes.
+// both modes and lists the available skills (P2 acceptance: unknown names
+// still error with the available list).
 func TestSkillRunnerTool_UnknownSkill(t *testing.T) {
 	reg := writeRunnerTestSkill(t, t.TempDir(), "review", "Review the code.")
 	tool := NewSkillRunnerTool(reg, nil, nil, true)
 
 	_, err := tool.Execute(`{"skill_name":"nope","task":"x"}`)
-	if err == nil || !strings.Contains(err.Error(), "not found") {
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not-found error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "review") {
+		t.Errorf("unknown-skill error must list available skills, got: %v", err)
 	}
 }
 
@@ -238,43 +246,36 @@ func TestStripSkillNoise(t *testing.T) {
 	}
 }
 
-// TestSkillRunnerToolSchema_ModelInvocableEnum is the P16 acceptance for the
-// model's tool schema: a user_invocable:false skill never appears in the
-// run_skill catalog (the enum the model sees), and neither does a
-// model_invocable:false skill. Fully-invocable skills are listed.
-func TestSkillRunnerToolSchema_ModelInvocableEnum(t *testing.T) {
-	dir := t.TempDir()
-	writeRunnerTestSkillWithPolicy(t, dir, "plain", "")
-	writeRunnerTestSkillWithPolicy(t, dir, "model-off", "model_invocable: false")
-	writeRunnerTestSkillWithPolicy(t, dir, "user-off", "user_invocable: false")
-	writeRunnerTestSkillWithPolicy(t, dir, "both-off", "model_invocable: false\nuser_invocable: false")
+// TestSkillRunnerToolSchema_NoEnum is the P2 acceptance: the run_skill schema
+// no longer carries the skill_name enum — discovery is catalog-only via
+// <available_skills> — so the schema is byte-identical across sessions with
+// different skill sets (prompt-cache stable). The P16 policy filtering that
+// used to live in the enum now lives in the catalog renderer
+// (RenderAvailableSkills → filterModelInvocable).
+func TestSkillRunnerToolSchema_NoEnum(t *testing.T) {
+	regA := writeRunnerTestSkill(t, t.TempDir(), "alpha", "A")
+	regB := writeRunnerTestSkill(t, t.TempDir(), "bravo", "B")
 
-	reg := NewSkillRegistry([]string{dir})
-	if err := reg.LoadAll(); err != nil {
-		t.Fatalf("load skills: %v", err)
-	}
-	tool := NewSkillRunnerTool(reg, nil, nil, true)
+	toolA := NewSkillRunnerTool(regA, nil, nil, true)
+	toolB := NewSkillRunnerTool(regB, nil, nil, true)
 
-	schema := tool.Schema()
-	props, _ := schema.Schema["properties"].(map[string]any)
+	schemaA := toolA.Schema()
+	props, _ := schemaA.Schema["properties"].(map[string]any)
 	skillProp, _ := props["skill_name"].(map[string]any)
-	enum, _ := skillProp["enum"].([]string)
+	if _, hasEnum := skillProp["enum"]; hasEnum {
+		t.Errorf("run_skill schema must not contain a skill_name enum (catalog-only discovery)")
+	}
 
-	got := map[string]bool{}
-	for _, name := range enum {
-		got[name] = true
+	jsonA, err := json.Marshal(schemaA)
+	if err != nil {
+		t.Fatalf("marshal schema A: %v", err)
 	}
-	if !got["plain"] {
-		t.Errorf("plain skill missing from run_skill enum: %v", enum)
+	jsonB, err := json.Marshal(toolB.Schema())
+	if err != nil {
+		t.Fatalf("marshal schema B: %v", err)
 	}
-	if got["model-off"] {
-		t.Errorf("model_invocable:false skill must never appear in the model's tool schema: %v", enum)
-	}
-	if got["user-off"] {
-		t.Errorf("user_invocable:false skill must never appear in the model's tool schema: %v", enum)
-	}
-	if got["both-off"] {
-		t.Errorf("model+user non-invocable skill must never appear in the model's tool schema: %v", enum)
+	if string(jsonA) != string(jsonB) {
+		t.Errorf("run_skill schema is session-dependent:\nA: %s\nB: %s", jsonA, jsonB)
 	}
 }
 

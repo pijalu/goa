@@ -44,7 +44,7 @@ type SkillMeta struct {
 	// knowledge-category skills — sticky action skills are ignored.
 	Sticky bool `yaml:"sticky"`
 	// ModelInvocable reports whether the skill may be invoked by the model
-	// through the run_skill tool catalog / <available_skills> listing.
+	// through the <available_skills> catalog listing.
 	// Defaults to true when omitted.
 	ModelInvocable bool `yaml:"model_invocable"`
 	// UserInvocable reports whether the skill may be invoked by the user from
@@ -109,7 +109,7 @@ func (s *Skill) IsSticky() bool {
 }
 
 // IsModelInvocable reports whether the skill may be invoked by the model via
-// the run_skill tool catalog / <available_skills> listing. The model-facing
+// the <available_skills> catalog listing. The model-facing
 // predicate requires BOTH flags (P16): a skill the user cannot invoke is
 // never advertised to the model, so the model catalog is always a subset of
 // what the user can run from the UI.
@@ -205,7 +205,8 @@ type SkillSummary struct {
 
 // IsModelInvocable reports whether the skill may be advertised to the model.
 // The model-facing predicate requires BOTH flags (P16 acceptance): a skill
-// the user cannot invoke never appears in the model's tool schema.
+// the user cannot invoke never appears in the model's <available_skills>
+// catalog.
 func (s SkillSummary) IsModelInvocable() bool {
 	return s.ModelInvocable && s.UserInvocable
 }
@@ -283,9 +284,9 @@ func (r *SkillRegistry) SetEmbeddedFS(efs fs.FS) {
 
 // SetDisabled marks skill names as disabled for ALL sources (embedded and
 // file-based): they are skipped during LoadAll, so they never reach the system
-// prompt listing, the skills banner, or the run_skill enum. A name in both
-// Enabled and Disabled is disabled (explicit off wins). Must be called before
-// LoadAll.
+// prompt listing, the skills banner, or the <available_skills> catalog. A name
+// in both Enabled and Disabled is disabled (explicit off wins). Must be called
+// before LoadAll.
 func (r *SkillRegistry) SetDisabled(names []string) {
 	if len(names) == 0 {
 		return
