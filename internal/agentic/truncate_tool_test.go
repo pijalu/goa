@@ -8,9 +8,10 @@ import (
 )
 
 // TestTruncateToolResult_PreservesHeadAndTail verifies source-level tool-result
-// truncation keeps both the start and the end (4.4c): the beginning matters for
-// read_file-style context, the end matters for bash/webfetch errors and final
-// results. The middle is elided with a clear marker.
+// truncation keeps both the start and the end for the default category (4.4c):
+// the beginning matters for read_file-style context, the end matters for
+// bash/webfetch errors and final results. The middle is elided with a clear
+// marker. A webfetch tool name exercises the default head/tail budget.
 func TestTruncateToolResult_PreservesHeadAndTail(t *testing.T) {
 	head := "HEAD-MARKER-" + strings.Repeat("H", 4000)
 	middle := strings.Repeat("M", 8000) // to be elided
@@ -18,7 +19,7 @@ func TestTruncateToolResult_PreservesHeadAndTail(t *testing.T) {
 	output := head + middle + tail
 
 	const limit = 2000
-	got := truncateToolResult(output, limit)
+	got := truncateToolResult("webfetch", output, limit)
 
 	if !strings.Contains(got, "HEAD-MARKER") {
 		t.Error("truncated result should preserve the head")
@@ -49,7 +50,7 @@ func TestTruncateToolResult_PreservesHeadAndTail(t *testing.T) {
 // the limit pass through untouched.
 func TestTruncateToolResult_NoTruncationUnderLimit(t *testing.T) {
 	output := strings.Repeat("x", 500)
-	if got := truncateToolResult(output, 1000); got != output {
+	if got := truncateToolResult("webfetch", output, 1000); got != output {
 		t.Errorf("output under limit should be unchanged, got len %d", len(got))
 	}
 }

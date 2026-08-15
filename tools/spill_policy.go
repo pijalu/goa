@@ -7,6 +7,7 @@ package tools
 import (
 	"fmt"
 
+	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/tools/common"
 )
 
@@ -53,7 +54,7 @@ func (p *SpillPolicy) ApplySpill(toolName, result string) string {
 	if err != nil {
 		return result
 	}
-	return p.buildReplacement(result, path)
+	return p.buildReplacement(toolName, result, path)
 }
 
 // spillNotice renders the omission notice for a saved result.
@@ -62,22 +63,21 @@ func spillNotice(omitted int, path string) string {
 		omitted, path)
 }
 
-// buildReplacement composes preview + "\n\n" + notice within the cap. The
-// notice cost is reserved out of the budget (priced at the worst-case omission
-// count — the full byte total — so the real notice is never longer than
-// reserved). When no within-cap replacement exists, the original is returned.
-func (p *SpillPolicy) buildReplacement(result, path string) string {
+// buildReplacement composes a category-aware preview + "\n\n" + notice within
+// the cap. The preview uses agentic.SemanticBudgetResult so the spill keeps the
+// semantically relevant middle (test failures, per-file search matches) instead
+// of a uniform head/tail cut; the notice cost is reserved out of the budget
+// (priced at the worst-case omission count — the full byte total — so the real
+// notice is never longer than reserved). When no within-cap replacement exists,
+// the original is returned.
+func (p *SpillPolicy) buildReplacement(toolName, result, path string) string {
 	limit := p.MaxInlineBytes
 	reserve := len(spillNotice(len(result), path)) + 2 // "\n\n" join
 	budget := limit - reserve
 	if budget < 0 {
 		budget = 0
 	}
-	headBytes := (budget + 1) / 2 // ceil
-	tailBytes := budget / 2       // floor
-	head := cutStringHead(result, headBytes)
-	tail := truncateStringTail(result, tailBytes)
-	preview := head + tail
+	preview := agentic.SemanticBudgetResult(toolName, result, budget)
 	omitted := len(result) - len(preview)
 	notice := spillNotice(omitted, path)
 	replaced := notice

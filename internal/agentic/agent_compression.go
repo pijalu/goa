@@ -352,18 +352,23 @@ func consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessa
 
 // --- Pre-compaction tool-result pruning (CX1) ---
 
-// pruneToolResultsPreCompact runs the model-free tool-result pruning pass
-// ahead of summarizeHistory (CX1): every over-budget ToolRole message in
-// history is rewritten in place to head + PruneMarker + tail (Unicode code
-// points), preserving the tool-call/result pairing (ToolCallID, ToolName and
-// every field except Content are untouched).
+// pruneToolResultsPreCompact runs the model-free tool-result pruning passes
+// ahead of summarizeHistory (CX1 + P4):
+//
+//  1. Stale-token pruning (P4): old large tool-result bodies outside the
+//     protected recent window are replaced with a placeholder (gate ≥20K
+//     reclaimable). This reclaims the bulk of a dump-heavy session at zero
+//     token/latency cost.
+//  2. Threshold pruning (CX1): every remaining over-budget ToolRole message is
+//     rewritten in place to head + PruneMarker + tail (Unicode code points),
+//     preserving the tool-call/result pairing (ToolCallID, ToolName and every
+//     field except Content are untouched).
 //
 // The pass then re-measures the context estimate: when pruning dropped usage
 // under the escalation level, the caller SKIPS the summarize LLM call (the
 // pruned history already fits). It returns skip=true only in that case, plus
-// the pre-pass stats and work record for the caller's EventCompact. The pass
-// is idempotent: a second invocation prunes nothing (every emitted result is
-// within the threshold and strictly smaller than its triggering input).
+// the pre-pass stats and work record for the caller's EventCompact. Both
+// passes are idempotent: a second invocation prunes nothing.
 func (a *Agent) pruneToolResultsPreCompact() (skip bool, before ContextStats, res compactionResult) {
 	maxTokens := a.effectiveMaxTokens()
 	if maxTokens <= 0 {
@@ -373,7 +378,14 @@ func (a *Agent) pruneToolResultsPreCompact() (skip bool, before ContextStats, re
 
 	a.mu.Lock()
 	before = a.computeContextStats()
+	staleChanged, staleReclaimed := pruneStaleToolOutput(a.history)
 	changed := a.pruneToolResultsLocked(cfg)
+	changed += staleChanged
+	if staleChanged > 0 {
+		// Tool payloads were replaced in place by the stale pass: the recorded
+		// provider prompt no longer matches the conversation.
+		a.invalidateContextUsageLocked()
+	}
 	skip = changed > 0 &&
 		a.computeContextStatsForMax(maxTokens).UsagePercent < a.cfg.ContextCompression.resolveThresholds().escalationPercent()
 	a.mu.Unlock()
@@ -383,8 +395,8 @@ func (a *Agent) pruneToolResultsPreCompact() (skip bool, before ContextStats, re
 		if skip {
 			note = "; pressure resolved, skipping summarize"
 		}
-		a.cfg.Logger.Log(Info, "tool-result pruner: pruned %d over-budget tool result(s) (threshold=%d chars)%s",
-			changed, cfg.ThresholdChars, note)
+		a.cfg.Logger.Log(Info, "tool-result pruner: pruned %d over-budget tool result(s) (threshold=%d chars, stale=%d tokens reclaimed)%s",
+			changed, cfg.ThresholdChars, staleReclaimed, note)
 	}
 	return skip, before, compactionResult{changed: changed}
 }
