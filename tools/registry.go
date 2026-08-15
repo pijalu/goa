@@ -130,6 +130,7 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "verify", Description: "Run the test suite, report pass/fail", Default: true},
 		{Name: "ask_user_question", Description: "Ask the user a question", Default: true},
 		{Name: "python", Description: "Execute Python code with gpython", Default: true},
+		{Name: "run_code", Description: "Python program with multi-tool dispatch (code-mode)", Default: true},
 		{Name: "bg_exec", Description: "Background process execution", Default: false},
 		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
 		{Name: "goal", Description: "Goal tracking", Default: false},

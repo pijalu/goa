@@ -37,6 +37,19 @@ func TestReadFileTool_ShortDoc(t *testing.T) {
 	}
 }
 
+func TestRunCodeTool_Docs(t *testing.T) {
+	tool := &RunCodeTool{}
+	if tool.ShortDoc() == "" {
+		t.Error("expected non-empty ShortDoc")
+	}
+	if tool.LongDoc() == "" {
+		t.Error("expected non-empty LongDoc")
+	}
+	if len(tool.Examples()) == 0 {
+		t.Error("expected at least one example")
+	}
+}
+
 func TestReadFileTool_LongDoc(t *testing.T) {
 	tool := &ReadFileTool{}
 	if tool.LongDoc() == "" {

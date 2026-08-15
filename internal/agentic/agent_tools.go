@@ -442,14 +442,22 @@ func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, er
 	if !ok {
 		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 	}
+	// Nested sub-call dispatch (gap TL7): a nested-capable tool (run_code)
+	// reads the ToolDispatcher from its execution context and re-enters this
+	// same guarded pipeline for every sub-call. The injected dispatcher
+	// refuses to re-enter this tool's own name, so a program cannot recurse
+	// into itself; every other sub-call traverses the complete permission and
+	// jail path (guard policy, solo policy, confirmation, registry lookup,
+	// execution) exactly like a direct call.
+	execCtx := WithToolDispatcher(ctx, a.dispatchSubCalls(name))
 	// ContextResultTool takes priority: ctx AND control signals (StopTurn).
 	if crt, ok := tool.(ContextResultTool); ok {
-		return crt.ExecuteContextWithResult(ctx, input)
+		return crt.ExecuteContextWithResult(execCtx, input)
 	}
 	// ContextTool next: it lets the tool observe cancellation (but its plain
 	// string result carries no StopTurn).
 	if ct, ok := tool.(ContextTool); ok {
-		out, err := ct.ExecuteContext(ctx, input)
+		out, err := ct.ExecuteContext(execCtx, input)
 		return ToolResult{Output: out, Error: err}, err
 	}
 	if rt, ok := tool.(ResultTool); ok {
@@ -457,4 +465,18 @@ func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, er
 	}
 	out, err := tool.Execute(input)
 	return ToolResult{Output: out, Error: err}, err
+}
+
+// dispatchSubCalls returns a ToolDispatcher bound to this agent that re-enters
+// the guarded tool pipeline (executeToolWithResult) for nested sub-calls while
+// refusing to re-enter the tool currently being executed (selfName). The
+// refusal is generic — any nested-capable tool cannot recursively invoke
+// itself — and is enforced at the agent boundary, never by the tool.
+func (a *Agent) dispatchSubCalls(selfName string) ToolDispatcher {
+	return func(ctx context.Context, name, input, callID string) (ToolResult, error) {
+		if name == selfName {
+			return ToolResult{}, fmt.Errorf("tool %q cannot be invoked as a run_code sub-call", selfName)
+		}
+		return a.executeToolWithResult(ctx, name, input, callID)
+	}
 }

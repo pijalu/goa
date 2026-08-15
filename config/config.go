@@ -660,6 +660,7 @@ type ToolsConfig struct {
 	SmartSearch SmartSearchConfig    `yaml:"smartsearch"`
 	Edit        EditConfig           `yaml:"edit"`
 	Python      PythonConfig         `yaml:"python"`
+	RunCode     RunCodeConfig        `yaml:"run_code"`
 	ReadFile    tools.FileToolConfig `yaml:"read_file"`
 	Write       WriteConfig          `yaml:"write"`
 	WebFetch    tools.WebFetchConfig `yaml:"webfetch"`
@@ -715,6 +716,10 @@ type ToolEnabledConfig struct {
 	// defaults to true so the model can run Python code unless the user
 	// explicitly disables it.
 	PythonEnabled bool `yaml:"python"`
+	// RunCode controls the `run_code` code-mode dispatch tool (gap TL7): a
+	// Python program that performs multiple tool sub-calls through the same
+	// guarded permission/jail path as direct calls. Opt-OUT: defaults to true.
+	RunCode bool `yaml:"run_code"`
 	// Agent controls the `agent` sub-agent tool. Opt-OUT: defaults to true
 	// (set in the embedded default config) so the model can spawn sub-agents
 	// unless the user explicitly disables it.
@@ -797,6 +802,7 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"webfetch":         &t.WebFetch,
 		"verify":           &t.Verify,
 		"python":           &t.PythonEnabled,
+		"run_code":         &t.RunCode,
 		"agent":            &t.Agent,
 		"agent_swarm":      &t.AgentSwarm,
 		"goa":              &t.Goa,
@@ -851,6 +857,24 @@ type PythonConfig struct {
 	// operations resolve against the project directory but absolute paths
 	// outside it are permitted.
 	Jail bool `yaml:"jail"`
+}
+
+// RunCodeConfig controls the run_code code-mode dispatch tool (gap TL7).
+type RunCodeConfig struct {
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// Jail confines the run_code program's own `os` file API to the project
+	// directory and below, matching the python/bash jail. The worker is
+	// jailed by default (nil = true); set false explicitly to allow the
+	// program's own file operations outside the project. Sub-calls always
+	// respect their own tools' jail configuration regardless of this flag.
+	Jail *bool `yaml:"jail"`
+	// MaxProgramBytes caps the submitted program length. Zero defaults to the
+	// tool's built-in cap (200KB).
+	MaxProgramBytes int `yaml:"max_program_bytes"`
+	// MaxLogResultBytes caps the inline sub-call result bytes stored in the
+	// durable dispatch log; oversized results spill to the dispatch spill dir.
+	// Zero defaults to the tool's built-in cap (64KB).
+	MaxLogResultBytes int `yaml:"max_log_result_bytes"`
 }
 
 // BashConfig controls bash tool behavior.

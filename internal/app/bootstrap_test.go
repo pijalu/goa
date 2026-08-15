@@ -138,6 +138,67 @@ func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {
 	}
 }
 
+// TestRegisterTools_RunCodeRespectsEnabled pins the run_code code-mode tool
+// (gap TL7) registration gating: opt-out by default (mirroring python), so the
+// model can submit a multi-tool program unless the user disables it.
+func TestRegisterTools_RunCodeRespectsEnabled(t *testing.T) {
+	projectDir := t.TempDir()
+
+	// Enabled (embedded default): the tool is registered and wired with the
+	// app registry as its sub-call surface plus a dispatch log dir under the
+	// project.
+	cfg, err := config.NewCascadeLoader(projectDir, "", nil).Load()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, projectDir, cfg, nil, false)
+	rc, ok := reg.Get("run_code")
+	if !ok {
+		t.Fatal("run_code should be registered by default (opt-out like python)")
+	}
+	rcTool, ok := rc.(*tools.RunCodeTool)
+	if !ok {
+		t.Fatalf("run_code tool has type %T, want *tools.RunCodeTool", rc)
+	}
+	if rcTool.Registry == nil {
+		t.Error("run_code tool must be wired with the app registry for its sub-call surface")
+	}
+	if rcTool.DispatchDir != projectDir+"/.goa/dispatch" {
+		t.Errorf("DispatchDir = %q, want %q", rcTool.DispatchDir, projectDir+"/.goa/dispatch")
+	}
+	if !rcTool.Jail {
+		t.Error("run_code worker must be jailed by default (gap TL7 jailed worker)")
+	}
+
+	// Disabled: absent from the registry.
+	cfg.Tools.Enabled.SetEnabled("run_code", false)
+	reg = tools.NewToolRegistry()
+	registerTools(reg, nil, nil, projectDir, cfg, nil, false)
+	if _, ok := reg.Get("run_code"); ok {
+		t.Fatal("run_code should NOT be registered when disabled")
+	}
+}
+
+// TestRegisterTools_RunCodeDispatchDirEmptyWithoutProject pins that a
+// project-less registration disables dispatch-log persistence rather than
+// writing into a relative directory.
+func TestRegisterTools_RunCodeDispatchDirEmptyWithoutProject(t *testing.T) {
+	cfg, err := config.NewCascadeLoader("", "", nil).Load()
+	if err != nil {
+		t.Fatalf("load default config: %v", err)
+	}
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, "", cfg, nil, false)
+	rc, ok := reg.Get("run_code")
+	if !ok {
+		t.Fatal("run_code should be registered")
+	}
+	if rcTool := rc.(*tools.RunCodeTool); rcTool.DispatchDir != "" {
+		t.Errorf("DispatchDir = %q, want empty when there is no project dir", rcTool.DispatchDir)
+	}
+}
+
 func TestRuntimeOptions_EmptyPromptImpliesHeadless(t *testing.T) {
 	opts := RuntimeOptions{PromptArg: "", PromptGiven: true}
 	if !opts.Headless() {

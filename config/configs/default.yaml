@@ -221,6 +221,13 @@ tools:
     hosts: []
   python:
     timeout_seconds: 60
+  run_code:
+    timeout_seconds: 60
+    # The run_code worker is jailed by default: the program's own os file
+    # API is confined to the project directory. Set false to allow the
+    # program's file operations outside the project (sub-calls still respect
+    # their own tools' jails).
+    jail: true
   edit:
     allow_fuzz_on_edits: true
     fuzzy_match: true
@@ -269,6 +276,7 @@ tools:
     webfetch: true
     verify: false
     python: true
+    run_code: true
     agent: false
     agent_swarm: false
     goa: false

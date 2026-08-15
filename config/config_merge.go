@@ -423,6 +423,7 @@ func (c *Config) mergeTools(other *Config) {
 	mergeEditFile(&c.Tools.Edit, &other.Tools.Edit)
 	mergeWriteFile(&c.Tools.Write, &other.Tools.Write)
 	mergePython(&c.Tools.Python, &other.Tools.Python)
+	mergeRunCode(&c.Tools.RunCode, &other.Tools.RunCode)
 	other.Tools.Enabled.ApplyTo(&c.Tools.Enabled)
 }
 
@@ -453,6 +454,16 @@ func mergePython(dst, src *PythonConfig) {
 	if src.TimeoutSeconds != 0 {
 		dst.TimeoutSeconds = src.TimeoutSeconds
 	}
+}
+
+// mergeRunCode merges the run_code tool config, preserving defaults for unset
+// scalar fields so embedded defaults are not zeroed by a config layer that
+// only touches other fields. The *bool Jail pointer is copied only when
+// explicitly set (nil = keep the default), so the default jailed worker can
+// be opted out with jail: false and survives unrelated merges. Disabling the
+// tool entirely is handled through tools.enabled.run_code.
+func mergeRunCode(dst, src *RunCodeConfig) {
+	mergeNonZeroScalars(reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem())
 }
 
 // mergeWriteFile merges the write tool config. Write does not support fuzzy

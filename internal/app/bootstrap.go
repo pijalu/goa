@@ -582,6 +582,28 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 			Jail:           cfg.Tools.Python.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
 		})
 	}
+	// run_code code-mode dispatch (gap TL7): a Python program that performs
+	// multiple tool sub-calls through the same guarded pipeline as direct
+	// calls, with a durable per-sub-call dispatch log under
+	// .goa/dispatch/<run>/ (spill-bounded artifacts).
+	if cfg.Tools.Enabled.RunCode {
+		var dispatchDir string
+		if projectDir != "" {
+			dispatchDir = filepath.Join(projectDir, ".goa", "dispatch")
+		}
+		reg.Register(&tools.RunCodeTool{
+			TimeoutSeconds:    cfg.Tools.RunCode.TimeoutSeconds,
+			MaxProgramBytes:   cfg.Tools.RunCode.MaxProgramBytes,
+			MaxLogResultBytes: cfg.Tools.RunCode.MaxLogResultBytes,
+			ProjectDir:        projectDir,
+			// The run_code worker is a "jailed worker" (gap TL7): its own os
+			// file API is confined to the project unless the user explicitly
+			// opts out. Sub-calls still respect their own tools' jails.
+			Jail:        cfg.Tools.RunCode.Jail == nil || *cfg.Tools.RunCode.Jail,
+			Registry:    reg,
+			DispatchDir: dispatchDir,
+		})
+	}
 	if cfg.Tools.Enabled.SSHBash {
 		reg.Register(&tools.SSHBashTool{Hosts: sshHosts(cfg)})
 	}
