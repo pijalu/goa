@@ -169,8 +169,8 @@ type HeadlessApp struct {
 	// compactions documents each completed compression round (per-round
 	// session-stats record), mirroring App.compactions so headless summary
 	// output can list them. Guarded by statsMu like the counters above.
-	compactions          []CompactionRound
-	toolCallsTotal       int
+	compactions    []CompactionRound
+	toolCallsTotal int
 
 	stream headlessStreamState
 
@@ -879,7 +879,6 @@ func (h *HeadlessApp) buildStatsLocked() sessionStats {
 		ToolCalls:       h.toolCallsTotal,
 		CacheReadTotal:  h.tokenCacheReadTotal,
 		CacheWriteTotal: h.tokenCacheWriteTotal,
-		CacheHit:        cacheHitTrendFromTotals(h.tokenCacheReadTotal, h.tokenCacheWriteTotal, h.tokenPromptTotal),
 		LastCacheHit:    cacheHitTrendFromTotals(h.lastTurnCacheRead, h.lastTurnCacheWrite, h.lastTurnPromptN),
 		MicroCompacts:   h.microCompacts,
 		Compacts:        h.compacts,

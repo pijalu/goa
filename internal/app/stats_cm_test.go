@@ -210,11 +210,11 @@ func TestHandleTokenStats_CacheMissFreshContextReset(t *testing.T) {
 	})
 }
 
-// TestBuildFooterStatParts_CacheMiss verifies CM renders next to CH only
-// when non-zero.
+// TestBuildFooterStatParts_CacheMiss verifies CM renders next to the
+// last-completion CH (▸) only when non-zero.
 func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 	base := sessionStats{CacheReadTotal: 900, CacheWriteTotal: 100, PromptN: 100,
-		CacheHit: cacheHitTrendFromTotals(900, 100, 100)}
+		LastCacheHit: cacheHitTrendFromTotals(900, 100, 100)}
 
 	withMisses := base
 	withMisses.CacheMisses = 3
@@ -222,10 +222,10 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 	if !strings.Contains(joined, "CM:3") {
 		t.Errorf("parts %q missing CM:3", joined)
 	}
-	chIdx := strings.Index(joined, "CH")
+	chIdx := strings.Index(joined, "▸")
 	cmIdx := strings.Index(joined, "CM:")
 	if chIdx < 0 || cmIdx < 0 || cmIdx < chIdx {
-		t.Errorf("CM must render next to (after) CH: %q", joined)
+		t.Errorf("CM must render next to (after) the CH rate: %q", joined)
 	}
 
 	noMisses := base

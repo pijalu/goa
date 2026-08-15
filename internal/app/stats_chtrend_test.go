@@ -8,11 +8,12 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
-// TestHandleTokenStats_CacheHitTrends verifies the pi-style per-completion
-// rate and the cumulative rate both evolve per provider round: each round
-// with cache activity shifts the current value into the previous baseline
-// (for delta coloring) and records the new one.
-func TestHandleTokenStats_CacheHitTrends(t *testing.T) {
+// TestHandleTokenStats_CacheHitTrend verifies the pi-style per-completion
+// rate evolves per provider round: each round with cache activity shifts the
+// current value into the previous baseline (for delta coloring) and records
+// the new one. The cumulative session rate is gone from the status bar —
+// only this last-completion trend remains.
+func TestHandleTokenStats_CacheHitTrend(t *testing.T) {
 	feed := func(a *App, promptN, cacheRead, cacheWrite int) {
 		a.turnCount++ // a new turn each feed: bypass the duplicate-stats dedupe
 		a.handleTokenStats(&agentic.OutputEvent{
@@ -41,46 +42,42 @@ func TestHandleTokenStats_CacheHitTrends(t *testing.T) {
 		}
 	})
 
-	t.Run("cumulative rate folds rounds together", func(t *testing.T) {
+	t.Run("cumulative totals still fold rounds together", func(t *testing.T) {
 		a := New(testSubsystems())
-		feed(a, 0, 300, 100) // cum: 300/400 = 75%
-		feed(a, 0, 100, 100) // cum: 400/600 = 66.67%
-		want := float64(400) / float64(600) * 100
-		if !a.cacheHit.Seen || a.cacheHit.Pct < want-0.01 || a.cacheHit.Pct > want+0.01 {
-			t.Errorf("cacheHit = %+v, want Pct≈%.2f", a.cacheHit, want)
+		feed(a, 0, 300, 100) // totals: 300 read / 100 write
+		feed(a, 0, 100, 100) // totals: 400 read / 200 write
+		if a.tokenCacheReadTotal != 400 || a.tokenCacheWriteTotal != 200 {
+			t.Errorf("totals = %d/%d, want 400/200", a.tokenCacheReadTotal, a.tokenCacheWriteTotal)
 		}
-		if !a.cacheHit.HasPrev || a.cacheHit.PrevPct != 75 {
-			t.Errorf("cacheHit = %+v, want PrevPct=75 HasPrev=true", a.cacheHit)
+		if a.lastCacheHit.Pct != 50 {
+			t.Errorf("lastCacheHit = %+v, want Pct=50 (per-completion rate of the last round)", a.lastCacheHit)
 		}
 	})
 
-	t.Run("cache-less rounds do not pollute the trends", func(t *testing.T) {
+	t.Run("cache-less rounds do not pollute the trend", func(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 0, 300, 100) // 75%
-		feed(a, 500, 0, 0)   // cache-less round — trends untouched
-		if a.lastCacheHit.Pct != 75 || a.cacheHit.Pct != 75 {
-			t.Errorf("trends = %+v / %+v, want both at 75 (cache-less round skipped)", a.lastCacheHit, a.cacheHit)
+		feed(a, 500, 0, 0)   // cache-less round — trend untouched
+		if a.lastCacheHit.Pct != 75 {
+			t.Errorf("trend = %+v, want 75 (cache-less round skipped)", a.lastCacheHit)
 		}
 	})
 
-	t.Run("trends reset on clearStats", func(t *testing.T) {
+	t.Run("trend resets on clearStats", func(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 0, 300, 100)
 		a.clearStats()
-		if a.cacheHit.Seen || a.lastCacheHit.Seen {
-			t.Errorf("clearStats must reset trends, got %+v / %+v", a.cacheHit, a.lastCacheHit)
+		if a.lastCacheHit.Seen {
+			t.Errorf("clearStats must reset the trend, got %+v", a.lastCacheHit)
 		}
 	})
 
-	t.Run("trends surface in footer stats", func(t *testing.T) {
+	t.Run("trend surfaces in footer stats", func(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 0, 300, 100)
 		a.statsMu.Lock()
 		st := a.buildFooterStatsLocked()
 		a.statsMu.Unlock()
-		if !st.CacheHit.Seen || st.CacheHit.Pct != 75 {
-			t.Errorf("sessionStats.CacheHit = %+v, want Pct=75 Seen=true", st.CacheHit)
-		}
 		if !st.LastCacheHit.Seen || st.LastCacheHit.Pct != 75 {
 			t.Errorf("sessionStats.LastCacheHit = %+v, want Pct=75 Seen=true", st.LastCacheHit)
 		}

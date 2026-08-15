@@ -106,10 +106,10 @@ type sessionStats struct {
 	ToolCallLevel   ToolCallLevel // 0=normal, 1=warning, 2=stopped
 	MicroCompacts   int
 	Compacts        int
-	// CacheHit is the cumulative session cache-hit trend (CH% footer stat).
-	CacheHit CacheHitTrend
 	// LastCacheHit is the most recent completion's cache-hit trend — the
-	// pi-style per-call rate shown next to the cumulative CH%.
+	// pi-style per-call rate (▸x.x%). It is the ONLY cache-hit rate in the
+	// status bar: the cumulative session rate was removed as noise (user
+	// request: keep the last completion CH, no global).
 	LastCacheHit CacheHitTrend
 	// Compactions documents each completed compression round (strategy,
 	// before/after %, freed tokens, removed messages, time). The aggregate
@@ -288,7 +288,6 @@ func (a *App) clearStats() {
 	a.compactions = nil
 	a.toolCallsTotal = 0
 	a.toolCallWarningLevel = ToolCallNormal
-	a.cacheHit = CacheHitTrend{}
 	a.lastCacheHit = CacheHitTrend{}
 }
 
@@ -986,13 +985,13 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 	a.tokenCacheReadTotal += timings.CacheReadTokens
 	a.tokenCacheWriteTotal += timings.CacheWriteTokens
 
-	// Cache-hit rate trends: the per-completion rate (pi-style, from THIS
-	// round's numbers) and the cumulative session rate. Only rounds with
-	// cache activity feed the trends — a cache-less round (or provider)
-	// must not drag the rate to 0 and trip the drop coloring.
+	// Cache-hit rate trend: the per-completion rate (pi-style, from THIS
+	// round's numbers) — the status bar shows only this, no cumulative
+	// session rate. Only rounds with cache activity feed the trend — a
+	// cache-less round (or provider) must not drag the rate to 0 and trip
+	// the drop coloring.
 	if timings.CacheReadTokens > 0 || timings.CacheWriteTokens > 0 {
 		a.lastCacheHit.observe(metrics.CacheHitPct(timings.CacheReadTokens, timings.CacheWriteTokens, timings.PromptN))
-		a.cacheHit.observe(metrics.CacheHitPct(a.tokenCacheReadTotal, a.tokenCacheWriteTotal, a.tokenPromptTotal))
 	}
 	// Count cache busts two ways:
 	//  1. Zero cache reads AFTER the cache was established (provider TTL
@@ -1088,7 +1087,6 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
 	st.CacheMisses = a.tokenCacheMisses
-	st.CacheHit = a.cacheHit
 	st.LastCacheHit = a.lastCacheHit
 	st.Compactions = append([]CompactionRound(nil), a.compactions...)
 	return st
@@ -1304,14 +1302,12 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.SpeedTokPerSec > 0 {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", s.SpeedTokPerSec))
 	}
-	// Cache hit percentage: cumulative session rate (CH) plus the pi-style
-	// per-completion rate of the last provider round (▸). See CacheHitPct
-	// for the formula; trends carry their previous value for coloring.
-	if s.CacheHit.Seen {
-		parts = append(parts, formatCacheHitPart(s.CacheHit))
-		if s.LastCacheHit.Seen {
-			parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
-		}
+	// Cache hit percentage: the pi-style per-completion rate of the last
+	// provider round (▸) — the status bar shows only this, no cumulative
+	// session rate. See CacheHitPct for the formula; the trend carries its
+	// previous value for coloring.
+	if s.LastCacheHit.Seen {
+		parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
 	}
 	// Cache-miss counter, next to CH and only when non-zero (a miss means the
 	// established cache was bypassed — compression, TTL expiry, prefix churn).
@@ -1361,21 +1357,16 @@ const (
 	cacheHitDropDelta = -5.0 // <= this: drop (red); between 0 and this: slight drop (orange)
 )
 
-// formatCacheHitPart renders the cumulative cache hit percentage (CHx.x%)
-// with color coding based on evolution from the previous value:
+// formatLastCacheHitPart renders the pi-style per-completion cache hit
+// rate of the last provider round (▸x.x%) — the only cache-hit rate in
+// the status bar — with color coding based on evolution from the
+// previous value:
 //   - Growing (>=+1pt):        bold green (#3fb950)
 //   - Stable / slight grow:    green (#3fb950)
 //   - Slight drop (< 5pts):    orange (#d29922)
 //   - Drop (>= 5pts):          red (#f85149)
 //
 // The first observation (no previous baseline) renders as stable green.
-func formatCacheHitPart(t CacheHitTrend) string {
-	return cacheHitColor(t) + fmt.Sprintf("CH%.1f%%", t.Pct) + ansi.Reset
-}
-
-// formatLastCacheHitPart renders the pi-style per-completion cache hit rate
-// of the last provider round (▸x.x%) with the same evolution coloring as
-// the cumulative CH part.
 func formatLastCacheHitPart(t CacheHitTrend) string {
 	return cacheHitColor(t) + fmt.Sprintf("▸%.1f%%", t.Pct) + ansi.Reset
 }

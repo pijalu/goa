@@ -121,7 +121,10 @@ func formatOrchAgentLine(r orchpanel.AgentEnhancedRow) string {
 		PredictedN:      r.TokensOut,
 		CacheReadTotal:  r.CacheRead,
 		CacheWriteTotal: r.CacheCreation,
-		CacheHit:        cacheHitTrendFromTotals(r.CacheRead, r.CacheCreation, r.TokensIn),
+		// A role row only has aggregate counters (no per-completion rate),
+		// so its cache-hit figure rides the LastCacheHit slot — the sole
+		// CH display in the footer since the cumulative CH was removed.
+		LastCacheHit:    cacheHitTrendFromTotals(r.CacheRead, r.CacheCreation, r.TokensIn),
 		ToolCalls:       r.ToolCalls,
 		ContextEstimate: r.ContextEstimate,
 		ContextMax:      r.ContextMax,

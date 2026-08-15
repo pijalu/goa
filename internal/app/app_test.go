@@ -739,12 +739,13 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PredictedN:      500,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
-		CacheHit:        CacheHitTrend{Pct: 60, Seen: true},
+		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true},
 		ContextEstimate: 2000,
 		ContextMax:      10000,
 	})
-	// 300 / (300+200) = 60% (cache hit = reads / (reads + writes))
-	if !strings.Contains(stats, "CH60.0%") {
+	// 300 / (300+200) = 60% (cache hit = reads / (reads + writes)). Only the
+	// last-completion rate renders (▸) — no cumulative global CH.
+	if !strings.Contains(stats, "▸60.0%") {
 		t.Errorf("expected cache hit 60%%, got %q", stats)
 	}
 	// Cache hit is shown even when PromptN is 0, as long as cache ops exist.
@@ -752,35 +753,39 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PromptN:         0,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
-		CacheHit:        CacheHitTrend{Pct: 60, Seen: true},
+		LastCacheHit:    CacheHitTrend{Pct: 60, Seen: true},
 	})
-	if !strings.Contains(noPrompt, "CH60.0%") {
+	if !strings.Contains(noPrompt, "▸60.0%") {
 		t.Errorf("expected cache hit 60%% when PromptN is 0, got %q", noPrompt)
 	}
-	// No cache ops at all should not show CH.
+	// No cache ops at all should not show a cache-hit rate.
 	noCache := formatFooterStats(sessionStats{
 		PromptN:    1000,
 		PredictedN: 500,
 	})
-	if strings.Contains(noCache, "CH") {
+	if strings.Contains(noCache, "▸") {
 		t.Errorf("expected no cache hit display when no cache ops, got %q", noCache)
 	}
 }
 
-// TestFormatFooterStats_LastCacheHit covers the pi-style per-completion rate:
-// shown as ▸x.x% next to the cumulative CH only when the last completion had
-// cache activity.
+// TestFormatFooterStats_LastCacheHit locks the status-bar cache-hit contract:
+// ONLY the pi-style per-completion rate of the last provider round renders
+// (▸x.x%) — the cumulative session CH was removed as noise (user request).
 func TestFormatFooterStats_LastCacheHit(t *testing.T) {
 	withLast := formatFooterStats(sessionStats{
-		CacheHit:     CacheHitTrend{Pct: 87.3, Seen: true},
 		LastCacheHit: CacheHitTrend{Pct: 41.9, Seen: true},
 	})
-	if !strings.Contains(withLast, "CH87.3%") || !strings.Contains(withLast, "▸41.9%") {
-		t.Errorf("expected cumulative + per-completion rates, got %q", withLast)
+	if !strings.Contains(withLast, "▸41.9%") {
+		t.Errorf("expected per-completion rate, got %q", withLast)
+	}
+	// The cumulative CH format must be gone from the status bar.
+	if strings.Contains(withLast, "CH") {
+		t.Errorf("expected no cumulative CH in the status bar, got %q", withLast)
 	}
 	// No per-completion observation → no ▸ part.
 	noLast := formatFooterStats(sessionStats{
-		CacheHit: CacheHitTrend{Pct: 87.3, Seen: true},
+		CacheReadTotal:  900,
+		CacheWriteTotal: 100,
 	})
 	if strings.Contains(noLast, "▸") {
 		t.Errorf("expected no per-completion rate without observation, got %q", noLast)
@@ -811,9 +816,9 @@ func TestFormatCacheHitPart_Colors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatCacheHitPart(tc.tr)
+			got := formatLastCacheHitPart(tc.tr)
 			if !strings.HasPrefix(got, tc.want) {
-				t.Errorf("formatCacheHitPart(%+v) = %q, want prefix %q", tc.tr, got, tc.want)
+				t.Errorf("formatLastCacheHitPart(%+v) = %q, want prefix %q", tc.tr, got, tc.want)
 			}
 		})
 	}
