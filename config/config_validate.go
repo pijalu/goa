@@ -427,12 +427,6 @@ func validateCompressionLevel(ve *internal.ValidationError, path string, v int) 
 	}
 }
 
-func validatePercentRange(ve *internal.ValidationError, path string, v int) {
-	if v < 0 || v > 100 {
-		ve.Add(fmt.Sprintf("%s: must be 0-100 (got %d)", path, v))
-	}
-}
-
 func validateThresholdOrder(ve *internal.ValidationError, path, loName string, lo int, hiName string, hi int) {
 	if lo > 0 && hi > 0 && lo > hi {
 		ve.Add(fmt.Sprintf("%s: %s (%d) must be ≤ %s (%d)", path, loName, lo, hiName, hi))
