@@ -5,7 +5,9 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"testing"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
@@ -193,4 +195,98 @@ func TestSummarizeRequestIsStrictAppendOfConversation(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "user", last["role"])
 	assert.Contains(t, last["content"], "Summarize the conversation above")
+}
+
+// ---------------------------------------------------------------------------
+// P21 (DS2) — default max-tokens resolution
+// ---------------------------------------------------------------------------
+
+func buildOpenAIRequest(t *testing.T, model schema.Model, opts schema.StreamOptions) map[string]any {
+	t.Helper()
+	profile := schema.ResolveProfile(model)
+	body, err := ForAPI(schema.ApiOpenAICompletions).BuildRequest(model, schema.Context{
+		Messages: []schema.Message{schema.NewUserMessage("hi")},
+	}, opts, profile)
+	require.NoError(t, err)
+	var req map[string]any
+	require.NoError(t, json.Unmarshal(body, &req))
+	return req
+}
+
+// TestDefaultMaxTokens_MaterializedOnDeepSeekRoute is the P21 acceptance core:
+// on the DeepSeek route with no explicit max_tokens, the wire request carries
+// the catalog's default_max_tokens (256000) in the max_tokens field instead of
+// omitting it — the request is always explicit and reconstructable (dsh
+// adapter DEFAULT_MAX_TOKENS=256_000, adapter.ts:91-93).
+func TestDefaultMaxTokens_MaterializedOnDeepSeekRoute(t *testing.T) {
+	model := schema.Model{
+		ID:       "deepseek-v4-flash",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderDeepSeek,
+		BaseURL:  "https://api.deepseek.com",
+	}
+	req := buildOpenAIRequest(t, model, schema.StreamOptions{})
+	assert.Equal(t, float64(256000), req["max_tokens"],
+		"DeepSeek route without explicit max_tokens must materialize the catalog default")
+}
+
+// TestDefaultMaxTokens_ExplicitWins is the P21 acceptance guard: an explicit
+// request value always wins over the catalog default (dsh: "an explicit cap
+// wins").
+func TestDefaultMaxTokens_ExplicitWins(t *testing.T) {
+	model := schema.Model{
+		ID:       "deepseek-v4-flash",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderDeepSeek,
+		BaseURL:  "https://api.deepseek.com",
+	}
+	req := buildOpenAIRequest(t, model, schema.StreamOptions{MaxTokens: 100})
+	assert.Equal(t, float64(100), req["max_tokens"],
+		"explicit max_tokens must always win over the catalog default")
+}
+
+// TestDefaultMaxTokens_OmittedWithoutCatalogDefault verifies providers without
+// a catalog default_max_tokens keep the historical behavior: no max_tokens
+// field when the request doesn't set one (the server applies its own default).
+func TestDefaultMaxTokens_OmittedWithoutCatalogDefault(t *testing.T) {
+	model := schema.Model{
+		ID:       "gpt-4o",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderOpenAI,
+		BaseURL:  "https://api.openai.com/v1",
+	}
+	req := buildOpenAIRequest(t, model, schema.StreamOptions{})
+	_, ok := req["max_completion_tokens"]
+	assert.False(t, ok, "provider without catalog default must omit max_completion_tokens")
+	_, ok = req["max_tokens"]
+	assert.False(t, ok, "provider without catalog default must omit max_tokens")
+}
+
+// TestDefaultMaxTokens_LogsDefaultedField is the P21 "log which fields came
+// from defaults" guard: materializing the catalog default emits a diagnostic
+// line naming the field and its source, while an explicit value stays silent.
+func TestDefaultMaxTokens_LogsDefaultedField(t *testing.T) {
+	model := schema.Model{
+		ID:       "deepseek-v4-flash",
+		Api:      schema.ApiOpenAICompletions,
+		Provider: schema.ProviderDeepSeek,
+		BaseURL:  "https://api.deepseek.com",
+	}
+
+	var buf bytes.Buffer
+	old := protocolLog
+	protocolLog = log.New(&buf, "", 0)
+	defer func() { protocolLog = old }()
+
+	buildOpenAIRequest(t, model, schema.StreamOptions{})
+	logged := buf.String()
+	assert.Contains(t, logged, "max_tokens",
+		"default materialization must log the field name")
+	assert.Contains(t, logged, "provider",
+		"default materialization must log the source")
+
+	buf.Reset()
+	buildOpenAIRequest(t, model, schema.StreamOptions{MaxTokens: 100})
+	assert.Empty(t, buf.String(),
+		"an explicit max_tokens must not log a default materialization")
 }

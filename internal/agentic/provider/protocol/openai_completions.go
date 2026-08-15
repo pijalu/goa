@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -17,6 +18,15 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
+
+// protocolLog emits protocol-level diagnostics (P21 default-materialization
+// markers: which request fields came from defaults instead of an explicit
+// value, dsh's adapterDefaults reporting). It defaults to stderr like the
+// agentic logger; tests can capture output via setProtocolLogOutput.
+var protocolLog = log.New(os.Stderr, "goa/protocol: ", log.LstdFlags)
+
+// setProtocolLogOutput redirects the package diagnostic logger. Test-only.
+func setProtocolLogOutput(w io.Writer) { protocolLog.SetOutput(w) }
 
 func init() {
 	Register(&openAICompletions{})
@@ -132,8 +142,20 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 			"include_usage": true,
 		},
 	}
-	if opts.MaxTokens > 0 {
-		body[compat.MaxTokensField] = opts.MaxTokens
+	// P21 (DS2): the wire request must always be explicit and reconstructable.
+	// An explicit request value always wins; when the request omits max_tokens,
+	// the provider catalog's default_max_tokens is materialized (DeepSeek
+	// 256000 — dsh adapter DEFAULT_MAX_TOKENS). model.MaxTokens (the models.dev
+	// output limit) is deliberately not used here: it is a model hard limit,
+	// not an adapter default cap (dsh llm README: "defaultMaxTokens is an
+	// adapter-configured per-request output cap, not a model hard limit").
+	maxTokens, defaultSource := resolveRequestMaxTokens(opts, model)
+	if maxTokens > 0 {
+		body[compat.MaxTokensField] = maxTokens
+	}
+	if defaultSource != "" {
+		protocolLog.Printf("field max_tokens came from %s default: %d (model=%s provider=%s)",
+			defaultSource, maxTokens, model.ID, model.Provider)
 	}
 	// Omit temperature when the provider does not support it (e.g. kimi-code
 	// rejects any value but its fixed default with HTTP 400 "invalid
@@ -162,6 +184,22 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 
 	applyThinking(body, model, opts, profile, compat)
 	return body
+}
+
+// resolveRequestMaxTokens returns the output-token cap to send on the wire
+// and the source it was resolved from. An explicit request value always wins
+// (dsh: "an explicit cap wins"); when absent, the per-provider catalog
+// default_max_tokens is materialized so the wire request is explicit and
+// reconstructable (P21, DS2). The returned source is "" for an explicit
+// value; the caller omits the field when the returned value is 0.
+func resolveRequestMaxTokens(opts schema.StreamOptions, model schema.Model) (int, string) {
+	if opts.MaxTokens > 0 {
+		return opts.MaxTokens, ""
+	}
+	if def := schema.LookupProviderDef(model.Provider); def != nil && def.DefaultMaxTokens > 0 {
+		return def.DefaultMaxTokens, "provider"
+	}
+	return 0, ""
 }
 
 func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) {

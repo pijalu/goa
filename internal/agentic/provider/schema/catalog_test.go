@@ -166,6 +166,20 @@ func TestDefaultRetryCodes_MatchesDSHVocabulary(t *testing.T) {
 	}
 }
 
+// TestDefaultMaxTokens_DeepSeek pins the P21 (DS2) catalog value: DeepSeek's
+// adapter-owned default output cap is 256000 over a 1000000-token context
+// window (dsh llm-deepseek DEFAULT_MAX_TOKENS / DEFAULT_CONTEXT_WINDOW,
+// adapter.ts:91-93).
+func TestDefaultMaxTokens_DeepSeek(t *testing.T) {
+	def := LookupProviderDefByID("deepseek")
+	if def == nil {
+		t.Fatal("deepseek not in catalog")
+	}
+	if def.DefaultMaxTokens != 256000 {
+		t.Errorf("deepseek DefaultMaxTokens = %d, want 256000", def.DefaultMaxTokens)
+	}
+}
+
 // TestResolveRetryPolicy_NilUsesDefault verifies a nil configured policy
 // resolves to the package default normal policy.
 func TestResolveRetryPolicy_NilUsesDefault(t *testing.T) {

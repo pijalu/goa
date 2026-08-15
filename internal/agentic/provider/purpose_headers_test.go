@@ -113,6 +113,23 @@ func TestPurposeHeaders_NoCompactOnConversation(t *testing.T) {
 	assert.False(t, ok, "session-title calls must not carry x-goa-compact")
 }
 
+// TestDefaultMaxTokens_WireCarriesExplicitValue is the P21 (DS2) acceptance
+// core at the wire level: on the DeepSeek route with no explicit max_tokens,
+// the transport request carries the catalog default 256000 in the max_tokens
+// field; an explicit request value always wins.
+func TestDefaultMaxTokens_WireCarriesExplicitValue(t *testing.T) {
+	req := runCaptured(t, deepSeekModel, schema.StreamOptions{APIKey: "sk-test"})
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(req.Body, &body))
+	assert.Equal(t, float64(256000), body["max_tokens"],
+		"DeepSeek wire request must materialize the catalog default max_tokens")
+
+	reqExplicit := runCaptured(t, deepSeekModel, schema.StreamOptions{APIKey: "sk-test", MaxTokens: 42})
+	require.NoError(t, json.Unmarshal(reqExplicit.Body, &body))
+	assert.Equal(t, float64(42), body["max_tokens"],
+		"explicit max_tokens must always win on the wire")
+}
+
 // TestPurposeHeaders_NoIDInRequestBody is the P13 acceptance guard: the ids
 // ride only in transport headers — never in the request body or
 // model-visible content.

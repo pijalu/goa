@@ -205,6 +205,15 @@ type ProviderDef struct {
 	// DefaultRetryPolicy). Resolved per route at provider construction; an
 	// explicit provider-config retry_policy overrides it field by field.
 	RetryPolicy *RetryPolicy
+	// DefaultMaxTokens is the provider's default per-request output-token cap
+	// (P21, DS2; dsh llm-deepseek DEFAULT_MAX_TOKENS). It is materialized into
+	// the request's max_tokens field when the caller does not set one, so the
+	// wire request is always explicit and reconstructable. It is an
+	// adapter-configured per-request output cap, NOT a model hard limit (dsh
+	// llm README: "defaultMaxTokens is an adapter-configured per-request
+	// output cap, not a model hard limit"); zero means no default — the field
+	// is omitted and the server applies its own default.
+	DefaultMaxTokens int
 }
 
 // NeedsAPIKey reports whether this provider requires an API key.
@@ -317,6 +326,12 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.deepseek.com",
 		DefaultModel: "deepseek-v4-flash", EnvKeys: []string{"DEEPSEEK_API_KEY"}, ModelsDevKey: "deepseek",
 		URLPatterns: []string{"deepseek.com"},
+		// P21 (DS2): adapter-owned output default — dsh llm-deepseek
+		// DEFAULT_MAX_TOKENS=256_000 over a DEFAULT_CONTEXT_WINDOW=1_000_000
+		// (packages/llm/llm-deepseek/src/adapter.ts:91-93). Materialized into
+		// max_tokens by the OpenAI-completions builder when the request omits
+		// it, so the wire request is always explicit and reconstructable.
+		DefaultMaxTokens: 256000,
 		PeakHours: []PeakWindow{
 			{StartMin: hhmm(1, 0), EndMin: hhmm(4, 0)},  // 01:00–04:00 UTC daily
 			{StartMin: hhmm(6, 0), EndMin: hhmm(10, 0)}, // 06:00–10:00 UTC daily
