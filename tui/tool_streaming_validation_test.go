@@ -43,6 +43,8 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"agent_swarm", map[string]any{"task": "Fix bugs", "items": []string{"a", "b"}}, map[string]any{"task": "Fix bugs"}, "Done\n", nil},
 		{"plan", map[string]any{"action": "get"}, map[string]any{"action": "get"}, "# Plan: test\n\n**Objective:** test\n", nil},
 		{"task_outcome", map[string]any{"status": "done", "summary": "completed"}, map[string]any{"status": "done"}, `{"status":"done","summary":"completed"}`, nil},
+		{"session_search", map[string]any{"query": "postgres"}, map[string]any{"query": "post"}, "Session search results (1):\n1. Session s1\n", nil},
+		{"session_event_read", map[string]any{"session_id": "s1", "seq": float64(2), "before": float64(1)}, map[string]any{"seq": float64(2)}, "Session s1\nTarget event seq 2:\n```json\n{}", nil},
 	}
 
 	for _, tc := range cases {
@@ -92,7 +94,7 @@ func TestToolStreaming_RegistryIsComplete(t *testing.T) {
 	cases := []string{
 		"read", "write", "edit", "bash", "python", "verify", "terminal",
 		"webfetch", "search", "smartsearch", "goal", "agent", "agent_swarm",
-		"plan", "task_outcome",
+		"plan", "task_outcome", "session_search", "session_event_read",
 	}
 	for _, name := range cases {
 		if _, ok := required[name]; !ok {

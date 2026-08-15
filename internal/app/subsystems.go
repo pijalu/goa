@@ -243,6 +243,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 		subs.toolRegistry.Register(&tools.TodoListTool{Mode: goalManager.Mode})
 	}
 	registerWebFetchTool(subs.toolRegistry, agentBundle.sessionStore, cfg, projectDir)
+	registerSessionQueryTools(subs.toolRegistry, agentBundle.sessionStore)
 	registry := core.NewCommandRegistry()
 	skillBundle := initSkillAndCommandLayer(cfg, projectDir, subs.providerMgr, subs.toolRegistry, goalManager, goalDriver, agentBundle.agentMgr, subs.trustMgr, opts.Telemetry, swarmState, registry, !opts.NoPlugins)
 	promptReg, workflowReg := initPromptAndWorkflowLayer(cfg, projectDir)

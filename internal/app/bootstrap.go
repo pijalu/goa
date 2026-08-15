@@ -778,6 +778,15 @@ func registerWebFetchTool(reg *tools.ToolRegistry, sessionStore *core.SessionSto
 	reg.Register(tool)
 }
 
+// registerSessionQueryTools registers the read-only session query tools
+// (session_search, session_event_read) over the shared session store.
+func registerSessionQueryTools(reg *tools.ToolRegistry, sessionStore *core.SessionStore) {
+	// Session tools are always registered: they are read-only and give the
+	// model the ability to recall decisions from prior sessions.
+	reg.Register(&tools.SessionSearchTool{Store: sessionStore})
+	reg.Register(&tools.SessionEventReadTool{Store: sessionStore})
+}
+
 func hasConfiguredModel(cfg *config.Config) bool {
 	return cfg.ActiveProvider != "" && cfg.ActiveModel != ""
 }

@@ -23,6 +23,8 @@ func init() {
 	RegisterToolRenderer("webfetch", tools.NewWebFetchRenderer())
 	RegisterToolRenderer("search", tools.NewSearchRenderer())
 	RegisterToolRenderer("smartsearch", tools.NewSmartSearchRenderer())
+	RegisterToolRenderer("session_search", &tools.SessionSearchRenderer{})
+	RegisterToolRenderer("session_event_read", &tools.SessionEventReadRenderer{})
 	RegisterToolRenderer("goal", goaltui.GoalRenderer{})
 	RegisterToolRenderer("agent", &tools.AgentToolRenderer{})
 	RegisterToolRenderer("agent_swarm", &swarm.AgentSwarmRenderer{})
