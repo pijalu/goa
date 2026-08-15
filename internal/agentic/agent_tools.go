@@ -4,6 +4,7 @@ package agentic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/pijalu/goa/internal"
@@ -145,6 +146,73 @@ func (a *Agent) appendToolResults(tcs []provider.ContentBlock, realResults []Too
 			})
 		}
 	}
+}
+
+// fileToolNames are the tools whose successful results are treated as
+// workspace-instruction touches (gap CX5). Goa's fuzzy edit is part of the
+// "edit" tool (AllowFuzz), so the dsh fuzzyedit surface maps to "edit" here.
+var fileToolNames = map[string]bool{
+	"read":  true,
+	"write": true,
+	"edit":  true,
+}
+
+// injectInstructionLifecycle surfaces workspace-instruction lifecycle changes
+// (gap CX5, dsh agent-instructions parity). After every successful
+// read/write/edit call in the batch, it asks the tracker to reconcile the
+// touched path and appends one durable user-role message per detected change
+// (Additional instructions from…, Updated instructions from…, Instructions
+// removed:…). The messages are appended to history after the tool results, so
+// the next stream round sends them to the model.
+func (a *Agent) injectInstructionLifecycle(tcs []provider.ContentBlock, realResults []ToolCallResult) {
+	tracker := a.cfg.InstructionTracker
+	if tracker == nil || a.cfg.ProjectDir == "" {
+		return
+	}
+	byID := indexResultsByID(realResults)
+	var msgs []Message
+	for _, tc := range tcs {
+		if !fileToolNames[tc.ToolName] {
+			continue
+		}
+		r, ok := byID[tc.ToolCallID]
+		if !ok || r.Err != nil {
+			continue
+		}
+		path := fileToolPath(tc.ToolArguments)
+		if path == "" {
+			continue
+		}
+		for _, change := range tracker.Reconcile(path) {
+			msgs = append(msgs, Message{
+				Type:    Content,
+				Role:    User,
+				Content: internal.RenderInstructionMessage(change),
+			})
+		}
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	a.mu.Lock()
+	a.history = append(a.history, msgs...)
+	a.mu.Unlock()
+	for i := range msgs {
+		a.emitMessage(msgs[i])
+	}
+}
+
+// fileToolPath extracts the "path" field from a file-tool JSON input. The
+// tracker only needs the directory the touch happened in to compute newly
+// reachable scopes, so a best-effort parse is sufficient.
+func fileToolPath(input string) string {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(input), &p); err != nil {
+		return ""
+	}
+	return p.Path
 }
 
 func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[string]ToolCallResult) string {

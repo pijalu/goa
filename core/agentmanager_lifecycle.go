@@ -237,6 +237,16 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 	if am.spillPolicyFactory != nil {
 		agenticCfg.SpillPolicy = am.spillPolicyFactory(opts.SessionID)
 	}
+	// Workspace-instruction lifecycle (gap CX5): seed the tracker with the
+	// baseline context files already rendered into the system prompt, so
+	// baseline scopes are treated as loaded and only lifecycle changes are
+	// reported as durable user messages.
+	if am.projectDir != "" {
+		agenticCfg.InstructionTracker = internal.NewInstructionTracker(
+			am.projectDir,
+			internal.LoadProjectContextFiles(am.projectDir, cfg.ConfigDir),
+		)
+	}
 	if level := am.modeMgr.GetThinkingLevel(); level != "" {
 		agenticCfg.ReasoningEffort = agentic.ReasoningEffort(level)
 	}

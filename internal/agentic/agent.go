@@ -725,6 +725,13 @@ type Config struct {
 	// Error results never reach the policy. Nil disables spilling entirely.
 	SpillPolicy SpillPolicy
 
+	// InstructionTracker tracks loaded workspace instruction files
+	// (AGENTS.md/CLAUDE.md) and their lifecycle changes after successful
+	// read/write/edit touches (gap CX5). It is seeded with the baseline
+	// context files already rendered into the system prompt. Nil disables
+	// the workspace-instruction lifecycle messages.
+	InstructionTracker *internal.InstructionTracker
+
 	// AllowEmptyResponse when true disables the empty-response guard that
 	// treats a clean stream end with zero events as a transient error.
 	// Companion and sub-agents (multiagent pool, orchestration specialists)

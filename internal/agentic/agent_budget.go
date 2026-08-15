@@ -466,6 +466,11 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 	// stream-loop strike counter (no-op when no strike is outstanding).
 	a.noteStreamLoopCleanActivity(len(realResults))
 	a.appendToolResults(tcs, realResults)
+	// Workspace-instruction lifecycle (gap CX5): after successful
+	// read/write/edit touches, surface newly reachable, changed, or removed
+	// AGENTS.md/CLAUDE.md scopes as durable user messages before the next
+	// stream round, so the model sees them in the following request.
+	a.injectInstructionLifecycle(tcs, realResults)
 
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
