@@ -145,6 +145,26 @@ type ModelPricing = schema.ModelPricing
 type Model = schema.Model
 type StreamOptions = schema.StreamOptions
 type SimpleStreamOptions = schema.SimpleStreamOptions
+type RetryMode = schema.RetryMode
+type RetryBackoff = schema.RetryBackoff
+type RetryPolicy = schema.RetryPolicy
+
+const (
+	RetryModeNormal = schema.RetryModeNormal
+	RetryModeAlways = schema.RetryModeAlways
+)
+
+// Canonical retry failure codes (re-exported from schema).
+const (
+	RetryCodeEmptyResponse = schema.RetryCodeEmptyResponse
+	RetryCodeRateLimit     = schema.RetryCodeRateLimit
+	RetryCodeServer        = schema.RetryCodeServer
+	RetryCodeTimeout       = schema.RetryCodeTimeout
+	RetryCodeTransport     = schema.RetryCodeTransport
+)
+
+// DefaultRetryCodes is the re-exported default transient code set.
+var DefaultRetryCodes = schema.DefaultRetryCodes
 
 // Constructor helpers remain in the provider package for ergonomics.
 var (

@@ -882,6 +882,45 @@ func applyProviderTimeoutRetries(opts *agenticprovider.StreamOptions, pCfg *conf
 	if d := parsePositiveDuration(pCfg.MaxRetryDelay); d > 0 {
 		opts.MaxRetryDelay = d
 	}
+	applyProviderRetryPolicy(opts, pCfg)
+}
+
+// applyProviderRetryPolicy resolves the per-provider retry_policy (if any)
+// into opts.RetryPolicy. It converts the YAML config into the schema policy,
+// fills unset fields from the provider's catalog default (then the package
+// default), and ensures the policy's max_retries beats the global
+// execution.retries scalar. A nil pCfg.RetryPolicy leaves opts.RetryPolicy as
+// nil so the legacy scalar retry behavior (MaxRetries/MaxRetryDelay) applies.
+func applyProviderRetryPolicy(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig) {
+	if pCfg == nil || pCfg.RetryPolicy == nil {
+		return
+	}
+	configured := &agenticprovider.RetryPolicy{}
+	if pCfg.RetryPolicy.Mode == string(agenticprovider.RetryModeAlways) {
+		configured.Mode = agenticprovider.RetryModeAlways
+	} else if pCfg.RetryPolicy.Mode == string(agenticprovider.RetryModeNormal) {
+		configured.Mode = agenticprovider.RetryModeNormal
+	}
+	configured.MaxRetries = pCfg.RetryPolicy.MaxRetries
+	configured.Codes = append([]string(nil), pCfg.RetryPolicy.Codes...)
+	b := pCfg.RetryPolicy.Backoff
+	if b.InitialMS > 0 {
+		configured.Backoff.InitialDelay = time.Duration(b.InitialMS) * time.Millisecond
+	}
+	if b.MaxMS > 0 {
+		configured.Backoff.MaxDelay = time.Duration(b.MaxMS) * time.Millisecond
+	}
+	configured.Backoff.Jitter = b.Jitter
+
+	catalogDefault := schema.LookupProviderDef(schema.Provider(pCfg.Provider))
+	if catalogDefault == nil && pCfg.Provider == "" {
+		catalogDefault = schema.MatchProviderByURL(pCfg.Endpoint)
+	}
+	var catalogPolicy *agenticprovider.RetryPolicy
+	if catalogDefault != nil {
+		catalogPolicy = catalogDefault.RetryPolicy
+	}
+	opts.RetryPolicy = schema.ResolveRetryPolicy(configured, catalogPolicy)
 }
 
 // applyProviderTransportCache applies transport and cache-retention overrides.

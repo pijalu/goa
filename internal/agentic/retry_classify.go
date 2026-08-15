@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/agentic/provider/hooks"
 )
 
@@ -24,6 +26,71 @@ const maxStreamBackoff = 30 * time.Second
 // retried like any other transient stream failure instead of ending the turn
 // silently.
 var errEmptyResponse = errors.New("provider returned an empty response (no content, no thinking, no tool calls)")
+
+// retryCodeOf classifies err into the canonical retry failure code
+// (EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT) used by retry
+// policy codes[] lists. It returns "" when the error carries no recognized
+// provider-neutral code.
+func retryCodeOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, errEmptyResponse) {
+		return provider.RetryCodeEmptyResponse
+	}
+	var provErr *hooks.ProviderError
+	if errors.As(err, &provErr) {
+		if provErr.IsRateLimit {
+			return provider.RetryCodeRateLimit
+		}
+		switch code := provErr.StatusCode(); {
+		case code >= 500 && code <= 599:
+			return provider.RetryCodeServer
+		case code == http.StatusRequestTimeout:
+			return provider.RetryCodeTimeout
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return provider.RetryCodeTimeout
+	}
+	text := strings.ToLower(err.Error())
+	if isTimeoutText(text) {
+		return provider.RetryCodeTimeout
+	}
+	if isServerErrorText(text) {
+		return provider.RetryCodeServer
+	}
+	if isTransientStreamError(err) {
+		return provider.RetryCodeTransport
+	}
+	return ""
+}
+
+// isTimeoutText recognizes timeout-shaped failure text.
+func isTimeoutText(text string) bool {
+	return strings.Contains(text, "timeout") ||
+		strings.Contains(text, "timed out") ||
+		strings.Contains(text, "gateway timeout")
+}
+
+// isServerErrorText recognizes 5xx-shaped failure text (server-side
+// overload/unavailability). "timeout" is excluded so gateway timeouts classify
+// as TIMEOUT, not SERVER.
+func isServerErrorText(text string) bool {
+	for _, p := range []string{
+		"queue is full",
+		"overloaded",
+		"service unavailable",
+		"bad gateway",
+		"internal server error",
+		"upstream connect error",
+	} {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // shouldRetryStreamError reports whether err is worth retrying.
 //
@@ -45,9 +112,23 @@ var errEmptyResponse = errors.New("provider returned an empty response (no conte
 // Context-overflow errors are always considered retryable here; the
 // once-only semantics are enforced separately in handleStreamFailure via
 // overflowRecoveryAttempted, so we never loop on compression.
-func shouldRetryStreamError(parentCtx context.Context, err error) bool {
+//
+// An optional retry policy adjusts the decision:
+//   - always mode retries every failure until the parent context is done
+//     (user cancel), regardless of code eligibility.
+//   - normal mode with a non-empty Codes list retries only failures whose
+//     canonical code is in the list.
+//   - nil policy keeps the legacy classification exactly.
+func shouldRetryStreamError(parentCtx context.Context, err error, policies ...*provider.RetryPolicy) bool {
 	if err == nil {
 		return false
+	}
+	// Policy short-circuits: a dead parent context (user/turn cancel) is never
+	// retried; always mode retries every failure until cancellation; a
+	// normal-mode codes filter gates eligibility. A nil policy lets the legacy
+	// classification below decide.
+	if decision, decided := policyRetryDecision(parentCtx, err, retryPolicyOf(policies...)); decided {
+		return decision
 	}
 	// Deadline exceeded: same discrimination as context.Canceled below.
 	// When the outer context is still alive, the deadline that fired was
@@ -57,7 +138,7 @@ func shouldRetryStreamError(parentCtx context.Context, err error) bool {
 	// the outer context's own deadline fired (user-imposed turn deadline),
 	// retrying cannot succeed and the error is surfaced immediately.
 	if errors.Is(err, context.DeadlineExceeded) {
-		return parentCtx.Err() == nil
+		return true
 	}
 	// Context cancellation: distinguish transport abort from user cancel.
 	// When the outer context is still alive (parentCtx.Err() == nil), a
@@ -65,7 +146,7 @@ func shouldRetryStreamError(parentCtx context.Context, err error) bool {
 	// connection server-side — retryable. When the outer context is also
 	// canceled, the user pressed Escape/Ctrl+C — not retryable.
 	if errors.Is(err, context.Canceled) {
-		return parentCtx.Err() == nil
+		return true
 	}
 	// An empty clean response is a provider-side truncation (seen under load);
 	// worth a bounded retry rather than a silent turn end.
@@ -85,6 +166,53 @@ func shouldRetryStreamError(parentCtx context.Context, err error) bool {
 		return provErr.IsRetryable
 	}
 	return isTransientStreamError(err)
+}
+
+// retryPolicyOf extracts the first optional policy, or nil when none was
+// passed. Keeps the variadic call sites backward compatible.
+func retryPolicyOf(policies ...*provider.RetryPolicy) *provider.RetryPolicy {
+	if len(policies) > 0 {
+		return policies[0]
+	}
+	return nil
+}
+
+// policyRetryDecision applies the policy-level short-circuits shared by every
+// retry decision. decided=false means no policy constraint applies and the
+// legacy classification should run. decided=true carries the forced outcome:
+// false for a dead parent context (user/turn cancel) or a codes-rejected
+// failure, true for always mode.
+func policyRetryDecision(parentCtx context.Context, err error, policy *provider.RetryPolicy) (decision, decided bool) {
+	if parentCtx != nil && parentCtx.Err() != nil {
+		return false, true
+	}
+	if policy == nil {
+		return false, false
+	}
+	if policy.Mode == provider.RetryModeAlways {
+		return true, true
+	}
+	if !policyAllowsCode(err, policy.Codes) {
+		return false, true
+	}
+	return false, false
+}
+
+// policyAllowsCode reports whether err's canonical retry code is eligible
+// under the policy's codes list. An empty list means no restriction (the
+// default transient set applies). Context-overflow errors always pass: they
+// are handled by the dedicated once-only compress+retry path with its own
+// budget, never by the policy code list (dsh semantics: context-overflow
+// compaction owns a separate budget).
+func policyAllowsCode(err error, codes []string) bool {
+	if len(codes) == 0 {
+		return true
+	}
+	if isContextLengthError(err) {
+		return true
+	}
+	code := retryCodeOf(err)
+	return code != "" && stringInSlice(code, codes)
 }
 
 // isTransientStreamError recognizes bare mid-stream failures that the provider
@@ -141,22 +269,90 @@ var transientStreamPatterns = []string{
 // retryBackoff computes the delay before the next retry for err.
 //
 // For rate-limited provider errors it honors a server-supplied Retry-After
-// (preferring the millisecond header when present), capped at maxStreamBackoff.
-// For everything else it uses bounded exponential backoff (1s, 2s, 4s, ...)
+// (preferring the millisecond header when present). With a policy the delay is
+// capped at the policy's backoff.MaxDelay and an over-cap provider delay falls
+// back to local backoff (dsh semantics); without a policy the historical
+// clampBackoff (maxStreamBackoff) applies.
+//
+// For everything else it uses bounded exponential backoff with the policy's
+// initial/max/jitter when provided, or the legacy schedule (1s, 2s, 4s, ...)
 // with up to 250ms of jitter to avoid thundering-herd retries against a
 // shared endpoint.
-func retryBackoff(err error, attempt int) time.Duration {
+func retryBackoff(err error, attempt int, policies ...*provider.RetryPolicy) time.Duration {
+	var policy *provider.RetryPolicy
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+
 	var provErr *hooks.ProviderError
 	if errors.As(err, &provErr) && provErr.IsRateLimit {
 		if d := retryAfterDuration(provErr.RetryAfter, provErr.RetryAfterMs); d > 0 {
-			return clampBackoff(d)
+			if policy != nil && policy.Backoff.MaxDelay > 0 {
+				if d <= policy.Backoff.MaxDelay {
+					return d
+				}
+				// Over-cap provider delay: use local backoff below.
+			} else {
+				return clampBackoff(d)
+			}
 		}
 	}
-	// Exponential base: attempt 0 -> 1s, 1 -> 2s, 2 -> 4s ... (matches the
+
+	if policy != nil {
+		return policyBackoff(policy, attempt)
+	}
+	// Legacy schedule: attempt 0 -> 1s, 1 -> 2s, 2 -> 4s ... (matches the
 	// previous fixed (retry+1) schedule for the first two attempts).
 	base := time.Duration(1<<uint(attempt)) * time.Second
 	jitter := time.Duration(rand.Intn(250)) * time.Millisecond
 	return clampBackoff(base + jitter)
+}
+
+// policyBackoff computes the local exponential-backoff delay for one retry
+// under a resolved retry policy: initial * 2^attempt, capped at max, with
+// symmetric ratio jitter around one (dsh semantics). attempt is 0-based.
+func policyBackoff(policy *provider.RetryPolicy, attempt int) time.Duration {
+	initial := policy.Backoff.InitialDelay
+	if initial <= 0 {
+		initial = time.Second
+	}
+	maxDelay := policy.Backoff.MaxDelay
+	if maxDelay <= 0 {
+		maxDelay = maxStreamBackoff
+	}
+	jitter := policy.Backoff.Jitter
+	if jitter < 0 {
+		jitter = 0
+	}
+	if jitter > 1 {
+		jitter = 1
+	}
+	base := initial << uint(attempt)
+	if base > maxDelay {
+		base = maxDelay
+	}
+	if jitter == 0 {
+		return base
+	}
+	factor := 1 - jitter + 2*jitter*rand.Float64()
+	d := time.Duration(float64(base) * factor)
+	if d > maxDelay {
+		d = maxDelay
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// stringInSlice reports whether s is present in list.
+func stringInSlice(s string, list []string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // retryAfterDuration converts a Retry-After header value (seconds) and/or a

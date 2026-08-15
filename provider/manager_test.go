@@ -267,6 +267,101 @@ func TestBuildStreamOptions_WithProvider(t *testing.T) {
 	}
 }
 
+// TestBuildStreamOptions_RetryPolicyBeatsGlobal verifies the P8 (DS4)
+// acceptance criterion: a per-provider retry_policy.max_retries beats the
+// global execution.retries, and the resolved policy is carried in
+// opts.RetryPolicy.
+func TestBuildStreamOptions_RetryPolicyBeatsGlobal(t *testing.T) {
+	cfg := &config.Config{
+		Execution:      config.ExecutionConfig{Retries: 9},
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{
+				ID: "openai", Endpoint: "https://api.openai.com/v1", Provider: "openai",
+				RetryPolicy: &config.RetryPolicyConfig{
+					Mode:       "normal",
+					MaxRetries: 1,
+					Backoff:    config.RetryBackoffConfig{InitialMS: 500, MaxMS: 2000, Jitter: 0},
+					Codes:      []string{"RATE_LIMIT"},
+				},
+			},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	opts := pm.BuildStreamOptions()
+
+	if opts.MaxRetries != 9 {
+		t.Errorf("legacy MaxRetries = %d, want global 9 (unused when RetryPolicy set)", opts.MaxRetries)
+	}
+	if opts.RetryPolicy == nil {
+		t.Fatal("expected resolved RetryPolicy on StreamOptions")
+	}
+	if opts.RetryPolicy.Mode != agenticprovider.RetryModeNormal {
+		t.Errorf("RetryPolicy.Mode = %q, want normal", opts.RetryPolicy.Mode)
+	}
+	if opts.RetryPolicy.MaxRetries != 1 {
+		t.Errorf("RetryPolicy.MaxRetries = %d, want 1 (per-provider beats global 9)", opts.RetryPolicy.MaxRetries)
+	}
+	if opts.RetryPolicy.Backoff.InitialDelay != 500*time.Millisecond {
+		t.Errorf("RetryPolicy.Backoff.InitialDelay = %v, want 500ms", opts.RetryPolicy.Backoff.InitialDelay)
+	}
+	if opts.RetryPolicy.Backoff.MaxDelay != 2*time.Second {
+		t.Errorf("RetryPolicy.Backoff.MaxDelay = %v, want 2s", opts.RetryPolicy.Backoff.MaxDelay)
+	}
+	if len(opts.RetryPolicy.Codes) != 1 || opts.RetryPolicy.Codes[0] != "RATE_LIMIT" {
+		t.Errorf("RetryPolicy.Codes = %v, want [RATE_LIMIT]", opts.RetryPolicy.Codes)
+	}
+}
+
+// TestBuildStreamOptions_RetryPolicyAlways verifies an always-mode
+// retry_policy resolves through provider construction.
+func TestBuildStreamOptions_RetryPolicyAlways(t *testing.T) {
+	cfg := &config.Config{
+		Execution:      config.ExecutionConfig{Retries: 9},
+		ActiveProvider: "deepseek",
+		Providers: []config.ProviderConfig{
+			{
+				ID: "deepseek", Endpoint: "https://api.deepseek.com", Provider: "deepseek",
+				RetryPolicy: &config.RetryPolicyConfig{Mode: "always"},
+			},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	opts := pm.BuildStreamOptions()
+	if opts.RetryPolicy == nil {
+		t.Fatal("expected resolved RetryPolicy")
+	}
+	if opts.RetryPolicy.Mode != agenticprovider.RetryModeAlways {
+		t.Errorf("RetryPolicy.Mode = %q, want always", opts.RetryPolicy.Mode)
+	}
+	// Always mode ignores the finite budget: MaxRetries defaults to the package
+	// default even though execution.retries is 9.
+	if opts.RetryPolicy.MaxRetries == 0 {
+		t.Error("RetryPolicy.MaxRetries should be defaulted")
+	}
+}
+
+// TestBuildStreamOptions_NoRetryPolicyKeepsLegacy verifies that omitting
+// retry_policy leaves opts.RetryPolicy nil so the legacy scalar behavior
+// (MaxRetries/MaxRetryDelay) applies unchanged.
+func TestBuildStreamOptions_NoRetryPolicyKeepsLegacy(t *testing.T) {
+	cfg := &config.Config{
+		Execution:      config.ExecutionConfig{Retries: 3},
+		ActiveProvider: "openai",
+		Providers: []config.ProviderConfig{
+			{ID: "openai", Endpoint: "https://api.openai.com/v1", Provider: "openai", MaxRetries: 4},
+		},
+	}
+	pm := NewProviderManager(cfg)
+	opts := pm.BuildStreamOptions()
+	if opts.RetryPolicy != nil {
+		t.Errorf("RetryPolicy = %+v, want nil (legacy scalar behavior)", opts.RetryPolicy)
+	}
+	if opts.MaxRetries != 4 {
+		t.Errorf("MaxRetries = %d, want 4 (per-provider scalar)", opts.MaxRetries)
+	}
+}
+
 func TestInferProviderIdentity_Presets(t *testing.T) {
 	tests := []struct {
 		name     string

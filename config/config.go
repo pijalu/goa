@@ -137,6 +137,38 @@ type ExecutionConfig struct {
 	StreamLoopResetAfter int `yaml:"stream_loop_reset_after,omitempty"`
 }
 
+// RetryBackoffConfig configures the exponential-backoff schedule for a
+// provider's retry policy. All values are optional; zero falls back to the
+// package defaults (initial 1000ms, max 30000ms, jitter 0.25).
+type RetryBackoffConfig struct {
+	// InitialMS is the base delay for the first retry in milliseconds
+	// (doubles per attempt).
+	InitialMS int `yaml:"initial_ms,omitempty" json:"initial_ms,omitempty"`
+	// MaxMS caps both the local exponential delay and any accepted provider
+	// Retry-After, in milliseconds.
+	MaxMS int `yaml:"max_ms,omitempty" json:"max_ms,omitempty"`
+	// Jitter is the symmetric random multiplier range around one
+	// (0.1 = ±10%). Valid range [0, 1].
+	Jitter float64 `yaml:"jitter,omitempty" json:"jitter,omitempty"`
+}
+
+// RetryPolicyConfig configures per-provider model-request retries, mirroring
+// the dsh llm-retry policy. mode is "normal" (finite budget, code-eligible) or
+// "always" (retry every model-request failure until cancel).
+type RetryPolicyConfig struct {
+	// Mode selects normal (default) or always retry behavior.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// MaxRetries is the finite retry budget for normal mode. When unset, the
+	// global execution.retries (or provider max_retries) applies.
+	MaxRetries int `yaml:"max_retries,omitempty" json:"max_retries,omitempty"`
+	// Backoff schedules the delay between attempts.
+	Backoff RetryBackoffConfig `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+	// Codes restricts normal-mode retries to the listed failure codes
+	// (EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT). Empty uses the
+	// default transient set.
+	Codes []string `yaml:"codes,omitempty" json:"codes,omitempty"`
+}
+
 // ProviderConfig configures a single LLM provider (endpoint + auth).
 // Model selection is handled separately via ModelConfig.
 type ProviderConfig struct {
@@ -185,6 +217,12 @@ type ProviderConfig struct {
 
 	// MaxRetryDelay caps exponential backoff delay.
 	MaxRetryDelay string `yaml:"max_retry_delay,omitempty"`
+
+	// RetryPolicy configures per-provider model-request retries (mode,
+	// finite budget, backoff, eligible codes). When set, its max_retries beats
+	// the global execution.retries and the scalar max_retries above; its
+	// backoff overrides MaxRetryDelay. Nil keeps the legacy scalar behavior.
+	RetryPolicy *RetryPolicyConfig `yaml:"retry_policy,omitempty" json:"retry_policy,omitempty"`
 
 	// ReasoningEffort sets a default reasoning level for this provider.
 	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`

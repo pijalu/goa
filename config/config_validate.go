@@ -179,6 +179,7 @@ func (c *Config) validateAgenticProviders(ve *internal.ValidationError) {
 		c.validateProviderTransport(ve, p)
 		c.validateProviderCache(ve, p)
 		c.validateProviderRetryDelay(ve, p)
+		c.validateProviderRetryPolicy(ve, p)
 	}
 }
 
@@ -212,6 +213,65 @@ func (c *Config) validateProviderRetryDelay(ve *internal.ValidationError, p Prov
 	}
 	if _, err := time.ParseDuration(p.MaxRetryDelay); err != nil {
 		ve.Add(fmt.Sprintf("providers.%s.max_retry_delay: cannot parse %q as duration: %v", p.ID, p.MaxRetryDelay, err))
+	}
+}
+
+// validateProviderRetryPolicy validates the optional per-provider retry_policy
+// block: mode must be normal|always, max_retries non-negative, backoff values
+// positive with initial ≤ max and jitter in [0,1], codes non-empty and
+// duplicate-free.
+func (c *Config) validateProviderRetryPolicy(ve *internal.ValidationError, p ProviderConfig) {
+	rp := p.RetryPolicy
+	if rp == nil {
+		return
+	}
+	prefix := fmt.Sprintf("providers.%s.retry_policy", p.ID)
+	validateRetryPolicyMode(ve, prefix, rp.Mode)
+	if rp.MaxRetries < 0 {
+		ve.Add(fmt.Sprintf("%s.max_retries: must be >= 0, got %d", prefix, rp.MaxRetries))
+	}
+	validateRetryPolicyBackoff(ve, prefix, rp.Backoff)
+	validateRetryPolicyCodes(ve, prefix, rp.Codes)
+}
+
+// validateRetryPolicyMode validates the mode field.
+func validateRetryPolicyMode(ve *internal.ValidationError, prefix, mode string) {
+	if mode != "" && mode != "normal" && mode != "always" {
+		ve.Add(fmt.Sprintf("%s.mode: must be %q or %q, got %q", prefix, "normal", "always", mode))
+	}
+}
+
+// validateRetryPolicyBackoff validates the backoff schedule fields.
+func validateRetryPolicyBackoff(ve *internal.ValidationError, prefix string, b RetryBackoffConfig) {
+	if b.InitialMS < 0 {
+		ve.Add(fmt.Sprintf("%s.backoff.initial_ms: must be >= 0, got %d", prefix, b.InitialMS))
+	}
+	if b.MaxMS < 0 {
+		ve.Add(fmt.Sprintf("%s.backoff.max_ms: must be >= 0, got %d", prefix, b.MaxMS))
+	}
+	if b.InitialMS > 0 && b.MaxMS > 0 && b.InitialMS > b.MaxMS {
+		ve.Add(fmt.Sprintf("%s.backoff.initial_ms: must be <= max_ms (%d > %d)", prefix, b.InitialMS, b.MaxMS))
+	}
+	if b.Jitter < 0 || b.Jitter > 1 {
+		ve.Add(fmt.Sprintf("%s.backoff.jitter: must be between 0 and 1, got %v", prefix, b.Jitter))
+	}
+}
+
+// validateRetryPolicyCodes validates the eligible failure-code list.
+func validateRetryPolicyCodes(ve *internal.ValidationError, prefix string, codes []string) {
+	if len(codes) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		if code == "" {
+			ve.Add(fmt.Sprintf("%s.codes: must contain only non-empty strings", prefix))
+			continue
+		}
+		if _, dup := seen[code]; dup {
+			ve.Add(fmt.Sprintf("%s.codes: duplicate code %q", prefix, code))
+		}
+		seen[code] = struct{}{}
 	}
 }
 

@@ -200,6 +200,52 @@ type Model struct {
 	Compat           any              `json:"compat,omitempty"`
 }
 
+// RetryMode selects how a provider route retries model-request failures.
+type RetryMode string
+
+const (
+	// RetryModeNormal retries only failures classified as eligible (by default
+	// the transient set: EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT,
+	// TRANSPORT) and only up to a finite MaxRetries budget.
+	RetryModeNormal RetryMode = "normal"
+	// RetryModeAlways retries every model-request failure without an attempt
+	// limit. Success, cancellation, or agent teardown stops the retry loop.
+	RetryModeAlways RetryMode = "always"
+)
+
+// RetryBackoff is the resolved exponential-backoff schedule for one retry
+// policy. Zero values mean "use the package default" for that axis.
+type RetryBackoff struct {
+	// InitialDelay is the base delay for the first retry (doubles per
+	// attempt). Zero falls back to the default 1s.
+	InitialDelay time.Duration `json:"initial_delay,omitempty"`
+	// MaxDelay caps both the local exponential delay and any accepted
+	// provider Retry-After. Zero falls back to the default 30s.
+	MaxDelay time.Duration `json:"max_delay,omitempty"`
+	// Jitter is the symmetric random multiplier range around one (0.1 = ±10%).
+	// Zero falls back to the default 0.25 (legacy fixed +250ms is replaced by
+	// symmetric jitter only when a policy is explicitly configured).
+	Jitter float64 `json:"jitter,omitempty"`
+}
+
+// RetryPolicy is the resolved per-provider model-request retry policy. A nil
+// policy means "legacy behavior": normal mode with the StreamOptions
+// MaxRetries/MaxRetryDelay scalars and the historical fixed-jitter backoff.
+type RetryPolicy struct {
+	// Mode selects normal (bounded, code-eligible) or always (unbounded)
+	// retry behavior.
+	Mode RetryMode `json:"mode,omitempty"`
+	// MaxRetries is the finite retry budget for normal mode. Zero falls back
+	// to the StreamOptions MaxRetries scalar (or 5).
+	MaxRetries int `json:"max_retries,omitempty"`
+	// Backoff schedules the delay between attempts.
+	Backoff RetryBackoff `json:"backoff,omitempty"`
+	// Codes restricts normal-mode retries to the listed failure codes
+	// (canonical vocabulary: EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT,
+	// TRANSPORT). Empty means the default transient set applies.
+	Codes []string `json:"codes,omitempty"`
+}
+
 // StreamOptions configures an LLM streaming request.
 type StreamOptions struct {
 	Temperature *float64        `json:"temperature,omitempty"`
@@ -224,6 +270,12 @@ type StreamOptions struct {
 
 	MaxRetries    int           `json:"max_retries,omitempty"`
 	MaxRetryDelay time.Duration `json:"max_retry_delay,omitempty"`
+
+	// RetryPolicy, when non-nil, replaces the legacy scalar retry behavior
+	// (MaxRetries/MaxRetryDelay + fixed-jitter backoff) with a per-provider
+	// policy resolved at provider construction: mode (normal/always), finite
+	// budget, backoff schedule, and eligible failure codes.
+	RetryPolicy *RetryPolicy `json:"retry_policy,omitempty"`
 
 	ToolChoice string `json:"tool_choice,omitempty"`
 

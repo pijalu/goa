@@ -859,6 +859,16 @@ providers:
       project: goa
     max_retry_delay: 2s
     reasoning_effort: low
+    retry_policy:
+      mode: always
+      max_retries: 7
+      backoff:
+        initial_ms: 500
+        max_ms: 5000
+        jitter: 0.2
+      codes:
+        - RATE_LIMIT
+        - SERVER
 models:
   - id: gpt-4o
     provider: openai
@@ -917,6 +927,27 @@ func assertProvider(t *testing.T, cfg Config) {
 	}
 	if p.ReasoningEffort != "low" {
 		t.Errorf("Provider.ReasoningEffort = %q, want low", p.ReasoningEffort)
+	}
+	if p.RetryPolicy == nil {
+		t.Fatal("Provider.RetryPolicy should be set")
+	}
+	if p.RetryPolicy.Mode != "always" {
+		t.Errorf("Provider.RetryPolicy.Mode = %q, want always", p.RetryPolicy.Mode)
+	}
+	if p.RetryPolicy.MaxRetries != 7 {
+		t.Errorf("Provider.RetryPolicy.MaxRetries = %d, want 7", p.RetryPolicy.MaxRetries)
+	}
+	if p.RetryPolicy.Backoff.InitialMS != 500 {
+		t.Errorf("Provider.RetryPolicy.Backoff.InitialMS = %d, want 500", p.RetryPolicy.Backoff.InitialMS)
+	}
+	if p.RetryPolicy.Backoff.MaxMS != 5000 {
+		t.Errorf("Provider.RetryPolicy.Backoff.MaxMS = %d, want 5000", p.RetryPolicy.Backoff.MaxMS)
+	}
+	if p.RetryPolicy.Backoff.Jitter != 0.2 {
+		t.Errorf("Provider.RetryPolicy.Backoff.Jitter = %v, want 0.2", p.RetryPolicy.Backoff.Jitter)
+	}
+	if len(p.RetryPolicy.Codes) != 2 || p.RetryPolicy.Codes[0] != "RATE_LIMIT" || p.RetryPolicy.Codes[1] != "SERVER" {
+		t.Errorf("Provider.RetryPolicy.Codes = %v, want [RATE_LIMIT SERVER]", p.RetryPolicy.Codes)
 	}
 }
 
@@ -1107,6 +1138,80 @@ func TestConfigValidate_AgenticFields(t *testing.T) {
 					Enabled:          boolPtr(true),
 					ThresholdPercent: 150,
 				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid retry_policy always",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "always", MaxRetries: 7,
+						Backoff: RetryBackoffConfig{InitialMS: 500, MaxMS: 5000, Jitter: 0.2},
+						Codes:   []string{"RATE_LIMIT", "SERVER"}},
+				}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid retry_policy normal empty codes",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal", MaxRetries: 1},
+				}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid retry_policy mode",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "sometimes"},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy negative max_retries",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal", MaxRetries: -1},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy backoff initial > max",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal",
+						Backoff: RetryBackoffConfig{InitialMS: 5000, MaxMS: 1000}},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy jitter out of range",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal",
+						Backoff: RetryBackoffConfig{Jitter: 1.5}},
+				}},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid retry_policy duplicate codes",
+			cfg: &Config{
+				Providers: []ProviderConfig{{
+					ID: "x", Provider: AgenticProviderOpenAI,
+					RetryPolicy: &RetryPolicyConfig{Mode: "normal", Codes: []string{"SERVER", "SERVER"}},
+				}},
 			},
 			wantErr: true,
 		},

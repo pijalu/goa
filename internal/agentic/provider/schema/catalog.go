@@ -80,6 +80,97 @@ type ProviderCompat struct {
 	Local bool
 }
 
+// Canonical retry failure codes (dsh llm-retry vocabulary). The retry policy's
+// codes[] list names these values; empty codes mean the default transient set
+// below. Codes are stable provider-neutral routing keys, never parsed from
+// message text by policy consumers.
+const (
+	// RetryCodeEmptyResponse is a degenerate provider completion that produced
+	// no durable content. Repeating it is safe.
+	RetryCodeEmptyResponse = "EMPTY_RESPONSE"
+	// RetryCodeRateLimit is a provider rate limit (HTTP 429).
+	RetryCodeRateLimit = "RATE_LIMIT"
+	// RetryCodeServer is a provider server failure (HTTP 5xx).
+	RetryCodeServer = "SERVER"
+	// RetryCodeTimeout is a request/response timeout (HTTP 408, deadline).
+	RetryCodeTimeout = "TIMEOUT"
+	// RetryCodeTransport is a network/transport failure (connection reset,
+	// refused, EOF, ...).
+	RetryCodeTransport = "TRANSPORT"
+)
+
+// DefaultRetryCodes are the failure codes eligible for retry in normal mode
+// when a policy omits codes (mirrors dsh llm-retry's DEFAULT_RETRYABLE_CODES).
+var DefaultRetryCodes = []string{
+	RetryCodeEmptyResponse,
+	RetryCodeRateLimit,
+	RetryCodeServer,
+	RetryCodeTimeout,
+	RetryCodeTransport,
+}
+
+// DefaultRetryPolicy is the package-wide normal-mode retry policy applied when
+// neither the provider config nor the catalog entry declares one. It keeps
+// Goa's established retry budget (5 retries, 1s→30s exponential, symmetric
+// jitter) with the default transient code set.
+var DefaultRetryPolicy = &RetryPolicy{
+	Mode:       RetryModeNormal,
+	MaxRetries: 5,
+	Backoff: RetryBackoff{
+		InitialDelay: time.Second,
+		MaxDelay:     30 * time.Second,
+		Jitter:       0.25,
+	},
+	Codes: DefaultRetryCodes,
+}
+
+// ResolveRetryPolicy merges an optional configured policy (from provider
+// config) with a catalog default into one fully-defaulted policy. The
+// configured policy wins per field; catalog defaults fill omissions; the
+// package default fills anything still unset. A nil configured policy uses the
+// catalog default (or the package default when the catalog has none).
+func ResolveRetryPolicy(configured *RetryPolicy, catalogDefault *RetryPolicy) *RetryPolicy {
+	out := DefaultRetryPolicy
+	if catalogDefault != nil {
+		out = catalogDefault
+	}
+	if configured == nil {
+		return cloneRetryPolicy(out)
+	}
+	merged := *out
+	if configured.Mode != "" {
+		merged.Mode = configured.Mode
+	}
+	if configured.MaxRetries != 0 {
+		merged.MaxRetries = configured.MaxRetries
+	}
+	if configured.Backoff.InitialDelay != 0 {
+		merged.Backoff.InitialDelay = configured.Backoff.InitialDelay
+	}
+	if configured.Backoff.MaxDelay != 0 {
+		merged.Backoff.MaxDelay = configured.Backoff.MaxDelay
+	}
+	if configured.Backoff.Jitter != 0 {
+		merged.Backoff.Jitter = configured.Backoff.Jitter
+	}
+	if len(configured.Codes) > 0 {
+		merged.Codes = append([]string(nil), configured.Codes...)
+	}
+	return &merged
+}
+
+// cloneRetryPolicy returns a copy of p safe to mutate independently.
+func cloneRetryPolicy(p *RetryPolicy) *RetryPolicy {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	if p.Codes != nil {
+		cp.Codes = append([]string(nil), p.Codes...)
+	}
+	return &cp
+}
+
 // ProviderDef is the declarative template for one known provider.
 type ProviderDef struct {
 	// ID is the config/wizard identifier (e.g. "openrouter", "poolside").
@@ -110,6 +201,10 @@ type ProviderDef struct {
 	// the TUI as red inside a window, orange within the grace margin, green
 	// otherwise. Empty = no peak indicator (always green).
 	PeakHours []PeakWindow
+	// RetryPolicy is the provider's default retry policy (nil = the package
+	// DefaultRetryPolicy). Resolved per route at provider construction; an
+	// explicit provider-config retry_policy overrides it field by field.
+	RetryPolicy *RetryPolicy
 }
 
 // NeedsAPIKey reports whether this provider requires an API key.

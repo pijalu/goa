@@ -151,3 +151,68 @@ func TestMatchProviderByNameOrURL_ZaiPrecedence(t *testing.T) {
 		t.Errorf("general URL = %v, want zai-api", general)
 	}
 }
+
+// TestDefaultRetryCodes_MatchesDSHVocabulary pins the default transient code
+// set to the dsh llm-retry DEFAULT_RETRYABLE_CODES vocabulary.
+func TestDefaultRetryCodes_MatchesDSHVocabulary(t *testing.T) {
+	want := []string{"EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"}
+	if len(DefaultRetryCodes) != len(want) {
+		t.Fatalf("DefaultRetryCodes = %v, want %v", DefaultRetryCodes, want)
+	}
+	for i, code := range want {
+		if DefaultRetryCodes[i] != code {
+			t.Errorf("DefaultRetryCodes[%d] = %q, want %q", i, DefaultRetryCodes[i], code)
+		}
+	}
+}
+
+// TestResolveRetryPolicy_NilUsesDefault verifies a nil configured policy
+// resolves to the package default normal policy.
+func TestResolveRetryPolicy_NilUsesDefault(t *testing.T) {
+	p := ResolveRetryPolicy(nil, nil)
+	if p == nil {
+		t.Fatal("ResolveRetryPolicy(nil, nil) = nil")
+	}
+	if p.Mode != RetryModeNormal {
+		t.Errorf("Mode = %q, want normal", p.Mode)
+	}
+	if p.MaxRetries != DefaultRetryPolicy.MaxRetries {
+		t.Errorf("MaxRetries = %d, want %d", p.MaxRetries, DefaultRetryPolicy.MaxRetries)
+	}
+	// Must be a fresh copy: mutating it must not affect the package default.
+	p.MaxRetries = 999
+	if DefaultRetryPolicy.MaxRetries == 999 {
+		t.Error("ResolveRetryPolicy returned a shared (non-cloned) default")
+	}
+}
+
+// TestResolveRetryPolicy_ConfiguredOverrides verifies per-field override: the
+// configured policy wins, catalog fills omissions, package default fills rest.
+func TestResolveRetryPolicy_ConfiguredOverrides(t *testing.T) {
+	catalog := &RetryPolicy{
+		Mode:       RetryModeAlways,
+		MaxRetries: 2,
+		Backoff:    RetryBackoff{InitialDelay: 2 * time.Second, MaxDelay: 20 * time.Second, Jitter: 0.2},
+		Codes:      []string{"SERVER"},
+	}
+	configured := &RetryPolicy{
+		Mode:       RetryModeNormal,
+		MaxRetries: 1,
+	}
+	p := ResolveRetryPolicy(configured, catalog)
+	if p.Mode != RetryModeNormal {
+		t.Errorf("Mode = %q, want configured normal", p.Mode)
+	}
+	if p.MaxRetries != 1 {
+		t.Errorf("MaxRetries = %d, want configured 1", p.MaxRetries)
+	}
+	if p.Backoff.InitialDelay != 2*time.Second {
+		t.Errorf("InitialDelay = %v, want catalog 2s", p.Backoff.InitialDelay)
+	}
+	if p.Backoff.MaxDelay != 20*time.Second {
+		t.Errorf("MaxDelay = %v, want catalog 20s", p.Backoff.MaxDelay)
+	}
+	if len(p.Codes) != 1 || p.Codes[0] != "SERVER" {
+		t.Errorf("Codes = %v, want catalog [SERVER]", p.Codes)
+	}
+}
