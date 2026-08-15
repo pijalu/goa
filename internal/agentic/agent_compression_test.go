@@ -851,7 +851,7 @@ func TestSummarizeHistoryWithElidedPairs(t *testing.T) {
 	agent.SetHistory(elidedPairHistory())
 	agent.compressToolElision(false)
 
-	summary, err := agent.summarizeHistory(context.Background())
+	summary, _, err := agent.summarizeHistory(context.Background())
 	if err != nil {
 		t.Fatalf("summarizeHistory failed: %v", err)
 	}
@@ -1132,7 +1132,7 @@ func TestSummarizeHistoryReusesConversationPrefix(t *testing.T) {
 		{Type: Content, Role: Assistant, Content: "second answer"},
 	})
 
-	summary, err := agent.summarizeHistory(context.Background())
+	summary, _, err := agent.summarizeHistory(context.Background())
 	if err != nil {
 		t.Fatalf("summarizeHistory failed: %v", err)
 	}
@@ -1201,7 +1201,7 @@ func TestSummarizeHistoryEmptyOnToolOnlyReply(t *testing.T) {
 		{Type: Content, Role: Assistant, Content: "a"},
 	})
 
-	summary, err := agent.summarizeHistory(context.Background())
+	summary, _, err := agent.summarizeHistory(context.Background())
 	if err == nil {
 		t.Errorf("summarizeHistory returned %q with nil error for a text-less reply; want an error so Compact cannot wipe history", summary)
 	}

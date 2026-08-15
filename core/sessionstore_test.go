@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pijalu/goa/internal/agentic"
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 )
 
 // setupTestSession creates a temporary directory for session testing.
@@ -176,7 +177,106 @@ func TestSessionCompactEventRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSessionMultipleSessions verifies multiple sessions are independent.
+// TestSessionCompactionProvenanceRoundTrip covers the CX4 durability
+// contract: the compaction provenance triple (compaction_start →
+// compaction_summary → compaction_end) rides the same observer→SessionStore
+// pipeline as every other agent event, so it must survive the JSONL
+// write/read round-trip with the CompactionTx payload (shared id, shadowed
+// range, provider/model, usage) intact. A second, deliberately unterminated
+// transaction (the process "killed" between start and end) must be flagged
+// by FindOrphanedCompactions on the reloaded log — the next-boot orphan
+// detection.
+func TestSessionCompactionProvenanceRoundTrip(t *testing.T) {
+	dir, cleanup := setupTestSession(t)
+	defer cleanup()
+
+	ss := NewSessionStore(dir)
+	ss.StartSession()
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventContent, Role: agentic.User, Text: "hi"})
+
+	// Completed transaction.
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventCompactionStart, CompactionTx: &agentic.CompactionTx{ID: "cx-done-1"}})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventCompactionSummary, CompactionTx: &agentic.CompactionTx{
+		ID:             "cx-done-1",
+		ShadowedEnd:    42,
+		ShadowedCount:  42,
+		ShadowedTokens: 12345,
+		FreedTokens:    12000,
+		Provider:       "deepseek",
+		Model:          "deepseek-v4",
+		Usage:          &agenticprovider.Usage{InputTokens: 12300, OutputTokens: 345},
+	}})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventCompactionEnd, CompactionTx: &agentic.CompactionTx{ID: "cx-done-1"}})
+
+	// Orphaned transaction: start (and summary) but no end — the crash
+	// window. No end is ever written for cx-crashed-2.
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventCompactionStart, CompactionTx: &agentic.CompactionTx{ID: "cx-crashed-2"}})
+	ss.WriteEvent(agentic.OutputEvent{Type: agentic.EventCompactionSummary, CompactionTx: &agentic.CompactionTx{ID: "cx-crashed-2", ShadowedCount: 42}})
+
+	if err := ss.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	sessions, err := ss.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+	events, err := ss.LoadSession(sessions[0].Name)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+
+	assertReloadedProvenanceTriple(t, events)
+	assertReloadedProvenanceOrphans(t, events)
+}
+
+// assertReloadedProvenanceTriple checks the completed transaction survived
+// the JSONL round-trip in order with its CompactionTx payload intact.
+func assertReloadedProvenanceTriple(t *testing.T, events []agentic.OutputEvent) {
+	t.Helper()
+	var triple []agentic.OutputEvent
+	for _, ev := range events {
+		if ev.CompactionTx != nil && ev.CompactionTx.ID == "cx-done-1" {
+			triple = append(triple, ev)
+		}
+	}
+	if len(triple) != 3 {
+		t.Fatalf("reloaded log holds %d events for the completed transaction, want 3", len(triple))
+	}
+	wantTypes := []agentic.EventType{agentic.EventCompactionStart, agentic.EventCompactionSummary, agentic.EventCompactionEnd}
+	for i, want := range wantTypes {
+		if triple[i].Type != want {
+			t.Errorf("triple[%d] type = %q after round-trip, want %q", i, triple[i].Type, want)
+		}
+	}
+	assertReloadedProvenanceFacts(t, triple[1].CompactionTx)
+}
+
+// assertReloadedProvenanceFacts checks the compaction_summary facts and
+// usage survived the JSONL round-trip.
+func assertReloadedProvenanceFacts(t *testing.T, sum *agentic.CompactionTx) {
+	t.Helper()
+	if sum.ShadowedEnd != 42 || sum.ShadowedCount != 42 || sum.ShadowedTokens != 12345 ||
+		sum.FreedTokens != 12000 || sum.Provider != "deepseek" || sum.Model != "deepseek-v4" {
+		t.Errorf("compaction_summary facts did not survive the round-trip: %+v", sum)
+	}
+	if sum.Usage == nil || sum.Usage.InputTokens != 12300 || sum.Usage.OutputTokens != 345 {
+		t.Errorf("compaction_summary usage did not survive the round-trip: %+v", sum.Usage)
+	}
+}
+
+// assertReloadedProvenanceOrphans checks next-boot orphan detection on the
+// reloaded log: only the killed transaction is flagged.
+func assertReloadedProvenanceOrphans(t *testing.T, events []agentic.OutputEvent) {
+	t.Helper()
+	orphans := agentic.FindOrphanedCompactions(events)
+	if len(orphans) != 1 || orphans[0] != "cx-crashed-2" {
+		t.Errorf("FindOrphanedCompactions on the reloaded log = %v, want [cx-crashed-2]", orphans)
+	}
+}
 func TestSessionMultipleSessions(t *testing.T) {
 	dir, cleanup := setupTestSession(t)
 	defer cleanup()

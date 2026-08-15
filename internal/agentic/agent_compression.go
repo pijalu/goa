@@ -116,7 +116,17 @@ func (a *Agent) Compact(ctx context.Context) error {
 		a.microDryRunValidate()
 	}
 
-	summary, err := a.summarizeHistory(ctx)
+	// CX4: open the durable compaction transaction. The triple
+	// (compaction_start → compaction_summary → compaction_end) shares one id
+	// and lands in the session JSONL via the observer pipeline, so a crash
+	// mid-compaction leaves a start with no end — detectable on next boot
+	// (FindOrphanedCompactions). The transaction opens only once a summarize
+	// is genuinely attempted: the prune-resolved early return above is a
+	// model-free pass (no summary exists to record) and never starts one.
+	txID := newCompactionTxID()
+	a.emitCompactionTxStart(txID)
+
+	summary, usage, err := a.summarizeHistory(ctx)
 	if err != nil && isContextLengthError(err) {
 		// Summarize self-overflowed: the history to summarize was too big for
 		// the window. Now — and only now — apply micro compaction to create
@@ -125,9 +135,13 @@ func (a *Agent) Compact(ctx context.Context) error {
 			a.cfg.Logger.Log(Info, "Compact: summarize overflowed (%v); applying micro compaction to make room and retrying", err)
 		}
 		a.applyMicroForSummarize()
-		summary, err = a.summarizeHistory(ctx)
+		summary, usage, err = a.summarizeHistory(ctx)
 	}
 	if err != nil {
+		// Failed attempt: close the transaction with the error so the log
+		// distinguishes a failed compaction (start → end{error}) from a crash
+		// (start with no end).
+		a.emitCompactionTxEnd(txID, err.Error())
 		return err
 	}
 
@@ -142,6 +156,7 @@ func (a *Agent) Compact(ctx context.Context) error {
 	if removed < 0 {
 		removed = 0
 	}
+	shadowedEnd := len(a.history)
 	a.history = []Message{
 		{Type: Content, Role: User, Content: frameCompactedSummary(summary)},
 		{Type: Content, Role: Assistant, Content: summary},
@@ -150,11 +165,30 @@ func (a *Agent) Compact(ctx context.Context) error {
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
 
+	// CX4: record the completed summary (shadowed range, freed tokens,
+	// provider/model, summarize-call usage), then close the transaction. The
+	// summary event fires after the replacement so its freed-tokens figure is
+	// measured against the landed checkpoint, and always before end so the
+	// triple keeps its start → summary → end order.
+	after := a.ContextStats()
+	a.emitCompactionTxSummary(&CompactionTx{
+		ID:             txID,
+		ShadowedStart:  0,
+		ShadowedEnd:    shadowedEnd,
+		ShadowedCount:  shadowedEnd,
+		ShadowedTokens: before.EstimatedTokens,
+		FreedTokens:    before.EstimatedTokens - after.EstimatedTokens,
+		Provider:       string(a.cfg.Model.Provider),
+		Model:          a.cfg.Model.ID,
+		Usage:          usage,
+	})
+	a.emitCompactionTxEnd(txID, "")
+
 	// Compact keeps its internal emission (public API contract +
 	// TestAgent_CompactEmitsCompactEvent), enriched with the structured
 	// payload. The full summary rides in Compaction.Detail; Text carries the
 	// strategy label like every other compression path.
-	a.emitCompaction(string(CompressionSummarize), before, a.ContextStats(), removed, 0, summary)
+	a.emitCompaction(string(CompressionSummarize), before, after, removed, 0, summary)
 	return nil
 }
 
@@ -222,7 +256,10 @@ func (a *Agent) applyMicroLocked(cfg MicroCompactionConfig) compactionResult {
 	return compactionResult{changed: changed}
 }
 
-func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
+// summarizeHistory runs the compaction summarize call and returns the
+// summary text plus the provider-reported usage of the summarize request
+// (nil when the provider emitted none — CX4 compaction_summary.usage).
+func (a *Agent) summarizeHistory(ctx context.Context) (string, *provider.Usage, error) {
 	// Diagnosability: elided tool calls in the history used to reach the
 	// provider verbatim and 400 the summarize request (invalid JSON
 	// function.arguments). migrateMessages now serializes them as text notes.
@@ -243,7 +280,7 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 	// own system prompt, tools, and shadowed-region messages verbatim").
 	pCtx := a.buildProviderContext(ctx)
 	if len(pCtx.Messages) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	pCtx.Messages = append(pCtx.Messages, provider.Message{
 		Role: provider.RoleUser,
@@ -260,9 +297,36 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 
 	stream, err := provider.Stream(model, pCtx, opts)
 	if err != nil {
-		return "", fmt.Errorf("summarization stream: %w", err)
+		return "", nil, fmt.Errorf("summarization stream: %w", err)
 	}
 
+	summary, err := consumeSummarizeStream(ctx, stream)
+	if err != nil {
+		return "", nil, err
+	}
+
+	// The request now carries tool schemas, so the model may answer the
+	// instruction with only a tool call and no text. An empty summary must
+	// fail here rather than let Compact wipe the history with blank content.
+	if strings.TrimSpace(summary) == "" {
+		return "", nil, fmt.Errorf("summarization produced no text (model may have answered with a tool call only)")
+	}
+
+	// Capture the provider-reported usage of the summarize call for the
+	// compaction_summary provenance event (the usage chunk rides the stream
+	// result via stream_options.include_usage). Nil when absent.
+	var usage *provider.Usage
+	if res := stream.Result(); res != nil {
+		usage = res.Usage
+	}
+
+	return summary, usage, nil
+}
+
+// consumeSummarizeStream drains the summarize stream into the summary text.
+// It returns on context cancellation, on an in-stream provider error, and on
+// a terminal stream failure; a clean close yields the accumulated text.
+func consumeSummarizeStream(ctx context.Context, stream *provider.AssistantMessageEventStream) (string, error) {
 	var summary strings.Builder
 	for event := range stream.Seq() {
 		if err := ctx.Err(); err != nil {
@@ -279,14 +343,6 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 	if err := stream.Err(); err != nil {
 		return "", fmt.Errorf("summarization failed: %w", err)
 	}
-
-	// The request now carries tool schemas, so the model may answer the
-	// instruction with only a tool call and no text. An empty summary must
-	// fail here rather than let Compact wipe the history with blank content.
-	if strings.TrimSpace(summary.String()) == "" {
-		return "", fmt.Errorf("summarization produced no text (model may have answered with a tool call only)")
-	}
-
 	return summary.String(), nil
 }
 

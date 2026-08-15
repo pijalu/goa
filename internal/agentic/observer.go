@@ -132,6 +132,12 @@ type OutputEvent struct {
 	// that predate the structured payload (treated as a bare signal).
 	Compaction *CompactionInfo `json:"compaction,omitempty"`
 
+	// CompactionTx carries the durable compaction-transaction record when
+	// Type is EventCompactionStart, EventCompactionSummary or
+	// EventCompactionEnd (CX4 provenance triple). It is nil for every other
+	// event type.
+	CompactionTx *CompactionTx `json:"compaction_tx,omitempty"`
+
 	// Metadata is a set of opaque key/value strings attached to the event.
 	// It is NOT sent to the LLM, but is propagated through the observer
 	// pipeline (including the XML stream). Clients use this to store
