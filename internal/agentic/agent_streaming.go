@@ -19,6 +19,10 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 	// Strip transient (ephemeral) system nudges at turn end so recovery/repeat
 	// hints inform the model during this turn but do not pollute future turns.
 	defer a.stripEphemeralSystemMessages()
+	// Safety net: the thinking-stall timers are already disarmed on content/
+	// tool progress and at every round boundary; stop them here too so an
+	// early error return can never leak a live timer past the turn.
+	defer a.stopThinkingStallTimers()
 
 	model, opts, initCtx := a.prepareTurn(ctx)
 	if err := a.checkContextLimit(); err != nil {
@@ -893,6 +897,15 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 	// (/config:temp:thinking_stall_detection:off or
 	// execution.disable_thinking_stall_detection); checked per delta so a
 	// mid-stream toggle takes effect immediately.
+	//
+	// A thinking delta is itself progress: the stall clock measures the gap
+	// since the LAST received thinking delta, so a slow model that streams
+	// reasoning tokens continuously for longer than the stop threshold is
+	// never stopped (session export 2026-08-15: the pre-fix code measured
+	// from the first delta of the phase and killed an actively-streaming
+	// locallm exactly thinking_stall_stop_seconds later). Because a true
+	// no-delta hang delivers no further deltas that could re-run this check,
+	// re-armed timers detect the gap even when the stream goes silent.
 	if stallDisabled := a.cfg.ThinkingStallDisabled != nil && a.cfg.ThinkingStallDisabled(); !stallDisabled {
 		warnAfter := a.cfg.ThinkingStallWarn
 		if warnAfter <= 0 {
@@ -902,23 +915,15 @@ func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
 		if stopAfter <= 0 {
 			stopAfter = defaultThinkingStallStop
 		}
-		if a.thinkingStallStart.IsZero() {
-			a.thinkingStallStart = time.Now()
-		}
-		elapsed := time.Since(a.thinkingStallStart)
-		if elapsed > stopAfter {
-			a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without progress", elapsed)
-			a.thinkingStalled = true
-			a.thinkingStallElapsed = elapsed
+		now := time.Now()
+		// First delta after a silence gap longer than the stop threshold:
+		// the timer should have fired but cannot be relied on when the gap
+		// crosses a round/reset boundary, so evaluate the gap inline too.
+		if !a.thinkingStallStart.IsZero() && now.Sub(a.thinkingStallStart) > stopAfter {
+			a.markThinkingStalled(now.Sub(a.thinkingStallStart))
 			return
 		}
-		if elapsed > warnAfter && !a.thinkingStallWarned {
-			a.thinkingStallWarned = true
-			a.emitEvent(OutputEvent{
-				Type: EventProgress,
-				Text: "The agent has been thinking for over " + warnAfter.Round(time.Second).String() + " without producing output.",
-			})
-		}
+		a.armThinkingStallTimers(now, warnAfter, stopAfter)
 	}
 
 	// Strip tool-call XML from the visible thinking stream. Local
@@ -1057,11 +1062,118 @@ func containsToolXMLTag(text string) bool {
 	return false
 }
 
+// armThinkingStallTimers records a thinking delta as forward progress and
+// (re)arms the warn/stop timers. Every received delta pushes the deadlines
+// out, so the timers only fire after warnAfter/stopAfter of continuous
+// thinking silence — never while deltas are still arriving.
+func (a *Agent) armThinkingStallTimers(now time.Time, warnAfter, stopAfter time.Duration) {
+	a.mu.Lock()
+	a.thinkingStallStart = now
+	a.mu.Unlock()
+
+	if a.thinkingStallWarnTimer == nil {
+		a.thinkingStallWarnTimer = time.AfterFunc(warnAfter, a.onThinkingStallWarn)
+	} else {
+		a.thinkingStallWarnTimer.Reset(warnAfter)
+	}
+	if a.thinkingStallStopTimer == nil {
+		a.thinkingStallStopTimer = time.AfterFunc(stopAfter, a.onThinkingStallStop)
+	} else {
+		a.thinkingStallStopTimer.Reset(stopAfter)
+	}
+}
+
+// onThinkingStallWarn emits the "still thinking" progress warning after
+// warnAfter of continuous thinking silence. It re-checks the actual gap under
+// the mutex because Reset can race with an in-flight timer callback: a delta
+// that landed just before the fire must suppress the stale warning.
+func (a *Agent) onThinkingStallWarn() {
+	a.mu.Lock()
+	if a.thinkingStallStart.IsZero() || a.thinkingStallWarned {
+		a.mu.Unlock()
+		return
+	}
+	elapsed := time.Since(a.thinkingStallStart)
+	warnAfter := a.cfg.ThinkingStallWarn
+	if warnAfter <= 0 {
+		warnAfter = defaultThinkingStallWarn
+	}
+	if elapsed < warnAfter {
+		a.mu.Unlock()
+		return
+	}
+	a.thinkingStallWarned = true
+	a.mu.Unlock()
+
+	a.emitEvent(OutputEvent{
+		Type: EventProgress,
+		Text: "The agent has been thinking for over " + warnAfter.Round(time.Second).String() + " without producing output.",
+	})
+}
+
+// onThinkingStallStop declares the stall after stopAfter of continuous
+// thinking silence. The stale-fire guard mirrors onThinkingStallWarn: a
+// delta arriving just before the fire invalidates the callback.
+func (a *Agent) onThinkingStallStop() {
+	a.mu.Lock()
+	if a.thinkingStallStart.IsZero() {
+		a.mu.Unlock()
+		return
+	}
+	elapsed := time.Since(a.thinkingStallStart)
+	stopAfter := a.cfg.ThinkingStallStop
+	if stopAfter <= 0 {
+		stopAfter = defaultThinkingStallStop
+	}
+	a.mu.Unlock()
+	if elapsed < stopAfter {
+		return
+	}
+	a.markThinkingStalled(elapsed)
+}
+
+// markThinkingStalled records the stall: the stream is stopped and the error
+// surfaces on the next handled event (see handleStreamEvent).
+func (a *Agent) markThinkingStalled(elapsed time.Duration) {
+	a.mu.Lock()
+	if a.thinkingStalled {
+		a.mu.Unlock()
+		return
+	}
+	a.thinkingStalled = true
+	a.thinkingStallElapsed = elapsed
+	a.mu.Unlock()
+	a.cfg.Logger.Log(Warn, "Stopping stream: thinking stalled for %v without progress", elapsed)
+}
+
 // resetThinkingStall clears the thinking-stall tracking whenever the model
 // produces content or a tool call, indicating forward progress.
 func (a *Agent) resetThinkingStall() {
+	a.mu.Lock()
+	a.resetThinkingStallLocked()
+	a.mu.Unlock()
+	a.stopThinkingStallTimers()
+}
+
+// resetThinkingStallLocked is resetThinkingStall for callers that already
+// hold a.mu (e.g. resetStreamRoundState via startStreamRound). Timer Stop is
+// safe under the lock, so the timers are disarmed inline.
+func (a *Agent) resetThinkingStallLocked() {
 	a.thinkingStallStart = time.Time{}
 	a.thinkingStallWarned = false
+	a.stopThinkingStallTimers()
+}
+
+// stopThinkingStallTimers disarms the warn/stop timers. Stale callbacks that
+// lose the Stop race are harmless: both re-check thinkingStallStart (zeroed
+// by the reset) under the mutex before acting.
+func (a *Agent) stopThinkingStallTimers() {
+	if a.thinkingStallWarnTimer != nil {
+		a.thinkingStallWarnTimer.Stop()
+	}
+	if a.thinkingStallStopTimer != nil {
+		a.thinkingStallStopTimer.Stop()
+	}
 }
 
 // resetStreamRoundState clears per-round buffers and flags before a re-stream
@@ -1078,7 +1190,7 @@ func (a *Agent) resetStreamRoundState() {
 	a.streamLoopStrikeThisRound = false
 	a.thinkingStalled = false
 	a.thinkingStallElapsed = 0
-	a.resetThinkingStall()
+	a.resetThinkingStallLocked()
 	a.streamingToolCalls = nil
 	a.streamingToolCallsByIndex = nil
 	a.toolCallDeltasThisRound = 0

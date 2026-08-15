@@ -200,14 +200,30 @@ type Agent struct {
 	toolSchemaTokensOnce sync.Once
 	toolSchemaTokens     int
 
-	// thinkingStall records when the current thinking-only phase started
-	// (zero value = not in a thinking stall). Used to detect models that
-	// emit reasoning tokens indefinitely without producing content or tool calls.
-	// Reset whenever a content token or tool call is received.
+	// thinkingStallStart records when the last thinking delta of the current
+	// thinking-only phase was received (zero value = not in a thinking-only
+	// phase). A stall is declared when NO thinking delta has arrived for
+	// longer than ThinkingStallStop — a true stream hang — never because a
+	// long but actively-streaming reasoning phase crossed a cumulative
+	// duration budget (session export 2026-08-15: a slow locallm streaming
+	// reasoning tokens for minutes was killed 5m0s after its FIRST delta
+	// despite 2603 subsequent deltas — "no stall but marked as stall").
+	// Refreshed on every thinking delta; reset whenever a content token or
+	// tool call is received.
 	thinkingStallStart time.Time
 	// thinkingStallWarned is set after the first stall warning is emitted
 	// so we don't flood the event stream.
 	thinkingStallWarned bool
+	// thinkingStallWarnTimer fires when no thinking delta has arrived for
+	// longer than ThinkingStallWarn, emitting the "still thinking" progress
+	// warning; thinkingStallStopTimer fires after ThinkingStallStop of
+	// silence and stops the turn. Both are re-armed on every thinking delta
+	// so only continuous silence trips them, and stopped on content/tool
+	// progress or round reset. The stop timer is required because a true
+	// no-delta hang delivers no further deltas that could re-evaluate the
+	// per-delta check.
+	thinkingStallWarnTimer *time.Timer
+	thinkingStallStopTimer *time.Timer
 	// thinkingStalled is set by the thinking-stall watchdog when the model
 	// emits only reasoning tokens for longer than ThinkingStallStop. It is
 	// separate from streamLoopDetected: the two guards stop the stream for

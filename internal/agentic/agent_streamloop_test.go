@@ -699,8 +699,106 @@ func TestStreamLoopStrike_MaxStrikesOneStopsImmediately(t *testing.T) {
 // Thinking-stall watchdog: a separate guard with its own flag, error message
 // and disable switch — it must never surface as "stream loop detected" and
 // must not be affected by the stream-loop toggle.
+//
+// Semantics (session export 2026-08-15, goa-export-20260815-015148.zip): the
+// watchdog must only fire when NO thinking deltas arrive for longer than the
+// stop threshold — a true stream gap/hang. A slow local model that streams
+// reasoning tokens continuously for longer than the threshold is making
+// progress and must never be stopped. The pre-fix code measured from the
+// first thinking delta of the phase, so a continuously-streaming locallm was
+// killed exactly thinking_stall_stop_seconds after its first delta despite
+// 2603 subsequent deltas ("No stall but marked as stall").
 // ---------------------------------------------------------------------------
 
+// waitForThinkingStall polls for the watchdog flag set by the stall timer
+// goroutine. The flag is written asynchronously, so a fixed sleep would be
+// racy (and -race-flagged without the mutex); polling keeps tests fast and
+// deterministic.
+func waitForThinkingStall(t *testing.T, a *Agent, want bool, timeout time.Duration, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		a.mu.Lock()
+		got := a.thinkingStalled
+		a.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	a.mu.Lock()
+	got := a.thinkingStalled
+	a.mu.Unlock()
+	t.Fatalf("%s: thinkingStalled = %v, want %v (after %v)", msg, got, want, timeout)
+}
+
+// The exported-incident regression: thinking deltas arriving continuously
+// (here faster than the stop threshold) for LONGER than the threshold must
+// never trip the watchdog — every delta is progress.
+func TestThinkingStall_ContinuousDeltasNotStalled(t *testing.T) {
+	const stop = 120 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallWarn: 40 * time.Millisecond,
+		ThinkingStallStop: stop,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	// Drip deltas every stop/4 for ~4x the stop threshold: cumulative
+	// thinking-phase duration far exceeds the budget, but no gap does.
+	for i := 0; i < 16; i++ {
+		a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "reasoning"})
+		a.mu.Lock()
+		stalled := a.thinkingStalled
+		a.mu.Unlock()
+		if stalled {
+			t.Fatalf("delta %d: thinkingStalled set while deltas were still arriving (gap < stop threshold)", i)
+		}
+		time.Sleep(stop / 4)
+	}
+	waitForThinkingStall(t, a, false, 2*stop, "active thinking stream longer than the stop threshold")
+}
+
+// A true hang: thinking deltas stop arriving for longer than the stop
+// threshold. No further deltas arrive to re-evaluate the per-delta check,
+// so the stall must be detected by the re-armed stall timer alone.
+func TestThinkingStall_NoDeltaGapStops(t *testing.T) {
+	const stop = 60 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallStop: stop,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "some reasoning"})
+	// No more deltas arrive — the timer must fire on its own.
+	waitForThinkingStall(t, a, true, 5*stop, "no thinking deltas for longer than the stop threshold")
+	a.mu.Lock()
+	elapsed := a.thinkingStallElapsed
+	a.mu.Unlock()
+	if elapsed < stop {
+		t.Errorf("thinkingStallElapsed = %v, want >= %v (the silence gap)", elapsed, stop)
+	}
+
+	done, _, err := a.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "x"})
+	if !done || err == nil {
+		t.Fatalf("handleStreamEvent = (done=%v, err=%v), want done=true with a stall error", done, err)
+	}
+	if !strings.Contains(err.Error(), "thinking stalled") {
+		t.Errorf("stall error = %v, want it to mention 'thinking stalled'", err)
+	}
+}
+
+// The stall error must still be reported under its own name and must not
+// leak into the stream-loop guard.
 func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
 	a := NewAgent(Config{
 		Model:             testModel(provider.ApiOpenAICompletions),
@@ -711,15 +809,20 @@ func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
 		for range a.Output {
 		}
 	}()
-	// Simulate a model that has been emitting only reasoning tokens for far
-	// longer than the configured stop duration.
+	// Simulate a model whose reasoning stream has gone silent for far longer
+	// than the configured stop duration: the last delta arrived 10 minutes
+	// ago, so this new delta lands after a gap that exceeds the threshold.
 	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
 	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "still reasoning"})
 
-	if !a.thinkingStalled {
-		t.Fatal("thinkingStalled not set after an over-long reasoning-only phase")
+	a.mu.Lock()
+	stalled := a.thinkingStalled
+	looped := a.streamLoopDetected
+	a.mu.Unlock()
+	if !stalled {
+		t.Fatal("thinkingStalled not set after a reasoning-only silence gap beyond the stop threshold")
 	}
-	if a.streamLoopDetected {
+	if looped {
 		t.Error("streamLoopDetected set by the thinking-stall watchdog — the guards must stay separate")
 	}
 
@@ -733,6 +836,93 @@ func TestThinkingStall_SeparateFlagAndError(t *testing.T) {
 	if strings.Contains(err.Error(), "stream loop detected") {
 		t.Errorf("stall error = %v, must NOT be misreported as a stream loop", err)
 	}
+}
+
+// The warn progress event fires when thinking has been silent past the warn
+// threshold, and the stop timer then declares the stall after the stop
+// threshold of silence. Once stalled the decision is final: a late content
+// delta disarms the timers (forward progress) but must NOT resurrect a turn
+// that is already being stopped with the stall error.
+func TestThinkingStall_WarnOnSilenceThenStallIsFinal(t *testing.T) {
+	const warn = 30 * time.Millisecond
+	const stop = 90 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallWarn: warn,
+		ThinkingStallStop: stop,
+	})
+	progress := make(chan string, 8)
+	a.AddObserver(OutputObserverFunc(func(ev OutputEvent) {
+		if ev.Type == EventProgress {
+			select {
+			case progress <- ev.Text:
+			default:
+			}
+		}
+	}))
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "reasoning"})
+	select {
+	case text := <-progress:
+		if !strings.Contains(text, "without producing output") {
+			t.Errorf("warn progress text = %q, want it to mention missing output", text)
+		}
+		// warn emitted after the warn threshold of silence
+	case <-time.After(5 * stop):
+		t.Fatal("no warn progress event after thinking silence exceeded the warn threshold")
+	}
+
+	waitForThinkingStall(t, a, true, 5*stop, "thinking silence past the stop threshold")
+
+	// A content delta arrives after the stall was declared: forward progress
+	// disarms the timers and clears the phase clock, but the stall flag is
+	// sticky — the turn is already being stopped with the stall error.
+	a.handleTextDelta(provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "answer"})
+	a.mu.Lock()
+	start := a.thinkingStallStart
+	stalled := a.thinkingStalled
+	a.mu.Unlock()
+	if !start.IsZero() {
+		t.Error("thinkingStallStart not cleared by content progress")
+	}
+	if !stalled {
+		t.Error("thinkingStalled must stay set once declared — the stall stop is final")
+	}
+	// The stall error still surfaces on the next handled event.
+	done, _, err := a.handleStreamEvent(context.Background(), nil, provider.AssistantMessageEvent{Type: provider.EventTextDelta, Delta: "x"})
+	if !done || err == nil || !strings.Contains(err.Error(), "thinking stalled") {
+		t.Errorf("handleStreamEvent = (done=%v, err=%v), want done=true with a 'thinking stalled' error", done, err)
+	}
+}
+
+// Stall timers must not survive a stream round: after resetStreamRoundState
+// a fresh reasoning phase starts with a clean clock.
+func TestThinkingStall_TimersStopAtRoundBoundary(t *testing.T) {
+	const stop = 60 * time.Millisecond
+	a := NewAgent(Config{
+		Model:             testModel(provider.ApiOpenAICompletions),
+		Logger:            NewLogger(Error),
+		ThinkingStallStop: stop,
+	})
+	go func() {
+		for range a.Output {
+		}
+	}()
+
+	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "reasoning"})
+	a.resetStreamRoundState()
+	a.mu.Lock()
+	start := a.thinkingStallStart
+	a.mu.Unlock()
+	if !start.IsZero() {
+		t.Fatal("thinkingStallStart must be cleared at the round boundary")
+	}
+	waitForThinkingStall(t, a, false, 3*stop, "stale stall timer after round reset")
 }
 
 func TestThinkingStall_DisabledByHook(t *testing.T) {
@@ -749,15 +939,24 @@ func TestThinkingStall_DisabledByHook(t *testing.T) {
 	}()
 	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
 	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "still reasoning"})
-	if a.thinkingStalled {
+	a.mu.Lock()
+	stalled := a.thinkingStalled
+	a.mu.Unlock()
+	if stalled {
 		t.Fatal("thinkingStalled set while the watchdog was disabled")
 	}
+	// No timer may be armed while disabled, so nothing can fire later either.
+	waitForThinkingStall(t, a, false, 5*50*time.Millisecond, "watchdog disabled")
 
-	// Re-enable mid-stream: the same over-long phase must now stop.
+	// Re-enable mid-stream: the same over-long silence gap must now stop.
 	disabled = false
+	a.thinkingStallStart = time.Now().Add(-10 * time.Minute)
 	a.handleThinkingDelta(provider.AssistantMessageEvent{Type: provider.EventThinkingDelta, Delta: "more reasoning"})
-	if !a.thinkingStalled {
-		t.Error("thinkingStalled not set after re-enabling the watchdog")
+	a.mu.Lock()
+	stalled = a.thinkingStalled
+	a.mu.Unlock()
+	if !stalled {
+		t.Error("thinkingStalled not set after re-enabling the watchdog on an over-long silence gap")
 	}
 }
 
