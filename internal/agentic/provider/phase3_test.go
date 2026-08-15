@@ -118,6 +118,47 @@ func TestBuildBaseOptions_PreservesExplicit(t *testing.T) {
 	}
 }
 
+// TestBuildSimpleOptions_SessionTitleForcesThinkingOff is the P13 acceptance
+// at the options layer: purpose=session-title must force thinking off even
+// when the caller requested a high thinking level (mirrors DS-thinking lock).
+func TestBuildSimpleOptions_SessionTitleForcesThinkingOff(t *testing.T) {
+	model := Model{Reasoning: true}
+
+	opts := BuildSimpleOptions(model, SimpleStreamOptions{
+		StreamOptions: StreamOptions{Purpose: PurposeSessionTitle},
+		Reasoning:     ThinkingHigh,
+	})
+	if opts.Reasoning != ThinkingOff {
+		t.Errorf("session-title must force ThinkingOff, got %q", opts.Reasoning)
+	}
+	if opts.Purpose != PurposeSessionTitle {
+		t.Errorf("purpose must survive BuildSimpleOptions, got %q", opts.Purpose)
+	}
+}
+
+// TestBuildSimpleOptions_ConversationKeepsRequestedLevel guards the lock
+// scope: conversation and compaction purposes keep the requested thinking
+// level unchanged.
+func TestBuildSimpleOptions_ConversationKeepsRequestedLevel(t *testing.T) {
+	model := Model{Reasoning: true}
+
+	for _, tc := range []struct {
+		purpose Purpose
+	}{
+		{PurposeConversation},
+		{PurposeCompaction},
+		{""},
+	} {
+		opts := BuildSimpleOptions(model, SimpleStreamOptions{
+			StreamOptions: StreamOptions{Purpose: tc.purpose},
+			Reasoning:     ThinkingHigh,
+		})
+		if opts.Reasoning != ThinkingHigh {
+			t.Errorf("purpose %q must keep ThinkingHigh, got %q", tc.purpose, opts.Reasoning)
+		}
+	}
+}
+
 func TestClampThinkingLevel_Off(t *testing.T) {
 	model := Model{Reasoning: true}
 	if got := ClampThinkingLevel(model, ThinkingOff); got != ThinkingOff {

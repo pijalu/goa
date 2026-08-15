@@ -294,6 +294,10 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, *provider.Usage, 
 	if opts.APIKey == "" && a.cfg.APIKey != "" {
 		opts.APIKey = a.cfg.APIKey
 	}
+	// P13 (CA2/CA3): mark the summarize call as compaction so DeepSeek-compat
+	// routes carry x-goa-compact: 1, letting hosts separate compaction
+	// traffic from conversation requests (dsh GenerateOptions.purpose).
+	opts.Purpose = provider.PurposeCompaction
 
 	stream, err := provider.Stream(model, pCtx, opts)
 	if err != nil {

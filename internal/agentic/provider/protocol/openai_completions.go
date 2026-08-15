@@ -172,6 +172,15 @@ func applyThinking(body map[string]any, model schema.Model, opts schema.StreamOp
 	if !model.Reasoning && format == "" {
 		return
 	}
+	// P13 (CA2/CA3): purpose=session-title forces thinking off — mirrors the
+	// DS-thinking lock (dsh llm-deepseek README: session-title "forces
+	// thinking disabled and omits the already-resolved effort, reserving its
+	// bounded output for visible title text"). The explicit disabled body is
+	// sent on formats that support one so a server-side sticky thinking
+	// default cannot leak through.
+	if opts.Purpose == schema.PurposeSessionTitle {
+		opts.Reasoning = schema.ThinkingOff
+	}
 	level := resolveThinkingLevel(model, opts, profile)
 	// An explicit "off" disables thinking on the server (pi does the same for
 	// z.ai: thinking:{type:"disabled"}) instead of omitting the body, so a
@@ -957,14 +966,21 @@ func zaiThinking(level string) map[string]any {
 
 // thinkingDisabledBodyForFormat returns the explicit "thinking off" body for
 // formats that support one. Formats without a disable signal return nil (the
-// body is simply omitted, as before).
+// body is simply omitted, as before). DeepSeek-compat formats send the
+// explicit disabled signal because DeepSeek defaults thinking ON for
+// thinking-capable models — omitting the body would leave the server-side
+// sticky default in effect (dsh wire-format note: "The adapter-owned off
+// effort maps to thinking: {type: 'disabled'}").
 func thinkingDisabledBodyForFormat(format string) map[string]any {
 	switch format {
 	case "zai":
 		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
+	case "deepseek", "string-thinking":
+		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
 	}
 	return nil
 }
+
 func togetherThinking(level string) map[string]any {
 	body := map[string]any{"reasoning": map[string]any{"enabled": true}}
 	if level != "" {

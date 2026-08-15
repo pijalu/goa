@@ -59,12 +59,12 @@ func ApplyStreamInterceptors(handler StreamHandler, interceptors ...StreamInterc
 // canonicalStreamInterceptors is the chain applied to every protocol-backed
 // streaming request (first = outermost). The built-in consumers replace the
 // historical ad-hoc wraps: cache forensics (inline recording in the generic
-// runtime) and metrics (the StreamOptions.OnResponse observation callback).
-// Later consumers (e.g. purpose headers, CA2/CA3) register via
-// RegisterStreamInterceptor.
+// runtime), metrics (the StreamOptions.OnResponse observation callback), and
+// purpose attribution (P13, CA2/CA3 — x-goa-* correlation headers).
 var canonicalStreamInterceptors = []StreamInterceptor{
 	CacheForensicsInterceptor,
 	MetricsInterceptor,
+	PurposeHeadersInterceptor,
 }
 
 var (

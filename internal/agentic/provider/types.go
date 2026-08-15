@@ -132,6 +132,15 @@ const (
 	CacheRetentionLong  = schema.CacheRetentionLong
 )
 
+// Re-exported request purpose (P13 attribution).
+type Purpose = schema.Purpose
+
+const (
+	PurposeConversation = schema.PurposeConversation
+	PurposeCompaction   = schema.PurposeCompaction
+	PurposeSessionTitle = schema.PurposeSessionTitle
+)
+
 // Re-exported core structs.
 type ContentBlock = schema.ContentBlock
 type Message = schema.Message

@@ -261,6 +261,11 @@ type StreamOptions struct {
 	CacheRetention CacheRetention `json:"cache_retention,omitempty"`
 	SessionID      string         `json:"session_id,omitempty"`
 
+	// Purpose classifies this request for transport-level attribution and
+	// per-purpose option locks (P13, CA2/CA3; dsh GenerateOptions.purpose).
+	// Empty means PurposeConversation.
+	Purpose Purpose `json:"purpose,omitempty"`
+
 	Headers map[string]string `json:"headers,omitempty"`
 	// Timeout bounds the connection phase only (dial → first response
 	// header). Body reads are guarded by IdleTimeout, never by Timeout, so
@@ -290,6 +295,28 @@ type StreamOptions struct {
 	// It is populated by StreamSimple and consumed by protocol builders.
 	Reasoning ThinkingLevel `json:"reasoning,omitempty"`
 }
+
+// Purpose classifies the intent of a streaming request for transport-level
+// attribution and per-purpose option locks (P13, CA2/CA3). It mirrors dsh's
+// GenerateOptions.purpose (packages/llm/llm-deepseek/README.md §App
+// attribution).
+type Purpose string
+
+const (
+	// PurposeConversation is the default for ordinary user turns.
+	PurposeConversation Purpose = "conversation"
+
+	// PurposeCompaction marks the auxiliary summarization call that shrinks
+	// history. DeepSeek-compat routes tag it with x-goa-compact: 1 so hosts
+	// can separate compaction traffic from conversation requests.
+	PurposeCompaction Purpose = "compaction"
+
+	// PurposeSessionTitle marks a bounded title-generation call. It forces
+	// thinking off (mirrors the DS-thinking lock), reserving the model's
+	// output for visible title text without changing conversation or
+	// compaction defaults.
+	PurposeSessionTitle Purpose = "session-title"
+)
 
 // SimpleStreamOptions extends StreamOptions with high-level reasoning controls.
 type SimpleStreamOptions struct {

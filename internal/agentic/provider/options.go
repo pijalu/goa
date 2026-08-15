@@ -63,6 +63,17 @@ func BuildBaseOptions(model Model, opts StreamOptions) StreamOptions {
 func BuildSimpleOptions(model Model, opts SimpleStreamOptions) StreamOptions {
 	base := BuildBaseOptions(model, opts.StreamOptions)
 
+	// P13 (CA2/CA3): purpose=session-title forces thinking off — mirrors the
+	// DS-thinking lock (dsh llm-deepseek README: "A request with
+	// GenerateOptions.purpose: 'session-title' also forces thinking disabled
+	// and omits the already-resolved effort, reserving its bounded output for
+	// visible title text without changing conversation or compaction
+	// defaults").
+	if opts.Purpose == PurposeSessionTitle {
+		base.Reasoning = ThinkingOff
+		return base
+	}
+
 	// Clamp reasoning level to what the model supports.
 	profile := schema.ResolveProfile(model)
 	level := ClampThinkingLevelWithMap(profile.Defaults.ThinkingLevelMap, model.Reasoning, opts.Reasoning)

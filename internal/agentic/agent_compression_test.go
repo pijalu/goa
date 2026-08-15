@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -870,6 +871,74 @@ func TestSummarizeHistoryWithElidedPairs(t *testing.T) {
 }
 
 // --- Provider prefix-cache bust loop:(CM:13) regression tests ---
+
+// purposeProbeProvider records every StreamOptions it receives so tests can
+// assert what a summarize request actually carried (P13 purpose attribution).
+type purposeProbeProvider struct {
+	api provider.Api
+
+	mu   sync.Mutex
+	opts []provider.StreamOptions
+}
+
+func (p *purposeProbeProvider) API() provider.Api { return p.api }
+
+func (p *purposeProbeProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.mu.Lock()
+	p.opts = append(p.opts, opts)
+	p.mu.Unlock()
+
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextStart, ContentIndex: 0})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, ContentIndex: 0, Delta: "compacted summary"})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextEnd, ContentIndex: 0})
+		result.End(&provider.AssistantMessage{
+			Content:    []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "compacted summary"}},
+			StopReason: provider.StopReasonEndTurn,
+		})
+	}()
+	return result, nil
+}
+
+func (p *purposeProbeProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+func (p *purposeProbeProvider) recordedOpts() []provider.StreamOptions {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]provider.StreamOptions(nil), p.opts...)
+}
+
+// TestSummarizeHistorySetsCompactionPurpose is the P13 acceptance at the
+// agent layer: the compaction summarize call marks its request purpose as
+// compaction so DeepSeek-compat routes emit x-goa-compact: 1.
+func TestSummarizeHistorySetsCompactionPurpose(t *testing.T) {
+	p := &purposeProbeProvider{api: provider.Api(fmt.Sprintf("summarize-purpose-probe-%d", testProviderCounter.Add(1)))}
+	provider.RegisterApiProvider(p)
+
+	agent := newElisionAgent()
+	agent.cfg.Model = testModel(p.API())
+	agent.cfg.Logger = NewLogger(Error)
+	agent.SetHistory(elidedPairHistory())
+
+	summary, _, err := agent.summarizeHistory(context.Background())
+	if err != nil {
+		t.Fatalf("summarizeHistory failed: %v", err)
+	}
+	if summary == "" {
+		t.Error("summarizeHistory returned an empty summary")
+	}
+
+	opts := p.recordedOpts()
+	if len(opts) != 1 {
+		t.Fatalf("expected 1 summarize request, got %d", len(opts))
+	}
+	if opts[0].Purpose != provider.PurposeCompaction {
+		t.Errorf("summarize request purpose = %q, want %q", opts[0].Purpose, provider.PurposeCompaction)
+	}
+}
 
 // appendElisionPair appends one assistant tool call plus its tool result of
 // the given size — the session shape that drives elision (a long single turn
