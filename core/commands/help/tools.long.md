@@ -21,7 +21,7 @@ Configurable tools:
   bg_exec        enabled by default
   delegate_to    disabled by default (multi-agent)
   memento        disabled by default
-  pty_exec       disabled by default
+  terminals      disabled by default
   request_review disabled by default (multi-agent)
   ssh_bash       disabled by default
 

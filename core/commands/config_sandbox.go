@@ -170,16 +170,16 @@ func applyBashMaxScore(ctx core.Context, value string) {
 	}
 }
 
-// applyTerminalSandboxToggle updates the running terminal tool's bypass flag.
+// applyTerminalSandboxToggle updates the running terminals tool's bypass flag.
 func applyTerminalSandboxToggle(ctx core.Context, enabled bool) {
 	if ctx.ToolRegistry == nil {
 		return
 	}
-	toolIface, ok := ctx.ToolRegistry.Get("terminal")
+	toolIface, ok := ctx.ToolRegistry.Get("terminals")
 	if !ok {
 		return
 	}
-	if terminalTool, ok := toolIface.(*tools.TerminalTool); ok {
+	if terminalTool, ok := toolIface.(*tools.TerminalsTool); ok {
 		terminalTool.Bypass = !enabled
 	}
 }

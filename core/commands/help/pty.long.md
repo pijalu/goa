@@ -6,7 +6,7 @@ Copyright (C) 2026 Pierre Poissinger
 
 Usage: /pty[:subcommand[args]]
 
-Manage pseudo-terminal sessions started by the agent via pty_exec.
+Manage pseudo-terminal sessions started by the agent via the terminals tool.
 
 Subcommands:
   (no args)           List all active PTY sessions

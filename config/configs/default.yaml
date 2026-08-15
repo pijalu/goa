@@ -263,7 +263,7 @@ tools:
     bg_exec: false
     delegate_to: false
     memento: false
-    pty_exec: true
+    terminals: true
     request_review: false
     ssh_bash: false
     webfetch: true

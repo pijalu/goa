@@ -181,7 +181,7 @@ tools:
   enabled:
     bg_exec: false            # background process execution
     memento: false           # thinking artifacts
-    pty_exec: false          # PTY-backed command execution
+    terminals: false          # Persistent terminal sessions
     ssh_bash: false          # remote shell execution
     delegate_to: false       # multi-agent delegation
     request_review: false    # multi-agent review requests

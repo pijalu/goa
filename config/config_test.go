@@ -1434,8 +1434,8 @@ func TestToolEnabledConfigDefaults(t *testing.T) {
 	if cfg.Tools.Enabled.BGExec {
 		t.Error("BGExec should be disabled by default")
 	}
-	if cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec should be disabled by default")
+	if cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals should be disabled by default")
 	}
 	if cfg.Tools.Enabled.SSHBash {
 		t.Error("SSHBash should be disabled by default")
@@ -1498,7 +1498,7 @@ tools:
 }
 
 // TestAgentToolsDefaultEnabled verifies the embedded default config keeps
-// only the lean core tool set on by default (pty_exec, python, webfetch) and
+// only the lean core tool set on by default (terminals, python, webfetch) and
 // ships the heavier agent-driven/sub-agent tools off — the tuned default
 // adopted from the maintainer config. Users opt in per tool via /tools.
 func TestAgentToolsDefaultEnabled(t *testing.T) {
@@ -1510,7 +1510,7 @@ func TestAgentToolsDefaultEnabled(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(yamlText), &cfg); err != nil {
 		t.Fatalf("Unmarshal embedded default failed: %v", err)
 	}
-	for _, name := range []string{"pty_exec", "python", "webfetch"} {
+	for _, name := range []string{"terminals", "python", "webfetch"} {
 		if !cfg.Tools.Enabled.GetEnabled(name) {
 			t.Errorf("embedded default should enable %s", name)
 		}
@@ -1527,7 +1527,7 @@ func TestToolEnabledConfigRoundTrip(t *testing.T) {
 tools:
   enabled:
     bg_exec: true
-    pty_exec: true
+    terminals: true
     memento: true
 `
 	var cfg Config
@@ -1537,8 +1537,8 @@ tools:
 	if !cfg.Tools.Enabled.BGExec {
 		t.Error("BGExec should be true")
 	}
-	if !cfg.Tools.Enabled.PTYExec {
-		t.Error("PTYExec should be true")
+	if !cfg.Tools.Enabled.Terminals {
+		t.Error("Terminals should be true")
 	}
 	if !cfg.Tools.Enabled.Memento {
 		t.Error("Memento should be true")

@@ -135,7 +135,7 @@ func ConfigurableTools() []ConfigurableTool {
 		{Name: "goal", Description: "Goal tracking", Default: false},
 		{Name: "lsp", Description: "LSP code navigation", Default: true},
 		{Name: "memento", Description: "Persistent memory files", Default: false},
-		{Name: "pty_exec", Description: "Pseudo-terminal sessions", Default: false},
+		{Name: "terminals", Description: "Persistent terminal sessions", Default: false},
 		{Name: "request_review", Description: "Request companion review", Default: false},
 		{Name: "smartsearch", Description: "BM25 code search (needs restart)", Default: false},
 		{Name: "ssh_bash", Description: "Remote SSH command execution", Default: false},

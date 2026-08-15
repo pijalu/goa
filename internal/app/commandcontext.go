@@ -220,8 +220,8 @@ func makeToolFactory(subs *subsystems) func(name string) (agentic.Tool, bool) {
 			return mk(), true
 		}
 		switch name {
-		case "pty_exec":
-			return makePTYExecTool(subs)
+		case "terminals":
+			return makeTerminalsTool(subs)
 		case "request_review", "delegate_to":
 			return makeAgentDrivenTool(subs, name)
 		case "agent":
@@ -362,11 +362,17 @@ func makePythonTool(subs *subsystems) agentic.Tool {
 	}
 }
 
-func makePTYExecTool(subs *subsystems) (agentic.Tool, bool) {
+func makeTerminalsTool(subs *subsystems) (agentic.Tool, bool) {
 	if subs.ptyMgr == nil {
 		return nil, false
 	}
-	return &tools.PTYExecTool{Mgr: subs.ptyMgr}, true
+	return &tools.TerminalsTool{
+		Mgr:        subs.ptyMgr,
+		Blocked:    subs.cfg.Tools.Terminal.Sandbox.BlockedCommands,
+		Allowed:    subs.cfg.Tools.Terminal.Sandbox.AllowedCommands,
+		Bypass:     !subs.cfg.Tools.Terminal.Sandbox.Enabled,
+		ProjectDir: subs.projectDir,
+	}, true
 }
 
 func makeAgentDrivenTool(subs *subsystems, name string) (agentic.Tool, bool) {

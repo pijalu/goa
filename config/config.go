@@ -703,7 +703,7 @@ type ToolEnabledConfig struct {
 	DelegateTo    bool `yaml:"delegate_to"`
 	Goal          bool `yaml:"goal"`
 	Memento       bool `yaml:"memento"`
-	PTYExec       bool `yaml:"pty_exec"`
+	Terminals     bool `yaml:"terminals"`
 	RequestReview bool `yaml:"request_review"`
 	SSHBash       bool `yaml:"ssh_bash"`
 	WebFetch      bool `yaml:"webfetch"`
@@ -791,7 +791,7 @@ func (t *ToolEnabledConfig) fieldPtr(name string) *bool {
 		"delegate_to":      &t.DelegateTo,
 		"goal":             &t.Goal,
 		"memento":          &t.Memento,
-		"pty_exec":         &t.PTYExec,
+		"terminals":        &t.Terminals,
 		"request_review":   &t.RequestReview,
 		"ssh_bash":         &t.SSHBash,
 		"webfetch":         &t.WebFetch,

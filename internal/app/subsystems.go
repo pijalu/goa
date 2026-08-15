@@ -330,8 +330,14 @@ func initBaseSubsystems(cfg *config.Config, projectDir string, headless bool) ba
 
 	toolRegistry := tools.NewToolRegistry()
 	lspMgr, mcpMgr := registerTools(toolRegistry, worktreeMgr, sandboxMgr, projectDir, cfg, bgMgr, headless)
-	if cfg.Tools.Enabled.PTYExec {
-		toolRegistry.Register(&tools.PTYExecTool{Mgr: ptyMgr})
+	if cfg.Tools.Enabled.Terminals {
+		toolRegistry.Register(&tools.TerminalsTool{
+			Mgr:        ptyMgr,
+			Blocked:    cfg.Tools.Terminal.Sandbox.BlockedCommands,
+			Allowed:    cfg.Tools.Terminal.Sandbox.AllowedCommands,
+			Bypass:     !cfg.Tools.Terminal.Sandbox.Enabled,
+			ProjectDir: projectDir,
+		})
 	}
 
 	// Scheduler tools (P18/TL2): persistent job store + model-facing

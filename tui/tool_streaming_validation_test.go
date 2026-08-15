@@ -34,7 +34,7 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"bash", map[string]any{"command": "echo hi"}, map[string]any{"command": "echo"}, "hi\nDuration: 0.01s\n", nil},
 		{"python", map[string]any{"code": "print(1)\n"}, map[string]any{"code": "print(1)\n"}, "1\n", map[string]any{"code": "print(1)\n"}},
 		{"verify", map[string]any{"command": "go test ./...", "args": []string{"-run", "TestFoo"}}, map[string]any{"command": "go test"}, "PASS\n", nil},
-		{"terminal", map[string]any{"command": "ls"}, map[string]any{"command": "ls"}, "file.txt\n", nil},
+		{"terminals", map[string]any{"action": "send", "text": "ls"}, map[string]any{"action": "send"}, "file.txt\n", nil},
 		{"webfetch", map[string]any{"url": "https://example.com"}, map[string]any{"url": "https://example.com"}, "<html></html>", nil},
 		{"search", map[string]any{"pattern": "foo", "path": "."}, map[string]any{"pattern": "foo"}, "a.go:1:foo", nil},
 		{"smartsearch", map[string]any{"query": "foo", "path": "."}, map[string]any{"query": "foo"}, "a.go:1:foo", nil},
@@ -95,7 +95,7 @@ func TestToolStreaming_RegistryIsComplete(t *testing.T) {
 		required[name] = false
 	}
 	cases := []string{
-		"read", "write", "edit", "bash", "python", "verify", "terminal",
+		"read", "write", "edit", "bash", "python", "verify", "terminals",
 		"webfetch", "search", "smartsearch", "goal", "agent", "agent_swarm",
 		"plan", "task_outcome", "session_search", "session_event_read",
 		"schedule_create", "schedule_delete", "schedule_list",

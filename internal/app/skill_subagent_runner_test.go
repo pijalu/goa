@@ -44,7 +44,7 @@ func TestFilterToolNames(t *testing.T) {
 }
 
 func TestDefaultSubAgentTools(t *testing.T) {
-	all := []string{"bash", "terminal", "run_skill", "read", "edit", "write", "webfetch", "custom"}
+	all := []string{"bash", "terminals", "run_skill", "read", "edit", "write", "webfetch", "custom"}
 	got := defaultSubAgentTools(all)
 	want := []string{"bash", "read", "edit", "write", "webfetch"}
 	if len(got) != len(want) {
@@ -61,7 +61,7 @@ func TestDefaultSubAgentTools(t *testing.T) {
 func TestSkillSubAgentRunner_ResolveToolNames(t *testing.T) {
 	pool := multiagent.NewAgentPool(provider.Model{}, provider.StreamOptions{}, []agentic.Tool{
 		&mockTool{name: "bash"},
-		&mockTool{name: "terminal"},
+		&mockTool{name: "terminals"},
 		&mockTool{name: "run_skill"},
 		&mockTool{name: "read"},
 	})
@@ -75,7 +75,7 @@ func TestSkillSubAgentRunner_ResolveToolNames(t *testing.T) {
 		{"default excludes restricted", nil, []string{"bash", "read"}},
 		{"explicit keeps order", []string{"read", "bash"}, []string{"read", "bash"}},
 		{"explicit run_skill excluded", []string{"run_skill", "bash"}, []string{"bash"}},
-		{"explicit terminal excluded", []string{"terminal", "bash"}, []string{"bash"}},
+		{"explicit terminals excluded", []string{"terminals", "bash"}, []string{"bash"}},
 	}
 
 	for _, tc := range cases {

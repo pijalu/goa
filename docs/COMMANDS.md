@@ -645,7 +645,7 @@ Also accessible via Ctrl+P and the side panel prompt tab.
 Usage: /pty[:subcommand[:args]]
 Aliases: (none)
 
-Manage pseudo-terminal sessions started by the agent via pty_exec tool.
+Manage pseudo-terminal sessions started by the agent via the terminals tool.
   /pty                    → List active PTY sessions
   /pty:ps                 → List active PTY sessions
   /pty:kill:<id>          → Terminate a session (SIGTERM → SIGKILL)

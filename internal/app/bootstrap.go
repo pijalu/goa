@@ -531,17 +531,6 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		Analyzer:            analyzerForBash(cfg.Tools.Bash),
 		Redactor:            secrets.DefaultRedactor(),
 	})
-	reg.Register(&tools.TerminalTool{
-		WorktreeMgr:         wm,
-		SandboxMgr:          sandboxMgr,
-		Blocked:             cfg.Tools.Terminal.Sandbox.BlockedCommands,
-		Allowed:             cfg.Tools.Terminal.Sandbox.AllowedCommands,
-		TimeoutSeconds:      cfg.Tools.Terminal.Sandbox.TimeoutSeconds,
-		MaxOutputChars:      cfg.Tools.Terminal.Sandbox.MaxOutputChars,
-		Bypass:              !cfg.Tools.Terminal.Sandbox.Enabled,
-		CompressionResolver: func() bool { return compression },
-	})
-
 	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker, headless)
 	mcpMgr := registerMCPServers(reg, projectDir, cfg)
 	return lspMgr, mcpMgr

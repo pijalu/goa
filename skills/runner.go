@@ -226,7 +226,7 @@ func (t *SkillRunnerTool) resolveAllowedTools(skill *Skill) []string {
 	if len(allowed) == 0 {
 		allowed = defaultSubAgentToolsFrom(all)
 	}
-	return excludeToolNames(allowed, "run_skill", "terminal")
+	return excludeToolNames(allowed, "run_skill", "terminals")
 }
 
 func defaultSubAgentToolsFrom(all []string) []string {

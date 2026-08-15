@@ -10,7 +10,7 @@ import (
 )
 
 // commandRunStatus is the TUI status line shared by shell-style tools
-// (bash/terminal): "Running: <command>", truncated, with a fallback when the
+// (bash): "Running: <command>", truncated, with a fallback when the
 // command is absent. It is the tool-side implementation of the status text the
 // tool-loop controller used to hardcode by tool name.
 func commandRunStatus(arguments string) string {

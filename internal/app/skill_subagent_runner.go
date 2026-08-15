@@ -23,7 +23,7 @@ type skillSubAgentRunner struct {
 // Run creates a one-off task agent with the given system prompt, runs the task,
 // and returns the collected assistant output. allowedTools restricts the tools
 // available to the sub-agent; if empty, a safe default set is used. run_skill
-// and terminal are always excluded.
+// and terminals are always excluded.
 func (r *skillSubAgentRunner) Run(ctx context.Context, systemPrompt, task string, allowedTools []string) (string, error) {
 	if r.pool == nil {
 		return "", fmt.Errorf("agent pool not available")
@@ -44,15 +44,15 @@ func (r *skillSubAgentRunner) Run(ctx context.Context, systemPrompt, task string
 }
 
 // resolveToolNames returns the tool names to expose to a sub-agent.
-// If allowed is empty, a safe default set is used. run_skill and terminal
+// If allowed is empty, a safe default set is used. run_skill and terminals
 // are always excluded because the sub-agent should not recurse into skills or
-// use the restricted-environment terminal.
+// use the persistent terminal tool.
 func (r *skillSubAgentRunner) resolveToolNames(allowed []string) []string {
 	all := r.pool.ToolNames()
 	if len(allowed) == 0 {
 		allowed = defaultSubAgentTools(all)
 	}
-	return filterToolNames(allowed, "run_skill", "terminal")
+	return filterToolNames(allowed, "run_skill", "terminals")
 }
 
 // defaultSubAgentTools returns a safe default set of tools from the parent.

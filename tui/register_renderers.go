@@ -19,7 +19,7 @@ func init() {
 	RegisterToolRenderer("bash", tools.NewBashRenderer())
 	RegisterToolRenderer("python", tools.NewPythonRenderer())
 	RegisterToolRenderer("verify", tools.NewVerifyRenderer())
-	RegisterToolRenderer("terminal", tools.TerminalRenderer{})
+	RegisterToolRenderer("terminals", tools.TerminalsRenderer{})
 	RegisterToolRenderer("webfetch", tools.NewWebFetchRenderer())
 	RegisterToolRenderer("search", tools.NewSearchRenderer())
 	RegisterToolRenderer("smartsearch", tools.NewSmartSearchRenderer())

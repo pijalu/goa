@@ -98,10 +98,10 @@ func TestSearchTool_IsRetryable(t *testing.T) {
 	}
 }
 
-// PTYExecTool
+// TerminalsTool
 
-func TestPTYExecTool_IsRetryable(t *testing.T) {
-	tool := &PTYExecTool{}
+func TestTerminalsTool_IsRetryable(t *testing.T) {
+	tool := &TerminalsTool{}
 	if tool.IsRetryable(nil) {
 		t.Error("expected false")
 	}
