@@ -5,9 +5,12 @@
 package app
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/tools"
 )
 
@@ -76,6 +79,45 @@ func TestAttachClarifyTool_NilSafe(t *testing.T) {
 	reg := tools.NewToolRegistry()
 	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
 	attachClarifyTool(reg, nil) // must not panic
+}
+
+// TestAttachEscalationApprover verifies the sandbox escalation approver is
+// injected into the registered bash tool.
+func TestAttachEscalationApprover(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
+	called := false
+	attachEscalationApprover(reg, func(ctx context.Context, req sandbox.EscalationRequest) (bool, error) {
+		called = true
+		return true, nil
+	})
+	tt, ok := reg.Get("bash")
+	if !ok {
+		t.Fatal("bash tool missing")
+	}
+	bt, ok := tt.(*tools.BashTool)
+	if !ok {
+		t.Fatalf("bash tool is %T", tt)
+	}
+	if bt.EscalationApprover == nil {
+		t.Fatal("escalation approver was not wired")
+	}
+	// The approver must actually be invoked through the tool's escalation path.
+	project := t.TempDir()
+	bt.ProjectDir = project
+	bt.Jail = true
+	// Widen to danger-full-access and reject; a nil approver would have the
+	// same denial, so assert the callback ran via the flag.
+	_, _ = bt.Execute(fmt.Sprintf(`{"command": "cat /etc/passwd", "sandbox_permissions": %q, "justification": "read system info"}`, sandbox.ModeDangerFullAccess))
+	if !called {
+		t.Error("escalation approver was not invoked")
+	}
+}
+
+func TestAttachEscalationApprover_NilSafe(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	registerTools(reg, nil, nil, t.TempDir(), &config.Config{}, nil, false)
+	attachEscalationApprover(reg, nil) // must not panic
 }
 
 func TestRegisterTools_SmartSearchRespectsEnabled(t *testing.T) {

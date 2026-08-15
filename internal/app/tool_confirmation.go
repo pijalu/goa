@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/perms"
+	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -290,4 +292,87 @@ func removeString(slice []string, s string) []string {
 type approvalStateFields struct {
 	pathApprovals map[string]bool
 	pathDenials   map[string]bool
+}
+
+// approveSandboxEscalation approves or rejects a sandbox escalation request.
+// It is the approval path for the bash sandbox escalation surface: the
+// decision is driven by the same perms.PathPolicy that gates ordinary tool
+// confirmation, so autonomy rules decide whether a dialog is needed at all:
+//
+//   - SOLO: the strictest autonomy — sandbox denials are final, never escalate.
+//   - YOLO: standing consent → PathAllow → escalation is pre-approved.
+//   - Ask/confirm modes: PathAsk → interactive dialog with the justification.
+func (a *App) approveSandboxEscalation(ctx context.Context, engine *tui.TUI, req sandbox.EscalationRequest) (bool, error) {
+	if a.subs == nil || a.subs.agentMgr == nil || a.subs.projectDir == "" {
+		return false, fmt.Errorf("sandbox escalation unavailable: no agent session")
+	}
+	autonomy := a.subs.agentMgr.CurrentMode().Autonomy
+	// SOLO is the strictest mode: a sandbox denial is final and never
+	// escalatable, regardless of how well the path policy can see the
+	// offending path (the jail's detection is intentionally stricter than
+	// the approval path's token extraction).
+	if autonomy == internal.AutonomySolo {
+		return false, nil
+	}
+	policy := perms.PathPolicy{ProjectDir: a.subs.projectDir, Autonomy: string(autonomy)}
+	// Evaluate the underlying command (escalation fields stripped) so the
+	// existing autonomy rules decide whether a dialog is even needed.
+	input := escalationCommandInput(req)
+	switch policy.Decide("bash", input) {
+	case perms.PathDeny:
+		// Denial is final — no dialog.
+		return false, nil
+	case perms.PathAllow:
+		// Pre-approved by standing policy (YOLO or an in-project path).
+		return true, nil
+	}
+	// PathAsk: interactive dialog with the justification.
+	return a.showEscalationApprovalDialog(ctx, engine, req)
+}
+
+// escalationCommandInput reconstructs the bash tool input (without the
+// escalation fields) for path-policy evaluation.
+func escalationCommandInput(req sandbox.EscalationRequest) string {
+	parts := []string{fmt.Sprintf("{\"command\":%q", req.Command)}
+	if req.Workdir != "" {
+		parts = append(parts, fmt.Sprintf("\"workdir\":%q", req.Workdir))
+	}
+	return strings.Join(parts, ",") + "}"
+}
+
+// showEscalationApprovalDialog asks the user to approve or reject a sandbox
+// escalation, showing the command and the model's justification.
+func (a *App) showEscalationApprovalDialog(ctx context.Context, engine *tui.TUI, req sandbox.EscalationRequest) (bool, error) {
+	if engine == nil {
+		return false, fmt.Errorf("no TUI available for sandbox escalation approval")
+	}
+	title := fmt.Sprintf("Approve bash sandbox escalation to %s?", req.RequestedMode)
+	items := []tui.SelectorItem{
+		{Value: "approve-once", Label: "Approve once", Description: formatEscalationMessage(req)},
+		{Value: "reject", Label: "Reject", Description: "Deny this escalation; the command stays blocked"},
+	}
+	ch := engine.ShowSelector(title, items, "")
+	select {
+	case choice := <-ch:
+		return choice == "approve-once", nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+// formatEscalationMessage renders a one-line human summary of an escalation
+// request for the approval dialog.
+func formatEscalationMessage(req sandbox.EscalationRequest) string {
+	cmd := strings.Join(strings.Fields(req.Command), " ")
+	if len(cmd) > 80 {
+		cmd = cmd[:77] + "..."
+	}
+	msg := fmt.Sprintf("Command: %s | Mode: %s → %s", cmd, req.CurrentMode, req.RequestedMode)
+	if req.Justification != "" {
+		msg += " | Why: " + req.Justification
+	}
+	if len(msg) > 200 {
+		msg = msg[:197] + "..."
+	}
+	return msg
 }

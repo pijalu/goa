@@ -6,6 +6,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -20,6 +21,7 @@ import (
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/acp"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
+	"github.com/pijalu/goa/internal/sandbox"
 	"github.com/pijalu/goa/internal/usage"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
@@ -222,6 +224,12 @@ func (a *App) Run() bool {
 		card := tui.NewClarifyCard(title, summary, question, options)
 		card.SetProgress(step, total)
 		return a.clarify(card)
+	})
+	// Attach the sandbox escalation approval path (bash sandbox surface). The
+	// approver routes through the same perms-driven decision as tool
+	// confirmation; headless builds stay fail-closed (no approver wired).
+	attachEscalationApprover(subs.toolRegistry, func(ctx context.Context, req sandbox.EscalationRequest) (bool, error) {
+		return a.approveSandboxEscalation(ctx, engine, req)
 	})
 	a.wireToolConfirmation(engine)
 	a.loadPersistedPathApprovals()

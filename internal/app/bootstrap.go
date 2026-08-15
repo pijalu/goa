@@ -814,6 +814,21 @@ func attachClarifyTool(reg *tools.ToolRegistry, clarify ask.ClarifyFunc) {
 	}
 }
 
+// attachEscalationApprover injects the sandbox escalation approval callback
+// into the registered bash tool. Called from App.Run once both the App and the
+// tool registry exist. When no approver is wired (e.g. headless mode), the
+// bash tool keeps its fail-closed default: escalations are denied.
+func attachEscalationApprover(reg *tools.ToolRegistry, approver func(ctx context.Context, req sandbox.EscalationRequest) (bool, error)) {
+	if approver == nil {
+		return
+	}
+	if t, ok := reg.Get("bash"); ok {
+		if bt, ok := t.(*tools.BashTool); ok {
+			bt.EscalationApprover = sandbox.EscalationApprover(approver)
+		}
+	}
+}
+
 type webFetchAgentPool struct {
 	pool *multiagent.AgentPool
 }
