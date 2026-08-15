@@ -271,6 +271,12 @@ const (
 // (0 = off), so with the all-zero thresholds nothing fires proactively — the
 // goa default config enables only the hard tier (hard_percent: 95, summarize).
 //
+// The usagePercent fed in is the PROJECTED occupancy (ContextStats.UsagePercent
+// is computed from ProjectedTokens, CX8/P20): the provider-anchored figure
+// that reacts immediately when a large tool result lands, so the trigger fires
+// on what the next request would actually cost rather than the stale
+// full-surface heuristic estimate.
+//
 // Escalation rules:
 //   - hard tier enabled and usage >= effectiveHard → hard tier, cache gate
 //     bypassed (overflow risk beats cache churn).

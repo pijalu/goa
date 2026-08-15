@@ -443,8 +443,10 @@ type partialToolCall struct {
 // ContextStats holds the current context window usage of an Agent.
 //
 // EstimatedTokens uses a language-aware heuristic (ASCII ≈ 0.25 tokens,
-// CJK ≈ 1 token) and is accurate enough for compression decisions without
-// adding external dependencies.
+// CJK ≈ 1 token) and is the conservative full-surface estimate used by the
+// reactive safety nets (ceiling enforcement, context-length recovery) and
+// cost/event reporting. Proactive compression decisions and occupancy
+// displays read ProjectedTokens instead (CX8/P20).
 type ContextStats struct {
 	// Messages is the number of messages in the conversation history.
 	Messages int
@@ -452,9 +454,20 @@ type ContextStats struct {
 	Characters int
 	// EstimatedTokens is a rough token count (chars / 4 for English, chars / 2 for CJK).
 	EstimatedTokens int
+	// ProjectedTokens is the projected cost of the NEXT request's prompt:
+	// the last provider-reported gross prompt size (the anchor) plus the
+	// heuristic reprice of every message appended since that request. Only
+	// the delta is estimated — the anchor carries the provider's exact count
+	// — so the figure reacts the moment content lands (e.g. a large tool
+	// result) instead of waiting for the next usage line. Falls back to the
+	// full heuristic estimate when no provider usage has been recorded
+	// (EstimatedTokens == ProjectedTokens in that case).
+	ProjectedTokens int
 	// MaxTokens is the configured context window limit (0 = unknown/unlimited).
 	MaxTokens int
-	// UsagePercent is EstimatedTokens / MaxTokens * 100 (0 if MaxTokens is 0).
+	// UsagePercent is ProjectedTokens / MaxTokens * 100 (0 if MaxTokens is 0).
+	// Occupancy displays and the proactive compaction trigger read the
+	// projection (P20 / CX8), never the stale full-surface estimate.
 	UsagePercent int
 	// AutoMax is true when MaxTokens was inferred from model metadata rather
 	// than an explicit user configuration.

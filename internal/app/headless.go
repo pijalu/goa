@@ -151,21 +151,22 @@ type HeadlessApp struct {
 	renderer HeadlessRenderer
 	confirm  ConfirmStrategy
 
-	statsMu              sync.Mutex
-	tokenPromptTotal     int
-	tokenPredictedTotal  int
-	tokenCacheReadTotal  int
-	tokenCacheWriteTotal int
-	tokenSessionMax      int
-	tokenSessionEstimate int
-	lastTurnPromptN      int
-	lastTurnPredictedN   int
-	lastTurnCacheRead    int
-	lastTurnCacheWrite   int
-	lastTurnSpeed        float64
-	turnCount            int
-	microCompacts        int
-	compacts             int
+	statsMu               sync.Mutex
+	tokenPromptTotal      int
+	tokenPredictedTotal   int
+	tokenCacheReadTotal   int
+	tokenCacheWriteTotal  int
+	tokenSessionMax       int
+	tokenSessionEstimate  int
+	tokenSessionProjected int
+	lastTurnPromptN       int
+	lastTurnPredictedN    int
+	lastTurnCacheRead     int
+	lastTurnCacheWrite    int
+	lastTurnSpeed         float64
+	turnCount             int
+	microCompacts         int
+	compacts              int
 	// compactions documents each completed compression round (per-round
 	// session-stats record), mirroring App.compactions so headless summary
 	// output can list them. Guarded by statsMu like the counters above.
@@ -836,6 +837,7 @@ func (h *HeadlessApp) handleStatsEvent(ev *agentic.OutputEvent) {
 	if ev.ContextStats != nil {
 		h.tokenSessionMax = ev.ContextStats.MaxTokens
 		h.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
+		h.tokenSessionProjected = ev.ContextStats.ProjectedTokens
 	}
 }
 
@@ -871,18 +873,19 @@ func (h *HeadlessApp) buildStats() sessionStats {
 
 func (h *HeadlessApp) buildStatsLocked() sessionStats {
 	st := sessionStats{
-		PromptN:         h.tokenPromptTotal,
-		PredictedN:      h.tokenPredictedTotal,
-		SpeedTokPerSec:  h.lastTurnSpeed,
-		ContextEstimate: h.tokenSessionEstimate,
-		ContextMax:      h.tokenSessionMax,
-		ToolCalls:       h.toolCallsTotal,
-		CacheReadTotal:  h.tokenCacheReadTotal,
-		CacheWriteTotal: h.tokenCacheWriteTotal,
-		LastCacheHit:    cacheHitTrendFromTotals(h.lastTurnCacheRead, h.lastTurnCacheWrite, h.lastTurnPromptN),
-		MicroCompacts:   h.microCompacts,
-		Compacts:        h.compacts,
-		Compactions:     append([]CompactionRound(nil), h.compactions...),
+		PromptN:          h.tokenPromptTotal,
+		PredictedN:       h.tokenPredictedTotal,
+		SpeedTokPerSec:   h.lastTurnSpeed,
+		ContextEstimate:  h.tokenSessionEstimate,
+		ContextProjected: h.tokenSessionProjected,
+		ContextMax:       h.tokenSessionMax,
+		ToolCalls:        h.toolCallsTotal,
+		CacheReadTotal:   h.tokenCacheReadTotal,
+		CacheWriteTotal:  h.tokenCacheWriteTotal,
+		LastCacheHit:     cacheHitTrendFromTotals(h.lastTurnCacheRead, h.lastTurnCacheWrite, h.lastTurnPromptN),
+		MicroCompacts:    h.microCompacts,
+		Compacts:         h.compacts,
+		Compactions:      append([]CompactionRound(nil), h.compactions...),
 	}
 	if h.subs != nil {
 		applyPricing(&st, h.subs.cfg, h.subs.cfg.ActiveModel)

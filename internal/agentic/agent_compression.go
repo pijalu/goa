@@ -559,6 +559,9 @@ func (a *Agent) emitContextStats() {
 }
 
 // proactiveTier resolves the current usage and selects the compression tier.
+// The usage percent is the PROJECTED occupancy (CX8/P20): computeContextStatsForMax
+// derives UsagePercent from ProjectedTokens, so the trigger reads the
+// provider-anchored next-request projection, not the stale full-surface estimate.
 func (a *Agent) proactiveTier(rt resolvedThresholds, maxTokens int) compressionTier {
 	a.mu.Lock()
 	stats := a.computeContextStatsForMax(maxTokens)

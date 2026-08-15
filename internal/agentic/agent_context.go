@@ -226,15 +226,17 @@ func (a *Agent) computeContextStatsForMax(maxTokens int) ContextStats {
 	}
 
 	estimated := a.estimateContextTokensLocked()
+	projected := a.projectedContextTokensLocked()
 	usagePercent := 0
 	if maxTokens > 0 {
-		usagePercent = estimated * 100 / maxTokens
+		usagePercent = projected * 100 / maxTokens
 	}
 
 	return ContextStats{
 		Messages:        len(a.history),
 		Characters:      chars,
 		EstimatedTokens: estimated,
+		ProjectedTokens: projected,
 		MaxTokens:       maxTokens,
 		UsagePercent:    usagePercent,
 		AutoMax:         a.cfg.ContextCompression.MaxTokens == 0 && a.cfg.Model.ContextWindow > 0,

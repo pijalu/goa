@@ -60,9 +60,10 @@ type App struct {
 	// survive mid-session context resets — this flag re-arms on
 	// EventContextReset so a fresh-context goal's cold start is not counted
 	// as a cache bust.
-	cacheReadEstablished bool
-	tokenSessionMax      int
-	tokenSessionEstimate int
+	cacheReadEstablished  bool
+	tokenSessionMax       int
+	tokenSessionEstimate  int
+	tokenSessionProjected int
 
 	// Last-turn tracking.
 	lastTurnPromptN    int

@@ -707,6 +707,41 @@ func TestFormatFooterStats(t *testing.T) {
 	}
 }
 
+// TestFormatFooterStats_ShowsProjectedContext is P20/CX8 acceptance criterion
+// 2: the footer's occupancy display reads the projected figure (the
+// provider-anchored next-request projection), not the stale estimate. The
+// estimate and the projection are deliberately different here: the footer must
+// show the projection's percentage.
+func TestFormatFooterStats_ShowsProjectedContext(t *testing.T) {
+	stats := formatFooterStats(sessionStats{
+		PromptN:          1500,
+		PredictedN:       800,
+		ContextEstimate:  2500, // stale estimate: 25%
+		ContextProjected: 8000, // projection: 80%
+		ContextMax:       10000,
+	})
+	if !strings.Contains(stats, "80.0%/10.0K") {
+		t.Errorf("expected projected context usage (80.0%%/10.0K), got %q", stats)
+	}
+	if strings.Contains(stats, "25.0%") {
+		t.Errorf("footer shows the stale estimate (25.0%%) instead of the projection, got %q", stats)
+	}
+}
+
+// TestFormatFooterStats_ProjectedFallsBackToEstimate verifies the footer
+// falls back to the estimate when no projection has been recorded (they are
+// equal then anyway).
+func TestFormatFooterStats_ProjectedFallsBackToEstimate(t *testing.T) {
+	stats := formatFooterStats(sessionStats{
+		ContextEstimate:  2500,
+		ContextProjected: 0,
+		ContextMax:       10000,
+	})
+	if !strings.Contains(stats, "25.0%/10.0K") {
+		t.Errorf("expected fallback context usage (25.0%%/10.0K), got %q", stats)
+	}
+}
+
 func TestFormatFooterStats_ToolCalls(t *testing.T) {
 	stats := formatFooterStats(sessionStats{
 		PromptN:         1500,

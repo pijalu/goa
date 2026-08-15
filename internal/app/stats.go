@@ -135,20 +135,21 @@ func cacheHitTrendFromTotals(read, write, prompt int) CacheHitTrend {
 
 // sessionStats holds cumulative + last-turn statistics for footer display.
 type sessionStats struct {
-	PromptN         int
-	PredictedN      int
-	CacheReadTotal  int
-	CacheWriteTotal int
-	CacheMisses     int     // cache-bust count: zero-cache-read requests after the cache was established
-	SpeedTokPerSec  float64 // last turn output tok/s
-	ContextEstimate int
-	ContextMax      int
-	CostUSD         float64
-	ShowCost        bool
-	ToolCalls       int
-	ToolCallLevel   ToolCallLevel // 0=normal, 1=warning, 2=stopped
-	MicroCompacts   int
-	Compacts        int
+	PromptN          int
+	PredictedN       int
+	CacheReadTotal   int
+	CacheWriteTotal  int
+	CacheMisses      int     // cache-bust count: zero-cache-read requests after the cache was established
+	SpeedTokPerSec   float64 // last turn output tok/s
+	ContextEstimate  int
+	ContextProjected int
+	ContextMax       int
+	CostUSD          float64
+	ShowCost         bool
+	ToolCalls        int
+	ToolCallLevel    ToolCallLevel // 0=normal, 1=warning, 2=stopped
+	MicroCompacts    int
+	Compacts         int
 	// LastCacheHit is the most recent completion's cache-hit trend —
 	// rendered as CH:<avg>%▸<last>% where <avg> is the rolling average
 	// of the last 10 observations and <last> is the most recent rate.
@@ -323,6 +324,7 @@ func (a *App) clearStats() {
 	a.lastTurnCacheWrite = 0
 	a.tokenSessionMax = 0
 	a.tokenSessionEstimate = 0
+	a.tokenSessionProjected = 0
 	a.lastTurnSpeed = 0
 	a.turnCount = 0
 	a.turnStatsSeen = false
@@ -727,7 +729,13 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	modelCfg := a.subs.cfg.GetModelByID(a.subs.cfg.ActiveModel)
 	ctxPct := 0.0
 	if a.tokenSessionMax > 0 {
-		ctxPct = float64(a.tokenSessionEstimate) / float64(a.tokenSessionMax) * 100
+		// The log's context figure is the projected occupancy (CX8/P20), the
+		// same provider-anchored figure the footer shows.
+		ctxTokens := a.tokenSessionProjected
+		if ctxTokens <= 0 {
+			ctxTokens = a.tokenSessionEstimate
+		}
+		ctxPct = float64(ctxTokens) / float64(a.tokenSessionMax) * 100
 	}
 	turn := a.turnCount
 	promptN := a.lastTurnPromptN
@@ -984,6 +992,7 @@ func (a *App) handleTokenStats(ev *agentic.OutputEvent) {
 	if ev.ContextStats != nil {
 		a.tokenSessionMax = ev.ContextStats.MaxTokens
 		a.tokenSessionEstimate = ev.ContextStats.EstimatedTokens
+		a.tokenSessionProjected = ev.ContextStats.ProjectedTokens
 	}
 
 	// Record per-turn usage to the global store (best-effort, non-fatal).
@@ -1116,15 +1125,16 @@ func (a *App) usageStoreOpen() (*usage.Store, error) {
 // buildFooterStatsLocked requires a.statsMu to be held by the caller.
 func (a *App) buildFooterStatsLocked() sessionStats {
 	st := sessionStats{
-		PromptN:         a.tokenPromptTotal,
-		PredictedN:      a.tokenPredictedTotal,
-		CacheReadTotal:  a.tokenCacheReadTotal,
-		CacheWriteTotal: a.tokenCacheWriteTotal,
-		SpeedTokPerSec:  a.lastTurnSpeed,
-		ContextEstimate: a.tokenSessionEstimate,
-		ContextMax:      a.tokenSessionMax,
-		ToolCalls:       a.toolCallsTotal,
-		ToolCallLevel:   a.toolCallWarningLevel,
+		PromptN:          a.tokenPromptTotal,
+		PredictedN:       a.tokenPredictedTotal,
+		CacheReadTotal:   a.tokenCacheReadTotal,
+		CacheWriteTotal:  a.tokenCacheWriteTotal,
+		SpeedTokPerSec:   a.lastTurnSpeed,
+		ContextEstimate:  a.tokenSessionEstimate,
+		ContextProjected: a.tokenSessionProjected,
+		ContextMax:       a.tokenSessionMax,
+		ToolCalls:        a.toolCallsTotal,
+		ToolCallLevel:    a.toolCallWarningLevel,
 	}
 	applyPricing(&st, a.subs.cfg, a.subs.cfg.ActiveModel)
 	st.MicroCompacts = a.microCompacts
@@ -1364,13 +1374,24 @@ func buildFooterStatParts(s sessionStats) []string {
 		parts = append(parts, fmt.Sprintf("$%.4f", s.CostUSD))
 	}
 	if s.ContextMax > 0 {
-		parts = append(parts, formatContextUsage(s.ContextEstimate, s.ContextMax))
+		parts = append(parts, formatContextUsage(footerContextTokens(s), s.ContextMax))
 	}
 	// Show compression counters when non-zero.
 	if s.MicroCompacts > 0 || s.Compacts > 0 {
 		parts = append(parts, fmt.Sprintf("c:%dm-%d", s.MicroCompacts, s.Compacts))
 	}
 	return parts
+}
+
+// footerContextTokens resolves the token figure the footer's occupancy display
+// renders: the projected next-request cost when recorded, else the estimate
+// (CX8/P20 — occupancy displays read the projection; the fallback only applies
+// before any provider usage has been recorded, when they are equal anyway).
+func footerContextTokens(s sessionStats) int {
+	if s.ContextProjected > 0 {
+		return s.ContextProjected
+	}
+	return s.ContextEstimate
 }
 
 // formatContextUsage renders context usage as "52.3%/128k". The
@@ -1421,7 +1442,6 @@ func formatLastCacheHitPart(t CacheHitTrend) string {
 		avgColor, avg, ansi.Reset,
 		lastColor, t.Pct, ansi.Reset)
 }
-
 
 // cacheHitColorFor resolves the SGR prefix (color + optional bold) for a
 // cache-hit element (avg or last) based on its delta from the previous
