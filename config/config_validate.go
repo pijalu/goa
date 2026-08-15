@@ -28,10 +28,31 @@ func (c *Config) Validate() error {
 	c.validatePlan(&ve)
 	c.validateMCP(&ve)
 	c.validateTools(&ve)
+	c.validateTimeContext(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
 	return nil
+}
+
+// validateTimeContext rejects invalid temporal-context settings at load: a
+// malformed refresh interval or an unsupported IANA zone would otherwise fail
+// later, silently at injection time.
+func (c *Config) validateTimeContext(ve *internal.ValidationError) {
+	tc := c.TimeContext
+	if !tc.Enabled {
+		return
+	}
+	if tc.RefreshInterval != "" {
+		if _, err := time.ParseDuration(tc.RefreshInterval); err != nil {
+			ve.Add(fmt.Sprintf("time_context.refresh_interval: must be a duration (e.g. 60s, 5m), got %q", tc.RefreshInterval))
+		}
+	}
+	if tc.TimeZone != "" {
+		if _, err := time.LoadLocation(tc.TimeZone); err != nil {
+			ve.Add(fmt.Sprintf("time_context.time_zone: unsupported IANA zone %q", tc.TimeZone))
+		}
+	}
 }
 
 // validateTools rejects invalid tool-policy values at load: a negative

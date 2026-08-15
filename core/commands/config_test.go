@@ -219,6 +219,46 @@ func TestSetConfigField_UnknownKey(t *testing.T) {
 	}
 }
 
+// TestSetConfigField_TimeContext verifies the time_context /config setters
+// (CX6): the enable switch, display zone, and refresh interval round-trip,
+// with the interval rejecting malformed durations.
+func TestSetConfigField_TimeContext(t *testing.T) {
+	cfg := &config.Config{}
+
+	if err := setConfigField(cfg, []string{"time_context", "enabled"}, "true"); err != nil {
+		t.Fatalf("set time_context.enabled: %v", err)
+	}
+	if !cfg.TimeContext.Enabled {
+		t.Error("time_context.enabled must be set to true")
+	}
+
+	if err := setConfigField(cfg, []string{"time_context", "time_zone"}, "Asia/Shanghai"); err != nil {
+		t.Fatalf("set time_context.time_zone: %v", err)
+	}
+	if cfg.TimeContext.TimeZone != "Asia/Shanghai" {
+		t.Errorf("time_context.time_zone = %q, want Asia/Shanghai", cfg.TimeContext.TimeZone)
+	}
+
+	if err := setConfigField(cfg, []string{"time_context", "refresh_interval"}, "90s"); err != nil {
+		t.Fatalf("set time_context.refresh_interval: %v", err)
+	}
+	if cfg.TimeContext.RefreshInterval != "90s" {
+		t.Errorf("time_context.refresh_interval = %q, want 90s", cfg.TimeContext.RefreshInterval)
+	}
+
+	if err := setConfigField(cfg, []string{"time_context", "refresh_interval"}, "bogus"); err == nil {
+		t.Error("set time_context.refresh_interval must reject a malformed duration")
+	}
+
+	// "0" clears to the empty string (inject every eligible step).
+	if err := setConfigField(cfg, []string{"time_context", "refresh_interval"}, "0"); err != nil {
+		t.Fatalf("set time_context.refresh_interval=0: %v", err)
+	}
+	if cfg.TimeContext.RefreshInterval != "" {
+		t.Errorf("time_context.refresh_interval after 0 = %q, want empty", cfg.TimeContext.RefreshInterval)
+	}
+}
+
 func TestConfigKeyCompletions(t *testing.T) {
 	comps := configKeyCompletions("")
 	if len(comps) == 0 {

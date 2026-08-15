@@ -58,6 +58,7 @@ type Config struct {
 	Prompts            PromptsConfig            `yaml:"prompts"`
 	ThinkingLevels     ThinkingLevelConfig      `yaml:"thinking_levels"`
 	ContextCompression ContextCompressionConfig `yaml:"context_compression"`
+	TimeContext        TimeContextConfig        `yaml:"time_context"`
 	Telegram           TelegramConfig           `yaml:"telegram"`
 	Orchestrator       OrchestratorConfig       `yaml:"orchestrator,omitempty"`
 	Teams              TeamsConfig              `yaml:"teams,omitempty"`
@@ -1036,6 +1037,23 @@ type ThinkingLevelConfig struct {
 	Companion string `yaml:"companion"`
 	Planner   string `yaml:"planner"`
 	Coder     string `yaml:"coder"`
+}
+
+// TimeContextConfig controls the per-turn temporal context injection (CX6):
+// a durable context message carrying a zoned timestamp and elapsed-since-last
+// reading, injected at model step preparation. The feature is off by default;
+// enable it to give the model a clock when interpreting otherwise-unqualified
+// dates and times.
+type TimeContextConfig struct {
+	// Enabled turns on per-step temporal context injection. Off by default.
+	Enabled bool `yaml:"enabled"`
+	// TimeZone is the IANA display zone used to format timestamps and
+	// reported to the model. Empty uses the local zone.
+	TimeZone string `yaml:"time_zone,omitempty"`
+	// RefreshInterval is the minimum wall-clock gap between readings, as a Go
+	// duration string ("60s", "5m"). Empty or "0" injects at every eligible
+	// step entry.
+	RefreshInterval string `yaml:"refresh_interval,omitempty"`
 }
 
 // ContextCompressionConfig controls automatic conversation history compression.

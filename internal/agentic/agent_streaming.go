@@ -175,6 +175,9 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		a.mu.Lock()
 		a.resetStreamRoundState()
 		a.mu.Unlock()
+		// Later-step entry: inject the per-turn temporal context reading
+		// (CX6) before the re-stream request is derived.
+		a.injectTimeContextIfDue(time.Now())
 		return provider.Stream(model, a.buildProviderContext(ctx), opts)
 	}
 	a.logProviderContext(initCtx, 0)
@@ -244,6 +247,9 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 	const maxRecoveryRounds = 3
 
 	for round := 0; round < maxRecoveryRounds; round++ {
+		// Recovery-step entry: inject the per-turn temporal context reading
+		// (CX6) before the recovery request is derived.
+		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
 		a.logProviderContext(pCtx, limit+1+round)
 
@@ -1679,12 +1685,17 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.toolRoundNudgeFired = false
 	a.autoContinueCount = 0
 	a.lastStopReason = ""
+	a.turnStep = 0
 	a.mu.Unlock()
 
 	if err := a.maybeCompress(ctx); err != nil {
 		a.cfg.Logger.Log(Error, "proactive compression failed: %v", err)
 	}
 	a.enforceContextCeiling()
+
+	// Step 1 entry: inject the per-turn temporal context reading (CX6) before
+	// the first provider request of the turn is derived.
+	a.injectTimeContextIfDue(time.Now())
 
 	pCtx := a.buildProviderContext(ctx)
 

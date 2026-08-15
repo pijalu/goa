@@ -232,6 +232,15 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 	if cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
 	}
+	// Per-turn temporal context injection (gap CX6): off by default. The
+	// refresh interval string is parsed at build time; a malformed value is
+	// rejected by config validation, so an empty parse result here only
+	// happens for an explicit "0" (inject every eligible step).
+	agenticCfg.TimeContext = agentic.TimeContextConfig{
+		Enabled:         cfg.TimeContext.Enabled,
+		TimeZone:        cfg.TimeContext.TimeZone,
+		RefreshInterval: timeContextRefreshInterval(cfg.TimeContext.RefreshInterval),
+	}
 	// Tool-result spill policy (gap CX2): built per session so the spill dir
 	// is scoped to the session ID carried in the stream options.
 	if am.spillPolicyFactory != nil {
@@ -320,6 +329,20 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
 		ToolResultPruning:   buildToolResultPruningConfig(cfg.ContextCompression.ToolResultPruning),
 	}
+}
+
+// timeContextRefreshInterval parses the time_context refresh interval string
+// into a duration. Empty or unparseable (validation already rejected the
+// latter) means zero: inject at every eligible step entry.
+func timeContextRefreshInterval(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // buildToolResultPruningConfig maps the YAML tool-result pruner settings to

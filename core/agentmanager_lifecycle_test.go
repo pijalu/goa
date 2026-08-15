@@ -412,3 +412,24 @@ func TestBuildCompressionConfig_PerModelHardOverridesTheDefault(t *testing.T) {
 		t.Errorf("hard strategy = %q, want empty (SDK default summarize applies)", ccDef.Strategies.Hard)
 	}
 }
+
+// TestTimeContextRefreshInterval parses the time_context refresh interval
+// string (CX6): empty and "0"-equivalent values parse to zero (inject every
+// eligible step), a valid duration parses to the duration, and an unparseable
+// value (rejected earlier by config validation) safely falls back to zero.
+func TestTimeContextRefreshInterval(t *testing.T) {
+	if got := timeContextRefreshInterval(""); got != 0 {
+		t.Errorf("timeContextRefreshInterval(\"\") = %v, want 0", got)
+	}
+	if got := timeContextRefreshInterval("60s"); got != time.Minute {
+		t.Errorf("timeContextRefreshInterval(\"60s\") = %v, want 1m0s", got)
+	}
+	if got := timeContextRefreshInterval("5m"); got != 5*time.Minute {
+		t.Errorf("timeContextRefreshInterval(\"5m\") = %v, want 5m0s", got)
+	}
+	// Unparseable (config validation rejects it earlier; here we only ensure
+	// the builder never panics and treats it as zero).
+	if got := timeContextRefreshInterval("bogus"); got != 0 {
+		t.Errorf("timeContextRefreshInterval(\"bogus\") = %v, want 0 (safe fallback)", got)
+	}
+}

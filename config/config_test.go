@@ -1234,6 +1234,77 @@ func TestConfig_GetReasoningEffort(t *testing.T) {
 	}
 }
 
+// TestConfig_ValidateTimeContext verifies the time_context validation rules:
+// a malformed refresh interval and an unsupported IANA zone are rejected,
+// while the disabled default and valid settings pass.
+func TestConfig_ValidateTimeContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{
+			name: "disabled default passes",
+			cfg:  &Config{TimeContext: TimeContextConfig{}},
+		},
+		{
+			name: "enabled with valid zone and interval passes",
+			cfg: &Config{TimeContext: TimeContextConfig{
+				Enabled:         true,
+				TimeZone:        "Asia/Shanghai",
+				RefreshInterval: "60s",
+			}},
+		},
+		{
+			name: "invalid refresh interval rejected",
+			cfg: &Config{TimeContext: TimeContextConfig{
+				Enabled:         true,
+				RefreshInterval: "not-a-duration",
+			}},
+			wantErr: true,
+		},
+		{
+			name: "unsupported time zone rejected",
+			cfg: &Config{TimeContext: TimeContextConfig{
+				Enabled:  true,
+				TimeZone: "Not/AZone",
+			}},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			gotErr := err != nil
+			if gotErr != tt.wantErr {
+				t.Errorf("Validate() err=%v, wantErr=%v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestConfig_MergeTimeContext verifies the cascade merge semantics (CX6):
+// the enable switch propagates upward (default off), and zone/interval
+// propagate when set.
+func TestConfig_MergeTimeContext(t *testing.T) {
+	base := &Config{}
+	over := &Config{TimeContext: TimeContextConfig{
+		Enabled:         true,
+		TimeZone:        "Asia/Shanghai",
+		RefreshInterval: "5m",
+	}}
+	base.DeepMerge(over)
+	if !base.TimeContext.Enabled {
+		t.Error("DeepMerge must propagate Enabled=true")
+	}
+	if base.TimeContext.TimeZone != "Asia/Shanghai" {
+		t.Errorf("DeepMerge TimeZone = %q, want Asia/Shanghai", base.TimeContext.TimeZone)
+	}
+	if base.TimeContext.RefreshInterval != "5m" {
+		t.Errorf("DeepMerge RefreshInterval = %q, want 5m", base.TimeContext.RefreshInterval)
+	}
+}
+
 func TestConfig_GetToolResultAsUser(t *testing.T) {
 	trueVal := true
 	cfg := &Config{

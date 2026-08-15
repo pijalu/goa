@@ -146,6 +146,15 @@ type Agent struct {
 	// directly), in which case the function falls back to the last user message.
 	turnStartHistoryLen int
 
+	// turnCounter counts completed user turns for the temporal context
+	// injection (CX6) message ("turn N"). Incremented once per user input in
+	// runInternal. turnStep counts step entries within the current turn
+	// ("step M"): reset to 0 in prepareTurn, incremented on every step entry
+	// (round 0 via prepareTurn, later rounds, recovery rounds) regardless of
+	// whether an injection was due.
+	turnCounter int
+	turnStep    int
+
 	// providerUsage stores the Usage from EventDone (stream_options.include_usage).
 	// When set, emitTurnStats uses these real token counts instead of estimates.
 	providerUsage *provider.Usage
@@ -493,6 +502,22 @@ const (
 	SkillExecutionModeInline SkillExecutionMode = "inline"
 )
 
+// TimeContextConfig controls the per-turn temporal context injection (CX6):
+// a durable context message carrying a zoned timestamp and elapsed since the
+// last reading, injected at model step preparation. A zero value (Enabled
+// false) disables injection; RefreshInterval zero or negative injects at
+// every eligible step entry.
+type TimeContextConfig struct {
+	// Enabled turns on per-step temporal context injection.
+	Enabled bool
+	// TimeZone is the IANA display zone used to format timestamps and
+	// reported to the model. Empty uses the local zone.
+	TimeZone string
+	// RefreshInterval is the minimum wall-clock gap between injections.
+	// Zero or negative injects at every eligible step entry.
+	RefreshInterval time.Duration
+}
+
 // ContextCompressionConfig controls automatic conversation history compression.
 //
 // A zero value disables automatic compression entirely: every layer is
@@ -611,6 +636,11 @@ type Config struct {
 	// ContextCompression controls automatic history compression.
 	// Zero value disables automatic compression.
 	ContextCompression ContextCompressionConfig
+	// TimeContext controls the per-turn temporal context injection (CX6):
+	// a durable context message carrying a zoned timestamp and elapsed
+	// since the last reading, injected at model step preparation. Zero
+	// value (Enabled false) disables injection.
+	TimeContext TimeContextConfig
 	// MaxToolRepeatTotal is the maximum number of identical tool calls (same
 	// tool + same arguments) allowed within a single turn, including the first
 	// call. When the count exceeds this threshold across any streaming rounds
@@ -1189,6 +1219,9 @@ func (a *Agent) runInternal(ctx context.Context, input string, images []string, 
 	var err error
 
 	for {
+		// One turn per user input; the temporal-context reading (CX6) uses
+		// the count in its "turn N" label.
+		a.turnCounter++
 		// Add user message to history and emit event
 		userMsg := Message{
 			Type:     Content,

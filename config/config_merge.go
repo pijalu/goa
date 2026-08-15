@@ -25,6 +25,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergePrompts(other)
 	c.mergeThinkingLevels(other)
 	c.mergeContextCompression(other)
+	c.mergeTimeContext(other)
 	c.mergeTelegram(other)
 	c.mergePermissions(other)
 	c.mergeOrchestrator(other)
@@ -800,6 +801,21 @@ func mergeCompressionPerModel(dst *map[string]ModelCompressionOverride, src map[
 			m.PreserveRecentTurns = o.PreserveRecentTurns
 		}
 		(*dst)[id] = m
+	}
+}
+
+// mergeTimeContext merges the temporal-context injection section (CX6). The
+// enable switch follows the enable-only cascade pattern (default is off, so
+// higher layers can only turn it on); zone and interval propagate when set.
+func (c *Config) mergeTimeContext(other *Config) {
+	if other.TimeContext.Enabled {
+		c.TimeContext.Enabled = true
+	}
+	if other.TimeContext.TimeZone != "" {
+		c.TimeContext.TimeZone = other.TimeContext.TimeZone
+	}
+	if other.TimeContext.RefreshInterval != "" {
+		c.TimeContext.RefreshInterval = other.TimeContext.RefreshInterval
 	}
 }
 

@@ -115,6 +115,17 @@ context_compression:
     truncated_marker: "[Old tool result content cleared]"
     min_context_ratio: 0.5
 
+# time_context controls the per-turn temporal context injection (CX6): a
+# durable context message carrying a zoned timestamp and elapsed-since-last
+# reading, injected at model step preparation. Off by default. Enable it to
+# give the model a clock when interpreting otherwise-unqualified dates and
+# times.
+time_context:
+  enabled: false
+  # time_zone: "Asia/Shanghai"  # IANA zone; omit to use the local zone.
+  # refresh_interval: "60s"     # minimum gap between readings; omit or "0" =
+  #                             # inject at every eligible step entry.
+
 telegram:
   enabled: true
 

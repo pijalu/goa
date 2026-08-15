@@ -6,6 +6,8 @@ package agentic
 
 import (
 	"fmt"
+	"strings"
+	"time"
 )
 
 // effectiveMaxTokens returns the context window limit the agent should use for
@@ -256,4 +258,179 @@ func (a *Agent) checkContextLimit() error {
 		return fmt.Errorf("context window full: estimated tokens exceed %d (%d%% of %d); compress or reset the conversation", hardCeiling, hardCeilingPercent, maxTokens)
 	}
 	return nil
+}
+
+// timeContextMetaKey marks an injected time-context reading in Message
+// metadata (value: the sampled RFC3339Nano wall time). The marker is never
+// sent to the LLM; it exists so the latest-injection scan can find readings
+// in the durable conversation history.
+const timeContextMetaKey = "goa.time-context"
+
+// timeContextZone returns the display zone for temporal-context readings:
+// the configured IANA zone when set, otherwise the local zone. An
+// unsupported configured zone (already rejected by config validation) falls
+// back to local.
+func (a *Agent) timeContextZone() *time.Location {
+	if a.cfg.TimeContext.TimeZone != "" {
+		if loc, err := time.LoadLocation(a.cfg.TimeContext.TimeZone); err == nil {
+			return loc
+		}
+	}
+	return time.Local
+}
+
+// formatTimeContextDuration renders a non-negative elapsed duration in
+// compact whole-second units (dsh time-context parity): 0s, 5s, 1m 5s,
+// 1h 2m 3s, 1d 2h 3m 4s. Negative durations (backward wall-clock movement)
+// clamp to 0s.
+func formatTimeContextDuration(elapsed time.Duration) string {
+	seconds := int64(elapsed / time.Second)
+	if seconds < 0 {
+		seconds = 0
+	}
+	days := seconds / 86400
+	seconds %= 86400
+	hours := seconds / 3600
+	seconds %= 3600
+	minutes := seconds / 60
+	seconds %= 60
+	var b strings.Builder
+	if days > 0 {
+		fmt.Fprintf(&b, "%dd ", days)
+	}
+	if hours > 0 {
+		fmt.Fprintf(&b, "%dh ", hours)
+	}
+	if minutes > 0 {
+		fmt.Fprintf(&b, "%dm ", minutes)
+	}
+	fmt.Fprintf(&b, "%ds", seconds)
+	return b.String()
+}
+
+// renderTimeContextMessage builds the durable temporal-context text for one
+// step entry, adapted from the dsh time-context README shape (three lines:
+// sampled timestamp with numeric offset and IANA zone, the display zone, and
+// the elapsed baseline). Goa has no browser provenance, so the zone is the
+// configured or local display zone rather than a request-scoped browser zone.
+func renderTimeContextMessage(now time.Time, zone *time.Location, turn, step int, elapsed *time.Duration) string {
+	elapsedText := "unavailable"
+	if elapsed != nil {
+		elapsedText = formatTimeContextDuration(*elapsed)
+	}
+	baseline := "model-visible message"
+	if step > 1 {
+		baseline = "step context"
+	}
+	ts := now.In(zone).Format("2006-01-02T15:04:05-07:00") + "[" + zoneName(zone) + "]"
+	return fmt.Sprintf(
+		"Time sampled while preparing turn %d, step %d: %s\n"+
+			"Time zone for this request: %s. Interpret otherwise-unqualified dates and times in this zone.\n"+
+			"Elapsed since the preceding %s: %s.",
+		turn, step, ts, zoneName(zone), baseline, elapsedText,
+	)
+}
+
+// zoneName returns the IANA-style name of a location for the temporal-context
+// message. LoadLocation results carry their canonical name; the local zone
+// falls back to its OS name or "Local".
+func zoneName(loc *time.Location) string {
+	if loc == nil {
+		return "Local"
+	}
+	return loc.String()
+}
+
+// latestTimeContextReadingLocked scans the durable conversation history in
+// reverse for the most recent injected time-context reading and returns its
+// sampled wall time. It scans history (never a process-local cache) so the
+// interval-suppression state re-derives from whatever history currently
+// holds, which is what makes it correct across history rewrites such as
+// compaction: a shadowed reading is no longer findable, so the next eligible
+// step injects a fresh one. The caller must hold a.mu.
+func (a *Agent) latestTimeContextReadingLocked() (time.Time, bool) {
+	for i := len(a.history) - 1; i >= 0; i-- {
+		if v, ok := a.history[i].Metadata[timeContextMetaKey]; ok {
+			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// latestStepContextReadingLocked scans the durable conversation history in
+// reverse for the most recent time-context reading within the current turn
+// (messages at or after the turn's first appended message). It stops at the
+// turn boundary so a later step measures elapsed from the preceding step
+// context in the SAME turn, not from an earlier turn's reading. The caller
+// must hold a.mu.
+func (a *Agent) latestStepContextReadingLocked() (time.Time, bool) {
+	start := a.turnStartHistoryLen
+	if start < 0 {
+		start = 0
+	}
+	for i := len(a.history) - 1; i >= start; i-- {
+		if v, ok := a.history[i].Metadata[timeContextMetaKey]; ok {
+			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+// injectTimeContextIfDue runs at every model step entry (round 0 via
+// prepareTurn, later rounds, recovery rounds) and, when the temporal-context
+// feature is enabled, appends one durable time-context reading to history
+// when due per the refresh interval: no earlier reading, wall clock moved
+// backward, or at least RefreshInterval elapsed since the latest reading.
+// Zero/negative interval injects at every eligible entry. It returns true
+// when a reading was injected. The reading is a User-role message (the model
+// sees it as ordinary context) carrying the injection marker in metadata; it
+// stays in history until compaction shadows it.
+func (a *Agent) injectTimeContextIfDue(now time.Time) bool {
+	cfg := a.cfg.TimeContext
+	if !cfg.Enabled {
+		return false
+	}
+	a.turnStep++
+	step := a.turnStep
+
+	zone := a.timeContextZone()
+
+	a.mu.Lock()
+	last, ok := a.latestTimeContextReadingLocked()
+	due := cfg.RefreshInterval <= 0 || !ok || now.Before(last) || now.Sub(last) >= cfg.RefreshInterval
+	if !due {
+		a.mu.Unlock()
+		return false
+	}
+
+	var elapsed *time.Duration
+	if step == 1 {
+		if t, found := a.latestTimeContextReadingLocked(); found {
+			d := now.Sub(t)
+			elapsed = &d
+		}
+	} else {
+		if t, found := a.latestStepContextReadingLocked(); found {
+			d := now.Sub(t)
+			elapsed = &d
+		}
+	}
+
+	msg := Message{
+		Type:     Content,
+		Role:     User,
+		Content:  renderTimeContextMessage(now, zone, a.turnCounter, step, elapsed),
+		Metadata: map[string]string{timeContextMetaKey: now.Format(time.RFC3339Nano)},
+	}
+	a.history = append(a.history, msg)
+	a.mu.Unlock()
+
+	// Emit outside a.mu (persistGoalReminder parity): the reading lands in
+	// the observer pipeline (session JSONL, TUI) like every other message.
+	a.emitMessage(msg)
+	return true
 }

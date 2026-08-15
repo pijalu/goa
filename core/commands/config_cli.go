@@ -514,6 +514,12 @@ var configSetters = map[string]configSetter{
 	"context_compression.micro_compaction.min_context_ratio":    setMicroMinContextRatio,
 	"context_compression.micro_compaction.cache_miss_threshold": setMicroCacheMissThreshold,
 	"context_compression.micro_compaction.truncated_marker":     setString(func(cfg *config.Config) *string { return &cfg.ContextCompression.MicroCompaction.TruncatedMarker }),
+	// Per-turn temporal context injection (gap CX6): no hidden knobs — the
+	// enable switch, display zone, and refresh interval are settable like
+	// every other runtime behavior.
+	"time_context.enabled":           setBool(func(cfg *config.Config) *bool { return &cfg.TimeContext.Enabled }),
+	"time_context.time_zone":         setString(func(cfg *config.Config) *string { return &cfg.TimeContext.TimeZone }),
+	"time_context.refresh_interval":  setTimeContextRefreshInterval,
 	"execution.loop_warning":                                    setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopWarning }),
 	"execution.loop_interrupt":                                  setInt(func(cfg *config.Config) *int { return &cfg.Execution.LoopInterrupt }),
 	"execution.disable_thinking_loop_detection":                 setBoolPtr(func(cfg *config.Config) **bool { return &cfg.Execution.DisableThinkingLoopDetection }),
@@ -872,6 +878,21 @@ func setMicroCacheMissThreshold(cfg *config.Config, value string) error {
 		return fmt.Errorf("context_compression.micro_compaction.cache_miss_threshold must be a duration (e.g. 15m, 1h), got %q", value)
 	}
 	cfg.ContextCompression.MicroCompaction.CacheMissThreshold = value
+	return nil
+}
+
+// setTimeContextRefreshInterval validates the time_context refresh interval
+// as a Go duration ("60s", "5m", "0"). Empty or "0" means inject at every
+// eligible step entry (no suppression).
+func setTimeContextRefreshInterval(cfg *config.Config, value string) error {
+	if value == "" || value == "0" {
+		cfg.TimeContext.RefreshInterval = ""
+		return nil
+	}
+	if _, err := time.ParseDuration(value); err != nil {
+		return fmt.Errorf("time_context.refresh_interval must be a duration (e.g. 60s, 5m) or 0, got %q", value)
+	}
+	cfg.TimeContext.RefreshInterval = value
 	return nil
 }
 
