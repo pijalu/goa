@@ -153,17 +153,12 @@ func showModelSelector(host core.UIHost, cfg *config.Config, saver config.Config
 // provider's live /models list merged with the built-in registry models for
 // that provider. Live entries win on ID conflict; registry entries fill gaps
 // (e.g. z.ai's coding endpoint, whose /models list is incomplete). On live
-// fetch error the registry list alone is returned (may still be empty).
+// fetch error the registry list alone is returned (may still be empty) and a
+// warning is flashed so the fallback is visible instead of silent.
 func modelListForProvider(host core.UIHost, providerID string) []provider.ModelInfo {
-	var live []provider.ModelInfo
-	if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
-		if pm, ok := ctx.ProviderManager.(interface {
-			ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
-		}); ok {
-			live, _ = pm.ListModelsCached(providerID, modelCacheTTL)
-		} else {
-			live, _ = ctx.ProviderManager.ListModels(providerID)
-		}
+	live, err := fetchLiveModels(host, providerID)
+	if err != nil {
+		warnLiveModelDiscoveryFallback(host, providerID, err)
 	}
 
 	var registry []provider.ModelInfo
@@ -191,6 +186,21 @@ func modelListForProvider(host core.UIHost, providerID string) []provider.ModelI
 		}
 	}
 	return out
+}
+
+// fetchLiveModels interrogates the provider's live GET /models endpoint via
+// the provider manager (using its TTL cache when available).
+func fetchLiveModels(host core.UIHost, providerID string) ([]provider.ModelInfo, error) {
+	ctx, ok := host.(core.Context)
+	if !ok || ctx.ProviderManager == nil {
+		return nil, nil
+	}
+	if pm, ok := ctx.ProviderManager.(interface {
+		ListModelsCached(string, time.Duration) ([]provider.ModelInfo, error)
+	}); ok {
+		return pm.ListModelsCached(providerID, modelCacheTTL)
+	}
+	return ctx.ProviderManager.ListModels(providerID)
 }
 
 // runModelAdd handles "/model add". With no arguments it opens the
@@ -486,6 +496,8 @@ func fetchAllProviderModels(host core.UIHost, cfg *config.Config) []providerMode
 }
 
 // fetchProviderModels tries to get the model list from a single provider.
+// On live fetch failure a warning is flashed so the picker's fallback (to
+// other providers / custom input) is visible instead of silently empty.
 func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelInfo {
 	ctx, ok := host.(core.Context)
 	if !ok || ctx.ProviderManager == nil {
@@ -498,12 +510,22 @@ func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelIn
 		if err == nil {
 			return models
 		}
+		warnLiveModelDiscoveryFallback(host, providerID, err)
+		return nil
 	}
 	models, err := ctx.ProviderManager.ListModels(providerID)
 	if err != nil {
+		warnLiveModelDiscoveryFallback(host, providerID, err)
 		return nil
 	}
 	return models
+}
+
+// warnLiveModelDiscoveryFallback flashes a warning when a provider's live
+// /models endpoint cannot be interrogated, so the picker's silent fallback to
+// cached/registry models becomes visible to the user.
+func warnLiveModelDiscoveryFallback(host core.UIHost, providerID string, err error) {
+	host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); using known models.", providerID, err))
 }
 
 // isModelSentinel reports whether v is a selector action/sentinel value that
