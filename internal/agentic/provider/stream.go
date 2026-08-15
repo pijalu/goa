@@ -99,7 +99,11 @@ func StreamInterceptors() []StreamInterceptor {
 // and specialized providers not yet migrated to the protocol package.
 func stream(model Model, ctx Context, opts StreamOptions) (*AssistantMessageEventStream, error) {
 	if opts.APIKey == "" {
-		opts.APIKey = GetEnvAPIKey(model.Provider)
+		key, err := GetEnvAPIKey(model.Provider)
+		if err != nil {
+			return nil, err
+		}
+		opts.APIKey = key
 	}
 	if protocol.ForAPI(model.Api) != nil {
 		return GenericStream(model, ctx, opts)
@@ -121,7 +125,11 @@ func Stream(model Model, ctx Context, opts StreamOptions) (*AssistantMessageEven
 func StreamSimple(model Model, ctx Context, opts SimpleStreamOptions) (*AssistantMessageEventStream, error) {
 	base := BuildSimpleOptions(model, opts)
 	if base.APIKey == "" {
-		base.APIKey = GetEnvAPIKey(model.Provider)
+		key, err := GetEnvAPIKey(model.Provider)
+		if err != nil {
+			return nil, err
+		}
+		base.APIKey = key
 	}
 	if protocol.ForAPI(model.Api) != nil {
 		return GenericStream(model, ctx, base)

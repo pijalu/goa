@@ -11,19 +11,37 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
-// GetEnvAPIKey returns the API key for the given provider by checking
-// well-known environment variables providers.
+// GetEnvAPIKey returns the validated API key for the given provider by
+// checking well-known environment variables (DS5/P15).
 //
-// Returns empty string if no known environment variable is set, or if the
+// It returns ("", nil) when no known environment variable is set, or when the
 // provider doesn't need an API key (e.g., local providers like LM Studio).
-func GetEnvAPIKey(provider Provider) string {
+// When a set variable holds a malformed key (empty after trimming, or
+// containing characters outside printable ASCII) it returns an
+// *schema.InvalidCredentialError naming the variable — the key material is
+// never included. The absence case is reported as ("", nil); callers that
+// must distinguish "missing" from "invalid" should inspect the error, while
+// callers that only need a key may treat any error as "no usable key".
+func GetEnvAPIKey(provider Provider) (string, error) {
 	vars := envVarsForProvider(provider)
 	for _, v := range vars {
-		if val := os.Getenv(v); val != "" {
-			return val
+		if raw := os.Getenv(v); raw != "" {
+			key, err := schema.ValidateAPIKey(v, raw)
+			if err != nil {
+				return "", err
+			}
+			return key, nil
 		}
 	}
-	return ""
+	return "", nil
+}
+
+// EnvVarsForProvider returns the environment variable names GetEnvAPIKey
+// checks for the given provider, in priority order. Returns nil for local-only
+// providers. Used by callers building a MissingCredentialError that lists
+// every source checked.
+func EnvVarsForProvider(provider Provider) []string {
+	return envVarsForProvider(provider)
 }
 
 // providerEnvVars maps known providers to their env var names (priority order).

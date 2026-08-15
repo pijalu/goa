@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 func init() {
@@ -347,10 +348,17 @@ func streamAzureResponses(model provider.Model, ctx provider.Context, opts provi
 
 	apiKey := opts.APIKey
 	if apiKey == "" {
-		apiKey = provider.GetEnvAPIKey(provider.ProviderAzure)
+		var err error
+		apiKey, err = provider.GetEnvAPIKey(provider.ProviderAzure)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("azure API key required: set AZURE_OPENAI_API_KEY")
+		return nil, &schema.MissingCredentialError{
+			Provider: string(provider.ProviderAzure),
+			Sources:  provider.EnvVarsForProvider(provider.ProviderAzure),
+		}
 	}
 
 	body := buildResponsesBody(model, ctx, opts)

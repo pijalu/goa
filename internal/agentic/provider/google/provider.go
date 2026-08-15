@@ -15,6 +15,7 @@ import (
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/agentic/provider/hooks"
+	"github.com/pijalu/goa/internal/agentic/provider/schema"
 )
 
 func init() {
@@ -58,10 +59,17 @@ func streamGoogle(model provider.Model, ctx provider.Context, opts provider.Stre
 
 	apiKey := opts.APIKey
 	if apiKey == "" {
-		apiKey = provider.GetEnvAPIKey(provider.ProviderGoogle)
+		var err error
+		apiKey, err = provider.GetEnvAPIKey(provider.ProviderGoogle)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("google API key required: set GEMINI_API_KEY or GOOGLE_API_KEY")
+		return nil, &schema.MissingCredentialError{
+			Provider: string(provider.ProviderGoogle),
+			Sources:  provider.EnvVarsForProvider(provider.ProviderGoogle),
+		}
 	}
 
 	modelID := model.ID
@@ -510,8 +518,9 @@ func vertexSafetySettings() []map[string]interface{} {
 // getGoogleAccessToken retrieves a GCP access token from the metadata server
 // or environment variable.
 func getGoogleAccessToken() string {
-	// Check env first
-	if token := provider.GetEnvAPIKey("google"); token != "" {
+	// Check env first; an invalid value is not a usable token, so fall through
+	// to the metadata server rather than reporting it here.
+	if token, err := provider.GetEnvAPIKey("google"); err == nil && token != "" {
 		return token
 	}
 
