@@ -475,6 +475,9 @@ func initHookEngine(cfg *config.Config, projectDir string, agentMgr *core.AgentM
 		log.Printf("Warning: failed to load hooks config: %v\n", err)
 		return
 	}
+	for _, w := range hookCfg.Warnings {
+		log.Printf("Warning: hooks config: %s\n", w)
+	}
 	if hookCfg == nil || len(hookCfg.Hooks) == 0 {
 		return
 	}

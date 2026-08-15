@@ -21,6 +21,7 @@ type Entry struct {
 	Payload    string    `json:"payload"`
 	Output     string    `json:"output,omitempty"`
 	ExitCode   int       `json:"exit_code"`
+	Dialect    Dialect   `json:"dialect,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at"`
 }

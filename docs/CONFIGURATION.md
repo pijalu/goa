@@ -580,6 +580,91 @@ User values are merged on top of the embedded defaults.
 }
 ```
 
+## Hooks
+
+Goa runs lifecycle command hooks at four interception points. Hooks execute
+with a JSON payload on stdin; a `beforeTool` hook can veto a tool call by
+exiting non-zero (goa dialect) or with the Claude Code deny contract (CC
+dialect). All executions are recorded in `<project>/.goa/hooks.log`.
+
+### Goa-native hooks (`hooks.yaml`)
+
+Configured in `~/.goa/hooks.yaml` (user) and `<project>/.goa/hooks.yaml`
+(project; project hooks append after user hooks).
+
+```yaml
+hooks:
+  - event: beforeTool
+    command: /path/to/guard.sh
+    args: []          # optional fixed args prepended to the payload
+  - event: afterTool
+    command: /path/to/log.sh
+  - event: sessionStart
+    command: /path/to/start.sh
+  - event: sessionEnd
+    command: /path/to/end.sh
+```
+
+Events: `beforeTool` (can veto — non-zero exit), `afterTool` (never vetoes),
+`sessionStart`, `sessionEnd`. Payloads are goa-shaped
+(`event`, `tool_name`, `tool_input`, `call_id`, `output`, `error`,
+`session_id`, `cwd`).
+
+### Claude Code hooks (`hooks.json` / `settings.json`)
+
+An existing Claude Code hook config is accepted as an additional source (gap
+TL4): `~/.claude/hooks.json`, `~/.claude/settings.json` (user scope) and
+`<project>/.claude/hooks.json`, `<project>/.claude/settings.json` (project
+scope). Both the bare event map and the `{"hooks": {...}}` settings shape are
+supported; only `type: "command"` hooks run — `http`, `mcp_tool`, `prompt`,
+and `agent` hooks are skipped with a warning.
+
+Supported CC events map onto goa's points: `PreToolUse` → `beforeTool`,
+`PostToolUse` → `afterTool`, `SessionStart` → `sessionStart`, `SessionEnd` →
+`sessionEnd`. Tool events keep their matcher (tool name; CC literal
+alternatives match case-insensitively, regex matchers use Go RE2); session
+matchers are ignored. Hooks receive CC-shaped stdin (`hook_event_name`,
+`tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `session_id`,
+`cwd`), run with `sh -c` (shell form) or exec form when `args` is present, in
+the project directory with `CLAUDE_PROJECT_DIR` exported and
+`${CLAUDE_PROJECT_DIR}` substituted. The CC default 600s timeout applies.
+
+CC output follows the Claude Code contract: stdout JSON is read on every exit
+code; exit 2 blocks (JSON cannot override it); otherwise a valid JSON object
+alone decides via `hookSpecificOutput.permissionDecision`
+(`allow`/`deny`/`ask`/`defer`) or the legacy top-level `decision`
+(`approve`/`block`). Matching hooks run serially and fold most-restrictively
+(`deny`/`block` > `ask`/`defer` > `allow`); a `beforeTool` veto error carries
+every vetoing hook's reason plus the accumulated `additionalContext` so the
+model sees it. `additionalContext` is capped at Claude Code's 10,000-character
+limit.
+
+Example (denies all `Bash` calls):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/deny.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Known limitations (mirroring dsh's bridge): `PostToolUse` feedback and
+`SessionStart`/`SessionEnd` context are recorded in the audit log but not
+injected into the conversation; `UserPromptSubmit`, `Stop`, `SubagentStart`,
+`SubagentStop`, and the other CC events are not supported; `if`, `async`,
+`once`, `statusMessage`, and `updatedInput` are not honored.
+
 ## Saving Config Changes
 
 Runtime config changes (e.g., via `/config set`) are persisted to `~/.goa/config.yaml` via `ConfigSaver`:

@@ -716,6 +716,9 @@ type Config struct {
 	// ProjectDir is the root of the codebase. It is used by SOLO mode to
 	// restrict file-system and shell access to the project directory.
 	ProjectDir string
+	// SessionID is the current session identifier, forwarded into Claude Code
+	// dialect hook payloads (session_id). Empty when no session is active.
+	SessionID string
 	// GetAutonomy returns the current autonomy level. When non-nil and it
 	// returns AutonomySolo, tool calls are validated against the SOLO policy.
 	GetAutonomy func() internal.AutonomyLevel

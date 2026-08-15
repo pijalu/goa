@@ -196,6 +196,7 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 		GoalStateProvider:        am.goalStateProvider,
 		StickyProvider:           am.stickyProvider,
 		ProjectDir:               am.projectDir,
+		SessionID:                opts.SessionID,
 		GetAutonomy:              func() internal.AutonomyLevel { return am.CurrentMode().Autonomy },
 		GetGuardConfig: func() perms.GuardConfig {
 			if am.modeRegistry == nil {

@@ -399,6 +399,8 @@ func (a *Agent) fireBeforeToolHook(ctx context.Context, name, input, callID stri
 		ToolName:  name,
 		ToolInput: input,
 		CallID:    callID,
+		SessionID: a.cfg.SessionID,
+		CWD:       a.cfg.ProjectDir,
 	})
 }
 
@@ -412,6 +414,8 @@ func (a *Agent) fireAfterToolHook(ctx context.Context, name, input, callID strin
 		ToolInput: input,
 		CallID:    callID,
 		Output:    result.Output,
+		SessionID: a.cfg.SessionID,
+		CWD:       a.cfg.ProjectDir,
 	}
 	if runErr != nil {
 		payload.Error = runErr.Error()
