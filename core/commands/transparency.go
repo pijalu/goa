@@ -10,6 +10,7 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
+	"github.com/pijalu/goa/internal/metrics"
 )
 
 // ExchangeCommand shows the raw LLM exchange for a turn.
@@ -214,7 +215,7 @@ func (c *StatsCommand) CompleteArgs(_ core.Context, prefix string) []core.ArgCom
 		{Value: "session", Description: "current session per-turn detail"},
 		{Value: "project", Description: "project-level totals (provider, model, cache)"},
 		{Value: "verbose", Description: "all projects, each split by provider and model"},
-		{Value: "cache", Description: "cache hit-rate evolution chart + drop table"},
+		{Value: "cache", Description: "cache hit-rate evolution chart + drop table (this session)"},
 	}
 	var out []core.ArgCompletion
 	for _, cand := range candidates {
@@ -363,7 +364,8 @@ func writeSummaryStats(w core.OutputWriter, rec core.SessionRecorder, totalToken
 	writeFmt(w, "  Total: %d tokens across %d turns\n", totalTokens, len(history))
 	writeFmt(w, "  Total in:  %d  out: %d\n", totals.PromptN, totals.PredictedN)
 	if totals.CacheRead > 0 || totals.CacheWrite > 0 {
-		writeFmt(w, "  Cache R: %d  W: %d\n", totals.CacheRead, totals.CacheWrite)
+		writeFmt(w, "  Cache R: %d  W: %d  hit rate: %.1f%%\n", totals.CacheRead, totals.CacheWrite,
+			metrics.CacheHitPct(totals.CacheRead, totals.CacheWrite, totals.PromptN))
 	}
 	if totals.CostUSD > 0 {
 		writeFmt(w, "  Cost: $%.4f\n", totals.CostUSD)

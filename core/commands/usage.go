@@ -14,6 +14,7 @@ import (
 	"github.com/pijalu/goa/core/commands/help"
 	"github.com/pijalu/goa/internal/agentic/provider/models"
 	"github.com/pijalu/goa/internal/ansi"
+	"github.com/pijalu/goa/internal/metrics"
 	"github.com/pijalu/goa/internal/usage"
 )
 
@@ -243,13 +244,15 @@ func writeUsageGlobal(b *strings.Builder, st usageStore, req usageRequest) {
 	// report cache writes (only Anthropic does), so a permanent "0 write"
 	// is noise, not signal (Stats: cache write is always 0).
 	if sum.CacheWrite > 0 {
-		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write\n",
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read / %s write (%.1f%% hit)\n",
 			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
-			humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite))
+			humanTokens(sum.CacheRead), humanTokens(sum.CacheWrite),
+			metrics.CacheHitPct(sum.CacheRead, sum.CacheWrite, sum.PromptN))
 	} else {
-		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read\n",
+		fmt.Fprintf(b, "Turns: %d   Input: %s   Output: %s   Total: %s   Cache: %s read (%.1f%% hit)\n",
 			sum.Turns, humanTokens(sum.PromptN), humanTokens(sum.PredictedN), humanTokens(sum.Total()),
-			humanTokens(sum.CacheRead))
+			humanTokens(sum.CacheRead),
+			metrics.CacheHitPct(sum.CacheRead, sum.CacheWrite, sum.PromptN))
 	}
 	// E3 (ENHANCE.md): fresh-vs-cached spend health. Fresh input tokens are the
 	// expensive currency; cache-read tokens are cheap — the fresh share of

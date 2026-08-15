@@ -26,11 +26,13 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
-## Cache HIT
-The status bar should show CH for cache hits - use CH:<avg last 10>%▸<last>%
 
-Color scheme change: Per elements (avg/last) - Orange/Red should only change for >=5% change in cache hit rate: the color should emphasize significant changes - not minor fluctuations
+# Archive
+## Cache HIT (fixed in 0f1e434)
+Status bar shows CH:<avg last 10>%▸<last>% with per-element evolution coloring.
+Colors: bold green >=+1pt, green minor fluctuation, red >=5pt drop. Orange removed.
 
-## stats:cache
-- Stats cache should *only* be used on current session (all agent calls)
-- All other stats: Include a average cache hit rate
+## stats:cache (fixed)
+/stats:cache now reads from the current session's turn history (all agent calls),
+not the persistent cross-session usage store. Session summary (/stats:session)
+and global usage (/usage) include average cache hit rate.
