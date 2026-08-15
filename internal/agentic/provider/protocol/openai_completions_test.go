@@ -33,39 +33,65 @@ func TestResolveOpenAICompat_ReasoningContentFlagPropagation(t *testing.T) {
 		"flag defaults off without a profile requirement")
 }
 
-// TestConvertAssistantMessage_ReasoningContent pins both serialization
-// behaviors: thinking blocks always serialize as reasoning_content; the flag
-// additionally injects an empty reasoning_content on assistant messages
-// without thinking (DeepSeek requires the key on EVERY assistant message in
-// thinking mode); without the flag the key stays absent.
+// TestConvertAssistantMessage_ReasoningContent pins the DS1 passback rule
+// (dsh serialize.ts:85-101): reasoning_content is emitted only on tool-call
+// turns — plain assistant turns drop it (the API ignores it there, so
+// sending it wastes tokens). On tool-call turns the thinking text passes
+// back verbatim; when the turn carries no thinking but the profile requires
+// the field (DeepSeek thinking mode), an empty reasoning_content is forced —
+// a missing key 400s the request. Without the flag the key stays absent.
 func TestConvertAssistantMessage_ReasoningContent(t *testing.T) {
-	thinkingMsg := schema.Message{
-		Role: schema.RoleAssistant,
-		Content: []schema.ContentBlock{
-			{Type: schema.ContentBlockThinking, Thinking: "chain of thought"},
-			{Type: schema.ContentBlockText, Text: "answer"},
-		},
+	toolCallBlock := schema.ContentBlock{
+		Type:          schema.ContentBlockToolCall,
+		ToolCallID:    "call_1",
+		ToolName:      "read",
+		ToolArguments: `{"path":"PLAN.md"}`,
 	}
-	plainMsg := schema.Message{
-		Role:    schema.RoleAssistant,
-		Content: []schema.ContentBlock{{Type: schema.ContentBlockText, Text: "answer"}},
+	thinkingBlock := schema.ContentBlock{Type: schema.ContentBlockThinking, Thinking: "chain of thought"}
+	textBlock := schema.ContentBlock{Type: schema.ContentBlockText, Text: "answer"}
+	assistantMsg := func(blocks ...schema.ContentBlock) schema.Message {
+		return schema.Message{Role: schema.RoleAssistant, Content: blocks}
 	}
 
-	// Thinking always serializes, flag or not.
-	out := convertAssistantMessage(thinkingMsg, openAICompletionsCompat{})
-	assert.Equal(t, "chain of thought", out["reasoning_content"])
+	t.Run("plain turn with thinking drops reasoning_content", func(t *testing.T) {
+		out := convertAssistantMessage(assistantMsg(thinkingBlock, textBlock), openAICompletionsCompat{})
+		_, ok := out["reasoning_content"]
+		assert.False(t, ok, "plain turn: reasoning_content must be dropped")
+		assert.Equal(t, "answer", out["content"])
+	})
 
-	// Flag on: plain assistant message gets an empty reasoning_content key.
-	out = convertAssistantMessage(plainMsg, openAICompletionsCompat{RequiresReasoningContentOnAssistantMessages: true})
-	rc, ok := out["reasoning_content"]
-	require.True(t, ok, "flag on: reasoning_content key must be present")
-	assert.Equal(t, "", rc)
+	t.Run("plain turn with thinking and flag on still drops reasoning_content", func(t *testing.T) {
+		out := convertAssistantMessage(assistantMsg(thinkingBlock, textBlock),
+			openAICompletionsCompat{RequiresReasoningContentOnAssistantMessages: true})
+		_, ok := out["reasoning_content"]
+		assert.False(t, ok, "plain turn: flag must not resurrect reasoning_content")
+	})
 
-	// Flag off: the key stays absent (pinned — providers that reject unknown
-	// fields rely on this).
-	out = convertAssistantMessage(plainMsg, openAICompletionsCompat{})
-	_, ok = out["reasoning_content"]
-	assert.False(t, ok, "flag off: reasoning_content must be absent")
+	t.Run("tool-call turn passes thinking back verbatim", func(t *testing.T) {
+		out := convertAssistantMessage(assistantMsg(thinkingBlock, toolCallBlock), openAICompletionsCompat{})
+		assert.Equal(t, "chain of thought", out["reasoning_content"],
+			"tool-call turn: reasoning_content must pass back even without the flag")
+	})
+
+	t.Run("tool-call turn without thinking gets forced empty key when flag on", func(t *testing.T) {
+		out := convertAssistantMessage(assistantMsg(toolCallBlock),
+			openAICompletionsCompat{RequiresReasoningContentOnAssistantMessages: true})
+		rc, ok := out["reasoning_content"]
+		require.True(t, ok, "flag on: tool-call turn must carry the reasoning_content key")
+		assert.Equal(t, "", rc)
+	})
+
+	t.Run("tool-call turn without thinking and flag off omits key", func(t *testing.T) {
+		out := convertAssistantMessage(assistantMsg(toolCallBlock), openAICompletionsCompat{})
+		_, ok := out["reasoning_content"]
+		assert.False(t, ok, "flag off + no thinking: reasoning_content must be absent")
+	})
+
+	t.Run("tool-call turn with thinking and flag on keeps thinking text", func(t *testing.T) {
+		out := convertAssistantMessage(assistantMsg(thinkingBlock, toolCallBlock),
+			openAICompletionsCompat{RequiresReasoningContentOnAssistantMessages: true})
+		assert.Equal(t, "chain of thought", out["reasoning_content"])
+	})
 }
 
 // TestResolveProfile_OpencodeCarriesReasoningContentFlag verifies the

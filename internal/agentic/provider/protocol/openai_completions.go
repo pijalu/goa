@@ -267,13 +267,15 @@ func imagePathToDataURL(path string) string {
 func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat) map[string]any {
 	result := map[string]any{"role": "assistant"}
 	var textContent string
+	var thinking string
 	var toolCalls []map[string]any
 	for _, block := range msg.Content {
 		switch block.Type {
 		case schema.ContentBlockText:
 			textContent += block.Text
 		case schema.ContentBlockThinking:
-			result["reasoning_content"] = block.Thinking
+			// DeepSeek-style reasoning; emitted below on tool-call turns only.
+			thinking += block.Thinking
 		case schema.ContentBlockToolCall:
 			toolCalls = append(toolCalls, map[string]any{
 				"id":   block.ToolCallID,
@@ -292,13 +294,17 @@ func convertAssistantMessage(msg schema.Message, compat openAICompletionsCompat)
 		} else {
 			result["content"] = textContent
 		}
-	} else {
-		result["content"] = textContent
-	}
-	if compat.RequiresReasoningContentOnAssistantMessages {
-		if _, ok := result["reasoning_content"]; !ok {
+		// DeepSeek passback rule (dsh serialize.ts): reasoning_content must
+		// return on tool-call turns; it is ignored on plain turns, so drop it
+		// there to save tokens. The flag forces the key (empty when the turn
+		// carries no thinking) — the API 400s without it in thinking mode.
+		if thinking != "" {
+			result["reasoning_content"] = thinking
+		} else if compat.RequiresReasoningContentOnAssistantMessages {
 			result["reasoning_content"] = ""
 		}
+	} else {
+		result["content"] = textContent
 	}
 	return result
 }
