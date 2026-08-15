@@ -175,8 +175,10 @@ func TestCompact_MicroEnabled_DryRunDoesNotMutate(t *testing.T) {
 	if summaries != 1 {
 		t.Fatalf("expected 1 summarize, got %d", summaries)
 	}
-	if len(received) != 1 || received[0] != beforeLen { // history has no system message; summarize gets all of it
-		t.Fatalf("summarize did not run on original history: received %v (history len %d)", received, beforeLen)
+	// +1: history has no system message, so summarize gets all of it plus the
+	// instruction appended as the final user message (cache-warm, CA1).
+	if len(received) != 1 || received[0] != beforeLen+1 {
+		t.Fatalf("summarize did not run on original history: received %v (history len %d, want %d)", received, beforeLen, beforeLen+1)
 	}
 	// The summarized result replaced history; micro never truncated in place.
 	agent.mu.Lock()
@@ -239,8 +241,10 @@ func TestCompact_MicroEnabled_AppliedOnlyOnSummarizeOverflow(t *testing.T) {
 	if len(received) != 2 {
 		t.Fatalf("expected 2 summarize attempts (overflow + retry), got %v", received)
 	}
-	if received[0] != origLen {
-		t.Fatalf("first summarize should see original history (%d msgs), got %d", origLen, received[0])
+	// +1: the summarize instruction rides as the final user message after the
+	// replayed conversation prefix (cache-warm summarization, CA1).
+	if received[0] != origLen+1 {
+		t.Fatalf("first summarize should see original history + instruction (%d msgs), got %d", origLen+1, received[0])
 	}
 
 	// Micro compaction MUST have been applied for real between the attempts:

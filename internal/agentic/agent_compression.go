@@ -165,35 +165,44 @@ func (a *Agent) applyMicroLocked(cfg MicroCompactionConfig) compactionResult {
 	return compactionResult{changed: changed}
 }
 
+// summarizeInstruction is the final user message of the summarize request.
+// It rides AFTER the replayed conversation prefix (system prompt + tools +
+// history) rather than replacing the system prompt, so on prefix-caching
+// providers (DeepSeek context caching, Anthropic, ...) the auxiliary call is a
+// strict append of the last conversation request and the whole conversation
+// prefix is served from the warm cache instead of being re-billed at full
+// input price on the largest history of the session.
+const summarizeInstruction = "Summarize the conversation above concisely, preserving key facts, decisions, and context."
+
 func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
-	// Snapshot history under the mutex, then run the (network) summarization
-	// off-lock so a slow provider call does not block off-turn history readers.
-	a.mu.Lock()
-	snapshot := append([]Message(nil), a.history...)
-	a.mu.Unlock()
-
-	var msgs []Message
-	for _, m := range snapshot {
-		if m.Role != System {
-			msgs = append(msgs, m)
-		}
-	}
-
-	if len(msgs) == 0 {
-		return "", nil
-	}
-
-	// Diagnosability: elided tool calls in the snapshot used to reach the
+	// Diagnosability: elided tool calls in the history used to reach the
 	// provider verbatim and 400 the summarize request (invalid JSON
 	// function.arguments). migrateMessages now serializes them as text notes.
-	a.logElidedSnapshotCount(msgs)
-
-	// Use the stream-based path for summarization
-	pCtx := provider.Context{
-		Context:      ctx,
-		SystemPrompt: "Summarize the following conversation concisely, preserving key facts and context:",
-		Messages:     migrateMessages(msgs),
+	// Counted on the internal history because migration erases the marker.
+	a.mu.Lock()
+	elidedCount := countElidedToolCalls(a.history)
+	a.mu.Unlock()
+	if elidedCount > 0 && a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "summarizeHistory: snapshot carries %d elided tool-call block(s), serialized as text notes", elidedCount)
 	}
+
+	// Build the request from the SAME prefix the conversation turns use —
+	// cfg.SystemPrompt, registered tool schemas, and buildProviderHistory's
+	// migration (leading-system skip, elision notes, orphan-result pairing) —
+	// then append the instruction as the final user message. Prefix parity
+	// with conversation requests is by construction (one shared builder), the
+	// deepseek-harness compaction-basic design ("replays the conversation's
+	// own system prompt, tools, and shadowed-region messages verbatim").
+	pCtx := a.buildProviderContext(ctx)
+	if len(pCtx.Messages) == 0 {
+		return "", nil
+	}
+	pCtx.Messages = append(pCtx.Messages, provider.Message{
+		Role: provider.RoleUser,
+		Content: []provider.ContentBlock{
+			{Type: provider.ContentBlockText, Text: summarizeInstruction},
+		},
+	})
 
 	model := a.cfg.Model
 	opts := a.cfg.StreamOptions
@@ -221,6 +230,13 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 
 	if err := stream.Err(); err != nil {
 		return "", fmt.Errorf("summarization failed: %w", err)
+	}
+
+	// The request now carries tool schemas, so the model may answer the
+	// instruction with only a tool call and no text. An empty summary must
+	// fail here rather than let Compact wipe the history with blank content.
+	if strings.TrimSpace(summary.String()) == "" {
+		return "", fmt.Errorf("summarization produced no text (model may have answered with a tool call only)")
 	}
 
 	return summary.String(), nil
@@ -622,18 +638,6 @@ func elisionReclaim(msg *Message) int {
 		reclaim += estimateTokens(msg.Content) - estimateTokens(elidedToolResultContent)
 	}
 	return reclaim
-}
-
-// logElidedSnapshotCount logs how many elided tool-call blocks a
-// provider-bound snapshot carries, so future summarize-request rejections
-// are diagnosable from agent.log alone.
-func (a *Agent) logElidedSnapshotCount(msgs []Message) {
-	if a.cfg.Logger == nil {
-		return
-	}
-	if n := countElidedToolCalls(msgs); n > 0 {
-		a.cfg.Logger.Log(Info, "summarizeHistory: snapshot carries %d elided tool-call block(s), serialized as text notes", n)
-	}
 }
 
 func computeElisionBoundary(histLen, preserve int) int {

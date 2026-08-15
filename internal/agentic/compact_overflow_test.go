@@ -90,9 +90,11 @@ func TestCompact_SummarizesOriginalHistory(t *testing.T) {
 		t.Fatal("summarize was not called")
 	}
 	// No pre-shrink: the summarizer receives the FULL original (non-system)
-	// history — there is no system message stored in history here.
-	if received != origLen {
-		t.Fatalf("summarize should run on original history (%d msgs), got %d", origLen, received)
+	// history — there is no system message stored in history here. The +1 is
+	// the summarize instruction appended as the final user message after the
+	// replayed prefix (cache-warm summarization, CA1).
+	if received != origLen+1 {
+		t.Fatalf("summarize should run on original history + instruction (%d msgs), got %d", origLen+1, received)
 	}
 
 	// And the result is the valid [user, assistant] compact pair.

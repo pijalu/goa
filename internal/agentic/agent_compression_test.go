@@ -1081,3 +1081,128 @@ func TestMaybeCompress_ToolElision_CacheBustConvergence(t *testing.T) {
 		}
 	}
 }
+
+// --- Cache-warm compaction summarization (CA1) regression tests ---
+
+// prefixStubTool is a minimal tool registered only so the summarize request
+// must carry a tools array identical to the conversation request's.
+type prefixStubTool struct{ BaseTool }
+
+func (prefixStubTool) Schema() ToolSchema {
+	return ToolSchema{
+		Name:        "prefix_stub",
+		Description: "stub tool for prefix-parity tests",
+		Schema:      map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+func (prefixStubTool) Execute(input string) (string, error) { return "ok", nil }
+func (prefixStubTool) IsRetryable(err error) bool           { return false }
+
+// TestSummarizeHistoryReusesConversationPrefix is the CA1 regression: the
+// summarize request must reuse the warm provider prefix cache, so it must be
+// built as the conversation's OWN request prefix — same system prompt, same
+// tools, same migrated history — with the compaction instruction appended as
+// the final user message. The pre-fix shape swapped in a summarizer system
+// prompt and dropped tools, cold-missing the automatic prefix cache (DeepSeek
+// context caching) on the largest history of the session.
+func TestSummarizeHistoryReusesConversationPrefix(t *testing.T) {
+	p := &gateProbeProvider{
+		api:        provider.Api(fmt.Sprintf("summarize-prefix-probe-%d", testProviderCounter.Add(1))),
+		toolRounds: 0,
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		SystemPrompt: "You are helpful.",
+		Tools:        []Tool{prefixStubTool{}},
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens:           10000,
+			ThresholdPercent:    50,
+			Strategy:            CompressionToolElision,
+			PreserveRecentTurns: 1,
+		},
+	})
+	agent.cfg.Model = testModel(p.API())
+	agent.cfg.Logger = NewLogger(Error)
+	agent.SetHistory([]Message{
+		{Type: Content, Role: System, Content: "You are helpful."},
+		{Type: Content, Role: User, Content: "first question"},
+		{Type: Content, Role: Assistant, Content: "first answer"},
+		{Type: Content, Role: User, Content: "second question"},
+		{Type: Content, Role: Assistant, Content: "second answer"},
+	})
+
+	summary, err := agent.summarizeHistory(context.Background())
+	if err != nil {
+		t.Fatalf("summarizeHistory failed: %v", err)
+	}
+	if summary == "" {
+		t.Fatal("summarizeHistory returned an empty summary")
+	}
+
+	ctxs := p.recorded()
+	if len(ctxs) != 1 {
+		t.Fatalf("expected 1 summarize request, got %d", len(ctxs))
+	}
+	got := ctxs[0]
+
+	// 1. The conversation's own system prompt is the request prefix — not a
+	// swapped-in summarizer system prompt.
+	if got.SystemPrompt != agent.cfg.SystemPrompt {
+		t.Errorf("summarize request system prompt = %q, want the conversation system prompt %q (prefix-cache reuse)",
+			got.SystemPrompt, agent.cfg.SystemPrompt)
+	}
+
+	// 2. Tool schemas ride the request exactly as they do on conversation
+	// turns, keeping the cached prefix (system + tools + history) aligned.
+	conversation := agent.buildProviderContext(context.Background())
+	if len(got.Tools) != len(conversation.Tools) {
+		t.Errorf("summarize request carries %d tool schemas, conversation request carries %d",
+			len(got.Tools), len(conversation.Tools))
+	}
+
+	// 3. The message list is the conversation history (leading system prompt
+	// skipped, since it rides SystemPrompt) plus ONE appended user message
+	// carrying the summarize instruction.
+	if len(got.Messages) != len(conversation.Messages)+1 {
+		t.Fatalf("summarize request holds %d messages, want conversation history (%d) + 1 instruction",
+			len(got.Messages), len(conversation.Messages))
+	}
+	for i, m := range conversation.Messages {
+		if got.Messages[i].Role != m.Role || payloadTexts([]provider.Message{got.Messages[i]}) != payloadTexts([]provider.Message{m}) {
+			t.Errorf("message %d diverges from conversation prefix: got role=%v text=%q, want role=%v text=%q",
+				i, got.Messages[i].Role, payloadTexts([]provider.Message{got.Messages[i]}), m.Role, payloadTexts([]provider.Message{m}))
+		}
+	}
+	last := got.Messages[len(got.Messages)-1]
+	if last.Role != provider.RoleUser {
+		t.Errorf("instruction message role = %v, want user", last.Role)
+	}
+	if !strings.Contains(strings.ToLower(payloadTexts([]provider.Message{last})), "summar") {
+		t.Error("final message does not carry the summarize instruction")
+	}
+}
+
+// TestSummarizeHistoryEmptyOnToolOnlyReply guards the tools-bearing summarize
+// path: a model that answers the instruction with only a tool call (no text)
+// must yield an error instead of wiping the history with an empty summary.
+func TestSummarizeHistoryEmptyOnToolOnlyReply(t *testing.T) {
+	p := &gateProbeProvider{
+		api:        provider.Api(fmt.Sprintf("summarize-toolonly-probe-%d", testProviderCounter.Add(1))),
+		toolRounds: 99, // always answer with a tool call, never text
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := newElisionAgent()
+	agent.cfg.Model = testModel(p.API())
+	agent.cfg.Logger = NewLogger(Error)
+	agent.SetHistory([]Message{
+		{Type: Content, Role: User, Content: "q"},
+		{Type: Content, Role: Assistant, Content: "a"},
+	})
+
+	summary, err := agent.summarizeHistory(context.Background())
+	if err == nil {
+		t.Errorf("summarizeHistory returned %q with nil error for a text-less reply; want an error so Compact cannot wipe history", summary)
+	}
+}
