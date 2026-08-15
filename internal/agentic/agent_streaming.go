@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -513,21 +512,18 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	a.drainCacheMissNotices()
 }
 
-// toolListHashLocked returns a cheap fingerprint of the registered tool set
-// (sorted schema names) so cache-drop forensics can discriminate provider-side
-// partial eviction from request-shape changes: a tool-set re-registration
-// alters the provider request shape and busts the prefix cache exactly like
-// an in-place history mutation (round-17 anomaly). The caller must
-// hold a.mu (reads a.cfg.Tools, replaced under mu by SetTools).
+// toolListHashLocked returns a cheap fingerprint of the tool schemas actually
+// shipped with each request (the Schemas() view) so cache-drop forensics can
+// discriminate provider-side partial eviction from request-shape changes: a
+// deferred-tool load grows the loaded-tail and alters the provider request
+// shape exactly like a tool-set re-registration busts the prefix cache
+// (round-17 anomaly). Hashing the exposed view (rather than the full
+// registered set) makes the fingerprint track the real wire shape. The caller
+// must hold a.mu (reads a.reg, replaced under mu by SetTools).
 func (a *Agent) toolListHashLocked() uint32 {
-	names := make([]string, 0, len(a.cfg.Tools))
-	for _, t := range a.cfg.Tools {
-		names = append(names, t.Schema().Name)
-	}
-	sort.Strings(names)
 	h := fnv.New32a()
-	for _, n := range names {
-		h.Write([]byte(n))
+	for _, s := range a.reg.Schemas() {
+		h.Write([]byte(s.Name))
 		h.Write([]byte{0})
 	}
 	return h.Sum32()

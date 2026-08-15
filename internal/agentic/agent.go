@@ -203,12 +203,6 @@ type Agent struct {
 	// concurrent readers (e.g. effectiveMaxTokens) can read it without taking mu.
 	contextWindow atomic.Int64
 
-	// toolSchemaTokens caches the token cost of the registered tool schemas,
-	// computed once (the registry is stable for the agent's lifetime). Used by
-	// fixedCostTokens to include the per-turn fixed cost in context usage.
-	toolSchemaTokensOnce sync.Once
-	toolSchemaTokens     int
-
 	// thinkingStallStart records when the last thinking delta of the current
 	// thinking-only phase was received (zero value = not in a thinking-only
 	// phase). A stall is declared when NO thinking delta has arrived for

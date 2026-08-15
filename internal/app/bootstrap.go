@@ -532,6 +532,11 @@ func registerTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, sandbo
 		Redactor:            secrets.DefaultRedactor(),
 	})
 	registerOptionalTools(reg, wm, projectDir, cfg, bgMgr, changeTracker, headless)
+	// P1 deferred-tool loader: a tiny schema whose description embeds the
+	// compact catalog of deferred tools. Registered last so its catalog sees
+	// the full deferred set; the model pulls deferred schemas on demand
+	// instead of shipping every schema with every request.
+	reg.Register(tools.NewToolSearchTool(reg))
 	mcpMgr := registerMCPServers(reg, projectDir, cfg)
 	return lspMgr, mcpMgr
 }

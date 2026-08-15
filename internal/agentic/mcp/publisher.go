@@ -20,8 +20,11 @@ type MCPToolPublisher struct {
 func NewMCPToolPublisher(registry *agentic.ToolRegistry) *MCPToolPublisher {
 	server := NewMCPServer(nil)
 
-	// Register all tools from the registry
-	schemas := registry.Schemas()
+	// Register all tools from the registry. AllSchemas() (not the partitioned
+	// Schemas() view) so the MCP surface exposes goa's complete tool set
+	// regardless of which schemas the LLM request currently ships (P1
+	// deferred loading).
+	schemas := registry.AllSchemas()
 	for _, schema := range schemas {
 		tool, ok := registry.Get(schema.Name)
 		if !ok {

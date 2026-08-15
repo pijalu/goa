@@ -31,6 +31,9 @@ type ToolCallResult struct {
 	Output   string
 	Err      error
 	StopTurn bool
+	// Meta carries out-of-band control data from the tool's ToolResult.
+	// tool_search sets Meta[MetaLoadTools] to request deferred-tool loads.
+	Meta map[string]string
 }
 
 // defaultMaxParallel caps how many tool calls run at once when the caller has
@@ -200,6 +203,7 @@ func (s *ToolScheduler) start(st *scheduledTask) {
 				Output:   result.Output,
 				Err:      result.Error,
 				StopTurn: result.StopTurn,
+				Meta:     result.Meta,
 			}
 			close(st.done)
 		})

@@ -25,7 +25,17 @@ type ToolResult struct {
 	// Used by goal tools: non-active statuses stop the turn so the
 	// model's summary response comes immediately.
 	StopTurn bool
+	// Meta carries out-of-band control data from the tool to the agent loop.
+	// Keys are tool-defined. The deferred-tool loader (tool_search) sets
+	// Meta[MetaLoadTools] to the comma-separated deferred tool names that
+	// should be exposed on the next stream round.
+	Meta map[string]string
 }
+
+// MetaLoadTools is the ToolResult.Meta key set by the tool_search loader to
+// request that the named deferred tools be exposed (appended to the
+// loaded-tail) on the next stream round.
+const MetaLoadTools = "load_tools"
 
 // Tool is the interface implemented by tools that can be used by an Agent.
 // Each tool must provide a schema for LLM discovery and an Execute method
@@ -71,6 +81,28 @@ type ContextTool interface {
 type ContextResultTool interface {
 	Tool
 	ExecuteContextWithResult(ctx context.Context, input string) (ToolResult, error)
+}
+
+// Deferred is an optional interface a Tool may implement to declare that its
+// schema should be withheld from the per-request eager block and exposed only
+// through the deferred-tool loader (tool_search). A deferred tool remains
+// registered and executable once the model pulls it via tool_search; before
+// that, calls are rejected with a clear redirect error.
+type Deferred interface {
+	Tool
+	// Deferred reports whether this tool's schema should be withheld from
+	// the eager block until the model loads it via tool_search.
+	Deferred() bool
+}
+
+// DeferredToolLoader is an optional interface a Tool may implement to serve as
+// the deferred-tool loader (tool_search). The registry keeps the loader in the
+// eager block and only activates deferral when a loader is part of the exposed
+// tool set, so withheld tools always remain loadable.
+type DeferredToolLoader interface {
+	Tool
+	// IsDeferredToolLoader identifies this tool as the deferred-tool loader.
+	IsDeferredToolLoader() bool
 }
 
 // BaseTool provides a default IsRetryable implementation that returns false.

@@ -438,6 +438,12 @@ func (a *Agent) runTool(ctx context.Context, name, input string) (ToolResult, er
 	if err := a.confirmToolIfNeeded(ctx, name, input); err != nil {
 		return ToolResult{}, err
 	}
+	// Deferred-tool gate (P1): a deferred tool that has not yet been loaded
+	// via tool_search is unreachable. Reject with a clear redirect instead of
+	// a generic "unknown tool" so the model learns to load it first.
+	if loader, unloaded := a.reg.DeferredStatus(name); unloaded {
+		return ToolResult{}, fmt.Errorf("tool %q is deferred and not yet loaded: call %s with query %q to load it first", name, loader, "select:"+name)
+	}
 	tool, ok := a.reg.Get(name)
 	if !ok {
 		return ToolResult{}, fmt.Errorf("unknown tool: %s", name)

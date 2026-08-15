@@ -454,6 +454,9 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 
 	a.appendAssistantToolCallMessage(tcs)
 	realResults := a.scheduleAndRunToolCalls(ctx, tcs)
+	// P1 deferred loading: a tool_search result carries Meta["load_tools"] —
+	// expose those tools on the next stream round (append-only loaded-tail).
+	a.applyToolLoadRequests(realResults)
 	// Fold each real execution outcome into loop detection: successful
 	// state-mutating calls bump the state epoch (resetting the repeat horizon
 	// for the NEXT round), and consecutive same-tool failures feed the
@@ -494,4 +497,30 @@ func (a *Agent) executeBufferedToolCalls(ctx context.Context) bool {
 		}
 	}
 	return true
+}
+
+// applyToolLoadRequests reads Meta[MetaLoadTools] from executed tool results
+// and exposes the requested deferred tools on the next stream round. The
+// tool_search loader sets that key to the comma-separated names of deferred
+// tools the model selected; loading is append-only, so the eager block stays
+// byte-stable and only the loaded-tail grows.
+func (a *Agent) applyToolLoadRequests(results []ToolCallResult) {
+	var names []string
+	for _, r := range results {
+		if r.Err != nil {
+			continue
+		}
+		v, ok := r.Meta[MetaLoadTools]
+		if !ok {
+			continue
+		}
+		for _, n := range strings.Split(v, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	if len(names) > 0 {
+		a.reg.LoadDeferred(names)
+	}
 }
