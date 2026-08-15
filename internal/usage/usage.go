@@ -201,6 +201,44 @@ func (s *Store) Sum(project string, since time.Time) (Stat, error) {
 	return st, err
 }
 
+// Rows returns raw usage events (one per completion) ordered by insertion
+// (chronological), oldest first, for an optional project/time filter. limit
+// > 0 keeps only the most recent limit events. Unlike Query/Sum this does no
+// aggregation — the /stats:cache evolution view needs the per-completion
+// time series to chart cache hit-rate movement and to locate drops.
+func (s *Store) Rows(project string, since time.Time, limit int) ([]Record, error) {
+	where, args := usageWhere(project, since)
+	q := `SELECT project, provider, model, prompt, predicted, cache_read, cache_write, created_at
+		FROM usage_events` + where + ` ORDER BY id ASC`
+	if limit > 0 {
+		// Keep the NEWEST limit rows: pick DESC with LIMIT, then re-order
+		// chronologically. created_at second-granularity ties are possible
+		// within one second — acceptable for chart bucketing.
+		q = `SELECT project, provider, model, prompt, predicted, cache_read, cache_write, created_at
+			FROM (
+				SELECT project, provider, model, prompt, predicted, cache_read, cache_write, created_at
+				FROM usage_events` + where + ` ORDER BY id DESC LIMIT ?
+			) ORDER BY created_at ASC`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Record
+	for rows.Next() {
+		var r Record
+		var at int64
+		if err := rows.Scan(&r.Project, &r.Provider, &r.Model, &r.PromptN, &r.PredictedN, &r.CacheRead, &r.CacheWrite, &at); err != nil {
+			return nil, err
+		}
+		r.At = time.Unix(at, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // usageWhere builds the WHERE clause shared by all aggregations: an optional
 // project equality filter and an optional created_at lower bound.
 func usageWhere(project string, since time.Time) (string, []any) {

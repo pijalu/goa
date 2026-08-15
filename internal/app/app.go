@@ -114,10 +114,11 @@ type App struct {
 	// session-stats record). Guarded by statsMu like the counters above.
 	compactions []CompactionRound
 
-	// Previous cache hit percentage for cache-hit evolution tracking.
-	// Used to color the CH% footer stat based on whether the cache hit rate
-	// is growing, dropping, or stable.
-	prevCacheHitPct float64
+	// Cache hit rate trends for the footer CH% stat: the cumulative
+	// session rate and the last completion's rate, each with its previous
+	// value for evolution coloring (growing/stable/dropping).
+	cacheHit     CacheHitTrend
+	lastCacheHit CacheHitTrend
 
 	// Status tracking for granular footer/status messages.
 	toolResultsSeen      int

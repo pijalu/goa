@@ -213,7 +213,8 @@ func TestHandleTokenStats_CacheMissFreshContextReset(t *testing.T) {
 // TestBuildFooterStatParts_CacheMiss verifies CM renders next to CH only
 // when non-zero.
 func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
-	base := sessionStats{CacheReadTotal: 900, CacheWriteTotal: 100, PromptN: 100}
+	base := sessionStats{CacheReadTotal: 900, CacheWriteTotal: 100, PromptN: 100,
+		CacheHit: cacheHitTrendFromTotals(900, 100, 100)}
 
 	withMisses := base
 	withMisses.CacheMisses = 3

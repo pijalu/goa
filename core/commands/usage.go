@@ -45,6 +45,7 @@ type usageStore interface {
 	Sum(project string, since time.Time) (usage.Stat, error)
 	Busts(project string, since time.Time) (int, error)
 	DailyCounts(project string, days int) ([]usage.DayCount, error)
+	Rows(project string, since time.Time, limit int) ([]usage.Record, error)
 	Close() error
 }
 

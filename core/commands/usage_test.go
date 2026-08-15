@@ -19,6 +19,7 @@ type fakeUsageStore struct {
 	sum       usage.Stat
 	busts     int
 	daily     []usage.DayCount
+	rows      []usage.Record
 	lastSince time.Time
 }
 
@@ -35,6 +36,10 @@ func (f *fakeUsageStore) Busts(project string, since time.Time) (int, error) {
 }
 func (f *fakeUsageStore) DailyCounts(project string, days int) ([]usage.DayCount, error) {
 	return f.daily, nil
+}
+
+func (f *fakeUsageStore) Rows(project string, since time.Time, limit int) ([]usage.Record, error) {
+	return f.rows, nil
 }
 func (f *fakeUsageStore) Close() error { return nil }
 

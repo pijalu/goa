@@ -121,6 +121,7 @@ func formatOrchAgentLine(r orchpanel.AgentEnhancedRow) string {
 		PredictedN:      r.TokensOut,
 		CacheReadTotal:  r.CacheRead,
 		CacheWriteTotal: r.CacheCreation,
+		CacheHit:        cacheHitTrendFromTotals(r.CacheRead, r.CacheCreation, r.TokensIn),
 		ToolCalls:       r.ToolCalls,
 		ContextEstimate: r.ContextEstimate,
 		ContextMax:      r.ContextMax,

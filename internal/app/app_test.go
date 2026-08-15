@@ -14,6 +14,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/provider"
@@ -738,6 +739,7 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PredictedN:      500,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
+		CacheHit:        CacheHitTrend{Pct: 60, Seen: true},
 		ContextEstimate: 2000,
 		ContextMax:      10000,
 	})
@@ -750,6 +752,7 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 		PromptN:         0,
 		CacheReadTotal:  300,
 		CacheWriteTotal: 200,
+		CacheHit:        CacheHitTrend{Pct: 60, Seen: true},
 	})
 	if !strings.Contains(noPrompt, "CH60.0%") {
 		t.Errorf("expected cache hit 60%% when PromptN is 0, got %q", noPrompt)
@@ -761,6 +764,58 @@ func TestFormatFooterStats_CacheHitPercentage(t *testing.T) {
 	})
 	if strings.Contains(noCache, "CH") {
 		t.Errorf("expected no cache hit display when no cache ops, got %q", noCache)
+	}
+}
+
+// TestFormatFooterStats_LastCacheHit covers the pi-style per-completion rate:
+// shown as ▸x.x% next to the cumulative CH only when the last completion had
+// cache activity.
+func TestFormatFooterStats_LastCacheHit(t *testing.T) {
+	withLast := formatFooterStats(sessionStats{
+		CacheHit:     CacheHitTrend{Pct: 87.3, Seen: true},
+		LastCacheHit: CacheHitTrend{Pct: 41.9, Seen: true},
+	})
+	if !strings.Contains(withLast, "CH87.3%") || !strings.Contains(withLast, "▸41.9%") {
+		t.Errorf("expected cumulative + per-completion rates, got %q", withLast)
+	}
+	// No per-completion observation → no ▸ part.
+	noLast := formatFooterStats(sessionStats{
+		CacheHit: CacheHitTrend{Pct: 87.3, Seen: true},
+	})
+	if strings.Contains(noLast, "▸") {
+		t.Errorf("expected no per-completion rate without observation, got %q", noLast)
+	}
+}
+
+// TestFormatCacheHitPart_Colors locks the CH evolution coloring:
+// bold green growing / green stable or slight grow / orange slight drop
+// (<5pts) / red drop (>=5pts); first observation (no baseline) is green.
+func TestFormatCacheHitPart_Colors(t *testing.T) {
+	const (
+		green  = "\x1b[38;2;63;185;80m"  // ansi.Fg("#3fb950")
+		orange = "\x1b[38;2;210;153;34m" // ansi.Fg("#d29922")
+		red    = "\x1b[38;2;248;81;73m"  // ansi.Fg("#f85149")
+	)
+	cases := []struct {
+		name string
+		tr   CacheHitTrend
+		want string // SGR prefix
+	}{
+		{"first observation is stable green", CacheHitTrend{Pct: 50, Seen: true}, green},
+		{"growing is bold green", CacheHitTrend{Pct: 52, PrevPct: 50, Seen: true, HasPrev: true}, ansi.Bold + green},
+		{"stable is green", CacheHitTrend{Pct: 50, PrevPct: 50, Seen: true, HasPrev: true}, green},
+		{"slight grow is green", CacheHitTrend{Pct: 50.5, PrevPct: 50, Seen: true, HasPrev: true}, green},
+		{"slight drop <5pts is orange", CacheHitTrend{Pct: 47, PrevPct: 50, Seen: true, HasPrev: true}, orange},
+		{"drop of exactly 5pts is red", CacheHitTrend{Pct: 45, PrevPct: 50, Seen: true, HasPrev: true}, red},
+		{"drop >5pts is red", CacheHitTrend{Pct: 10, PrevPct: 50, Seen: true, HasPrev: true}, red},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatCacheHitPart(tc.tr)
+			if !strings.HasPrefix(got, tc.want) {
+				t.Errorf("formatCacheHitPart(%+v) = %q, want prefix %q", tc.tr, got, tc.want)
+			}
+		})
 	}
 }
 
