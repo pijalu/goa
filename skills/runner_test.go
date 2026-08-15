@@ -237,3 +237,84 @@ func TestStripSkillNoise(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillRunnerToolSchema_ModelInvocableEnum is the P16 acceptance for the
+// model's tool schema: a user_invocable:false skill never appears in the
+// run_skill catalog (the enum the model sees), and neither does a
+// model_invocable:false skill. Fully-invocable skills are listed.
+func TestSkillRunnerToolSchema_ModelInvocableEnum(t *testing.T) {
+	dir := t.TempDir()
+	writeRunnerTestSkillWithPolicy(t, dir, "plain", "")
+	writeRunnerTestSkillWithPolicy(t, dir, "model-off", "model_invocable: false")
+	writeRunnerTestSkillWithPolicy(t, dir, "user-off", "user_invocable: false")
+	writeRunnerTestSkillWithPolicy(t, dir, "both-off", "model_invocable: false\nuser_invocable: false")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+	tool := NewSkillRunnerTool(reg, nil, nil, true)
+
+	schema := tool.Schema()
+	props, _ := schema.Schema["properties"].(map[string]any)
+	skillProp, _ := props["skill_name"].(map[string]any)
+	enum, _ := skillProp["enum"].([]string)
+
+	got := map[string]bool{}
+	for _, name := range enum {
+		got[name] = true
+	}
+	if !got["plain"] {
+		t.Errorf("plain skill missing from run_skill enum: %v", enum)
+	}
+	if got["model-off"] {
+		t.Errorf("model_invocable:false skill must never appear in the model's tool schema: %v", enum)
+	}
+	if got["user-off"] {
+		t.Errorf("user_invocable:false skill must never appear in the model's tool schema: %v", enum)
+	}
+	if got["both-off"] {
+		t.Errorf("model+user non-invocable skill must never appear in the model's tool schema: %v", enum)
+	}
+}
+
+// TestSkillRunnerTool_ModelNonInvocableStillExecutes is the P16 acceptance
+// "model_invocable:false still runs from the UI": the run_skill tool (used by
+// the user via /skill:run) executes a model_invocable:false skill normally —
+// the policy gates the catalog, not trusted internal execution.
+func TestSkillRunnerTool_ModelNonInvocableStillExecutes(t *testing.T) {
+	dir := t.TempDir()
+	writeRunnerTestSkillWithPolicy(t, dir, "model-off", "model_invocable: false")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+	tool := NewSkillRunnerTool(reg, nil, nil, true)
+
+	out, err := tool.Execute(`{"skill_name":"model-off","task":"do it"}`)
+	if err != nil {
+		t.Fatalf("Execute must run a model_invocable:false skill from the UI path: %v", err)
+	}
+	if !strings.Contains(out, "# Skill: model-off") {
+		t.Errorf("expected skill execution output, got:\n%s", out)
+	}
+}
+
+// writeRunnerTestSkillWithPolicy creates a SKILL.md with an extra frontmatter
+// policy block (empty = default policy) under dir/<name>/.
+func writeRunnerTestSkillWithPolicy(t *testing.T, dir, name, policy string) {
+	t.Helper()
+	skillRoot := filepath.Join(dir, name)
+	if err := os.MkdirAll(skillRoot, 0755); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	fm := "name: " + name + "\ndescription: test skill\ncategory: action"
+	if policy != "" {
+		fm += "\n" + policy
+	}
+	content := "---\n" + fm + "\n---\nbody for " + name
+	if err := os.WriteFile(filepath.Join(skillRoot, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+}

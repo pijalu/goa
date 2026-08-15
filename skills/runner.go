@@ -46,8 +46,20 @@ func NewSkillRunnerTool(registry *SkillRegistry, pool *multiagent.AgentPool, ren
 	}
 }
 
-// Schema returns the tool schema for run_skill.
+// Schema returns the tool schema for run_skill. The skill_name enum is the
+// run_skill tool catalog: it lists only model-invocable skills (P16). A
+// skill with model_invocable:false, or user_invocable:false (which per the
+// P16 acceptance never appears in the model's tool schema), is excluded even
+// though the user can still run it from the UI.
 func (t *SkillRunnerTool) Schema() agentic.ToolSchema {
+	enum := make([]string, 0)
+	if t.Registry != nil {
+		for _, s := range t.Registry.List() {
+			if s.IsModelInvocable() {
+				enum = append(enum, s.Name)
+			}
+		}
+	}
 	return agentic.ToolSchema{
 		Name:        "run_skill",
 		Description: "Execute a skill with a specific task. Skills provide specialized capabilities like refactoring, test generation, documentation, and more.",
@@ -57,6 +69,7 @@ func (t *SkillRunnerTool) Schema() agentic.ToolSchema {
 				"skill_name": map[string]any{
 					"type":        "string",
 					"description": "Name of the skill to execute (e.g., refactor, test-gen, document, review, explain)",
+					"enum":        enum,
 				},
 				"task": map[string]any{
 					"type":        "string",

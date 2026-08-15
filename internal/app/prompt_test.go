@@ -592,3 +592,35 @@ func TestBuildSelfDocSection_GeneratedFromEmbeddedDocs(t *testing.T) {
 		t.Errorf("missing read-tool guidance:\n%s", section)
 	}
 }
+
+// TestAvailableSkillsSection_FiltersModelInvocable is the P16 acceptance for
+// the model-facing <available_skills> section: a user_invocable:false skill
+// never appears in what the model sees, and neither does a
+// model_invocable:false skill.
+func TestAvailableSkillsSection_FiltersModelInvocable(t *testing.T) {
+	dir := t.TempDir()
+	writeTestSkill(t, dir, "plain", "name: plain\ndescription: Plain\ncategory: action")
+	writeTestSkill(t, dir, "model-off", "name: model-off\ndescription: Model off\ncategory: action\nmodel_invocable: false")
+	writeTestSkill(t, dir, "user-off", "name: user-off\ndescription: User off\ncategory: action\nuser_invocable: false")
+
+	skillReg := skills.NewSkillRegistry([]string{filepath.Join(dir, ".goa", "skills")})
+	if err := skillReg.LoadAll(); err != nil {
+		t.Fatalf("load skills: %v", err)
+	}
+
+	subs := newTestSubsystems(dir)
+	subs.skillRegistry = skillReg
+	subs.toolRegistry = tools.NewToolRegistry()
+	subs.toolRegistry.Register(&mockTool{name: "run_skill"})
+
+	got := availableSkillsSection(subs)
+	if !strings.Contains(got, "plain") {
+		t.Errorf("plain skill should be advertised to the model:\n%s", got)
+	}
+	if strings.Contains(got, "model-off") {
+		t.Errorf("model_invocable:false skill must not be advertised to the model:\n%s", got)
+	}
+	if strings.Contains(got, "user-off") {
+		t.Errorf("user_invocable:false skill must never appear in the model's tool schema:\n%s", got)
+	}
+}

@@ -267,6 +267,10 @@ func (f *fakeSkillRegistry) List() []skills.SkillSummary {
 			Category:    s.Meta.Category,
 			Sticky:      s.IsSticky(),
 			Source:      s.Source,
+			// Invocation policy mirrors the loaded skill; test fixtures
+			// default both to true via testSkill.
+			ModelInvocable: s.Meta.ModelInvocable,
+			UserInvocable:  s.Meta.UserInvocable,
 		})
 	}
 	return out

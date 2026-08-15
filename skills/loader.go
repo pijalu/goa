@@ -43,6 +43,25 @@ type SkillMeta struct {
 	// requiring explicit /skill:run activation. Restricted to
 	// knowledge-category skills — sticky action skills are ignored.
 	Sticky bool `yaml:"sticky"`
+	// ModelInvocable reports whether the skill may be invoked by the model
+	// through the run_skill tool catalog / <available_skills> listing.
+	// Defaults to true when omitted.
+	ModelInvocable bool `yaml:"model_invocable"`
+	// UserInvocable reports whether the skill may be invoked by the user from
+	// the TUI skill menu (/skills). Defaults to true when omitted.
+	UserInvocable bool `yaml:"user_invocable"`
+}
+
+// UnmarshalYAML defaults the invocation policy to fully invocable when the
+// frontmatter omits either flag: a bare bool zero value would otherwise mean
+// "not invocable" for every skill without an explicit policy. Explicit
+// `model_invocable: false` / `user_invocable: false` still win after the
+// defaults are set.
+func (m *SkillMeta) UnmarshalYAML(value *yaml.Node) error {
+	m.ModelInvocable = true
+	m.UserInvocable = true
+	type rawSkillMeta SkillMeta
+	return value.Decode((*rawSkillMeta)(m))
 }
 
 // Skill represents a fully loaded skill with metadata and instructions.
@@ -87,6 +106,22 @@ func (r *SkillRegistry) IsInline(name string) bool {
 // error and reports false.
 func (s *Skill) IsSticky() bool {
 	return s.Meta.Sticky && s.Meta.Category != SkillCategoryAction && !s.Meta.Hidden
+}
+
+// IsModelInvocable reports whether the skill may be invoked by the model via
+// the run_skill tool catalog / <available_skills> listing. The model-facing
+// predicate requires BOTH flags (P16): a skill the user cannot invoke is
+// never advertised to the model, so the model catalog is always a subset of
+// what the user can run from the UI.
+func (s *Skill) IsModelInvocable() bool {
+	return s.Meta.ModelInvocable && s.Meta.UserInvocable
+}
+
+// IsUserInvocable reports whether the skill may be invoked by the user from
+// the TUI skill menu (/skills). A model_invocable:false skill remains
+// user-invocable and still runs from the UI (P16 acceptance).
+func (s *Skill) IsUserInvocable() bool {
+	return s.Meta.UserInvocable
 }
 
 // StickySkills returns all sticky knowledge skills, sorted by name for
@@ -160,6 +195,25 @@ type SkillSummary struct {
 	// Source is the origin of the skill: "embedded" for compiled-in skills,
 	// "file" for skills loaded from a directory (home/project/plugin dirs).
 	Source string
+	// ModelInvocable / UserInvocable mirror the frontmatter invocation
+	// policy (P16), both defaulting to true. Consumers filter by the
+	// predicate matching their surface: model-facing catalogs use
+	// IsModelInvocable, the user-facing TUI menu uses IsUserInvocable.
+	ModelInvocable bool
+	UserInvocable  bool
+}
+
+// IsModelInvocable reports whether the skill may be advertised to the model.
+// The model-facing predicate requires BOTH flags (P16 acceptance): a skill
+// the user cannot invoke never appears in the model's tool schema.
+func (s SkillSummary) IsModelInvocable() bool {
+	return s.ModelInvocable && s.UserInvocable
+}
+
+// IsUserInvocable reports whether the skill may appear in the user-facing
+// TUI skill menu. model_invocable:false skills remain user-invocable.
+func (s SkillSummary) IsUserInvocable() bool {
+	return s.UserInvocable
 }
 
 const (
@@ -611,6 +665,10 @@ func (r *SkillRegistry) ListEmbeddedDiscoverable() []SkillSummary {
 				Category:    categoryOrDefault(skill.Meta.Category),
 				FilePath:    skill.FilePath,
 				Source:      "embedded",
+				// Invocation policy defaults are applied by parseSkill's
+				// SkillMeta.UnmarshalYAML (both true when omitted).
+				ModelInvocable: skill.Meta.ModelInvocable,
+				UserInvocable:  skill.Meta.UserInvocable,
 			})
 		}
 		return nil
@@ -709,6 +767,8 @@ func (r *SkillRegistry) List() []SkillSummary {
 			RequiresSubAgent: r.hasAnySubSkill(s.Meta.Name),
 			Sticky:           s.IsSticky(),
 			Source:           s.Source,
+			ModelInvocable:   s.Meta.ModelInvocable,
+			UserInvocable:    s.Meta.UserInvocable,
 		})
 	}
 	return summaries

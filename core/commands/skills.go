@@ -114,8 +114,12 @@ func skillNameCompletionsFromNames(subcmd, searchPrefix string, names []string, 
 }
 
 // skillNameCompletions proposes skill names matching the search prefix.
+// run/show are user-invocation surfaces (P16): skills the user cannot invoke
+// (user_invocable:false) are not proposed.
 func skillNameCompletions(subcmd, searchPrefix string, reg core.SkillRegistry) []core.ArgCompletion {
-	return skillNameCompletionsFiltered(subcmd, searchPrefix, reg, nil)
+	return skillNameCompletionsFiltered(subcmd, searchPrefix, reg, func(s skills.SkillSummary) bool {
+		return s.IsUserInvocable()
+	})
 }
 
 // skillNameCompletionsFiltered proposes skill names matching the search prefix
@@ -271,6 +275,10 @@ func listSkills(ctx core.Context, reg core.SkillRegistry) error {
 	if ctx.Config != nil && ctx.Config.Skills.ExecutionMode == config.AgenticSkillModeInline {
 		summaries = filterSkillsForMode(summaries, true)
 	}
+	// The TUI skill menu is the user-facing surface (P16): skills the user
+	// cannot invoke (user_invocable:false) are hidden, while
+	// model_invocable:false skills still appear and run from here.
+	summaries = filterUserInvocable(summaries)
 	if len(summaries) > 0 {
 		writeStr(w, "# Skills\n\n")
 		for _, s := range summaries {
@@ -317,6 +325,19 @@ func filterSkillsForMode(summaries []skills.SkillSummary, inlineMode bool) []ski
 	filtered := make([]skills.SkillSummary, 0, len(summaries))
 	for _, s := range summaries {
 		if !s.RequiresSubAgent {
+			filtered = append(filtered, s)
+		}
+	}
+	return filtered
+}
+
+// filterUserInvocable returns only the skills the user may invoke from the
+// TUI skill menu (P16). A model_invocable:false skill stays in the list —
+// the model flag gates only the model-facing catalog.
+func filterUserInvocable(summaries []skills.SkillSummary) []skills.SkillSummary {
+	filtered := make([]skills.SkillSummary, 0, len(summaries))
+	for _, s := range summaries {
+		if s.IsUserInvocable() {
 			filtered = append(filtered, s)
 		}
 	}
@@ -533,12 +554,18 @@ func (c *SkillShortcutCommand) Run(ctx core.Context, args []string) error {
 }
 
 // RegisterSkillShortcuts registers dedicated /<command> shortcuts for skills
-// that define a "command:" field in their frontmatter.
+// that define a "command:" field in their frontmatter. Shortcuts are a
+// user-facing invocation surface (P16): a user_invocable:false skill is not
+// given a slash command, even though trusted internal callers can still load
+// it by name via the registry.
 func RegisterSkillShortcuts(registry *core.CommandRegistry, skillReg *skills.SkillRegistry) []string {
 	var warnings []string
 	for _, s := range skillReg.List() {
 		skill, ok := skillReg.Get(s.Name)
 		if !ok || skill.Meta.Command == "" {
+			continue
+		}
+		if !s.IsUserInvocable() {
 			continue
 		}
 		cmd := &SkillShortcutCommand{Skill: skill}

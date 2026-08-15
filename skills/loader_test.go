@@ -678,3 +678,119 @@ func TestSkillRegistryStickyBodies(t *testing.T) {
 		t.Errorf("StickyBodies not byte-stable across calls")
 	}
 }
+
+// TestParseSkillInvocationPolicy covers the P16 frontmatter policy:
+// model_invocable / user_invocable default to true when omitted, and
+// explicit false values are honored.
+func TestParseSkillInvocationPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		frontmatter string
+		wantModel   bool
+		wantUser    bool
+	}{
+		{name: "defaults both true", frontmatter: "name: s\ndescription: d", wantModel: true, wantUser: true},
+		{name: "model only false", frontmatter: "name: s\ndescription: d\nmodel_invocable: false", wantModel: false, wantUser: true},
+		{name: "user only false", frontmatter: "name: s\ndescription: d\nuser_invocable: false", wantModel: true, wantUser: false},
+		{name: "both false", frontmatter: "name: s\ndescription: d\nmodel_invocable: false\nuser_invocable: false", wantModel: false, wantUser: false},
+		{name: "explicit true", frontmatter: "name: s\ndescription: d\nmodel_invocable: true\nuser_invocable: true", wantModel: true, wantUser: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "---\n" + tt.frontmatter + "\n---\n\nbody"
+			skill := parseSkill("s", content, "embedded", "skills/s/SKILL.md")
+			if skill == nil {
+				t.Fatal("parseSkill returned nil")
+			}
+			if skill.Meta.ModelInvocable != tt.wantModel {
+				t.Errorf("ModelInvocable = %v, want %v", skill.Meta.ModelInvocable, tt.wantModel)
+			}
+			if skill.Meta.UserInvocable != tt.wantUser {
+				t.Errorf("UserInvocable = %v, want %v", skill.Meta.UserInvocable, tt.wantUser)
+			}
+			if skill.IsModelInvocable() != (tt.wantModel && tt.wantUser) {
+				t.Errorf("IsModelInvocable = %v, want %v (model predicate must require both flags)", skill.IsModelInvocable(), tt.wantModel && tt.wantUser)
+			}
+			if skill.IsUserInvocable() != tt.wantUser {
+				t.Errorf("IsUserInvocable = %v, want %v", skill.IsUserInvocable(), tt.wantUser)
+			}
+		})
+	}
+}
+
+// TestSkillInvocationPolicyPredicates verifies the surface predicates on
+// SkillSummary: IsModelInvocable requires BOTH flags (P16 acceptance — a
+// user_invocable:false skill never appears in the model's tool schema),
+// while IsUserInvocable reads only the user flag (model_invocable:false
+// skills still run from the UI).
+func TestSkillInvocationPolicyPredicates(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     bool
+		user      bool
+		wantModel bool
+		wantUser  bool
+	}{
+		{name: "both true", model: true, user: true, wantModel: true, wantUser: true},
+		{name: "model false user true", model: false, user: true, wantModel: false, wantUser: true},
+		{name: "model true user false", model: true, user: false, wantModel: false, wantUser: false},
+		{name: "both false", model: false, user: false, wantModel: false, wantUser: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := SkillSummary{ModelInvocable: tt.model, UserInvocable: tt.user}
+			if got := s.IsModelInvocable(); got != tt.wantModel {
+				t.Errorf("IsModelInvocable = %v, want %v", got, tt.wantModel)
+			}
+			if got := s.IsUserInvocable(); got != tt.wantUser {
+				t.Errorf("IsUserInvocable = %v, want %v", got, tt.wantUser)
+			}
+		})
+	}
+}
+
+// TestSkillRegistryListCarriesInvocationPolicy verifies List() surfaces the
+// parsed policy on summaries so model/user consumers can filter.
+func TestSkillRegistryListCarriesInvocationPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeInvPolicySkill(t, dir, "plain", "name: plain\ndescription: P")
+	writeInvPolicySkill(t, dir, "model-off", "name: model-off\ndescription: M\nmodel_invocable: false")
+	writeInvPolicySkill(t, dir, "user-off", "name: user-off\ndescription: U\nuser_invocable: false")
+
+	reg := NewSkillRegistry([]string{dir})
+	if err := reg.LoadAll(); err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got := map[string]SkillSummary{}
+	for _, s := range reg.List() {
+		got[s.Name] = s
+	}
+	if !got["plain"].IsModelInvocable() || !got["plain"].IsUserInvocable() {
+		t.Errorf("plain skill should be fully invocable: %+v", got["plain"])
+	}
+	if got["model-off"].IsModelInvocable() {
+		t.Errorf("model-off skill must not be model-invocable: %+v", got["model-off"])
+	}
+	if !got["model-off"].IsUserInvocable() {
+		t.Errorf("model-off skill must remain user-invocable: %+v", got["model-off"])
+	}
+	if got["user-off"].IsUserInvocable() {
+		t.Errorf("user-off skill must not be user-invocable: %+v", got["user-off"])
+	}
+	if got["user-off"].IsModelInvocable() {
+		t.Errorf("user-off skill must not be model-invocable (P16 acceptance): %+v", got["user-off"])
+	}
+}
+
+// writeInvPolicySkill creates a SKILL.md under dir/<name>/.
+func writeInvPolicySkill(t *testing.T, dir, name, frontmatter string) {
+	t.Helper()
+	sd := filepath.Join(dir, name)
+	if err := os.MkdirAll(sd, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "---\n" + frontmatter + "\n---\n\nbody"
+	if err := os.WriteFile(filepath.Join(sd, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}

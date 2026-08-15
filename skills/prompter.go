@@ -25,6 +25,10 @@ func ToSkillSummaries(skills []*Skill) []SkillSummary {
 			FilePath:    s.FilePath,
 			Inline:      s.Meta.Inline,
 			Category:    categoryOrDefault(s.Meta.Category),
+			// Invocation policy defaults are applied by SkillMeta.UnmarshalYAML
+			// (both true when omitted) for YAML-parsed skills.
+			ModelInvocable: s.Meta.ModelInvocable,
+			UserInvocable:  s.Meta.UserInvocable,
 		})
 	}
 	return out
@@ -43,8 +47,17 @@ type availableSkillsData struct {
 // registered; when it is not (inline execution mode), action skills are
 // advertised with their /skill:run:<name> invocation instead of a
 // nonexistent tool.
+//
+// The listing is the model-facing skill catalog: skills that are not
+// model-invocable (model_invocable:false, or user_invocable:false per the
+// P16 acceptance that a user-non-invocable skill never appears in the
+// model's tool schema) are filtered out before rendering.
 func RenderAvailableSkills(renderer PromptRenderer, skills []SkillSummary, runSkillAvailable bool) string {
 	if len(skills) == 0 || renderer == nil {
+		return ""
+	}
+	skills = filterModelInvocable(skills)
+	if len(skills) == 0 {
 		return ""
 	}
 	data := availableSkillsData{
@@ -56,6 +69,18 @@ func RenderAvailableSkills(renderer PromptRenderer, skills []SkillSummary, runSk
 		return ""
 	}
 	return result
+}
+
+// filterModelInvocable returns only the skills the model may invoke,
+// preserving input order.
+func filterModelInvocable(skills []SkillSummary) []SkillSummary {
+	out := make([]SkillSummary, 0, len(skills))
+	for _, s := range skills {
+		if s.IsModelInvocable() {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // availableSkillsHeader returns the header line describing how each skill
