@@ -4,19 +4,63 @@ package agentic
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/internal/agentic/provider/hooks"
+	"github.com/pijalu/goa/internal/embeddoc"
 )
 
-// compactSummaryRequestPrompt is the stable user turn that precedes the
-// generated summary in compacted history. Carrying the summary as an assistant
-// reply to a user turn keeps the role sequence valid for strict providers
-// (DeepSeek, some OpenAI deployments) that reject an assistant-first history,
-// and ends on an assistant turn so the next user input alternates correctly.
-const compactSummaryRequestPrompt = "Summarize our conversation so far, preserving key facts, decisions, and context."
+// compactSummaryOpenTag and compactSummaryCloseTag wrap the structured
+// summary inside the landed checkpoint (CX3, dsh compaction-basic). The open
+// tag also marks a checkpoint to LATER compaction passes: the summarize
+// instruction (compaction_instruction.md) tells the model to consolidate any
+// prior <compacted-summary> block instead of copying it forward verbatim.
+const (
+	compactSummaryOpenTag  = "<compacted-summary>"
+	compactSummaryCloseTag = "</compacted-summary>"
+)
+
+// compactSummaryInstructionRaw is the embedded 8-section checkpoint contract.
+//
+//go:embed compaction_instruction.md
+var compactSummaryInstructionRaw string
+
+// compactSummaryInstruction is the final user message of the summarize
+// request (CX3): the 8-section Markdown checkpoint contract ported verbatim
+// from dsh compaction-basic summarizer.ts COMPACTION_INSTRUCTION. It rides
+// AFTER the replayed conversation prefix (system prompt + tools + history)
+// rather than replacing the system prompt, so on prefix-caching providers
+// (DeepSeek context caching, Anthropic, ...) the auxiliary call is a strict
+// append of the last conversation request and the whole conversation prefix
+// is served from the warm cache instead of being re-billed at full input
+// price on the largest history of the session. The contract names the
+// <compacted-summary> tag so a history already carrying a prior checkpoint is
+// consolidated, not duplicated — this is how later compactions "feed the
+// previous checkpoint into the summarize input": the landed checkpoint is a
+// history message, so it replays into the next summarize verbatim.
+//
+// The SPDX HTML comment is stripped once at init so it never consumes LLM
+// context (Goa embedded-prompt convention).
+var compactSummaryInstruction = strings.TrimSpace(
+	string(embeddoc.StripHTMLComments([]byte(compactSummaryInstructionRaw))))
+
+// compactSummaryPreamble frames the replacement user turn in compacted
+// history as established context (CX3, dsh compaction-basic
+// CHECKPOINT_PREAMBLE). Paired with the wrapped assistant checkpoint reply,
+// it keeps the role sequence valid for strict providers (DeepSeek, some
+// OpenAI deployments) that reject an assistant-first history, and ends on an
+// assistant turn so the next user input alternates correctly.
+const compactSummaryPreamble = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint."
+
+// frameCompactedSummary wraps a raw model summary in the durable checkpoint
+// framing (dsh compaction-basic frameSummary): preamble + <compacted-summary>
+// + summary + </compacted-summary>.
+func frameCompactedSummary(summary string) string {
+	return compactSummaryPreamble + "\n\n" + compactSummaryOpenTag + "\n" + summary + "\n" + compactSummaryCloseTag
+}
 
 // elidedToolCallArguments is the in-history marker written by elideToolMessages
 // into the arguments of elided assistant tool calls. It is NOT valid JSON and
@@ -99,7 +143,7 @@ func (a *Agent) Compact(ctx context.Context) error {
 		removed = 0
 	}
 	a.history = []Message{
-		{Type: Content, Role: User, Content: compactSummaryRequestPrompt},
+		{Type: Content, Role: User, Content: frameCompactedSummary(summary)},
 		{Type: Content, Role: Assistant, Content: summary},
 	}
 	// History was replaced wholesale: the recorded provider prompt is stale.
@@ -178,15 +222,6 @@ func (a *Agent) applyMicroLocked(cfg MicroCompactionConfig) compactionResult {
 	return compactionResult{changed: changed}
 }
 
-// summarizeInstruction is the final user message of the summarize request.
-// It rides AFTER the replayed conversation prefix (system prompt + tools +
-// history) rather than replacing the system prompt, so on prefix-caching
-// providers (DeepSeek context caching, Anthropic, ...) the auxiliary call is a
-// strict append of the last conversation request and the whole conversation
-// prefix is served from the warm cache instead of being re-billed at full
-// input price on the largest history of the session.
-const summarizeInstruction = "Summarize the conversation above concisely, preserving key facts, decisions, and context."
-
 func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 	// Diagnosability: elided tool calls in the history used to reach the
 	// provider verbatim and 400 the summarize request (invalid JSON
@@ -213,7 +248,7 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, error) {
 	pCtx.Messages = append(pCtx.Messages, provider.Message{
 		Role: provider.RoleUser,
 		Content: []provider.ContentBlock{
-			{Type: provider.ContentBlockText, Text: summarizeInstruction},
+			{Type: provider.ContentBlockText, Text: compactSummaryInstruction},
 		},
 	})
 
