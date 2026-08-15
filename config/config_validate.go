@@ -27,10 +27,19 @@ func (c *Config) Validate() error {
 	c.validateGoals(&ve)
 	c.validatePlan(&ve)
 	c.validateMCP(&ve)
+	c.validateTools(&ve)
 	if ve.HasErrors() {
 		return &ve
 	}
 	return nil
+}
+
+// validateTools rejects invalid tool-policy values at load: a negative
+// max_inline_bytes would otherwise spill every result.
+func (c *Config) validateTools(ve *internal.ValidationError) {
+	if c.Tools.MaxInlineBytes < 0 {
+		ve.Add(fmt.Sprintf("tools.max_inline_bytes: must be a non-negative integer (got %d)", c.Tools.MaxInlineBytes))
+	}
 }
 
 func (c *Config) validateMode(ve *internal.ValidationError) {

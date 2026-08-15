@@ -46,6 +46,7 @@ import (
 	"github.com/pijalu/goa/provider"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tools"
+	"github.com/pijalu/goa/tools/common"
 	goaltools "github.com/pijalu/goa/tools/goal"
 	toolsSwarm "github.com/pijalu/goa/tools/swarm"
 	"github.com/pijalu/goa/tui"
@@ -416,6 +417,22 @@ func initAgentBundle(cfg *config.Config, projectDir string) agentBundle {
 	sessionState := core.NewSessionState(initialMode)
 	agentMgr := core.NewAgentManager(cfg, sessionStore, loopDetector, sessionState, eventBus, projectDir)
 	agentMgr.SetStateStore(stateStore)
+	// Tool-result spill policy (gap CX2): when tools.max_inline_bytes is set,
+	// oversized plain-text tool results spill verbatim into the session-scoped
+	// dir ~/.goa/spill/<session>/ and the model sees a bounded preview+notice.
+	if cfg.Tools.MaxInlineBytes > 0 {
+		maxInline := cfg.Tools.MaxInlineBytes
+		agentMgr.SetSpillPolicyFactory(func(sessionID string) agentic.SpillPolicy {
+			if sessionID == "" {
+				return nil // no session owner: keep results inline
+			}
+			dir := common.SessionSpillDir(internal.GoaHomeDir(), sessionID)
+			return &tools.SpillPolicy{
+				MaxInlineBytes: maxInline,
+				Store:          common.NewSpillStore(dir),
+			}
+		})
+	}
 	agentLogger := initAgentLogger(cfg, projectDir, agentMgr)
 	execCtrl := core.NewExecutionController(cfg, sessionState)
 

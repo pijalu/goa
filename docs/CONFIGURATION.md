@@ -167,6 +167,10 @@ skills:
 
 # ── Tools ──────────────────────────────────────────────────────────
 tools:
+  max_inline_bytes: 0            # Spill policy: cap on model-facing tool-result bytes
+                                 # (0=disabled). Over-cap plain-text results are saved
+                                 # verbatim to ~/.goa/spill/<session>/ and replaced by a
+                                 # bounded head/tail preview + locator notice.
   # Optional tools toggles. Most are opt-IN (default false).
   # `clarify_disabled` is the exception: it is opt-OUT (default false),
   # so the ask_user_question tool is ENABLED by default.

@@ -184,6 +184,12 @@ skills:
   embedded: true
 
 tools:
+  # max_inline_bytes caps the model-facing size of any single plain-text tool
+  # result (spill policy, gap CX2). A result over the cap is saved verbatim to
+  # ~/.goa/spill/<session>/ and replaced by a bounded head/tail preview plus a
+  # locator notice ("Full result stored at: ..."). 0 (default) disables the
+  # policy entirely.
+  max_inline_bytes: 0
   bash:
     blocked_commands:
       - "rm -rf /"

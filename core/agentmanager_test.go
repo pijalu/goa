@@ -2438,3 +2438,48 @@ func TestAgentManager_BuildCompressionConfig_EmbeddedDefaultHardSummarize(t *tes
 		t.Errorf("OnErrorStrategy = %q, want hybrid (embedded default)", cc.OnErrorStrategy)
 	}
 }
+
+// TestAgentManager_StartSession_WiresSpillPolicy verifies the spill-policy
+// factory (gap CX2) is invoked per session with the store's session ID so the
+// policy can scope its spill dir, and that a nil factory leaves the agent
+// without a policy.
+func TestAgentManager_StartSession_WiresSpillPolicy(t *testing.T) {
+	cfg := &config.Config{
+		Execution: config.ExecutionConfig{Mode: internal.ExecutionYolo, WorktreeMode: internal.WorktreeAlways},
+	}
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	tuiEvents := event.MakeBus(10, 10, 10, 10)
+	sessionStore := NewSessionStore(t.TempDir())
+	am := NewAgentManager(cfg, sessionStore, nil, sessionState, tuiEvents, "")
+
+	var gotSessionID string
+	factoryCalls := 0
+	am.SetSpillPolicyFactory(func(sessionID string) agentic.SpillPolicy {
+		factoryCalls++
+		gotSessionID = sessionID
+		return &stubSpillPolicy{}
+	})
+
+	mdl := agenticprovider.Model{ID: "test-model", Api: agenticprovider.ApiOpenAICompletions}
+	if _, err := am.StartSession(mdl, agenticprovider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatalf("StartSession failed: %v", err)
+	}
+
+	if factoryCalls != 1 {
+		t.Fatalf("spill policy factory should be invoked once per session, got %d", factoryCalls)
+	}
+	agent := am.CurrentAgent()
+	if agent == nil {
+		t.Fatal("CurrentAgent should be set after StartSession")
+	}
+	if gotSessionID == "" || gotSessionID != agent.StreamOptions().SessionID {
+		t.Errorf("factory session ID %q should match the agent session %q", gotSessionID, agent.StreamOptions().SessionID)
+	}
+	if agent.SpillPolicy() == nil {
+		t.Error("agent should carry the factory-provided spill policy")
+	}
+}
+
+type stubSpillPolicy struct{}
+
+func (stubSpillPolicy) ApplySpill(toolName, result string) string { return result }

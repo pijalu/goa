@@ -120,6 +120,7 @@ type AgentManager struct {
 	companionBuf         strings.Builder
 	goalStateProvider    agentic.GoalStateProvider
 	stickyProvider       agentic.StickyProvider
+	spillPolicyFactory   func(sessionID string) agentic.SpillPolicy
 	postTurnHook         func()
 	lifecycleRegistry    LifecycleRegistry
 	projectDir           string

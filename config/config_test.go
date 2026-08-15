@@ -153,6 +153,34 @@ nested_unknown:
 // TestConfigValidateStreamLoopMinPeriod verifies execution.stream_loop_min_period
 // accepts 0 (default) and values >= 8, rejecting anything below the absolute
 // scan floor.
+func TestConfigValidateMaxInlineBytes(t *testing.T) {
+	for _, tt := range []struct {
+		v       int
+		wantErr bool
+	}{
+		{0, false},     // disabled (default)
+		{4096, false},  // typical cap
+		{-1, true},     // negative would spill every result
+		{-4096, true},
+	} {
+		cfg := &Config{Tools: ToolsConfig{MaxInlineBytes: tt.v}}
+		err := cfg.Validate()
+		if gotErr := err != nil; gotErr != tt.wantErr {
+			t.Errorf("Validate(max_inline_bytes=%d) err=%v, wantErr=%v", tt.v, err, tt.wantErr)
+		}
+	}
+}
+
+func TestConfigMaxInlineBytesYAML(t *testing.T) {
+	var cfg Config
+	if err := yaml.Unmarshal([]byte("tools:\n  max_inline_bytes: 4096\n"), &cfg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if cfg.Tools.MaxInlineBytes != 4096 {
+		t.Errorf("Tools.MaxInlineBytes = %d, want 4096", cfg.Tools.MaxInlineBytes)
+	}
+}
+
 func TestConfigValidateStreamLoopMinPeriod(t *testing.T) {
 	for _, tt := range []struct {
 		v       int

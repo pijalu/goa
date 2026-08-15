@@ -28,6 +28,16 @@ func (am *AgentManager) SetGoalStateProvider(p agentic.GoalStateProvider) {
 	am.goalStateProvider = p
 }
 
+// SetSpillPolicyFactory sets the factory used to build the per-session
+// tool-result spill policy (gap CX2). The factory receives the session ID at
+// StartSession so the implementation can scope its spill dir; a nil return
+// disables spilling for that session. Call before StartSession.
+func (am *AgentManager) SetSpillPolicyFactory(f func(sessionID string) agentic.SpillPolicy) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.spillPolicyFactory = f
+}
+
 // SetStickyProvider sets the always-on instruction source (sticky knowledge
 // skills) wired into every session agent. Call before StartSession.
 func (am *AgentManager) SetStickyProvider(p agentic.StickyProvider) {
@@ -221,6 +231,11 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 	compressionCfg := am.buildCompressionConfig(cfg, mdl.ID, mdl.ContextWindow)
 	if cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
+	}
+	// Tool-result spill policy (gap CX2): built per session so the spill dir
+	// is scoped to the session ID carried in the stream options.
+	if am.spillPolicyFactory != nil {
+		agenticCfg.SpillPolicy = am.spillPolicyFactory(opts.SessionID)
 	}
 	if level := am.modeMgr.GetThinkingLevel(); level != "" {
 		agenticCfg.ReasoningEffort = agentic.ReasoningEffort(level)

@@ -13,6 +13,18 @@ import (
 	"github.com/pijalu/goa/internal/toolaccess"
 )
 
+// SpillPolicy bounds oversized plain-text tool results by saving them
+// verbatim to a session-scoped spill dir and substituting a budgeted
+// head/tail preview plus a locator notice (gap CX2, dsh spill-policy parity).
+// The implementation lives in the tools package; the agent only sees this
+// seam. Nil disables the policy.
+type SpillPolicy interface {
+	// ApplySpill returns the model-facing content for a successful plain-text
+	// tool result: the original when the policy does not apply (under cap,
+	// read tool, storage failure), or the bounded replacement when spilled.
+	ApplySpill(toolName, result string) string
+}
+
 func countToolCallBlocks(blocks []provider.ContentBlock) int {
 	count := 0
 	for _, b := range blocks {
@@ -152,6 +164,16 @@ func (a *Agent) resolveToolResultContent(tc provider.ContentBlock, byID map[stri
 	// save-once-refilter pattern. The result itself is untouched.
 	if tc.ToolName == "bash" && a.popBashNearDup(tc.ToolCallID) {
 		output += nearDuplicateHint
+	}
+	// Tool-result spill policy (gap CX2): an oversized plain-text result is
+	// saved verbatim to the session spill dir and replaced by a budgeted
+	// head/tail preview + locator notice. Error results never reach this
+	// point (early return above); the policy itself skips read and keeps the
+	// original on any storage failure.
+	if a.cfg.SpillPolicy != nil {
+		if spilled := a.cfg.SpillPolicy.ApplySpill(tc.ToolName, output); spilled != output {
+			return spilled
+		}
 	}
 	if limit := a.toolResultSizeLimit(); limit > 0 && len(output) > limit {
 		return truncateToolResult(output, limit)

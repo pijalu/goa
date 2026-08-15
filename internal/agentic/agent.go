@@ -712,6 +712,12 @@ type Config struct {
 	// sessionStart, sessionEnd). When nil, no hooks run.
 	HookEngine hooks.AgentHookEngine
 
+	// SpillPolicy bounds oversized plain-text tool results (gap CX2): a final
+	// result over the configured cap is saved verbatim to the session spill
+	// dir and replaced by a budgeted head/tail preview + locator notice.
+	// Error results never reach the policy. Nil disables spilling entirely.
+	SpillPolicy SpillPolicy
+
 	// AllowEmptyResponse when true disables the empty-response guard that
 	// treats a clean stream end with zero events as a transient error.
 	// Companion and sub-agents (multiagent pool, orchestration specialists)
@@ -989,6 +995,14 @@ func (a *Agent) StreamOptions() provider.StreamOptions {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.cfg.StreamOptions
+}
+
+// SpillPolicy returns the configured tool-result spill policy (nil when the
+// policy is disabled).
+func (a *Agent) SpillPolicy() SpillPolicy {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.SpillPolicy
 }
 
 // SetStreamOptions replaces the stream options for subsequent turns.

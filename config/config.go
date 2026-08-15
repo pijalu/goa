@@ -625,6 +625,11 @@ type ToolsConfig struct {
 	Write       WriteConfig          `yaml:"write"`
 	WebFetch    tools.WebFetchConfig `yaml:"webfetch"`
 	Enabled     ToolEnabledConfig    `yaml:"enabled"`
+	// MaxInlineBytes caps the model-facing size of any single plain-text tool
+	// result (gap CX2 spill policy). A result over the cap is saved verbatim
+	// to ~/.goa/spill/<session>/ and replaced by a budgeted head/tail preview
+	// plus a locator notice. Zero (the default) disables the policy entirely.
+	MaxInlineBytes int `yaml:"max_inline_bytes"`
 }
 
 // SmartSearchConfig controls the smartsearch tool.
