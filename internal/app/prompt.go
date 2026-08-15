@@ -453,7 +453,7 @@ func startAgentSession(subs *subsystems, chat *tui.ChatViewport) {
 
 	systemPrompt := buildSystemPrompt(subs)
 	agenticTools := filterToolsForCurrentMode(subs, subs.toolRegistry.All())
-	_, err = subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, subs.cfg)
+	_, err = subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, subs.liveConfig())
 	if err != nil {
 		chat.AddSystemMessage(fmt.Sprintf("Failed to start session: %v", err))
 		subs.tuiEngine.RequestRender()

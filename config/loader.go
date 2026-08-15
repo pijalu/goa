@@ -859,6 +859,22 @@ func (cl *CascadeLoader) HomeConfigPath() string {
 	return filepath.Join(cl.homeDir, ".goa", "config.yaml")
 }
 
+// WritableConfigPaths returns the file paths of the writable cascade layers:
+// the home config, the project config and project local config, or the
+// explicit --config file (in addition to the home config, which is always
+// part of the cascade). Embedded defaults, env vars, and CLI flags are not
+// files and therefore never hot-reloadable.
+func (cl *CascadeLoader) WritableConfigPaths() []string {
+	paths := []string{cl.HomeConfigPath()}
+	if cl.configPath != "" {
+		return append(paths, cl.configPath)
+	}
+	return append(paths,
+		filepath.Join(cl.projectDir, ".goa", "config.yaml"),
+		filepath.Join(cl.projectDir, ".goa", "config.local.yaml"),
+	)
+}
+
 // skillListsOnDisk reads only the skills list keys (enabled / disabled /
 // sticky / sticky_off) from the config file at path. ok=false when the file
 // is missing or unreadable — callers then leave the in-memory lists as-is

@@ -249,6 +249,10 @@ func (a *App) Run() bool {
 	a.startAsyncPluginLoad(engine)
 
 	done := a.setupEventHandlers(engine, chat, inp)
+	// P22/DS6: hot-reload config edits from disk for the interactive session.
+	// Started before the event loops so an edit made while the app runs
+	// applies on the next request; stopped on shutdown (no goroutine leaks).
+	a.subs.startConfigWatcher()
 	engine.RunLoops() // launch the commandLoop (sole state owner) + renderLoop
 	// Startup-done hook: fires the title transition when the async loads
 	// (plugins + history) complete, or at the 5s fallback — whichever first.
@@ -266,6 +270,7 @@ func (a *App) Run() bool {
 		a.usageStore = nil
 	}
 	engine.Stop()
+	a.subs.stopConfigWatcher()
 
 	if subs.runWizard {
 		fmt.Println("\n⟡  Launching setup wizard...")

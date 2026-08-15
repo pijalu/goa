@@ -1211,3 +1211,64 @@ func TestResolveAPIKey_ConfigKeyWins(t *testing.T) {
 		t.Errorf("ResolveAPIKey = %q, want config key %q", got, "config-key")
 	}
 }
+
+// TestSetConfig_HotReloadSwapsActiveProvider verifies SetConfig swaps the
+// config the next request resolves: after a hot reload, Active() and
+// BuildStreamOptions() reflect the new provider profile (P22/DS6).
+func TestSetConfig_HotReloadSwapsActiveProvider(t *testing.T) {
+	oldCfg := &config.Config{
+		ActiveProvider: "old-provider",
+		ActiveModel:    "old-model",
+		Providers: []config.ProviderConfig{{
+			ID:       "old-provider",
+			Endpoint: "https://old.example/v1",
+		}},
+		Models: []config.ModelConfig{{ID: "old-model", ProviderID: "old-provider", Model: "old-model"}},
+	}
+	pm := NewProviderManager(oldCfg)
+
+	oldProvider, oldModel := pm.Active()
+	if oldProvider == nil || oldProvider.ID != "old-provider" || oldModel != "old-model" {
+		t.Fatalf("boot Active() = (%v, %q), want (old-provider, old-model)", oldProvider, oldModel)
+	}
+
+	newCfg := &config.Config{
+		ActiveProvider: "new-provider",
+		ActiveModel:    "new-model",
+		Providers: []config.ProviderConfig{{
+			ID:       "new-provider",
+			Endpoint: "https://new.example/v1",
+		}},
+		Models: []config.ModelConfig{{ID: "new-model", ProviderID: "new-provider", Model: "new-model"}},
+	}
+	pm.SetConfig(newCfg)
+
+	// Next request sees the new profile.
+	newProvider, newModel := pm.Active()
+	if newProvider == nil || newProvider.ID != "new-provider" || newModel != "new-model" {
+		t.Errorf("after SetConfig Active() = (%v, %q), want (new-provider, new-model)", newProvider, newModel)
+	}
+	if pm.Config() != newCfg {
+		t.Errorf("Config() did not return the reloaded config")
+	}
+
+	mdl, err := pm.ResolveActiveModel()
+	if err != nil {
+		t.Fatalf("ResolveActiveModel: %v", err)
+	}
+	if mdl.BaseURL != "https://new.example/v1/chat/completions" {
+		t.Errorf("ResolveActiveModel BaseURL = %q, want new-provider endpoint", mdl.BaseURL)
+	}
+}
+
+// TestSetConfig_NilConfigSafe verifies SetConfig(nil) and Config() are safe.
+func TestSetConfig_NilConfigSafe(t *testing.T) {
+	pm := NewProviderManager(&config.Config{})
+	pm.SetConfig(nil)
+	if pm.Config() != nil {
+		t.Errorf("Config() after SetConfig(nil) = %v, want nil", pm.Config())
+	}
+	if p, m := pm.Active(); p != nil || m != "" {
+		t.Errorf("Active() after SetConfig(nil) = (%v, %q), want (nil, \"\")", p, m)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pijalu/goa/config"
@@ -40,7 +41,11 @@ type ModelListResponse struct {
 // ProviderManager manages active provider selection, model listing,
 // and connection testing.
 type ProviderManager struct {
-	cfg       *config.Config
+	// cfg holds the current configuration. It is an atomic pointer so a hot
+	// reload (config watcher) can swap in a fresh config while request
+	// goroutines resolve the active provider/model: an in-flight request keeps
+	// the config it loaded; the next request sees the new one.
+	cfg       atomic.Pointer[config.Config]
 	client    *http.Client
 	Cache     *ModelCache
 	authStore *auth.Store
@@ -48,13 +53,31 @@ type ProviderManager struct {
 
 // NewProviderManager creates a provider manager.
 func NewProviderManager(cfg *config.Config) *ProviderManager {
-	return &ProviderManager{
-		cfg: cfg,
+	pm := &ProviderManager{
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 		Cache: NewModelCache(),
 	}
+	pm.cfg.Store(cfg)
+	return pm
+}
+
+// Config returns the config currently in effect for request resolution. It is
+// the boot config until a hot reload applies a new one.
+func (pm *ProviderManager) Config() *config.Config {
+	if pm == nil {
+		return nil
+	}
+	return pm.cfg.Load()
+}
+
+// SetConfig atomically swaps the provider configuration, e.g. after a hot
+// reload of the config cascade. The next request resolves the new provider
+// profile (endpoint, API key, models, effort); in-flight requests keep the
+// config they loaded.
+func (pm *ProviderManager) SetConfig(cfg *config.Config) {
+	pm.cfg.Store(cfg)
 }
 
 // SetAuthStore wires the encrypted credential store so the provider manager
@@ -71,12 +94,16 @@ func (pm *ProviderManager) SetAuthStore(store *auth.Store) {
 // configured active provider is not found (no silent fallback to a different
 // provider, which would route requests to the wrong endpoint).
 func (pm *ProviderManager) Active() (*config.ProviderConfig, string) {
-	if pm == nil || pm.cfg == nil {
+	if pm == nil {
 		return nil, ""
 	}
-	provider := pm.cfg.GetProviderByID(pm.cfg.ActiveProvider)
-	if provider == nil && pm.cfg.ActiveProvider == "" {
-		provider = pm.cfg.PreferredProvider()
+	cfg := pm.cfg.Load()
+	if cfg == nil {
+		return nil, ""
+	}
+	provider := cfg.GetProviderByID(cfg.ActiveProvider)
+	if provider == nil && cfg.ActiveProvider == "" {
+		provider = cfg.PreferredProvider()
 	}
 	if provider == nil {
 		return nil, ""
@@ -87,14 +114,15 @@ func (pm *ProviderManager) Active() (*config.ProviderConfig, string) {
 
 // SetActive updates the active provider and model.
 func (pm *ProviderManager) SetActive(providerID, model string) error {
+	cfg := pm.cfg.Load()
 	if providerID != "" {
-		if pm.cfg.GetProviderByID(providerID) == nil {
+		if cfg.GetProviderByID(providerID) == nil {
 			return fmt.Errorf("provider %q not found", providerID)
 		}
-		pm.cfg.ActiveProvider = providerID
+		cfg.ActiveProvider = providerID
 	}
 	if model != "" {
-		pm.cfg.ActiveModel = model
+		cfg.ActiveModel = model
 	}
 	return nil
 }
@@ -161,7 +189,7 @@ func (pm *ProviderManager) ListModelsCached(providerID string, ttl time.Duration
 
 // ListModels queries the provider's /models endpoint.
 func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
-	provider := pm.cfg.GetProviderByID(providerID)
+	provider := pm.cfg.Load().GetProviderByID(providerID)
 	if provider == nil {
 		return nil, fmt.Errorf("provider %q not found", providerID)
 	}
@@ -210,7 +238,7 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 // does not serve a complete model list (e.g. z.ai's coding plan) still offer
 // their known models in add-model pickers.
 func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
-	pCfg := pm.cfg.GetProviderByID(providerID)
+	pCfg := pm.cfg.Load().GetProviderByID(providerID)
 	if pCfg == nil {
 		return nil
 	}
@@ -252,9 +280,10 @@ func (pm *ProviderManager) TestConnection(providerID string) (latency time.Durat
 //  3. If input is empty, fall back to the provider's DefaultModel
 //  4. If still empty, fall back to the first ModelConfig for the provider
 func (pm *ProviderManager) ResolveModelName(cfg config.ProviderConfig, modelID string) string {
+	cur := pm.cfg.Load()
 	// 1. Look up by model config ID
 	if modelID != "" {
-		if mc := pm.cfg.GetModelByID(modelID); mc != nil && mc.Model != "" {
+		if mc := cur.GetModelByID(modelID); mc != nil && mc.Model != "" {
 			return mc.Model
 		}
 		// Not a model config ID — return verbatim (raw model name)
@@ -262,9 +291,9 @@ func (pm *ProviderManager) ResolveModelName(cfg config.ProviderConfig, modelID s
 	}
 
 	// 2. Fall back to first ModelConfig for this provider
-	for i := range pm.cfg.Models {
-		if pm.cfg.Models[i].ProviderID == cfg.ID && pm.cfg.Models[i].Model != "" {
-			return pm.cfg.Models[i].Model
+	for i := range cur.Models {
+		if cur.Models[i].ProviderID == cfg.ID && cur.Models[i].Model != "" {
+			return cur.Models[i].Model
 		}
 	}
 
@@ -273,7 +302,7 @@ func (pm *ProviderManager) ResolveModelName(cfg config.ProviderConfig, modelID s
 
 // resolveModelName is a convenience wrapper using ActiveModel from config.
 func (pm *ProviderManager) resolveModelName(cfg config.ProviderConfig) string {
-	return pm.ResolveModelName(cfg, pm.cfg.ActiveModel)
+	return pm.ResolveModelName(cfg, pm.cfg.Load().ActiveModel)
 }
 
 // ResolveActiveModel resolves the active model through the agentic model registry.
@@ -296,7 +325,7 @@ func (pm *ProviderManager) ResolveActiveModel() (agenticprovider.Model, error) {
 		return agenticprovider.Model{}, fmt.Errorf("no model name resolved for provider %q", pCfg.ID)
 	}
 
-	mCfg, err := pm.cfg.GetActiveModelConfig()
+	mCfg, err := pm.cfg.Load().GetActiveModelConfig()
 	if err != nil {
 		mCfg = config.ModelConfig{}
 	}
@@ -723,7 +752,7 @@ func (pm *ProviderManager) ResolveModelByID(modelID string) (agenticprovider.Mod
 // provider. This lets per-role agents (e.g., the companion) use a different
 // provider than the main agent.
 func (pm *ProviderManager) ResolveModelForProvider(providerID, modelID string) (agenticprovider.Model, error) {
-	pCfg := pm.cfg.GetProviderByID(providerID)
+	pCfg := pm.cfg.Load().GetProviderByID(providerID)
 	if pCfg == nil {
 		pCfg, _ = pm.Active()
 	}
@@ -795,13 +824,14 @@ func (pm *ProviderManager) resolveModelByName(pCfg *config.ProviderConfig, model
 // ProviderConfig and ModelConfig, applying defaults for timeout, retries,
 // headers, transport, cache, and reasoning.
 func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
-	pCfg := pm.cfg.GetActiveProviderConfig()
-	mCfg, err := pm.cfg.GetActiveModelConfig()
+	cfg := pm.cfg.Load()
+	pCfg := cfg.GetActiveProviderConfig()
+	mCfg, err := cfg.GetActiveModelConfig()
 	if err != nil {
 		mCfg = config.ModelConfig{}
 	}
 
-	defaultRetries := pm.cfg.Execution.Retries
+	defaultRetries := cfg.Execution.Retries
 	if defaultRetries <= 0 {
 		defaultRetries = 5
 	}
@@ -840,10 +870,14 @@ func (pm *ProviderManager) effectiveAPIKey(provider *config.ProviderConfig) stri
 // not in ProviderConfig.APIKey) are still seen as authenticated — otherwise
 // the quota plugin treats them as no_api_key and drops them (z.ai #6).
 func (pm *ProviderManager) ResolveAPIKey(providerID string) string {
-	if pm == nil || pm.cfg == nil {
+	if pm == nil {
 		return ""
 	}
-	pCfg := pm.cfg.GetProviderByID(providerID)
+	cfg := pm.cfg.Load()
+	if cfg == nil {
+		return ""
+	}
+	pCfg := cfg.GetProviderByID(providerID)
 	if pCfg == nil {
 		return ""
 	}

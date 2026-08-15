@@ -544,7 +544,7 @@ func (h *HeadlessApp) startSession() error {
 	// Wire tool confirmation so ask/confirm autonomy levels can prompt (or
 	// reject when non-interactive) before executing sensitive tools.
 	h.subs.agentMgr.SetConfirmTool(h.confirmTool)
-	_, err = h.subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, h.subs.cfg)
+	_, err = h.subs.agentMgr.StartSession(mdl, streamOpts, systemPrompt, agenticTools, h.subs.liveConfig())
 	if err != nil {
 		return fmt.Errorf("failed to start session: %w", err)
 	}

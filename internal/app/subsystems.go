@@ -176,9 +176,87 @@ type subsystems struct {
 	// mcpManager owns MCP server connections and their registered tools;
 	// closed on shutdown. Nil when no MCP servers are configured.
 	mcpManager *mcp.Manager
+
+	// configWatcher watches the writable config cascade layers and hot-applies
+	// reloaded provider profiles. Started for the interactive TUI session and
+	// closed on shutdown (no goroutine leaks). configWatchWG tracks the change
+	// consumer goroutine so stopConfigWatcher can wait for it to exit.
+	configWatcher *config.ConfigWatcher
+	configWatchWG sync.WaitGroup
 }
 
 func (s *subsystems) getInput() *tui.Editor { return s.inputEditor }
+
+// liveConfig returns the config for the next request: the hot-reloaded config
+// once the config watcher has published one, otherwise the boot config. The
+// request path (StartSession) must read through here — never the static
+// subs.cfg — so an external config edit applies on the next request without a
+// restart (P22/DS6).
+func (s *subsystems) liveConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	if s.providerMgr != nil {
+		if c := s.providerMgr.Config(); c != nil {
+			return c
+		}
+	}
+	return s.cfg
+}
+
+// startConfigWatcher begins watching the writable config cascade layers and
+// hot-applies reloaded provider profiles. It is enabled only for the
+// interactive TUI session, where the acceptance path lives; one-shot modes
+// (headless, ACP, dream, export) run a single request and close before a
+// hot reload could matter. Idempotent.
+func (s *subsystems) startConfigWatcher() {
+	if s == nil || s.configWatcher != nil || s.loader == nil || s.providerMgr == nil {
+		return
+	}
+	w, err := config.NewConfigWatcher(s.loader, log.Printf)
+	if err != nil {
+		log.Printf("config hot-reload disabled: %v", err)
+		return
+	}
+	w.Start()
+	s.configWatcher = w
+	s.configWatchWG.Add(1)
+	go func() {
+		defer s.configWatchWG.Done()
+		for cfg := range w.Changes() {
+			s.applyReloadedConfig(cfg)
+		}
+	}()
+}
+
+// stopConfigWatcher shuts the watcher down and waits for the consumer
+// goroutine to exit, so no goroutine leaks across restarts. Idempotent.
+func (s *subsystems) stopConfigWatcher() {
+	if s == nil || s.configWatcher == nil {
+		return
+	}
+	s.configWatcher.Close()
+	s.configWatchWG.Wait()
+	s.configWatcher = nil
+}
+
+// applyReloadedConfig swaps the live provider profile to a freshly reloaded
+// config so the next request resolves the new provider/model/effort. The
+// boot-time subs.cfg is intentionally not replaced: it is read from many
+// goroutines without synchronization, and the request path already reads the
+// live config via liveConfig.
+func (s *subsystems) applyReloadedConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	if s.providerMgr != nil {
+		s.providerMgr.SetConfig(cfg)
+	}
+	if s.agentPool != nil {
+		s.agentPool.SetGoaConfig(cfg)
+	}
+	log.Printf("config hot-reloaded: provider profile updated from disk")
+}
 
 // effectiveModeState returns the live session mode — the value restored from
 // state.json on startup or changed at runtime via /mode — falling back to the
