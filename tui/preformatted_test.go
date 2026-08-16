@@ -100,6 +100,35 @@ func TestIsPreformatted_Markdown(t *testing.T) {
 	}
 }
 
+// TestIsPreformatted_MarkdownTable guards the /tools readability fix: a markdown
+// table (the new /tools format) must route to the markdown renderer, NOT the
+// preformatted line path, so the TUI draws it as an aligned table.
+func TestIsPreformatted_MarkdownTable(t *testing.T) {
+	md := "**Default part of prompt** (always available)\n\n" +
+		"| Tool | Description |\n| --- | --- |\n" +
+		"| `read` | Read a file. |\n" +
+		"| `bash` | Run a shell command. |\n"
+	if isPreformatted(md) {
+		t.Error("markdown table must not be preformatted — /tools must render as a table")
+	}
+}
+
+// TestRenderGoaPanel_MarkdownTable asserts a markdown table produces a bordered,
+// aligned table in the goa panel (box-drawing column separators present).
+func TestRenderGoaPanel_MarkdownTable(t *testing.T) {
+	md := "**Default part of prompt** (always available)\n\n" +
+		"| Tool | Description |\n| --- | --- |\n" +
+		"| `read` | Read a file. |\n" +
+		"| `bash` | Run a shell command. |\n"
+	out := strings.Join(renderGoaPanel(md, false, 90), "\n")
+	if !strings.ContainsAny(out, "┌┬│") {
+		t.Errorf("table not rendered with box borders:\n%s", out)
+	}
+	if !strings.Contains(out, "read") || !strings.Contains(out, "Run a shell command") {
+		t.Errorf("table content missing:\n%s", out)
+	}
+}
+
 func TestIsPreformatted_SingleLine(t *testing.T) {
 	if isPreformatted("just one line") {
 		t.Error("single line should not be preformatted")

@@ -27,6 +27,21 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
+## CRITICAL: export/import fails — "Unexpected compression method: ceiling"
+Observed: importing/exporting a session archive fails with
+`Unexpected compression method: ceiling` on
+`.goa/exports/goa-export-20260816-142942.zip`. The string "ceiling" is not a ZIP
+compression method — this reads like a label/value mix-up in the export/import
+code path (a field that should hold the compression method enum is being fed the
+word "ceiling", or a corrupt/unexpected archive), and the error message is
+unactionable.
+Expected: session export produces a valid ZIP and import reads it back
+(round-trip). The compression method must be a real ZIP method (store/deflate);
+the error should identify the offending field/source. Investigate the export
+writer + import reader (likely under internal/... session export or
+tools/export), reproduce with a round-trip test, and fix root cause. Add a
+round-trip test that would have caught it.
+
 ## /cache:stats should show a bar chart of recent cache-hit values
 Observed: `/cache:stats` shows cache stats per turn / as aggregate text.
 Expected: render a horizontal bar chart of the LATEST api/cache value returned
@@ -55,6 +70,23 @@ Long descriptions should be truncated with an ellipsis to fit the terminal
 width, with /tools:<name> available for the full text.
 
 # Archive
+
+## /tools output is unreadable — one long wrapped line per section (fixed)
+Root cause: `listTools` (core/commands/docs.go) rendered each section as
+`"  %-20s %s\n"` rows; at the panel's inner width the description column ran
+long and the terminal soft-wrapped it mid-sentence, so names ran into
+descriptions with no per-tool column alignment — the reported wall-of-text.
+Fix: `listTools` now emits a **markdown table** (`| Tool | Description |` +
+`| --- | --- |` + one `| `name` | desc |` row per tool), section headers as
+bold text. Command output is added via `chat.AddSystemMessage` → `newSystemMessage`
+→ `renderGoaPanel`, which markdown-renders non-preformatted text with the
+`MDStreamRenderer` — and that renderer draws GFM tables as aligned bordered
+tables. `mdTableCell` escapes any literal `|` in descriptions so the column split
+holds. Tests: `TestIsPreformatted_MarkdownTable` + `TestRenderGoaPanel_MarkdownTable`
+(tui/preformatted_test.go) pin that the table routes to the markdown renderer
+(not the preformatted line path) and produces box-drawing columns; existing
+`TestListTools_*` still pass. Gates: vet/staticcheck/gocyclo/gofmt clean;
+gocognit `toggleTool`(16) is pre-existing on HEAD (verified via git stash).
 
 ## run_code tests fail on dev machine — HOME isolation (fixed)
 Root cause: `TestRegisterTools_RunCodeRespectsEnabled` and

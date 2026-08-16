@@ -607,20 +607,32 @@ func listTools(out core.OutputWriter, reg core.ToolRegistry) error {
 		}
 	}
 
-	writeStr(out, "Default part of prompt (always available):\n")
+	// Render a markdown table: one tool per row, names in a code column,
+	// descriptions in their own column. The TUI renders this via the
+	// MDStreamRenderer (renderGoaPanel), giving aligned columns and no
+	// mid-sentence wrapping — the fix for the unreadable wall-of-text list.
+	writeStr(out, "**Default part of prompt** (always available)\n\n")
+	writeStr(out, "| Tool | Description |\n| --- | --- |\n")
 	for _, t := range eager {
-		writeFmt(out, "  %-20s %s\n", t.Schema().Name, toolSummaryLine(t.Schema().Description))
+		writeFmt(out, "| `%s` | %s |\n", t.Schema().Name, mdTableCell(toolSummaryLine(t.Schema().Description)))
 	}
 
 	if len(deferred) > 0 {
-		writeStr(out, "\nMust use search (load via tool_search before calling):\n")
+		writeStr(out, "\n**Must use search** (load via tool_search before calling)\n\n")
+		writeStr(out, "| Tool | Description |\n| --- | --- |\n")
 		for _, t := range deferred {
-			writeFmt(out, "  %-20s 🔍 via tool_search — %s\n", t.Schema().Name, toolSummaryLine(t.Schema().Description))
+			writeFmt(out, "| `%s` | 🔍 via tool_search — %s |\n", t.Schema().Name, mdTableCell(toolSummaryLine(t.Schema().Description)))
 		}
 	}
 
 	writeFmt(out, "\n%d tool(s) available (%d in prompt, %d via tool_search). Use /tools:name for details, or /docs:TOOLS for the full reference.\n", len(all), len(eager), len(deferred))
 	return nil
+}
+
+// mdTableCell makes a string safe for a markdown table cell: a literal `|`
+// would break the column split, so it is escaped as `\|`.
+func mdTableCell(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
 }
 
 // isDeferredTool reports whether a tool's schema is withheld from the
