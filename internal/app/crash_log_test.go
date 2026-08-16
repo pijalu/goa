@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal"
 )
 
 // These tests mutate process-wide state (log output, the crashLogFile global,
@@ -31,8 +33,11 @@ func TestCrashLogPath(t *testing.T) {
 	})
 	t.Run("home fallback", func(t *testing.T) {
 		t.Setenv("GOA_CRASH_LOG", "")
-		home, err := os.UserHomeDir()
-		if err != nil {
+		// crashLogPath resolves the home via internal.GoaHome() (which honors
+		// GOA_HOME / the package TestMain scratch home), NOT os.UserHomeDir() —
+		// so compute the expectation from the same source.
+		home, ok := internal.GoaHome()
+		if !ok {
 			t.Skip("no home dir")
 		}
 		want := filepath.Join(home, ".goa", "crash.log")

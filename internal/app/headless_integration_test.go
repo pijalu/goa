@@ -16,7 +16,19 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
 
+// TestMain isolates the goa home for every test in this package. Several tests
+// load config through the cascade (config.NewCascadeLoader), which reads
+// ~/.goa/config.yaml from the REAL user home unless GOA_HOME is set — a
+// developer's home config (e.g. tools.enabled.run_code:false) then overrides the
+// embedded defaults and breaks tests that assert default tool registration
+// (bugs.md: TestRegisterTools_RunCode* HOME-isolation). Point GOA_HOME at a
+// scratch dir so the cascade sees only the embedded + test-provided layers.
 func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "goa-app-test-home")
+	if err == nil {
+		_ = os.Setenv("GOA_HOME", dir)
+		defer os.RemoveAll(dir)
+	}
 	os.Exit(m.Run())
 }
 

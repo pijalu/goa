@@ -27,7 +27,49 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
+## /cache:stats should show a bar chart of recent cache-hit values
+Observed: `/cache:stats` shows cache stats per turn / as aggregate text.
+Expected: render a horizontal bar chart of the LATEST api/cache value returned
+per completion (not a per-turn breakdown). The last (rightmost) bar must be the
+most recent completion. Width adapts to the available terminal columns: draw
+"last X" values, up to 20, where X = min(20, available columns after the
+label/percent gutter). Each bar's height/length encodes the cache-hit value for
+that completion, labeled with its percentage; the chart should reuse the
+existing CH color thresholds (bold green >= +1pt improvement, green minor
+fluctuation, red >= 5pt drop) if per-bar coloring is supported.
+
+## /tools output is unreadable — one long wrapped line per section
+Observed: `/tools` renders the tool list as a single box where each section is
+one very long line with tool names and full descriptions concatenated and
+soft-wrapped (e.g. "ask_user_question Ask the user for clarification. bash Run a
+shell command… goal Goal list manager: 1 ACTIVE goal pursued autonomously across
+turns; queue auto-starts python Execute Python…"). Tool names run into
+descriptions, descriptions wrap mid-sentence, and there is no per-tool line
+break or column alignment — the list is effectively unreadable.
+Expected: one tool per line, aligned columns (name / short description), full
+sentences never wrapped mid-token, and the section headers on their own lines —
+e.g. a two-column table:
+  ask_user_question   Ask the user for clarification.
+  bash                Run a shell command. …
+Long descriptions should be truncated with an ellipsis to fit the terminal
+width, with /tools:<name> available for the full text.
+
 # Archive
+
+## run_code tests fail on dev machine — HOME isolation (fixed)
+Root cause: `TestRegisterTools_RunCodeRespectsEnabled` and
+`TestRegisterTools_RunCodeDispatchDirEmptyWithoutProject` (internal/app/bootstrap_test.go)
+load config via `config.NewCascadeLoader` WITHOUT isolating the goa home, so the
+developer's real `~/.goa/config.yaml` (which sets `tools.enabled.run_code: false`)
+overrode the embedded default and the tests failed asserting run_code is
+registered by default. Same class as the archived `TestRunCodeDefaultsLoaded` fix.
+Fix: `internal/app` package `TestMain` (headless_integration_test.go) now sets
+`GOA_HOME` to a scratch dir for the whole package, so every cascade load sees only
+embedded + test layers. `TestCrashLogPath/home_fallback` (crash_log_test.go) was
+updated to compute its expectation from `internal.GoaHome()` (GOA_HOME-aware, the
+same source `crashLogPath` uses) instead of `os.UserHomeDir()`. Verified: full
+`go test -race ./internal/app` PASS with the real user HOME (run_code + crash tests
+green). Gates: vet/staticcheck/gocognit/gocyclo/gofmt clean on changed files.
 
 ## team: allow defining member order / workflow (implemented)
 Feature delivered: a team definition now carries an ordered `workflow:` of member
