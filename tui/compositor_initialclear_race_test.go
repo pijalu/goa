@@ -23,14 +23,14 @@ type raceTerminal struct {
 	once    sync.Once
 }
 
-func (rt *raceTerminal) Start(func(string), func())     {}
-func (rt *raceTerminal) Stop()                          {}
-func (rt *raceTerminal) SetRaw() (func(), error)        { return func() {}, nil }
-func (rt *raceTerminal) Size() (int, int)               { return rt.w, rt.h }
-func (rt *raceTerminal) HideCursor()                    {}
-func (rt *raceTerminal) ShowCursor()                    {}
-func (rt *raceTerminal) ClearScreen()                   {}
-func (rt *raceTerminal) SetTitle(string)                {}
+func (rt *raceTerminal) Start(func(string), func()) {}
+func (rt *raceTerminal) Stop()                      {}
+func (rt *raceTerminal) SetRaw() (func(), error)    { return func() {}, nil }
+func (rt *raceTerminal) Size() (int, int)           { return rt.w, rt.h }
+func (rt *raceTerminal) HideCursor()                {}
+func (rt *raceTerminal) ShowCursor()                {}
+func (rt *raceTerminal) ClearScreen()               {}
+func (rt *raceTerminal) SetTitle(string)            {}
 
 func (rt *raceTerminal) Write(p []byte) (int, error) {
 	// The first Write blocks until released, staying inside its critical

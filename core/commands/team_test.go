@@ -59,7 +59,10 @@ type stubSession struct {
 	thinking            string
 }
 
-func (s *stubSession) SwitchModel(pid, mid string) error   { s.providerID, s.modelID = pid, mid; return nil }
+func (s *stubSession) SwitchModel(pid, mid string) error {
+	s.providerID, s.modelID = pid, mid
+	return nil
+}
 func (s *stubSession) CurrentModel() (string, string)      { return s.providerID, s.modelID }
 func (s *stubSession) CurrentMode() internal.ModeState     { return s.mode }
 func (s *stubSession) SetMode(ms internal.ModeState) error { s.mode = ms; return nil }
@@ -387,9 +390,9 @@ func TestTeamCommand_RemoveUnknown(t *testing.T) {
 // name arrives as a single trailing token.
 func TestSplitTeamArg(t *testing.T) {
 	cases := []struct {
-		arg      string
-		sub      string
-		rest     string
+		arg  string
+		sub  string
+		rest string
 	}{
 		{"", "", ""},
 		{"add", "add", ""},
@@ -400,10 +403,10 @@ func TestSplitTeamArg(t *testing.T) {
 		{"use:beta", "use", "beta"},
 		{"remove:My Team", "remove", "My Team"},
 		{"show:My Team", "show", "My Team"},
-		{"alpha", "", "alpha"},          // plain team name → default activation
-		{"My Team", "", "My Team"},      // multi-word team name whole
-		{"beta-2", "", "beta-2"},        // hyphenated non-keyword is a name
-		{"statusquo", "", "statusquo"},  // keyword prefix but not keyword
+		{"alpha", "", "alpha"},         // plain team name → default activation
+		{"My Team", "", "My Team"},     // multi-word team name whole
+		{"beta-2", "", "beta-2"},       // hyphenated non-keyword is a name
+		{"statusquo", "", "statusquo"}, // keyword prefix but not keyword
 	}
 	for _, tc := range cases {
 		sub, rest := splitTeamArg(tc.arg)
@@ -667,8 +670,8 @@ func TestConfigMenu_TeamDescriptionEscReturnsToDetail(t *testing.T) {
 
 	menu.open(func() { _ = menu.showRoot() })
 	menu.showSubMenu("teams")
-	sr.onSel("alpha", true)         // team detail
-	sr.onSel("description", true)   // description input shown
+	sr.onSel("alpha", true)       // team detail
+	sr.onSel("description", true) // description input shown
 	if ir.prompt == "" {
 		t.Fatal("expected the description input prompt")
 	}
@@ -855,7 +858,7 @@ func TestConfigMenu_TeamWizardRejectsInvalidName(t *testing.T) {
 	menu := newConfigMenu(*ctx)
 
 	menu.addTeamWizard()
-	sr.onSel = nil // detect any advance to a selector (model pick)
+	sr.onSel = nil          // detect any advance to a selector (model pick)
 	ir.onSub("-lead", true) // leading dash: must start alphanumeric
 
 	if _, exists := cfg.Teams.Definitions["-lead"]; exists {
