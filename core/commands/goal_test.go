@@ -2198,6 +2198,72 @@ func runManageMoveCase(t *testing.T, tc manageMoveCase) {
 	expectManagerCursor(t, opens, 2, cursor, ids[tc.wantCursor])
 }
 
+// TestGoalCommand_ManageReorderKeyedRealSelector is the integration regression
+// for "goal manage '+'/'-' do not reorder": it drives the manager through the
+// KEYED selector path — a real tui.Selector with ReorderMode, fed the actual
+// '+'/'-' bytes — rather than fabricating the "__moveup__" emit. This covers
+// the wiring the legacy tests bypass (they set only SelectOptionFunc, which
+// makes Context.SelectOptionKeyed fall back to default add/delete bindings).
+func TestGoalCommand_ManageReorderKeyedRealSelector(t *testing.T) {
+	cases := []struct {
+		name      string
+		key       string // "+" or "-"
+		selectIdx int    // which queued goal to highlight (0-based)
+		wantOrder []int  // expected queue order as indices into original ids
+	}{
+		{"plus moves second up", "+", 1, []int{1, 0, 2}},
+		{"minus moves first down", "-", 0, []int{1, 0, 2}},
+		{"plus on first is a no-op", "+", 0, []int{0, 1, 2}},
+		{"minus on last is a no-op", "-", 2, []int{0, 1, 2}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, queue := newManagerCommand(t, "")
+			ids := appendQueued(t, queue, "g0", "g1", "g2")
+
+			ctx := testContext()
+			opens := 0
+			// Mimic the production host (internal/app wireInteractiveCallbacks):
+			// build a real selector, apply the keyed bindings, then drive it.
+			ctx.SelectOptionKeyedFunc = func(_ string, items []tui.SelectorItem, current string, keys tui.SelectorKeymap, cb func(string, bool)) {
+				opens++
+				if opens > 1 {
+					cb("", false) // close the reopened manager
+					return
+				}
+				result := make(chan string, 1)
+				sel := tui.NewSelector("Goal manager — execution order", items, current, result)
+				sel.SetKeymap(keys)
+				if !keys.ReorderMode {
+					t.Error("manager must open the selector in ReorderMode")
+				}
+				// Highlight the target queued goal. Manager rows are:
+				// [__add_first__, (no active), g0, g1, g2, __add_last__, __done__].
+				// Row 0 is the add-at-start sentinel, so goal selectIdx sits at row
+				// selectIdx+1 → press Down selectIdx+1 times. The TUI decodes
+				// terminal bytes into named keys (tui.KeyDown) and passes printable
+				// runes ("+"/"-") through unchanged.
+				for i := 0; i <= tc.selectIdx; i++ {
+					sel.HandleInput(tui.KeyDown)
+				}
+				sel.HandleInput(tc.key) // the real '+'/'-' printable key
+				select {
+				case v := <-result:
+					cb(v, v != "")
+				default:
+					t.Errorf("'%s' on a goal row produced no emit — reorder hotkey not firing", tc.key)
+					cb("", false)
+				}
+			}
+
+			if err := cmd.showQueueManager(ctx); err != nil {
+				t.Fatal(err)
+			}
+			assertQueueIDs(t, queue, ids, tc.wantOrder)
+		})
+	}
+}
+
 // TestGoalCommand_ManageActiveRowRejected: move/delete emits and plain Enter
 // on the ACTIVE goal row are rejected with a flash — the queue and the
 // running goal are untouched and the manager reopens on the active row.

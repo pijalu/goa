@@ -28,6 +28,37 @@ per item with a short title, the observed behavior, and the expected behavior.
 # TODO
 
 # Archive
+
+## config: run_code not enabled by default (fixed — test isolation)
+Root cause: `TestRunCodeDefaultsLoaded` (config/run_code_config_test.go) did NOT isolate
+`HOME`, so `NewCascadeLoader` used the real `~/.goa` and loaded the developer's home
+config — which set `tools.enabled.run_code: false`, overriding the embedded default.
+Confirmed: with an isolated `HOME` the test passed; with the real HOME it failed.
+Not a production-code bug: `loadDefaults` → `DeepMerge` → `ToolEnabledConfig.ApplyTo`
+correctly record and merge the embedded `run_code: true`.
+Fix: added `t.Setenv("HOME"/"USERPROFILE", t.TempDir())` to `TestRunCodeDefaultsLoaded`,
+matching every sibling run_code test. Verified: `go test ./config/ -run TestRunCode`
+all PASS.
+
+## goal manage: '+' and '-' do not reorder goals (not reproducible — regression test added)
+Investigated the full path. The reorder hotkeys are correctly wired end-to-end:
+`/goal:manage` opens the selector via `SelectOptionKeyed(..., ReorderMode)`
+(goal.go:947) → the TUI wires `SelectOptionKeyedFunc` → `ShowSelectorKeyed` →
+`sel.SetKeymap(ReorderMode)` (commandcontext.go:75, tui.go:977) → selector
+`handleHotkey` emits `__moveup__`/`__movedown__` on '+'/'-' (selector.go:272-284) →
+`handleManagerSelection` → `moveManagerGoal` → `GoalQueueStore.Move` persists and the
+manager reopens with the cursor on the moved goal (goal.go:1008-1063).
+Verification: added `TestGoalCommand_ManageReorderKeyedRealSelector`
+(core/commands/goal_test.go) driving a REAL `tui.Selector` (ReorderMode) fed the actual
+'+'/'-' keys through `showQueueManagerAt`; all four scenarios pass. A separate probe
+drove keys through the real `TUI.handleKey` router with the selector as a capturing
+overlay and confirmed `+` emits `__moveup__` (previously existing tests only fabricated
+the emit via SelectOptionFunc, bypassing the keyed path). Pre-existing
+`TestGoalCommand_ManageMoveHotkeys` and `GoalQueueStore` move tests also pass.
+Conclusion: no defect found in current code — the feature works as specified. If a
+specific terminal still fails to reorder, reopen with the terminal type and the
+`/goal:manage` key-log (`SetKeyLog`) trace.
+
 ## Cache HIT (fixed in 0f1e434)
 Status bar shows CH:<avg last 10>%▸<last>% with per-element evolution coloring.
 Colors: bold green >=+1pt, green minor fluctuation, red >=5pt drop. Orange removed.
