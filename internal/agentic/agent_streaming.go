@@ -546,13 +546,23 @@ func (a *Agent) handleStreamError(ctx context.Context, stream *provider.Assistan
 	return true, false, a.resolveStreamError(ctx, stream, event.Error)
 }
 
-// tryAutoHealToolCalls parses the accumulated assistant text for XML tool
-// calls when AutoHealToolCalls is enabled and no native tool calls were
-// buffered.  Discovered calls are run through the ToolLoopController and
-// either buffered for execution or recorded as no-ops with a nudge message.
-// It returns true when at least one call was discovered.
+// tryAutoHealToolCalls recovers tool calls the model emitted as text instead
+// of as structured tool_calls, when no native tool calls were buffered.
+//
+// DSML (DeepSeek's native markup) is ALWAYS recovered: DeepSeek-family models
+// fall back to it precisely when the request suppresses structured tool calls
+// (tool_choice "none", e.g. the post-StopTurn collapse round), so a well-formed
+// DSML call would otherwise be silently dropped — losing the user's work with
+// no recourse. That is not the "malformed local model" case the opt-in exists
+// for; it is a first-class provider format and must never be refused.
+//
+// The generic <tool_call>/<function=name> forms remain gated behind
+// AutoHealToolCalls (opt-in for weak local models). Discovered calls are run
+// through the ToolLoopController and either buffered for execution or recorded
+// as no-ops with a nudge message. It returns true when at least one call was
+// discovered.
 func (a *Agent) tryAutoHealToolCalls() bool {
-	if !a.cfg.AutoHealToolCalls || len(a.bufferedToolCalls) > 0 {
+	if len(a.bufferedToolCalls) > 0 {
 		return false
 	}
 
@@ -565,7 +575,9 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		}
 		combined += thinking
 	}
-	if !hasToolSignal(combined) {
+	// DSML is recovered unconditionally; the generic XML forms only when the
+	// operator opted in to healing malformed local-model output.
+	if !hasDSMLSignal(combined) && !(a.cfg.AutoHealToolCalls && hasToolSignal(combined)) {
 		return false
 	}
 
@@ -574,7 +586,14 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		Text: "Decoding tool calls...",
 	})
 
-	calls := parseToolCallsFromText(combined, 0, true)
+	// Parse path: full multi-form recovery when auto-heal is on; DSML-only when
+	// it is off (generic XML healing stays opt-in, DSML never is).
+	var calls []parsedToolCall
+	if a.cfg.AutoHealToolCalls {
+		calls = parseToolCallsFromText(combined, 0, true)
+	} else {
+		calls = parseDSMLToolCallsFromText(combined, 0, true)
+	}
 	if len(calls) == 0 {
 		return false
 	}
@@ -900,7 +919,24 @@ func (a *Agent) handleTextDelta(event provider.AssistantMessageEvent) {
 	a.mu.Unlock()
 	a.contentBuf.WriteString(event.Delta)
 	a.checkStreamLoop(a.contentBuf.String())
-	a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: event.Delta, IsDelta: true})
+
+	// Display path: stream live until a tool-call markup signal appears; from
+	// then on, buffer and emit only markup-free text so multi-delta tool-call
+	// markup (DSML on tool_choice:"none" collapse rounds, or healed XML) is
+	// never rendered raw. The raw contentBuf is untouched for healing/finalize.
+	if !a.contentMarkupSeen && hasToolSignal(event.Delta) {
+		a.contentMarkupSeen = true
+	}
+	if !a.contentMarkupSeen {
+		a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: event.Delta, IsDelta: true})
+		return
+	}
+	a.contentDisplayBuf.WriteString(event.Delta)
+	clean := stripToolMarkup(a.contentDisplayBuf.String(), true)
+	if clean != "" && !containsToolXMLTag(clean) {
+		a.emitEvent(OutputEvent{Type: EventContent, State: StateContent, Role: Assistant, Text: clean, IsDelta: true})
+		a.contentDisplayBuf.Reset()
+	}
 }
 
 func (a *Agent) handleThinkingDelta(event provider.AssistantMessageEvent) {
@@ -1073,6 +1109,7 @@ func containsToolXMLTag(text string) bool {
 		"<tool_call>", "</tool_call>",
 		"<function=", "</function>",
 		"<parameter=", "</parameter>",
+		"<｜｜DSML｜｜", // any DSML delimiter (open or close) suppresses display
 	} {
 		if strings.Contains(text, tag) {
 			return true
@@ -1673,6 +1710,8 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.contentBuf.Reset()
 	a.thinkingBuf.Reset()
 	a.thinkingDisplayBuf.Reset()
+	a.contentDisplayBuf.Reset()
+	a.contentMarkupSeen = false
 	a.turnStatsEmitted = false
 	a.turnStartHistoryLen = len(a.history)
 	a.bufferedToolCalls = nil

@@ -239,3 +239,50 @@ func (m *autoHealMockTool) Execute(input string) (string, error) {
 }
 
 func (m *autoHealMockTool) IsRetryable(err error) bool { return false }
+
+// TestDSMLToolCallRecoveredWithAutoHealOff pins the 2026-08-16 regression:
+// deepseek-v4-flash, on a tool_choice:"none" collapse round, emitted its
+// native DSML tool-call markup as text. With AutoHealToolCalls disabled (the
+// default) the call was silently dropped and the raw markup surfaced to the
+// user. DSML is a first-class provider format and must be recovered even when
+// the generic XML auto-heal opt-in is off.
+func TestDSMLToolCallRecoveredWithAutoHealOff(t *testing.T) {
+	events := []provider.AssistantMessageEvent{
+		{Type: provider.EventTextDelta, Delta: "Queue cleared. Now recreate merged batch.\n<｜｜DSML｜｜tool_calls>\n"},
+		{Type: provider.EventTextDelta, Delta: `<｜｜DSML｜｜invoke name="terminal">` + "\n"},
+		{Type: provider.EventTextDelta, Delta: `<｜｜DSML｜｜parameter name="command" string="true">echo hello</｜｜DSML｜｜parameter>` + "\n"},
+		{Type: provider.EventTextDelta, Delta: "</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>"},
+	}
+	p := registerTestProvider("dsml-noautoheal", events)
+	mdl := testModel(p.api)
+
+	called := false
+	tool := &autoHealMockTool{
+		name: "terminal",
+		exec: func(input string) (string, error) {
+			called = true
+			if input != `{"command":"echo hello"}` {
+				t.Errorf("unexpected input: %q", input)
+			}
+			return "hello", nil
+		},
+	}
+
+	agent := NewAgent(Config{
+		Model:        mdl,
+		SystemPrompt: "test",
+		Tools:        []Tool{tool},
+		// AutoHealToolCalls deliberately left false: DSML must not need it.
+	})
+
+	out, err := agent.RunAndCollect(context.Background(), "recreate goals")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !called {
+		t.Fatal("DSML tool call was dropped with auto-heal off (must be recovered)")
+	}
+	if strings.Contains(out, "DSML") {
+		t.Errorf("DSML markup leaked into user-visible output: %q", out)
+	}
+}

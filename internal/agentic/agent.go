@@ -124,6 +124,17 @@ type Agent struct {
 	// content sent before a tool call (or in a text-only response) is lost.
 	contentBuf strings.Builder
 
+	// contentDisplayBuf accumulates content tokens held back from display once
+	// a tool-call markup signal (tool_call/function/DSML) appears mid-stream,
+	// so multi-delta markup (esp. DSML emitted on tool_choice:"none" collapse
+	// rounds) is never rendered raw to the user. Flushed (stripped) once the
+	// buffer is clean. Text streamed before any signal is emitted live.
+	contentDisplayBuf strings.Builder
+	// contentMarkupSeen latches true once a tool-call markup signal appears in
+	// the content stream, switching display from live deltas to the buffered
+	// (markup-suppressing) path for the rest of the response.
+	contentMarkupSeen bool
+
 	// turnStatsEmitted tracks whether the provider already sent real token
 	// stats during this turn. If true, we skip emitting estimated stats at
 	// turn end to avoid double-counting.
@@ -544,23 +555,14 @@ type ContextCompressionConfig struct {
 	// 0 disables token-based triggering.
 	MaxTokens int
 
-	// ThresholdPercent triggers compression when usage exceeds this
-	// percentage of MaxTokens. 0 = default 90.
-	// Recommended for inline mode: 75-80.
-	//
-	// Deprecated: use Thresholds.TriggerPercent. When both are set,
-	// ThresholdPercent wins (backwards compatibility).
-	ThresholdPercent int
-
 	// Thresholds configures the fill levels at which compression escalates:
-	// early cheap maintenance (soft), the main strategy trigger, and the
-	// emergency ceiling (hard). See CompressionThresholds.
+	// early cheap maintenance (soft) and the emergency ceiling (hard). The
+	// model is exactly soft / hard / on-error — there is no trigger layer.
+	// See CompressionThresholds.
 	Thresholds CompressionThresholds
 
 	// Strategies selects the compression strategy per escalation layer
-	// (soft/trigger/hard). See CompressionLayerStrategies. The legacy
-	// Strategy field maps to the trigger layer when Strategies.Trigger is
-	// unset.
+	// (soft/hard). See CompressionLayerStrategies.
 	Strategies CompressionLayerStrategies
 
 	// DisableCacheGate turns the prefix-cache gate off entirely: proactive
@@ -589,10 +591,6 @@ type ContextCompressionConfig struct {
 	// so a compaction-triggering request can fall back under pressure without
 	// an LLM call when pruning alone resolves it. Zero value = defaults.
 	ToolResultPruning ToolResultPruningConfig
-
-	// Strategy selects the compression algorithm.
-	// Default: CompressionToolElision.
-	Strategy CompressionStrategy
 
 	// PreserveRecentTurns keeps the last N user/assistant/tool turns
 	// uncompressed. Default: 2.
@@ -798,7 +796,10 @@ func NewAgent(cfg Config) *Agent {
 	// the caller left MicroCompaction at zero. Without this, DefaultMicroCompaction
 	// Config's values (KeepRecentMessages=20, MinContextRatio=0.5, ...) are
 	// silently never applied and microCompactForced reads zero values.
-	if cfg.ContextCompression.Strategy == CompressionMicro && cfg.ContextCompression.MicroCompaction == (MicroCompactionConfig{}) {
+	// Apply only when micro is the EXPLICIT soft-layer strategy: the resolved
+	// softStrategy defaults to micro even with the soft layer disabled, which
+	// would otherwise populate MicroCompaction for non-micro configs.
+	if cfg.ContextCompression.Strategies.Soft == CompressionMicro && cfg.ContextCompression.MicroCompaction == (MicroCompactionConfig{}) {
 		cfg.ContextCompression.MicroCompaction = DefaultMicroCompactionConfig
 	}
 	a := &Agent{
