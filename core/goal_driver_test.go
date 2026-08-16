@@ -732,8 +732,8 @@ func (a *rateLimitScriptAgent) ResetLoopStop() { a.resetCalls++ }
 
 // fakeTeamOverlay records ApplyOverlay/RemoveOverlay calls for assertions.
 type fakeTeamOverlay struct {
-	applied  []string
-	removed  int
+	applied []string
+	removed int
 }
 
 func (f *fakeTeamOverlay) ApplyOverlay(name string) error {

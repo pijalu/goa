@@ -23,11 +23,11 @@ func (m *configMenu) settingCompression() {
 	}
 	openers := map[string]func(){
 		"soft_percent": func() { m.settingCompressionCeiling("soft") },
-		"soft_method": func() { m.settingCompressionMethod("soft") },
+		"soft_method":  func() { m.settingCompressionMethod("soft") },
 		"hard_percent": func() { m.settingCompressionCeiling("hard") },
-		"hard_method": func() { m.settingCompressionMethod("hard") },
-		"on_error":   m.settingCompressionOnError,
-		"advanced":   m.settingCompressionAdvanced,
+		"hard_method":  func() { m.settingCompressionMethod("hard") },
+		"on_error":     m.settingCompressionOnError,
+		"advanced":     m.settingCompressionAdvanced,
 	}
 	m.ctx.SelectOption("Compression:", items, "", func(selected string, ok bool) {
 		if !ok {

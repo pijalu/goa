@@ -192,8 +192,8 @@ func TestAgent_CompactStalePruningSkipsSummarize(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 200000,
 			Thresholds: CompressionThresholds{
-				TriggerPercent: 50,
-				HardPercent:    95,
+				SoftPercent: 50,
+				HardPercent: 95,
 			},
 		},
 	})

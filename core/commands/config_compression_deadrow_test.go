@@ -94,9 +94,9 @@ func TestCompressionMenu_AdvancedNoDeadRows(t *testing.T) {
 // "off" turns OnContextError off; a method turns it on and sets the strategy.
 func TestCompressionMenu_OnErrorPicker(t *testing.T) {
 	cfg := &config.Config{ContextCompression: config.ContextCompressionConfig{
-		Enabled:          boolPtr(true),
-		OnContextError:   true,
-		OnErrorStrategy:  "hybrid",
+		Enabled:         boolPtr(true),
+		OnContextError:  true,
+		OnErrorStrategy: "hybrid",
 	}}
 	ctx, sr, _, _ := newMenuTestContext(t, cfg)
 	menu := newConfigMenu(*ctx)

@@ -1025,12 +1025,12 @@ func TestCompressionLabel(t *testing.T) {
 	}{
 		{
 			name: "explicitly disabled",
-			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(false)}},
+			cfg:  &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(false)}},
 			want: "disabled",
 		},
 		{
 			name: "nothing enabled",
-			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)}},
+			cfg:  &config.Config{ContextCompression: config.ContextCompressionConfig{Enabled: boolPtr(true)}},
 			want: "none active",
 		},
 		{
@@ -1046,9 +1046,9 @@ func TestCompressionLabel(t *testing.T) {
 		{
 			name: "hard plus on-error (tuned default)",
 			cfg: &config.Config{ContextCompression: config.ContextCompressionConfig{
-				Enabled:         boolPtr(true),
-				Thresholds:      config.CompressionThresholdsConfig{HardPercent: 95},
-				OnContextError:  true,
+				Enabled:        boolPtr(true),
+				Thresholds:     config.CompressionThresholdsConfig{HardPercent: 95},
+				OnContextError: true,
 			}},
 			want: "2 active",
 		},

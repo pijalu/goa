@@ -166,8 +166,8 @@ type GoalDriver struct {
 	// overlay is currently bound to so it is applied once per goal. Nil =
 	// team overlays disabled (no TeamManager wired). Both fields are only
 	// touched from the single Drive loop.
-	TeamOverlay    TeamOverlayManager
-	overlayGoalID  string
+	TeamOverlay   TeamOverlayManager
+	overlayGoalID string
 }
 
 // TeamOverlayManager is the subset of the TeamManager the goal drive loop needs

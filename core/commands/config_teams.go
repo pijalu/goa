@@ -118,7 +118,6 @@ func (m *configMenu) openTeamsActive() {
 	})
 }
 
-
 // openTeamDetail edits one team definition.
 func (m *configMenu) openTeamDetail(name string) {
 	m.current = func() { m.openTeamDetail(name) }

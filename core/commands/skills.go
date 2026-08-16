@@ -35,18 +35,18 @@ func (c *SkillsCommand) CompleteArgs(ctx core.Context, prefix string) []core.Arg
 	}
 
 	// Level 2+: propose skill names for run:/show:/enable:/disable:/sticky:
-		switch parts[0] {
-		case "run", "show":
-			return skillNameCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
-		case "enable":
-			return skillEnableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
-		case "disable":
-			return skillDisableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
-		case "sticky":
-			return skillStickyCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
-		}
-		return nil
+	switch parts[0] {
+	case "run", "show":
+		return skillNameCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
+	case "enable":
+		return skillEnableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
+	case "disable":
+		return skillDisableCompletions(parts[0], strings.Join(parts[1:], ":"), ctx)
+	case "sticky":
+		return skillStickyCompletions(parts[0], strings.Join(parts[1:], ":"), ctx.SkillRegistry)
 	}
+	return nil
+}
 
 // skillSubcommandCompletions proposes the run/show/enable/disable subcommands
 // for completion.

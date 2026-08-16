@@ -453,15 +453,12 @@ func (p *AgentPool) inheritGoaConfig(ac *agentic.Config) {
 	ac.SkillExecutionMode = agentic.SkillExecutionMode(p.Config.Skills.ExecutionMode)
 	if p.Config.ContextCompression.EnabledValue() || p.Config.ContextCompression.MaxTokens > 0 {
 		ac.ContextCompression = agentic.ContextCompressionConfig{
-			MaxTokens:        p.Config.ContextCompression.MaxTokens,
-			ThresholdPercent: p.Config.ContextCompression.ThresholdPercent,
+			MaxTokens: p.Config.ContextCompression.MaxTokens,
 			Thresholds: agentic.CompressionThresholds{
-				SoftPercent:    p.Config.ContextCompression.Thresholds.SoftPercent,
-				TriggerPercent: p.Config.ContextCompression.Thresholds.TriggerPercent,
-				HardPercent:    p.Config.ContextCompression.Thresholds.HardPercent,
+				SoftPercent: p.Config.ContextCompression.Thresholds.SoftPercent,
+				HardPercent: p.Config.ContextCompression.Thresholds.HardPercent,
 			},
 			OnContextError:      p.Config.ContextCompression.OnContextError,
-			Strategy:            agentic.CompressionStrategy(p.Config.ContextCompression.Strategy),
 			PreserveRecentTurns: p.Config.ContextCompression.PreserveRecentTurns,
 		}
 	}

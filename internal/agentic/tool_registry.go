@@ -56,9 +56,9 @@ type ToolRegistry struct {
 
 	// Deferred-loading state (P1): configured once at construction.
 	deferralActive bool
-	loaderName     string            // loader tool name ("" when no loader)
-	deferred       []string          // deferred tool names, alpha-sorted
-	deferredSet    map[string]bool   // deferred name → true
+	loaderName     string          // loader tool name ("" when no loader)
+	deferred       []string        // deferred tool names, alpha-sorted
+	deferredSet    map[string]bool // deferred name → true
 
 	// Loaded-tail state: append-only, mutated by LoadDeferred.
 	mu            sync.Mutex

@@ -32,23 +32,23 @@ type sessionReferenceMessage struct {
 // sessionReferenceJSON is the serialized envelope of one referenced session
 // (dsh sessionReference context source reference record).
 type sessionReferenceJSON struct {
-	ID             string                    `json:"id"`
-	Label          string                    `json:"label"`
-	CaptureSeq     int                       `json:"capture_seq"`
-	Compact        bool                      `json:"compact"`
-	Retained       int                       `json:"retained_messages"`
-	Omitted        int                       `json:"omitted_messages"`
-	OmittedBytes   int                       `json:"omitted_bytes"`
-	Truncated      bool                      `json:"truncated"`
-	Messages       []sessionReferenceMessage `json:"messages"`
-	MessageKept    []bool                    `json:"-"`
+	ID           string                    `json:"id"`
+	Label        string                    `json:"label"`
+	CaptureSeq   int                       `json:"capture_seq"`
+	Compact      bool                      `json:"compact"`
+	Retained     int                       `json:"retained_messages"`
+	Omitted      int                       `json:"omitted_messages"`
+	OmittedBytes int                       `json:"omitted_bytes"`
+	Truncated    bool                      `json:"truncated"`
+	Messages     []sessionReferenceMessage `json:"messages"`
+	MessageKept  []bool                    `json:"-"`
 }
 
 // sessionReferenceEnvelope is the top-level snapshot document wrapped by the
 // <referenced-sessions> framing tags.
 type sessionReferenceEnvelope struct {
-	Kind       string                `json:"kind"`
-	Version    int                   `json:"version"`
+	Kind       string                 `json:"kind"`
+	Version    int                    `json:"version"`
 	References []sessionReferenceJSON `json:"references"`
 }
 
