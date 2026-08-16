@@ -27,20 +27,35 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## CRITICAL: export/import fails — "Unexpected compression method: ceiling"
-Observed: importing/exporting a session archive fails with
-`Unexpected compression method: ceiling` on
-`.goa/exports/goa-export-20260816-142942.zip`. The string "ceiling" is not a ZIP
-compression method — this reads like a label/value mix-up in the export/import
-code path (a field that should hold the compression method enum is being fed the
-word "ceiling", or a corrupt/unexpected archive), and the error message is
-unactionable.
-Expected: session export produces a valid ZIP and import reads it back
-(round-trip). The compression method must be a real ZIP method (store/deflate);
-the error should identify the offending field/source. Investigate the export
-writer + import reader (likely under internal/... session export or
-tools/export), reproduce with a round-trip test, and fix root cause. Add a
-round-trip test that would have caught it.
+## CRITICAL: context compaction shows "Unexpected compression method: ceiling" and drops messages instead of summarizing
+Observed (screenshot): a banner `⚡ Context compacted (ceiling): 89% → 44% · 265
+messages dropped · ~133415 tokens freed`, plus a surfaced string "Unexpected
+compression method: ceiling". The user config intent is **95% → summarize**
+(only soft/hard/error layers; no proactive "trigger"). Two problems:
+(1) "ceiling" is the reactive context-ceiling *trigger label*, surfaced where a
+compression strategy/method name is expected — confusing and unactionable.
+(2) The reactive ceiling enforcer DROPPED 265 messages instead of the hard layer
+SUMMARIZING them. Root cause (internal/agentic/agent_streaming.go:1705-1708 and
+:170-173): each turn/round runs `maybeCompress()` (hard layer → Compact() →
+summarize) and then UNCONDITIONALLY `enforceContextCeiling()`. When the hard
+summarize fails (LLM summarize error — logged only at line 1706/171) the history
+is untouched, still over the ceiling, so `enforceContextCeiling` front-cuts the
+oldest messages and emits `emitCompactionResult("ceiling", ...)` — the destructive
+drop the user saw. (Dev home config sets hard_percent: 60, so this fired at 60%.)
+Expected: when hard=summarize and the summarize fails, surface the failure
+clearly (no confusing "ceiling"/"method" wording) and do NOT silently
+message-drop as if it were a normal compaction; the reactive ceiling should be a
+last resort clearly labeled, and the failed summarize error must be visible.
+
+DESIGN CONSTRAINT (user): the compression model must be EXACTLY three layers —
+**soft / hard / error** — and nothing else. Remove the "trigger" layer
+(thresholds.trigger_percent, strategies.trigger, the deprecated threshold_percent
+alias, the tierTrigger tier, the legacy single `strategy` field) and remove the
+derived "magic value" helpers that invent extra levels (escalationPercent =
+hard−5, deferralCeiling = hard−10, elisionTargetPercent = hard−20,
+reactiveTargetPercent = hard−50). Every threshold reference must be a configured
+soft or hard value (or the single hard default 95), never a hard−N invention.
+Default: hard = 95% → summarize.
 
 ## /cache:stats should show a bar chart of recent cache-hit values
 Observed: `/cache:stats` shows cache stats per turn / as aggregate text.

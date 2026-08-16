@@ -43,8 +43,10 @@ func bigToolHistory() []Message {
 
 // TestEnforceContextCeiling_EmitsCompactEvent is the regression test for
 // context compressions are invisible: the reactive ceiling enforcer
-// dropped messages with zero observable trace. It must now emit exactly one
-// structured EventCompact with Strategy="ceiling".
+// dropped messages with zero observable trace. It must emit exactly one
+// structured EventCompact labeled "hard fallback" (NOT the confusing "ceiling"),
+// and it must cut only to the hard ceiling — not to a derived hard−N magic
+// target (bugs.md: "Unexpected compression method: ceiling" / 95%→summarize).
 func TestEnforceContextCeiling_EmitsCompactEvent(t *testing.T) {
 	mk := func(role Role, n int) Message {
 		return Message{Type: Content, Role: role, Content: strings.Repeat("x", n)}
@@ -71,8 +73,8 @@ func TestEnforceContextCeiling_EmitsCompactEvent(t *testing.T) {
 	if ci == nil {
 		t.Fatal("ceiling EventCompact must carry the structured Compaction payload")
 	}
-	if ci.Strategy != "ceiling" {
-		t.Errorf("Strategy = %q, want ceiling", ci.Strategy)
+	if ci.Strategy != "hard fallback" {
+		t.Errorf("Strategy = %q, want \"hard fallback\" (the old confusing \"ceiling\" label was removed)", ci.Strategy)
 	}
 	if ci.Removed <= 0 {
 		t.Errorf("Removed = %d, want > 0 (messages were dropped)", ci.Removed)

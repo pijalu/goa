@@ -315,12 +315,12 @@ func TestPreparePath_CeilingOnlyWhenSummarizeCannotRun(t *testing.T) {
 	}
 	found := false
 	for _, ev := range compactEvents(obs) {
-		if ev.Compaction != nil && ev.Compaction.Strategy == "ceiling" {
+		if ev.Compaction != nil && ev.Compaction.Strategy == "hard fallback" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected a ceiling compaction event when summarize cannot run")
+		t.Error("expected a 'hard fallback' compaction event when summarize cannot run (the old 'ceiling' label was removed)")
 	}
 }
 

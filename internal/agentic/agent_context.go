@@ -38,23 +38,25 @@ func (a *Agent) effectiveMaxTokens() int {
 	return maxTokens
 }
 
-// enforceContextCeiling is a last-resort safety net. After proactive compression
-// has run, if the estimated context still exceeds the configured maximum it
-// drops the oldest non-system messages until usage is back under the ceiling.
-// This prevents runaway conversations from growing unbounded when compression
-// is disabled, misconfigured, or unable to keep up.
+// enforceContextCeiling is the bounded last-resort fallback for the hard layer.
+// After the hard-layer strategy (summarize by default) has run, if the estimated
+// context still exceeds the hard ceiling it drops the oldest non-system messages
+// until usage is back under the HARD ceiling (no derived magic target). This
+// prevents an over-window request from going out when summarize failed or could
+// not free enough. It is emitted with the explicit "hard fallback" label (NOT
+// the confusing "ceiling") so the surface shows this is a fallback for a failed
+// summarize, not a normal compression.
 //
 // The mutation runs under a.mu (enforceContextCeilingLocked); the structured
 // EventCompact is emitted after unlock so every visible surface — the
-// conversation bubble, the footer counter, and the session JSONL — records
-// the otherwise-silent reactive cut ("context compressions are
-// invisible").
+// conversation bubble, the footer counter, and the session JSONL — records the
+// cut.
 func (a *Agent) enforceContextCeiling() {
 	before, res, ok := a.enforceContextCeilingLocked()
 	if !ok {
 		return
 	}
-	a.emitCompactionResult("ceiling", before, res, "")
+	a.emitCompactionResult("hard fallback", before, res, "summarize did not fit the window; dropped oldest messages to the hard ceiling")
 }
 
 // enforceContextCeilingLocked performs the reactive cut under a.mu and
@@ -67,23 +69,17 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 		return before, res, false
 	}
 
-	// Use effectiveHard: the ceiling enforcer is a REACTIVE safety net that
-	// stays on even when proactive threshold compression is disabled (hard=0).
+	// Use effectiveHard: the ceiling enforcer is the reactive fallback that
+	// stays on even when the proactive hard layer is disabled (hard=0).
 	hardCeilingPercent := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	hardCeiling := maxTokens * hardCeilingPercent / 100
 	// The fixed per-turn cost (system prompt + tool schemas) is always present;
 	// history must fit in the remainder or the outgoing request still overflows.
+	// The cut target IS the hard ceiling — no derived hard−N magic level: the
+	// user configured hard as the cap, so the fallback brings usage under it.
 	historyCeiling := hardCeiling - a.fixedCostTokens()
-	// Reactive target (CM:13 design rule 4): a destructive front-cut
-	// busts the provider prefix cache, so cut once to free ≥50% of the window
-	// rather than nibbling just under the ceiling (which re-busts every round).
-	// historyTarget is the token budget for retained history after the cut; the
-	// enforcer finds the smallest cut whose retained tail fits this lower target
-	// so one cache miss buys many rounds of headroom.
-	targetPercent := a.cfg.ContextCompression.resolveThresholds().reactiveTargetPercent()
-	historyTarget := maxTokens*targetPercent/100 - a.fixedCostTokens()
-	if historyTarget < 0 {
-		historyTarget = 0
+	if historyCeiling < 0 {
+		historyCeiling = 0
 	}
 
 	// History is mutated here; hold the agent mutex for the whole transaction.
@@ -119,42 +115,21 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 	}
 
 	// Keep the system prompt (index 0) plus the most-recent contiguous tail
-	// whose tokens fit the reactive TARGET (≥50% savings), not just the ceiling.
-	// Find the smallest cut k in [1, n] such that tok[0] + sum(tok[k:]) <=
-	// historyTarget. Cutting to the lower target frees ≥ReactiveSavingsPercent
-	// of the window in one pass (design rule 4) so the next tool result does not
-	// immediately re-cross the ceiling and bust the cache again. If the target
-	// is unachievable (every cut still exceeds it), fall back to the hard
-	// ceiling as the safety bound so the request at least fits.
+	// whose tokens fit the HARD ceiling. Find the smallest cut k in [1, n] such
+	// that tok[0] + sum(tok[k:]) <= historyCeiling. There is no lower magic
+	// target: the fallback cuts to the configured hard ceiling (the cap the user
+	// set), dropping the fewest oldest messages needed to fit.
 	system := tok[0]
 	nonSystem := total - system // sum(tok[1:])
 	cut := len(hist)            // fall-back: keep only the system prompt
 	droppedTokens := 0
-	fittedCeiling := false
 	for k := 1; k < len(hist); k++ {
 		keptHere := system + (nonSystem - droppedTokens) // tok[0] + sum(tok[k:])
-		if !fittedCeiling && keptHere <= historyCeiling {
-			fittedCeiling = true
-		}
-		if keptHere <= historyTarget {
+		if keptHere <= historyCeiling {
 			cut = k
 			break
 		}
 		droppedTokens += tok[k]
-	}
-	// The target was unreachable even after dropping everything non-system:
-	// fall back to the smallest cut that fits the hard ceiling so the outgoing
-	// request still fits (the absolute safety guarantee of this enforcer).
-	if cut == len(hist) && fittedCeiling {
-		droppedTokens = 0
-		for k := 1; k < len(hist); k++ {
-			keptHere := system + (nonSystem - droppedTokens)
-			if keptHere <= historyCeiling {
-				cut = k
-				break
-			}
-			droppedTokens += tok[k]
-		}
 	}
 
 	// Advance past any tool results whose owning assistant(tool_calls) message
@@ -177,8 +152,8 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 		}
 	}
 	if a.cfg.Logger != nil && droppedTokens > 0 {
-		a.cfg.Logger.Log(Warn, "Context ceiling enforced: reactive cut freed ~%d tokens (target %d%% of window, ≥%d%% savings per CM:13)",
-			droppedTokens, targetPercent, ReactiveSavingsPercent)
+		a.cfg.Logger.Log(Warn, "Hard-ceiling fallback: dropped oldest messages, freed ~%d tokens to fit under %d%% of window",
+			droppedTokens, hardCeilingPercent)
 	}
 
 	kept := append(hist[:1:1], hist[cut:]...)

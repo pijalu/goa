@@ -380,45 +380,55 @@ func TestEnforceContextCeiling_NeverOrphansToolResults(t *testing.T) {
 // We build a history pinned near the 95% ceiling, run the enforcer, and assert
 // the retained history occupies at most the reactive target (≈45% of the window
 // at the default 95% ceiling), i.e. ≥50% savings.
-func TestEnforceContextCeiling_ReactiveCutFreesHalfWindow(t *testing.T) {
+// TestEnforceContextCeiling_ReactiveCutTargetsHardCeiling replaces the old
+// "frees half window" (hard−50 magic) assertion with the soft/hard/error
+// contract: the reactive fallback cuts the FEWEST oldest messages needed to
+// bring usage under the configured HARD ceiling (no derived hard−N target).
+// With a 95% ceiling and history just over it, the cut must (a) drop the few
+// over-ceiling messages, (b) keep usage under 95% (not all the way down to a
+// 45% magic target), and (c) keep the most recent messages.
+func TestEnforceContextCeiling_ReactiveCutTargetsHardCeiling(t *testing.T) {
 	const window = 10000
 	// estimateTokens counts ascii chars as asciiCount/4, so N chars => N/4 tokens.
-	// Build ~38 messages of ~100 tokens each (~3800 tokens ≈ 38% of window) plus a
-	// system prompt, totaling just over the 95% ceiling so the enforcer fires.
 	mk := func(role Role, chars int) Message {
 		return Message{Type: Content, Role: role, Content: strings.Repeat("x", chars)}
 	}
 	hist := []Message{mk(System, 400)} // ~100 tokens
-	// Fill to ~96% of the window: 95 ceiling, so the enforcer must cut.
+	// Fill to ~96% of the window (over the 95% hard ceiling) so the fallback fires.
 	for i := 0; i < 95; i++ {
 		hist = append(hist, mk(User, 400)) // ~100 tokens each
 	}
 	a := &Agent{cfg: Config{Model: provider.Model{ContextWindow: window}}, history: hist}
+	before := len(a.history)
 	a.enforceContextCeiling()
 
 	retained := 0
 	for i := range a.history {
 		retained += messageTokenCount(&a.history[i])
 	}
-	// Reactive target at default hard=95: 95 - ReactiveSavingsPercent(50) = 45%.
-	// Fixed cost is ~0 here (no tool schemas), so retained must be ≤ 45% of window.
-	target := window * 45 / 100
-	if retained > target {
-		t.Errorf("reactive cut did not free ≥50%% of the window: retained %d tokens (%.1f%%), target %d tokens (45%%) — "+
-			"a nibble that only dips under the 95%% ceiling re-busts the prefix cache every round (CM:13)",
-			retained, float64(retained)/float64(window)*100, target)
+	hard := window * 95 / 100
+	// (b) usage must fit under the HARD ceiling, not a magic 45% target.
+	if retained > hard {
+		t.Errorf("fallback left %d tokens over the hard ceiling (%d); want ≤ hard ceiling", retained, hard)
 	}
-	// The cut must have actually happened (history shrank substantially).
-	if len(a.history) >= len(hist) {
-		t.Errorf("history was not cut: %d messages before, %d after", len(hist), len(a.history))
+	// (a) the cut should be minimal: only the over-ceiling messages drop, so it
+	// must NOT have fallen to the old hard−50 (45%) target — retained should be
+	// well above 45% (it only needed to drop ~1-2% over the ceiling).
+	if retained < window*50/100 {
+		t.Errorf("fallback over-cut to %.1f%% (< 50%%) — it should cut only to the hard ceiling, not the removed hard−50 magic target",
+			float64(retained)/float64(window)*100)
+	}
+	// The cut happened (history shrank) but kept most messages.
+	if len(a.history) >= before {
+		t.Errorf("history was not cut: %d before, %d after", before, len(a.history))
 	}
 }
 
-// TestEnforceContextCeiling_ReactiveCutNoImmediateRebust verifies the second
-// half of the CM:13 fix: after a reactive cut to the target, a single small
-// tool-result addition must NOT push history back over the ceiling (which would
-// force another destructive cut and re-bust). This is the "one cache bust buys
-// many rounds" guarantee (design rule 4 rationale).
+// TestEnforceContextCeiling_ReactiveCutNoImmediateRebust verifies the reactive
+// fallback is safe across a follow-up round: after a cut to the hard ceiling and
+// a small addition, a second enforce pass must still leave history under the
+// hard ceiling (the fallback re-cuts as needed; it never leaves the request over
+// the configured hard cap).
 func TestEnforceContextCeiling_ReactiveCutNoImmediateRebust(t *testing.T) {
 	const window = 10000
 	mk := func(role Role, chars int) Message {
