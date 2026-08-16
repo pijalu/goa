@@ -507,6 +507,16 @@ func (o *ForegroundOrchestrator) AfterMainTurn(ctx context.Context, mainOutput s
 
 	prompt := o.renderCompanionPrompt(mainOutput)
 	if err := companion.Run(ctx, prompt); err != nil {
+		// The companion stream set the UI busy (stream_start/thinking_start)
+		// but a failure — e.g. a slow-LLM context deadline — aborts before
+		// EventEnd, so no stream_end ever fires. Without this cleanup the
+		// footer stays stuck on "reviewing"/busy and the transcript section
+		// never collapses (bugs.md: team slow-LLM stuck screen + incorrect
+		// statusbar). Emit the companion stream_end so the UI always returns
+		// to idle; the error is still surfaced to the caller for the flash.
+		// From=companion + To=stream_end + Kind=content routes through the same
+		// cleanup path as a normal completion (clear busy, close the section).
+		o.emitKind(gorole.Companion, "stream_end", "", "content")
 		return fmt.Errorf("companion run: %w", err)
 	}
 

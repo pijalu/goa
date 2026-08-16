@@ -355,6 +355,73 @@ func TestAfterMainTurn_EmptyReviewSkipped(t *testing.T) {
 	}
 }
 
+// failingProvider is a test-only provider whose Stream always fails (e.g. a
+// slow-LLM context deadline), so the companion run aborts before EventEnd.
+type failingProvider struct {
+	api provider.Api
+	err error
+}
+
+func (p *failingProvider) API() provider.Api { return p.api }
+
+func (p *failingProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return nil, p.err
+}
+
+func (p *failingProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return nil, p.err
+}
+
+func failingModel(text string) provider.Model {
+	api := provider.Api("test-failing-api-" + text)
+	provider.RegisterApiProvider(&failingProvider{api: api, err: context.DeadlineExceeded})
+	return provider.Model{
+		ID:         "failing-model",
+		Name:       "failing-model",
+		Api:        api,
+		Provider:   provider.ProviderCustom,
+		InputTypes: []string{"text"},
+		BaseURL:    "http://localhost:9999/v1/chat/completions",
+	}
+}
+
+// TestAfterMainTurn_FailureEmitsCompanionStreamEnd is the regression test for
+// the bugs.md entry "team: run breaks on slow LLM — stuck screen, incorrect
+// statusbar". When the companion run fails mid-stream (a slow-LLM deadline),
+// no EventEnd fires so no stream_end is emitted — leaving the footer stuck on
+// "reviewing"/busy and the transcript section open. AfterMainTurn must emit a
+// companion stream_end on failure so the UI always returns to idle.
+func TestAfterMainTurn_FailureEmitsCompanionStreamEnd(t *testing.T) {
+	// A non-eligible retry policy (empty Codes) so the failing companion
+	// surfaces immediately instead of burning the real 5-retry backoff
+	// schedule (~31s) — keeps the test fast while still exercising the
+	// failure path.
+	pool := NewAgentPool(failingModel("boom"), provider.StreamOptions{
+		RetryPolicy: &provider.RetryPolicy{Mode: provider.RetryModeNormal, MaxRetries: 1, Codes: []string{}},
+	}, nil)
+	orch := NewForegroundOrchestrator(pool)
+	orch.SetMode(WorkflowCompanionMinor)
+
+	ctx := context.Background()
+	err := orch.AfterMainTurn(ctx, "func main() {}")
+	if err == nil {
+		t.Fatal("expected companion run error from failing provider")
+	}
+
+	// Drain events, looking for the companion cleanup stream_end.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case msg := <-orch.Events():
+			if msg.From == "companion" && msg.To == "stream_end" && msg.Kind == "content" {
+				return // success: cleanup stream_end emitted
+			}
+		case <-deadline:
+			t.Fatal("no companion stream_end emitted after companion failure — UI would stay stuck busy")
+		}
+	}
+}
+
 // responseProvider is a test-only provider that returns a fixed text response.
 type responseProvider struct {
 	api  provider.Api

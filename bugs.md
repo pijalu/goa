@@ -27,22 +27,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## team: run breaks on slow LLM — stuck screen, companion error, incorrect statusbar
-Observed: With a slow local LLM (LM Studio, google/gemma-4-e4b; companion model
-qwen3.8-27b via nano-gpt), a `/team` run does not complete. The companion cycle
-fails with `Companion error: companion run: LLM request failed (not retryable):
-context deadline exceeded` (agent.log: `stream failure: context deadline exceeded`
-→ `stream error not retryable; surfacing immediately`). The screen is left stuck
-mid-run ("companion · cycle 1", thinking truncated at "Need") and the statusbar
-shows stale/incorrect state. A single slow-LLM timeout kills the whole team run
-instead of being isolated/retried per member.
-Evidence: /Users/muaddib/dev/testt/.goa/exports/goa-export-20260816-125612.zip
-(issue.md, logs/agent.log:776, companion started 12:53:16, failure 12:55:16).
-Expected: (a) a per-member/companion LLM timeout must not hang the UI or abort the
-whole team run — surface the error for that member and keep the screen/statusbar
-accurate; (b) the "not retryable" classification of `context deadline exceeded`
-should be revisited for slow providers (a slow model is recoverable).
-
 ## team: allow defining member order / workflow (feature)
 Feature request: `/team` should let the user define the order and workflow of the
 team — e.g. architect ⇄ coder ⇄ code reviewer — including bidirectional
@@ -51,6 +35,48 @@ pass work in a configurable sequence with the ability to iterate back (reviewer 
 coder) until done.
 
 # Archive
+
+## team: run breaks on slow LLM — stuck screen, companion error, incorrect statusbar (fixed — statusbar cleanup)
+Root cause: the framework-driven companion stream marks the UI busy
+(`SetCompanionBusy(true)`, `CompanionActivity:"reviewing"/"thinking"`) on
+`stream_start`/`thinking_start`, but those indicators are cleared ONLY on
+`stream_end` (`internal/app/orchestrator.go` `handleOrchestratorContentStream`
+`stream_end` case). `stream_end` is emitted solely on a clean `EventEnd`
+(`handleAgentEndEvent`). On a slow local LLM the companion request hits the
+`multiagent.message_timeout` (default 120s) deadline and `companion.Run`
+returns before `EventEnd` — so NO `stream_end` ever fires: the footer stays
+stuck on "reviewing"/busy and the transcript companion section stays open
+(the reported stuck screen + incorrect statusbar). The run itself did NOT
+"kill the team run": `CompanionCoordinator.RunPostTurn` runs the review in a
+background goroutine and surfaces the error as a flash, leaving the main agent
+usable — the visible symptom was the never-cleared busy state.
+Fix (a) — statusbar/screen accuracy: on companion-run error, `AfterMainTurn`
+(multiagent/foreground_orchestrator.go) now emits a companion `stream_end`
+(`From=companion, To=stream_end, Kind=content`) before returning the error.
+This routes through the SAME cleanup path as a normal completion — clears
+`CompanionBusy`, resets `CompanionActivity`, and collapses the section via
+`SetDone("")` — so the UI always returns to idle even on timeout. The error is
+still surfaced as a flash.
+Fix (b) — "not retryable" revisited: the classification is already correct in
+principle: `shouldRetryStreamError` retries `context.DeadlineExceeded` WHILE
+the parent ctx is alive (a request-scoped deadline, e.g. a slow LM Studio load
+— confirmed by the default 5-retry/backoff plan engaging in tests). The
+failure surfaced as "not retryable" only because the companion's own
+`messageTimeout` deadline had fired (parent dead → retry pointless). That hard
+bound is intentional fail-open for a background reviewer; it is configurable
+via `multiagent.message_timeout` (raise it for slow models, e.g. `5m`). No
+code change needed for (b); the per-member `thinking_level`/timeout knobs plus
+the (a) cleanup resolve the reported behavior.
+Tests: `TestAfterMainTurn_FailureEmitsCompanionStreamEnd` (new, failing
+provider aborts before EventEnd → asserts the companion cleanup `stream_end`
+is emitted); full `TestAfterMainTurn_*`/`TestForegroundOrchestrator_*` and
+`internal/app` orchestrator/companion/footer suites pass under `-race`.
+Gates: vet/staticcheck/gocognit/gocyclo clean on changed files. NOTE: two
+`internal/app` `run_code` bootstrap tests FAIL on this machine both before AND
+after the change (pre-existing HOME-isolation issue — the developer's
+`~/.goa` sets `tools.enabled.run_code:false`; see the archived run_code
+entry); unrelated to this fix.
+Evidence (original): /Users/muaddib/dev/testt/.goa/exports/goa-export-20260816-125612.zip.
 
 ## race: TestRunWizardWithTerminal_FirstFrameRenders (fixed — InitialClear unsynchronized)
 Root cause: `Compositor.InitialClear()` (tui/compositor.go) wrote the clear
