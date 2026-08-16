@@ -6,7 +6,9 @@ package multiagent
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -352,6 +354,71 @@ func TestAfterMainTurn_EmptyReviewSkipped(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timeout")
 	default:
+	}
+}
+
+// countingProvider records how many times Stream ran (for loop assertions).
+type countingProvider struct {
+	api   provider.Api
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *countingProvider) API() provider.Api { return p.api }
+
+func (p *countingProvider) Stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	p.mu.Lock()
+	p.calls++
+	n := p.calls // vary the response per call so the loop detector doesn't trip
+	p.mu.Unlock()
+	text := fmt.Sprintf("out-%d", n)
+	result := provider.NewAssistantMessageEventStream(64)
+	go func() {
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextStart, ContentIndex: 0})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextDelta, ContentIndex: 0, Delta: text})
+		result.Push(provider.AssistantMessageEvent{Type: provider.EventTextEnd, ContentIndex: 0})
+		result.End(&provider.AssistantMessage{Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: text}}})
+	}()
+	return result, nil
+}
+
+func (p *countingProvider) StreamSimple(model provider.Model, ctx provider.Context, opts provider.SimpleStreamOptions) (*provider.AssistantMessageEventStream, error) {
+	return p.Stream(model, ctx, provider.BuildSimpleOptions(model, opts))
+}
+
+func (p *countingProvider) count() int { p.mu.Lock(); defer p.mu.Unlock(); return p.calls }
+
+// TestRunPipeline_LoopsBackReviewerToCoder proves the team-workflow feedback
+// loop (bugs.md: architect ⇄ coder ⇄ code reviewer): a reviewer stage with a
+// loop_back_to edge returns control to the coder and the intervening stages
+// repeat, bounded by max_iterations.
+func TestRunPipeline_LoopsBackReviewerToCoder(t *testing.T) {
+	cp := &countingProvider{api: provider.Api("test-counting-api")}
+	provider.RegisterApiProvider(cp)
+	countingModel := provider.Model{
+		ID: "count-model", Name: "count-model", Api: cp.api,
+		Provider: provider.ProviderCustom, InputTypes: []string{"text"},
+		BaseURL: "http://localhost:9999/v1/chat/completions",
+	}
+	// Pool default model is the counting model; every role resolves to it.
+	pool := NewAgentPool(countingModel, provider.StreamOptions{}, nil)
+	orch := NewForegroundOrchestrator(pool)
+
+	p := &Pipeline{
+		ID: "team-wf",
+		Stages: []PipelineStage{
+			{ID: "architect", Name: "Architect", Agent: "architect", Prompt: "Design"},
+			{ID: "coder", Name: "Coder", Agent: "coder", Prompt: "Implement"},
+			{ID: "reviewer", Name: "Reviewer", Agent: "reviewer", Prompt: "Review", Loop: LoopConfig{LoopBackTo: "coder", MaxIterations: 2}},
+		},
+	}
+	if err := orch.RunPipeline(context.Background(), p, "task"); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	// architect=1, then coder/reviewer run 3 times (initial + 2 loop-backs)
+	// = 1 + 2*... architect(1) + coder×3 + reviewer×3 = 7 total Stream calls.
+	if got, want := cp.count(), 7; got != want {
+		t.Errorf("total stage runs = %d, want %d (architect×1, coder×3, reviewer×3)", got, want)
 	}
 }
 

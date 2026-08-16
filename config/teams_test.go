@@ -67,6 +67,43 @@ teams:
 	}
 }
 
+func TestTeamsYAML_ParseWorkflow(t *testing.T) {
+	raw := `
+teams:
+  definitions:
+    crew:
+      members:
+        architect: { model: m1, role: main }
+        coder:     { model: m2, role: worker }
+        reviewer:  { model: m3, role: reviewer }
+      workflow:
+        - { member: architect, prompt: "Design {{.UserInput}}" }
+        - { member: coder, prompt: "Implement the design" }
+        - { member: reviewer, prompt: "Review the code", loop_back_to: coder, max_iterations: 3 }
+`
+	var c Config
+	if err := yaml.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	def := c.Teams.Definitions["crew"]
+	if !def.HasWorkflow() {
+		t.Fatal("workflow not parsed")
+	}
+	if len(def.Workflow) != 3 {
+		t.Fatalf("workflow stages = %d, want 3", len(def.Workflow))
+	}
+	if def.Workflow[0].Member != "architect" || def.Workflow[1].Member != "coder" || def.Workflow[2].Member != "reviewer" {
+		t.Errorf("workflow order = %+v", def.Workflow)
+	}
+	last := def.Workflow[2]
+	if last.LoopBackTo != "coder" || last.MaxIterations != 3 {
+		t.Errorf("loop = %+v, want loop_back_to=coder max_iterations=3", last)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil for a valid workflow", err)
+	}
+}
+
 func TestTeamDefinition_ResolvedMembers(t *testing.T) {
 	t.Run("shorthand", func(t *testing.T) {
 		def := TeamDefinition{
@@ -267,6 +304,60 @@ func TestValidateTeams(t *testing.T) {
 				Members: map[string]TeamMember{"Bad One": {Model: "m1", Role: "main"}},
 			}}
 		}, wantErr: "member name must match"},
+		// Workflow (bugs.md: member order / workflow) — architect ⇄ coder ⇄ reviewer.
+		{name: "workflow: valid ordered with feedback loop", mutate: func(c *Config) {
+			c.Teams.Definitions = map[string]TeamDefinition{"t": {
+				Members: map[string]TeamMember{
+					"architect": {Model: "m1", Role: "main"},
+					"coder":     {Model: "m2", Role: "worker"},
+					"reviewer":  {Model: "m3", Role: "reviewer"},
+				},
+				Workflow: []TeamWorkflowStage{
+					{Member: "architect"},
+					{Member: "coder"},
+					{Member: "reviewer", LoopBackTo: "coder", MaxIterations: 3},
+				},
+			}}
+		}},
+		{name: "workflow: stage references unknown member", mutate: func(c *Config) {
+			c.Teams.Definitions = map[string]TeamDefinition{"t": {
+				Members:  map[string]TeamMember{"a": {Model: "m1", Role: "main"}},
+				Workflow: []TeamWorkflowStage{{Member: "ghost"}},
+			}}
+		}, wantErr: `member: "ghost" is not a member of the team`},
+		{name: "workflow: stage missing member", mutate: func(c *Config) {
+			c.Teams.Definitions = map[string]TeamDefinition{"t": {
+				Members:  map[string]TeamMember{"a": {Model: "m1", Role: "main"}},
+				Workflow: []TeamWorkflowStage{{Member: ""}},
+			}}
+		}, wantErr: ".member: must be set"},
+		{name: "workflow: duplicate member stage", mutate: func(c *Config) {
+			c.Teams.Definitions = map[string]TeamDefinition{"t": {
+				Members: map[string]TeamMember{
+					"a": {Model: "m1", Role: "main"},
+					"b": {Model: "m2", Role: "worker"},
+				},
+				Workflow: []TeamWorkflowStage{{Member: "a"}, {Member: "b"}, {Member: "a"}},
+			}}
+		}, wantErr: "appears more than once"},
+		{name: "workflow: loop to unknown stage", mutate: func(c *Config) {
+			c.Teams.Definitions = map[string]TeamDefinition{"t": {
+				Members: map[string]TeamMember{
+					"a": {Model: "m1", Role: "main"},
+					"b": {Model: "m2", Role: "reviewer"},
+				},
+				Workflow: []TeamWorkflowStage{{Member: "a"}, {Member: "b", LoopBackTo: "ghost"}},
+			}}
+		}, wantErr: "does not match an earlier workflow stage"},
+		{name: "workflow: forward loop rejected", mutate: func(c *Config) {
+			c.Teams.Definitions = map[string]TeamDefinition{"t": {
+				Members: map[string]TeamMember{
+					"a": {Model: "m1", Role: "main"},
+					"b": {Model: "m2", Role: "reviewer"},
+				},
+				Workflow: []TeamWorkflowStage{{Member: "a", LoopBackTo: "b"}, {Member: "b"}},
+			}}
+		}, wantErr: "does not match an earlier workflow stage"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

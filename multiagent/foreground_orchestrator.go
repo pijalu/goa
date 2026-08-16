@@ -633,6 +633,112 @@ func (o *ForegroundOrchestrator) RunWorkflow(ctx context.Context, reg *WorkflowR
 	return nil
 }
 
+// RunPipeline executes a caller-supplied pipeline whose stages may loop back:
+// after a stage whose Loop.LoopBackTo names an earlier stage completes,
+// control returns to that earlier stage and the intervening stages repeat,
+// bounded by Loop.MaxIterations (0 = run the edge once, i.e. no repeat). This
+// is the team-workflow execution path (bugs.md "team: member order / workflow")
+// — e.g. architect → coder → reviewer ⇄ coder. Unlike RunWorkflow it takes the
+// pipeline directly (no registry lookup) because team workflows are built
+// on the fly from the team definition.
+//
+// Execution model: stages run in Stages order via runStage (the same per-stage
+// machinery as RunWorkflow — context accumulation, gates, steering). The stage
+// cursor advances forward normally; a completed stage with a Loop back-edge
+// repositions the cursor to the target while iterations remain.
+func (o *ForegroundOrchestrator) RunPipeline(ctx context.Context, p *Pipeline, userInput string) error {
+	if p == nil || len(p.Stages) == 0 {
+		return fmt.Errorf("pipeline has no stages")
+	}
+	if err := validateWorkflow(*p); err != nil {
+		return fmt.Errorf("invalid pipeline: %w", err)
+	}
+
+	ctx = o.startRunContext(ctx)
+	defer o.finishRunContext()
+
+	run := NewPipelineRun(p)
+	o.mu.Lock()
+	o.activePipeline = p
+	o.activeRun = run
+	o.accumulatedContext = ""
+	o.mu.Unlock()
+	// Always clear the active run on exit so companion mode works afterwards.
+	defer func() {
+		o.mu.Lock()
+		o.activeRun = nil
+		o.activePipeline = nil
+		o.accumulatedContext = ""
+		o.mu.Unlock()
+	}()
+
+	total := len(p.Stages)
+	o.setProgress(WorkflowProgress{StageIndex: 0, TotalStages: total, StageName: "starting", Status: "running"})
+
+	// iterations[i] counts how many times stage i's loop back-edge has fired.
+	iterations := make(map[int]int)
+	idx := 0
+	for idx >= 0 && idx < total {
+		if o.Stopped() {
+			o.setProgress(WorkflowProgress{Status: "failed"})
+			return fmt.Errorf("orchestrator stopped")
+		}
+		stage := p.Stages[idx]
+		// RunStageAt (not NextStage): loop-backs revisit earlier stages, which
+		// NextStage's len(Stages) cap would refuse.
+		if _, ok := run.RunStageAt(idx); !ok {
+			break
+		}
+		o.setProgress(WorkflowProgress{StageIndex: idx, TotalStages: total, StageName: stage.Name, StageID: stage.ID, Status: "running"})
+		if o.ModeSwitchCallback != nil {
+			o.ModeSwitchCallback(stage.Agent)
+		}
+		if err := o.runStage(ctx, run, stage, userInput); err != nil {
+			o.setProgress(WorkflowProgress{Status: "failed"})
+			return err
+		}
+		idx = nextStageIndex(p, idx, iterations)
+	}
+
+	o.setProgress(WorkflowProgress{Status: "complete"})
+	o.emit("system", "user", fmt.Sprintf("Workflow %q complete.", p.ID))
+	return nil
+}
+
+// nextStageIndex computes the cursor for the stage after `idx`. When stage idx
+// has a Loop back-edge with iterations remaining, the cursor jumps back to the
+// named earlier stage (and the edge count is consumed); otherwise it advances
+// forward by one. Returning len(Stages) ends the pipeline.
+func nextStageIndex(p *Pipeline, idx int, iterations map[int]int) int {
+	stage := p.Stages[idx]
+	if stage.Loop.LoopBackTo == "" {
+		return idx + 1
+	}
+	max := stage.Loop.MaxIterations
+	if max < 0 {
+		max = 0
+	}
+	if iterations[idx] >= max {
+		return idx + 1 // loop budget exhausted: continue forward
+	}
+	target := stageIndexByID(p, stage.Loop.LoopBackTo)
+	if target < 0 || target >= idx {
+		return idx + 1 // invalid/forward target: fail safe, continue forward
+	}
+	iterations[idx]++
+	return target
+}
+
+// stageIndexByID returns the index of the stage with the given ID, or -1.
+func stageIndexByID(p *Pipeline, id string) int {
+	for i, s := range p.Stages {
+		if s.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 func (o *ForegroundOrchestrator) runStage(ctx context.Context, run *PipelineRun, stage PipelineStage, userInput string) error {
 	o.emit("system", stage.Agent, fmt.Sprintf("Running %s...", stage.Name))
 	// Fresh stage: clear leftover transient state so counts or a stale advance

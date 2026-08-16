@@ -138,8 +138,8 @@ type TeamsConfig struct {
 }
 
 // TeamDefinition is a named agent team: a set of members (main shorthand +
-// companion shorthand, or the canonical Members map), a review policy, and
-// defaults applied on activation.
+// companion shorthand, or the canonical Members map), a review policy, an
+// optional ordered workflow, and defaults applied on activation.
 type TeamDefinition struct {
 	Description string                `yaml:"description,omitempty"`
 	Main        *TeamMember           `yaml:"main,omitempty"`
@@ -148,7 +148,31 @@ type TeamDefinition struct {
 	Review      string                `yaml:"review,omitempty"`
 	ReviewGates TeamReviewGates       `yaml:"review_gates,omitempty"`
 	Delegation  string                `yaml:"delegation,omitempty"`
+	Workflow    []TeamWorkflowStage   `yaml:"workflow,omitempty"`
 	Defaults    TeamDefaults          `yaml:"defaults,omitempty"`
+}
+
+// TeamWorkflowStage is one ordered step of a team's workflow (bugs.md "team:
+// allow defining member order / workflow"). Stages run in list order; each
+// hands its output to the next. A stage with LoopBackTo set forms a feedback
+// loop: after it completes, control returns to the named earlier stage (e.g.
+// a reviewer sends work back to the coder) and the intervening stages repeat,
+// bounded by MaxIterations — this is the architect ⇄ coder ⇄ reviewer cycle.
+type TeamWorkflowStage struct {
+	// Member is the team member (pool role) that runs this stage. It must
+	// reference a defined member (main/reviewer/worker) of the team.
+	Member string `yaml:"member"`
+	// Prompt is the stage instruction. It is rendered as a Go template with
+	// the user's task as {{.UserInput}} and the accumulated prior-stage output
+	// prepended as context. Empty falls back to a sensible per-member default.
+	Prompt string `yaml:"prompt,omitempty"`
+	// LoopBackTo, when set, names an EARLIER stage in the same workflow: after
+	// this stage completes the loop returns there. Must point backward
+	// (no forward/self loops) so the workflow always has a defined entry.
+	LoopBackTo string `yaml:"loop_back_to,omitempty"`
+	// MaxIterations caps how many times the loop back-edge may fire (0 = run
+	// the loop once, i.e. no repeat). Prevents unbounded reviewer⇄coder cycles.
+	MaxIterations int `yaml:"max_iterations,omitempty"`
 }
 
 // TeamMember is a named model binding: model ID, optional provider override,
@@ -290,6 +314,75 @@ func (d TeamDefinition) EffectiveDelegation() string {
 	return TeamDelegationAgent
 }
 
+// HasWorkflow reports whether the team defines an ordered member workflow.
+func (d TeamDefinition) HasWorkflow() bool { return len(d.Workflow) > 0 }
+
+// ValidateWorkflow checks the team's workflow structurally (member refs,
+// uniqueness, backward loop targets) and returns a single error, or nil. It is
+// the programmatic counterpart of the config-validation path, used by
+// /team:run before building the pipeline.
+func (d TeamDefinition) ValidateWorkflow() error {
+	if len(d.Workflow) == 0 {
+		return nil
+	}
+	members, err := d.ResolvedMembers()
+	if err != nil {
+		return err
+	}
+	ve := &internal.ValidationError{}
+	validateTeamWorkflow(ve, "workflow", d, members)
+	if ve.HasErrors() {
+		return fmt.Errorf("%s", ve.ErrList[0])
+	}
+	return nil
+}
+
+// validateWorkflow checks the team's ordered workflow (bugs.md "team: member
+// order / workflow"): every stage must reference a defined member, stage
+// members must be unique, and loop_back_to must point to an earlier stage in
+// the list (so the workflow has a well-defined entry and loops are backward).
+func validateTeamWorkflow(ve *internal.ValidationError, prefix string, def TeamDefinition, members []ResolvedMember) {
+	if len(def.Workflow) == 0 {
+		return
+	}
+	known := make(map[string]struct{}, len(members))
+	for _, rm := range members {
+		known[rm.Name] = struct{}{}
+	}
+	seen := make(map[string]int, len(def.Workflow)) // stage member -> index
+	for i, s := range def.Workflow {
+		sp := fmt.Sprintf("%s.workflow[%d]", prefix, i)
+		validateWorkflowStage(ve, sp, s, known, seen, i)
+		seen[s.Member] = i
+	}
+}
+
+// validateWorkflowStage validates one workflow stage against the team's
+// member set and the set of stages seen so far (for backward loop targets).
+func validateWorkflowStage(ve *internal.ValidationError, sp string, s TeamWorkflowStage, known map[string]struct{}, seen map[string]int, idx int) {
+	if s.Member == "" {
+		ve.Add(sp + ".member: must be set")
+		return
+	}
+	if _, ok := known[s.Member]; !ok {
+		ve.Add(fmt.Sprintf("%s.member: %q is not a member of the team", sp, s.Member))
+	}
+	if _, dup := seen[s.Member]; dup {
+		ve.Add(fmt.Sprintf("%s.member: member %q appears more than once in the workflow", sp, s.Member))
+	}
+	if s.LoopBackTo == "" {
+		return
+	}
+	target, ok := seen[s.LoopBackTo]
+	if !ok {
+		ve.Add(fmt.Sprintf("%s.loop_back_to: %q does not match an earlier workflow stage", sp, s.LoopBackTo))
+		return
+	}
+	if target >= idx {
+		ve.Add(fmt.Sprintf("%s.loop_back_to: must point to an earlier stage (got %q at index %d, current %d)", sp, s.LoopBackTo, target, idx))
+	}
+}
+
 // validateTeams enforces TEAMS.md §3.5 rules 1–10.
 func (c *Config) validateTeams(ve *internal.ValidationError) {
 	tc := c.Teams
@@ -328,6 +421,7 @@ func (c *Config) validateTeamDefinition(ve *internal.ValidationError, name strin
 	}
 	validateTeamReview(ve, prefix, def)
 	c.validateTeamMembers(ve, prefix, members, skipModelCheck, knownModels, knownProviders)
+	validateTeamWorkflow(ve, prefix, def, members)
 }
 
 // validateTeamReview checks the review policy, gates, quorum, and delegation.

@@ -38,10 +38,16 @@ type GateConfig struct {
 	Prompt          string `yaml:"prompt"`
 }
 
-// LoopConfig controls iteration limits for repeating stages.
+// LoopConfig controls iteration and feedback for a stage. UntilApproved +
+// MaxIterations bound gate-driven repetition; LoopBackTo (team workflows) names
+// an earlier stage to return to after this stage completes, forming a feedback
+// loop (e.g. reviewer → coder) bounded by MaxIterations.
 type LoopConfig struct {
 	MaxIterations int  `yaml:"max_iterations"`
 	UntilApproved bool `yaml:"until_approved"`
+	// LoopBackTo names an earlier stage ID to return to after this stage
+	// completes (a backward feedback edge). Empty = no loop (advance forward).
+	LoopBackTo string `yaml:"loop_back_to,omitempty"`
 }
 
 // PipelineStage defines a single stage in a multi-agent pipeline.
@@ -172,6 +178,28 @@ func (r *PipelineRun) CompleteStage(stageID string) {
 	if _, ok := r.Stages[stageID]; ok {
 		r.Stages[stageID] = StageCompleted
 	}
+}
+
+// RunStageAt marks the stage at index idx as running for a loop-back /
+// revisit (team workflows, RunPipeline). Unlike NextStage it does not cap at
+// len(Stages): a stage may run several times when a later stage loops back to
+// it. The previously-current stage (if ahead of idx) is marked completed so
+// the status map reflects the loop.
+func (r *PipelineRun) RunStageAt(idx int) (PipelineStage, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Status == PipelineCancelled || idx < 0 || idx >= len(r.Pipeline.Stages) {
+		return PipelineStage{}, false
+	}
+	if r.Current >= 0 && r.Current != idx {
+		prevID := r.Pipeline.Stages[r.Current].ID
+		r.Stages[prevID] = StageCompleted
+	}
+	r.Current = idx
+	st := r.Pipeline.Stages[idx]
+	r.Stages[st.ID] = StageRunning
+	r.Status = PipelineRunning
+	return st, true
 }
 
 // Resume submits an approval decision for the current gate. approved=true

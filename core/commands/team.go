@@ -12,6 +12,7 @@ import (
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/team"
+	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -39,6 +40,11 @@ Usage:
   /team:list            List defined teams
   /team:sync            Re-apply the active team definition (clears drift)
   /team:show:<name>     Show a team definition
+  /team:run:<name>      Run the team's ordered member workflow (architect → coder → reviewer, with loop_back_to feedback) on a task
+
+Teams may define a workflow: list of member stages run in order; a stage with
+loop_back_to: <earlier member> forms a feedback loop (reviewer <-> coder) bounded
+by max_iterations. See /team:show:<name> for a team's workflow.
 
 Teams are defined under teams.definitions in the config (see /config → Teams).`
 }
@@ -56,6 +62,9 @@ func (c *TeamCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCo
 			add("show:"+name, "show team definition")
 			add("use:"+name, "activate team (alias)")
 			add("remove:"+name, "remove team")
+			if def, ok := ctx.Config.Teams.Definitions[name]; ok && def.HasWorkflow() {
+				add("run:"+name, "run team workflow (ordered members + loops)")
+			}
 		}
 	}
 	add("add", "create a team (wizard)")
@@ -63,6 +72,7 @@ func (c *TeamCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCo
 	add("status", "show active team status")
 	add("list", "list defined teams")
 	add("sync", "re-apply the active team (clear drift)")
+	add("run", "run the team's ordered workflow on a task")
 	return comps
 }
 
@@ -126,7 +136,7 @@ func splitTeamArg(arg string) (sub, rest string) {
 // isTeamSubCommand reports whether s is a /team sub-command keyword.
 func isTeamSubCommand(s string) bool {
 	switch s {
-	case "add", "list", "remove", "off", "status", "sync", "show", "use":
+	case "add", "list", "remove", "off", "status", "sync", "show", "use", "run":
 		return true
 	}
 	return false
@@ -146,6 +156,8 @@ func teamManagedDispatch(ctx core.Context, m *team.Manager, sub, rest string) er
 		return teamShow(ctx, rest)
 	case "use":
 		return teamActivate(ctx, m, rest)
+	case "run":
+		return teamRun(ctx, m, rest)
 	default:
 		// No recognized sub-command: rest holds the whole argument (the team
 		// name), per splitTeamArg's "", arg return.
@@ -278,6 +290,119 @@ func teamOff(ctx core.Context, m *team.Manager) error {
 	return nil
 }
 
+// teamRun executes a team's ordered member workflow (bugs.md "team: member
+// order / workflow"). It builds a pipeline from the team's workflow stages —
+// each stage runs its member in order, and a stage with loop_back_to forms a
+// feedback loop (e.g. reviewer ⇄ coder) — and runs it on the foreground
+// orchestrator. The team must be activated first so its members are in the
+// agent pool; the user is prompted for the task when none is supplied.
+//
+// Usage: /team:run:<name>  (name optional when a team is already active)
+func teamRun(ctx core.Context, m *team.Manager, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = m.EffectiveTeam()
+	}
+	if name == "" {
+		writeStr(ctx, "No team active. Usage: /team:run:<name> (or activate one with /team:<name>)\n")
+		return nil
+	}
+	def, ok := ctx.Config.Teams.Definitions[name]
+	if !ok {
+		writeFmt(ctx, "Team %q not defined (defined: %s)\n", name, strings.Join(ctx.Config.TeamNames(), ", "))
+		return nil
+	}
+	if !def.HasWorkflow() {
+		writeFmt(ctx, "Team %q has no workflow. Add a `workflow:` list to its definition (ordered members, optional loop_back_to) to define the execution order.\n", name)
+		return nil
+	}
+	if ctx.ForegroundOrchestrator == nil {
+		writeStr(ctx, "Orchestrator not available.\n")
+		return nil
+	}
+	// Activate the team so its members are registered in the agent pool before
+	// the workflow references them (idempotent when already active).
+	if m.EffectiveTeam() != name {
+		if err := m.Activate(name); err != nil {
+			writeFmt(ctx, "Cannot activate team %s: %v\n", name, err)
+			return nil
+		}
+		persistActiveTeam(ctx, name)
+		ctx.FooterRefresh()
+	}
+	pipeline, err := teamWorkflowPipeline(name, def)
+	if err != nil {
+		writeFmt(ctx, "Team %q workflow invalid: %v\n", name, err)
+		return nil
+	}
+	// Prompt for the task, then run.
+	ctx.ShowInput("Task for team "+name+" workflow:", "", func(task string, okInput bool) {
+		if !okInput || strings.TrimSpace(task) == "" {
+			return
+		}
+		go runTeamWorkflow(ctx, name, pipeline, task)
+	})
+	return nil
+}
+
+// runTeamWorkflow runs the built pipeline on the foreground orchestrator and
+// reports completion/failure as an inter-agent message.
+func runTeamWorkflow(ctx core.Context, name string, p *multiagent.Pipeline, task string) {
+	ctx.InterAgent("system", "user", "Team workflow "+name+": running "+teamWorkflowSummary(p)+"…")
+	if err := ctx.ForegroundOrchestrator.RunPipeline(ctx.ForegroundOrchestrator.Context(), p, task); err != nil {
+		ctx.InterAgent("system", "user", fmt.Sprintf("Team workflow %s error: %v", name, err))
+		return
+	}
+	ctx.InterAgent("system", "user", "Team workflow "+name+" complete.")
+}
+
+// teamWorkflowPipeline builds a *multiagent.Pipeline from a team definition's
+// ordered workflow. Each stage's Agent is the member name (a pool role set at
+// activation); a stage with loop_back_to becomes a Loop back-edge. Stage order
+// is the workflow list order — the requested member order.
+func teamWorkflowPipeline(teamName string, def config.TeamDefinition) (*multiagent.Pipeline, error) {
+	if err := def.ValidateWorkflow(); err != nil {
+		return nil, err
+	}
+	p := &multiagent.Pipeline{
+		ID:   "team:" + teamName,
+		Name: "Team " + teamName + " workflow",
+	}
+	for _, s := range def.Workflow {
+		prompt := s.Prompt
+		if prompt == "" {
+			prompt = "{{.UserInput}}" // pass the task through when no stage prompt
+		}
+		p.Stages = append(p.Stages, multiagent.PipelineStage{
+			ID:     s.Member,
+			Name:   s.Member,
+			Agent:  s.Member,
+			Prompt: prompt,
+			Loop: multiagent.LoopConfig{
+				LoopBackTo:    s.LoopBackTo,
+				MaxIterations: s.MaxIterations,
+			},
+		})
+	}
+	return p, nil
+}
+
+// teamWorkflowSummary renders the ordered member chain for the chat header,
+// marking loop-backs (e.g. "architect → coder → reviewer⇄coder").
+func teamWorkflowSummary(p *multiagent.Pipeline) string {
+	var b strings.Builder
+	for i, s := range p.Stages {
+		if i > 0 {
+			b.WriteString(" → ")
+		}
+		b.WriteString(s.Agent)
+		if s.Loop.LoopBackTo != "" {
+			b.WriteString("⇄" + s.Loop.LoopBackTo)
+		}
+	}
+	return b.String()
+}
+
 // teamSync re-applies the active team definition, clearing drift.
 func teamSync(ctx core.Context, m *team.Manager) error {
 	if err := m.Sync(); err != nil {
@@ -345,26 +470,51 @@ func teamShow(ctx core.Context, name string) error {
 		b.WriteString(fmt.Sprintf(" (triggers: %s, quorum: %s)", strings.Join(def.ReviewGates.Triggers, ","), def.EffectiveQuorum()))
 	}
 	b.WriteString("\n")
+	writeTeamMembers(&b, def)
+	writeTeamWorkflow(&b, name, def)
+	writeStr(ctx, b.String())
+	return nil
+}
+
+// writeTeamMembers renders the resolved member list for /team:show.
+func writeTeamMembers(b *strings.Builder, def config.TeamDefinition) {
 	members, err := def.ResolvedMembers()
 	if err != nil {
 		b.WriteString("  <invalid definition: " + err.Error() + ">\n")
-	} else {
-		for _, rm := range members {
-			b.WriteString(fmt.Sprintf("  %s (%s): model=%s", rm.Name, rm.Member.Role, rm.Member.Model))
-			if rm.Member.Provider != "" {
-				b.WriteString(" provider=" + rm.Member.Provider)
-			}
-			if rm.Member.Mode != "" {
-				b.WriteString(" mode=" + rm.Member.Mode)
-			}
-			if rm.Member.ThinkingLevel != "" {
-				b.WriteString(" thinking=" + rm.Member.ThinkingLevel)
-			}
-			b.WriteString("\n")
-		}
+		return
 	}
-	writeStr(ctx, b.String())
-	return nil
+	for _, rm := range members {
+		b.WriteString(fmt.Sprintf("  %s (%s): model=%s", rm.Name, rm.Member.Role, rm.Member.Model))
+		if rm.Member.Provider != "" {
+			b.WriteString(" provider=" + rm.Member.Provider)
+		}
+		if rm.Member.Mode != "" {
+			b.WriteString(" mode=" + rm.Member.Mode)
+		}
+		if rm.Member.ThinkingLevel != "" {
+			b.WriteString(" thinking=" + rm.Member.ThinkingLevel)
+		}
+		b.WriteString("\n")
+	}
+}
+
+// writeTeamWorkflow renders the ordered member workflow (with loop-backs) for
+// /team:show, plus the /team:run hint.
+func writeTeamWorkflow(b *strings.Builder, name string, def config.TeamDefinition) {
+	if !def.HasWorkflow() {
+		return
+	}
+	b.WriteString("  workflow (run with /team:run:" + name + "):\n")
+	for i, s := range def.Workflow {
+		b.WriteString(fmt.Sprintf("    %d. %s", i+1, s.Member))
+		if s.LoopBackTo != "" {
+			b.WriteString(fmt.Sprintf(" ⇄ %s (max %d)", s.LoopBackTo, s.MaxIterations))
+		}
+		if s.Prompt != "" {
+			b.WriteString(" — " + s.Prompt)
+		}
+		b.WriteString("\n")
+	}
 }
 
 // teamOneLiner renders the compact description used in selectors and the

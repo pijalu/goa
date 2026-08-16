@@ -27,14 +27,40 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## team: allow defining member order / workflow (feature)
-Feature request: `/team` should let the user define the order and workflow of the
-team — e.g. architect ⇄ coder ⇄ code reviewer — including bidirectional
-hand-off/feedback loops, not just a fixed unordered set of members. Members should
-pass work in a configurable sequence with the ability to iterate back (reviewer →
-coder) until done.
-
 # Archive
+
+## team: allow defining member order / workflow (implemented)
+Feature delivered: a team definition now carries an ordered `workflow:` of member
+stages, run in list order, with optional feedback loops. Config
+(`config/teams.go`): new `TeamWorkflowStage{Member, Prompt, LoopBackTo,
+MaxIterations}` and `TeamDefinition.Workflow []TeamWorkflowStage`; validation
+(`validateTeamWorkflow`, wired into `validateTeamDefinition` and exposed as
+`TeamDefinition.ValidateWorkflow`) enforces that every stage references a defined
+member, stage members are unique, and `loop_back_to` points to an EARLIER stage
+(so the workflow has a defined entry and loops are backward). Example:
+`workflow: [{member: architect}, {member: coder}, {member: reviewer,
+loop_back_to: coder, max_iterations: 3}]` = architect → coder → reviewer ⇄ coder.
+Execution (`multiagent/foreground_orchestrator.go`): new
+`ForegroundOrchestrator.RunPipeline(ctx, *Pipeline, input)` runs caller-supplied
+ordered stages reusing the existing runStage machinery (context accumulation
+across stages, gates, steering); `nextStageIndex` implements the loop back-edge
+(jump to the named earlier stage while `MaxIterations` remain, then continue
+forward). `PipelineRun.RunStageAt` (multiagent/pipeline.go) supports revisiting a
+stage on loop-back (NextStage's len cap would refuse); `LoopConfig.LoopBackTo`
+added. Command (`core/commands/team.go`): `/team:run:<name>` activates the team
+(registers members in the pool), builds the pipeline (`teamWorkflowPipeline`),
+prompts for the task, and runs it; `/team:show:<name>` renders the ordered
+workflow with loop annotations (`reviewer ⇄ coder (max 3)`) and the run hint;
+completion + LongHelp updated.
+Tests: config table cases (valid loop, unknown member, missing member, duplicate
+member, unknown/forward loop target) + `TestTeamsYAML_ParseWorkflow`;
+`TestRunPipeline_LoopsBackReviewerToCoder` proves the loop executes
+(architect×1, coder×3, reviewer×3); command tests for the pipeline builder,
+`/team:show` workflow display, and `/team:run` no-workflow guard.
+Gates: `go vet`, `staticcheck`, `gocognit -over 15`, `gocyclo -over 12` clean on
+changed files (two `agent_tool_visibility_test.go` U1000 warnings are
+pre-existing on HEAD); `go test -count=1 -race -cover ./config ./multiagent
+./core/commands` PASS (80.0% / 67.6% / 60.4%).
 
 ## team: run breaks on slow LLM — stuck screen, companion error, incorrect statusbar (fixed — statusbar cleanup)
 Root cause: the framework-driven companion stream marks the UI busy

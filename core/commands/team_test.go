@@ -496,6 +496,95 @@ func TestTeamCommand_CompleteArgs(t *testing.T) {
 	}
 }
 
+// workflowTeamConfig builds a config with a team that has an ordered
+// architect → coder → reviewer⇄coder workflow.
+func workflowTeamConfig() *config.Config {
+	cfg := teamCmdConfig()
+	cfg.Teams.Definitions["crew"] = config.TeamDefinition{
+		Members: map[string]config.TeamMember{
+			"architect": {Model: "m1", Role: "main"},
+			"coder":     {Model: "m2", Role: "worker"},
+			"reviewer":  {Model: "m3", Role: "reviewer"},
+		},
+		Review: "off",
+		Workflow: []config.TeamWorkflowStage{
+			{Member: "architect", Prompt: "Design {{.UserInput}}"},
+			{Member: "coder"},
+			{Member: "reviewer", LoopBackTo: "coder", MaxIterations: 2},
+		},
+	}
+	return cfg
+}
+
+func TestTeamWorkflowPipeline_Builds(t *testing.T) {
+	def := workflowTeamConfig().Teams.Definitions["crew"]
+	p, err := teamWorkflowPipeline("crew", def)
+	if err != nil {
+		t.Fatalf("teamWorkflowPipeline: %v", err)
+	}
+	if len(p.Stages) != 3 {
+		t.Fatalf("stages = %d, want 3", len(p.Stages))
+	}
+	// Order preserved: architect, coder, reviewer.
+	wantOrder := []string{"architect", "coder", "reviewer"}
+	for i, w := range wantOrder {
+		if p.Stages[i].Agent != w {
+			t.Errorf("stage %d agent = %q, want %q", i, p.Stages[i].Agent, w)
+		}
+	}
+	// Loop edge carried over.
+	if p.Stages[2].Loop.LoopBackTo != "coder" || p.Stages[2].Loop.MaxIterations != 2 {
+		t.Errorf("reviewer loop = %+v, want coder/2", p.Stages[2].Loop)
+	}
+	// Empty prompt defaulted to the task pass-through.
+	if p.Stages[1].Prompt == "" {
+		t.Errorf("coder stage prompt was not defaulted")
+	}
+	// Summary renders the loop annotation.
+	if s := teamWorkflowSummary(p); !strings.Contains(s, "reviewer⇄coder") {
+		t.Errorf("summary = %q, want it to mark reviewer⇄coder", s)
+	}
+}
+
+func TestTeamWorkflowPipeline_Invalid(t *testing.T) {
+	def := config.TeamDefinition{
+		Members:  map[string]config.TeamMember{"a": {Model: "m1", Role: "main"}},
+		Workflow: []config.TeamWorkflowStage{{Member: "ghost"}},
+	}
+	if _, err := teamWorkflowPipeline("x", def); err == nil {
+		t.Fatal("expected error for workflow referencing an unknown member")
+	}
+}
+
+func TestTeamCommand_ShowDisplaysWorkflow(t *testing.T) {
+	cfg := workflowTeamConfig()
+	ctx := teamCmdContext(t, cfg)
+	var out strings.Builder
+	ctx.OutputBuffer = &out
+	if err := (&TeamCommand{}).Run(ctx, []string{"show:crew"}); err != nil {
+		t.Fatalf("Run show: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"workflow", "architect", "coder", "reviewer", "⇄ coder", "/team:run:crew"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("teamShow output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestTeamCommand_RunNoWorkflow(t *testing.T) {
+	cfg := teamCmdConfig() // alpha/beta have no workflow
+	ctx := teamCmdContext(t, cfg)
+	var out strings.Builder
+	ctx.OutputBuffer = &out
+	if err := (&TeamCommand{}).Run(ctx, []string{"run:alpha"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out.String(), "no workflow") {
+		t.Errorf("expected 'no workflow' message, got:\n%s", out.String())
+	}
+}
+
 // ── /config → Teams menu CRUD (TEAMS.md §8.3) ────────────────────────────
 
 func TestConfigMenu_RootIncludesTeams(t *testing.T) {
