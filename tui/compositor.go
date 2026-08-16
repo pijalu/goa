@@ -505,7 +505,16 @@ func (c *Compositor) Buffer() []string {
 }
 
 // InitialClear wipes the terminal before the first frame.
+//
+// It runs on the caller's goroutine (TUI.Start), NOT the renderLoop, and
+// writes to the shared terminal — so it must take c.mu like every other
+// Compositor method. Without the lock a concurrent shutdown (Stop→Restore,
+// which holds mu) or an in-flight frame could interleave terminal writes with
+// this clear, corrupting the output stream and tripping the race detector
+// (bugs.md: TestRunWizardWithTerminal_FirstFrameRenders race).
 func (c *Compositor) InitialClear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.terminal.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[3J\x1b[?2026l"))
 }
 

@@ -27,7 +27,57 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
+## team: run breaks on slow LLM — stuck screen, companion error, incorrect statusbar
+Observed: With a slow local LLM (LM Studio, google/gemma-4-e4b; companion model
+qwen3.8-27b via nano-gpt), a `/team` run does not complete. The companion cycle
+fails with `Companion error: companion run: LLM request failed (not retryable):
+context deadline exceeded` (agent.log: `stream failure: context deadline exceeded`
+→ `stream error not retryable; surfacing immediately`). The screen is left stuck
+mid-run ("companion · cycle 1", thinking truncated at "Need") and the statusbar
+shows stale/incorrect state. A single slow-LLM timeout kills the whole team run
+instead of being isolated/retried per member.
+Evidence: /Users/muaddib/dev/testt/.goa/exports/goa-export-20260816-125612.zip
+(issue.md, logs/agent.log:776, companion started 12:53:16, failure 12:55:16).
+Expected: (a) a per-member/companion LLM timeout must not hang the UI or abort the
+whole team run — surface the error for that member and keep the screen/statusbar
+accurate; (b) the "not retryable" classification of `context deadline exceeded`
+should be revisited for slow providers (a slow model is recoverable).
+
+## team: allow defining member order / workflow (feature)
+Feature request: `/team` should let the user define the order and workflow of the
+team — e.g. architect ⇄ coder ⇄ code reviewer — including bidirectional
+hand-off/feedback loops, not just a fixed unordered set of members. Members should
+pass work in a configurable sequence with the ability to iterate back (reviewer →
+coder) until done.
+
 # Archive
+
+## race: TestRunWizardWithTerminal_FirstFrameRenders (fixed — InitialClear unsynchronized)
+Root cause: `Compositor.InitialClear()` (tui/compositor.go) wrote the clear
+sequence to the shared terminal WITHOUT holding `c.mu`, while every other
+Compositor method (`Render`/`Restore`/`Clear`/`Buffer`) locks it. `TUI.Start()`
+calls `InitialClear` on the caller's goroutine (NOT the renderLoop), so during
+the wizard's `Start() → RenderNow() → RunLoops() → Stop()` lifecycle a
+concurrent shutdown (`Stop`→`Restore`, which holds mu) or an in-flight frame
+could interleave terminal writes with the clear — corrupting the CSI-2026 sync
+stream and racing the detector in the environment where the failure was seen.
+Fix: `InitialClear` now takes `c.mu` (one-line change + doc), restoring the
+documented invariant "mu serializes Render/Restore/Buffer" for ALL terminal
+access. Regression test `TestCompositor_InitialClear_SerializedWithRender`
+(tui/compositor_initialclear_race_test.go) blocks the clear's terminal write
+inside its critical section and issues a concurrent `Render`+`Restore` to
+exercise the now-serialized path.
+Note on reproducibility: the race could NOT be reproduced locally (500+ runs
+of the wizard suite and the full `go test -race ./...` all pass before AND
+after the fix — the test's mutex-guarded fake terminal and the atomic
+`stopped`/`started` reads mask the interleaving on this machine). The fix is a
+correctness hardening of a genuine invariant violation; the regression test
+documents the intended serialization. Gates: `go vet`, `staticcheck`,
+`gocognit -over 15`, `gocyclo -over 12` clean on changed files (the two
+reported warnings — `render_trace.go sceneLayersTrace` U1000 and
+`scrollOffUnstable` gocyclo 13 — are pre-existing, confirmed on stashed HEAD,
+unrelated to this change). `go test -race -cover ./tui ./config` PASS
+(tui 74.8%, config 80.2%).
 
 ## config: run_code not enabled by default (fixed — test isolation)
 Root cause: `TestRunCodeDefaultsLoaded` (config/run_code_config_test.go) did NOT isolate
