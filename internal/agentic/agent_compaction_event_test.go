@@ -29,15 +29,15 @@ func compactEvents(obs *mockEventObserver) []OutputEvent {
 // under force). Six trailing messages guarantee enough tail.
 func bigToolHistory() []Message {
 	return []Message{
-		{Type: Content, Role: System, Content: "You are helpful."},                     // 0
-		{Type: Content, Role: User, Content: "step 1"},                                 // 1
+		{Type: Content, Role: System, Content: "You are helpful."},                            // 0
+		{Type: Content, Role: User, Content: "step 1"},                                        // 1
 		{Type: Content, Role: ToolRole, ToolCallID: "c1", Content: strings.Repeat("x", 2000)}, // 2
-		{Type: Content, Role: User, Content: "step 2"},                                 // 3
+		{Type: Content, Role: User, Content: "step 2"},                                        // 3
 		{Type: Content, Role: ToolRole, ToolCallID: "c2", Content: strings.Repeat("y", 2000)}, // 4
-		{Type: Content, Role: User, Content: "step 3"},                                 // 5
+		{Type: Content, Role: User, Content: "step 3"},                                        // 5
 		{Type: Content, Role: ToolRole, ToolCallID: "c3", Content: strings.Repeat("z", 2000)}, // 6
-		{Type: Content, Role: User, Content: "step 4"},                                 // 7
-		{Type: Content, Role: Assistant, Content: "ok"},                                // 8
+		{Type: Content, Role: User, Content: "step 4"},                                        // 7
+		{Type: Content, Role: Assistant, Content: "ok"},                                       // 8
 	}
 }
 
@@ -112,7 +112,6 @@ func TestCompressToolElision_EmitsCompactEvent(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 100000,
-			Strategy:  CompressionToolElision,
 		},
 	})
 	agent.SetHistory(bigToolHistory())
@@ -139,7 +138,6 @@ func TestCompressToolElision_NoEventWhenNothingToDo(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 100000,
-			Strategy:  CompressionToolElision,
 		},
 	})
 	agent.SetHistory([]Message{
@@ -165,7 +163,6 @@ func TestCompressSelective_EmitsCompactEvent(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           100000,
-			Strategy:            CompressionSelective,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -205,7 +202,7 @@ func TestCompressHybrid_EmitsSingleCompactEvent(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           500,
 			Thresholds:          CompressionThresholds{HardPercent: 15},
-			Strategy:            CompressionHybrid,
+			Strategies:          CompressionLayerStrategies{Hard: CompressionHybrid},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -238,10 +235,10 @@ func TestCompressHistoryWith_MicroEmitsOnce(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:        100000,
-			ThresholdPercent: 80,
-			Strategy:         CompressionMicro,
-			MicroCompaction:  DefaultMicroCompactionConfig,
+			MaxTokens:       100000,
+			Thresholds:      CompressionThresholds{SoftPercent: 80},
+			Strategies:      CompressionLayerStrategies{Soft: CompressionMicro},
+			MicroCompaction: DefaultMicroCompactionConfig,
 		},
 	})
 	agent.SetHistory(bigToolHistory())

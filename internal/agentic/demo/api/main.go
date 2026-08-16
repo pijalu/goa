@@ -1,9 +1,11 @@
 //go:build ignore
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
 
 package main
+
 import (
 	"context"
 	"embed"
@@ -38,13 +40,13 @@ func main() {
 	// Create skill runner - loads embedded skills
 	loader := skillrunner.NewEmbeddedSkillsLoader(skillsFS, "skills")
 	runner, err := skillrunner.NewRunner(skillrunner.Config{
-		Loader:              loader,
-		Model:               cfg.ToModel(),
-		WorkDir:             ".",
-		Logger:              agentic.NewLogger(agentic.Warn),
-		ContextCompression:  compressionCfg,
-		ReasoningEffort:     agentic.ReasoningEffort(cfg.ReasoningEffort),
-		ToolResultAsUser:    agentCfg.ToolResultAsUser,
+		Loader:             loader,
+		Model:              cfg.ToModel(),
+		WorkDir:            ".",
+		Logger:             agentic.NewLogger(agentic.Warn),
+		ContextCompression: compressionCfg,
+		ReasoningEffort:    agentic.ReasoningEffort(cfg.ReasoningEffort),
+		ToolResultAsUser:   agentCfg.ToolResultAsUser,
 	})
 	if err != nil {
 		log.Fatal(err)

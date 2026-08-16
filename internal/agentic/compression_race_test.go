@@ -21,7 +21,6 @@ func TestCompression_NoRaceWithHistoryReaders(t *testing.T) {
 		cfg: Config{
 			ContextCompression: ContextCompressionConfig{
 				MaxTokens:           1000,
-				Strategy:            CompressionToolElision,
 				PreserveRecentTurns: 1,
 			},
 		},

@@ -291,7 +291,7 @@ func TestFindOrphanedCompactions_KillBetweenStartAndEnd(t *testing.T) {
 		start("cx-ok-1"), summary("cx-ok-1"), end("cx-ok-1", ""), // completed
 		start("cx-failed-2"), end("cx-failed-2", "summarize blew up"), // failed but closed
 		start("cx-crashed-3"), summary("cx-crashed-3"), // KILLED before end
-		start("cx-crashed-4"), // KILLED right after start
+		start("cx-crashed-4"),                   // KILLED right after start
 		{Type: EventCompact, Text: "summarize"}, // legacy event: no tx payload, ignored
 	}
 
@@ -331,8 +331,8 @@ func TestAgent_Compact_PruneResolvedSkipsTransaction(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 10000,
 			Thresholds: CompressionThresholds{
-				TriggerPercent: 50,
-				HardPercent:    95,
+				SoftPercent: 50,
+				HardPercent: 95,
 			},
 		},
 	})

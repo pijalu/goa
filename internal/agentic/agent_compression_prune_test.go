@@ -191,8 +191,8 @@ func TestAgent_CompactSkipsSummarizeWhenPruningResolves(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 10000,
 			Thresholds: CompressionThresholds{
-				TriggerPercent: 50,
-				HardPercent:    95,
+				SoftPercent: 50,
+				HardPercent: 95,
 			},
 		},
 	})
@@ -260,8 +260,8 @@ func TestAgent_CompactSummarizesWhenPruningInsufficient(t *testing.T) {
 			// so the summarize fallback must still run.
 			MaxTokens: 1000,
 			Thresholds: CompressionThresholds{
-				TriggerPercent: 50,
-				HardPercent:    95,
+				SoftPercent: 50,
+				HardPercent: 95,
 			},
 		},
 	})

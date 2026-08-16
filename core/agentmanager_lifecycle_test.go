@@ -317,39 +317,41 @@ func TestOverlayCompressionForModel_StrategiesAndCacheGate(t *testing.T) {
 		Enabled:   &ccEnabled,
 		CacheGate: "on",
 		Strategies: config.CompressionLayerStrategiesConfig{
-			Soft:    "micro",
-			Trigger: "tool_elision",
-			Hard:    "hybrid",
+			Soft: "micro",
+			Hard: "hybrid",
 		},
 		PerModel: map[string]config.ModelCompressionOverride{
-			"local-model": {CacheGate: "off", Strategies: config.CompressionLayerStrategiesConfig{Trigger: "selective"}},
+			"local-model": {CacheGate: "off", Strategies: config.CompressionLayerStrategiesConfig{Hard: "selective"}},
 		},
 	}
 
-	// Per-model override: cache gate off + trigger selective; other fields inherit.
+	// Per-model override: cache gate off + hard selective; other fields inherit.
 	ov := overlayCompressionForModel(cc, "local-model")
 	if ov.cacheGate != "off" {
 		t.Errorf("cacheGate = %q, want off (per-model override)", ov.cacheGate)
 	}
-	if ov.strategies.Trigger != "selective" {
-		t.Errorf("trigger strategy = %q, want selective (per-model override)", ov.strategies.Trigger)
+	if ov.strategies.Hard != "selective" {
+		t.Errorf("hard strategy = %q, want selective (per-model override)", ov.strategies.Hard)
 	}
-	if ov.strategies.Soft != "micro" || ov.strategies.Hard != "hybrid" {
-		t.Errorf("soft/hard = %q/%q, want micro/hybrid (inherited)", ov.strategies.Soft, ov.strategies.Hard)
+	if ov.strategies.Soft != "micro" {
+		t.Errorf("soft = %q, want micro (inherited)", ov.strategies.Soft)
 	}
 
 	// No override: global values.
 	ov2 := overlayCompressionForModel(cc, "other-model")
-	if ov2.cacheGate != "on" || ov2.strategies.Trigger != "tool_elision" {
-		t.Errorf("no-override overlay = gate %q trigger %q, want on/tool_elision (global)", ov2.cacheGate, ov2.strategies.Trigger)
+	if ov2.cacheGate != "on" || ov2.strategies.Hard != "hybrid" {
+		t.Errorf("no-override overlay = gate %q hard %q, want on/hybrid (global)", ov2.cacheGate, ov2.strategies.Hard)
 	}
 
-	// The agentic mapping: per-layer strategies map to the SDK type; the
-	// DisableCacheGate flag derives from the resolved cache gate in
-	// buildCompressionConfig (DisableCacheGate: ov.cacheGate == "off").
+	// The agentic mapping: soft/hard strategies map to the SDK type (no
+	// trigger layer); the DisableCacheGate flag derives from the resolved cache
+	// gate in buildCompressionConfig (DisableCacheGate: ov.cacheGate == "off").
 	ag := agenticLayerStrategies(ov.strategies)
-	if ag.Trigger != agentic.CompressionSelective {
-		t.Errorf("agentic trigger = %q, want selective", ag.Trigger)
+	if ag.Hard != agentic.CompressionSelective {
+		t.Errorf("agentic hard = %q, want selective", ag.Hard)
+	}
+	if ag.Soft != agentic.CompressionMicro {
+		t.Errorf("agentic soft = %q, want micro", ag.Soft)
 	}
 }
 
@@ -388,11 +390,11 @@ func TestBuildCompressionConfig_PerModelHardOverridesTheDefault(t *testing.T) {
 	if cc.Strategies.Hard != agentic.CompressionSelective {
 		t.Errorf("hard strategy = %q, want selective (per-model override)", cc.Strategies.Hard)
 	}
-	if cc.Strategies.Soft != "" || cc.Strategies.Trigger != "" {
-		t.Errorf("soft/trigger strategies = %q/%q, want empty (inherited unset)", cc.Strategies.Soft, cc.Strategies.Trigger)
+	if cc.Strategies.Soft != "" {
+		t.Errorf("soft strategy = %q, want empty (inherited unset)", cc.Strategies.Soft)
 	}
-	if cc.Thresholds.SoftPercent != 0 || cc.Thresholds.TriggerPercent != 0 {
-		t.Errorf("soft/trigger thresholds = %d/%d, want 0/0 (inherited global zeros, opt-in off)", cc.Thresholds.SoftPercent, cc.Thresholds.TriggerPercent)
+	if cc.Thresholds.SoftPercent != 0 {
+		t.Errorf("soft threshold = %d, want 0 (inherited global zero, opt-in off)", cc.Thresholds.SoftPercent)
 	}
 
 	// Negative per-model hard_percent: an explicit opt-out of the proactive

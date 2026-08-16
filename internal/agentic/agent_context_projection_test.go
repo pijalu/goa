@@ -120,16 +120,17 @@ func TestProjectedTokens_InvalidatedByHistoryShrink(t *testing.T) {
 	}
 }
 
-// TestProactiveCompaction_TriggerReadsProjection is acceptance criterion 3:
-// the compaction trigger must read the projection, not the stale estimate.
-// The setup makes the heuristic estimate sit ABOVE the trigger while the
-// provider-anchored projection sits BELOW it: only a trigger reading the
-// projection stays quiet. A trigger reading the stale estimate would fire.
-func TestProactiveCompaction_TriggerReadsProjection(t *testing.T) {
+// TestProactiveCompaction_SoftReadsProjection is acceptance criterion 3 under
+// the soft/hard model: the proactive tier must read the projection, not the
+// stale estimate. The setup makes the heuristic estimate sit ABOVE the soft
+// ceiling while the provider-anchored projection sits BELOW it: only a tier
+// reading the projection stays quiet. (This is the SOFT layer now — the old
+// "trigger" layer was removed.)
+func TestProactiveCompaction_SoftReadsProjection(t *testing.T) {
 	a := NewAgent(Config{
 		Model: provider.Model{ContextWindow: 100000},
 		ContextCompression: ContextCompressionConfig{
-			Thresholds: CompressionThresholds{TriggerPercent: 50},
+			Thresholds: CompressionThresholds{SoftPercent: 50},
 		},
 	})
 	// CJK-heavy history: the heuristic prices CJK at 1 token/char, so the full
@@ -160,14 +161,14 @@ func TestProactiveCompaction_TriggerReadsProjection(t *testing.T) {
 	}
 }
 
-// TestProactiveCompaction_TriggerFiresAboveProjectedTrigger is the positive
-// half of the projection-driven trigger: when the projection crosses the
-// trigger, the tier fires.
-func TestProactiveCompaction_TriggerFiresAboveProjectedTrigger(t *testing.T) {
+// TestProactiveCompaction_SoftFiresAboveProjectedCeiling is the positive half
+// of the projection-driven soft tier: when the projection crosses the soft
+// ceiling, the soft tier fires. (Reads the projection, not the stale estimate.)
+func TestProactiveCompaction_SoftFiresAboveProjectedCeiling(t *testing.T) {
 	a := NewAgent(Config{
 		Model: provider.Model{ContextWindow: 100000},
 		ContextCompression: ContextCompressionConfig{
-			Thresholds: CompressionThresholds{TriggerPercent: 50},
+			Thresholds: CompressionThresholds{SoftPercent: 50},
 		},
 	})
 	a.SetHistory([]Message{{Type: Content, Role: User, Content: "hi"}})
@@ -175,21 +176,22 @@ func TestProactiveCompaction_TriggerFiresAboveProjectedTrigger(t *testing.T) {
 
 	rt := a.cfg.ContextCompression.resolveThresholds()
 	tier := a.proactiveTier(rt, 100000)
-	if tier != tierTrigger {
-		t.Errorf("tier = %v, want tierTrigger at 60%% projected usage", tier)
+	if tier != tierSoft {
+		t.Errorf("tier = %v, want tierSoft at 60%% projected usage", tier)
 	}
 }
 
-// TestMaybeCompress_TriggerReadsProjection runs the full maybeCompress path:
-// with the projection below the trigger but the stale estimate above it, no
-// compression must fire (the per-round proactive gate reads the projection).
-func TestMaybeCompress_TriggerReadsProjection(t *testing.T) {
+// TestMaybeCompress_SoftReadsProjection runs the full maybeCompress path:
+// with the projection below the soft ceiling but the stale estimate above it,
+// no compression must fire (the per-round proactive gate reads the projection).
+// Uses the SOFT layer (tool_elision) now that the trigger layer is removed.
+func TestMaybeCompress_SoftReadsProjection(t *testing.T) {
 	a := NewAgent(Config{
 		Model: testModel(provider.ApiOpenAICompletions),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:  100000,
-			Strategy:   CompressionToolElision,
-			Thresholds: CompressionThresholds{TriggerPercent: 50},
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
+			Thresholds: CompressionThresholds{SoftPercent: 50},
 		},
 	})
 	a.SetHistory([]Message{

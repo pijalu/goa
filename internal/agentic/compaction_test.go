@@ -137,7 +137,6 @@ func TestMicroCompact_UsesEffectiveContextWindow(t *testing.T) {
 	a := &Agent{
 		cfg: Config{
 			ContextCompression: ContextCompressionConfig{
-				Strategy: CompressionMicro,
 				MicroCompaction: MicroCompactionConfig{
 					KeepRecentMessages: 1,
 					MinContentTokens:   1,

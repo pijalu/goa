@@ -17,8 +17,8 @@ func TestNewAgent_AppliesDefaultMicroCompactionConfig(t *testing.T) {
 		SystemPrompt: "test",
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens: 8000,
-			Strategy:  CompressionMicro,
+			MaxTokens:  8000,
+			Strategies: CompressionLayerStrategies{Soft: CompressionMicro},
 			// MicroCompaction intentionally zero — defaults should apply.
 		},
 	})
@@ -52,7 +52,7 @@ func TestNewAgent_PreservesExplicitMicroCompactionConfig(t *testing.T) {
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:       8000,
-			Strategy:        CompressionMicro,
+			Strategies:      CompressionLayerStrategies{Soft: CompressionMicro},
 			MicroCompaction: explicit,
 		},
 	})
@@ -70,8 +70,8 @@ func TestNewAgent_NoDefaultForNonMicroStrategy(t *testing.T) {
 		SystemPrompt: "test",
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens: 8000,
-			Strategy:  CompressionToolElision,
+			MaxTokens:  8000,
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
 		},
 	})
 

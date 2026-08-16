@@ -166,13 +166,17 @@ func (a *Agent) microCompactForced(force bool) (ContextStats, compactionResult) 
 	// skipping the mutation risks an overflow. force=true (explicit
 	// /compress) always mutates so a manual invocation always does visible
 	// work.
-	rt := a.cfg.ContextCompression.resolveThresholds()
-	deferCeilingRatio := float64(rt.deferralCeiling()) / 100
-	if !force && contextRatio < deferCeilingRatio && !a.cacheAssumedCold() {
+	// Simplified cache gate (soft/hard/error model): micro is the SOFT-layer
+	// strategy. Defer it while the provider cache is presumed hot, regardless of
+	// any derived level (no deferralCeiling = hard−10 magic). force=true (manual
+	// /compress) always mutates. The one override is the HARD ceiling: at/above
+	// it the overflow risk beats cache churn, so the mutation runs even hot.
+	overHard := contextRatio >= float64(a.cfg.ContextCompression.resolveThresholds().effectiveHard())/100
+	if !force && !overHard && !a.cacheAssumedCold() {
 		if a.cfg.Logger != nil {
 			// Info, not Debug: this suppresses compression the user configured.
-			a.cfg.Logger.Log(Info, "micro compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%, ceiling=%d%%)",
-				cfg.CacheMissThreshold, contextRatio*100, rt.deferralCeiling())
+			a.cfg.Logger.Log(Info, "micro (soft) compaction deferred: provider cache presumed hot (idle < %s, ratio=%.1f%%)",
+				cfg.CacheMissThreshold, contextRatio*100)
 		}
 		a.mu.Unlock()
 		return before, compactionResult{}

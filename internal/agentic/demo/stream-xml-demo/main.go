@@ -1,9 +1,11 @@
 //go:build ignore
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
 
 package main
+
 import (
 	"context"
 	"embed"
@@ -49,13 +51,13 @@ func main() {
 
 	// Create runner with shared observer for sub-agent event forwarding
 	runner, err := skillrunner.NewRunner(skillrunner.Config{
-		Loader:              loader,
-		Model:               cfg.ToModel(),
-		WorkDir:             ".",
-		Logger:              log,
-		Observer:            obs,
-		ContextCompression:  compressionCfg,
-		ReasoningEffort:     agentic.ReasoningEffort(cfg.ReasoningEffort),
+		Loader:             loader,
+		Model:              cfg.ToModel(),
+		WorkDir:            ".",
+		Logger:             log,
+		Observer:           obs,
+		ContextCompression: compressionCfg,
+		ReasoningEffort:    agentic.ReasoningEffort(cfg.ReasoningEffort),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create runner: %v\n", err)

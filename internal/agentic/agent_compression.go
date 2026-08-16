@@ -207,7 +207,7 @@ func (a *Agent) microDryRunValidate() {
 	// The required shrink target: micro would need to bring estimated usage
 	// under the escalation level (effectiveHard−5), the same headroom the
 	// reactive paths reserve so the next request goes out with margin.
-	target := maxTokens * a.cfg.ContextCompression.resolveThresholds().escalationPercent() / 100
+	target := maxTokens * a.cfg.ContextCompression.resolveThresholds().effectiveHard() / 100
 
 	a.mu.Lock()
 	before := a.computeContextStats()
@@ -387,7 +387,7 @@ func (a *Agent) pruneToolResultsPreCompact() (skip bool, before ContextStats, re
 		a.invalidateContextUsageLocked()
 	}
 	skip = changed > 0 &&
-		a.computeContextStatsForMax(maxTokens).UsagePercent < a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+		a.computeContextStatsForMax(maxTokens).UsagePercent < a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	a.mu.Unlock()
 
 	if changed > 0 && a.cfg.Logger != nil {
@@ -455,7 +455,7 @@ func pruneToolResultContent(content string, cfg ToolResultPruningConfig) (string
 // ContextStats returns the current context window usage statistics.
 
 func (a *Agent) MaybeCompress(ctx context.Context) error {
-	return a.MaybeCompressWith(ctx, a.cfg.ContextCompression.Strategy, true)
+	return a.MaybeCompressWith(ctx, "", true)
 }
 
 // MaybeCompressWith manually triggers context compression using the given
@@ -502,8 +502,19 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 	effective := a.computeContextStatsForMax(maxTokens)
 	a.mu.Unlock()
 	stats := a.ContextStats()
-	if rt.triggerStrategy == CompressionMicro && effective.UsagePercent < rt.effectiveHard() {
-		return a.compressAndReport(ctx)
+	// Legacy whole-strategy micro: when the SOFT layer is micro it self-manages
+	// its internal thresholds below the hard ceiling, so skip the tier gate and
+	// run it directly until the emergency ceiling is reached. Route to the SOFT
+	// strategy (micro), not the legacy whole-config Strategy, so a soft=micro
+	// config applies micro rather than falling back to tool_elision.
+	//
+	// The gate must check the soft THRESHOLD (rt.soft > 0), not merely the
+	// resolved soft strategy: resolveThresholds defaults softStrategy to micro
+	// even when the soft layer is disabled (SoftPercent 0 = opt-in off), so
+	// gating on the strategy alone fired micro on every turn — eliding fresh
+	// tool results at near-empty context.
+	if rt.soft > 0 && rt.softStrategy == CompressionMicro && effective.UsagePercent < rt.effectiveHard() {
+		return a.compressSoftAndReport(ctx, rt.softStrategy)
 	}
 
 	tier := a.proactiveTier(rt, maxTokens)
@@ -514,12 +525,6 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
 		}
 		return a.compressAndReportWith(ctx, rt.hardStrategy)
-	case tierTrigger:
-		if a.cfg.Logger != nil {
-			a.cfg.Logger.Log(Info, "Context compression triggered: %d%% usage (%d / %d tokens)",
-				stats.UsagePercent, stats.EstimatedTokens, stats.MaxTokens)
-		}
-		return a.compressAndReportWith(ctx, rt.triggerStrategy)
 	case tierSoft:
 		if a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Info, "Soft-tier context maintenance: %d%% usage (%d / %d tokens)",
@@ -529,11 +534,6 @@ func (a *Agent) maybeCompress(ctx context.Context) error {
 	default:
 		return nil
 	}
-}
-
-// compressAndReport applies the configured strategy and emits fresh stats.
-func (a *Agent) compressAndReport(ctx context.Context) error {
-	return a.compressAndReportWith(ctx, a.cfg.ContextCompression.Strategy)
 }
 
 // compressAndReportWith applies the given strategy and emits fresh stats.
@@ -582,20 +582,12 @@ func (a *Agent) proactiveTier(rt resolvedThresholds, maxTokens int) compressionT
 	return tier
 }
 
-// compressHistory applies the configured compression strategy.
-func (a *Agent) compressHistory(ctx context.Context) error {
-	return a.compressHistoryWith(ctx, a.cfg.ContextCompression.Strategy, false)
-}
-
 // compressHistoryWith applies a specific strategy. When force is true,
 // strategies with their own internal thresholds (micro compaction) bypass
 // those thresholds so that a manual /compress invocation always does
 // something visible, even when usage is below the configured ratio.
-// An empty strategy falls back to the configured one, then to tool_elision.
+// An empty strategy falls back to tool_elision (the zero-cost default).
 func (a *Agent) compressHistoryWith(ctx context.Context, strategy CompressionStrategy, force bool) error {
-	if strategy == "" {
-		strategy = a.cfg.ContextCompression.Strategy
-	}
 	if strategy == "" {
 		strategy = CompressionToolElision
 	}
@@ -705,7 +697,7 @@ func (a *Agent) runSelective() (ContextStats, compactionResult) {
 // Compact emits its own "summarize" event and no "hybrid" event fires (the
 // elision/selective work is subsumed by the summarize).
 func (a *Agent) compressHybrid(ctx context.Context) error {
-	threshold := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+	threshold := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 
 	a.mu.Lock()
 	before := a.computeContextStats()
@@ -820,7 +812,14 @@ func (a *Agent) proactiveElisionBoundary(countBoundary int) (boundary int, escal
 		return countBoundary, false
 	}
 	rt := a.cfg.ContextCompression.resolveThresholds()
-	need := a.computeContextStatsForMax(maxTokens).EstimatedTokens - maxTokens*rt.elisionTargetPercent()/100
+	// Elision maintains the SOFT level: bring usage down to the soft ceiling (the
+	// level soft maintenance is configured for), or the hard ceiling when no soft
+	// level is set. No derived hard−N target.
+	targetPct := rt.soft
+	if targetPct <= 0 {
+		targetPct = rt.effectiveHard()
+	}
+	need := a.computeContextStatsForMax(maxTokens).EstimatedTokens - maxTokens*targetPct/100
 	if need <= 0 {
 		return countBoundary, false
 	}
@@ -1019,7 +1018,13 @@ func (a *Agent) maybeCompressAfterLengthTruncation() {
 	// compaction needs a lock-free emission boundary, so it runs off-lock via
 	// compressHistoryWithStrategy (which emits its own "micro" event); the
 	// selective follow-up then reports as "truncation".
-	strategy := a.cfg.ContextCompression.Strategy
+	// The maintenance strategy is the SOFT-layer strategy; an unset soft layer
+	// ("" after resolution when soft is disabled) reduces to tool_elision +
+	// selective. Micro runs off-lock via compressHistoryWithStrategy.
+	strategy := a.cfg.ContextCompression.resolveThresholds().softStrategy
+	if a.cfg.ContextCompression.Thresholds.SoftPercent <= 0 {
+		strategy = ""
+	}
 	if strategy == CompressionMicro {
 		a.compressHistoryWithStrategy(string(strategy), true)
 		a.mu.Lock()
@@ -1127,7 +1132,7 @@ func (a *Agent) compressOverflowRecovery(ctx context.Context) {
 	// When it escalates, Compact emits its own "summarize" event, so the
 	// pre-escalation elision/selective work is NOT separately reported (it is
 	// subsumed by the summarize) — exactly one EventCompact per recovery.
-	threshold := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+	threshold := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 	if stats.UsagePercent >= threshold {
 		if err := a.Compact(ctx); err != nil && a.cfg.Logger != nil {
 			a.cfg.Logger.Log(Error, "Context-overflow summarize failed: %v", err)
@@ -1198,7 +1203,7 @@ func (a *Agent) compressHistoryWithStrategyLocked(strategy string, force bool) c
 		res := a.compressToolElision(true)
 		stats := a.computeContextStats()
 		maxTokens := a.effectiveMaxTokens()
-		escalation := a.cfg.ContextCompression.resolveThresholds().escalationPercent()
+		escalation := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
 		if maxTokens > 0 && stats.EstimatedTokens > maxTokens*escalation/100 {
 			s := a.compressSelective()
 			res = mergeCompaction(res, s)

@@ -53,8 +53,8 @@ func dispatchAgent(t *testing.T, onError CompressionStrategy) *Agent {
 	a := NewAgent(Config{
 		Model: testModel(p.API()),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:         1000000, // post-pass estimate ≪ escalation level
-			OnErrorStrategy:   onError,
+			MaxTokens:           1000000, // post-pass estimate ≪ escalation level
+			OnErrorStrategy:     onError,
 			PreserveRecentTurns: 2,
 		},
 	})

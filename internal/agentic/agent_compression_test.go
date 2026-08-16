@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/pijalu/goa/internal/agentic/provider"
 )
@@ -124,8 +123,6 @@ func TestCompressToolElision(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -209,8 +206,6 @@ func TestCompressSelective(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionSelective,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -244,8 +239,6 @@ func TestCompressToolElision_ReducesTokensOnSmallHistory(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           100000,
-			ThresholdPercent:    80,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 2,
 		},
 	})
@@ -283,8 +276,6 @@ func TestCompressToolElision_ForcedSixMessages(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           100000,
-			ThresholdPercent:    80,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 2,
 		},
 	})
@@ -315,10 +306,10 @@ func TestMicroCompactForced_ReducesTokensOnSmallHistory(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:        100000,
-			ThresholdPercent: 80,
-			Strategy:         CompressionMicro,
-			MicroCompaction:  DefaultMicroCompactionConfig,
+			MaxTokens:       100000,
+			Thresholds:      CompressionThresholds{SoftPercent: 80},
+			Strategies:      CompressionLayerStrategies{Soft: CompressionMicro},
+			MicroCompaction: DefaultMicroCompactionConfig,
 		},
 	})
 
@@ -357,7 +348,6 @@ func TestCompressHybrid(t *testing.T) {
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           500,
 			Thresholds:          CompressionThresholds{HardPercent: 15},
-			Strategy:            CompressionHybrid,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -412,10 +402,13 @@ func TestMaybeCompress_Triggers(t *testing.T) {
 	agent := NewAgent(Config{
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:           500,
-			ThresholdPercent:    10,
-			Strategy:            CompressionSelective,
-			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: these tests exercise trigger mechanics offline // selective actually removes messages
+			MaxTokens: 500,
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// low soft threshold + selective strategy (selective actually
+			// removes messages). A fresh agent has no hot-cache evidence, so
+			// the soft gate fires rather than deferring.
+			Thresholds:          CompressionThresholds{SoftPercent: 10},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionSelective, Hard: CompressionSelective},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -454,9 +447,11 @@ func TestMaybeCompress_FallsBackToModelWindow(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		Model:        provider.Model{ContextWindow: 500},
 		ContextCompression: ContextCompressionConfig{
-			ThresholdPercent:    10,
-			Strategy:            CompressionSelective,
-			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: these tests exercise trigger mechanics offline
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// low soft threshold + selective strategy (selective removes
+			// messages); fresh agent = cold cache, so the soft gate fires.
+			Thresholds:          CompressionThresholds{SoftPercent: 10},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionSelective, Hard: CompressionSelective},
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -632,8 +627,6 @@ func newElisionAgent() *Agent {
 		SystemPrompt: "You are helpful.",
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 1,
 		},
 	})
@@ -940,19 +933,6 @@ func TestSummarizeHistorySetsCompactionPurpose(t *testing.T) {
 	}
 }
 
-// appendElisionPair appends one assistant tool call plus its tool result of
-// the given size — the session shape that drives elision (a long single turn
-// of tool-call rounds).
-func appendElisionPair(a *Agent, resultSize int) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	id := fmt.Sprintf("c%d", len(a.history))
-	a.history = append(a.history,
-		Message{Type: Content, Role: Assistant, ToolCalls: []ToolCallInfo{{ID: id, Type: "function", Name: "tool", Arguments: `{"n":1}`}}},
-		Message{Type: Content, Role: ToolRole, Content: strings.Repeat("x", resultSize), ToolCallID: id},
-	)
-}
-
 // historyHash fingerprints message count, contents and tool-call arguments so
 // tests can detect any history mutation (in-place elision or message drops) —
 // every mutation is a provider prefix-cache bust on the next request.
@@ -969,186 +949,6 @@ func historyHash(a *Agent) uint64 {
 		}
 	}
 	return h.Sum64()
-}
-
-// simulateHotCacheRound marks the per-round provider contact the way a
-// cache-reporting provider does: every completed request reports cache reads
-// (partial hits after a bust still count) and refreshes the activity clock.
-func simulateHotCacheRound(a *Agent) {
-	a.mu.Lock()
-	a.cacheWarmObserved = true
-	a.lastRoundActivity = time.Now()
-	a.mu.Unlock()
-}
-
-// TestMaybeCompress_ToolElision_HotCacheBudgetHysteresis is the core CM:13
-// regression: above the 85% deferral ceiling with a hot cache, proactive
-// tool_elision used to elide only the ~2 messages that crossed the count
-// boundary per round, so usage stayed at the ceiling and the hot prefix
-// cache busted EVERY round (13 misses in the session export). The hot-cache
-// path must elide by TOKEN BUDGET down to the hysteresis target (hard−20 =
-// 75%) in ONE pass, then stay quiet while usage climbs back.
-func TestMaybeCompress_ToolElision_HotCacheBudgetHysteresis(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens:  10000,
-			Strategy:   CompressionToolElision,
-			Thresholds: CompressionThresholds{TriggerPercent: 80}, // production shape: ceiling = hard−10 = 85
-		},
-	})
-	a.mu.Lock()
-	a.history = append(a.history, Message{Type: Content, Role: System, Content: "sys"})
-	a.mu.Unlock()
-	for i := 0; i < 19; i++ {
-		appendElisionPair(a, 1500) // ~470 est tokens per pair
-	}
-	stats := a.ContextStats()
-	if stats.UsagePercent < 85 || stats.UsagePercent >= 95 {
-		t.Fatalf("setup: usage %d%% must be in the [85,95) ceiling band", stats.UsagePercent)
-	}
-	simulateHotCacheRound(a)
-
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
-	}
-	after := a.ContextStats()
-	target := a.cfg.ContextCompression.resolveThresholds().elisionTargetPercent()
-	if after.UsagePercent > target {
-		t.Errorf("one hot-cache pass must elide down to the hysteresis target: usage %d%% > %d%%",
-			after.UsagePercent, target)
-	}
-	// Hysteresis elides only what the budget needs: the oldest results are
-	// elided but mid-history payloads survive (no wholesale wipe).
-	a.mu.Lock()
-	oldest := a.history[2].Content
-	mid := a.history[20].Content
-	a.mu.Unlock()
-	if oldest != elidedToolResultContent {
-		t.Errorf("oldest tool result not elided: %q", oldest[:min(30, len(oldest))])
-	}
-	if mid == elidedToolResultContent {
-		t.Errorf("budget overshot: mid-history result elided though the budget was met earlier")
-	}
-	// No re-fire while usage is back below the trigger: the next per-round
-	// gate must leave history untouched (that per-round re-fire IS the bust
-	// loop: count-boundary advance rewrote 2 more messages every round).
-	before := historyHash(a)
-	simulateHotCacheRound(a)
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
-	}
-	if historyHash(a) != before {
-		t.Errorf("proactive gate re-fired below the trigger after hysteresis elision (per-round bust loop)")
-	}
-}
-
-// TestMaybeCompress_ToolElision_HotCacheEscalatesWhenBudgetUnmet covers the
-// payload-poor case: at/above the ceiling with a hot cache but almost no
-// elidable tool payload, nibbling every round would bust the cache for
-// near-zero gain — the pass must escalate to selective message removal so the
-// single bust buys real headroom (the entry's "stop nibbling" alternative).
-func TestMaybeCompress_ToolElision_HotCacheEscalatesWhenBudgetUnmet(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens:  6200,
-			Strategy:   CompressionToolElision,
-			Strategies: CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer offline
-			Thresholds: CompressionThresholds{TriggerPercent: 80},              // production shape: ceiling = 85
-		},
-	})
-	a.mu.Lock()
-	a.history = append(a.history, Message{Type: Content, Role: System, Content: "sys"})
-	// Payload-poor history: plain user/assistant text only (~91% usage).
-	for i := 0; i < 30; i++ {
-		a.history = append(a.history,
-			Message{Type: Content, Role: User, Content: strings.Repeat("q", 300)},
-			Message{Type: Content, Role: Assistant, Content: strings.Repeat("a", 300)},
-		)
-	}
-	a.mu.Unlock()
-	stats := a.ContextStats()
-	if stats.UsagePercent < 85 || stats.UsagePercent >= 95 {
-		t.Fatalf("setup: usage %d%% must be in the [85,95) ceiling band", stats.UsagePercent)
-	}
-	simulateHotCacheRound(a)
-
-	if err := a.maybeCompress(context.Background()); err != nil {
-		t.Fatalf("maybeCompress: %v", err)
-	}
-	a.mu.Lock()
-	n := len(a.history)
-	a.mu.Unlock()
-	if n >= 61 {
-		t.Errorf("budget-unmet hot-cache pass did not escalate to selective: %d messages kept", n)
-	}
-	after := a.ContextStats()
-	target := a.cfg.ContextCompression.resolveThresholds().elisionTargetPercent()
-	if after.UsagePercent > target {
-		t.Errorf("escalation must buy real headroom: usage %d%% > target %d%%", after.UsagePercent, target)
-	}
-}
-
-// TestMaybeCompress_ToolElision_CacheBustConvergence replays the CM:13
-// session shape — one long turn, hot cache, usage climbing slowly past the
-// 85% deferral ceiling — and counts cache busts (rounds where the proactive
-// gate mutated history). Pre-fix the count boundary advanced every round and
-// busted the cache on EVERY round above the ceiling (~13 misses per export);
-// post-fix one budgeted bust buys ~40 rounds of headroom, so a 85-round
-// climb busts at most twice (the entry's "≤2 misses" bar).
-func TestMaybeCompress_ToolElision_CacheBustConvergence(t *testing.T) {
-	a := NewAgent(Config{
-		Model: testModel(provider.ApiOpenAICompletions),
-		ContextCompression: ContextCompressionConfig{
-			MaxTokens:  20000,
-			Strategy:   CompressionToolElision,
-			Strategies: CompressionLayerStrategies{Hard: CompressionSelective}, // no LLM in tests
-			Thresholds: CompressionThresholds{TriggerPercent: 80},              // production shape: ceiling = 85
-		},
-	})
-	a.mu.Lock()
-	a.history = append(a.history, Message{Type: Content, Role: System, Content: "sys"})
-	a.mu.Unlock()
-	// Seed to ~84% with large tool payloads, then climb slowly (small
-	// results), mirroring the session's 84% → 95% drift over ~180 rounds.
-	for a.ContextStats().UsagePercent < 84 {
-		appendElisionPair(a, 1300)
-	}
-
-	var bustRounds []int
-	usageAfterFirstBust := -1
-	for round := 0; round < 85; round++ {
-		simulateHotCacheRound(a)
-		before := historyHash(a)
-		if err := a.maybeCompress(context.Background()); err != nil {
-			t.Fatalf("maybeCompress round %d: %v", round, err)
-		}
-		if historyHash(a) != before {
-			bustRounds = append(bustRounds, round)
-			if usageAfterFirstBust < 0 {
-				usageAfterFirstBust = a.ContextStats().UsagePercent
-			}
-		}
-		appendElisionPair(a, 110) // ~48 est tokens per round of growth
-	}
-
-	if len(bustRounds) == 0 {
-		t.Fatalf("proactive elision never fired though usage crossed the 85%% ceiling")
-	}
-	if len(bustRounds) > 2 {
-		t.Errorf("cache busted %d times in 85 rounds (rounds %v); budgeted hysteresis must keep it ≤2 "+
-			"(pre-fix the count boundary busted EVERY round above the ceiling)", len(bustRounds), bustRounds)
-	}
-	target := a.cfg.ContextCompression.resolveThresholds().elisionTargetPercent()
-	if usageAfterFirstBust > target {
-		t.Errorf("usage after the first bust = %d%%, want ≤ hysteresis target %d%%", usageAfterFirstBust, target)
-	}
-	for i := 1; i < len(bustRounds); i++ {
-		if gap := bustRounds[i] - bustRounds[i-1]; gap < 10 {
-			t.Errorf("bust gap %d rounds (rounds %v): one bust must buy many rounds of headroom", gap, bustRounds)
-		}
-	}
 }
 
 // --- Cache-warm compaction summarization (CA1) regression tests ---
@@ -1186,8 +986,6 @@ func TestSummarizeHistoryReusesConversationPrefix(t *testing.T) {
 		Tools:        []Tool{prefixStubTool{}},
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           10000,
-			ThresholdPercent:    50,
-			Strategy:            CompressionToolElision,
 			PreserveRecentTurns: 1,
 		},
 	})

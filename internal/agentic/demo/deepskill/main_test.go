@@ -1,9 +1,11 @@
 //go:build ignore
+
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Copyright (C) 2026 Pierre Poissinger
 
 package main
+
 import (
 	"context"
 	"embed"
@@ -118,8 +120,8 @@ func TestSubSkillIndividualExecution(t *testing.T) {
 		t.Fatal("genSentence skill not found")
 	}
 	subRunner, err := skillrunner.NewRunner(skillrunner.Config{
-		Skills:   genSent.SubSkills,
-		WorkDir:  t.TempDir(),
+		Skills:  genSent.SubSkills,
+		WorkDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create sub-runner: %v", err)

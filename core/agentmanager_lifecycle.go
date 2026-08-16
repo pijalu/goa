@@ -328,13 +328,20 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		thresholds = agentic.CompressionThresholds{}
 	}
 
+	// The legacy whole-config `strategy` was the main compression strategy; with
+	// the trigger layer gone it maps onto the HARD layer (the ceiling at which
+	// the main strategy fires) when no explicit strategies.hard is set.
+	strategies := agenticLayerStrategies(ov.strategies)
+	if strategies.Hard == "" && ov.strategy != "" {
+		strategies.Hard = agentic.CompressionStrategy(ov.strategy)
+	}
+
 	return agentic.ContextCompressionConfig{
 		MaxTokens:           ov.maxTokens,
 		Thresholds:          thresholds,
 		OnContextError:      cfg.ContextCompression.OnContextError,
 		OnErrorStrategy:     agentic.CompressionStrategy(cfg.ContextCompression.OnErrorStrategy),
-		Strategy:            compressionStrategy(ov.strategy),
-		Strategies:          agenticLayerStrategies(ov.strategies),
+		Strategies:          strategies,
 		DisableCacheGate:    ov.cacheGate == "off",
 		PreserveRecentTurns: ov.preserveRecentTurns,
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
@@ -379,9 +386,8 @@ func buildToolResultPruningConfig(s config.ToolResultPruningSettings) agentic.To
 // summarize) apply.
 func agenticLayerStrategies(s config.CompressionLayerStrategiesConfig) agentic.CompressionLayerStrategies {
 	return agentic.CompressionLayerStrategies{
-		Soft:    agentic.CompressionStrategy(s.Soft),
-		Trigger: agentic.CompressionStrategy(s.Trigger),
-		Hard:    agentic.CompressionStrategy(s.Hard),
+		Soft: agentic.CompressionStrategy(s.Soft),
+		Hard: agentic.CompressionStrategy(s.Hard),
 	}
 }
 
@@ -456,41 +462,40 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 
 // resolveAgenticThresholds folds the config-layer thresholds with the legacy
 // threshold_percent alias and the deprecated Execution.TokenCritical fallback,
-// producing the SDK-level thresholds. Precedence: legacy threshold_percent →
-// thresholds.* → TokenCritical (deprecated, logged once) → SDK defaults (0 =
-// let the SDK default apply).
+// producing the SDK-level (soft/hard) thresholds. The SDK model is exactly
+// soft / hard / on-error — there is no trigger layer — so every legacy
+// "trigger" level (threshold_percent, thresholds.trigger_percent,
+// TokenCritical) maps onto the HARD ceiling: it was the fill level at which
+// the main strategy fired, and the hard ceiling is now that point. Precedence:
+// explicit hard_percent → legacy threshold_percent → trigger_percent →
+// TokenCritical (deprecated, logged once) → SDK default (0 = let the SDK
+// default apply).
 func (am *AgentManager) resolveAgenticThresholds(cfg *config.Config, t config.CompressionThresholdsConfig, legacyTrigger int) agentic.CompressionThresholds {
 	out := agentic.CompressionThresholds{
-		SoftPercent:    t.SoftPercent,
-		TriggerPercent: t.TriggerPercent,
-		HardPercent:    t.HardPercent,
+		SoftPercent: t.SoftPercent,
+		HardPercent: t.HardPercent,
 	}
-	// Deprecated alias wins over thresholds.trigger_percent when both are set.
-	if legacyTrigger > 0 {
-		out.TriggerPercent = legacyTrigger
+	if out.HardPercent == 0 && legacyTrigger > 0 {
+		out.HardPercent = legacyTrigger
 	}
-	if out.TriggerPercent == 0 && cfg.Execution.TokenCritical > 0 {
+	if out.HardPercent == 0 && t.TriggerPercent > 0 {
+		out.HardPercent = t.TriggerPercent
+	}
+	if out.HardPercent == 0 && cfg.Execution.TokenCritical > 0 {
 		am.logTokenCriticalDeprecationOnce()
-		out.TriggerPercent = cfg.Execution.TokenCritical
+		out.HardPercent = cfg.Execution.TokenCritical
 	}
 	return out
 }
 
 // logTokenCriticalDeprecationOnce warns (once per process) that the
-// execution.token_critical fallback for the compression trigger is deprecated.
+// execution.token_critical fallback for the compression ceiling is deprecated.
 var tokenCriticalDeprecationLogged atomic.Bool
 
 func (am *AgentManager) logTokenCriticalDeprecationOnce() {
 	if tokenCriticalDeprecationLogged.CompareAndSwap(false, true) && am.logger != nil {
-		am.logger.Log(agentic.Warn, "execution.token_critical is deprecated as a compression trigger fallback; use context_compression.thresholds.trigger_percent instead")
+		am.logger.Log(agentic.Warn, "execution.token_critical is deprecated as a compression ceiling fallback; use context_compression.thresholds.hard_percent instead")
 	}
-}
-
-func compressionStrategy(s string) agentic.CompressionStrategy {
-	if s := agentic.CompressionStrategy(s); s != "" {
-		return s
-	}
-	return agentic.CompressionToolElision
 }
 
 func buildMicroCompactionConfig(m config.MicroCompactionSettings) agentic.MicroCompactionConfig {

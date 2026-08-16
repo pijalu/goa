@@ -253,9 +253,9 @@ func TestDeferralAllSchemas(t *testing.T) {
 // runTool rejects an unloaded deferred tool with a clear redirect error.
 func TestRunToolDeferredRedirect(t *testing.T) {
 	agent := NewAgent(Config{
-		Model:        testModel(provider.ApiOpenAICompletions),
-		SystemPrompt: "test",
-		Tools:        []Tool{&probeEagerTool{name: "read"}, &probeEagerTool{name: "write"}, &probeLoader{}, &probeDeferredTool{name: "d0"}},
+		Model:              testModel(provider.ApiOpenAICompletions),
+		SystemPrompt:       "test",
+		Tools:              []Tool{&probeEagerTool{name: "read"}, &probeEagerTool{name: "write"}, &probeLoader{}, &probeDeferredTool{name: "d0"}},
 		ContextCompression: ContextCompressionConfig{MaxTokens: 0},
 	})
 	// Build a registry that has deferral active (≥ threshold deferred tools +
@@ -284,9 +284,9 @@ func TestRunToolDeferredRedirect(t *testing.T) {
 func TestApplyToolLoadRequests(t *testing.T) {
 	reg := deferralProbeRegistry()
 	agent := NewAgent(Config{
-		Model:        testModel(provider.ApiOpenAICompletions),
-		SystemPrompt: "test",
-		Tools:        []Tool{&probeEagerTool{name: "read"}, &probeLoader{}, &probeDeferredTool{name: "d0"}, &probeDeferredTool{name: "d1"}},
+		Model:              testModel(provider.ApiOpenAICompletions),
+		SystemPrompt:       "test",
+		Tools:              []Tool{&probeEagerTool{name: "read"}, &probeLoader{}, &probeDeferredTool{name: "d0"}, &probeDeferredTool{name: "d1"}},
 		ContextCompression: ContextCompressionConfig{MaxTokens: 0},
 	})
 	agent.reg = reg

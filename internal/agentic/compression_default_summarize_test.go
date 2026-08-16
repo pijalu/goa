@@ -25,6 +25,7 @@ import (
 //     applied as a pre-compression to make room — and ONLY then.
 //   - ceiling / tool_elision / selective / micro must NOT fire proactively
 //     under a zero config.
+//
 // TestResolveThresholds_DefaultHardStrategyIsSummarize pins the resolved
 // defaults of an all-zero ContextCompressionConfig: the hard-layer strategy is
 // summarize (not hybrid, not elision) whenever the hard tier is enabled, and
@@ -36,8 +37,8 @@ func TestResolveThresholds_DefaultHardStrategyIsSummarize(t *testing.T) {
 	if rt.hardStrategy != CompressionSummarize {
 		t.Errorf("default hardStrategy = %q, want %q", rt.hardStrategy, CompressionSummarize)
 	}
-	if rt.soft != 0 || rt.trigger != 0 {
-		t.Errorf("default soft/trigger must stay disabled (opt-in), got soft=%d trigger=%d", rt.soft, rt.trigger)
+	if rt.soft != 0 {
+		t.Errorf("default soft must stay disabled (opt-in), got soft=%d", rt.soft)
 	}
 	if rt.softStrategy != CompressionMicro {
 		t.Errorf("default softStrategy = %q, want %q", rt.softStrategy, CompressionMicro)
@@ -108,9 +109,9 @@ func TestMaybeCompress_LegacyMicroBranchUsesEffectiveWindow(t *testing.T) {
 	p := textEventProvider("Summary: the conversation was about testing.")
 	a := NewAgent(Config{
 		Model: testModel(p.API()),
-		// Legacy whole-strategy micro, as shipped in default.yaml.
+		// Soft-layer micro (self-managing below the hard ceiling).
 		ContextCompression: ContextCompressionConfig{
-			Strategy:   CompressionMicro,
+			Strategies: CompressionLayerStrategies{Soft: CompressionMicro},
 			MaxTokens:  1000,
 			Thresholds: CompressionThresholds{HardPercent: 95}, // shipped-default hard tier
 			MicroCompaction: MicroCompactionConfig{
@@ -163,8 +164,11 @@ func TestMaybeCompress_LegacyMicroBranchStillSelfManagesBelowCeiling(t *testing.
 	a := NewAgent(Config{
 		Model: testModel(p.API()),
 		ContextCompression: ContextCompressionConfig{
-			Strategy:  CompressionMicro,
-			MaxTokens: 1000,
+			// Soft layer explicitly enabled (0 = disabled): the soft=micro
+			// self-management branch only runs when the soft tier is on.
+			Thresholds: CompressionThresholds{SoftPercent: 10},
+			Strategies: CompressionLayerStrategies{Soft: CompressionMicro},
+			MaxTokens:  1000,
 			// Explicit micro settings (NewAgent only fills defaults for an
 			// all-zero block): keep exactly the last message so the old tool
 			// result at idx 2 falls inside the truncation window.

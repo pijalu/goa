@@ -102,7 +102,6 @@ func TestCompact_MicroDisabledByDefault_UsesSummarize(t *testing.T) {
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 4000,
-			Strategy:  CompressionSummarize,
 			// MicroCompaction zero → Enabled=false (the default).
 		},
 	})
@@ -150,7 +149,6 @@ func TestCompact_MicroEnabled_DryRunDoesNotMutate(t *testing.T) {
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:       4000,
-			Strategy:        CompressionSummarize,
 			MicroCompaction: micro,
 		},
 	})
@@ -209,7 +207,6 @@ func TestCompact_MicroEnabled_AppliedOnlyOnSummarizeOverflow(t *testing.T) {
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:       4000,
-			Strategy:        CompressionSummarize,
 			MicroCompaction: micro,
 		},
 	})
@@ -286,7 +283,6 @@ func TestCompact_PersistentOverflowPropagatesError(t *testing.T) {
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 4000,
-			Strategy:  CompressionSummarize,
 			// Micro disabled (default) — irrelevant for the fallback path.
 		},
 	})

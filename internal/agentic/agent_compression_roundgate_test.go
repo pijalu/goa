@@ -107,10 +107,13 @@ func TestAgent_CompressionGateBetweenRounds(t *testing.T) {
 		}},
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens: 2000,
-			Strategy:  CompressionToolElision,
-			// Trigger at 50%: two 600-token results (~60%) already cross it,
-			// so the round-2/3 gates must run the elision pass.
-			Thresholds: CompressionThresholds{TriggerPercent: 50},
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// 50% soft threshold + tool_elision strategy: two 600-token results
+			// (~60%) already cross it, so the round-2/3 gates run the elision
+			// pass. The probe provider reports no cache reads, so the cache is
+			// presumed cold and the soft gate does not defer.
+			Thresholds: CompressionThresholds{SoftPercent: 50},
+			Strategies: CompressionLayerStrategies{Soft: CompressionToolElision},
 		},
 	})
 

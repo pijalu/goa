@@ -63,10 +63,12 @@ func TestMaybeCompress_FiresDueToFixedCost(t *testing.T) {
 		},
 		Logger: NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
-			MaxTokens:           1000,
-			Strategy:            CompressionSelective,
-			Strategies:          CompressionLayerStrategies{Hard: CompressionSelective}, // pin hard layer: test exercises trigger mechanics offline
-			ThresholdPercent:    90,
+			MaxTokens: 1000,
+			// Soft/hard model: no trigger layer. Drive the SOFT layer with a
+			// 90% soft threshold + selective strategy (selective removes
+			// messages); fresh agent = cold cache, so the soft gate fires.
+			Thresholds:          CompressionThresholds{SoftPercent: 90},
+			Strategies:          CompressionLayerStrategies{Soft: CompressionSelective, Hard: CompressionSelective},
 			PreserveRecentTurns: 1,
 		},
 	})

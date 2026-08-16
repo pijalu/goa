@@ -68,7 +68,6 @@ func TestCompact_SummarizesOriginalHistory(t *testing.T) {
 		Logger:       NewLogger(Error),
 		ContextCompression: ContextCompressionConfig{
 			MaxTokens:           800,
-			Strategy:            CompressionSummarize,
 			PreserveRecentTurns: 2,
 		},
 	})
