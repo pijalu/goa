@@ -193,8 +193,19 @@ def analyze_miss(report: Dict[str, Any],
         result["explained"] = True
         return result
 
-    # verdict 4: nothing on the client explains it
-    result["verdicts"].append("provider-eviction?")
+    # verdict 4: nothing on the client explains it. Report block-alignment
+    # evidence: providers cache in fixed-size blocks (z.ai/deepseek: 64
+    # tokens), so a loss that is an exact block multiple with a stable
+    # client prefix points at server-side segment eviction.
+    prev_read = report.get("prev_cache_read_tokens") or 0
+    cur_read = report.get("cache_read_tokens") or 0
+    lost = prev_read - cur_read
+    if lost > 0 and prev_read % 64 == 0 and cur_read % 64 == 0:
+        result["verdicts"].append(
+            "provider-eviction(block-aligned loss: %d blocks of 64)"
+            % (lost // 64))
+    else:
+        result["verdicts"].append("provider-eviction?")
     return result
 
 
