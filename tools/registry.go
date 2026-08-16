@@ -120,28 +120,31 @@ type ConfigurableTool struct {
 }
 
 // ConfigurableTools returns every runtime-toggleable tool with a short
-// description and its default enabled state. Adding a tool here is the only
-// change needed for it to show up in the Tools config screen and docs.
+// description and its default enabled state. The Default flags mirror the
+// embedded default config (config/configs/default.yaml tools.enabled), so
+// /config and /docs show the same on/off state a fresh install ships with.
+// ask_user_question is Default:true (opt-out) — it is enabled by default and
+// only removed when the user sets tools.enabled.clarify_disabled: true.
 func ConfigurableTools() []ConfigurableTool {
 	return []ConfigurableTool{
-		{Name: "agent", Description: "Spawn a sub-agent for a task", Default: true},
-		{Name: "agent_swarm", Description: "Fan out a swarm of sub-agents", Default: true},
-		{Name: "goa", Description: "Run Goa slash commands from the model", Default: true},
-		{Name: "verify", Description: "Run the test suite, report pass/fail", Default: true},
+		{Name: "agent", Description: "Spawn a sub-agent for a task", Default: false},
+		{Name: "agent_swarm", Description: "Fan out a swarm of sub-agents", Default: false},
+		{Name: "goa", Description: "Run Goa slash commands from the model", Default: false},
+		{Name: "verify", Description: "Run the test suite, report pass/fail", Default: false},
 		{Name: "ask_user_question", Description: "Ask the user a question", Default: true},
 		{Name: "python", Description: "Execute Python code with gpython", Default: true},
 		{Name: "run_code", Description: "Python program with multi-tool dispatch (code-mode)", Default: true},
 		{Name: "bg_exec", Description: "Background process execution", Default: false},
 		{Name: "delegate_to", Description: "Delegate tasks to sub-agents", Default: false},
 		{Name: "goal", Description: "Goal tracking", Default: false},
-		{Name: "lsp", Description: "LSP code navigation", Default: true},
+		{Name: "lsp", Description: "LSP code navigation", Default: false},
 		{Name: "memento", Description: "Persistent memory files", Default: false},
-		{Name: "terminals", Description: "Persistent terminal sessions", Default: false},
+		{Name: "terminals", Description: "Persistent terminal sessions", Default: true},
 		{Name: "request_review", Description: "Request companion review", Default: false},
 		{Name: "smartsearch", Description: "BM25 code search (needs restart)", Default: false},
 		{Name: "ssh_bash", Description: "Remote SSH command execution", Default: false},
-		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: true},
-		{Name: "webfetch", Description: "URL content fetching", Default: false},
+		{Name: "todo_list", Description: "Session todo list (goal-linked when a goal is active)", Default: false},
+		{Name: "webfetch", Description: "URL content fetching", Default: true},
 	}
 }
 

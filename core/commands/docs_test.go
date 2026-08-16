@@ -39,6 +39,140 @@ func TestToolSummaryLine_StripsSPDXHeader(t *testing.T) {
 	}
 }
 
+// fakeDeferredTool is a tool whose schema is withheld from the prompt and
+// loaded on demand via tool_search (implements agentic.Deferred).
+type fakeDeferredTool struct {
+	fakeTool
+}
+
+func (f *fakeDeferredTool) Deferred() bool { return true }
+
+// descTool is an eager tool with a controllable name/description.
+type descTool struct {
+	name string
+	desc string
+}
+
+func (f *descTool) Schema() agentic.ToolSchema {
+	return agentic.ToolSchema{Name: f.name, Description: f.desc}
+}
+func (f *descTool) Execute(string) (string, error) { return "ok", nil }
+func (f *descTool) IsRetryable(error) bool         { return false }
+
+// TestListTools_PartitionsEagerAndDeferred verifies /tools groups tools into
+// "Default part of prompt" and "Must use search", marks deferred tools with
+// the 🔍 icon and a "via tool_search" label, and does not truncate
+// descriptions.
+func TestListTools_PartitionsEagerAndDeferred(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	longDesc := "This is a deliberately long tool description that exceeds sixty characters to prove the list view no longer truncates it."
+	reg.Register(&descTool{name: "read", desc: "Read a file."})
+	reg.Register(&descTool{name: "bash", desc: longDesc})
+	reg.Register(&fakeDeferredTool{fakeTool{name: "webfetch"}})
+	reg.Register(&fakeDeferredTool{fakeTool{name: "memento"}})
+
+	w := newWriter()
+	if err := listTools(w, reg); err != nil {
+		t.Fatalf("listTools: %v", err)
+	}
+	text := w.Text()
+
+	if !strings.Contains(text, "Default part of prompt") {
+		t.Errorf("expected eager section header, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Must use search") {
+		t.Errorf("expected deferred section header, got:\n%s", text)
+	}
+	if !strings.Contains(text, "🔍 via tool_search") {
+		t.Errorf("expected deferred tools marked with 🔍 via tool_search, got:\n%s", text)
+	}
+	if !strings.Contains(text, longDesc) {
+		t.Errorf("description was truncated; expected full text, got:\n%s", text)
+	}
+	if strings.Contains(text, "...") {
+		t.Errorf("found truncation ellipsis in output:\n%s", text)
+	}
+	// Counts line reports the split.
+	if !strings.Contains(text, "4 tool(s) available (2 in prompt, 2 via tool_search)") {
+		t.Errorf("expected eager/deferred counts, got:\n%s", text)
+	}
+}
+
+// TestListTools_AllEager verifies the deferred section is omitted when no
+// tool is deferred.
+func TestListTools_AllEager(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	reg.Register(&descTool{name: "read", desc: "Read a file."})
+
+	w := newWriter()
+	if err := listTools(w, reg); err != nil {
+		t.Fatalf("listTools: %v", err)
+	}
+	text := w.Text()
+	if !strings.Contains(text, "Default part of prompt") {
+		t.Errorf("expected eager section header, got:\n%s", text)
+	}
+	if strings.Contains(text, "Must use search") {
+		t.Errorf("did not expect a deferred section, got:\n%s", text)
+	}
+	if !strings.Contains(text, "1 tool(s) available (1 in prompt, 0 via tool_search)") {
+		t.Errorf("expected counts, got:\n%s", text)
+	}
+}
+
+// TestShowToolDetail_DeferredAvailability verifies the detail view announces
+// whether a tool is in the prompt or must be loaded via tool_search.
+func TestShowToolDetail_DeferredAvailability(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	reg.Register(&descTool{name: "read", desc: "Read a file."})
+	reg.Register(&fakeDeferredTool{fakeTool{name: "webfetch"}})
+
+	w := newWriter()
+	if err := showToolDetail(w, reg, "webfetch"); err != nil {
+		t.Fatalf("showToolDetail: %v", err)
+	}
+	if !strings.Contains(w.Text(), "🔍 Must use search") {
+		t.Errorf("expected deferred availability line, got:\n%s", w.Text())
+	}
+
+	w2 := newWriter()
+	if err := showToolDetail(w2, reg, "read"); err != nil {
+		t.Fatalf("showToolDetail: %v", err)
+	}
+	if !strings.Contains(w2.Text(), "Default part of prompt") {
+		t.Errorf("expected eager availability line, got:\n%s", w2.Text())
+	}
+}
+
+// TestGetToolEnabled_AskUserQuestionDefault verifies ask_user_question is
+// enabled by default (opt-out): a zero-value config (clarify_disabled unset)
+// reports enabled.
+func TestGetToolEnabled_AskUserQuestionDefault(t *testing.T) {
+	if !getToolEnabled(&config.Config{}, "ask_user_question") {
+		t.Error("ask_user_question should be enabled by default")
+	}
+	cfg := &config.Config{}
+	cfg.Tools.Enabled.SetEnabled("clarify_disabled", true)
+	if getToolEnabled(cfg, "ask_user_question") {
+		t.Error("ask_user_question should be disabled when clarify_disabled=true")
+	}
+}
+
+// TestConfigurableTools_AskUserQuestionDefault verifies the toggle catalog
+// marks ask_user_question as enabled by default (opt-out).
+func TestConfigurableTools_AskUserQuestionDefault(t *testing.T) {
+	for _, ct := range tools.ConfigurableTools() {
+		if ct.Name == "ask_user_question" {
+			if !ct.Default {
+				t.Error("ask_user_question catalog Default should be true (enabled by default)")
+			}
+			return
+		}
+	}
+	// If we get here the tool is missing from the catalog entirely.
+	t.Error("ask_user_question missing from ConfigurableTools()")
+}
+
 func TestToolsDocCommand_ToggleCompletionStateAware(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Tools.Enabled.WebFetch = true
