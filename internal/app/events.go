@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/goal"
 	"github.com/pijalu/goa/core/plan"
@@ -1004,14 +1005,34 @@ func (a *App) updateGoalFooter(update *event.GoalUpdate) {
 	// (routine SetData rebuilds preserve them — a stats tick must never clear
 	// the ◈ marker, Issues 3-4). The footer carries no other goal
 	// detail: objective/status/todo titles are the goal bubble's job.
+	// The goal count is 1 (the current goal) + queued goals, so the ◈ sign
+	// follows the todo-marker shape: 1 → "◈", 3 → "◈◈◈", 25 → "25◈".
 	if update.Snapshot == nil {
-		a.subs.footer.SetGoalStatus("", 0)
+		a.subs.footer.SetGoalStatus("", 0, 0)
 	} else {
-		a.subs.footer.SetGoalStatus(string(update.Snapshot.Status), countPendingGoalTodos(update.Snapshot.Todos))
+		a.subs.footer.SetGoalStatus(
+			string(update.Snapshot.Status),
+			1+countQueuedGoals(a.subs.goalManager),
+			countPendingGoalTodos(update.Snapshot.Todos))
 	}
 	if a.subs.tuiEngine != nil {
 		a.subs.tuiEngine.RequestRender()
 	}
+}
+
+// countQueuedGoals returns the number of goals waiting in the queue (the
+// current goal is counted separately by the caller). A nil manager or a
+// failed queue read yields 0 — the footer must keep rendering even when the
+// queue store is unavailable.
+func countQueuedGoals(mgr *core.GoalManager) int {
+	if mgr == nil {
+		return 0
+	}
+	queued, err := mgr.Queue.Read()
+	if err != nil {
+		return 0
+	}
+	return len(queued)
 }
 
 // countPendingGoalTodos returns the number of todos not yet done on a goal

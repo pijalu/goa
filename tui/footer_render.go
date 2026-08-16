@@ -566,8 +566,9 @@ func formatFooterLineAt(stats, model, provider, thinking, activity string, busy,
 }
 
 // goalProfileLabel renders the line-1 right-side label: while a goal is
-// ACTIVE, a bare ◈ marker prefixes the profile label, and one ⬩ per pending
-// todo follows it (up to 3, then +(n-3)) — "◈ coding-posture ⬩⬩⬩+2 │ YOLO".
+// ACTIVE, a ◈ goal-count marker prefixes the profile label (one ◈ per goal
+// up to 3, then a numeric prefix — "◈", "◈◈◈", "25◈"), and one ⬩ per pending
+// todo follows it (up to 3, then +(n-3)) — "◈◈◈ coding-posture ⬩⬩⬩+2 │ YOLO".
 // The markers are the ONLY goal signal in the footer: objective, status and
 // todo detail live in the dedicated goal bubble chrome, so no goal detail is
 // duplicated here. The ◈ decoration marks an active goal ONLY: a
@@ -581,11 +582,28 @@ func (f *Footer) goalProfileLabel(fg string) string {
 	if f.data.GoalStatus != "active" {
 		return label
 	}
-	marked := ansi.Fg(TheTheme.ColorHex("tool_success")) + "◈" + ansi.Reset + fg + " " + label
+	sign := goalCountMarkers(f.data.GoalCount)
+	if sign == "" {
+		sign = "◈" // an active goal without a recorded count still marks
+	}
+	marked := ansi.Fg(TheTheme.ColorHex("tool_success")) + sign + ansi.Reset + fg + " " + label
 	if todos := goalTodoMarkers(f.data.GoalPendingTodos); todos != "" {
 		marked += " " + todos
 	}
 	return marked
+}
+
+// goalCountMarkers renders the goal-count sign with the same shape as the
+// todo markers: one ◈ per goal (max 3 glyphs), then a numeric prefix for the
+// overflow — 1 → "◈", 3 → "◈◈◈", 25 → "25◈".
+func goalCountMarkers(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n > 3 {
+		return fmt.Sprintf("%d◈", n)
+	}
+	return strings.Repeat("◈", n)
 }
 
 // goalTodoMarkers renders one ⬩ per pending todo (max 3), with a +n counter

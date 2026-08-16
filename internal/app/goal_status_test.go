@@ -5,6 +5,7 @@
 package app
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/pijalu/goa/core"
@@ -115,5 +116,37 @@ func TestHandleGoalUpdate_CountsPendingTodos(t *testing.T) {
 	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
 	if got := footer.Data().GoalPendingTodos; got != 0 {
 		t.Errorf("after clear GoalPendingTodos = %d, want 0", got)
+	}
+}
+
+// TestHandleGoalUpdate_CountsGoals: the footer's ◈ goal-count sign reflects
+// the total goals — 1 (the current goal) + queued goals — so it can render
+// the todo-style shape (1 → "◈", 3 → "◈◈◈", 25 → "25◈").
+func TestHandleGoalUpdate_CountsGoals(t *testing.T) {
+	a := &App{}
+	footer := tui.NewFooter()
+	chat := tui.NewChatViewport()
+	mgr := newTestGoalManager()
+	mgr.Queue = core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	if _, err := mgr.Queue.Append("queued one"); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := mgr.Queue.Append("queued two"); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	a.subs = &subsystems{footer: footer, chat: chat, goalManager: mgr}
+
+	// Active goal + 2 queued → 3 goals → "◈◈◈".
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: &goal.GoalSnapshot{
+		Objective: "current", Status: goal.GoalActive,
+	}})
+	if got := footer.Data().GoalCount; got != 3 {
+		t.Errorf("GoalCount = %d, want 3 (1 current + 2 queued)", got)
+	}
+
+	// A clear event zeroes the count.
+	a.handleGoalUpdate(&event.GoalUpdate{Snapshot: nil})
+	if got := footer.Data().GoalCount; got != 0 {
+		t.Errorf("after clear GoalCount = %d, want 0", got)
 	}
 }

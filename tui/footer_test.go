@@ -581,10 +581,55 @@ func TestFooter_Render_GoalMarker(t *testing.T) {
 	}
 
 	// Explicit clear (the app clears goal state via SetGoalStatus).
-	f.SetGoalStatus("", 0)
+	f.SetGoalStatus("", 0, 0)
 	firstLine = ansi.Strip(f.Render(80)[0])
 	if strings.Contains(firstLine, "◈") {
 		t.Errorf("no goal → no ◈ marker, got %q", firstLine)
+	}
+}
+
+// TestFooter_Render_GoalCountMarkers: the ◈ sign follows the todo-marker
+// shape — one ◈ per goal up to 3, then a numeric prefix for the overflow:
+// 1 → "◈", 3 → "◈◈◈", 25 → "25◈". An active goal with no recorded count
+// still marks (backward-compatible default).
+func TestFooter_Render_GoalCountMarkers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count int
+		want  string
+	}{
+		{"zero-fallback", 0, "◈ p │ YOLO"},
+		{"one", 1, "◈ p │ YOLO"},
+		{"two", 2, "◈◈ p │ YOLO"},
+		{"three", 3, "◈◈◈ p │ YOLO"},
+		{"four", 4, "4◈ p │ YOLO"},
+		{"twenty-five", 25, "25◈ p │ YOLO"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFooter()
+			f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+			f.SetGoalStatus("active", tc.count, 0)
+			firstLine := ansi.Strip(f.Render(80)[0])
+			if !strings.Contains(firstLine, tc.want) {
+				t.Errorf("count=%d: want %q in first line, got %q", tc.count, tc.want, firstLine)
+			}
+		})
+	}
+}
+
+// TestFooter_Render_GoalCountMarkersRequireGoal: the ◈ count sign decorates
+// an ACTIVE goal only — paused/blocked goals must not render it regardless of
+// the recorded count.
+func TestFooter_Render_GoalCountMarkersRequireGoal(t *testing.T) {
+	for _, status := range []string{"", "paused", "blocked"} {
+		f := NewFooter()
+		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
+		f.SetGoalStatus(status, 25, 0)
+		for i, line := range f.Render(80) {
+			if strings.Contains(line, "◈") {
+				t.Errorf("goal status %q: line %d renders ◈ markers: %q", status, i, ansi.Strip(line))
+			}
+		}
 	}
 }
 
@@ -627,7 +672,7 @@ func TestFooter_Render_GoalTodoMarkers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := NewFooter()
 			f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
-			f.SetGoalStatus("active", tc.pending)
+			f.SetGoalStatus("active", 1, tc.pending)
 			firstLine := ansi.Strip(f.Render(80)[0])
 			if !strings.Contains(firstLine, tc.want) {
 				t.Errorf("pending=%d: want %q in first line, got %q", tc.pending, tc.want, firstLine)
@@ -643,7 +688,7 @@ func TestFooter_Render_TodoMarkersRequireGoal(t *testing.T) {
 	for _, status := range []string{"", "paused", "blocked"} {
 		f := NewFooter()
 		f.SetData(FooterData{Workdir: "/test", Mode: "yolo", Profile: "p", Model: "m"})
-		f.SetGoalStatus(status, 4)
+		f.SetGoalStatus(status, 1, 4)
 		for i, line := range f.Render(80) {
 			if strings.Contains(line, "⬩") {
 				t.Errorf("goal status %q: line %d renders ⬩ markers: %q", status, i, ansi.Strip(line))
