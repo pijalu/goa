@@ -21,10 +21,6 @@ import (
 // Rates use metrics.CacheHitPct — the same formula as the footer CH% stat —
 // so the chart, the drop table, and the live footer always agree.
 
-// cacheChartMaxBuckets caps the bar chart width in rows; longer histories are
-// bucketed (token-weighted) so the chart stays readable.
-const cacheChartMaxBuckets = 40
-
 // cacheDropThresholdPts is the minimum rate fall (percentage points) between
 // two consecutive completions of the same model that counts as a cache drop.
 // It matches the footer's red "drop" threshold (cacheHitDropDelta in
@@ -39,14 +35,6 @@ type cacheTurn struct {
 	CacheRead  int
 	CacheWrite int
 	PromptN    int
-}
-
-// cacheBucket is one bar of the evolution chart: a token-weighted aggregate
-// of consecutive completions.
-type cacheBucket struct {
-	FirstTurn int // first turn number in the bucket
-	Rows      int
-	Pct       float64 // token-weighted cache hit rate
 }
 
 // cacheDrop is one detected cache-rate fall between consecutive completions.
@@ -82,51 +70,6 @@ func cacheTurnRate(t cacheTurn) float64 {
 	return metrics.CacheHitPct(t.CacheRead, t.CacheWrite, t.PromptN)
 }
 
-// bucketCacheTurns aggregates consecutive cache-active turns into at most
-// maxBuckets token-weighted buckets, preserving chronology. Turns with no
-// cache activity (read==0 && write==0) are skipped: their permanent 0%
-// would read as drops.
-func bucketCacheTurns(turns []cacheTurn, maxBuckets int) []cacheBucket {
-	var active []cacheTurn
-	for _, t := range turns {
-		if t.CacheRead > 0 || t.CacheWrite > 0 {
-			active = append(active, t)
-		}
-	}
-	if len(active) == 0 {
-		return nil
-	}
-	if maxBuckets <= 0 {
-		maxBuckets = cacheChartMaxBuckets
-	}
-	per := (len(active) + maxBuckets - 1) / maxBuckets
-	var out []cacheBucket
-	for i := 0; i < len(active); {
-		j := i + per
-		if j > len(active) {
-			j = len(active)
-		}
-		out = append(out, aggregateCacheBucket(active[i:j]))
-		i = j
-	}
-	return out
-}
-
-// aggregateCacheBucket folds one run of turns into a bucket with a
-// token-weighted rate (total reads / total cache ops), not a mean of rates —
-// a 100-token completion must not weigh as much as a 100k-token one.
-func aggregateCacheBucket(turns []cacheTurn) cacheBucket {
-	b := cacheBucket{FirstTurn: turns[0].Num, Rows: len(turns)}
-	var read, write, prompt int
-	for _, t := range turns {
-		read += t.CacheRead
-		write += t.CacheWrite
-		prompt += t.PromptN
-	}
-	b.Pct = metrics.CacheHitPct(read, write, prompt)
-	return b
-}
-
 // detectCacheDrops finds falls of >= thresholdPts percentage points between
 // consecutive cache-active turns. A cache-active turn is one with any prompt
 // tokens (it called the LLM); turns with zero prompt tokens are skipped
@@ -150,44 +93,138 @@ func detectCacheDrops(turns []cacheTurn, thresholdPts float64) []cacheDrop {
 	return drops
 }
 
-// writeCacheView renders the /stats:cache output: evolution bar chart +
-// cache drop table.
+// cacheChartBars caps the horizontal chart at the latest N completions.
+const cacheChartBars = 20
+
+// cacheChartRows is the vertical resolution (block rows) of the horizontal
+// chart — each bar is scaled into this many row bands.
+const cacheChartRows = 8
+
+// writeCacheView renders the /stats:cache output: a horizontal bar chart of
+// the latest per-completion cache-hit rates plus the cache drop table.
 func writeCacheView(b *strings.Builder, turns []cacheTurn) {
-	b.WriteString("Cache hit rate evolution — this session\n")
+	b.WriteString("Cache hit rate — latest completions (rightmost = newest)\n")
 	b.WriteString(strings.Repeat("-", 60) + "\n")
 
-	buckets := bucketCacheTurns(turns, cacheChartMaxBuckets)
-	if len(buckets) == 0 {
+	rates, colors := latestCacheRates(turns, cacheChartBars)
+	if len(rates) == 0 {
 		b.WriteString("No cache activity recorded yet.\n")
 		return
 	}
-	writeCacheChart(b, buckets)
+	writeCacheChart(b, rates, colors)
 	writeCacheDrops(b, detectCacheDrops(turns, cacheDropThresholdPts))
 }
 
-// writeCacheChart renders one bar per bucket: turn range, a bar whose length
-// is the hit rate, the numeric rate, and the completion count. Bar color
-// follows the footer's CH coloring: bold green growing, green stable/minor
-// change (< 5pts drop), red significant drop (>= 5pts) — delta vs the
-// previous bucket.
-func writeCacheChart(b *strings.Builder, buckets []cacheBucket) {
-	const barWidth = 24
-	prev := -1.0
-	for _, bk := range buckets {
-		filled := int(bk.Pct*barWidth/100 + 0.5)
-		if filled > barWidth {
-			filled = barWidth
+// latestCacheRates extracts the per-completion cache-hit rate of the latest
+// maxBars cache-active completions, oldest→newest (so the rightmost bar is the
+// most recent), plus the per-bar color from the CH delta scheme. Completions
+// with no cache activity (read==0 && write==0) are skipped: their permanent 0%
+// would read as drops.
+func latestCacheRates(turns []cacheTurn, maxBars int) ([]float64, []string) {
+	var rates []float64
+	for _, t := range turns {
+		if t.CacheRead > 0 || t.CacheWrite > 0 {
+			rates = append(rates, cacheTurnRate(t))
 		}
-		color := cacheBarColor(bk.Pct, prev)
-		prev = bk.Pct
-		fmt.Fprintf(b, "T%-4d %s%s%s%s %5.1f%% (%d)\n",
-			bk.FirstTurn,
-			color,
-			strings.Repeat("█", filled),
-			strings.Repeat("░", barWidth-filled),
-			ansi.Reset,
-			bk.Pct, bk.Rows)
 	}
+	if len(rates) == 0 {
+		return nil, nil
+	}
+	if len(rates) > maxBars {
+		rates = rates[len(rates)-maxBars:]
+	}
+	colors := make([]string, len(rates))
+	prev := -1.0
+	for i, r := range rates {
+		colors[i] = cacheBarColor(r, prev)
+		prev = r
+	}
+	return rates, colors
+}
+
+// cacheChartGutter is the fixed left-gutter width holding the band percentage
+// labels (e.g. "100% ").
+const cacheChartGutter = "     "
+
+// writeCacheChart renders a horizontal bar chart: one 1-column-wide bar per
+// completion, separated by a single space, rightmost = newest. Each bar's
+// height encodes the completion's cache-hit rate (scaled to cacheChartRows
+// block bands); the percentage axis is on the left, per-bar labels under the
+// baseline. Color per bar follows the footer CH thresholds.
+func writeCacheChart(b *strings.Builder, rates []float64, colors []string) {
+	if len(rates) == 0 {
+		return
+	}
+	height := cacheBarHeights(rates)
+	for row := cacheChartRows; row >= 1; row-- {
+		writeCacheChartRow(b, row, height, colors)
+	}
+	writeCacheChartBaseline(b, len(rates))
+	writeCacheChartLabels(b, rates)
+}
+
+// cacheBarHeights scales each rate into a bar height in row bands
+// (0..cacheChartRows).
+func cacheBarHeights(rates []float64) []int {
+	height := make([]int, len(rates))
+	for i, r := range rates {
+		h := int(r*cacheChartRows/100 + 0.5)
+		if h > cacheChartRows {
+			h = cacheChartRows
+		}
+		height[i] = h
+	}
+	return height
+}
+
+// writeCacheChartRow draws one horizontal band: the gutter label (at 25%
+// steps) then one cell per bar — a colored block where the bar reaches this
+// band, a space otherwise.
+func writeCacheChartRow(b *strings.Builder, row int, height []int, colors []string) {
+	b.WriteString(cacheRowGutter(row))
+	writeCacheRowCells(b, func(i int) string {
+		if height[i] >= row {
+			return colors[i] + "█" + ansi.Reset
+		}
+		return " "
+	}, len(height))
+	b.WriteString("\n")
+}
+
+// cacheRowGutter returns the left gutter for a band: the band's percentage at
+// 25% steps, blank otherwise.
+func cacheRowGutter(row int) string {
+	pct := row * 100 / cacheChartRows
+	if pct%25 == 0 {
+		return fmt.Sprintf("%3d%% ", pct)
+	}
+	return cacheChartGutter
+}
+
+// writeCacheRowCells writes n single-column cells separated by a space, each
+// cell's content from cell(i).
+func writeCacheRowCells(b *strings.Builder, cell func(i int) string, n int) {
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(cell(i))
+	}
+}
+
+// writeCacheChartBaseline draws the ─ axis under the bars.
+func writeCacheChartBaseline(b *strings.Builder, n int) {
+	b.WriteString(cacheChartGutter)
+	writeCacheRowCells(b, func(int) string { return "─" }, n)
+	b.WriteString("\n")
+}
+
+// writeCacheChartLabels lists each bar's percentage under the chart, newest
+// rightmost. With ≤ 20 bars the per-bar column is too narrow for the value, so
+// labels are listed as a compact oldest→newest row of percentages instead.
+func writeCacheChartLabels(b *strings.Builder, rates []float64) {
+	b.WriteString(cacheChartGutter)
+	writeCacheRowCells(b, func(i int) string { return fmt.Sprintf("%.0f", rates[i]) }, len(rates))
 	b.WriteString("\n")
 }
 

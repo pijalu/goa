@@ -27,64 +27,42 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## CRITICAL: context compaction shows "Unexpected compression method: ceiling" and drops messages instead of summarizing
-Observed (screenshot): a banner `⚡ Context compacted (ceiling): 89% → 44% · 265
-messages dropped · ~133415 tokens freed`, plus a surfaced string "Unexpected
-compression method: ceiling". The user config intent is **95% → summarize**
-(only soft/hard/error layers; no proactive "trigger"). Two problems:
-(1) "ceiling" is the reactive context-ceiling *trigger label*, surfaced where a
-compression strategy/method name is expected — confusing and unactionable.
-(2) The reactive ceiling enforcer DROPPED 265 messages instead of the hard layer
-SUMMARIZING them. Root cause (internal/agentic/agent_streaming.go:1705-1708 and
-:170-173): each turn/round runs `maybeCompress()` (hard layer → Compact() →
-summarize) and then UNCONDITIONALLY `enforceContextCeiling()`. When the hard
-summarize fails (LLM summarize error — logged only at line 1706/171) the history
-is untouched, still over the ceiling, so `enforceContextCeiling` front-cuts the
-oldest messages and emits `emitCompactionResult("ceiling", ...)` — the destructive
-drop the user saw. (Dev home config sets hard_percent: 60, so this fired at 60%.)
-Expected: when hard=summarize and the summarize fails, surface the failure
-clearly (no confusing "ceiling"/"method" wording) and do NOT silently
-message-drop as if it were a normal compaction; the reactive ceiling should be a
-last resort clearly labeled, and the failed summarize error must be visible.
-
-DESIGN CONSTRAINT (user): the compression model must be EXACTLY three layers —
-**soft / hard / error** — and nothing else. Remove the "trigger" layer
-(thresholds.trigger_percent, strategies.trigger, the deprecated threshold_percent
-alias, the tierTrigger tier, the legacy single `strategy` field) and remove the
-derived "magic value" helpers that invent extra levels (escalationPercent =
-hard−5, deferralCeiling = hard−10, elisionTargetPercent = hard−20,
-reactiveTargetPercent = hard−50). Every threshold reference must be a configured
-soft or hard value (or the single hard default 95), never a hard−N invention.
-Default: hard = 95% → summarize.
-
-## /cache:stats should show a bar chart of recent cache-hit values
-Observed: `/cache:stats` shows cache stats per turn / as aggregate text.
-Expected: render a horizontal bar chart of the LATEST api/cache value returned
-per completion (not a per-turn breakdown). The last (rightmost) bar must be the
-most recent completion. Width adapts to the available terminal columns: draw
-"last X" values, up to 20, where X = min(20, available columns after the
-label/percent gutter). Each bar's height/length encodes the cache-hit value for
-that completion, labeled with its percentage; the chart should reuse the
-existing CH color thresholds (bold green >= +1pt improvement, green minor
-fluctuation, red >= 5pt drop) if per-bar coloring is supported.
-
-## /tools output is unreadable — one long wrapped line per section
-Observed: `/tools` renders the tool list as a single box where each section is
-one very long line with tool names and full descriptions concatenated and
-soft-wrapped (e.g. "ask_user_question Ask the user for clarification. bash Run a
-shell command… goal Goal list manager: 1 ACTIVE goal pursued autonomously across
-turns; queue auto-starts python Execute Python…"). Tool names run into
-descriptions, descriptions wrap mid-sentence, and there is no per-tool line
-break or column alignment — the list is effectively unreadable.
-Expected: one tool per line, aligned columns (name / short description), full
-sentences never wrapped mid-token, and the section headers on their own lines —
-e.g. a two-column table:
-  ask_user_question   Ask the user for clarification.
-  bash                Run a shell command. …
-Long descriptions should be truncated with an ellipsis to fit the terminal
-width, with /tools:<name> available for the full text.
+## Status bar does not show the goal count (like it shows todos)
+Observed (screenshot): `/goal:list` shows 1 active + 10 queued goals, and the
+input-area divider echoes the active goal name, but the status bar (footer)
+shows only `↑… ↓… tok/s CH:… CM:1 TC:… $… %…` plus mode — there is NO goal
+count/segment. The footer DOES show a todos count, so goals should be surfaced
+the same way for parity.
+Expected: the status bar shows the number of goals (active + queued), the same
+way it shows the todos count — e.g. a `G:<n>` segment (or `G:1/11`) alongside
+the existing todos counter, so an active autonomous-goal session is visible at
+a glance without running /goal:list.
 
 # Archive
+
+## /cache:stats should show a bar chart of recent cache-hit values (fixed)
+Observed: `/cache:stats` showed cache stats per turn / as aggregate text.
+Fix (core/commands/stats_cache.go): `writeCacheView` now renders a HORIZONTAL
+bar chart of the latest per-completion cache-hit rates — one 1-column-wide bar
+per completion, 1-column gap between bars, rightmost = newest, capped at
+`cacheChartBars` = 20 bars. Each bar's height (scaled to `cacheChartRows` = 8
+block bands) encodes that completion's cache-hit rate; a left percentage gutter
+marks the 25/50/75/100% bands and a compact oldest→newest label row under the
+`─` baseline lists each bar's percentage. Per-bar color reuses the footer CH
+thresholds via `cacheBarColor` (bold green ≥ +1pt improvement, green minor
+fluctuation, red ≥ 5pt drop). `latestCacheRates` extracts the per-completion
+rate of the latest ≤20 cache-active completions (skipping read==0&&write==0
+cold turns so their permanent 0% doesn't read as a bust), oldest→newest.
+The old fixed-width vertical bucketed chart (`bucketCacheTurns`,
+`aggregateCacheBucket`, `cacheBucket`, `cacheChartMaxBuckets`) was removed.
+The cache-drop table is unchanged. Tests: `TestLatestCacheRates` (+cap/order/
+skip-cold/empty subtests), `TestWriteCacheChart` (geometry: rows+baseline+
+label lines, 100% gutter, 50% band fill pattern, baseline, per-bar labels),
+`TestWriteCacheChartEmpty`, `TestStatsCommand_CacheView` updated to the new
+header + block bars; `TestDetectCacheDropsSession` still passes. Gates:
+vet/staticcheck/gocognit/gocyclo/gofmt clean on the changed files; the
+remaining core/commands complexity warnings (TestSkillStickyToggleCommand,
+toggleTool, etc.) are pre-existing on HEAD (verified via git stash).
 
 ## /tools output is unreadable — one long wrapped line per section (fixed)
 Root cause: `listTools` (core/commands/docs.go) rendered each section as
