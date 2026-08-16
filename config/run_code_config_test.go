@@ -14,6 +14,12 @@ import (
 // code-mode tool (gap TL7): enabled by default, 60s timeout, and the worker
 // jailed by default.
 func TestRunCodeDefaultsLoaded(t *testing.T) {
+	// Isolate HOME so a developer's real ~/.goa/config.yaml cannot leak in
+	// and override the embedded defaults (a home layer that sets
+	// tools.enabled.run_code:false would otherwise fail this test).
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	cfg, err := NewCascadeLoader(t.TempDir(), "", nil).Load()
 	if err != nil {
 		t.Fatalf("Load error: %v", err)
