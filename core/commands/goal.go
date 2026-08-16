@@ -737,6 +737,7 @@ func (c *GoalCommand) cancelAll(ctx core.Context) error {
 			return err
 		}
 		cleared = len(goals)
+		c.notifyQueueChanged()
 	}
 	if c.Mode.GetGoal().Goal == nil {
 		if cleared == 0 {
@@ -866,6 +867,17 @@ func goalOnOffLabel(v bool) string {
 	return "disabled"
 }
 
+// notifyQueueChanged pushes a fresh goal snapshot to the footer/bubble after
+// a durable-queue mutation. Queue operations emit no goal lifecycle events on
+// their own, so without this the footer's ◈ count (1 active + queued) stays
+// stale until the next active-goal event. The published update carries no
+// Change, so no chat marker is emitted.
+func (c *GoalCommand) notifyQueueChanged() {
+	if c.Mode != nil {
+		c.Mode.NotifyGoalChanged()
+	}
+}
+
 // queueNext inserts a goal at the FRONT of the durable queue (/goal:next and
 // /goal:next:first): it is promoted NEXT, right after the active goal
 // completes. fresh is the resolved context mode — stored with the goal so
@@ -885,6 +897,7 @@ func (c *GoalCommand) queueNext(ctx core.Context, objective string, fresh bool) 
 	} else {
 		writeFmt(ctx, "Queued goal to run next (queue: %d) [%s]: %s\n", len(goals), name, objective)
 	}
+	c.notifyQueueChanged()
 	c.noteResumeWhenNoActiveGoal(ctx)
 	return nil
 }
@@ -906,6 +919,7 @@ func (c *GoalCommand) queueLast(ctx core.Context, objective string, fresh bool) 
 	} else {
 		writeFmt(ctx, "Queued goal #%d [%s]: %s\n", len(goals), name, objective)
 	}
+	c.notifyQueueChanged()
 	c.noteResumeWhenNoActiveGoal(ctx)
 	return nil
 }
@@ -1060,6 +1074,7 @@ func (c *GoalCommand) moveManagerGoal(ctx core.Context, id, direction string) {
 		_ = c.showQueueManagerAt(ctx, "")
 		return
 	}
+	c.notifyQueueChanged()
 	_ = c.showQueueManagerAt(ctx, id)
 }
 
@@ -1091,6 +1106,7 @@ func (c *GoalCommand) confirmDeleteManagerGoal(ctx core.Context, id string) {
 		if _, _, err := c.Queue.Remove(id); err != nil {
 			ctx.Flash(err.Error())
 		} else {
+			c.notifyQueueChanged()
 			ctx.Flash("Goal deleted.")
 		}
 		_ = c.showQueueManagerAt(ctx, "")
@@ -1172,6 +1188,7 @@ func (c *GoalCommand) applyEditedObjective(ctx core.Context, id, current, value 
 		ctx.Flash(err.Error())
 		return
 	}
+	c.notifyQueueChanged()
 	ctx.Flash("Goal updated.")
 }
 
@@ -1180,6 +1197,7 @@ func (c *GoalCommand) reorderQueue(ctx core.Context, mapping string) error {
 	if err != nil {
 		return err
 	}
+	c.notifyQueueChanged()
 	writeStr(ctx, "Queue reordered:\n")
 	for i, g := range goals {
 		name := g.Name

@@ -27,18 +27,37 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## Status bar does not show the goal count (like it shows todos)
-Observed (screenshot): `/goal:list` shows 1 active + 10 queued goals, and the
-input-area divider echoes the active goal name, but the status bar (footer)
-shows only `↑… ↓… tok/s CH:… CM:1 TC:… $… %…` plus mode — there is NO goal
-count/segment. The footer DOES show a todos count, so goals should be surfaced
-the same way for parity.
-Expected: the status bar shows the number of goals (active + queued), the same
-way it shows the todos count — e.g. a `G:<n>` segment (or `G:1/11`) alongside
-the existing todos counter, so an active autonomous-goal session is visible at
-a glance without running /goal:list.
-
 # Archive
+
+## Status bar does not show the goal count (like it shows todos) (fixed)
+Root cause: the footer already renders the goal count as the ◈ sign next to
+the profile/mode (`goalCountMarkers`: 1 → "◈", 3 → "◈◈◈", 25 → "25◈"), and
+`updateGoalFooter` computes it as `1 + countQueuedGoals` — but the durable
+goal queue is a SEPARATE store that emits NO goal lifecycle events when
+mutated. `/goal:next`, `/goal:next:last`, `/goal:manage` add/delete/reorder
+and `/goal:cancel:all` all changed the queue without publishing a GoalUpdate,
+so the footer's GoalCount stayed stale (the screenshot's single `◈` = the
+active goal only, the 10 queued goals never recomputed) until the next
+active-goal lifecycle event.
+Fix: added `GoalMode.NotifyGoalChanged()` (core/goal/mode.go) — publishes the
+current snapshot with a nil Change (no chat marker). `GoalCommand` gained a
+`notifyQueueChanged()` helper (core/commands/goal.go) now called after every
+queue mutation: `queueNext`, `queueLast`, `cancelAll` (Clear),
+`moveManagerGoal` (Move), `confirmDeleteManagerGoal` (Remove),
+`applyEditedObjective` (Update), `reorderQueue` (ReorderByMapping). Promotion
+paths (`resumeFirstQueued`, `promoteQueuedGoal`) already refresh via
+CreateGoal/PauseGoal lifecycle events, so they needed no change. The publish
+chain (NotifyGoalChanged → goalEventPublisher → bus GoalUpdate →
+handleGoalUpdate → updateGoalFooter → 1+countQueuedGoals) is unchanged.
+Tests: `TestNotifyGoalChanged_PublishesSnapshotNoChange` and
+`TestNotifyGoalChanged_NoGoalPublishesNil` (core/goal/mode_test.go) pin the
+snapshot+nil-change contract; `TestGoalCommand_QueueOpsPublishRefresh`
+(core/commands/goal_test.go) pins that a queue insert re-publishes exactly one
+snapshot with no chat-marker change. Verified the render end-to-end: 1 active
++ 10 queued → "11◈ coding-posture ⬩⬩ │ YOLO". Gates: vet/staticcheck/
+gocognit/gocyclo/gofmt clean on the touched functions (all ≤ 9 gocognit).
+Note: a pre-existing session shows the correct count only after the next goal
+event; new queue mutations now refresh immediately.
 
 ## /cache:stats should show a bar chart of recent cache-hit values (fixed)
 Observed: `/cache:stats` showed cache stats per turn / as aggregate text.

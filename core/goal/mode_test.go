@@ -181,6 +181,46 @@ func TestMarkComplete_ClearEventCarriesNoChange(t *testing.T) {
 	}
 }
 
+// NotifyGoalChanged re-publishes the current snapshot with no Change so
+// consumers that derive display state from an external store (the goal queue)
+// refresh on a mutation that emits no lifecycle event of its own. The event
+// must carry the live snapshot AND a nil change (no chat marker).
+func TestNotifyGoalChanged_PublishesSnapshotNoChange(t *testing.T) {
+	pub := &clearCapturePublisher{}
+	mode := NewGoalMode(&testStore{}, pub, nil, nil)
+	mode.CreateGoal(CreateGoalInput{Objective: "first"}, GoalActorUser)
+	before := len(pub.snaps)
+
+	mode.NotifyGoalChanged()
+
+	if len(pub.snaps) != before+1 {
+		t.Fatalf("NotifyGoalChanged published %d snaps, want exactly 1 more than %d", len(pub.snaps), before)
+	}
+	last := pub.snaps[len(pub.snaps)-1]
+	if last == nil || last.Objective != "first" {
+		t.Errorf("NotifyGoalChanged snapshot = %+v, want the active goal", last)
+	}
+	if ch := pub.changes[len(pub.changes)-1]; ch != nil {
+		t.Errorf("NotifyGoalChanged change = %+v, want nil (no chat marker)", ch)
+	}
+}
+
+// With no active goal, NotifyGoalChanged still publishes — a nil snapshot so
+// consumers clear goal display state (e.g. after the queue is emptied).
+func TestNotifyGoalChanged_NoGoalPublishesNil(t *testing.T) {
+	pub := &clearCapturePublisher{}
+	mode := NewGoalMode(&testStore{}, pub, nil, nil)
+
+	mode.NotifyGoalChanged()
+
+	if len(pub.snaps) != 1 {
+		t.Fatalf("NotifyGoalChanged published %d snaps, want 1", len(pub.snaps))
+	}
+	if pub.snaps[0] != nil {
+		t.Errorf("NotifyGoalChanged with no goal published %+v, want nil snapshot", pub.snaps[0])
+	}
+}
+
 func TestPauseResumeNoGoal(t *testing.T) {
 	mode := NewGoalMode(&testStore{}, nil, nil, nil)
 	reason := "x"

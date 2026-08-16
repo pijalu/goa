@@ -711,6 +711,25 @@ func (m *GoalMode) GetGoal() GoalToolResult {
 	return GoalToolResult{Goal: &snap}
 }
 
+// NotifyGoalChanged re-publishes the current goal snapshot with no Change —
+// a snapshot-only refresh for consumers that derive display state from data
+// outside the goal's own lifecycle. The goal queue is one such store: adding,
+// removing, reordering or clearing queued goals changes the footer's ◈ count
+// (1 active + queued) without touching the active goal, so no lifecycle event
+// fires on its own. Commands that mutate the queue call this to push a fresh
+// snapshot (and with it the recomputed queue count) to the footer and goal
+// bubble. A nil Change means no chat marker is emitted.
+func (m *GoalMode) NotifyGoalChanged() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var snap *GoalSnapshot
+	if m.state != nil {
+		s := m.toSnapshot(m.state)
+		snap = &s
+	}
+	m.emitGoalUpdated(snap, nil)
+}
+
 // GetActiveGoal returns the snapshot only when status is active.
 func (m *GoalMode) GetActiveGoal() *GoalSnapshot {
 	m.mu.RLock()

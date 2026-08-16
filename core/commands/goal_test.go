@@ -801,6 +801,48 @@ func testContext() core.Context {
 	}
 }
 
+// queuePublishRecorder captures goal publish events so a test can assert that
+// a durable-queue mutation re-published the goal snapshot (the footer ◈ count
+// depends on it — queue ops emit no lifecycle event of their own).
+type queuePublishRecorder struct {
+	snaps   int
+	changes int
+}
+
+func (p *queuePublishRecorder) Publish(snap *goal.GoalSnapshot, change *goal.GoalChange) {
+	p.snaps++
+	if change != nil {
+		p.changes++
+	}
+}
+
+// TestGoalCommand_QueueOpsPublishRefresh pins the footer-count fix: every
+// durable-queue mutation (next/last/reorder) re-publishes the goal snapshot
+// with NO change (no chat marker), so the footer's ◈ count (1 active +
+// queued) stays current instead of waiting for the next lifecycle event.
+func TestGoalCommand_QueueOpsPublishRefresh(t *testing.T) {
+	pub := &queuePublishRecorder{}
+	mode := goal.NewGoalMode(nil, pub, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "queue.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if err := cmd.Run(ctx, []string{"seed-active"}); err != nil {
+		t.Fatal(err)
+	}
+	base := pub.snaps // the create lifecycle publish
+
+	if err := cmd.Run(ctx, []string{"next", "queued-one"}); err != nil {
+		t.Fatal(err)
+	}
+	if pub.snaps != base+1 {
+		t.Errorf("queue insert published %d snaps (base %d), want exactly one refresh", pub.snaps, base)
+	}
+	if pub.changes != 0 {
+		t.Errorf("queue insert published %d changes, want 0 (no chat marker)", pub.changes)
+	}
+}
+
 type testAutonomySwitcher struct {
 	level internal.AutonomyLevel
 }
