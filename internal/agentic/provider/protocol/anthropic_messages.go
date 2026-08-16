@@ -76,8 +76,12 @@ func (p *anthropicMessages) BuildRequest(model schema.Model, ctx schema.Context,
 	if ctx.SystemPrompt != "" {
 		body["system"] = []map[string]any{{"type": "text", "text": ctx.SystemPrompt}}
 	}
-	if len(ctx.Tools) > 0 {
+	if len(ctx.Tools) > 0 && !ctx.NoTools {
 		body["tools"] = convertAnthropicTools(ctx.Tools)
+	}
+	if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = map[string]any{"type": "none"}
 	}
 	if opts.Temperature != nil && compat.SupportsTemperature {
 		body["temperature"] = *opts.Temperature

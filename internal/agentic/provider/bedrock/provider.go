@@ -145,7 +145,7 @@ func buildBedrockBody(model provider.Model, ctx provider.Context, opts provider.
 		infConfig["temperature"] = *opts.Temperature
 	}
 
-	if len(ctx.Tools) > 0 {
+	if len(ctx.Tools) > 0 && !ctx.NoTools {
 		body["toolConfig"] = map[string]interface{}{
 			"tools": convertBedrockTools(ctx.Tools),
 		}

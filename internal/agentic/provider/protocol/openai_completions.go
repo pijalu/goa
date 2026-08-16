@@ -125,6 +125,21 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 // Request building
 // ---------------------------------------------------------------------------
 
+// applyToolChoice attaches the tools array to the body and forces tool use
+// when ToolChoice is set (e.g., "required" for workflow agents). A NoTools
+// context (P7 final-step collapse) omits the tools array and forces
+// tool_choice "none" so the model must answer text-only.
+func applyToolChoice(body map[string]any, tools []map[string]any, toolChoice string, noTools bool) {
+	if noTools {
+		body["tool_choice"] = "none"
+		return
+	}
+	body["tools"] = tools
+	if toolChoice != "" {
+		body["tool_choice"] = toolChoice
+	}
+}
+
 func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.StreamOptions, profile schema.VariantProfile, compat openAICompletionsCompat) map[string]any {
 	messages := convertMessages(model, ctx.Messages, ctx.SystemPrompt, compat)
 	tools := convertTools(ctx.Tools)
@@ -167,10 +182,10 @@ func buildOpenAIParams(model schema.Model, ctx schema.Context, opts schema.Strea
 		body["top_p"] = *opts.TopP
 	}
 	if len(tools) > 0 {
-		body["tools"] = tools
-		if opts.ToolChoice != "" {
-			body["tool_choice"] = opts.ToolChoice
-		}
+		applyToolChoice(body, tools, opts.ToolChoice, ctx.NoTools)
+	} else if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
 	}
 	if compat.SupportsStore {
 		body["store"] = false

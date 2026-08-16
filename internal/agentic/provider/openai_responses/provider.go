@@ -111,7 +111,12 @@ func buildResponsesBody(model provider.Model, ctx provider.Context, opts provide
 		"model":  model.ID,
 		"input":  convertResponsesInput(ctx.Messages, ctx.SystemPrompt),
 		"stream": true,
-		"tools":  convertResponsesTools(ctx.Tools),
+	}
+	if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
+	} else {
+		body["tools"] = convertResponsesTools(ctx.Tools)
 	}
 	if opts.MaxTokens > 0 {
 		body["max_output_tokens"] = opts.MaxTokens

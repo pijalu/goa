@@ -143,6 +143,11 @@ type Context struct {
 	SystemPrompt string          `json:"system_prompt,omitempty"`
 	Messages     []Message       `json:"messages"`
 	Tools        []ToolSchema    `json:"tools,omitempty"`
+	// NoTools collapses tools for this single request (P7): the wire body
+	// omits the tools array and forces tool_choice "none", so the model
+	// cannot call tools and must answer text-only. Used for final-step /
+	// stop-turn summary requests; the next request restores the full set.
+	NoTools bool `json:"-"`
 }
 
 // GoContext returns the embedded Go context, or context.Background() if nil.

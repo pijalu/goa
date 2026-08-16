@@ -134,7 +134,7 @@ func buildGoogleBody(model provider.Model, ctx provider.Context, opts provider.S
 		genConfig["temperature"] = *opts.Temperature
 	}
 
-	if len(ctx.Tools) > 0 {
+	if len(ctx.Tools) > 0 && !ctx.NoTools {
 		body["tools"] = convertGoogleTools(ctx.Tools)
 	}
 

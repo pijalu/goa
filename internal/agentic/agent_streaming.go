@@ -177,7 +177,16 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		// Later-step entry: inject the per-turn temporal context reading
 		// (CX6) before the re-stream request is derived.
 		a.injectTimeContextIfDue(time.Now())
-		return provider.Stream(model, a.buildProviderContext(ctx), opts)
+		pCtx := a.buildProviderContext(ctx)
+		// Final-step collapse (P7): a pending stop-turn signal marks this
+		// round text-only — no tools, tool_choice none — so the model
+		// produces its summary instead of calling more tools. The flag is
+		// consumed here; the next round (or turn) restores the full set.
+		if a.toolCollapseNextRound {
+			pCtx.NoTools = true
+			a.toolCollapseNextRound = false
+		}
+		return provider.Stream(model, pCtx, opts)
 	}
 	a.logProviderContext(initCtx, 0)
 	return provider.Stream(model, initCtx, opts)
@@ -250,6 +259,10 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 		// (CX6) before the recovery request is derived.
 		a.injectTimeContextIfDue(time.Now())
 		pCtx := a.buildProviderContext(ctx)
+		// Final-step collapse (P7): recovery rounds are the turn's last
+		// step — the model must answer with what it has gathered, so the
+		// request carries no tools and tool_choice none.
+		pCtx.NoTools = true
 		a.logProviderContext(pCtx, limit+1+round)
 
 		recoveryStream, err := provider.Stream(model, pCtx, opts)
@@ -645,14 +658,18 @@ func (a *Agent) completeStreamTurn(ctx context.Context) bool {
 		a.emitTurnStats()
 		a.checkSilentOverflow()
 		// Decide whether the loop will stream another round. The turn continues
-		// only when a real tool executed and the batch was not asked to stop.
+		// only when a real tool executed. A stop-turn signal (StopTurn tool
+		// result) does not end the turn outright: it stops the current tool
+		// batch and marks the next round text-only, so the model's summary
+		// response comes immediately without further tool calls (P7, TC6).
 		// EventEnd is emitted exclusively on the finishing path so mid-turn UI
 		// consumers never observe a premature turn end (which previously dropped
 		// the status spinner after the first tool call).
-		turnContinues := hadRealExecution && !a.stopBatchAfterThis
 		if a.stopBatchAfterThis {
 			a.stopBatchAfterThis = false
+			a.toolCollapseNextRound = true
 		}
+		turnContinues := hadRealExecution
 		if !turnContinues {
 			a.emitEvent(OutputEvent{Type: EventEnd})
 		}
@@ -1662,6 +1679,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.bufferedToolCallCount = 0
 	a.budgetToolCalls = make(map[string]string)
 	a.stopBatchAfterThis = false
+	a.toolCollapseNextRound = false
 	a.providerUsage = nil
 	a.recentToolCalls = nil
 	a.lastCallKey = ""
@@ -2012,7 +2030,7 @@ func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
 		Context:      ctx,
 		SystemPrompt: sp,
 		Messages:     msgs,
-		Tools:        migrateSchemas(a.reg.Schemas()),
+		Tools:        migrateSchemas(a.reg.Schemas(), a.cfg.Model),
 	}
 }
 

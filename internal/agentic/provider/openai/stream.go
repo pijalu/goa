@@ -127,12 +127,15 @@ func buildParams(model provider.Model, ctx provider.Context, opts provider.Strea
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
-	if len(tools) > 0 {
+	if len(tools) > 0 && !ctx.NoTools {
 		body["tools"] = tools
 		// Force tool use when ToolChoice is set (e.g., "required" for workflow agents)
 		if opts.ToolChoice != "" {
 			body["tool_choice"] = opts.ToolChoice
 		}
+	} else if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
 	}
 	if provider.ToBool(compat.SupportsStore, false) {
 		body["store"] = false

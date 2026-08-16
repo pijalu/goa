@@ -295,6 +295,13 @@ type Agent struct {
 	// appended to history.
 	stopBatchAfterThis bool
 
+	// toolCollapseNextRound marks the NEXT stream round as the turn's final
+	// step (P7): the request carries no tools and tool_choice "none", so the
+	// model must produce its summary response text-only. Set by completeStreamTurn
+	// when a stop-turn signal is pending; consumed by startStreamRound when it
+	// builds the round's provider context.
+	toolCollapseNextRound bool
+
 	// overflowRecoveryAttempted tracks whether an overflow-triggered
 	// context compression + stream retry has already been attempted in
 	// the current turn. Prevents infinite retry loops when compression

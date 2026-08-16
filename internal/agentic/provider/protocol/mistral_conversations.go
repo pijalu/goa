@@ -48,11 +48,14 @@ func (p *mistralConversations) BuildRequest(model schema.Model, ctx schema.Conte
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
-	if len(tools) > 0 {
+	if len(tools) > 0 && !ctx.NoTools {
 		body["tools"] = tools
 		if opts.ToolChoice != "" {
 			body["tool_choice"] = opts.ToolChoice
 		}
+	} else if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
 	}
 	applyThinking(body, model, opts, schema.VariantProfile{Compat: schema.CompatFlags{ThinkingFormat: compat.ThinkingFormat}}, compat)
 	return json.Marshal(body)

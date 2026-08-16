@@ -85,8 +85,11 @@ func buildMistralParams(model provider.Model, ctx provider.Context, opts provide
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
-	if len(ctx.Tools) > 0 {
+	if len(ctx.Tools) > 0 && !ctx.NoTools {
 		body["tools"] = convertMistralTools(ctx.Tools)
+	} else if ctx.NoTools {
+		// Final-step collapse (P7): the model must answer text-only.
+		body["tool_choice"] = "none"
 	}
 	return body
 }
