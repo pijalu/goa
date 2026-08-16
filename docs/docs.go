@@ -120,6 +120,7 @@ var docDescriptions = map[string]string{
 	"PLUGINS":               "JS extensions — create custom tools, commands, and UI elements",
 	"PROFILES":              "Agent profiles — built-in profiles, custom profiles, extends inheritance",
 	"PROFILING":             "CPU, heap, and execution trace profiling while running Goa",
+	"PROVIDER-CACHE":        "Provider prompt cache — keyed vs auto prefix cache, miss detection, goal injection, stability requirements",
 	"PROVIDER-CONNECTIVITY": "Provider HTTP connectivity: User-Agent, auth flow, transport config, troubleshooting",
 	"PROVIDERS":             "Provider configuration — variants, custom providers, URL templates",
 	"SETUP":                 "Installation and setup guide — first-run wizard, provider configuration",

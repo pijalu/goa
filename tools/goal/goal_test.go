@@ -992,7 +992,10 @@ func TestGoalTool_CreateHandover(t *testing.T) {
 }
 
 // TestGoalTool_CreateHandover_Queued verifies a queued create carries the
-// explicit handover into the durable queue and list exposes it.
+// explicit handover into the durable queue. The handover is full detail, so
+// the compact `list` view no longer exposes it (list is now bounded); the
+// durable handover is verified by promoting the queued goal and reading it
+// back via `get`, the full-detail path.
 func TestGoalTool_CreateHandover_Queued(t *testing.T) {
 	mode := goal.NewGoalMode(nil, nil, nil, nil)
 	q := &fakeQueue{}
@@ -1007,12 +1010,24 @@ func TestGoalTool_CreateHandover_Queued(t *testing.T) {
 	if len(read) != 1 || read[0].Handoff == nil || *read[0].Handoff != "queued continuity note" {
 		t.Errorf("queued goal handover = %+v", read)
 	}
+	// list is compact and must NOT leak the full handover.
 	out, err := tool.Execute(`{"action":"list"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"handover":"queued continuity note"`) {
-		t.Errorf("list must expose the queued handover: %q", out)
+	if strings.Contains(out, "queued continuity note") {
+		t.Errorf("compact list must not expose full handover text: %q", out)
+	}
+	// The handover survives promotion and is readable in full via `get`.
+	if _, err := tool.Execute(`{"action":"promote","goalId":"` + read[0].ID + `"}`); err != nil {
+		t.Fatal(err)
+	}
+	getOut, err := tool.Execute(`{"action":"get"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(getOut, `"handover":"queued continuity note"`) {
+		t.Errorf("get must expose the promoted goal's stored handover: %q", getOut)
 	}
 }
 
@@ -1197,5 +1212,54 @@ func TestGoalTool_CreateReportsTotalQueueDepth(t *testing.T) {
 	}
 	if payload.TotalQueued != 4 {
 		t.Errorf("totalQueued = %d, want 4 (2 pre-existing + 2 new)", payload.TotalQueued)
+	}
+}
+
+// TestGoalTool_ListIsCompact verifies `goal list` returns bounded summaries,
+// not full GoalSnapshots: a queue of goals with long objectives/handovers must
+// serialize small (the frigolite session's 33-goal list reached ~50KB), and
+// the large free-text fields (handover) must not appear in the list payload.
+func TestGoalTool_ListIsCompact(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	q := &fakeQueue{}
+	tool := &GoalTool{Mode: mode, CreateAllowed: func() bool { return true }, Queue: q}
+	longObj := strings.Repeat("x", goal.ExcerptObjectiveLen*4)
+	longHand := strings.Repeat("h", goal.ExcerptFieldLen*4)
+	if _, err := tool.Execute(`{"action":"create","objective":"` + longObj + `","handover":"` + longHand + `"}`); err != nil {
+		t.Fatalf("seed active: %v", err)
+	}
+	// Seed many queued goals with long fields to simulate the 33-goal case.
+	for i := 0; i < 33; i++ {
+		if _, err := tool.Execute(`{"action":"create","objective":"` + longObj + `","handover":"` + longHand + `"}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := tool.Execute(`{"action":"list"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Compact: no long run of the padded objective/handover survives.
+	if strings.Contains(out, strings.Repeat("x", goal.ExcerptObjectiveLen+1)) {
+		t.Errorf("list leaked an untruncated objective")
+	}
+	if strings.Contains(out, strings.Repeat("h", goal.ExcerptFieldLen+1)) {
+		t.Errorf("list leaked an untruncated handover")
+	}
+	// Bounded size: 34 goals (1 active + 33 queued) must stay far below the
+	// prior ~50KB. ~34 * (400 objective + small overhead) ≈ 15KB worst case.
+	if len(out) > 20000 {
+		t.Errorf("list result too large: %d chars", len(out))
+	}
+	// Shape preserved: active + queued + count keys present.
+	var payload struct {
+		Active json.RawMessage   `json:"active"`
+		Queued []json.RawMessage `json:"queued"`
+		Count  int               `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("list must stay JSON: %v (%q)", err, out[:200])
+	}
+	if payload.Count != 33 || len(payload.Queued) != 33 {
+		t.Errorf("count=%d queued=%d, want 33/33", payload.Count, len(payload.Queued))
 	}
 }

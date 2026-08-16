@@ -490,11 +490,21 @@ func (t *GoalTool) queueDepth() int {
 	return len(goals)
 }
 
-// handleList returns the active goal plus the queued goals as a todo-like list.
+// handleList returns a COMPACT view of the goal state: the active goal and
+// every queued goal are summarized (identity, status, counters, a bounded
+// objective excerpt, todo roll-up) rather than serialized as full
+// GoalSnapshots. Full snapshots carry the unbounded free-text fields
+// (completion criterion, verify command, handover, terminal reason) that made
+// a multi-goal list result balloon — a 33-goal list reached ~50KB / ~12.5k
+// tokens, which bloats the context and enlarges the divergent suffix a
+// content-prefix cache (Z.AI/DeepSeek) must recompute. Full detail for one
+// goal stays available via handleGet. The summary shape keeps the keys the
+// TUI renderer reads (name/objective/status/counters/todos) so the display is
+// unchanged.
 func (t *GoalTool) handleList() (agentic.ToolResult, error) {
 	payload := map[string]any{}
 	if g := t.Mode.GetGoal().Goal; g != nil {
-		payload["active"] = goal.ForModel(*g)
+		payload["active"] = goal.SummarizeSnapshot(*g)
 	} else {
 		payload["active"] = nil
 	}
@@ -504,8 +514,12 @@ func (t *GoalTool) handleList() (agentic.ToolResult, error) {
 			queued = q
 		}
 	}
-	payload["queued"] = queued
-	payload["count"] = len(queued)
+	summaries := make([]goal.UpcomingGoalSummary, len(queued))
+	for i := range queued {
+		summaries[i] = goal.SummarizeUpcoming(queued[i])
+	}
+	payload["queued"] = summaries
+	payload["count"] = len(summaries)
 	out, _ := json.Marshal(payload)
 	return agentic.ToolResult{Output: string(out)}, nil
 }
