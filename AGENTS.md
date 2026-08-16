@@ -14,6 +14,7 @@ Copyright (C) 2026 Pierre Poissinger
 4. **A huge correct implementation is much better than a small incorrect one** — Don't lower scope to save effort; do the full clean design.
 5. **Complex work done now is better than tomorrow** — Delay compounds: later changes layer on the deferred design, making rework harder and riskier. Do the hard part now.
 6. **Follow SOLID design** — Methods should be generic and composable (small primitives + factories), not fat per-type APIs. Single Responsibility per type; Open/Closed for extension; depend on abstractions.
+7. **Conversations are append-only; cache IDs are context-scoped** — Outside of compression, a conversation's message history is strictly append-only: never rewrite, drop, or reorder already-sent messages. Any new context — fresh-context goal, `/clear`, sub-agent, skill runner, planner, summarizer, fork — MUST use its own dedicated session/cache ID (`prompt_cache_key`, `previous_response_id`, session-affinity headers). Two request chains may share an ID only when one is a byte-exact append of the other; anything else must rotate the ID (see `AgentManager.ResetConversationID`, `internal/agentic/provider/cache_forensics.go`). A shared ID with a diverging context silently evicts the provider cache and surfaces as an unexplained cache miss.
 
 ## Architecture
 

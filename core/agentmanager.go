@@ -872,10 +872,21 @@ func (am *AgentManager) RefreshContextCompression() {
 // SetStreamOptions replaces the active agent's stream options for subsequent turns.
 // This updates the API key, headers, timeout, and other provider settings so the
 // new provider's credentials are used on the next turn.
+//
+// Rule 7 (append-only conversations; cache IDs are context-scoped): a
+// provider/model switch mid-session does NOT begin a new context — the
+// conversation continues as an append of itself, so it must keep its
+// SessionID (the provider cache key). An empty incoming SessionID therefore
+// inherits the live one; an explicitly-set SessionID (e.g. static provider
+// config) is a deliberate override and wins. Rotation stays with
+// ResetConversationID, which writes the agent's options directly.
 func (am *AgentManager) SetStreamOptions(opts agenticprovider.StreamOptions) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	if am.activeAgent != nil {
+		if opts.SessionID == "" {
+			opts.SessionID = am.activeAgent.StreamOptions().SessionID
+		}
 		am.activeAgent.SetStreamOptions(opts)
 	}
 }

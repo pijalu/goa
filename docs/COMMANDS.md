@@ -226,6 +226,14 @@ echo "Wrong model used" | goa -export-session s_abc123 -export-output ./debug.zi
 echo "TUI input issue" | goa -export-output ./debug.zip -include-global-log=false
 ```
 
+To review a bundle (request timeline, cache-miss forensics with per-miss
+verdicts, trace anomalies) use the standalone analyzer — see
+[`scripts/export/README.md`](../scripts/export/README.md):
+
+```bash
+python3 scripts/export/review_export.py .goa/exports/goa-export-<timestamp>.zip
+```
+
 ### `/fork` — Branch session tree from node
 
 ```

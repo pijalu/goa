@@ -6,11 +6,14 @@ package skillrunner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	agentic "github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/agentic/provider"
@@ -452,7 +455,7 @@ func (r *Runner) executeSubAgent(skill *Skill, task string) (string, error) {
 	subTools := r.buildSubTools(effectiveParentTools, skill)
 	systemPrompt := r.buildSubAgentSystemPrompt(skill, effectiveParentTools, subTools)
 
-	subAgent := r.newSubAgent(systemPrompt, subTools)
+	subAgent := r.newSubAgent(skill.Name, systemPrompt, subTools)
 	defer subAgent.Stop()
 
 	capture := r.attachSubAgentObservers(subAgent, skill)
@@ -580,11 +583,46 @@ func (r *Runner) inheritedSkills(skill *Skill) []*Skill {
 	return out
 }
 
-func (r *Runner) newSubAgent(systemPrompt string, subTools []agentic.Tool) *agentic.Agent {
+// subAgentSessionID derives the dedicated session/cache id for one skill
+// sub-agent execution. A non-empty parent id gains a per-skill suffix with a
+// random component so concurrent executions of the same skill never share a
+// provider cache entry; an empty parent id stays empty (no cache affinity
+// was configured). See Rule 7 in AGENTS.md.
+func subAgentSessionID(parentSessionID, skillName string) string {
+	if parentSessionID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/skill/%s/%s", parentSessionID, skillName, shortRandomID())
+}
+
+// shortRandomID returns 12 lowercase hex chars (48 bits) of crypto-random
+// uniqueness for sub-agent cache ids.
+func shortRandomID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is vanishingly rare; fall back to a time-based
+		// suffix so a derived id is still per-execution unique.
+		return fmt.Sprintf("%012x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+func (r *Runner) newSubAgent(skillName, systemPrompt string, subTools []agentic.Tool) *agentic.Agent {
+	// Rule 7 (append-only conversations; cache IDs are context-scoped): a
+	// skill sub-agent starts a NEW, divergent context (skill instructions,
+	// fresh history) and must not inherit the parent's SessionID — the
+	// SessionID drives the provider cache key (prompt_cache_key /
+	// previous_response_id / session-affinity), so sharing it with a
+	// non-append context silently evicts the parent conversation's cache
+	// (observed as an unexplained cache miss after an interleaved sub-agent
+	// request). Derive a dedicated, per-execution id instead. An empty parent
+	// SessionID stays empty (no cache affinity configured).
+	opts := r.cfg.StreamOptions
+	opts.SessionID = subAgentSessionID(r.cfg.StreamOptions.SessionID, skillName)
 	return agentic.NewAgent(agentic.Config{
 		Model:                    r.cfg.Model,
 		APIKey:                   r.cfg.StreamOptions.APIKey,
-		StreamOptions:            r.cfg.StreamOptions,
+		StreamOptions:            opts,
 		SystemPrompt:             systemPrompt,
 		Tools:                    subTools,
 		Logger:                   r.cfg.Logger,

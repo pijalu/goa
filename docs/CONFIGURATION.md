@@ -44,7 +44,12 @@ providers:
     max_retry_delay: 2s              # Cap exponential backoff
     transport: sse                   # sse | websocket
     cache_retention: none            # none | short | long
-    session_id: ""                   # Cache-affinity session id
+    session_id: ""                   # Cache-affinity session id (WARNING: pins ALL
+                                     # conversations, sub-agents, and one-shot calls to a
+                                     # single provider cache key — diverging contexts that
+                                     # share a key evict each other's cache, surfacing as
+                                     # unexplained cache misses. Leave empty unless you
+                                     # know the provider requires it; see AGENTS.md Rule 7)
     headers:                         # Custom HTTP headers
       X-Custom: value
     metadata:                        # Provider-specific metadata
