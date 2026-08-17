@@ -98,6 +98,18 @@ func Fg(hex string) string {
 	return FgRGB(r, g, b)
 }
 
+// Hyperlink wraps text in an OSC-8 hyperlink sequence so supporting
+// terminals render it as a clickable link to url. Format:
+// ESC ] 8 ; params ; url BEL text ESC ] 8 ; ; BEL. An empty url closes the
+// link (matching AnsiState.processHyperlink). Text with an empty url is
+// returned unchanged.
+func Hyperlink(url, text string) string {
+	if url == "" {
+		return text
+	}
+	return Esc + "]8;;" + url + "\x07" + text + Esc + "]8;;\x07"
+}
+
 // Bg returns the ANSI background color sequence for a hex color.
 func Bg(hex string) string {
 	r, g, b := HexToRGB(hex)

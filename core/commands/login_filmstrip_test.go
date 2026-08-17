@@ -52,7 +52,10 @@ func (f *fakeTerm) sendKey(s string) {
 
 // blockingCodexFlow mimics the real Codex browser login: it emits the auth URL
 // through the bridged writer, then blocks until released (standing in for the
-// browser-callback wait). It proves the UI is not frozen while parked.
+// browser-callback wait). It proves the UI is not frozen while parked. The URL
+// is emitted via the production codexUIFromWriter bridge so the test also
+// exercises the OSC-8 hyperlink + click-hint rendering end to end. The
+// OpenURL bridge is neutralized (no real browser in tests).
 type blockingCodexFlow struct {
 	release chan struct{}
 	started chan struct{}
@@ -60,8 +63,14 @@ type blockingCodexFlow struct {
 	tokens  *oauth.Tokens
 }
 
-func (f *blockingCodexFlow) Run(ctx context.Context, w uiWriter, _ prompter) (*oauth.Tokens, error) {
-	w.Writef("Open this URL in your browser:\nhttps://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann\n")
+const filmstripAuthURL = "https://auth.openai.com/oauth/authorize?client_id=app_EMoamEEZ73f0CkXaXp7hrann"
+
+func (f *blockingCodexFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oauth.Tokens, error) {
+	opts := codexUIFromWriter(w, p)
+	opts.OpenURL = nil // no real browser in tests
+	if opts.NotifyURL != nil {
+		opts.NotifyURL(filmstripAuthURL)
+	}
 	f.once.Do(func() { close(f.started) })
 	select {
 	case <-f.release:

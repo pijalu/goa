@@ -7,12 +7,15 @@ package commands
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/core/commands/help"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/auth"
+	"github.com/pijalu/goa/plugins"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -550,24 +553,49 @@ func (f *codexDeviceFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oau
 
 // codexUIFromWriter builds CodexUIOpts that surface the auth URL / device code
 // through the command's writer and the manual-paste prompt through the
-// prompter. nil prompter disables the manual-paste fallback.
+// prompter, mirroring Pi's login dialog:
+//   - the authorization URL is an OSC-8 clickable hyperlink with a dim
+//     "Ctrl/Cmd+click to open" hint, and the browser is auto-opened
+//     (best-effort — failures fall back to the printed link),
+//   - the device flow shows the verification URL as a hyperlink plus a
+//     prominent "Enter code: <userCode>" line and a waiting message,
+//   - the manual-paste prompt advertises "(esc to cancel, enter to submit)".
+// A nil prompter disables the manual-paste fallback.
 func codexUIFromWriter(w uiWriter, p prompter) oauth.CodexUIOpts {
 	opts := oauth.CodexUIOpts{}
 	if w != nil {
 		opts.NotifyURL = func(u string) {
-			w.Writef("Open this URL in your browser:\n%s\n", u)
+			w.Writef("Open this URL to sign in:\n%s\n", ansi.Hyperlink(u, u))
+			w.Writef("(%s — browser opened automatically)\n", clickHint(u))
 		}
 		opts.NotifyDevice = func(a oauth.CodexDeviceAuth) {
-			w.Writef("Open %s and enter code: %s\n", oauth.CodexDeviceVerificationURI, a.UserCode)
-			w.Writef("Waiting for authorization...\n")
+			w.Writef("Open %s\n", ansi.Hyperlink(oauth.CodexDeviceVerificationURI, oauth.CodexDeviceVerificationURI))
+			w.Writef("(%s)\n", clickHint(oauth.CodexDeviceVerificationURI))
+			w.Writef("Enter code: %s\n", a.UserCode)
+			w.Writef("Waiting for authentication...\n")
 		}
+		// Auto-open the browser (pi showAuth behavior). Best-effort: the
+		// printed hyperlink remains as the manual fallback on failure.
+		bridge := plugins.NewBrowserBridge()
+		opts.OpenURL = func(u string) { _ = bridge.OpenURL(u) }
 	}
 	if p != nil {
 		opts.PromptManualCode = func() (string, bool) {
-			return p.Prompt("Paste authorization code", "Paste the redirect URL or code and press Enter:")
+			return p.Prompt("Paste authorization code",
+				"Paste the redirect URL or code and press Enter (esc to cancel, enter to submit):")
 		}
 	}
 	return opts
+}
+
+// clickHint renders the platform-appropriate "click to open" hint as a dim
+// clickable hyperlink (pi showAuth/showDeviceCode style).
+func clickHint(u string) string {
+	hint := "Ctrl+click to open"
+	if runtime.GOOS == "darwin" {
+		hint = "Cmd+click to open"
+	}
+	return ansi.Hyperlink(u, hint)
 }
 
 // deviceCodeFlow performs GitHub's device-code OAuth flow.

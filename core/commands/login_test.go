@@ -13,16 +13,22 @@ import (
 
 	"github.com/pijalu/goa/core"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/ansi"
 	"github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/tui"
 )
 
 type fakePrompter struct {
-	value string
-	ok    bool
+	value    string
+	ok       bool
+	title    string
+	question string
 }
 
-func (f *fakePrompter) Prompt(_, _ string) (string, bool) { return f.value, f.ok }
+func (f *fakePrompter) Prompt(title, question string) (string, bool) {
+	f.title, f.question = title, question
+	return f.value, f.ok
+}
 
 type fakeWriter struct {
 	lines []string
@@ -564,24 +570,52 @@ func TestCodexUIFromWriter_SurfacesURLAndDeviceCode(t *testing.T) {
 	if opts.NotifyURL == nil {
 		t.Fatal("NotifyURL nil")
 	}
-	opts.NotifyURL("https://auth.openai.com/...")
-	if !strings.Contains(b.String(), "auth.openai.com") {
-		t.Errorf("NotifyURL did not write URL, got %q", b.String())
+	opts.NotifyURL("https://auth.openai.com/oauth/authorize?client_id=x")
+	out := b.String()
+	if !strings.Contains(out, "auth.openai.com") {
+		t.Errorf("NotifyURL did not write URL, got %q", out)
 	}
+	// The URL must be a clickable OSC-8 hyperlink with a click-to-open hint
+	// (Pi showAuth style).
+	if !strings.Contains(out, "\x1b]8;;https://auth.openai.com/oauth/authorize?client_id=x\x07") {
+		t.Errorf("NotifyURL missing OSC-8 hyperlink, got %q", out)
+	}
+	if !strings.Contains(ansi.Strip(out), "click to open") {
+		t.Errorf("NotifyURL missing click-to-open hint, got %q", out)
+	}
+	// The browser auto-open bridge must be wired.
+	if opts.OpenURL == nil {
+		t.Error("OpenURL nil — browser auto-open not wired")
+	}
+
+	b.Reset()
 	opts.NotifyDevice(oauth.CodexDeviceAuth{UserCode: "ABCD-1234"})
-	if !strings.Contains(b.String(), "ABCD-1234") {
-		t.Errorf("NotifyDevice did not write user code, got %q", b.String())
+	dev := b.String()
+	// Device flow: hyperlinked verification URL + prominent "Enter code:" +
+	// waiting message (Pi showDeviceCode/showWaiting style).
+	if !strings.Contains(dev, "\x1b]8;;"+oauth.CodexDeviceVerificationURI+"\x07") {
+		t.Errorf("NotifyDevice missing OSC-8 hyperlink, got %q", dev)
+	}
+	for _, want := range []string{"Enter code: ABCD-1234", "Waiting for authentication..."} {
+		if !strings.Contains(ansi.Strip(dev), want) {
+			t.Errorf("NotifyDevice missing %q, got %q", want, dev)
+		}
 	}
 }
 
 func TestCodexUIFromWriter_ManualPromptBridged(t *testing.T) {
-	opts := codexUIFromWriter(fmtWriter{&strings.Builder{}}, &fakePrompter{value: "code123", ok: true})
+	p := &fakePrompter{value: "code123", ok: true}
+	opts := codexUIFromWriter(fmtWriter{&strings.Builder{}}, p)
 	if opts.PromptManualCode == nil {
 		t.Fatal("PromptManualCode nil despite prompter")
 	}
 	code, ok := opts.PromptManualCode()
 	if !ok || code != "code123" {
 		t.Errorf("PromptManualCode = %q,%v", code, ok)
+	}
+	// The manual-paste prompt advertises the esc/enter hint (Pi showManualInput).
+	if !strings.Contains(p.question, "esc to cancel, enter to submit") {
+		t.Errorf("manual prompt missing esc/enter hint, got %q", p.question)
 	}
 	// nil prompter disables manual paste.
 	opts = codexUIFromWriter(fmtWriter{&strings.Builder{}}, nil)

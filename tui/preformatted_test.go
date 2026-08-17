@@ -7,6 +7,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/pijalu/goa/internal/ansi"
 )
 
 // stripPanelBox removes ANSI escapes and goa-panel box-drawing characters so
@@ -193,5 +195,35 @@ func TestChatViewport_AddSystemMessagePreformatted(t *testing.T) {
 	}
 	if !hasCmd1 {
 		t.Error("expected /cmd1 in rendered output")
+	}
+}
+
+// TestSystemMessage_OSC8Hyperlink pins the Pi showAuth/showDeviceCode UX at
+// the render layer: an OAuth URL emitted as an OSC-8 hyperlink survives the
+// system-message panel (the raw frame carries the ESC ]8;; open/close codes),
+// while the visible (stripped) text shows the URL and click-to-open hint.
+func TestSystemMessage_OSC8Hyperlink(t *testing.T) {
+	url := "https://auth.openai.com/codex/device"
+	link := ansi.Hyperlink(url, url)
+	hint := ansi.Hyperlink(url, "Cmd+click to open")
+	msg := "Open this URL to sign in:\n" + link + "\n(" + hint + ")\nEnter code: ABCD-1234"
+
+	cv := NewChatViewport()
+	cv.AddSystemMessagePreformatted(msg)
+	raw := strings.Join(cv.Render(100), "\n")
+
+	// The hyperlink escape codes reach the terminal (clickable link).
+	if !strings.Contains(raw, "\x1b]8;;"+url+"\x07") {
+		t.Errorf("raw frame missing OSC-8 open for %q\n---\n%s", url, raw)
+	}
+	if !strings.Contains(raw, "\x1b]8;;\x07") {
+		t.Errorf("raw frame missing OSC-8 close\n---\n%s", raw)
+	}
+	// The visible text shows the URL, hint, and prominent device code.
+	visible := ansi.Strip(raw)
+	for _, want := range []string{url, "Cmd+click to open", "Enter code: ABCD-1234"} {
+		if !strings.Contains(visible, want) {
+			t.Errorf("visible frame missing %q\n---\n%s", want, visible)
+		}
 	}
 }
