@@ -27,9 +27,97 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-No current issues.
+## Tools deferred to tool_search: schedule_create / schedule_delete / schedule_list
+
+Report: the `schedule_*` tools (schedule_create, schedule_delete,
+schedule_list) are deferred to `tool_search` instead of being directly
+available.
+
+Expected: clarify intended availability/registration of the schedule tools so
+they are usable as first-class tools (or document why they must remain
+deferred).
 
 # Archive
+
+## ~~Codex login UX — method choice should be a list; OAuth steps should follow Pi TUI~~ — FIXED (2026-08-17)
+
+Both problems from the `/provider` OAuth-freeze follow-up are resolved.
+
+**Problem 1 — login-method prompt renders as free-text question.**
+`selectCodexMethod` (core/commands/login.go) asked browser-vs-device via the
+free-text clarify prompt. It now routes through `ctx.SelectOption` with
+`browser`/`device` SelectorItems (arrow-key navigate, enter to pick, esc
+cancels → browser default) whenever a selector is wired — Pi `showAuthSelect`
+style — keeping the free-text prompter as the headless fallback. The choice
+blocks on a result channel; that is safe because `handleOAuth` runs off the
+TUI commandLoop on the `runOAuthFlow` goroutine. Additionally, `App.clarify`
+(internal/app/app.go) now answers ANY ClarifyCard that carries `Options`
+through the navigable selector overlay instead of the free-text main input
+(option-free cards keep the editor-title input path), so the clarify widget
+renders provided Options as a list per the report.
+
+**Problem 2 — OAuth link / code not shown inline like Pi.**
+`codexUIFromWriter` now mirrors Pi's `showAuth`/`showDeviceCode`/
+`showManualInput`: the authorization URL is an OSC-8 clickable hyperlink with
+a dim "Ctrl/Cmd+click to open" hint plus best-effort browser auto-open
+(`plugins.BrowserBridge`); the device flow shows the verification URL as a
+hyperlink, a prominent "Enter code: <userCode>" line, and "Waiting for
+authentication..."; the manual-paste prompt advertises "(esc to cancel, enter
+to submit)". New `ansi.Hyperlink(url, text)` emits the OSC-8 sequence
+(zero-width for `Width`/`Strip`).
+
+**Problem 2 follow-up — URL/code lost to the dead command OutputBuffer.**
+Reported: "Selecting device bring back to input - no message/no action to
+link." Root cause: the async `runOAuthFlow` runs on a background goroutine
+whose `ctx.Writef` targeted the originating `/login` command's OutputBuffer —
+echoed by the router only when the command returns. But `runOAuthFlow`
+returns immediately while the flow parks, so the URL/code were written to a
+buffer never rendered. Fix: new `event.SystemMessage` chat-bus event +
+`Context.WriteSystem(text, preformatted)` (goroutine-safe live chat write),
+`App.showSystemMessage` handler, and `runOAuthFlowSync` now takes an explicit
+`uiWriter` — the async path uses a `liveOAuthWriter` (WriteSystem,
+preformatted to preserve OSC-8 links) while the headless sync path keeps
+`ctx.Writef`. Each notification is batched into one multi-line message so it
+renders as a single chat panel (Pi login-dialog style).
+
+Tests:
+- login_test.go: `TestSelectCodexMethod_Selector{Browser,Device,CancelDefaultsBrowser}`
+  + `TestSelectCodexMethod_HeadlessKeepsTextPrompt`; `TestCodexUIFromWriter_*`
+  assert OSC-8 bytes, click hint, Enter-code/waiting lines, OpenURL wiring, and
+  the esc/enter hint.
+- login_filmstrip_test.go: `TestLoginCodexMethod_Filmstrip` drives the live
+  engine method list (both options visible), arrow-down+enter → device flow,
+  engine stays responsive, tokens stored. `TestLoginCodexOAuth_Filmstrip`
+  (browser) now asserts the auth URL + click-to-open hint + success line are
+  visible in the chat frame; `TestLoginCodexDeviceCode_Filmstrip` (new)
+  asserts the verification URL, "Enter code: WXYZ-9876", and "Waiting for
+  authentication..." render live. `drainChatEvents`/`applyChatEvent` mirror
+  the production chat-event reader so the EventBus output reaches the
+  viewport.
+- internal/app/app_test.go: `TestClarify_OptionsUseSelector` /
+  `TestClarify_OptionsSelectorCancel` pin option-list routing + cancel;
+  `TestClarify_InputTitleShowsProgressNotQuestion` now targets the free-text
+  path (option cards no longer touch the editor title).
+- internal/ansi: `TestHyperlink`. tui: `TestSystemMessage_OSC8Hyperlink` —
+  hyperlink survives the system-message panel (raw OSC-8 + visible URL/hint/
+  code). Also fixed a latent race in the filmstrip selector stubs
+  (`ShowSelector` must run via ApplySync; it mutates selector state the
+  commandLoop reads).
+
+Terminal output validated via live-engine filmstrip + ChatViewport render
+dumps (selector list shows arrow-nav options; device panel shows clickable
+URL, "Enter code:", "Waiting for authentication...").
+
+Gates: vet ✓ staticcheck (5 pre-existing, unrelated, unchanged) ✓ gocognit
+≤15 (26→26 no new) ✓ gocyclo ≤12 (33→33 no new) ✓ race+cover ✓.
+
+Commits: `0d5d3ff` (method choice + clarify options as list), `39f5068`
+(OSC-8 hyperlink UX + browser auto-open), `1b092fd` (live WriteSystem for
+async OAuth output — the "no message/no link" root-cause fix).
+
+<details><summary>Original issue text</summary>
+
+</details>
 
 ## ~~Codex OAuth freeze from /provider picker — TUI frozen after OAuth choice~~ — FIXED (2026-06-24)
 
