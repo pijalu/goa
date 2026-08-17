@@ -59,6 +59,52 @@ func LoginCodexDevice(ctx context.Context) (*Tokens, error) {
 	return loginCodexDevice(ctx, defaultCodexFlowConfig())
 }
 
+// CodexUIOpts lets a host (e.g. the TUI) bridge the interactive bits of the
+// Codex login into its own UI: displaying the auth URL / device code and
+// collecting a manual paste. All fields are optional; nil falls back to
+// production defaults (stdout print, no manual prompt).
+type CodexUIOpts struct {
+	// NotifyURL receives the browser authorization URL for display.
+	NotifyURL func(url string)
+	// NotifyDevice receives the device authorization info (user code).
+	NotifyDevice func(auth CodexDeviceAuth)
+	// PromptManualCode asks the user to paste a code/redirect URL. Return
+	// ok=false on cancel. Nil disables manual paste.
+	PromptManualCode func() (string, bool)
+	// OpenURL, when set, opens the authorization URL in a browser.
+	OpenURL func(url string)
+}
+
+// LoginCodexBrowserUI is LoginCodexBrowser with host-bridged UI callbacks.
+func LoginCodexBrowserUI(ctx context.Context, ui CodexUIOpts) (*Tokens, error) {
+	cfg := defaultCodexFlowConfig()
+	cfg.applyUI(ui)
+	return loginCodexBrowser(ctx, cfg)
+}
+
+// LoginCodexDeviceUI is LoginCodexDevice with host-bridged UI callbacks.
+func LoginCodexDeviceUI(ctx context.Context, ui CodexUIOpts) (*Tokens, error) {
+	cfg := defaultCodexFlowConfig()
+	cfg.applyUI(ui)
+	return loginCodexDevice(ctx, cfg)
+}
+
+// applyUI overlays host UI callbacks onto the flow config.
+func (cfg *codexFlowConfig) applyUI(ui CodexUIOpts) {
+	if ui.NotifyURL != nil {
+		cfg.notifyURL = ui.NotifyURL
+	}
+	if ui.NotifyDevice != nil {
+		cfg.notifyDevice = ui.NotifyDevice
+	}
+	if ui.PromptManualCode != nil {
+		cfg.promptManualCode = ui.PromptManualCode
+	}
+	if ui.OpenURL != nil {
+		cfg.openURL = ui.OpenURL
+	}
+}
+
 // defaultCodexFlowConfig wires interactive defaults: the auth URL is printed
 // to stdout, and a manual-paste prompt reads from stdin.
 func defaultCodexFlowConfig() *codexFlowConfig {

@@ -385,7 +385,7 @@ func (c *LoginCommand) deviceFlow(provider string) oauthFlow {
 	}
 	switch {
 	case isCodexProvider(provider):
-		return &codexDeviceFlow{login: oauth.LoginCodexDevice}
+		return &codexDeviceFlow{login: oauth.LoginCodexDevice, loginUI: oauth.LoginCodexDeviceUI}
 	case provider == "copilot" || provider == "github":
 		return &deviceCodeFlow{provider: oauth.NewGitHubCopilotOAuth()}
 	default:
@@ -394,10 +394,31 @@ func (c *LoginCommand) deviceFlow(provider string) oauthFlow {
 }
 
 // runOAuthFlow executes the flow and persists the resulting tokens.
+//
+// The flow is blocking — it waits for a browser callback or device-code poll.
+// In a live TUI (EventBus wired) it must run on a background goroutine so it
+// does not freeze the UI; progress and the result are delivered via
+// ctx.Writef / ctx.Flash, which post to the event bus and are goroutine-safe.
+// Headless (no EventBus — tests, scripts) runs synchronously so the caller
+// observes completion and errors directly.
 func (c *LoginCommand) runOAuthFlow(ctx core.Context, provider string, flow oauthFlow) error {
 	if flow == nil {
 		return fmt.Errorf("provider %q does not support OAuth", provider)
 	}
+	if ctx.EventBus == nil {
+		return c.runOAuthFlowSync(ctx, provider, flow)
+	}
+	ctx.Writef("Starting OAuth login for %s...\n", provider)
+	go func() {
+		if err := c.runOAuthFlowSync(ctx, provider, flow); err != nil {
+			ctx.Flash(fmt.Sprintf("OAuth login for %s failed: %v", provider, err))
+		}
+	}()
+	return nil
+}
+
+// runOAuthFlowSync runs the flow to completion and persists the tokens.
+func (c *LoginCommand) runOAuthFlowSync(ctx core.Context, provider string, flow oauthFlow) error {
 	tokens, err := flow.Run(context.Background(), ctx, c.resolvePrompter(ctx))
 	if err != nil {
 		return fmt.Errorf("oauth flow: %w", err)
@@ -448,29 +469,62 @@ func (c *LoginCommand) newOAuthFlow(provider string) oauthFlow {
 	case "codex", "openai":
 		// Default to the browser login; the device-code variant is selected by
 		// the explicit ":device" suffix in handleOAuth.
-		return &codexBrowserFlow{login: oauth.LoginCodexBrowser}
+		return &codexBrowserFlow{login: oauth.LoginCodexBrowser, loginUI: oauth.LoginCodexBrowserUI}
 	default:
 		return nil
 	}
 }
 
 // codexBrowserFlow wraps the oauth package browser login so the command layer
-// can substitute a fake in tests via LoginCommand.codexLogin.
+// can substitute a fake in tests via LoginCommand.flowFactory. When running
+// against a real TUI it bridges the auth URL and manual-code prompt into the
+// host UI via CodexUIOpts.
 type codexBrowserFlow struct {
 	login func(ctx context.Context) (*oauth.Tokens, error)
+	// loginUI, when set, is the UI-bridged variant preferred in a TUI context.
+	loginUI func(ctx context.Context, ui oauth.CodexUIOpts) (*oauth.Tokens, error)
 }
 
-func (f *codexBrowserFlow) Run(ctx context.Context, _ uiWriter, _ prompter) (*oauth.Tokens, error) {
+func (f *codexBrowserFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oauth.Tokens, error) {
+	if f.loginUI != nil {
+		return f.loginUI(ctx, codexUIFromWriter(w, p))
+	}
 	return f.login(ctx)
 }
 
 // codexDeviceFlow wraps the oauth package device-code login.
 type codexDeviceFlow struct {
-	login func(ctx context.Context) (*oauth.Tokens, error)
+	login   func(ctx context.Context) (*oauth.Tokens, error)
+	loginUI func(ctx context.Context, ui oauth.CodexUIOpts) (*oauth.Tokens, error)
 }
 
-func (f *codexDeviceFlow) Run(ctx context.Context, _ uiWriter, _ prompter) (*oauth.Tokens, error) {
+func (f *codexDeviceFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oauth.Tokens, error) {
+	if f.loginUI != nil {
+		return f.loginUI(ctx, codexUIFromWriter(w, p))
+	}
 	return f.login(ctx)
+}
+
+// codexUIFromWriter builds CodexUIOpts that surface the auth URL / device code
+// through the command's writer and the manual-paste prompt through the
+// prompter. nil prompter disables the manual-paste fallback.
+func codexUIFromWriter(w uiWriter, p prompter) oauth.CodexUIOpts {
+	opts := oauth.CodexUIOpts{}
+	if w != nil {
+		opts.NotifyURL = func(u string) {
+			w.Writef("Open this URL in your browser:\n%s\n", u)
+		}
+		opts.NotifyDevice = func(a oauth.CodexDeviceAuth) {
+			w.Writef("Open %s and enter code: %s\n", oauth.CodexDeviceVerificationURI, a.UserCode)
+			w.Writef("Waiting for authorization...\n")
+		}
+	}
+	if p != nil {
+		opts.PromptManualCode = func() (string, bool) {
+			return p.Prompt("Paste authorization code", "Paste the redirect URL or code and press Enter:")
+		}
+	}
+	return opts
 }
 
 // deviceCodeFlow performs GitHub's device-code OAuth flow.

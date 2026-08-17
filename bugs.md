@@ -31,6 +31,41 @@ No current issues.
 
 # Archive
 
+## ~~Codex OAuth freeze — selecting OAuth shows nothing / TUI frozen~~ — FIXED (2026-06-05)
+
+Report: "adding a provider — selection oauth does not bring anything"; TUI
+frozen after selecting OAuth.
+
+Root causes (both in the command layer, not the oauth package):
+1. **Freeze** — `runOAuthFlow` called the blocking codex browser/device flow
+   synchronously. From the auth-kind picker (or provider picker) the selection
+   callback runs on the UI goroutine via `app.apply`, so the browser-callback
+   wait parked the engine command loop → frozen TUI.
+2. **Nothing shown** — the codex flows wrote the auth URL / device code via
+   `fmt.Printf` to stdout, which the TUI never renders; no manual-paste prompt
+   was wired either.
+
+Fix:
+- `runOAuthFlow` runs the flow on a background goroutine when an EventBus is
+  wired (live TUI); headless stays synchronous. Progress/result delivered via
+  `ctx.Writef`/`ctx.Flash` (goroutine-safe event-bus posts).
+- oauth package: added `CodexUIOpts` + `LoginCodexBrowserUI`/`LoginCodexDeviceUI`
+  so the host bridges `NotifyURL`/`NotifyDevice`/`PromptManualCode`/`OpenURL`.
+- command layer: `codexBrowserFlow`/`codexDeviceFlow` gained `loginUI` variants;
+  `codexUIFromWriter` bridges the auth URL + device code to `ctx.Writef` and the
+  manual-paste prompt to the prompter (clarify card).
+
+Tests:
+- `TestLoginCodexOAuth_Filmstrip` (new, core/commands): drives the real
+  `/login:openai-codex` flow on a live TUI engine (`RunLoops` so ApplySync
+  serializes) with a blocking codex flow. Asserts selector shown, OAuth pick
+  returns promptly, engine stays responsive while the flow is parked
+  (ApplySync probe), tokens stored on completion. Negative-controlled: forcing
+  the sync path makes the responsiveness probe fail ("UI engine frozen").
+- `TestCodexUIFromWriter_*`: URL + device code + manual-prompt bridging.
+
+Gates: vet ✓ build ✓ race ✓ gocognit ≤15 ✓ gocyclo ≤12 ✓ staticcheck clean ✓.
+
 ## ~~Login UX — sign-on discovery, codex auth selection, completion~~ — FIXED (2026-06-05)
 
 All three issues resolved, follow pi wizard flow:

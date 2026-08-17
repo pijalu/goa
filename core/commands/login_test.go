@@ -551,6 +551,45 @@ func TestLoginList_TerminalOutput_ShowsKind(t *testing.T) {
 	}
 }
 
+// --- codexUIFromWriter bridging ---
+
+// fmtWriter adapts a strings.Builder to the uiWriter interface for tests.
+type fmtWriter struct{ b *strings.Builder }
+
+func (w fmtWriter) Writef(format string, args ...any) { fmt.Fprintf(w.b, format, args...) }
+
+func TestCodexUIFromWriter_SurfacesURLAndDeviceCode(t *testing.T) {
+	var b strings.Builder
+	opts := codexUIFromWriter(fmtWriter{&b}, nil)
+	if opts.NotifyURL == nil {
+		t.Fatal("NotifyURL nil")
+	}
+	opts.NotifyURL("https://auth.openai.com/...")
+	if !strings.Contains(b.String(), "auth.openai.com") {
+		t.Errorf("NotifyURL did not write URL, got %q", b.String())
+	}
+	opts.NotifyDevice(oauth.CodexDeviceAuth{UserCode: "ABCD-1234"})
+	if !strings.Contains(b.String(), "ABCD-1234") {
+		t.Errorf("NotifyDevice did not write user code, got %q", b.String())
+	}
+}
+
+func TestCodexUIFromWriter_ManualPromptBridged(t *testing.T) {
+	opts := codexUIFromWriter(fmtWriter{&strings.Builder{}}, &fakePrompter{value: "code123", ok: true})
+	if opts.PromptManualCode == nil {
+		t.Fatal("PromptManualCode nil despite prompter")
+	}
+	code, ok := opts.PromptManualCode()
+	if !ok || code != "code123" {
+		t.Errorf("PromptManualCode = %q,%v", code, ok)
+	}
+	// nil prompter disables manual paste.
+	opts = codexUIFromWriter(fmtWriter{&strings.Builder{}}, nil)
+	if opts.PromptManualCode != nil {
+		t.Error("PromptManualCode should be nil with nil prompter")
+	}
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {
