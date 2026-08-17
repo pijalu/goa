@@ -68,6 +68,12 @@ type ChatEvent struct {
 	ClearChat bool
 	// Flash carries a transient flash message.
 	Flash *Flash
+	// SystemMessage appends a durable system message to the chat viewport.
+	// Used by background goroutines (e.g. the async OAuth flow) to surface
+	// live output (auth URL, device code) after the originating command has
+	// already returned — its OutputBuffer is echoed only at command end and
+	// would otherwise be lost.
+	SystemMessage *SystemMessage
 	// InterAgent carries an agent-to-agent message.
 	InterAgent *InterAgent
 	// ShowOutputModal requests a modal with command output.
@@ -90,6 +96,14 @@ type ChatEvent struct {
 // Flash is a transient flash message displayed in the status area.
 type Flash struct {
 	Text string
+}
+
+// SystemMessage is a durable system message appended to the chat viewport.
+// Preformatted=true renders the text line-by-line (preserving embedded ANSI
+// such as OSC-8 hyperlinks); false lets the message auto-detect markdown.
+type SystemMessage struct {
+	Text         string
+	Preformatted bool
 }
 
 // InterAgent is an agent-to-agent message in multi-agent mode.

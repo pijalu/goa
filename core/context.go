@@ -542,6 +542,22 @@ func (c Context) Flash(text string) {
 	}
 }
 
+// WriteSystem appends a durable system message to the chat viewport from any
+// goroutine (goroutine-safe event-bus post). Unlike Writef — which targets the
+// per-command OutputBuffer echoed only when the command returns — WriteSystem
+// renders live, so a background flow (e.g. async OAuth) can surface output
+// after its originating command has already returned. Preformatted preserves
+// embedded ANSI such as OSC-8 hyperlinks.
+func (c Context) WriteSystem(text string, preformatted bool) {
+	if c.EventBus == nil || text == "" {
+		return
+	}
+	select {
+	case c.EventBus.Chat <- event.ChatEvent{SystemMessage: &event.SystemMessage{Text: text, Preformatted: preformatted}}:
+	default:
+	}
+}
+
 // InterruptAgent cancels the current agent turn without stopping the session.
 // It is used by session restore to halt any in-flight reconnect loop before
 // replaying stored history.

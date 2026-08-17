@@ -429,6 +429,8 @@ func (a *App) handleChatEvent(ev event.ChatEvent) {
 		a.handleInterAgentEvent(ev.InterAgent)
 	case ev.Flash != nil:
 		a.showFlash(ev.Flash)
+	case ev.SystemMessage != nil:
+		a.showSystemMessage(ev.SystemMessage)
 	case ev.ShowOutputModal != nil:
 		a.showOutputModal(ev.ShowOutputModal)
 	case ev.ShowReviewPager != nil:
@@ -477,6 +479,22 @@ func (a *App) showFlash(f *event.Flash) {
 		return
 	}
 	a.subs.chat.AddFlashMessage("⚡ " + f.Text)
+}
+
+// showSystemMessage appends a durable system message posted from a background
+// goroutine (e.g. the async OAuth flow surfacing its auth URL / device code).
+func (a *App) showSystemMessage(m *event.SystemMessage) {
+	if a.subs.chat == nil || m == nil || m.Text == "" {
+		return
+	}
+	if m.Preformatted {
+		a.subs.chat.AddSystemMessagePreformatted(m.Text)
+	} else {
+		a.subs.chat.AddSystemMessage(m.Text)
+	}
+	if a.subs.tuiEngine != nil {
+		a.subs.tuiEngine.RequestRender()
+	}
 }
 
 func (a *App) showOutputModal(m *event.ShowOutputModal) {

@@ -117,11 +117,14 @@ func TestLoginCodexOAuth_Filmstrip(t *testing.T) {
 	}
 
 	// Production-style Context: selector → engine overlay, EventBus wired so
-	// runOAuthFlow takes the async (non-freezing) path. No OutputBuffer: output
-	// assertions live in the synchronous unit tests; here we assert UI liveness
-	// and credential storage, which are the freeze/silent-failure regressions.
+	// runOAuthFlow takes the async (non-freezing) path and posts the auth URL
+	// live to the chat via WriteSystem. drainChatEvents mirrors the production
+	// chat-event reader so that output actually lands in the viewport.
+	bus := event.MakeBus(16, 16, 16, 16)
+	stopDrain := drainChatEvents(engine, chat, bus)
+	defer stopDrain()
 	ctx := core.Context{
-		EventBus: event.MakeBus(16, 16, 16, 16),
+		EventBus: bus,
 	}
 	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
 		// Show the selector on the commandLoop (ApplySync): showSelector
@@ -162,39 +165,34 @@ func TestLoginCodexOAuth_Filmstrip(t *testing.T) {
 		t.Fatal("OAuth flow did not start after selecting oauth — UI frozen?")
 	}
 
-	// UI stays responsive while the flow is parked: the engine command loop must
-	// still process work. If runOAuthFlow ran synchronously on the UI goroutine,
-	// this ApplySync would block until the (unreleased) flow returned.
-	responsive := make(chan struct{})
-	go func() {
-		engine.ApplySync(func() { close(responsive) })
-	}()
-	select {
-	case <-responsive:
-	case <-time.After(2 * time.Second):
-		t.Fatal("UI engine frozen: ApplySync blocked while OAuth flow was parked")
-	}
+	// UI stays responsive while the flow is parked (a synchronous flow on the
+	// UI goroutine would park the engine loop — the reported freeze).
+	assertEngineResponsive(t, engine)
 	engine.RenderNow()
 	film.Capture("oauth-waiting", engine.AgentFrame(), "")
 
+	// The browser auth URL is surfaced live in the chat as a clickable
+	// (OSC-8) link with a click-to-open hint — the regression that was
+	// previously lost to the dead command OutputBuffer.
+	waitForFrame(t, engine, "auth.openai.com/oauth/authorize")
+	if !visibleHas(engine.AgentFrame(), "click to open") {
+		t.Errorf("oauth-waiting frame missing click-to-open hint; visible = %v", engine.AgentFrame().Visible)
+	}
+	engine.RenderNow()
+	film.Capture("oauth-url-shown", engine.AgentFrame(), "")
+
 	// Step 2: release the flow (browser login done) → tokens stored.
 	close(flow.release)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := store.GetOAuth("openai"); ok {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if _, ok := store.GetOAuth("openai"); !ok {
-		t.Fatal("oauth tokens not stored after flow completed")
-	}
+	waitForCondition(t, func() bool { return store.HasAuth("openai") })
 	engine.RenderNow()
 	film.Capture("oauth-success", engine.AgentFrame(), "")
 
-	// The filmstrip recorded the full evolution; assert it has the 3 key steps.
-	if len(film.Frames()) < 3 {
-		t.Errorf("filmstrip captured %d snapshots, want >= 3", len(film.Frames()))
+	// The success line is also surfaced live in the chat.
+	waitForFrame(t, engine, "OAuth login for openai succeeded.")
+
+	// The filmstrip recorded the full evolution; assert it has the key steps.
+	if len(film.Frames()) < 4 {
+		t.Errorf("filmstrip captured %d snapshots, want >= 4", len(film.Frames()))
 	}
 }
 
@@ -206,6 +204,47 @@ func visibleHas(frame tui.AgentFrame, substr string) bool {
 		}
 	}
 	return false
+}
+
+// drainChatEvents consumes the event bus's Chat channel and applies each
+// SystemMessage / Flash to the chat viewport, mirroring the production
+// App.runChatEventReader → handleChatEvent path. It returns a stop func.
+// Without this, a filmstrip ctx that wires an EventBus never surfaces the
+// live OAuth WriteSystem output into the chat, so assertions on the rendered
+// auth URL / device code would see nothing.
+func drainChatEvents(engine *tui.TUI, chat *tui.ChatViewport, bus *event.Bus) func() {
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case ev := <-bus.Chat:
+				applyChatEvent(engine, chat, ev)
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
+}
+
+// applyChatEvent renders one drained ChatEvent onto the chat viewport on the
+// commandLoop (ApplySync), mirroring App.showSystemMessage / showFlash.
+func applyChatEvent(engine *tui.TUI, chat *tui.ChatViewport, ev event.ChatEvent) {
+	switch {
+	case ev.SystemMessage != nil:
+		m := ev.SystemMessage
+		engine.ApplySync(func() {
+			if m.Preformatted {
+				chat.AddSystemMessagePreformatted(m.Text)
+			} else {
+				chat.AddSystemMessage(m.Text)
+			}
+		})
+	case ev.Flash != nil:
+		f := ev.Flash
+		engine.ApplySync(func() { chat.AddFlashMessage("⚡ " + f.Text) })
+	}
 }
 
 // TestLoginCodexMethod_Filmstrip pins the Pi showAuthSelect UX for the codex
@@ -298,6 +337,122 @@ func TestLoginCodexMethod_Filmstrip(t *testing.T) {
 	if err := <-runDone; err != nil {
 		t.Fatalf("login run: %v", err)
 	}
+	engine.RenderNow()
+	film.Capture("device-success", engine.AgentFrame(), "")
+
+	if len(film.Frames()) < 3 {
+		t.Errorf("filmstrip captured %d snapshots, want >= 3", len(film.Frames()))
+	}
+}
+
+// blockingCodexDeviceFlow mimics the real Codex device-code login: it emits
+// the device authorization (verification URL + user code) through the
+// production codexUIFromWriter bridge, then blocks until released (standing
+// in for the device-token poll). It lets the filmstrip assert the "Enter
+// code:" panel reaches the chat live.
+type blockingCodexDeviceFlow struct {
+	release  chan struct{}
+	started  chan struct{}
+	once     sync.Once
+	tokens   *oauth.Tokens
+	userCode string
+}
+
+func (f *blockingCodexDeviceFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oauth.Tokens, error) {
+	opts := codexUIFromWriter(w, p)
+	if opts.NotifyDevice != nil {
+		opts.NotifyDevice(oauth.CodexDeviceAuth{UserCode: f.userCode, IntervalSeconds: 5})
+	}
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+		return f.tokens, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestLoginCodexDeviceCode_Filmstrip validates the headless (device-code)
+// sign-on end to end on a live TUI engine: after the method list picks
+// "device", the verification URL (as a clickable OSC-8 link), the prominent
+// "Enter code: <userCode>" line, and the "Waiting for authentication..."
+// message must appear in the chat viewport live — the regression where
+// selecting device returned to the input with no message and no link.
+func TestLoginCodexDeviceCode_Filmstrip(t *testing.T) {
+	term := &fakeTerm{w: 100, h: 30}
+	engine := tui.NewTUI(term)
+	chat := tui.NewChatViewport()
+	engine.AddChild(chat)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+	film := tui.NewFilmstrip()
+
+	store, err := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	flow := &blockingCodexDeviceFlow{
+		release:  make(chan struct{}),
+		started:  make(chan struct{}),
+		tokens:   &oauth.Tokens{AccessToken: "device-tok", AccountID: "acct-d"},
+		userCode: "WXYZ-9876",
+	}
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return flow },
+	}
+
+	bus := event.MakeBus(16, 16, 16, 16)
+	stopDrain := drainChatEvents(engine, chat, bus)
+	defer stopDrain()
+	ctx := core.Context{EventBus: bus}
+	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
+		var ch <-chan string
+		engine.ApplySync(func() { ch = engine.ShowSelector(title, items, current) })
+		go func() {
+			sel := <-ch
+			engine.Apply(func() { onSel(sel, sel != "") })
+		}()
+	}
+
+	// Drive /login:openai-codex oauth on a background goroutine (production
+	// parity — see TestLoginCodexMethod_Filmstrip).
+	runDone := make(chan error, 1)
+	go func() { runDone <- cmd.Run(ctx, []string{"openai-codex", "oauth"}) }()
+	waitForFrame(t, engine, "OpenAI Codex login method")
+	film.Capture("method-selector", engine.AgentFrame(), "")
+
+	// Pick "Use a device code".
+	term.sendKey("\x1b[B") // down → device
+	term.sendKey("\r")     // enter
+	select {
+	case <-flow.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("device flow did not start after picking device")
+	}
+	assertEngineResponsive(t, engine)
+
+	// The device-code panel must be rendered live in the chat.
+	waitForFrame(t, engine, "Enter code: WXYZ-9876")
+	engine.RenderNow()
+	film.Capture("device-code-shown", engine.AgentFrame(), "")
+	for _, want := range []string{"auth.openai.com/codex/device", "click to open", "Waiting for authentication..."} {
+		if !visibleHas(engine.AgentFrame(), want) {
+			t.Errorf("device-code frame missing %q; visible = %v", want, engine.AgentFrame().Visible)
+		}
+	}
+
+	// Complete the flow → tokens stored + success line shown.
+	close(flow.release)
+	if err := <-runDone; err != nil {
+		t.Fatalf("login run: %v", err)
+	}
+	waitForCondition(t, func() bool { return store.HasAuth("openai") })
+	waitForFrame(t, engine, "OAuth login for openai succeeded.")
 	engine.RenderNow()
 	film.Capture("device-success", engine.AgentFrame(), "")
 

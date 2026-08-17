@@ -443,36 +443,50 @@ func (c *LoginCommand) deviceFlow(provider string) oauthFlow {
 //
 // The flow is blocking — it waits for a browser callback or device-code poll.
 // In a live TUI (EventBus wired) it must run on a background goroutine so it
-// does not freeze the UI; progress and the result are delivered via
-// ctx.Writef / ctx.Flash, which post to the event bus and are goroutine-safe.
-// Headless (no EventBus — tests, scripts) runs synchronously so the caller
-// observes completion and errors directly.
+// does not freeze the UI. Because the originating command has already
+// returned by the time the flow emits its auth URL / device code, those
+// progress lines must NOT go to the command's OutputBuffer (echoed only at
+// command end — i.e. never); they are posted live to the chat viewport via
+// ctx.WriteSystem. The result is delivered via ctx.Flash. Headless (no
+// EventBus — tests, scripts) runs synchronously with the normal Writef
+// (OutputBuffer) writer so the caller observes output/completion directly.
 func (c *LoginCommand) runOAuthFlow(ctx core.Context, provider string, flow oauthFlow) error {
 	if flow == nil {
 		return fmt.Errorf("provider %q does not support OAuth", provider)
 	}
 	if ctx.EventBus == nil {
-		return c.runOAuthFlowSync(ctx, provider, flow)
+		return c.runOAuthFlowSync(ctx, provider, flow, ctx)
 	}
-	ctx.Writef("Starting OAuth login for %s...\n", provider)
 	go func() {
-		if err := c.runOAuthFlowSync(ctx, provider, flow); err != nil {
+		if err := c.runOAuthFlowSync(ctx, provider, flow, liveOAuthWriter{ctx: ctx}); err != nil {
 			ctx.Flash(fmt.Sprintf("OAuth login for %s failed: %v", provider, err))
 		}
 	}()
 	return nil
 }
 
-// runOAuthFlowSync runs the flow to completion and persists the tokens.
-func (c *LoginCommand) runOAuthFlowSync(ctx core.Context, provider string, flow oauthFlow) error {
-	tokens, err := flow.Run(context.Background(), ctx, c.resolvePrompter(ctx))
+// liveOAuthWriter routes flow output to the chat viewport as preformatted
+// system messages (preserving OSC-8 hyperlinks) so the auth URL / device code
+// appear live while the async flow is parked. It satisfies uiWriter.
+type liveOAuthWriter struct{ ctx core.Context }
+
+func (w liveOAuthWriter) Writef(format string, args ...any) {
+	w.ctx.WriteSystem(fmt.Sprintf(format, args...), true)
+}
+
+// runOAuthFlowSync runs the flow to completion and persists the tokens. out is
+// the writer the flow uses for its progress output (live chat writer when
+// async, the command's Writef when synchronous).
+func (c *LoginCommand) runOAuthFlowSync(ctx core.Context, provider string, flow oauthFlow, out uiWriter) error {
+	out.Writef("Starting OAuth login for %s...\n", provider)
+	tokens, err := flow.Run(context.Background(), out, c.resolvePrompter(ctx))
 	if err != nil {
 		return fmt.Errorf("oauth flow: %w", err)
 	}
 	if err := c.Store.SetOAuth(provider, tokens); err != nil {
 		return fmt.Errorf("store oauth tokens: %w", err)
 	}
-	ctx.Writef("OAuth login for %s succeeded.\n", provider)
+	out.Writef("OAuth login for %s succeeded.\n", provider)
 	return nil
 }
 
@@ -564,15 +578,17 @@ func (f *codexDeviceFlow) Run(ctx context.Context, w uiWriter, p prompter) (*oau
 func codexUIFromWriter(w uiWriter, p prompter) oauth.CodexUIOpts {
 	opts := oauth.CodexUIOpts{}
 	if w != nil {
+		// Each notification is a single multi-line message so it renders as
+		// ONE chat panel (Pi login-dialog style), not one box per line.
 		opts.NotifyURL = func(u string) {
-			w.Writef("Open this URL to sign in:\n%s\n", ansi.Hyperlink(u, u))
-			w.Writef("(%s — browser opened automatically)\n", clickHint(u))
+			w.Writef("Open this URL to sign in:\n%s\n(%s — browser opened automatically)\n",
+				ansi.Hyperlink(u, u), clickHint(u))
 		}
 		opts.NotifyDevice = func(a oauth.CodexDeviceAuth) {
-			w.Writef("Open %s\n", ansi.Hyperlink(oauth.CodexDeviceVerificationURI, oauth.CodexDeviceVerificationURI))
-			w.Writef("(%s)\n", clickHint(oauth.CodexDeviceVerificationURI))
-			w.Writef("Enter code: %s\n", a.UserCode)
-			w.Writef("Waiting for authentication...\n")
+			w.Writef("Open %s\n(%s)\nEnter code: %s\nWaiting for authentication...\n",
+				ansi.Hyperlink(oauth.CodexDeviceVerificationURI, oauth.CodexDeviceVerificationURI),
+				clickHint(oauth.CodexDeviceVerificationURI),
+				a.UserCode)
 		}
 		// Auto-open the browser (pi showAuth behavior). Best-effort: the
 		// printed hyperlink remains as the manual fallback on failure.
