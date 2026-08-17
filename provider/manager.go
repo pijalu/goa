@@ -237,6 +237,15 @@ func (pm *ProviderManager) ListModels(providerID string) ([]ModelInfo, error) {
 // This complements ListModels (live /models fetch): providers whose endpoint
 // does not serve a complete model list (e.g. z.ai's coding plan) still offer
 // their known models in add-model pickers.
+//
+// The openai-codex subscription provider has NO models.dev mapping of its own
+// and its endpoint (https://chatgpt.com/backend-api) serves no /models route
+// (Cloudflare 403), so both the live fetch and a straight registry lookup come
+// back empty. Codex subscriptions serve the codex model family of the openai
+// catalog, so the lookup aliases to the openai registry filtered to codex
+// models (matching Pi's hardcoded codex catalog: gpt-5.x-codex[-spark] plus
+// the gpt-5.x codex-served generations). The provider identity used for
+// streaming is unaffected — only the model-list lookup aliases.
 func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
 	pCfg := pm.cfg.Load().GetProviderByID(providerID)
 	if pCfg == nil {
@@ -244,21 +253,59 @@ func (pm *ProviderManager) ListRegistryModels(providerID string) []ModelInfo {
 	}
 	prov, _ := inferProviderIdentity(*pCfg)
 
+	filter := func(string) bool { return true }
+	if prov == schema.ProviderOpenAICodex {
+		prov = schema.ProviderOpenAI
+		filter = isCodexFamilyModel
+	}
+
 	seen := map[string]bool{}
 	var out []ModelInfo
 	for _, m := range models.GetRuntimeModels(prov) {
-		if !seen[m.ID] {
+		if !seen[m.ID] && filter(m.ID) {
 			out = append(out, ModelInfo{ID: m.ID})
 			seen[m.ID] = true
 		}
 	}
 	for _, m := range models.GetModels(prov) {
-		if !seen[m.ID] {
+		if !seen[m.ID] && filter(m.ID) {
 			out = append(out, ModelInfo{ID: m.ID})
 			seen[m.ID] = true
 		}
 	}
 	return out
+}
+
+// isCodexFamilyModel reports whether a model ID belongs to the codex family
+// served by the ChatGPT Codex subscription endpoint: the explicitly codex
+// models (gpt-5.x-codex[-spark]) plus the gpt-5.4+ generations Pi's codex
+// catalog carries (gpt-5.4, gpt-5.4-mini, gpt-5.5, gpt-5.6-luna/sol/terra —
+// scripts/generate-models.ts). Older gpt-5.x IDs (gpt-5, gpt-5.1..gpt-5.3) and
+// pro/nano/chat-latest variants are not served by the subscription transport.
+func isCodexFamilyModel(id string) bool {
+	if strings.Contains(id, "codex") {
+		return true
+	}
+	// rest is the version+suffix after "gpt-5." — e.g. "4" for gpt-5.4,
+	// "4-mini" for gpt-5.4-mini. Single-digit minor versions make the lexical
+	// ">= 4" cut exact.
+	rest, ok := strings.CutPrefix(id, "gpt-5.")
+	if !ok {
+		return false
+	}
+	version, suffix, hasSuffix := strings.Cut(rest, "-")
+	if version < "4" {
+		return false
+	}
+	if !hasSuffix {
+		return true // bare gpt-5.N with N >= 4
+	}
+	// Only the Pi-listed codex-served suffixes qualify.
+	switch suffix {
+	case "mini", "luna", "sol", "terra":
+		return true
+	}
+	return false
 }
 
 // TestConnection tests connectivity to a provider by listing models.

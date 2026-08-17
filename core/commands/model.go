@@ -510,21 +510,54 @@ func fetchProviderModels(host core.UIHost, providerID string) []provider.ModelIn
 		if err == nil {
 			return models
 		}
-		warnLiveModelDiscoveryFallback(host, providerID, err)
+		warnLiveModelDiscoveryFallback(host, providerID, err, registryModelCount(host, providerID))
 		return nil
 	}
 	models, err := ctx.ProviderManager.ListModels(providerID)
 	if err != nil {
-		warnLiveModelDiscoveryFallback(host, providerID, err)
+		warnLiveModelDiscoveryFallback(host, providerID, err, registryModelCount(host, providerID))
 		return nil
 	}
 	return models
 }
 
+// registryModelCount reports how many known (registry/catalog) models a
+// provider has, so the discovery-failure flash can distinguish "using known
+// models" (fallback actually has entries) from "no known models" (the picker
+// will offer only the custom-model row). Zero when the host exposes no
+// registry lookup — the flash then keeps the legacy wording.
+func registryModelCount(host core.UIHost, providerID string) int {
+	if pm, ok := host.(interface {
+		ListRegistryModels(string) []provider.ModelInfo
+	}); ok {
+		return len(pm.ListRegistryModels(providerID))
+	}
+	if ctx, ok := host.(core.Context); ok && ctx.ProviderManager != nil {
+		if pm, ok := ctx.ProviderManager.(interface {
+			ListRegistryModels(string) []provider.ModelInfo
+		}); ok {
+			return len(pm.ListRegistryModels(providerID))
+		}
+	}
+	return 0
+}
+
 // warnLiveModelDiscoveryFallback flashes a warning when a provider's live
-// /models endpoint cannot be interrogated, so the picker's silent fallback to
-// cached/registry models becomes visible to the user.
-func warnLiveModelDiscoveryFallback(host core.UIHost, providerID string, err error) {
+// /models endpoint cannot be interrogated, so the picker's fallback to
+// cached/registry models becomes visible instead of silent. When the registry
+// fallback is also empty the message says so — "using known models" would be
+// a lie (the picker then shows only the custom-model row), which is exactly
+// what the openai-codex subscription endpoint (no /models route, Cloudflare
+// 403) produced before it gained a registry alias.
+func warnLiveModelDiscoveryFallback(host core.UIHost, providerID string, err error, registryCount ...int) {
+	known := true
+	if len(registryCount) > 0 {
+		known = registryCount[0] > 0
+	}
+	if !known {
+		host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); no known models for this provider — type a custom model name.", providerID, err))
+		return
+	}
 	host.Flash(fmt.Sprintf("Model discovery failed for %s (%v); using known models.", providerID, err))
 }
 

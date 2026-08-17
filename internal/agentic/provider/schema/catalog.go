@@ -288,7 +288,10 @@ var providerCatalog = []ProviderDef{
 		// kind is resolved from the auth store at stream time.
 		ID: "openai-codex", Name: "OpenAI Codex", Provider: ProviderOpenAICodex,
 		API: ApiOpenAICodexResponses, BaseURL: "https://chatgpt.com/backend-api",
-		DefaultModel: "gpt-5.3-codex", EnvKeys: []string{"OPENAI_API_KEY"},
+		// The codex subscription endpoint serves the gpt-5.4+ generations and
+		// gpt-5.3-codex-spark (Pi scripts/generate-models.ts); gpt-5.3-codex is
+		// not served there, so the default must be a served model.
+		DefaultModel: "gpt-5.5", EnvKeys: []string{"OPENAI_API_KEY"},
 		URLPatterns: []string{"chatgpt.com/backend-api"},
 	},
 	{

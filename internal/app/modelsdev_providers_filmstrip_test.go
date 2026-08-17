@@ -235,6 +235,85 @@ func TestModelsDev_ModelsVisibleInTUIPicker_Filmstrip(t *testing.T) {
 	}
 }
 
+// TestOpenAICodex_ModelsVisibleInTUIPicker_Filmstrip pins the bug-1 fix at the
+// terminal surface: an openai-codex provider whose live /models fetch fails
+// (dead endpoint — the chatgpt.com backend-api serves no /models route) must
+// still present the codex model family in the "Select model to add:" picker,
+// via the ListRegistryModels codex→openai alias. Before the fix the picker
+// rendered ONLY the "── custom model ──" row.
+func TestOpenAICodex_ModelsVisibleInTUIPicker_Filmstrip(t *testing.T) {
+	cfg := &config.Config{Providers: []config.ProviderConfig{
+		{
+			ID: "openai-codex", Name: "OpenAI Codex", Endpoint: deadEndpoint,
+			Provider: "openai-codex", API: "openai-codex-responses",
+		},
+	}}
+	pm := provider.NewProviderManager(cfg)
+
+	models := pm.ListRegistryModels("openai-codex")
+	if len(models) == 0 {
+		t.Fatal("ListRegistryModels(openai-codex) empty — the codex alias regressed")
+	}
+	// The picker must offer more than just the custom row.
+	if len(models) < 2 {
+		t.Fatalf("codex registry alias served %d model(s), want the codex family", len(models))
+	}
+
+	items := modelPickerItems(models, "openai-codex")
+	want := []string{"gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.5"}
+	film := drivePickerFilmstrip(t, "codex-picker", items)
+	for _, id := range want {
+		if !filmSaw(film, id) {
+			t.Errorf("codex model %q not visible in TUI picker\nfilm:\n%s", id, film.Render())
+		}
+	}
+}
+
+// modelPickerItems builds the selector rows exactly as the /model add picker
+// does for a registry-served provider (model rows + the custom-model row).
+func modelPickerItems(models []provider.ModelInfo, providerID string) []tui.SelectorItem {
+	items := make([]tui.SelectorItem, 0, len(models)+1)
+	for _, m := range models {
+		items = append(items, tui.SelectorItem{Value: m.ID, Label: m.ID, Description: providerID})
+	}
+	return append(items, tui.SelectorItem{Value: "__custom__", Label: "── custom model ──", Description: "type any model name"})
+}
+
+// drivePickerFilmstrip renders the items through the real TUI selector and
+// scrolls it window by window, capturing a filmstrip frame per window so
+// every row is rendered at least once (the selector window advances only as
+// the highlight moves past maxShow/2).
+func drivePickerFilmstrip(t *testing.T, label string, items []tui.SelectorItem) *tui.Filmstrip {
+	t.Helper()
+	term := &testTerminal{w: 100, h: 40}
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	t.Cleanup(engine.Stop)
+
+	engine.ShowSelector("Select model to add:", items, "")
+	film := tui.NewFilmstrip()
+	for step := 0; step < len(items)+8; step++ {
+		engine.RenderNow()
+		film.Capture(label+"-window@"+itoaApp(step), engine.AgentFrame(), "")
+		engine.SendKey(tui.KeyDown) // scroll to the next window
+	}
+	return film
+}
+
+// filmSaw reports whether any captured filmstrip frame rendered the text.
+func filmSaw(film *tui.Filmstrip, text string) bool {
+	for _, snap := range film.Frames() {
+		for _, line := range snap.Frame.Visible {
+			if strings.Contains(line, text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // itoaApp is a tiny int→string helper (the tui.itoa is unexported).
 func itoaApp(n int) string {
 	if n == 0 {

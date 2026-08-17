@@ -155,6 +155,96 @@ func TestModelListForProvider_UnreachableFallsBackWithWarning(t *testing.T) {
 	}
 }
 
+// TestModelListForProvider_OpenAICodex403FallsBackToCodexFamily pins the
+// bug-1 fix end to end at the picker source: an openai-codex provider whose
+// endpoint answers 403 (the chatgpt.com backend-api has no /models route —
+// Cloudflare challenge) must still list the codex model family from the
+// registry alias, and the flash must say "using known models" (the alias DID
+// fill the list) rather than leaving only the custom-model row.
+func TestModelListForProvider_OpenAICodex403FallsBackToCodexFamily(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<html>cloudflare challenge</html>"))
+	}))
+	defer srv.Close()
+
+	ctx := newModeTestContext()
+	// The live fetch is routed at the 403 mock while the provider keeps the
+	// codex identity fields the preset would carry (Provider/API), so identity
+	// inference resolves openai-codex regardless of the mock endpoint.
+	ctx.Config.Providers = []config.ProviderConfig{
+		{
+			ID: "openai-codex", Name: "OpenAI Codex", Endpoint: srv.URL,
+			Provider: "openai-codex", API: "openai-codex-responses",
+		},
+	}
+	ctx.ProviderManager = provider.NewProviderManager(ctx.Config)
+	ctx.EventBus = event.MakeBus(4, 4, 4, 4)
+
+	models := modelListForProvider(ctx, "openai-codex")
+	if len(models) == 0 {
+		t.Fatal("openai-codex picker listed no models after live 403 — registry alias missing")
+	}
+	foundCodex := false
+	for _, m := range models {
+		if strings.Contains(m.ID, "codex") {
+			foundCodex = true
+			break
+		}
+	}
+	if !foundCodex {
+		t.Errorf("no codex-family model in fallback list: %v", models)
+	}
+
+	select {
+	case ev := <-ctx.EventBus.Chat:
+		if ev.Flash == nil {
+			t.Fatalf("expected a discovery-failure flash, got %+v", ev)
+		}
+		if !strings.Contains(ev.Flash.Text, "using known models") {
+			t.Errorf("flash %q must say 'using known models' (the alias filled the list)", ev.Flash.Text)
+		}
+	default:
+		t.Fatal("expected a discovery-failure flash, got none")
+	}
+}
+
+// TestWarnLiveModelDiscoveryFallback_NoKnownModels pins the accurate-flash
+// branch: when the registry fallback is ALSO empty the message must not claim
+// "using known models" — that lie left the picker showing only the
+// custom-model row with no explanation.
+func TestWarnLiveModelDiscoveryFallback_NoKnownModels(t *testing.T) {
+	ctx := newModeTestContext()
+	ctx.EventBus = event.MakeBus(4, 4, 4, 4)
+
+	warnLiveModelDiscoveryFallback(ctx, "mystery", fmt.Errorf("boom"), 0)
+	select {
+	case ev := <-ctx.EventBus.Chat:
+		if ev.Flash == nil {
+			t.Fatalf("expected a flash, got %+v", ev)
+		}
+		if strings.Contains(ev.Flash.Text, "using known models") {
+			t.Errorf("flash %q claims a registry fallback that does not exist", ev.Flash.Text)
+		}
+		if !strings.Contains(ev.Flash.Text, "no known models") {
+			t.Errorf("flash %q must say no known models are available", ev.Flash.Text)
+		}
+	default:
+		t.Fatal("expected a flash, got none")
+	}
+
+	// Legacy no-count call keeps the "using known models" wording.
+	warnLiveModelDiscoveryFallback(ctx, "mystery", fmt.Errorf("boom"))
+	select {
+	case ev := <-ctx.EventBus.Chat:
+		if ev.Flash == nil || !strings.Contains(ev.Flash.Text, "using known models") {
+			t.Fatalf("legacy call must keep the known-models wording, got %+v", ev)
+		}
+	default:
+		t.Fatal("expected a flash, got none")
+	}
+}
+
 // TestFetchProviderModels_UnreachableWarns verifies the aggregate picker path
 // (custom-model prompt over ALL providers) also warns on live failure instead
 // of silently returning nothing.

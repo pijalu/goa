@@ -1272,3 +1272,85 @@ func TestSetConfig_NilConfigSafe(t *testing.T) {
 		t.Errorf("Active() after SetConfig(nil) = (%v, %q), want (nil, \"\")", p, m)
 	}
 }
+
+// TestListRegistryModels_OpenAICodexServesCodexFamily pins the codex registry
+// alias: the openai-codex subscription provider has no models.dev mapping of
+// its own and its endpoint serves no /models route, so ListRegistryModels
+// must alias to the openai catalog filtered to the codex family (the picker
+// showed ONLY "custom model" before the alias, behind a misleading "using
+// known models" flash).
+func TestListRegistryModels_OpenAICodexServesCodexFamily(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderConfig{
+			{ID: "codex", Name: "OpenAI Codex", Endpoint: "https://chatgpt.com/backend-api"},
+			{ID: "openai", Name: "OpenAI", Endpoint: "https://api.openai.com/v1"},
+		},
+	}
+	pm := NewProviderManager(cfg)
+
+	codex := pm.ListRegistryModels("codex")
+	if len(codex) == 0 {
+		t.Fatal("ListRegistryModels(openai-codex endpoint) returned no models; the picker can only offer a custom row")
+	}
+	hasSpark := false
+	for _, m := range codex {
+		if m.ID == "gpt-5.3-codex-spark" {
+			hasSpark = true
+		}
+		if !isCodexFamilyModel(m.ID) {
+			t.Errorf("non-codex-family model %q leaked into the openai-codex list", m.ID)
+		}
+	}
+	if !hasSpark {
+		t.Errorf("codex list missing gpt-5.3-codex-spark (Pi codex catalog); got %v", codex)
+	}
+
+	// The plain openai provider list must be unaffected by the alias.
+	openai := pm.ListRegistryModels("openai")
+	if len(openai) == 0 {
+		t.Fatal("ListRegistryModels(openai) returned no models")
+	}
+	hasGPT4o := false
+	for _, m := range openai {
+		if m.ID == "gpt-4o" {
+			hasGPT4o = true
+		}
+	}
+	if !hasGPT4o {
+		t.Error("openai registry list lost gpt-4o — the codex alias must not narrow the openai list")
+	}
+}
+
+// TestIsCodexFamilyModel pins the codex-served model filter: the codex
+// subscription endpoint serves the explicit codex models plus the gpt-5.4+
+// generations (Pi scripts/generate-models.ts codexModels).
+func TestIsCodexFamilyModel(t *testing.T) {
+	tests := []struct {
+		id   string
+		want bool
+	}{
+		{"gpt-5.3-codex-spark", true},
+		{"gpt-5.3-codex", true},
+		{"gpt-5.4", true},
+		{"gpt-5.4-mini", true},
+		{"gpt-5.5", true},
+		{"gpt-5.6-luna", true},
+		{"gpt-5.6-sol", true},
+		{"gpt-5.6-terra", true},
+		{"gpt-5", false},
+		{"gpt-5.1", false},
+		{"gpt-5.2", false},
+		{"gpt-5.2-chat-latest", false},
+		{"gpt-5.4-pro", false},
+		{"gpt-5.4-nano", false},
+		{"gpt-4o", false},
+		{"gpt-4.1", false},
+		{"o3", false},
+		{"chatgpt-image-latest", false},
+	}
+	for _, tt := range tests {
+		if got := isCodexFamilyModel(tt.id); got != tt.want {
+			t.Errorf("isCodexFamilyModel(%q) = %v, want %v", tt.id, got, tt.want)
+		}
+	}
+}
