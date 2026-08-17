@@ -387,16 +387,22 @@ func waitCodexCode(ctx context.Context, cfg *codexFlowConfig, resultCh <-chan co
 			}
 			return res.code, nil
 		case input := <-manualCh:
-			code, pastedState := parseCodexAuthorizationInput(input)
-			if pastedState != "" && pastedState != state {
-				return "", fmt.Errorf("state mismatch")
-			}
-			if code == "" {
-				return "", fmt.Errorf("missing authorization code")
-			}
-			return code, nil
+			return codeFromManualInput(input, state)
 		}
 	}
+}
+
+// codeFromManualInput validates a pasted code/redirect-URL against the
+// expected state and extracts the authorization code.
+func codeFromManualInput(input, state string) (string, error) {
+	code, pastedState := parseCodexAuthorizationInput(input)
+	if pastedState != "" && pastedState != state {
+		return "", fmt.Errorf("state mismatch")
+	}
+	if code == "" {
+		return "", fmt.Errorf("missing authorization code")
+	}
+	return code, nil
 }
 
 // exchangeCodexCode swaps an authorization code for tokens at the token endpoint.
@@ -446,7 +452,7 @@ func startCodexDeviceAuth(ctx context.Context, cfg *codexFlowConfig) (*CodexDevi
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("OpenAI Codex device code login is not enabled for this server. Use browser login or verify the server URL.")
+		return nil, fmt.Errorf("OpenAI Codex device code login is not enabled for this server: use browser login or verify the server URL")
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("OpenAI Codex device code request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -520,33 +526,35 @@ func codexPollOnce(ctx context.Context, cfg *codexFlowConfig, device *CodexDevic
 
 	// Classify JSON error bodies: deviceauth_authorization_pending => pending,
 	// slow_down => pending with increased interval (caller applies +5s).
+	switch codexDeviceErrorCode(body) {
+	case "deviceauth_authorization_pending":
+		return nil, true, nil
+	case "slow_down":
+		return nil, true, errCodexSlowDown
+	}
+	return nil, false, fmt.Errorf("OpenAI Codex device auth failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+}
+
+// codexDeviceErrorCode extracts the error code from a device-token error body.
+// The error field may be a plain string or an object with a code field.
+func codexDeviceErrorCode(body []byte) string {
 	var errBody struct {
 		Error json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(body, &errBody) == nil && len(errBody.Error) > 0 {
-		var codeStr string
-		if json.Unmarshal(errBody.Error, &codeStr) == nil {
-			switch codeStr {
-			case "deviceauth_authorization_pending":
-				return nil, true, nil
-			case "slow_down":
-				return nil, true, errCodexSlowDown
-			}
-		} else {
-			var obj struct {
-				Code string `json:"code"`
-			}
-			if json.Unmarshal(errBody.Error, &obj) == nil {
-				switch obj.Code {
-				case "deviceauth_authorization_pending":
-					return nil, true, nil
-				case "slow_down":
-					return nil, true, errCodexSlowDown
-				}
-			}
-		}
+	if json.Unmarshal(body, &errBody) != nil || len(errBody.Error) == 0 {
+		return ""
 	}
-	return nil, false, fmt.Errorf("OpenAI Codex device auth failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	var codeStr string
+	if json.Unmarshal(errBody.Error, &codeStr) == nil {
+		return codeStr
+	}
+	var obj struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(errBody.Error, &obj) == nil {
+		return obj.Code
+	}
+	return ""
 }
 
 // errCodexSlowDown marks a slow_down response; the poll loop treats it as

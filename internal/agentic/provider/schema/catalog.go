@@ -288,7 +288,7 @@ var providerCatalog = []ProviderDef{
 		// kind is resolved from the auth store at stream time.
 		ID: "openai-codex", Name: "OpenAI Codex", Provider: ProviderOpenAICodex,
 		API: ApiOpenAICodexResponses, BaseURL: "https://chatgpt.com/backend-api",
-		DefaultModel: "gpt-5.3-codex", EnvKeys: []string{"OPENAI_API_KEY"}, ModelsDevKey: "openai",
+		DefaultModel: "gpt-5.3-codex", EnvKeys: []string{"OPENAI_API_KEY"},
 		URLPatterns: []string{"chatgpt.com/backend-api"},
 	},
 	{
