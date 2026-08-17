@@ -27,10 +27,23 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## OpenAI codex support
-Import OpenAI codex support from ../pi - this include oauth login (note: /login:openai currently crash) - provider selection should allow the user to select between api key/oauth token.
+No current issues.
 
-The auth should support normal oauth *and* device tokens
+# Archive
+
+## ~~OpenAI codex support~~ — FIXED (2026-06-05)
+
+Import OpenAI codex support from ../pi - this include oauth login (note: /login:openai currently crash) - provider selection should allow the user to select between api key/oauth token. The auth should support normal oauth *and* device tokens.
+
+**Resolution summary** (full plan retained below): imported the codex OAuth flow
+from `../pi/packages/ai/src/auth/oauth/openai-codex.ts`. Implemented W1–W5.
+Fixed `/login:openai` (now lists apikey+oauth, no silent cancel), real codex
+OAuth (browser + device code) with PKCE + refresh + account-id, codex transport
+identity headers + backend-api URL for OAuth, `openai-codex` catalog provider,
+apikey-vs-oauth selection. All quality gates green (vet/build/race/cover,
+gocognit ≤15, gocyclo ≤12, staticcheck clean). Terminal output validated.
+
+<details><summary>Original fix plan + findings</summary>
 
 ### Fix plan (detailed)
 
@@ -107,3 +120,5 @@ The auth should support normal oauth *and* device tokens
 
 **Execution:** goals per guideline — one goal per work item (fresh context per goal),
 todos inside each goal for shared-context micro steps. Commit after each work item.
+
+</details>
