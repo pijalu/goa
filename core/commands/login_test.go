@@ -194,3 +194,162 @@ func TestLoginCommandOAuthFlowError(t *testing.T) {
 		t.Fatal("expected no credential on flow error")
 	}
 }
+
+// --- W3: OpenAI/Codex apikey+oauth selection ---
+
+func TestSupportedAuthKinds_OpenAIHasBoth(t *testing.T) {
+	kinds := supportedAuthKinds("openai")
+	if len(kinds) != 2 || kinds[0] != "apikey" || kinds[1] != "oauth" {
+		t.Errorf("openai kinds = %v, want [apikey oauth]", kinds)
+	}
+	kinds = supportedAuthKinds("codex")
+	if len(kinds) != 2 || kinds[0] != "apikey" || kinds[1] != "oauth" {
+		t.Errorf("codex kinds = %v, want [apikey oauth]", kinds)
+	}
+}
+
+func TestLoginCommandOpenAIAPIKey(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	if err := cmd.Run(core.Context{}, []string{"openai", "apikey", "sk-live"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	got, ok := store.GetAPIKey("openai")
+	if !ok || got != "sk-live" {
+		t.Errorf("api key = %q", got)
+	}
+}
+
+func TestLoginCommandOpenAIOAuthBrowserDefault(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{AccessToken: "codex-token", AccountID: "acct-1"}
+	cmd := &LoginCommand{
+		Store:       store,
+		prompter:    &fakePrompter{value: "browser", ok: true},
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"openai", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	got, ok := store.GetOAuth("openai")
+	if !ok || got.AccessToken != "codex-token" || got.AccountID != "acct-1" {
+		t.Errorf("token = %+v", got)
+	}
+}
+
+func TestLoginCommandOpenAIOAuthDeviceSelection(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{AccessToken: "device-token"}
+	cmd := &LoginCommand{
+		Store:       store,
+		prompter:    &fakePrompter{value: "device", ok: true},
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"openai", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !store.HasAuth("openai") {
+		t.Error("expected stored oauth credential")
+	}
+}
+
+func TestLoginCommandOpenAIOAuthExplicitDeviceSuffix(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{AccessToken: "device-token"}
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"openai", "oauth", "device"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !store.HasAuth("openai") {
+		t.Error("expected stored oauth credential via :device suffix")
+	}
+}
+
+func TestLoginCommandOpenAIOAuthUnknownVariant(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	if err := cmd.Run(core.Context{}, []string{"openai", "oauth", "bogus"}); err == nil {
+		t.Fatal("expected error for unknown oauth variant")
+	}
+}
+
+func TestLoginCommandCodexMethodCancelDefaultsBrowser(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{AccessToken: "tok"}
+	cmd := &LoginCommand{
+		Store:       store,
+		prompter:    &fakePrompter{ok: false}, // cancelled prompt
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"codex", "oauth"}); err != nil {
+		t.Fatalf("cancelled method prompt must default to browser: %v", err)
+	}
+	if !store.HasAuth("codex") {
+		t.Error("expected stored credential after browser default")
+	}
+}
+
+func TestLoginCommandCodexMethodUnknown(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{
+		Store:       store,
+		prompter:    &fakePrompter{value: "weird", ok: true},
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"codex", "oauth"}); err == nil {
+		t.Fatal("expected unknown-method error")
+	}
+}
+
+func TestLoginCommandNoPrompterNoCrash(t *testing.T) {
+	// /login:openai with no ClarifyFunc and no injected prompter must not
+	// panic — it lists the supported kinds.
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	if err := cmd.Run(core.Context{}, []string{"openai"}); err != nil {
+		t.Fatalf("listing kinds must not error: %v", err)
+	}
+}
+
+func TestLoginCommandAPIKeyNoPrompterNoPanic(t *testing.T) {
+	// /login:openai:apikey without prompter must fail gracefully, not panic.
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	if err := cmd.Run(core.Context{}, []string{"openai", "apikey"}); err != nil {
+		t.Fatalf("cancelled prompt returns nil error: %v", err)
+	}
+	if store.HasAuth("openai") {
+		t.Error("no credential stored after cancelled prompt")
+	}
+}
+
+func TestDeviceFlowFactoryInjection(t *testing.T) {
+	cmd := &LoginCommand{}
+	flow := cmd.deviceFlow("openai")
+	if flow == nil {
+		t.Fatal("openai device flow must exist")
+	}
+	if _, ok := flow.(*codexDeviceFlow); !ok {
+		t.Errorf("flow type = %T, want *codexDeviceFlow", flow)
+	}
+	if got := cmd.deviceFlow("unknown"); got != nil {
+		t.Errorf("unknown provider device flow = %v, want nil", got)
+	}
+}
+
+func TestNewOAuthFlowCodex(t *testing.T) {
+	cmd := &LoginCommand{}
+	flow := cmd.newOAuthFlow("openai")
+	if flow == nil {
+		t.Fatal("openai oauth flow must exist")
+	}
+	if _, ok := flow.(*codexBrowserFlow); !ok {
+		t.Errorf("flow type = %T, want *codexBrowserFlow", flow)
+	}
+	if got := cmd.newOAuthFlow("kimi"); got != nil {
+		t.Errorf("kimi oauth flow = %v, want nil", got)
+	}
+}

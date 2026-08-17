@@ -169,10 +169,12 @@ func (c *LoginCommand) handleAPIKey(ctx core.Context, provider string, rest []st
 }
 
 func (c *LoginCommand) handleOAuth(ctx core.Context, provider string, rest []string) error {
+	// Explicit device-code variant: /login:<provider>:oauth:device
+	if len(rest) > 0 && strings.EqualFold(rest[0], "device") {
+		return c.runOAuthFlow(ctx, provider, c.deviceFlow(provider))
+	}
 	if len(rest) > 0 {
-		// Manual authorization-code exchange: /login:<provider>:oauth:<code>
-		code := strings.TrimSpace(rest[0])
-		return c.exchangeAuthCode(ctx, provider, code)
+		return fmt.Errorf("unknown oauth variant %q (supported: device)", rest[0])
 	}
 
 	flow := c.resolveFlowFactory()(provider)
@@ -180,29 +182,76 @@ func (c *LoginCommand) handleOAuth(ctx core.Context, provider string, rest []str
 		return fmt.Errorf("provider %q does not support OAuth", provider)
 	}
 
+	// Codex/OpenAI offers browser (default) and device-code login methods,
+	// mirroring pi's method selection prompt.
+	if isCodexProvider(provider) {
+		method, err := c.selectCodexMethod(ctx)
+		if err != nil {
+			return err
+		}
+		if method == codexMethodDevice {
+			flow = c.deviceFlow(provider)
+		}
+	}
+	return c.runOAuthFlow(ctx, provider, flow)
+}
+
+// codex login method identifiers.
+const (
+	codexMethodBrowser = "browser"
+	codexMethodDevice  = "device"
+)
+
+func isCodexProvider(provider string) bool {
+	return provider == "codex" || provider == "openai"
+}
+
+// selectCodexMethod asks the user to pick browser vs device-code login. A nil
+// or cancelled prompter defaults to browser (the common case) so headless
+// scripted flows keep working.
+func (c *LoginCommand) selectCodexMethod(ctx core.Context) (string, error) {
+	p := c.resolvePrompter(ctx)
+	choice, ok := p.Prompt(
+		"OpenAI Codex login method",
+		"Select login method — 'browser' (default) or 'device' (headless):",
+	)
+	if !ok || strings.TrimSpace(choice) == "" {
+		return codexMethodBrowser, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(choice)) {
+	case codexMethodBrowser:
+		return codexMethodBrowser, nil
+	case codexMethodDevice, "device_code":
+		return codexMethodDevice, nil
+	default:
+		return "", fmt.Errorf("unknown login method %q (browser|device)", choice)
+	}
+}
+
+// deviceFlow returns the device-code flow for the provider, honouring test
+// injection via flowFactory.
+func (c *LoginCommand) deviceFlow(provider string) oauthFlow {
+	if c.flowFactory != nil {
+		return c.flowFactory(provider)
+	}
+	switch {
+	case isCodexProvider(provider):
+		return &codexDeviceFlow{login: oauth.LoginCodexDevice}
+	case provider == "copilot" || provider == "github":
+		return &deviceCodeFlow{provider: oauth.NewGitHubCopilotOAuth()}
+	default:
+		return nil
+	}
+}
+
+// runOAuthFlow executes the flow and persists the resulting tokens.
+func (c *LoginCommand) runOAuthFlow(ctx core.Context, provider string, flow oauthFlow) error {
+	if flow == nil {
+		return fmt.Errorf("provider %q does not support OAuth", provider)
+	}
 	tokens, err := flow.Run(context.Background(), ctx, c.resolvePrompter(ctx))
 	if err != nil {
 		return fmt.Errorf("oauth flow: %w", err)
-	}
-	if err := c.Store.SetOAuth(provider, tokens); err != nil {
-		return fmt.Errorf("store oauth tokens: %w", err)
-	}
-	ctx.Writef("OAuth login for %s succeeded.\n", provider)
-	return nil
-}
-
-func (c *LoginCommand) exchangeAuthCode(ctx core.Context, provider, code string) error {
-	flow := c.resolveFlowFactory()(provider)
-	if flow == nil {
-		return fmt.Errorf("provider %q does not support OAuth", provider)
-	}
-	codeFlow, ok := flow.(*authCodeFlow)
-	if !ok {
-		return fmt.Errorf("provider %q does not support authorization-code exchange", provider)
-	}
-	tokens, err := codeFlow.Exchange(code)
-	if err != nil {
-		return fmt.Errorf("exchange: %w", err)
 	}
 	if err := c.Store.SetOAuth(provider, tokens); err != nil {
 		return fmt.Errorf("store oauth tokens: %w", err)
@@ -224,18 +273,18 @@ func supportedAuthKinds(provider string) []string {
 	switch provider {
 	case "copilot", "github":
 		return []string{"oauth"}
-	case "codex":
-		return []string{"oauth"}
+	case "codex", "openai":
+		return []string{"apikey", "oauth"}
 	case "anthropic":
 		return []string{"apikey"}
-	case "openai", "kimi":
+	case "kimi":
 		return []string{"apikey"}
 	default:
 		return []string{"apikey"}
 	}
 }
 
-// newOAuthFlow returns an OAuth flow for the provider, or nil if unsupported.
+// resolveFlowFactory returns the OAuth flow factory, overridable in tests.
 func (c *LoginCommand) resolveFlowFactory() func(string) oauthFlow {
 	if c.flowFactory != nil {
 		return c.flowFactory
@@ -247,18 +296,32 @@ func (c *LoginCommand) newOAuthFlow(provider string) oauthFlow {
 	switch provider {
 	case "copilot", "github":
 		return &deviceCodeFlow{provider: oauth.NewGitHubCopilotOAuth()}
-	case "codex":
-		o, err := oauth.NewOpenAICodexOAuth()
-		if err != nil {
-			return nil
-		}
-		return &authCodeFlow{provider: o}
-	case "anthropic":
-		// Anthropic OAT requires client credentials from config; not supported by default.
-		return nil
+	case "codex", "openai":
+		// Default to the browser login; the device-code variant is selected by
+		// the explicit ":device" suffix in handleOAuth.
+		return &codexBrowserFlow{login: oauth.LoginCodexBrowser}
 	default:
 		return nil
 	}
+}
+
+// codexBrowserFlow wraps the oauth package browser login so the command layer
+// can substitute a fake in tests via LoginCommand.codexLogin.
+type codexBrowserFlow struct {
+	login func(ctx context.Context) (*oauth.Tokens, error)
+}
+
+func (f *codexBrowserFlow) Run(ctx context.Context, _ uiWriter, _ prompter) (*oauth.Tokens, error) {
+	return f.login(ctx)
+}
+
+// codexDeviceFlow wraps the oauth package device-code login.
+type codexDeviceFlow struct {
+	login func(ctx context.Context) (*oauth.Tokens, error)
+}
+
+func (f *codexDeviceFlow) Run(ctx context.Context, _ uiWriter, _ prompter) (*oauth.Tokens, error) {
+	return f.login(ctx)
 }
 
 // deviceCodeFlow performs GitHub's device-code OAuth flow.
@@ -277,35 +340,6 @@ func (f *deviceCodeFlow) Run(ctx context.Context, writer uiWriter, _ prompter) (
 	tokens, err := f.provider.PollForToken(ctx, resp.DeviceCode, resp.Interval)
 	if err != nil {
 		return nil, fmt.Errorf("poll token: %w", err)
-	}
-	return tokens, nil
-}
-
-// authCodeFlow performs an authorization-code OAuth flow with a user-pasted code.
-type authCodeFlow struct {
-	provider *oauth.OpenAICodexOAuth
-}
-
-func (f *authCodeFlow) Run(ctx context.Context, writer uiWriter, prompter prompter) (*oauth.Tokens, error) {
-	url, err := f.provider.AuthURL(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	writer.Writef("Open this URL in your browser:\n%s\n", url)
-	code, ok := prompter.Prompt("OAuth code", "Paste the authorization code and press Enter:")
-	if !ok {
-		return nil, fmt.Errorf("authorization cancelled")
-	}
-	return f.Exchange(strings.TrimSpace(code))
-}
-
-func (f *authCodeFlow) Exchange(code string) (*oauth.Tokens, error) {
-	if code == "" {
-		return nil, fmt.Errorf("authorization code is empty")
-	}
-	tokens, err := f.provider.Exchange(context.Background(), code)
-	if err != nil {
-		return nil, err
 	}
 	return tokens, nil
 }

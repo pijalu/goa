@@ -47,6 +47,32 @@ type CodexDeviceAuth struct {
 	IntervalSeconds int
 }
 
+// LoginCodexBrowser runs the browser (authorization code + PKCE + localhost
+// callback) Codex login with production defaults: prints the auth URL via the
+// default notifier and prompts on stdin for a manual paste fallback.
+func LoginCodexBrowser(ctx context.Context) (*Tokens, error) {
+	return loginCodexBrowser(ctx, defaultCodexFlowConfig())
+}
+
+// LoginCodexDevice runs the device-code Codex login with production defaults.
+func LoginCodexDevice(ctx context.Context) (*Tokens, error) {
+	return loginCodexDevice(ctx, defaultCodexFlowConfig())
+}
+
+// defaultCodexFlowConfig wires interactive defaults: the auth URL is printed
+// to stdout, and a manual-paste prompt reads from stdin.
+func defaultCodexFlowConfig() *codexFlowConfig {
+	return &codexFlowConfig{
+		notifyURL: func(u string) {
+			fmt.Printf("Open this URL in your browser:\n%s\n", u)
+		},
+		notifyDevice: func(a CodexDeviceAuth) {
+			fmt.Printf("Open %s and enter code: %s\n", CodexDeviceVerificationURI, a.UserCode)
+			fmt.Println("Waiting for authorization...")
+		},
+	}
+}
+
 // codexDeviceCode is the successful poll result: an authorization code plus
 // the PKCE verifier minted server-side for the device flow.
 type codexDeviceCode struct {
