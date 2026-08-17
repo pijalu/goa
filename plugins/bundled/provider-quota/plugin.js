@@ -35,6 +35,7 @@ register("zai", require("./fetchers/zai.js"));
 register("kimi", require("./fetchers/kimi.js"));
 register("minimax", require("./fetchers/minimax.js"));
 register("openrouter", require("./fetchers/openrouter.js"));
+register("opencode", require("./fetchers/opencode.js"));
 register(_fallbackId, require("./fetchers/local.js"));
 
 // --- Provider config resolution ------------------------------------------
@@ -90,6 +91,11 @@ function fetcherAliases(fetcher, ident) {
 	}
 	if (fetcher === "zai") {
 		return ident === "zaicoding" || ident === "zaicodingcn" || ident === "zaicodingplan" || ident === "zhipu";
+	}
+	if (fetcher === "opencode") {
+		// Both OpenCode variants (Zen "opencode" and Go "opencode-go") share
+		// the OPENCODE_API_KEY and the usage endpoint under their base URL.
+		return ident === "opencode" || ident === "opencodego" || ident === "opencodezen";
 	}
 	return false;
 }

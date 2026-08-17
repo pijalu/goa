@@ -408,15 +408,14 @@ func TestQuota_ConfigFuncReflectsProviderSwitch(t *testing.T) {
 }
 
 // TestQuota_NonLocalUnsupportedProviderHidesSegment covers the report
-// "(opencode-go) deepseek-v4-flash • high • [∞]": a NON-local provider with no
-// quota API must NOT show the local infinity symbol — the segment must be
-// removed entirely. Only genuine local providers (provider type "local") show
-// [∞].
+// "(provider) model • mode • [∞]": a NON-local provider with no quota API must
+// NOT show the local infinity symbol — the segment must be removed entirely.
+// Only genuine local providers (provider type "local") show [∞].
 func TestQuota_NonLocalUnsupportedProviderHidesSegment(t *testing.T) {
 	env := newQuotaTestEnv(t)
-	// opencode-go is a real (non-local) provider with no quota fetcher.
-	env.setProvider("opencode-go", map[string]any{"provider": "opencode", "apiKey": "sk"})
-	env.setActiveProvider("opencode-go")
+	// "acme" is a NON-local provider with no quota fetcher (no alias matches).
+	env.setProvider("acme", map[string]any{"provider": "acme-llm", "apiKey": "sk", "endpoint": "https://api.acme-llm.example.com/v1"})
+	env.setActiveProvider("acme")
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := ansi.Strip(env.renderSegment())
@@ -425,6 +424,68 @@ func TestQuota_NonLocalUnsupportedProviderHidesSegment(t *testing.T) {
 	}
 	if strings.TrimSpace(seg) != "" {
 		t.Fatalf("non-local unsupported provider should hide the quota segment, got %q", seg)
+	}
+}
+
+// TestQuota_OpencodeSegmentShowsQuota is the inverse of the unsupported case:
+// opencode-go is a supported provider whose segment must show the real usage
+// windows, not the hidden/∞/pending states. It guards two wirings at once:
+// the alias mapping that routes the "opencode-go" config identity to the
+// opencode fetcher, and the fetcher parsing the REAL /zen/go/v1/usage payload
+// ({"usage":{"rolling":…,"weekly":…,"monthly":…}}) — the bug report behind
+// this test had both /quota and the status bar empty for opencode-go.
+func TestQuota_OpencodeSegmentShowsQuota(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	// Mirrors the real user config: id opencode-go, provider opencode-go.
+	env.setProvider("opencode-go", map[string]any{"provider": "opencode-go", "apiKey": "sk", "baseUrl": "https://opencode.ai/zen/go/v1"})
+	env.setActiveProvider("opencode-go")
+	env.respond("opencode.ai/zen/go/v1/usage", 200, `{"usage":{"rolling":{"status":"ok","percent":12,"resetsAt":"2026-08-17T11:55:57.159Z"},"weekly":{"status":"ok","percent":34,"resetsAt":"2026-08-24T00:00:00.159Z"},"monthly":{"status":"ok","percent":85,"resetsAt":"2026-09-05T15:47:55.159Z"}}}`)
+	env.load(t)
+	out := env.callCommand("quota", "refresh")
+	if out != "Quota refreshed." {
+		t.Fatalf("refresh = %q", out)
+	}
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "%") {
+		t.Fatalf("opencode-go segment should show usage percentages, got %q", seg)
+	}
+	if strings.Contains(seg, "∞") || strings.Contains(seg, "⚠") || strings.Contains(seg, "…") {
+		t.Fatalf("opencode-go segment must show quota, not hidden/warn/pending, got %q", seg)
+	}
+	// /quota must render the provider's window rows, not an empty table.
+	table := env.callCommand("quota")
+	if !strings.Contains(table, "OpenCode") || !strings.Contains(table, "85%") {
+		t.Fatalf("/quota should list OpenCode windows (monthly at 85%%):\n%s", table)
+	}
+}
+
+// TestQuota_OpencodeDualVariantConfig mirrors the real user config where BOTH
+// opencode (zen/v1) and opencode-go (zen/go/v1) providers exist. The direct
+// id match in providerConfigFor resolves the "opencode" fetcher to the zen/v1
+// entry; the fetcher must still reach the usage API (which lives only under
+// /zen/go/v1) via its base rewrite, otherwise the opencode row and the
+// opencode-go segment show bad_response.
+func TestQuota_OpencodeDualVariantConfig(t *testing.T) {
+	env := newQuotaTestEnv(t)
+	env.setProvider("opencode", map[string]any{"provider": "opencode", "apiKey": "sk", "endpoint": "https://opencode.ai/zen/v1"})
+	env.setProvider("opencode-go", map[string]any{"provider": "opencode-go", "apiKey": "sk", "endpoint": "https://opencode.ai/zen/go/v1"})
+	env.setActiveProvider("opencode-go")
+	// Only the go usage URL is mocked: a fetch against zen/v1/usage 404s.
+	env.respond("opencode.ai/zen/go/v1/usage", 200, `{"usage":{"rolling":{"status":"ok","percent":5,"resetsAt":"2026-08-17T12:00:00.000Z"},"monthly":{"status":"ok","percent":85,"resetsAt":"2026-09-05T15:47:55.000Z"}}}`)
+	env.load(t)
+	if out := env.callCommand("quota", "refresh"); out != "Quota refreshed." {
+		t.Fatalf("refresh = %q", out)
+	}
+	table := env.callCommand("quota")
+	if !strings.Contains(table, "OpenCode") || !strings.Contains(table, "85%") {
+		t.Fatalf("/quota with dual-variant config should show OpenCode windows:\n%s", table)
+	}
+	if strings.Contains(table, "bad_response") || strings.Contains(table, "http_404") {
+		t.Fatalf("/quota must not fetch the zen/v1 usage URL:\n%s", table)
+	}
+	seg := ansi.Strip(env.renderSegment())
+	if !strings.Contains(seg, "%") {
+		t.Fatalf("opencode-go segment with dual-variant config = %q", seg)
 	}
 }
 
