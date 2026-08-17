@@ -105,6 +105,96 @@ func TestEnforceContextCeiling_NoEventWhenUnderCeiling(t *testing.T) {
 	}
 }
 
+// TestEnforceContextCeiling_SuppressedBelowHardCeiling is the bug-2 headline
+// regression: at ~94% TOTAL usage with hard_percent=95, the fallback dropped
+// 3 messages and reported "summarize did not fit the window" — but summarize
+// had NEVER run (the hard tier fires at ≥95%). The history-only cut target
+// (hard − fixedCost) is stricter than the hard-tier trigger, so the fallback
+// fired below the configured ceiling. The net must be suppressed while total
+// usage is under the hard ceiling — compression there belongs to summarize.
+func TestEnforceContextCeiling_SuppressedBelowHardCeiling(t *testing.T) {
+	// Window 262144 (k3-256k parity), hard=95 → hardCeiling 249036. Build a
+	// history whose TOTAL (with a large fixed cost, mirroring the system
+	// prompt + 258 tool schemas) lands ~94% — under the ceiling — while the
+	// history ALONE exceeds hardCeiling − fixedCost (the old cut target).
+	a := NewAgent(Config{
+		Model:        testModel(provider.ApiOpenAICompletions),
+		SystemPrompt: "sys",
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens:  262144,
+			Thresholds: CompressionThresholds{HardPercent: 95},
+		},
+	})
+	// ~235K tokens of plain (non-shrinkable) history → ~90% + fixed cost.
+	big := strings.Repeat("u", 700000) // ~212K tokens by chars/3.3
+	a.history = []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: big},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("a", 30000)},
+	}
+	before := len(a.history)
+	a.mu.Lock()
+	usage := a.estimateContextTokensLocked()
+	a.mu.Unlock()
+	hardCeiling := 262144 * 95 / 100
+	if usage > hardCeiling {
+		t.Fatalf("test setup: usage %d already exceeds hard ceiling %d", usage, hardCeiling)
+	}
+
+	obs := &mockEventObserver{}
+	a.AddObserver(obs)
+	a.enforceContextCeiling()
+
+	if len(a.history) != before {
+		t.Errorf("fallback dropped messages at %d%% (< hard 95%%) where summarize owns compression: len %d -> %d",
+			usage*100/262144, before, len(a.history))
+	}
+	for _, ev := range compactEvents(obs) {
+		if ev.Compaction != nil && ev.Compaction.Strategy == "hard fallback" {
+			t.Errorf("hard fallback fired below the hard ceiling (detail %q) — summarize never ran", ev.Compaction.Detail)
+		}
+	}
+}
+
+// TestEnforceContextCeiling_SkippedOnCanceledContext pins the dead-turn guard:
+// when the turn context is canceled (user Esc, shutdown), the destructive
+// fallback must NOT run — the cut exists to let the NEXT request go out, and
+// a canceled turn sends none. History must be untouched and no event emitted.
+func TestEnforceContextCeiling_SkippedOnCanceledContext(t *testing.T) {
+	mk := func(role Role, n int) Message {
+		return Message{Type: Content, Role: role, Content: strings.Repeat("x", n)}
+	}
+	a := &Agent{
+		cfg: Config{Model: provider.Model{ContextWindow: 100}}, // hardCeiling = 95 tokens
+		history: []Message{
+			mk(System, 4),
+			mk(User, 200),
+			mk(User, 200),
+			mk(User, 200),
+		},
+	}
+	obs := &mockEventObserver{}
+	a.AddObserver(obs)
+	before := len(a.history)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // dead turn
+	a.enforceContextCeilingUnlessCanceled(ctx, compressionCauseFromErr(context.Canceled))
+
+	if len(a.history) != before {
+		t.Errorf("canceled turn dropped messages: len %d -> %d (silent data loss)", before, len(a.history))
+	}
+	if n := len(compactEvents(obs)); n != 0 {
+		t.Errorf("canceled turn emitted %d compaction events, want 0", n)
+	}
+
+	// Control: a live context with usage over the ceiling still runs the net.
+	a.enforceContextCeilingUnlessCanceled(context.Background(), causeSummarizeOverflow)
+	if len(a.history) >= before {
+		t.Error("live turn over the ceiling must still enforce the net")
+	}
+}
+
 // TestCompressToolElision_EmitsCompactEvent verifies the elision path emits a
 // structured event through compressHistoryWith when it mutates tool payloads.
 func TestCompressToolElision_EmitsCompactEvent(t *testing.T) {

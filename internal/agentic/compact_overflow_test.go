@@ -105,6 +105,92 @@ func TestCompact_SummarizesOriginalHistory(t *testing.T) {
 	}
 }
 
+// TestCompact_SummarizeOverflowShrinksInputUntilFits pins the bug-2 input-side
+// guarantee: when the summarize request overflows AND micro truncation cannot
+// free enough (a chat-heavy history with no elidable tool payload), the retry
+// input must be cut down so the retried summarize fits the window. Before the
+// fix the retry re-overflowed and Compact failed, surfacing as the "hard
+// fallback" drop with the "summarize did not fit the window" label.
+func TestCompact_SummarizeOverflowShrinksInputUntilFits(t *testing.T) {
+	// Overflow once, then succeed. The provider records messages per attempt.
+	p := registerOverflowProvider("shrink-retry", 1)
+	a := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "sys",
+		Logger:       NewLogger(Error),
+	})
+	// A plain-chat history (no tool payloads for micro to free) large enough
+	// that the summarize request overflows the window.
+	big := strings.Repeat("u", 4000)
+	a.history = []Message{{Type: Content, Role: System, Content: "sys"}}
+	for i := 0; i < 40; i++ {
+		a.history = append(a.history,
+			Message{Type: Content, Role: User, Content: big},
+			Message{Type: Content, Role: Assistant, Content: big},
+		)
+	}
+	// Tiny window: the full history (~100K tokens) vastly exceeds it.
+	a.cfg.Model.ContextWindow = 4000
+
+	if err := a.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact must succeed after shrinking the summarize input: %v", err)
+	}
+	p.mu.Lock()
+	received := append([]int(nil), p.received...)
+	p.mu.Unlock()
+	if len(received) != 2 {
+		t.Fatalf("summarize attempts = %d, want 2 (overflow + shrunk retry)", len(received))
+	}
+	if received[1] >= received[0] {
+		t.Errorf("retry input was not shrunk: attempt sizes %v (want retry < first)", received)
+	}
+	// The compacted result is the [user, assistant] summary pair.
+	if len(a.history) != 2 {
+		t.Errorf("after Compact history = %d messages, want the summary pair", len(a.history))
+	}
+}
+
+// TestCompact_OversizedSummaryIsCappedToFit pins the bug-2 output-side
+// guarantee: a verbose model returning an oversized summary must not land a
+// compacted history that still exceeds the ceiling (which would re-fire
+// compression — or the destructive fallback — on the very next turn). The
+// summary is capped to the window budget with a truncation note.
+func TestCompact_OversizedSummaryIsCappedToFit(t *testing.T) {
+	// Provider returns a summary far larger than the window budget allows.
+	big := strings.Repeat("S", 200000) // ~60K tokens, window is 4000
+	p := textEventProvider(big)
+	a := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "sys",
+		Logger:       NewLogger(Error),
+	})
+	a.cfg.Model.ContextWindow = 4000
+	a.history = []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: strings.Repeat("u", 12000)},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("a", 12000)},
+	}
+
+	if err := a.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if len(a.history) != 2 {
+		t.Fatalf("expected summary pair, got %d", len(a.history))
+	}
+	summary := a.history[1].Content
+	if !strings.Contains(summary, "truncated to fit the context window") {
+		t.Errorf("oversized summary must carry the truncation note; got len=%d", len(summary))
+	}
+	// The landed pair must fit under the hard ceiling of the window.
+	a.mu.Lock()
+	after := a.estimateContextTokensLocked()
+	a.mu.Unlock()
+	hardCeiling := 4000 * 95 / 100
+	if after > hardCeiling {
+		t.Errorf("compacted history %d tokens still exceeds hard ceiling %d — summary was not capped", after, hardCeiling)
+	}
+}
+
 // TestCompact_NoSystemDuplication verifies the compacted history does not store
 // the system prompt (which is sent via Context.SystemPrompt), so it is not
 // double-sent on the next turn.

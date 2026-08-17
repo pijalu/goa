@@ -167,10 +167,13 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 		// between rounds — a TC:436 session sailed past 100% unchecked until
 		// the provider rejected the request (compression entry).
 		// Re-check before every re-stream so no request leaves oversized.
-		if err := a.maybeCompress(ctx); err != nil {
-			a.cfg.Logger.Log(Error, "per-round compression failed: %v", err)
+		compressErr := a.maybeCompress(ctx)
+		if compressErr != nil {
+			a.cfg.Logger.Log(Error, "per-round compression failed: %v", compressErr)
 		}
-		a.enforceContextCeiling()
+		// Same dead-turn guard as prepareTurn: a canceled round must not
+		// trigger the destructive ceiling fallback.
+		a.enforceContextCeilingUnlessCanceled(ctx, compressionCauseFromErr(compressErr))
 		a.mu.Lock()
 		a.resetStreamRoundState()
 		a.mu.Unlock()
@@ -1741,10 +1744,16 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	a.turnStep = 0
 	a.mu.Unlock()
 
-	if err := a.maybeCompress(ctx); err != nil {
-		a.cfg.Logger.Log(Error, "proactive compression failed: %v", err)
+	compressErr := a.maybeCompress(ctx)
+	if compressErr != nil {
+		a.cfg.Logger.Log(Error, "proactive compression failed: %v", compressErr)
 	}
-	a.enforceContextCeiling()
+	// Never cut history for a turn that is already dead: the destructive
+	// ceiling fallback exists to let the NEXT request go out, and a canceled
+	// context means no request will — dropping messages would be silent data
+	// loss. The cause threads the real summarize outcome so a false "did not
+	// fit the window" is never reported.
+	a.enforceContextCeilingUnlessCanceled(ctx, compressionCauseFromErr(compressErr))
 
 	// Step 1 entry: inject the per-turn temporal context reading (CX6) before
 	// the first provider request of the turn is derived.

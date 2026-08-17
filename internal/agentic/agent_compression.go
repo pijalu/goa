@@ -135,6 +135,11 @@ func (a *Agent) Compact(ctx context.Context) error {
 			a.cfg.Logger.Log(Info, "Compact: summarize overflowed (%v); applying micro compaction to make room and retrying", err)
 		}
 		a.applyMicroForSummarize()
+		// Guarantee the retry fits (bug-2: summarize must always fit the
+		// window): micro only truncates tool payloads, so a chat-heavy history
+		// can still overflow. When the estimated summarize request is still
+		// oversized, drop the oldest messages (chain-safe) until it fits.
+		a.shrinkHistoryForSummarizeRetry()
 		summary, usage, err = a.summarizeHistory(ctx)
 	}
 	if err != nil {
@@ -144,6 +149,13 @@ func (a *Agent) Compact(ctx context.Context) error {
 		a.emitCompactionTxEnd(txID, err.Error())
 		return err
 	}
+
+	// Guarantee the landed summary fits (bug-2, output side): a verbose model
+	// can return a summary large enough to keep the window over the ceiling,
+	// which would re-trigger compression (or the destructive fallback) on the
+	// very next turn. Cap the summary to the available history budget before
+	// it replaces the conversation.
+	summary = a.fitSummaryToWindow(summary)
 
 	// Replace history with a valid, cache-stable role sequence. The system
 	// prompt is NOT stored here: buildProviderContext sends it via
@@ -238,6 +250,171 @@ func (a *Agent) applyMicroForSummarize() {
 	res := a.applyMicroLocked(cfg)
 	a.mu.Unlock()
 	a.emitCompactionResult(string(CompressionMicro), before, res, "summarize overflow fallback")
+}
+
+// summarizeInstructionTokens estimates the token cost the compaction
+// instruction adds to the summarize request (the final user message).
+func summarizeInstructionTokens() int { return estimateTokens(compactSummaryInstruction) }
+
+// summarizeInputBudget is the token budget the summarize REQUEST input must
+// fit: the full window minus the fixed per-turn cost (system prompt + tool
+// schemas, already inside the estimate) minus a reserve for the summary
+// output. Summarizing a ~95%-full window otherwise requests more than the
+// window can hold — the summarize itself is then rejected (context length),
+// which is exactly the "summarize did not fit the window" failure.
+func (a *Agent) summarizeInputBudget() int {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 {
+		return 0
+	}
+	// Reserve room for the summary output and the instruction. The output
+	// reserve is a fraction of the window (summaries are short relative to
+	// the conversation), bounded below so a tiny window still leaves output
+	// room and above so a huge window never reserves an absurd amount.
+	reserve := maxTokens / 8 // 12.5%
+	if reserve < 2048 {
+		reserve = 2048
+	}
+	if reserve > 32768 {
+		reserve = 32768
+	}
+	budget := maxTokens - a.fixedCostTokens() - summarizeInstructionTokens() - reserve
+	if budget < 0 {
+		budget = 0
+	}
+	return budget
+}
+
+// shrinkHistoryForSummarizeRetry drops the oldest messages (chain-safe) until
+// the estimated summarize request fits the window's input budget. It runs
+// only on the summarize-overflow retry path, after micro truncation proved
+// insufficient — the guarantee that the retried summarize always fits the
+// window (bug-2). Emits a selective-style EventCompact for the cut.
+func (a *Agent) shrinkHistoryForSummarizeRetry() {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 {
+		return
+	}
+	budget := a.summarizeInputBudget()
+	a.mu.Lock()
+	before := a.computeContextStats()
+	res := a.dropOldestToFitLocked(budget)
+	a.mu.Unlock()
+	if res.removed > 0 {
+		a.emitCompactionResult(string(CompressionSelective), before, res, "shrinking summarize input to fit the window")
+	}
+}
+
+// dropOldestToFitLocked drops the oldest non-system messages until the
+// history's estimated tokens fit the given budget (chain-safe: never leaves a
+// leading tool result orphaned). Returns the work record. The caller must
+// hold a.mu.
+func (a *Agent) dropOldestToFitLocked(budget int) compactionResult {
+	if len(a.history) <= 1 {
+		return compactionResult{}
+	}
+	tok := make([]int, len(a.history))
+	total := 0
+	for i := range a.history {
+		tok[i] = messageTokenCount(&a.history[i])
+		total += tok[i]
+	}
+	if total <= budget {
+		return compactionResult{}
+	}
+	// Find the smallest front cut keeping system + tail within budget.
+	cut := len(a.history)
+	dropped := 0
+	system := tok[0]
+	for k := 1; k < len(a.history); k++ {
+		if system+(total-dropped) <= budget {
+			cut = k
+			break
+		}
+		dropped += tok[k]
+	}
+	// Advance past orphaned tool results (strict providers reject a leading
+	// tool message with no preceding tool_calls).
+	for cut < len(a.history) && a.history[cut].Role == ToolRole {
+		dropped += tok[cut]
+		cut++
+	}
+	a.history = append(a.history[:1:1], a.history[cut:]...)
+	a.invalidateContextUsageLocked()
+	return compactionResult{removed: cut - 1, freedTokens: dropped}
+}
+
+// summaryTruncationNote marks a summary that was capped to fit the window.
+const summaryTruncationNote = "\n\n[summary truncated to fit the context window]"
+
+// fitSummaryToWindow caps the produced summary so the compacted history (the
+// [summary-request, summary] pair) fits the history budget under the hard
+// ceiling. The pair stores the summary TWICE (the framed request message wraps
+// the summary in the preamble + tags, and the assistant reply carries it
+// verbatim), plus per-message overhead — so the budget each copy must fit is
+// roughly half the history budget. The cap is measured against the real token
+// estimator (not a chars→tokens guess) and trimmed iteratively, so the landed
+// pair is guaranteed under the ceiling. This prevents the next turn from
+// re-firing compression — or the destructive fallback — on a just-compacted
+// conversation (bug-2, output side).
+func (a *Agent) fitSummaryToWindow(summary string) string {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 {
+		return summary
+	}
+	hard := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
+	// Budget for the summary-bearing history (the pair), excluding fixed cost.
+	budget := maxTokens*hard/100 - a.fixedCostTokens()
+	if budget < 0 {
+		budget = 0
+	}
+
+	// pairTokens measures the landed pair's real token cost for a given
+	// summary body: the framed user request (preamble + tagged summary) plus
+	// the assistant reply, with per-message overhead.
+	pairTokens := func(body string) int {
+		req := Message{Type: Content, Role: User, Content: frameCompactedSummary(body)}
+		rep := Message{Type: Content, Role: Assistant, Content: body}
+		return messageTokenCount(&req) + messageTokenCount(&rep)
+	}
+
+	if pairTokens(summary) <= budget {
+		return summary
+	}
+
+	// Iteratively trim on a rune boundary until the measured pair fits. Start
+	// from a chars-per-token estimate of the target and halve the overage each
+	// pass — converges in a handful of iterations without a rune-at-a-time
+	// walk. Always appends the truncation note so the model (and the user) can
+	// see the summary was cut.
+	runes := []rune(summary)
+	if a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Warn, "summarize produced an oversized summary (%d tokens est. for the pair); truncating to fit the window budget %d", pairTokens(summary), budget)
+	}
+	// Initial guess: budget tokens ≈ budget*3.3 chars, but the pair doubles
+	// the body, so start near half. Clamp to the current length.
+	guess := budget * 33 / 10 / 2
+	if guess > len(runes) {
+		guess = len(runes)
+	}
+	for n := guess; n >= 0; {
+		candidate := string(runes[:n]) + summaryTruncationNote
+		if pairTokens(candidate) <= budget {
+			return candidate
+		}
+		// Shrink by 10% of the current length each miss (fast convergence).
+		next := n - (n/10 + 1)
+		if next < 0 {
+			next = 0
+		}
+		if next == n {
+			break
+		}
+		n = next
+	}
+	// Pathological: even the note alone exceeds the budget (window smaller
+	// than the fixed cost). Return the note only — never an unbounded summary.
+	return summaryTruncationNote
 }
 
 // applyMicroLocked performs the real in-place micro compaction pass under a.mu

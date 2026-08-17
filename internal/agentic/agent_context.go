@@ -5,6 +5,7 @@
 package agentic
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -38,25 +39,122 @@ func (a *Agent) effectiveMaxTokens() int {
 	return maxTokens
 }
 
-// enforceContextCeiling is the bounded last-resort fallback for the hard layer.
-// After the hard-layer strategy (summarize by default) has run, if the estimated
-// context still exceeds the hard ceiling it drops the oldest non-system messages
-// until usage is back under the HARD ceiling (no derived magic target). This
-// prevents an over-window request from going out when summarize failed or could
-// not free enough. It is emitted with the explicit "hard fallback" label (NOT
-// the confusing "ceiling") so the surface shows this is a fallback for a failed
-// summarize, not a normal compression.
+// compressionCause describes why the hard-layer compression left the context
+// over the ceiling, so the last-resort fallback can surface the TRUE reason
+// instead of the one-size "summarize did not fit the window" label (which was
+// also emitted when summarize had been canceled or had failed for any other
+// reason).
+type compressionCause string
+
+const (
+	// causeSummarizeRan: the hard-layer compression ran to completion (nil
+	// error) yet usage is still over the ceiling — the landed summary
+	// overshot the window.
+	causeSummarizeRan compressionCause = ""
+	// causeSummarizeOverflow: summarize failed with a context-length error —
+	// its request did not fit the window even after the micro shrink retry.
+	causeSummarizeOverflow compressionCause = "overflow"
+	// causeSummarizeFailed: summarize failed for a non-fit reason (provider
+	// error, cancellation propagated by a caller that ignored the dead-turn
+	// guard, ...).
+	causeSummarizeFailed compressionCause = "failed"
+)
+
+// compressionCauseFromErr maps a maybeCompress error to the fallback cause.
+func compressionCauseFromErr(err error) compressionCause {
+	if err == nil {
+		return causeSummarizeRan
+	}
+	if isContextLengthError(err) {
+		return causeSummarizeOverflow
+	}
+	return causeSummarizeFailed
+}
+
+// enforceContextCeiling is the bounded last-resort safety net for the hard
+// layer (zero-cause convenience wrapper for tests and direct callers).
 //
-// The mutation runs under a.mu (enforceContextCeilingLocked); the structured
-// EventCompact is emitted after unlock so every visible surface — the
-// conversation bubble, the footer counter, and the session JSONL — records the
-// cut.
+// Per the bug-2 contract this should essentially NEVER fire: the hard-layer
+// summarize is engineered to always fit the window (it shrinks its own input
+// until the request fits, and lands a summary sized to the ceiling). The
+// enforcer remains only as a defensive net for the pathological case where
+// the fixed cost (system prompt + tool schemas) alone approaches the window
+// — and in that case it explains WHY the hard ceiling could not be met
+// instead of silently dropping messages behind a "did not fit" label.
 func (a *Agent) enforceContextCeiling() {
+	a.enforceContextCeilingWithCause(causeSummarizeOverflow)
+}
+
+// enforceContextCeilingUnlessCanceled skips the destructive fallback entirely
+// when the turn context is already done: the cut exists to let the NEXT
+// request go out, and a canceled/deadline turn sends none — dropping messages
+// there is silent data loss.
+func (a *Agent) enforceContextCeilingUnlessCanceled(ctx context.Context, cause compressionCause) {
+	if ctx != nil && ctx.Err() != nil {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "Context ceiling fallback skipped: turn context is done (%v)", ctx.Err())
+		}
+		return
+	}
+	a.enforceContextCeilingWithCause(cause)
+}
+
+// enforceContextCeilingWithCause runs the hard-ceiling safety net and emits
+// the structured EventCompact with a detail naming the real cause and, when
+// the configured hard ceiling is unreachable (fixed cost alone exceeds it),
+// an explicit explanation rather than a bare drop. Per the escalation
+// contract the model-free passes run FIRST (tool-result pruning + micro
+// truncation): only when the window still does not fit are the oldest
+// messages dropped to the hard ceiling.
+func (a *Agent) enforceContextCeilingWithCause(cause compressionCause) {
 	before, res, ok := a.enforceContextCeilingLocked()
 	if !ok {
 		return
 	}
-	a.emitCompactionResult("hard fallback", before, res, "summarize did not fit the window; dropped oldest messages to the hard ceiling")
+	a.emitCompactionResult("hard fallback", before, res, a.ceilingFallbackDetail(cause, res))
+}
+
+// ceilingFallbackDetail builds the user-visible detail for the hard-fallback
+// event from the failure cause and the work record (so a model-free-only pass
+// is not described as a message drop). When the hard ceiling is fundamentally
+// unreachable — the fixed per-turn cost (system prompt + tool schemas) alone
+// meets or exceeds it — the message says so explicitly and advises lowering
+// the ceiling or the fixed footprint, which is the "explained/avoided"
+// requirement for a 95% target that cannot be achieved.
+func (a *Agent) ceilingFallbackDetail(cause compressionCause, res compactionResult) string {
+	action := "shrank tool payloads to the hard ceiling"
+	if res.removed > 0 {
+		action = "dropped oldest messages to the hard ceiling"
+	}
+	var reason string
+	switch cause {
+	case causeSummarizeRan:
+		reason = "summary still exceeds the window"
+	case causeSummarizeFailed:
+		reason = "summarize could not complete"
+	default:
+		reason = "summarize did not fit the window"
+	}
+	detail := reason + "; " + action
+	if a.fixedCostExceedsCeiling() {
+		detail += fmt.Sprintf(
+			" (warning: system prompt + tool schemas alone use ~%d tokens, meeting/exceeding the hard ceiling — lower the ceiling or reduce the fixed footprint)",
+			a.fixedCostTokens())
+	}
+	return detail
+}
+
+// fixedCostExceedsCeiling reports whether the fixed per-turn cost (system
+// prompt + tool schemas) alone meets or exceeds the hard ceiling — the one
+// condition under which NO history cut can bring usage under it, which must
+// be surfaced as an explanation rather than a silent drop loop.
+func (a *Agent) fixedCostExceedsCeiling() bool {
+	maxTokens := a.effectiveMaxTokens()
+	if maxTokens <= 0 {
+		return false
+	}
+	hard := a.cfg.ContextCompression.resolveThresholds().effectiveHard()
+	return a.fixedCostTokens() >= maxTokens*hard/100
 }
 
 // enforceContextCeilingLocked performs the reactive cut under a.mu and
@@ -95,10 +193,41 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 	}
 	before = a.computeContextStats()
 
+	// Core bug-2 fix: the fallback must not fire while TOTAL usage is under
+	// the configured hard ceiling. The history-only cut target
+	// (historyCeiling = hard − fixedCost) is stricter than the hard-tier
+	// trigger (total usage ≥ hard), so without this gate the fallback dropped
+	// messages at ~94% — BEFORE summarize ever ran (summarize fires at ≥95%)
+	// — and falsely reported "summarize did not fit the window". When total
+	// usage is under the hard ceiling, compression belongs to the proactive
+	// summarize, not to this destructive net; skip and let the next turn's
+	// hard tier summarize.
+	totalUsage := a.estimateContextTokensLocked()
+	if totalUsage <= hardCeiling {
+		if a.cfg.Logger != nil {
+			a.cfg.Logger.Log(Info, "Hard-ceiling fallback suppressed: total usage %d ≤ hard ceiling %d (history-only occupancy is over only because of fixed cost); summarize owns this range", totalUsage, hardCeiling)
+		}
+		return before, res, false
+	}
+
+	// Escalation order (per the bug-2 contract): the destructive message drop
+	// is the TRUE last resort. First run the model-free shrink passes —
+	// stale/over-budget tool-result pruning and micro truncation — which
+	// reclaim the bulk of a dump-heavy session WITHOUT dropping any message.
+	// Only when those leave the window still over the ceiling do we drop.
+	// (A summarize that could not fit used to jump straight to the drop even
+	// when elidable tool payload would have made the window fit.)
+	if shrinkRes, fits := a.shrinkToolPayloadsToFitLocked(historyCeiling); fits {
+		return before, shrinkRes, shrinkRes.didWork()
+	} else {
+		res.changed = shrinkRes.changed
+	}
+
 	// Compute each message's token cost once. The previous implementation
 	// removed the oldest non-system message one at a time, re-estimating the
 	// whole history (O(n)) and shifting the slice (O(n)) per iteration, making
 	// the last-resort safety net O(n^2) on long sessions exactly when it runs.
+	hist = a.history
 	tok := make([]int, len(hist))
 	total := 0
 	for i := range hist {
@@ -111,9 +240,52 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 	// also fits the REAL window, not just the estimated one.
 	total = a.floorTokensAtProviderUsage(tok, total)
 	if total <= historyCeiling {
-		return before, res, false
+		// The shrink above (or a concurrent reader's view) already fits.
+		return before, res, res.didWork()
 	}
 
+	cut, droppedTokens := a.dropOldestToCeilingLocked(hist, tok, total, historyCeiling, hardCeiling)
+	res.removed = cut - 1
+	res.freedTokens = droppedTokens
+	return before, res, true
+}
+
+// shrinkToolPayloadsToFitLocked runs the model-free shrink passes (tool-result
+// pruning + micro truncation) and reports whether history now fits the ceiling
+// without dropping any message. The caller must hold a.mu. When it returns
+// fits=false the caller proceeds to the destructive drop; the shrink work is
+// still reported via the returned compactionResult.
+func (a *Agent) shrinkToolPayloadsToFitLocked(historyCeiling int) (res compactionResult, fits bool) {
+	changed := a.pruneToolResultsLocked(a.cfg.ContextCompression.ToolResultPruning.resolve())
+	microRes := a.applyMicroLocked(microFallbackConfig(a.cfg.ContextCompression.MicroCompaction))
+	changed += microRes.changed
+	res.changed = changed
+	if changed == 0 {
+		return res, a.historyTokensLocked() <= historyCeiling
+	}
+	fits = a.historyTokensLocked() <= historyCeiling
+	if fits && a.cfg.Logger != nil {
+		a.cfg.Logger.Log(Info, "Hard-ceiling fallback resolved by tool-payload shrink (%d message(s)); no messages dropped", changed)
+	}
+	return res, fits
+}
+
+// historyTokensLocked sums the estimated tokens of the current history.
+// The caller must hold a.mu.
+func (a *Agent) historyTokensLocked() int {
+	total := 0
+	for i := range a.history {
+		total += messageTokenCount(&a.history[i])
+	}
+	return total
+}
+
+// dropOldestToCeilingLocked drops the oldest non-system messages until the
+// kept tail fits historyCeiling, advancing past orphaned tool results. It
+// returns the cut index and freed tokens, mutating a.history. The caller must
+// hold a.mu. This is the destructive last resort, reached only when the
+// model-free shrink passes could not fit the window.
+func (a *Agent) dropOldestToCeilingLocked(hist []Message, tok []int, total, historyCeiling, hardCeiling int) (cut, droppedTokens int) {
 	// Keep the system prompt (index 0) plus the most-recent contiguous tail
 	// whose tokens fit the HARD ceiling. Find the smallest cut k in [1, n] such
 	// that tok[0] + sum(tok[k:]) <= historyCeiling. There is no lower magic
@@ -121,8 +293,7 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 	// set), dropping the fewest oldest messages needed to fit.
 	system := tok[0]
 	nonSystem := total - system // sum(tok[1:])
-	cut := len(hist)            // fall-back: keep only the system prompt
-	droppedTokens := 0
+	cut = len(hist)             // fall-back: keep only the system prompt
 	for k := 1; k < len(hist); k++ {
 		keptHere := system + (nonSystem - droppedTokens) // tok[0] + sum(tok[k:])
 		if keptHere <= historyCeiling {
@@ -146,14 +317,13 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 		cut++
 	}
 
-	for _, m := range hist[1:cut] {
-		if a.cfg.Logger != nil {
+	if a.cfg.Logger != nil {
+		for _, m := range hist[1:cut] {
 			a.cfg.Logger.Log(Warn, "Context ceiling enforced: dropped %s message (len=%d)", m.Role, len(m.Content))
 		}
-	}
-	if a.cfg.Logger != nil && droppedTokens > 0 {
-		a.cfg.Logger.Log(Warn, "Hard-ceiling fallback: dropped oldest messages, freed ~%d tokens to fit under %d%% of window",
-			droppedTokens, hardCeilingPercent)
+		if droppedTokens > 0 {
+			a.cfg.Logger.Log(Warn, "Hard-ceiling fallback: dropped oldest messages, freed ~%d tokens to fit under ceiling", droppedTokens)
+		}
 	}
 
 	kept := append(hist[:1:1], hist[cut:]...)
@@ -164,12 +334,7 @@ func (a *Agent) enforceContextCeilingLocked() (before ContextStats, res compacti
 	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > historyCeiling {
 		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history + fixed cost exceeds %d tokens", hardCeiling)
 	}
-
-	// The cut dropped every non-system message before index cut. Report the
-	// round so the ceiling pass surfaces like every other compression.
-	res.removed = cut - 1
-	res.freedTokens = droppedTokens
-	return before, res, true
+	return cut, droppedTokens
 }
 
 // floorTokensAtProviderUsage scales per-message token estimates up so their

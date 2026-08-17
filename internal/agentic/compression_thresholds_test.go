@@ -440,14 +440,56 @@ func TestEnforceContextCeiling_RespectsConfiguredHardPercent(t *testing.T) {
 		t.Errorf("enforceContextCeiling dropped messages below hard=30%%: len = %d, want 11", len(a.history))
 	}
 
-	// Tighten: hard=15 → 20% usage exceeds → must drop oldest.
+	// Tighten: hard=15 → 20% usage exceeds → must shrink. The history is
+	// tool-heavy (4 large tool results), so the model-free passes
+	// (pruning/micro truncation) resolve the pressure WITHOUT dropping any
+	// message — the escalation-order contract: drop only when shrink can't fit.
 	a.SetContextCompression(ContextCompressionConfig{
 		MaxTokens:  20000,
 		Thresholds: CompressionThresholds{HardPercent: 15},
 	})
 	a.enforceContextCeiling()
-	if len(a.history) >= 11 {
-		t.Errorf("enforceContextCeiling did not enforce hard=15%%: len = %d, want < 11", len(a.history))
+	if len(a.history) != 11 {
+		t.Errorf("enforceContextCeiling dropped messages on a shrinkable history: len = %d, want 11 (elision/micro must run first)", len(a.history))
+	}
+	// But the shrink must have happened (the tool payloads were truncated in
+	// place to bring history under the 15% ceiling).
+	foundMarker := false
+	for _, m := range a.history {
+		if m.Role == ToolRole && (strings.Contains(m.Content, PruneMarker) || strings.Contains(m.Content, a.cfg.ContextCompression.MicroCompaction.TruncatedMarker)) {
+			foundMarker = true
+		}
+	}
+	if !foundMarker {
+		t.Error("expected tool-payload truncation markers after the fallback; the model-free shrink did not run")
+	}
+}
+
+// TestEnforceContextCeiling_DropsWhenShrinkCannotFit pins the last-resort
+// drop: a history of plain (non-tool) messages has no elidable payload, so
+// when total usage exceeds the hard ceiling the fallback must drop the oldest
+// messages — shrink alone cannot fit.
+func TestEnforceContextCeiling_DropsWhenShrinkCannotFit(t *testing.T) {
+	a := NewAgent(Config{
+		Model: testModel(provider.ApiOpenAICompletions),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens:  2000,
+			Thresholds: CompressionThresholds{HardPercent: 50},
+		},
+	})
+	// Plain chat, no tool payloads to shrink; ~1800 tokens = 90% of 2000.
+	long := strings.Repeat("u", 1600)
+	a.history = []Message{
+		{Type: Content, Role: System, Content: "sys"},
+		{Type: Content, Role: User, Content: long},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("a", 1600)},
+		{Type: Content, Role: User, Content: strings.Repeat("q", 1600)},
+		{Type: Content, Role: Assistant, Content: strings.Repeat("z", 1600)},
+	}
+	before := len(a.history)
+	a.enforceContextCeiling()
+	if len(a.history) >= before {
+		t.Errorf("fallback must drop oldest messages when shrink cannot fit: len %d -> %d", before, len(a.history))
 	}
 }
 

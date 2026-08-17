@@ -152,6 +152,37 @@ func TestFormatCompactionBubble_DetailOnNewLine(t *testing.T) {
 	}
 }
 
+// TestFormatCompactionBubble_HardFallbackEscalationDetail pins the bug-2
+// user-visible surface: when the ceiling safety net resolves pressure by
+// shrinking tool payloads (escalation order — drop is the last resort), the
+// bubble must NOT claim messages were dropped; it must say the payloads were
+// shrunk. And when the fixed cost alone meets the ceiling, the bubble must
+// carry the explicit explanation.
+func TestFormatCompactionBubble_HardFallbackEscalationDetail(t *testing.T) {
+	app := New(testSubsystems())
+
+	// Shrink-resolved: removed=0 → "shrank tool payloads", no "messages dropped".
+	app.handleAgentOutputEvent(compactEvent("hard fallback", 96, 90, 4000, 0,
+		"summarize did not fit the window; shrank tool payloads to the hard ceiling"))
+	cv := app.subs.chat
+	rendered := strings.Join(cv.Render(100), "\n")
+	if !strings.Contains(rendered, "shrank tool payloads to the hard ceiling") {
+		t.Errorf("expected the shrink detail in the bubble, rendered:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "messages dropped") {
+		t.Errorf("shrink-resolved fallback must not claim message drops, rendered:\n%s", rendered)
+	}
+
+	// Fixed-cost-over-ceiling explanation (the "cannot achieve 95%" case).
+	app2 := New(testSubsystems())
+	app2.handleAgentOutputEvent(compactEvent("hard fallback", 97, 96, 0, 1,
+		"summarize did not fit the window; dropped oldest messages to the hard ceiling (warning: system prompt + tool schemas alone use ~12000 tokens, meeting/exceeding the hard ceiling — lower the ceiling or reduce the fixed footprint)"))
+	rendered2 := strings.Join(app2.subs.chat.Render(120), "\n")
+	if !strings.Contains(rendered2, "meeting/exceeding the hard ceiling") {
+		t.Errorf("expected the fixed-cost explanation, rendered:\n%s", rendered2)
+	}
+}
+
 // TestCompactionStrategy_StructuredWinsOverText verifies the resolver prefers
 // the structured payload when Text and Compaction.Strategy disagree.
 func TestCompactionStrategy_StructuredWinsOverText(t *testing.T) {
