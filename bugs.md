@@ -31,6 +31,44 @@ No current issues.
 
 # Archive
 
+## ~~Codex OAuth freeze from /provider picker — TUI frozen after OAuth choice~~ — FIXED (2026-06-24)
+
+Report: "Adding oauth provider freeze the screen" — `/provider` → `+` → OpenAI
+Codex → "Sign in with ChatGPT (OAuth)" leaves the TUI unresponsive with the
+"Authenticate OpenAI Codex:" selector still displayed.
+
+Root cause: `promptCodexAuthChoice`'s OAuth branch ran the codex login flow
+synchronously inside the selector callback, which production wiring executes
+on the TUI commandLoop (`SelectOptionFunc` → `app.apply`). The flow's
+browser-vs-device method prompt (`Context.Clarify` → `app.clarify`) blocks for
+input on the main input line — which never arrives because the selector
+overlay still holds input focus (its `Hide` is queued behind the blocked
+loop). Deadlock: the hidden selector swallows keys, the clarify card never
+gets an answer. Same bug class as the archived `/login` freeze (2026-06-05),
+one layer up: that fix made the flow *wait* async; this callback blocked
+*before* reaching it.
+
+Fix (`core/commands/provider.go`):
+- `startCodexOAuthFromPicker` adds the provider optimistically, flashes
+  "starting sign-in", and runs the method prompt + `loginFlowRunner` on a
+  background goroutine (all UI calls on that path are goroutine-safe
+  event-bus posts or internally applied).
+- On sign-in failure the freshly-added provider is rolled back (a pre-existing
+  entry is kept), per the original code's comment.
+- `pickerProviderMu` serializes the off-loop add/rollback against each other.
+
+Tests:
+- `TestProviderPicker_CodexOAuth_Filmstrip` (new, core/commands): drives the
+  real `/provider` → `+` → codex → OAuth path on a live TUI engine with a
+  blocking login-flow stub. Asserts the auth selector is shown, the callback
+  returns promptly, the commandLoop stays responsive while the flow is parked
+  (ApplySync probe), and the provider is added without a stored key.
+  Negative-controlled: a synchronous flow run fails with "UI engine frozen".
+- `TestStartCodexOAuthFromPicker_FailureRollsBackProvider`: failure rollback
+  (fresh provider removed, pre-existing kept).
+
+Gates: vet ✓ staticcheck ✓ race ✓ gocognit ≤15 ✓ gocyclo ≤12 ✓ (no new hits).
+
 ## ~~Codex OAuth freeze — selecting OAuth shows nothing / TUI frozen~~ — FIXED (2026-06-05)
 
 Report: "adding a provider — selection oauth does not bring anything"; TUI
