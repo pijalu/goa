@@ -369,7 +369,8 @@ func TestInferProviderIdentity_Presets(t *testing.T) {
 		wantProv agenticprovider.Provider
 		wantAPI  agenticprovider.Api
 	}{
-		{"openai", "openai", agenticprovider.ProviderOpenAI, agenticprovider.ApiOpenAICompletions},
+		{"openai", "openai", agenticprovider.ProviderOpenAI, agenticprovider.ApiOpenAIResponses},
+		{"openai-codex", "openai-codex", agenticprovider.ProviderOpenAICodex, agenticprovider.ApiOpenAICodexResponses},
 		{"lmstudio", "lmstudio", agenticprovider.ProviderLMStudio, agenticprovider.ApiOpenAICompletions},
 		{"ollama", "ollama", agenticprovider.ProviderOllama, agenticprovider.ApiOpenAICompletions},
 		{"deepseek", "deepseek", agenticprovider.ProviderDeepSeek, agenticprovider.ApiOpenAICompletions},

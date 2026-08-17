@@ -117,6 +117,35 @@ func (h *AuthHook) applyProviderHeaders(ctx *RequestContext) {
 	if ctx.Model.Provider == schema.ProviderOpenAI && h.profile.Auth.Method == schema.AuthMethodOAuth {
 		ctx.Profile.Compat.SystemAsInstructions = true
 	}
+
+	if ctx.Model.Api == schema.ApiOpenAICodexResponses {
+		applyCodexHeaders(ctx)
+	}
+}
+
+// applyCodexHeaders sets the Codex identity headers on the subscription
+// transport, mirroring Pi's buildBaseCodexHeaders/buildSSEHeaders and
+// OpenCode's codex fetch wrapper: both transports tag the originator; the
+// OAuth transport (opts.CodexAccountID set) additionally carries the ChatGPT
+// account id, the responses beta flag, and — when a session is active — the
+// session-id affinity header the codex backend uses for cache locality.
+func applyCodexHeaders(ctx *RequestContext) {
+	if !hasHeader(ctx.Headers, "originator") {
+		ctx.Headers["originator"] = "goa"
+	}
+	if ctx.Options.SessionID != "" && !hasHeader(ctx.Headers, "session-id") {
+		ctx.Headers["session-id"] = ctx.Options.SessionID
+	}
+	if ctx.Options.CodexAccountID == "" {
+		return
+	}
+	ctx.Headers["chatgpt-account-id"] = ctx.Options.CodexAccountID
+	if !hasHeader(ctx.Headers, "OpenAI-Beta") {
+		ctx.Headers["OpenAI-Beta"] = "responses=experimental"
+	}
+	if !hasHeader(ctx.Headers, "accept") {
+		ctx.Headers["accept"] = "text/event-stream"
+	}
 }
 
 func injectAuth(headers map[string]string, auth schema.AuthConfig, token string) {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/pijalu/goa/internal/agentic/provider/schema"
@@ -78,17 +79,78 @@ func (p *azureOpenAIResponses) ParseResponse(reader io.Reader, stream *schema.As
 }
 
 func buildResponsesBody(model schema.Model, ctx schema.Context, opts schema.StreamOptions, profile schema.VariantProfile, flavor string) ([]byte, error) {
+	// Codex carries the system prompt in the dedicated instructions field
+	// (matching the codex CLI and Pi) rather than as a leading input message.
+	// Other responses flavors keep the system prompt as an input message.
+	isCodex := flavor == "codex"
+	systemPrompt := ctx.SystemPrompt
+	if isCodex {
+		systemPrompt = ""
+	}
+
 	body := map[string]any{
 		"model":  model.ID,
-		"input":  convertResponsesInput(ctx.Messages, ctx.SystemPrompt, profile),
+		"input":  convertResponsesInput(ctx.Messages, systemPrompt, profile),
 		"stream": true,
 	}
-	if ctx.NoTools {
-		// Final-step collapse (P7): the model must answer text-only.
-		body["tool_choice"] = "none"
-	} else {
-		body["tools"] = convertResponsesTools(ctx.Tools)
+	if isCodex {
+		applyCodexBodyFields(body, ctx)
 	}
+	applyResponsesToolFields(body, ctx)
+	applyResponsesSessionFields(body, model, opts)
+	applyResponsesSamplingFields(body, model, opts, profile)
+	if store := profile.Compat.SupportsStore; store != nil {
+		body["store"] = *store
+	}
+	if opts.ServiceTier != "" {
+		body["service_tier"] = opts.ServiceTier
+	}
+	return json.Marshal(body)
+}
+
+// applyCodexBodyFields sets the codex subscription request fields: the system
+// prompt in the dedicated instructions field (matching the codex CLI and Pi)
+// and parallel tool calls enabled by default.
+func applyCodexBodyFields(body map[string]any, ctx schema.Context) {
+	instructions := ctx.SystemPrompt
+	if instructions == "" {
+		instructions = "You are a helpful assistant."
+	}
+	body["instructions"] = instructions
+	body["tool_choice"] = "auto"
+	body["parallel_tool_calls"] = true
+}
+
+// applyResponsesToolFields wires the tool list, honoring the final-step
+// text-only collapse (P7): NoTools forces tool_choice "none" and drops the
+// parallel-tool flag so the model answers text-only.
+func applyResponsesToolFields(body map[string]any, ctx schema.Context) {
+	if ctx.NoTools {
+		body["tool_choice"] = "none"
+		delete(body, "parallel_tool_calls")
+		return
+	}
+	body["tools"] = convertResponsesTools(ctx.Tools)
+}
+
+// applyResponsesSessionFields wires session continuation and prompt caching
+// (previous_response_id + prompt_cache_key) when a session ID is present.
+func applyResponsesSessionFields(body map[string]any, model schema.Model, opts schema.StreamOptions) {
+	if opts.SessionID == "" {
+		return
+	}
+	body["previous_response_id"] = opts.SessionID
+	if shouldSendOpenAIResponsesPromptCacheKey(model, opts) {
+		body["prompt_cache_key"] = ClampOpenAIPromptCacheKey(opts.SessionID)
+		if opts.CacheRetention == schema.CacheRetentionLong {
+			body["prompt_cache_retention"] = "24h"
+		}
+	}
+}
+
+// applyResponsesSamplingFields wires token/temperature/top_p and the reasoning
+// (thinking) block request fields.
+func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile) {
 	if opts.MaxTokens > 0 {
 		body["max_output_tokens"] = opts.MaxTokens
 	}
@@ -98,28 +160,11 @@ func buildResponsesBody(model schema.Model, ctx schema.Context, opts schema.Stre
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if opts.SessionID != "" {
-		body["previous_response_id"] = opts.SessionID
-		if shouldSendOpenAIResponsesPromptCacheKey(model, opts) {
-			body["prompt_cache_key"] = ClampOpenAIPromptCacheKey(opts.SessionID)
-			if opts.CacheRetention == schema.CacheRetentionLong {
-				body["prompt_cache_retention"] = "24h"
-			}
-		}
-	}
 	if model.Reasoning || profile.Compat.ThinkingFormat != "" {
 		body["include"] = []string{"reasoning.encrypted_content"}
 		body["text"] = map[string]any{"verbosity": "low"}
 		body["reasoning"] = map[string]any{"summary": "auto"}
 	}
-	store := profile.Compat.SupportsStore
-	if store != nil {
-		body["store"] = *store
-	}
-	if opts.ServiceTier != "" {
-		body["service_tier"] = opts.ServiceTier
-	}
-	return json.Marshal(body)
 }
 
 // shouldSendOpenAIResponsesPromptCacheKey mirrors Pi's behavior: Azure and Codex
@@ -160,21 +205,49 @@ func convertResponsesInput(messages []schema.Message, systemPrompt string, profi
 				"content": extractResponsesText(msg.Content),
 			})
 		case schema.RoleAssistant:
-			input = append(input, map[string]any{
-				"role":    "assistant",
-				"content": extractResponsesText(msg.Content),
-			})
+			input = append(input, convertResponsesAssistant(msg)...)
 		case schema.RoleToolResult:
-			tcID, tcName, text := extractToolCallInfo(msg.Content)
+			tcID, _, text := extractToolCallInfo(msg.Content)
+			// The responses API expects a function_call_output item keyed by the
+			// originating call_id, not a chat-completions role:"tool" message.
 			input = append(input, map[string]any{
-				"role":         "tool",
-				"tool_call_id": normalizeResponsesToolCallID(tcID),
-				"content":      text,
-				"name":         tcName,
+				"type":    "function_call_output",
+				"call_id": normalizeResponsesToolCallID(tcID),
+				"output":  text,
 			})
 		}
 	}
 	return input
+}
+
+// convertResponsesAssistant serializes an assistant turn to responses-API
+// output items: text becomes a message item carrying output_text content, and
+// each tool call becomes a function_call item keyed by its call_id. This is
+// the shape the responses API (and the Codex subscription backend) requires on
+// history replay — chat-completions assistant/tool roles are rejected.
+func convertResponsesAssistant(msg schema.Message) []map[string]any {
+	var out []map[string]any
+	if text := extractResponsesText(msg.Content); text != "" {
+		out = append(out, map[string]any{
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]any{
+				{"type": "output_text", "text": text},
+			},
+		})
+	}
+	for _, b := range msg.Content {
+		if b.Type != schema.ContentBlockToolCall {
+			continue
+		}
+		out = append(out, map[string]any{
+			"type":      "function_call",
+			"call_id":   normalizeResponsesToolCallID(b.ToolCallID),
+			"name":      b.ToolName,
+			"arguments": b.ToolArguments,
+		})
+	}
+	return out
 }
 
 func normalizeResponsesToolCallID(id string) string {
@@ -216,6 +289,18 @@ func extractToolCallInfo(blocks []schema.ContentBlock) (id, name, text string) {
 	return "", "", ""
 }
 
+// responsesToolCall accumulates one in-flight function_call output item. The
+// responses API streams tool-call identity via output_item.added and the
+// arguments incrementally via function_call_arguments.delta, finalizing them
+// in function_call_arguments.done / output_item.done.
+type responsesToolCall struct {
+	id      string
+	name    string
+	args    string // accumulated arguments JSON
+	callID  string // the call_id used to match tool results (falls back to id)
+	emitted bool   // tool-call event already pushed
+}
+
 type responsesEventContext struct {
 	contentBuf string
 	outputText string
@@ -223,11 +308,14 @@ type responsesEventContext struct {
 	ended      bool
 	decodeErr  error
 	stream     *schema.AssistantMessageEventStream
+	// toolCalls tracks in-flight function_call items by output_index so
+	// streamed argument deltas accumulate onto the right call.
+	toolCalls map[int]*responsesToolCall
 }
 
 func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStream) {
 	defer closeIfCloser(body)
-	ctx := &responsesEventContext{stream: stream}
+	ctx := &responsesEventContext{stream: stream, toolCalls: map[int]*responsesToolCall{}}
 	if err := transport.ParseSSE(body, func(ev transport.SSEEvent) bool {
 		var event struct {
 			Type string `json:"type"`
@@ -241,6 +329,12 @@ func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStrea
 			handleResponsesTextDelta(ctx, ev.Data)
 		case "response.output_item.added":
 			handleResponsesOutputItemAdded(ctx, ev.Data)
+		case "response.function_call_arguments.delta":
+			handleResponsesFuncArgsDelta(ctx, ev.Data)
+		case "response.function_call_arguments.done":
+			handleResponsesFuncArgsDone(ctx, ev.Data)
+		case "response.output_item.done":
+			handleResponsesOutputItemDone(ctx, ev.Data)
 		case "response.completed":
 			handleResponsesCompleted(ctx, ev.Data)
 		}
@@ -254,11 +348,55 @@ func parseResponsesSSE(body io.Reader, stream *schema.AssistantMessageEventStrea
 		return
 	}
 	if !ctx.ended {
+		// Stream terminated without a completed event: flush any pending tool
+		// calls that never saw output_item.done, then end with buffered text.
+		flushPendingToolCalls(ctx)
 		var blocks []schema.ContentBlock
 		if ctx.contentBuf != "" {
 			blocks = append(blocks, schema.ContentBlock{Type: schema.ContentBlockText, Text: ctx.contentBuf})
 		}
+		blocks = append(blocks, toolCallBlocks(ctx)...)
 		stream.End(&schema.AssistantMessage{Content: blocks, StopReason: schema.StopReasonEndTurn})
+	}
+}
+
+// emitToolCall pushes the completed tool-call event exactly once, preferring
+// the call_id (the identifier tool results reference) over the item id.
+func emitToolCall(ctx *responsesEventContext, tc *responsesToolCall) {
+	if tc.emitted {
+		return
+	}
+	tc.emitted = true
+	if !ctx.started {
+		ctx.started = true
+		ctx.stream.Push(schema.AssistantMessageEvent{Type: schema.EventStart, Partial: &schema.AssistantMessage{}})
+	}
+	id := tc.callID
+	if id == "" {
+		id = tc.id
+	}
+	ctx.stream.Push(schema.AssistantMessageEvent{
+		Type: schema.EventToolCallEnd,
+		ToolCall: &schema.ContentBlock{
+			Type:          schema.ContentBlockToolCall,
+			ToolCallID:    id,
+			ToolName:      tc.name,
+			ToolArguments: tc.args,
+		},
+	})
+}
+
+// flushPendingToolCalls emits any tool calls still buffered when the stream
+// ends (defensive: a well-formed stream finalizes each via output_item.done).
+func flushPendingToolCalls(ctx *responsesEventContext) {
+	// Deterministic order by output_index.
+	indices := make([]int, 0, len(ctx.toolCalls))
+	for idx := range ctx.toolCalls {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		emitToolCall(ctx, ctx.toolCalls[idx])
 	}
 }
 
@@ -280,33 +418,112 @@ func handleResponsesTextDelta(ctx *responsesEventContext, chunk string) {
 }
 
 func handleResponsesOutputItemAdded(ctx *responsesEventContext, chunk string) {
-	var item struct {
-		Item struct {
-			Type  string          `json:"type"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+	var ev struct {
+		OutputIndex int `json:"output_index"`
+		Item        struct {
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			CallID    string          `json:"call_id"`
+			Name      string          `json:"name"`
+			Arguments string          `json:"arguments"`
+			Input     json.RawMessage `json:"input"`
 		} `json:"item"`
 	}
-	if err := json.Unmarshal([]byte(chunk), &item); err != nil {
+	if err := json.Unmarshal([]byte(chunk), &ev); err != nil {
 		ctx.decodeErr = fmt.Errorf("decode output_item.added chunk: %w", err)
 		return
 	}
-	if item.Item.Type == "function_call" {
-		if !ctx.started {
-			ctx.started = true
-			ctx.stream.Push(schema.AssistantMessageEvent{Type: schema.EventStart, Partial: &schema.AssistantMessage{}})
-		}
-		ctx.stream.Push(schema.AssistantMessageEvent{
-			Type: schema.EventToolCallEnd,
-			ToolCall: &schema.ContentBlock{
-				Type:          schema.ContentBlockToolCall,
-				ToolCallID:    item.Item.ID,
-				ToolName:      item.Item.Name,
-				ToolArguments: string(item.Item.Input),
-			},
-		})
+	if ev.Item.Type != "function_call" {
+		return
 	}
+	// Register the in-flight call; arguments arrive via the delta/done events.
+	// Some backends send the full arguments inline (no streaming); seed the
+	// buffer from whichever field is populated so output_item.done can emit.
+	tc := &responsesToolCall{
+		id:     ev.Item.ID,
+		callID: ev.Item.CallID,
+		name:   ev.Item.Name,
+		args:   ev.Item.Arguments,
+	}
+	if tc.args == "" && len(ev.Item.Input) > 0 {
+		tc.args = string(ev.Item.Input)
+	}
+	ctx.toolCalls[ev.OutputIndex] = tc
+}
+
+// handleResponsesFuncArgsDelta accumulates a streamed arguments fragment onto
+// the in-flight function_call for this output_index.
+func handleResponsesFuncArgsDelta(ctx *responsesEventContext, chunk string) {
+	var ev struct {
+		OutputIndex int    `json:"output_index"`
+		Delta       string `json:"delta"`
+	}
+	if err := json.Unmarshal([]byte(chunk), &ev); err != nil {
+		ctx.decodeErr = fmt.Errorf("decode function_call_arguments.delta chunk: %w", err)
+		return
+	}
+	if tc := ctx.toolCalls[ev.OutputIndex]; tc != nil {
+		tc.args += ev.Delta
+	}
+}
+
+// handleResponsesFuncArgsDone sets the final arguments for the in-flight
+// function_call (the done event carries the complete arguments JSON).
+func handleResponsesFuncArgsDone(ctx *responsesEventContext, chunk string) {
+	var ev struct {
+		OutputIndex int    `json:"output_index"`
+		Arguments   string `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(chunk), &ev); err != nil {
+		ctx.decodeErr = fmt.Errorf("decode function_call_arguments.done chunk: %w", err)
+		return
+	}
+	if tc := ctx.toolCalls[ev.OutputIndex]; tc != nil && ev.Arguments != "" {
+		tc.args = ev.Arguments
+	}
+}
+
+// handleResponsesOutputItemDone finalizes a function_call output item: the
+// item carries the complete arguments, so emit the tool call now that its
+// arguments are fully known.
+func handleResponsesOutputItemDone(ctx *responsesEventContext, chunk string) {
+	var ev struct {
+		OutputIndex int `json:"output_index"`
+		Item        struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal([]byte(chunk), &ev); err != nil {
+		ctx.decodeErr = fmt.Errorf("decode output_item.done chunk: %w", err)
+		return
+	}
+	if ev.Item.Type != "function_call" {
+		return
+	}
+	tc := ctx.toolCalls[ev.OutputIndex]
+	if tc == nil {
+		// No added/delta seen (backend sent a single done event): build it now.
+		tc = &responsesToolCall{}
+		ctx.toolCalls[ev.OutputIndex] = tc
+	}
+	// Item fields are authoritative on done; fill any gaps.
+	if tc.id == "" {
+		tc.id = ev.Item.ID
+	}
+	if tc.callID == "" {
+		tc.callID = ev.Item.CallID
+	}
+	if tc.name == "" {
+		tc.name = ev.Item.Name
+	}
+	if ev.Item.Arguments != "" {
+		tc.args = ev.Item.Arguments
+	}
+	emitToolCall(ctx, tc)
 }
 
 func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
@@ -327,6 +544,10 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 	if ctx.contentBuf != "" {
 		blocks = append(blocks, schema.ContentBlock{Type: schema.ContentBlockText, Text: ctx.contentBuf})
 	}
+	// Tool calls are part of the assistant turn: include them in the final
+	// message content (matching the chat-completions parser contract) so the
+	// agent loop sees them from result.Content, not only from stream events.
+	blocks = append(blocks, toolCallBlocks(ctx)...)
 	stopReason := schema.StopReasonEndTurn
 	if resp.Response.Status == "incomplete" {
 		stopReason = schema.StopReasonMaxTokens
@@ -340,4 +561,32 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 		},
 	})
 	ctx.ended = true
+}
+
+// toolCallBlocks materializes the accumulated in-flight function_call items as
+// content blocks, ordered by output_index for determinism.
+func toolCallBlocks(ctx *responsesEventContext) []schema.ContentBlock {
+	if len(ctx.toolCalls) == 0 {
+		return nil
+	}
+	indices := make([]int, 0, len(ctx.toolCalls))
+	for idx := range ctx.toolCalls {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	blocks := make([]schema.ContentBlock, 0, len(indices))
+	for _, idx := range indices {
+		tc := ctx.toolCalls[idx]
+		id := tc.callID
+		if id == "" {
+			id = tc.id
+		}
+		blocks = append(blocks, schema.ContentBlock{
+			Type:          schema.ContentBlockToolCall,
+			ToolCallID:    id,
+			ToolName:      tc.name,
+			ToolArguments: tc.args,
+		})
+	}
+	return blocks
 }

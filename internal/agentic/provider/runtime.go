@@ -209,7 +209,25 @@ func resolveURL(model schema.Model, profile schema.VariantProfile) string {
 	if baseURL == "" {
 		return ""
 	}
+	if model.Api == schema.ApiOpenAICodexResponses {
+		baseURL = codexResponsesURL(baseURL)
+	}
 	return schema.ResolveURLTemplate(baseURL)
+}
+
+// codexResponsesURL normalizes a Codex base URL to the responses endpoint,
+// mirroring Pi's resolveCodexUrl: the ChatGPT subscription transport serves
+// the responses API at {base}/codex/responses (the base
+// https://chatgpt.com/backend-api has no bare responses route and 404s).
+func codexResponsesURL(baseURL string) string {
+	u := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(u, "/codex/responses") {
+		return u
+	}
+	if strings.HasSuffix(u, "/codex") {
+		return u + "/responses"
+	}
+	return u + "/codex/responses"
 }
 
 func defaultBaseURL(model schema.Model, profile schema.VariantProfile) string {

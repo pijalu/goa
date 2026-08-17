@@ -1,9 +1,9 @@
 {
   "id": "openai-codex-responses",
-  "match": { "api": "openai-codex-responses", "provider": "openai" },
+  "match": { "api": "openai-codex-responses" },
   "defaults": { "temperature": 1.0, "max_tokens": 4096 },
   "compat": {
-    "supports_store": true,
+    "supports_store": false,
     "max_tokens_field": "max_output_tokens",
     "thinking_format": "reasoning_content",
     "supports_prompt_cache": true,
