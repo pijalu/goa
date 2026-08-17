@@ -903,6 +903,33 @@ func applyProviderAPIKey(opts *agenticprovider.StreamOptions, pCfg *config.Provi
 	if apiKey != "" {
 		opts.APIKey = apiKey
 	}
+	// Codex OAuth: surface the ChatGPT account id so the codex API layer can
+	// select the subscription transport (backend-api URL + identity headers).
+	applyCodexAccountID(opts, pCfg, authStore)
+}
+
+// applyCodexAccountID populates opts.CodexAccountID when the provider's stored
+// credential is an OAuth token carrying a ChatGPT account id. An explicit
+// config API key or a stored API key means the plain api.openai.com transport,
+// so the account id stays empty.
+func applyCodexAccountID(opts *agenticprovider.StreamOptions, pCfg *config.ProviderConfig, authStore *auth.Store) {
+	if pCfg == nil || authStore == nil {
+		return
+	}
+	if pCfg.ID != "openai" && pCfg.ID != "codex" {
+		return
+	}
+	if pCfg.APIKey != "" {
+		return // explicit API key wins over OAuth
+	}
+	if _, hasKey := authStore.GetAPIKey(pCfg.ID); hasKey {
+		return // stored API key wins over OAuth
+	}
+	tokens, ok := authStore.GetOAuth(pCfg.ID)
+	if !ok || tokens == nil || tokens.AccountID == "" {
+		return
+	}
+	opts.CodexAccountID = tokens.AccountID
 }
 
 // applyProviderTimeoutRetries applies timeout and retry overrides.
@@ -1069,6 +1096,12 @@ func oauthProviderFor(id string) oauth.OAuthProvider {
 	switch id {
 	case "copilot", "github":
 		return oauth.NewGitHubCopilotOAuth()
+	case "codex", "openai":
+		prov, err := oauth.NewOpenAICodexOAuth()
+		if err != nil {
+			return nil
+		}
+		return prov
 	case "anthropic":
 		// Anthropic OAT requires client credentials; no auto-refresh without config.
 		return nil

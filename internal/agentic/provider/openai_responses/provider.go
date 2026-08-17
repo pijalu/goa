@@ -60,7 +60,7 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 	if baseURL == "" {
 		switch flavor {
 		case "codex":
-			baseURL = "https://api.openai.com/v1/responses/codex"
+			baseURL = codexBaseURL(opts)
 		default:
 			baseURL = "https://api.openai.com/v1/responses"
 		}
@@ -88,6 +88,11 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 	for k, v := range opts.Headers {
 		req.Header.Set(k, v)
 	}
+	// Codex OAuth subscription transport headers (after opts.Headers so the
+	// account identity is always present and not user-overridable).
+	if flavor == "codex" {
+		applyCodexHeaders(req, opts)
+	}
 
 	client := provider.NewStreamingHTTPClient()
 
@@ -104,6 +109,39 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 	go provider.CloseStreamOnCancel(ctx.GoContext(), stream)
 	go parseResponsesSSE(resp.Body, stream)
 	return stream, nil
+}
+
+// codexOAuthBaseURL is the subscription transport endpoint used when the
+// credential is an OAuth token (ChatGPT Plus/Pro), per pi's implementation.
+const codexOAuthBaseURL = "https://chatgpt.com/backend-api/codex/responses"
+
+// codexAPIKeyBaseURL is the endpoint used with a plain OpenAI API key.
+const codexAPIKeyBaseURL = "https://api.openai.com/v1/responses/codex"
+
+// codexBaseURL selects the codex endpoint based on credential kind.
+func codexBaseURL(opts provider.StreamOptions) string {
+	if opts.CodexAccountID != "" {
+		return codexOAuthBaseURL
+	}
+	return codexAPIKeyBaseURL
+}
+
+// applyCodexHeaders sets the Codex identity headers. The OAuth transport adds
+// the ChatGPT account id and beta flag; both transports tag the originator.
+func applyCodexHeaders(req *http.Request, opts provider.StreamOptions) {
+	if req.Header.Get("originator") == "" {
+		req.Header.Set("originator", "goa")
+	}
+	if opts.CodexAccountID == "" {
+		return
+	}
+	req.Header.Set("chatgpt-account-id", opts.CodexAccountID)
+	if req.Header.Get("OpenAI-Beta") == "" {
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+	}
+	if req.Header.Get("accept") == "" {
+		req.Header.Set("accept", "text/event-stream")
+	}
 }
 
 func buildResponsesBody(model provider.Model, ctx provider.Context, opts provider.StreamOptions) map[string]interface{} {

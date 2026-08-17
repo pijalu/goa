@@ -296,6 +296,12 @@ type StreamOptions struct {
 
 	ServiceTier string `json:"service_tier,omitempty"`
 
+	// CodexAccountID carries the OpenAI ChatGPT account id when the credential
+	// is an OAuth subscription token (vs a plain API key). Its presence selects
+	// the Codex subscription transport: base URL https://chatgpt.com/backend-api
+	// and the chatgpt-account-id/originator/OpenAI-Beta identity headers.
+	CodexAccountID string `json:"codex_account_id,omitempty"`
+
 	// Reasoning carries the high-level reasoning level selected by the caller.
 	// It is populated by StreamSimple and consumed by protocol builders.
 	Reasoning ThinkingLevel `json:"reasoning,omitempty"`
