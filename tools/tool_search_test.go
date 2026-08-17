@@ -203,3 +203,64 @@ func (*longDescDeferredTool) Schema() agentic.ToolSchema {
 func (*longDescDeferredTool) Execute(input string) (string, error) {
 	return "", nil
 }
+
+// TestScheduleToolsAreEager pins the report "schedule_create/delete/list
+// deferred to tool_search": the scheduler tools must stay in the eager block
+// (they do NOT implement Deferred), so the model can call them directly
+// without a tool_search round-trip. Guards against someone adding them to
+// deferred.go.
+func TestScheduleToolsAreEager(t *testing.T) {
+	reg := tools.NewToolRegistry()
+	// The full deferred family so deferral actually activates (>= threshold).
+	for _, d := range []agentic.Tool{
+		&tools.TerminalsTool{}, &tools.WebFetchTool{}, &tools.BGExecTool{},
+		&tools.MementoTool{}, &tools.SmartSearchTool{}, &tools.SSHBashTool{},
+		&tools.SessionSearchTool{}, &tools.SessionEventReadTool{},
+	} {
+		reg.Register(d)
+	}
+	// The scheduler tools under test.
+	reg.Register(&tools.ScheduleCreateTool{})
+	reg.Register(&tools.ScheduleDeleteTool{})
+	reg.Register(&tools.ScheduleListTool{})
+	reg.Register(tools.NewToolSearchTool(reg)) // loader, last (bootstrap order)
+
+	areg := agentic.NewToolRegistry(reg.All())
+
+	// Deferral is active (sanity: a real deferred tool is withheld).
+	if _, unloaded := areg.DeferredStatus("webfetch"); !unloaded {
+		t.Fatal("webfetch should be deferred (deferral active) but is not")
+	}
+	// The schedule tools are eager and present in the eager schema block.
+	var eager []string
+	for _, s := range areg.Schemas() {
+		eager = append(eager, s.Name)
+	}
+	for _, want := range []string{"schedule_create", "schedule_delete", "schedule_list"} {
+		if loader, unloaded := areg.DeferredStatus(want); unloaded {
+			t.Errorf("%s is DEFERRED (loader=%s), want eager", want, loader)
+		}
+		found := false
+		for _, n := range eager {
+			if n == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s missing from eager schema block (eager=%v)", want, eager)
+		}
+		// And the tool_search catalog must not advertise them as deferred.
+		if strings.Contains(catalogText(reg), want) {
+			t.Errorf("%s wrongly listed in tool_search deferred catalog", want)
+		}
+	}
+}
+
+// catalogText returns the loader's catalog description for assertions.
+func catalogText(reg *tools.ToolRegistry) string {
+	l, ok := reg.Get("tool_search")
+	if !ok {
+		return ""
+	}
+	return l.Schema().Description
+}

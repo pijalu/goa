@@ -27,17 +27,43 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## Tools deferred to tool_search: schedule_create / schedule_delete / schedule_list
-
-Report: the `schedule_*` tools (schedule_create, schedule_delete,
-schedule_list) are deferred to `tool_search` instead of being directly
-available.
-
-Expected: clarify intended availability/registration of the schedule tools so
-they are usable as first-class tools (or document why they must remain
-deferred).
-
 # Archive
+
+## ~~Tools deferred to tool_search: schedule_create / schedule_delete / schedule_list~~ — NOT A BUG (2026-08-17)
+
+Report: the `schedule_*` tools are deferred to `tool_search` instead of being
+directly available.
+
+**Finding: does not reproduce — the schedule tools are eager.** Investigation:
+- `tools/schedule.go` (`ScheduleCreateTool/ScheduleDeleteTool/ScheduleListTool`)
+  do NOT implement `agentic.Deferred`; they are absent from `tools/deferred.go`
+  (the deferred family is terminals/webfetch/bg_exec/memento/smartsearch/
+  ssh_bash/session_search/session_event_read only).
+- They are registered eagerly in `internal/app/subsystems.go:426-428` for every
+  session (no config gate), and `agentic.configureDeferral` only withholds tools
+  implementing `Deferred()`.
+- Reproduction building the FULL production tool set (all 8 deferred tools +
+  schedule + the `tool_search` loader) into the agent's registry shows
+  `DeferredStatus("schedule_*") == unloaded:false` and all three names present
+  in the eager schema block; deferral is active (webfetch withheld) as a control.
+- Both the installed binary (`~/go/bin/goa`, mtime today) and a fresh build
+  contain the `schedule_create` symbols.
+
+Likely cause of the report: a stale binary (predating commit `22eca59`
+"feat(tools): scheduler tools (TL2)", 2026-08-15) or a misread of the
+tool_search catalog. No code change required.
+
+Regression guard added: `tools/tool_search_test.go
+TestScheduleToolsAreEager` builds the production-shaped registry and pins that
+the schedule tools are eager + absent from the deferred catalog, so a future
+edit adding them to `deferred.go` fails loudly.
+
+Gates: vet ✓ gocognit ≤15 / gocyclo ≤12 (no new) ✓ race ✓. (Note: `go test
+./tools/` full-package run has a PRE-EXISTING, unrelated hang in
+`TestTerminals_Read_OffsetCount_Succeeds` — confirmed identical on the
+committed baseline via `git stash`; schedule/search/tool_search tests pass.)
+
+Commit: regression test below.
 
 ## ~~Codex login UX — method choice should be a list; OAuth steps should follow Pi TUI~~ — FIXED (2026-08-17)
 
