@@ -272,10 +272,19 @@ func TestProviderCommand_CodexAuthChoiceOAuthSkipsKeyPrompt(t *testing.T) {
 	ctx, sr, ir, _ := newMenuTestContext(t, cfg)
 	saver := &fakeConfigSaver{}
 	ctx.ConfigSaver = saver
-	// Stub the OAuth runner so no real browser/network flow starts.
+	// Stub the OAuth runner so no real browser/network flow starts. The runner
+	// is invoked on a background goroutine (async picker OAuth), so restore the
+	// seam only after it has been called.
+	called := make(chan struct{})
 	origRunner := loginFlowRunner
-	loginFlowRunner = func(core.Context, string) error { return nil }
-	defer func() { loginFlowRunner = origRunner }()
+	loginFlowRunner = func(core.Context, string) error {
+		close(called)
+		return nil
+	}
+	defer func() {
+		<-called
+		loginFlowRunner = origRunner
+	}()
 
 	preset := config.FindPreset("openai-codex")
 	if preset == nil {
@@ -286,7 +295,10 @@ func TestProviderCommand_CodexAuthChoiceOAuthSkipsKeyPrompt(t *testing.T) {
 	if strings.HasPrefix(ir.prompt, "API key") {
 		t.Errorf("OAuth path unexpectedly prompted for API key: %q", ir.prompt)
 	}
-	if got := cfg.GetProviderByID("openai-codex"); got == nil {
+	pickerProviderMu.Lock()
+	got := cfg.GetProviderByID("openai-codex")
+	pickerProviderMu.Unlock()
+	if got == nil {
 		t.Error("codex provider not added after OAuth choice")
 	}
 }

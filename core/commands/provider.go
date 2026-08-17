@@ -7,6 +7,7 @@ package commands
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
@@ -16,6 +17,12 @@ import (
 
 // Ensure tui is used
 var _ = tui.SelectorItem{}
+
+// pickerProviderMu serializes the provider picker's optimistic add + async
+// failure rollback, which mutate cfg.Providers off the commandLoop (unlike
+// every other provider edit, which is loop-owned). Tests also gate their
+// config reads on it to stay race-free.
+var pickerProviderMu sync.Mutex
 
 // ProviderCommand sets or displays the active provider.
 //
@@ -211,10 +218,7 @@ func promptCodexAuthChoice(ctx core.Context, cfg *config.Config, saver config.Co
 			return
 		}
 		if choice == "oauth" {
-			// Run the codex login flow (browser default), then add the provider
-			// with no stored key — the OAuth token is used at stream time.
-			_ = loginFlowRunner(ctx, preset.ID)
-			finalizePickedProvider(ctx, cfg, saver, preset.ID, preset.Name, preset.Endpoint, "")
+			startCodexOAuthFromPicker(ctx, cfg, saver, preset)
 			return
 		}
 		ctx.ShowInput("API key for "+preset.Name+":", "", func(apiKey string, ok bool) {
@@ -224,6 +228,46 @@ func promptCodexAuthChoice(ctx core.Context, cfg *config.Config, saver config.Co
 			finalizePickedProvider(ctx, cfg, saver, preset.ID, preset.Name, preset.Endpoint, apiKey)
 		})
 	})
+}
+
+// startCodexOAuthFromPicker launches the codex OAuth sign-in started from the
+// provider picker. It is invoked from the auth-choice selector callback, which
+// production wiring runs on the TUI commandLoop; the login flow's method
+// prompt (clarify) and browser/device wait would block that loop — freezing
+// the whole TUI — so they run on a background goroutine (all UI calls on that
+// path are goroutine-safe event-bus posts / internally applied). The provider
+// is added immediately with no stored key; if sign-in fails it is rolled back
+// unless it pre-existed.
+func startCodexOAuthFromPicker(ctx core.Context, cfg *config.Config, saver config.ConfigSaver, preset *config.ProviderPreset) {
+	pickerProviderMu.Lock()
+	preExisting := cfg.GetProviderByID(preset.ID) != nil
+	finalizePickedProvider(ctx, cfg, saver, preset.ID, preset.Name, preset.Endpoint, "")
+	pickerProviderMu.Unlock()
+	ctx.Flash("Starting " + preset.Name + " sign-in…")
+	go func() {
+		if err := loginFlowRunner(ctx, preset.ID); err != nil && !preExisting {
+			pickerProviderMu.Lock()
+			removeProviderConfig(cfg, saver, preset.ID)
+			pickerProviderMu.Unlock()
+			ctx.Flash(preset.Name + " sign-in failed: " + err.Error() + " (provider removed)")
+		}
+	}()
+}
+
+// removeProviderConfig deletes a provider entry and persists, mirroring
+// doRemoveProvider but without user-facing messaging (the caller flashes).
+func removeProviderConfig(cfg *config.Config, saver config.ConfigSaver, providerID string) {
+	for i, p := range cfg.Providers {
+		if p.ID != providerID {
+			continue
+		}
+		cfg.Providers = append(cfg.Providers[:i], cfg.Providers[i+1:]...)
+		if cfg.ActiveProvider == providerID {
+			cfg.ActiveProvider = ""
+		}
+		_ = saveHomeProvidersAndModels(cfg, saver)
+		return
+	}
 }
 
 // promptCustomProvider collects endpoint, API key and ID for a custom provider.
