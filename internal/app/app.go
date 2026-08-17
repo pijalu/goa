@@ -529,22 +529,34 @@ func (a *App) requestMainInputWithCancel(prompt string, onSubmit func(string), o
 	}
 }
 
+// clarifyResult is the outcome of a clarify round: the user's answer text and
+// whether they confirmed (false = cancelled).
+type clarifyResult struct {
+	text string
+	ok   bool
+}
+
 // clarify renders a ClarifyCard in the conversation and blocks until the user
-// answers on the main input line. It is the host backend for the
-// ask_user_question tool (core.Context.ClarifyFunc). Because tool execution
-// happens off the commandLoop, ALL state mutations (card append, pendingInput
-// registration, title set) are routed through app.apply so the commandLoop
-// remains the sole mutator. The blocking happens here on the tool goroutine.
+// answers. It is the host backend for the ask_user_question tool
+// (core.Context.ClarifyFunc). Because tool execution happens off the
+// commandLoop, ALL state mutations (card append, pendingInput registration,
+// title set) are routed through app.apply so the commandLoop remains the sole
+// mutator. The blocking happens here on the tool goroutine.
+//
+// Answer discipline mirrors Pi's login dialog: a card WITH options is answered
+// by picking from a navigable option list (selector overlay — arrow keys +
+// enter, esc cancels); a card without options keeps the free-text main input
+// line. The card bubble stays in the conversation as context either way.
 func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
-	type result struct {
-		text string
-		ok   bool
-	}
-	resCh := make(chan result, 1)
+	resCh := make(chan clarifyResult, 1)
 
 	a.apply(func() {
 		if a.subs.chat != nil {
 			a.subs.chat.AddClarifyCard(card)
+		}
+		if len(card.Options()) > 0 {
+			a.clarifyWithOptionList(card, resCh)
+			return
 		}
 		// The question and options live in the card bubble; the input-line title
 		// is only a compact cue. For a multi-question batch, show progress
@@ -563,9 +575,9 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 			inp.SetText("")
 		}
 		a.requestMainInputWithCancel(prompt, func(text string) {
-			resCh <- result{text, true}
+			resCh <- clarifyResult{text, true}
 		}, func() {
-			resCh <- result{"", false}
+			resCh <- clarifyResult{"", false}
 		})
 		if a.subs.tuiEngine != nil {
 			a.subs.tuiEngine.RequestRender()
@@ -574,6 +586,45 @@ func (a *App) clarify(card *tui.ClarifyCard) (string, bool) {
 
 	r := <-resCh
 	return r.text, r.ok
+}
+
+// clarifyWithOptionList answers an option-carrying ClarifyCard through a
+// navigable selector overlay (Pi showAuthSelect style) instead of the
+// free-text main input. The selector title carries the card title plus the
+// compact batch-progress cue; the highlighted row is the one whose label or
+// number the user confirms with Enter; Esc/Ctrl+C cancels (ok==false).
+// Runs on the commandLoop (via clarify's apply). Falls back to the free-text
+// input path when no engine is wired.
+func (a *App) clarifyWithOptionList(card *tui.ClarifyCard, resCh chan<- clarifyResult) {
+	engine := a.subs.tuiEngine
+	if engine == nil {
+		resCh <- clarifyResult{"", false}
+		return
+	}
+	title := card.Title()
+	if label := card.ProgressLabel(); label != "" {
+		title = strings.TrimSpace(title + " — " + label)
+	}
+	if title == "" {
+		title = card.Question()
+	}
+	options := card.Options()
+	items := make([]tui.SelectorItem, 0, len(options))
+	for _, opt := range options {
+		items = append(items, tui.SelectorItem{
+			Value:         opt,
+			Label:         opt,
+			PreserveOrder: true,
+		})
+	}
+	selCh := engine.ShowSelector(title, items, "")
+	go func() {
+		sel := <-selCh
+		// Deliver on the commandLoop so the wake-up is serialized with the
+		// rest of the UI state, mirroring how SelectOptionFunc callbacks are
+		// marshalled in commandcontext.go.
+		a.apply(func() { resCh <- clarifyResult{sel, sel != ""} })
+	}()
 }
 
 // clearMainInputRequest clears any pending main-input request and restores the

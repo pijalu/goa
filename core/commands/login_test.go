@@ -590,6 +590,99 @@ func TestCodexUIFromWriter_ManualPromptBridged(t *testing.T) {
 	}
 }
 
+// --- codex method selection: navigable option list (Pi showAuthSelect) ---
+
+// syncSelectOption builds a SelectOptionFunc that immediately delivers sel
+// through the callback (synchronous test double for the production async
+// wiring).
+func syncSelectOption(t *testing.T, wantItems []string, sel string, ok bool) func(string, []tui.SelectorItem, string, func(string, bool)) {
+	t.Helper()
+	return func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
+		var vals []string
+		for _, it := range items {
+			vals = append(vals, it.Value)
+		}
+		for _, want := range wantItems {
+			if !contains(vals, want) {
+				t.Errorf("method selector missing %q in %v", want, vals)
+			}
+		}
+		if current != codexMethodBrowser {
+			t.Errorf("selector default = %q, want browser highlighted first", current)
+		}
+		onSel(sel, ok)
+	}
+}
+
+func TestSelectCodexMethod_SelectorBrowser(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{AccessToken: "tok"}
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	ctx := core.Context{
+		SelectOptionFunc: syncSelectOption(t, []string{codexMethodBrowser, codexMethodDevice}, codexMethodBrowser, true),
+	}
+	if err := cmd.Run(ctx, []string{"openai", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !store.HasAuth("openai") {
+		t.Error("browser pick must store the oauth credential")
+	}
+}
+
+func TestSelectCodexMethod_SelectorDevice(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: &oauth.Tokens{AccessToken: "d"}} },
+	}
+	ctx := core.Context{
+		SelectOptionFunc: syncSelectOption(t, nil, codexMethodDevice, true),
+	}
+	if err := cmd.Run(ctx, []string{"openai", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !store.HasAuth("openai") {
+		t.Error("device pick must store the oauth credential")
+	}
+}
+
+func TestSelectCodexMethod_SelectorCancelDefaultsBrowser(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: &oauth.Tokens{AccessToken: "b"}} },
+	}
+	ctx := core.Context{
+		SelectOptionFunc: syncSelectOption(t, nil, "", false), // esc
+	}
+	if err := cmd.Run(ctx, []string{"openai", "oauth"}); err != nil {
+		t.Fatalf("cancelled selector must default to browser: %v", err)
+	}
+	if !store.HasAuth("openai") {
+		t.Error("browser default must store the oauth credential")
+	}
+}
+
+// TestSelectCodexMethod_HeadlessKeepsTextPrompt verifies the free-text
+// prompter path is kept when no selector is wired (scripts, headless).
+func TestSelectCodexMethod_HeadlessKeepsTextPrompt(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{
+		Store:       store,
+		prompter:    &fakePrompter{value: "device", ok: true},
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: &oauth.Tokens{AccessToken: "d"}} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"openai", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !store.HasAuth("openai") {
+		t.Error("headless device pick must store the oauth credential")
+	}
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {

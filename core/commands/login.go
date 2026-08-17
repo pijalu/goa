@@ -355,10 +355,53 @@ func isCodexProvider(provider string) bool {
 	}
 }
 
-// selectCodexMethod asks the user to pick browser vs device-code login. A nil
-// or cancelled prompter defaults to browser (the common case) so headless
-// scripted flows keep working.
+// codexMethodSelectorItems renders the browser-vs-device choice as a
+// navigable list, mirroring pi's showAuthSelect option list (arrow-key
+// navigate, enter to pick, esc cancels → default).
+func codexMethodSelectorItems() []tui.SelectorItem {
+	return []tui.SelectorItem{
+		{
+			Value:         codexMethodBrowser,
+			Label:         "Sign in with browser",
+			Description:   "Opens a browser tab; paste the redirect URL if the callback is missed",
+			PreserveOrder: true,
+		},
+		{
+			Value:         codexMethodDevice,
+			Label:         "Use a device code",
+			Description:   "Headless login — paste a code shown here on another device",
+			PreserveOrder: true,
+		},
+	}
+}
+
+// selectCodexMethod asks the user to pick browser vs device-code login. In a
+// live TUI (SelectOptionFunc wired) the choice is a navigable option list
+// (Pi showAuthSelect style), not a free-text prompt; headless falls back to
+// the text prompter. A nil/cancelled prompt defaults to browser (the common
+// case) so scripted flows keep working.
+//
+// SelectOptionFunc is async (the production wiring returns immediately and
+// delivers via a callback goroutine), so this blocks on a result channel.
+// That is safe: for codex OAuth, handleOAuth runs on the runOAuthFlow
+// background goroutine whenever an EventBus is wired, and the selector
+// callback itself marshals onto the TUI commandLoop (app.apply) — blocking
+// here cannot deadlock the loop.
 func (c *LoginCommand) selectCodexMethod(ctx core.Context) (string, error) {
+	if ctx.SelectOptionFunc != nil {
+		type result struct {
+			v  string
+			ok bool
+		}
+		resCh := make(chan result, 1)
+		ctx.SelectOption("OpenAI Codex login method", codexMethodSelectorItems(), codexMethodBrowser,
+			func(v string, ok bool) { resCh <- result{v, ok} })
+		r := <-resCh
+		if !r.ok || r.v == "" {
+			return codexMethodBrowser, nil
+		}
+		return r.v, nil
+	}
 	p := c.resolvePrompter(ctx)
 	choice, ok := p.Prompt(
 		"OpenAI Codex login method",

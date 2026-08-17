@@ -115,7 +115,11 @@ func TestLoginCodexOAuth_Filmstrip(t *testing.T) {
 		EventBus: event.MakeBus(16, 16, 16, 16),
 	}
 	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
-		ch := engine.ShowSelector(title, items, current)
+		// Show the selector on the commandLoop (ApplySync): showSelector
+		// mutates selector state (SetDone) which the loop concurrently reads
+		// in HandleInput — calling it from the caller goroutine races.
+		var ch <-chan string
+		engine.ApplySync(func() { ch = engine.ShowSelector(title, items, current) })
 		go func() {
 			sel := <-ch
 			// Production runs the selection callback on the UI goroutine via
@@ -193,4 +197,102 @@ func visibleHas(frame tui.AgentFrame, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestLoginCodexMethod_Filmstrip pins the Pi showAuthSelect UX for the codex
+// browser-vs-device method choice on a live TUI engine: the choice is a
+// navigable option list (selector overlay with both methods rendered), not a
+// free-text clarify prompt. It drives /login:openai-codex oauth, picks
+// "device" via arrow-down + enter, and asserts the device flow is selected
+// and the engine stays responsive throughout.
+func TestLoginCodexMethod_Filmstrip(t *testing.T) {
+	term := &fakeTerm{w: 100, h: 30}
+	engine := tui.NewTUI(term)
+	chat := tui.NewChatViewport()
+	engine.AddChild(chat)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+	film := tui.NewFilmstrip()
+
+	store, err := auth.NewStore(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	flow := &blockingCodexFlow{
+		release: make(chan struct{}),
+		started: make(chan struct{}),
+		tokens:  &oauth.Tokens{AccessToken: "device-tok"},
+	}
+	cmd := &LoginCommand{
+		Store:       store,
+		flowFactory: func(string) oauthFlow { return flow },
+	}
+
+	// Production-style Context: selector → engine overlay with callbacks
+	// marshalled onto the commandLoop; EventBus wired so the oauth flow runs
+	// on its background goroutine while the method selector is shown. The
+	// callback is QUEUED (engine.Apply, like app.apply) — ApplySync here would
+	// park the loop: selectCodexMethod legitimately blocks on the selection
+	// result, so the callback must not hold the loop while delivering it.
+	ctx := core.Context{
+		EventBus: event.MakeBus(16, 16, 16, 16),
+	}
+	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
+		// Show the selector on the commandLoop (ApplySync): showSelector
+		// mutates selector state (SetDone) which the loop concurrently reads
+		// in HandleInput — calling it from the caller goroutine races.
+		var ch <-chan string
+		engine.ApplySync(func() { ch = engine.ShowSelector(title, items, current) })
+		go func() {
+			sel := <-ch
+			engine.Apply(func() { onSel(sel, sel != "") })
+		}()
+	}
+
+	// Step 0: /login:openai-codex oauth runs on a background goroutine (as
+	// runOAuthFlow does in production — the synchronous Run would otherwise
+	// block inside SelectOption while the method selector waits for keys).
+	// The method selector then appears as an overlay.
+	runDone := make(chan error, 1)
+	go func() { runDone <- cmd.Run(ctx, []string{"openai-codex", "oauth"}) }()
+	waitForFrame(t, engine, "OpenAI Codex login method")
+	engine.RenderNow()
+	film.Capture("method-selector", engine.AgentFrame(), "")
+
+	// Both methods must be visible in the list (not a bare free-text prompt).
+	for _, want := range []string{"Sign in with browser", "Use a device code"} {
+		if !visibleHas(engine.AgentFrame(), want) {
+			t.Fatalf("method selector missing %q; visible = %v", want, engine.AgentFrame().Visible)
+		}
+	}
+
+	// Step 1: arrow-down to "Use a device code" and confirm. The flow starts
+	// (on the runOAuthFlow goroutine) without parking the engine loop.
+	term.sendKey("\x1b[B") // down → device
+	term.sendKey("\r")     // enter
+	select {
+	case <-flow.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("device flow did not start after picking device — selector stuck?")
+	}
+	assertEngineResponsive(t, engine)
+	engine.RenderNow()
+	film.Capture("device-flow-waiting", engine.AgentFrame(), "")
+
+	// Step 2: release the flow → tokens stored; the command returns cleanly.
+	close(flow.release)
+	waitForCondition(t, func() bool { return store.HasAuth("openai") })
+	if err := <-runDone; err != nil {
+		t.Fatalf("login run: %v", err)
+	}
+	engine.RenderNow()
+	film.Capture("device-success", engine.AgentFrame(), "")
+
+	if len(film.Frames()) < 3 {
+		t.Errorf("filmstrip captured %d snapshots, want >= 3", len(film.Frames()))
+	}
 }

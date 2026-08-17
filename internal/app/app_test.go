@@ -87,10 +87,14 @@ func containsRendered(cv *tui.ChatViewport, substr string) bool {
 }
 
 // TestClarify_InputTitleShowsProgressNotQuestion pins the fix for the
-// "long series of questions" UX bug: the input-line title must be a compact
-// progress cue ("... — 2 of 5"), NOT the full question text (which lives in
-// the card bubble). Previously the entire question/options were stuffed into
-// the editor title, so a long series ballooned the title with no progress cue.
+// "long series of questions" UX bug on the FREE-TEXT path: the input-line
+// title must be a compact progress cue ("... — 2 of 5"), NOT the full
+// question text (which lives in the card bubble). Previously the entire
+// question/options were stuffed into the editor title, so a long series
+// ballooned the title with no progress cue.
+//
+// (Cards WITH options no longer touch the editor title — they are answered
+// through a navigable selector overlay; see TestClarify_OptionsUseSelector.)
 func TestClarify_InputTitleShowsProgressNotQuestion(t *testing.T) {
 	term := &testTerminal{w: 100, h: 30}
 	engine := tui.NewTUI(term)
@@ -114,7 +118,7 @@ func TestClarify_InputTitleShowsProgressNotQuestion(t *testing.T) {
 	app := New(subs)
 
 	longQuestion := "Which of the many plausible approaches should the planner take when decomposing this work into independently schedulable sub-agent tasks?"
-	card := tui.NewClarifyCard("Clarifications needed", "ctx", longQuestion, []string{"option A", "option B"})
+	card := tui.NewClarifyCard("Clarifications needed", "ctx", longQuestion, nil) // free-text path
 	card.SetProgress(2, 5)
 
 	done := make(chan struct{})
@@ -190,6 +194,149 @@ func TestClarify_StandaloneTitleNoProgress(t *testing.T) {
 	if got != "Clarifications needed" {
 		t.Errorf("standalone title = %q, want %q", got, "Clarifications needed")
 	}
+}
+
+// clarifyKeyTerminal is a testTerminal that captures the input handler so a
+// test can drive selector keys (up/down/enter/esc) into the engine.
+type clarifyKeyTerminal struct {
+	testTerminal
+	onInput func(string)
+}
+
+func (t *clarifyKeyTerminal) Start(onInput func(string), _ func()) { t.onInput = onInput }
+
+func (t *clarifyKeyTerminal) sendKey(s string) {
+	if t.onInput != nil {
+		t.onInput(s)
+	}
+}
+
+// TestClarify_OptionsUseSelector pins the Pi showAuthSelect behavior: a
+// ClarifyCard WITH options is answered through a navigable selector overlay
+// (arrow keys + enter), NOT the free-text main input line. The editor title
+// must remain untouched and the picked option is returned.
+func TestClarify_OptionsUseSelector(t *testing.T) {
+	term := &clarifyKeyTerminal{}
+	term.w, term.h = 100, 30
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+
+	chat := tui.NewChatViewport()
+	inp := tui.NewEditor()
+	engine.AddChild(chat)
+	engine.AddChild(inp)
+	inp.SetTUI(engine)
+	engine.SetFocus(inp)
+
+	subs := testSubsystems()
+	subs.tuiEngine = engine
+	subs.chat = chat
+	subs.inputEditor = inp
+	app := New(subs)
+
+	card := tui.NewClarifyCard("OpenAI Codex login method", "", "Pick a login method",
+		[]string{"Sign in with browser", "Use a device code"})
+
+	type answer struct {
+		text string
+		ok   bool
+	}
+	ansCh := make(chan answer, 1)
+	go func() {
+		text, ok := app.clarify(card)
+		ansCh <- answer{text, ok}
+	}()
+
+	// Wait for the selector overlay to appear, then navigate down → enter.
+	waitForVisibleText(t, engine, "Sign in with browser")
+	engine.ApplySync(func() {
+		if got := inp.Title(); got != "" {
+			t.Errorf("editor title must stay untouched for option cards, got %q", got)
+		}
+		if app.pendingInput != nil {
+			t.Error("option cards must not register a main-input request")
+		}
+	})
+	term.sendKey("\x1b[B") // down → "Use a device code"
+	term.sendKey("\r")     // enter
+
+	select {
+	case got := <-ansCh:
+		if !got.ok || got.text != "Use a device code" {
+			t.Errorf("clarify = (%q, %v), want (%q, true)", got.text, got.ok, "Use a device code")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clarify did not return after selector confirm")
+	}
+}
+
+// TestClarify_OptionsSelectorCancel verifies Esc on the option selector
+// reports cancellation (ok==false) rather than blocking forever.
+func TestClarify_OptionsSelectorCancel(t *testing.T) {
+	term := &clarifyKeyTerminal{}
+	term.w, term.h = 100, 30
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.RunLoops()
+
+	chat := tui.NewChatViewport()
+	engine.AddChild(chat)
+
+	subs := testSubsystems()
+	subs.tuiEngine = engine
+	subs.chat = chat
+	app := New(subs)
+
+	card := tui.NewClarifyCard("Pick", "", "?", []string{"a", "b"})
+	type answer struct {
+		text string
+		ok   bool
+	}
+	ansCh := make(chan answer, 1)
+	go func() {
+		text, ok := app.clarify(card)
+		ansCh <- answer{text, ok}
+	}()
+
+	waitForVisibleText(t, engine, "a")
+	term.sendKey("\x1b") // esc → cancel
+
+	select {
+	case got := <-ansCh:
+		if got.ok || got.text != "" {
+			t.Errorf("cancelled clarify = (%q, %v), want (\"\", false)", got.text, got.ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("clarify did not return after selector cancel")
+	}
+}
+
+// waitForVisibleText polls the rendered frame until substr appears.
+func waitForVisibleText(t *testing.T, engine *tui.TUI, substr string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		engine.RenderNow()
+		for _, l := range engine.AgentFrame().Visible {
+			if strings.Contains(l, substr) {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var b strings.Builder
+	for _, l := range engine.AgentFrame().Visible {
+		b.WriteString(l)
+		b.WriteByte('\n')
+	}
+	t.Fatalf("frame never showed %q; visible:\n%s", substr, b.String())
 }
 
 func TestInitialFooterData_ResolvesProvider(t *testing.T) {

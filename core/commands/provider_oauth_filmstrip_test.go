@@ -71,7 +71,11 @@ func TestProviderPicker_CodexOAuth_Filmstrip(t *testing.T) {
 		EventBus:    event.MakeBus(16, 16, 16, 16),
 	}
 	ctx.SelectOptionFunc = func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
-		ch := engine.ShowSelector(title, items, current)
+		// Show the selector on the commandLoop (ApplySync): showSelector
+		// mutates selector state (SetDone) which the loop concurrently reads
+		// in HandleInput — calling it from the caller goroutine races.
+		var ch <-chan string
+		engine.ApplySync(func() { ch = engine.ShowSelector(title, items, current) })
 		go func() {
 			sel := <-ch
 			// Production runs the selection callback on the UI goroutine via
