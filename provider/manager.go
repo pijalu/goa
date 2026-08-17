@@ -916,20 +916,33 @@ func applyCodexAccountID(opts *agenticprovider.StreamOptions, pCfg *config.Provi
 	if pCfg == nil || authStore == nil {
 		return
 	}
-	if pCfg.ID != "openai" && pCfg.ID != "codex" {
-		return
-	}
 	if pCfg.APIKey != "" {
 		return // explicit API key wins over OAuth
 	}
-	if _, hasKey := authStore.GetAPIKey(pCfg.ID); hasKey {
+	storeID := codexStoreID(pCfg.ID)
+	if storeID == "" {
+		return
+	}
+	if _, hasKey := authStore.GetAPIKey(storeID); hasKey {
 		return // stored API key wins over OAuth
 	}
-	tokens, ok := authStore.GetOAuth(pCfg.ID)
+	tokens, ok := authStore.GetOAuth(storeID)
 	if !ok || tokens == nil || tokens.AccountID == "" {
 		return
 	}
 	opts.CodexAccountID = tokens.AccountID
+}
+
+// codexStoreID maps a configured provider id to the auth-store key that holds
+// its Codex credential. /login:openai (and the :codex alias) store under
+// "openai"; the catalog "openai-codex" provider shares that credential.
+func codexStoreID(providerID string) string {
+	switch providerID {
+	case "openai", "codex", "openai-codex":
+		return "openai"
+	default:
+		return ""
+	}
 }
 
 // applyProviderTimeoutRetries applies timeout and retry overrides.
@@ -1055,6 +1068,10 @@ func parsePositiveDuration(s string) time.Duration {
 }
 
 func resolveAPIKey(store *auth.Store, providerID string) string {
+	// Codex catalog provider shares the "openai" credential.
+	if sid := codexStoreID(providerID); sid != "" {
+		providerID = sid
+	}
 	if key, ok := store.GetAPIKey(providerID); ok {
 		return key
 	}
@@ -1096,7 +1113,7 @@ func oauthProviderFor(id string) oauth.OAuthProvider {
 	switch id {
 	case "copilot", "github":
 		return oauth.NewGitHubCopilotOAuth()
-	case "codex", "openai":
+	case "codex", "openai", "openai-codex":
 		prov, err := oauth.NewOpenAICodexOAuth()
 		if err != nil {
 			return nil

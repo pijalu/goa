@@ -122,6 +122,27 @@ func TestLookupProviderDef(t *testing.T) {
 	}
 }
 
+// TestOpenAICodexCatalogEntry pins the Codex subscription provider identity:
+// distinct Provider identity, codex-responses API, chatgpt backend base URL.
+func TestOpenAICodexCatalogEntry(t *testing.T) {
+	def := LookupProviderDefByID("openai-codex")
+	if def == nil {
+		t.Fatal("openai-codex not in catalog")
+	}
+	if def.Provider != ProviderOpenAICodex {
+		t.Errorf("Provider = %q, want openai-codex", def.Provider)
+	}
+	if def.API != ApiOpenAICodexResponses {
+		t.Errorf("API = %q, want openai-codex-responses", def.API)
+	}
+	if def.BaseURL != "https://chatgpt.com/backend-api" {
+		t.Errorf("BaseURL = %q", def.BaseURL)
+	}
+	if got := MatchProviderByURL("https://chatgpt.com/backend-api/codex/responses"); got == nil || got.ID != "openai-codex" {
+		t.Errorf("MatchProviderByURL = %v, want openai-codex", got)
+	}
+}
+
 // TestMatchProviderByNameOrURL_Poolside proves a catalog-only provider is
 // fingerprintable by both its identity and its URL pattern with no dedicated
 // code — the invariant behind the template-driven catalog.

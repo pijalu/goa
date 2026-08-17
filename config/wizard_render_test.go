@@ -164,20 +164,28 @@ func TestRunWizardWithTerminal_RefreshOnEveryChange(t *testing.T) {
 		t.Fatalf("Enter did not refresh to provider screen. Output:\n%s", term.strippedOutput())
 	}
 
-	// 3. Down → selection moves from OpenAI (index 0) to LM Studio (index 1).
-	// Reset output first: differential rendering leaves old frames in the
-	// buffer, so without resetting the Up assertion below would find stale text.
+	// 3. Down → selection moves from the first preset (index 0) to the second
+	// (index 1). Resolve names from the catalog so the assertion survives
+	// catalog additions/removals. Reset output first: differential rendering
+	// leaves old frames in the buffer, so without resetting the Up assertion
+	// below would find stale text.
+	presets := PresetProviders()
+	if len(presets) < 2 {
+		t.Fatalf("need at least two presets, got %d", len(presets))
+	}
+	second := presets[1].Name
+	first := presets[0].Name
 	term.reset()
 	term.send(tui.KeyDown)
-	if !term.waitForContent(t, ">   2) LM Studio", 2*time.Second) {
-		t.Fatalf("Down did not refresh provider list with LM Studio selected. Output:\n%s", term.strippedOutput())
+	if !term.waitForContent(t, ">   2) "+second, 2*time.Second) {
+		t.Fatalf("Down did not refresh provider list with %s selected. Output:\n%s", second, term.strippedOutput())
 	}
 
-	// 4. Up → selection moves back to OpenAI (index 0). Reset output first.
+	// 4. Up → selection moves back to the first preset. Reset output first.
 	term.reset()
 	term.send(tui.KeyUp)
-	if !term.waitForContent(t, ">   1) OpenAI", 2*time.Second) {
-		t.Fatalf("Up did not move selection back to OpenAI. Output:\n%s", term.strippedOutput())
+	if !term.waitForContent(t, ">   1) "+first, 2*time.Second) {
+		t.Fatalf("Up did not move selection back to %s. Output:\n%s", first, term.strippedOutput())
 	}
 
 	// 5. Escape → go back to welcome screen.
@@ -217,11 +225,23 @@ func TestRunWizardWithTerminal_NumberKeyRefreshes(t *testing.T) {
 		t.Fatalf("provider screen not rendered. Output:\n%s", term.strippedOutput())
 	}
 
-	// Press "3" to select Ollama (index 2).
+	// Press the number key matching Ollama's actual position in the preset
+	// list (the catalog drives ordering; don't hardcode an index).
+	ollamaIdx := -1
+	for i, p := range PresetProviders() {
+		if p.ID == "ollama" {
+			ollamaIdx = i
+			break
+		}
+	}
+	if ollamaIdx < 0 || ollamaIdx > 8 {
+		t.Fatalf("Ollama not found at a single-digit position (idx %d)", ollamaIdx)
+	}
+	key := string(rune('1' + ollamaIdx))
 	term.reset()
-	term.send("3")
-	if !term.waitForContent(t, ">   3) Ollama", 2*time.Second) {
-		t.Fatalf("number key '3' did not refresh selection to Ollama. Output:\n%s", term.strippedOutput())
+	term.send(key)
+	if !term.waitForContent(t, ">   "+key+") Ollama", 2*time.Second) {
+		t.Fatalf("number key %q did not refresh selection to Ollama. Output:\n%s", key, term.strippedOutput())
 	}
 
 	// Exit.

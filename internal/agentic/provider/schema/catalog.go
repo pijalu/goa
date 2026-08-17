@@ -281,6 +281,17 @@ var providerCatalog = []ProviderDef{
 		URLPatterns: []string{"api.openai.com"},
 	},
 	{
+		// OpenAI Codex (ChatGPT Plus/Pro subscription). OAuth-first: users
+		// authenticate via /login:openai:oauth (browser or device) and the
+		// transport targets the chatgpt.com backend API. An OpenAI API key
+		// also works (transport falls back to api.openai.com). The credential
+		// kind is resolved from the auth store at stream time.
+		ID: "openai-codex", Name: "OpenAI Codex", Provider: ProviderOpenAICodex,
+		API: ApiOpenAICodexResponses, BaseURL: "https://chatgpt.com/backend-api",
+		DefaultModel: "gpt-5.3-codex", EnvKeys: []string{"OPENAI_API_KEY"}, ModelsDevKey: "openai",
+		URLPatterns: []string{"chatgpt.com/backend-api"},
+	},
+	{
 		ID: "lmstudio", Name: "LM Studio", Provider: ProviderLMStudio,
 		API: ApiOpenAICompletions, BaseURL: "http://localhost:1234/v1",
 		DefaultModel: "local-model",

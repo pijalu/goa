@@ -71,7 +71,7 @@ func (c *LoginCommand) LongHelp() string {
 
 // CompleteArgs provides argument completions for providers and auth kinds.
 func (c *LoginCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	providers := []string{"copilot", "github", "codex", "anthropic", "openai", "kimi"}
+	providers := []string{"copilot", "github", "codex", "openai", "openai-codex", "anthropic", "kimi"}
 	var comps []core.ArgCompletion
 	for _, p := range providers {
 		if prefix == "" || strings.HasPrefix(p, prefix) {
@@ -79,6 +79,17 @@ func (c *LoginCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgC
 		}
 	}
 	return comps
+}
+
+// normalizeProviderID maps login aliases onto the canonical auth-store key.
+// /login:codex and /login:openai-codex share the "openai" Codex credential.
+func normalizeProviderID(provider string) string {
+	switch strings.ToLower(provider) {
+	case "codex", "openai-codex":
+		return "openai"
+	default:
+		return strings.ToLower(provider)
+	}
 }
 
 // Run executes the login command.
@@ -91,7 +102,7 @@ func (c *LoginCommand) Run(ctx core.Context, args []string) error {
 		return c.listProviders(ctx)
 	}
 
-	provider := args[0]
+	provider := normalizeProviderID(args[0])
 	if len(args) == 1 {
 		return c.listKindsOrStartDefault(ctx, provider)
 	}
@@ -203,7 +214,12 @@ const (
 )
 
 func isCodexProvider(provider string) bool {
-	return provider == "codex" || provider == "openai"
+	switch provider {
+	case "codex", "openai", "openai-codex":
+		return true
+	default:
+		return false
+	}
 }
 
 // selectCodexMethod asks the user to pick browser vs device-code login. A nil
@@ -273,7 +289,7 @@ func supportedAuthKinds(provider string) []string {
 	switch provider {
 	case "copilot", "github":
 		return []string{"oauth"}
-	case "codex", "openai":
+	case "codex", "openai", "openai-codex":
 		return []string{"apikey", "oauth"}
 	case "anthropic":
 		return []string{"apikey"}

@@ -287,8 +287,9 @@ func TestLoginCommandCodexMethodCancelDefaultsBrowser(t *testing.T) {
 	if err := cmd.Run(core.Context{}, []string{"codex", "oauth"}); err != nil {
 		t.Fatalf("cancelled method prompt must default to browser: %v", err)
 	}
-	if !store.HasAuth("codex") {
-		t.Error("expected stored credential after browser default")
+	// /login:codex normalizes to the "openai" store key.
+	if !store.HasAuth("openai") {
+		t.Error("expected stored credential after browser default (normalized to openai)")
 	}
 }
 
@@ -351,5 +352,37 @@ func TestNewOAuthFlowCodex(t *testing.T) {
 	}
 	if got := cmd.newOAuthFlow("kimi"); got != nil {
 		t.Errorf("kimi oauth flow = %v, want nil", got)
+	}
+}
+
+func TestNormalizeProviderID(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"codex", "openai"},
+		{"openai-codex", "openai"},
+		{"openai", "openai"},
+		{"github", "github"},
+		{"OpenAI-Codex", "openai"},
+	}
+	for _, tt := range tests {
+		if got := normalizeProviderID(tt.in); got != tt.want {
+			t.Errorf("normalizeProviderID(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestLoginCommandOpenAICodexAliasStoresUnderOpenAI(t *testing.T) {
+	store := mustStore(t)
+	expected := &oauth.Tokens{AccessToken: "tok", AccountID: "acct-x"}
+	cmd := &LoginCommand{
+		Store:       store,
+		prompter:    &fakePrompter{value: "browser", ok: true},
+		flowFactory: func(string) oauthFlow { return &fakeOAuthFlow{tokens: expected} },
+	}
+	if err := cmd.Run(core.Context{}, []string{"openai-codex", "oauth"}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	got, ok := store.GetOAuth("openai")
+	if !ok || got.AccessToken != "tok" {
+		t.Errorf("stored under openai key = %+v", got)
 	}
 }
