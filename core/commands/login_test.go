@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pijalu/goa/core"
@@ -384,5 +385,64 @@ func TestLoginCommandOpenAICodexAliasStoresUnderOpenAI(t *testing.T) {
 	got, ok := store.GetOAuth("openai")
 	if !ok || got.AccessToken != "tok" {
 		t.Errorf("stored under openai key = %+v", got)
+	}
+}
+
+// --- Guideline 5: validate the actual terminal output a user sees ---
+
+// runCapturing executes the command with an OutputBuffer and returns the
+// exact text the TUI would display.
+func runCapturing(t *testing.T, cmd *LoginCommand, args []string) string {
+	t.Helper()
+	var buf strings.Builder
+	ctx := core.Context{OutputBuffer: &buf}
+	if err := cmd.Run(ctx, args); err != nil {
+		t.Fatalf("run %v: %v", args, err)
+	}
+	return buf.String()
+}
+
+func TestLoginOpenAI_TerminalOutput_KindMenu(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	out := runCapturing(t, cmd, []string{"openai"})
+	for _, want := range []string{`Provider "openai" supports:`, "apikey", "oauth", "/login:openai:<kind>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestLoginOpenAI_TerminalOutput_APIKeyStored(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	out := runCapturing(t, cmd, []string{"openai", "apikey", "sk-live-1"})
+	if !strings.Contains(out, "Stored API key for openai") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestLoginOpenAI_TerminalOutput_OAuthSuccess(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{
+		Store:    store,
+		prompter: &fakePrompter{value: "browser", ok: true},
+		flowFactory: func(string) oauthFlow {
+			return &fakeOAuthFlow{tokens: &oauth.Tokens{AccessToken: "tok", AccountID: "a"}}
+		},
+	}
+	out := runCapturing(t, cmd, []string{"openai", "oauth"})
+	if !strings.Contains(out, "OAuth login for openai succeeded.") {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestLoginList_TerminalOutput_ShowsKind(t *testing.T) {
+	store := mustStore(t)
+	_ = store.SetOAuth("openai", &oauth.Tokens{AccessToken: "tok", AccountID: "acct-1"})
+	cmd := &LoginCommand{Store: store}
+	out := runCapturing(t, cmd, nil)
+	if !strings.Contains(out, "openai (oauth)") {
+		t.Errorf("list output = %q, want 'openai (oauth)'", out)
 	}
 }
