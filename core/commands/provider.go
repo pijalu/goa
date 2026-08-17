@@ -165,9 +165,16 @@ func runAddProviderFromPicker(host core.UIHost, cfg *config.Config, saver config
 	})
 }
 
-// finalizePresetProviderFromPicker adds a preset provider, prompting for an
-// API key when the preset requires one.
+// finalizePresetProviderFromPicker adds a preset provider. Codex-capable
+// presets first ask how to authenticate (Sign in with ChatGPT / OAuth vs API
+// key) instead of forcing a key prompt; other presets prompt for an API key
+// when the preset requires one.
 func finalizePresetProviderFromPicker(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, preset *config.ProviderPreset) {
+	ctx, isCtx := host.(core.Context)
+	if isCtx && isCodexAuthSelectable(preset) {
+		promptCodexAuthChoice(ctx, cfg, saver, preset)
+		return
+	}
 	if !preset.NeedsAPIKey {
 		finalizePickedProvider(host, cfg, saver, preset.ID, preset.Name, preset.Endpoint, "")
 		return
@@ -177,6 +184,45 @@ func finalizePresetProviderFromPicker(host core.UIHost, cfg *config.Config, save
 			return
 		}
 		finalizePickedProvider(host, cfg, saver, preset.ID, preset.Name, preset.Endpoint, apiKey)
+	})
+}
+
+// isCodexAuthSelectable reports whether a preset is an OpenAI Codex provider
+// that supports both OAuth sign-in and an API key.
+func isCodexAuthSelectable(preset *config.ProviderPreset) bool {
+	switch preset.ID {
+	case "openai-codex", "codex", "openai":
+		return true
+	default:
+		return false
+	}
+}
+
+// promptCodexAuthChoice asks how to authenticate a codex provider. OAuth runs
+// the codex login flow (browser or device) then adds the provider without a
+// stored key; API key falls back to the normal key prompt.
+func promptCodexAuthChoice(ctx core.Context, cfg *config.Config, saver config.ConfigSaver, preset *config.ProviderPreset) {
+	items := []tui.SelectorItem{
+		{Value: "oauth", Label: "Sign in with ChatGPT (OAuth)", Description: "Browser or device-code sign-in"},
+		{Value: "apikey", Label: "Use an API key", Description: "Paste a pre-generated OpenAI API key"},
+	}
+	ctx.SelectOption("Authenticate "+preset.Name+":", items, "oauth", func(choice string, ok bool) {
+		if !ok || choice == "" {
+			return
+		}
+		if choice == "oauth" {
+			// Run the codex login flow (browser default), then add the provider
+			// with no stored key — the OAuth token is used at stream time.
+			_ = loginFlowRunner(ctx, preset.ID)
+			finalizePickedProvider(ctx, cfg, saver, preset.ID, preset.Name, preset.Endpoint, "")
+			return
+		}
+		ctx.ShowInput("API key for "+preset.Name+":", "", func(apiKey string, ok bool) {
+			if !ok {
+				return
+			}
+			finalizePickedProvider(ctx, cfg, saver, preset.ID, preset.Name, preset.Endpoint, apiKey)
+		})
 	})
 }
 

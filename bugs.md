@@ -27,7 +27,65 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-No current issues.
+## Login UX — sign-on discovery, codex auth selection, completion
+
+Three related gaps around `/login` and OpenAI Codex provider onboarding.
+Follow the pi wizard flow.
+
+### Issues (confirmed against current code)
+
+1. **`/login` should provide a list of possible sign-on.**
+   Today bare `/login` only lists *already-stored* providers, or prints
+   "No credentials stored." It never enumerates the providers you *can* sign
+   into. Fix: list available providers with their supported auth kinds.
+
+2. **`/login:openai-codex` should open a list of possible auth + have
+   completion.**
+   - Completion: `CompleteArgs` (login.go:73) completes only provider names;
+     after a provider is typed it offers no auth-kind completion
+     (`apikey`/`oauth`/`oauth:device`). Fix: second-arg completion of kinds.
+   - Auth list: with one arg it prints kinds as plain text
+     (`listKindsOrStartDefault`) instead of an interactive selector like pi.
+     Fix: offer a selectable auth-kind menu (browser oauth, device oauth,
+     api key).
+
+3. **Openai-codex provider should not force an API key.**
+   `finalizePresetProviderFromPicker` (provider.go:170) prompts for an API key
+   whenever `preset.NeedsAPIKey` is true — codex has no OAuth path and the user
+   is forced to paste a key even though OAuth exists. Fix: for codex, offer an
+   auth-type choice (Sign in with ChatGPT / OAuth vs API key) and flow into
+   `/login:openai-codex` instead of the bare key prompt.
+
+### Fix plan
+
+- **A. `/login` discovery list** — `listProviders`: when no stored creds (or
+  always), also print available providers + kinds from a shared registry of
+  sign-on options. Reuse `supportedAuthKinds` over the known provider set.
+- **B. Kind completion** — extend `CompleteArgs` to detect when the first arg
+  is a known provider and complete the second arg with its kinds
+  (`apikey`, `oauth`, `oauth:device`).
+- **C. Interactive kind picker** — `listKindsOrStartDefault`: when multi-kind
+  and a UI host is available, `SelectOption` over kinds (oauth browser /
+  oauth device / api key) then dispatch into the same handlers. Headless keeps
+  current text fallback.
+- **D. Provider-picker codex auth choice** — in
+  `finalizePresetProviderFromPicker`, special-case codex-capable presets:
+  `SelectOption` "Sign in with ChatGPT (OAuth)" / "Use API key". OAuth → run
+  the codex login flow (device/browser), then add provider without a stored
+  key. API key → existing prompt path.
+
+### Test approach
+- `CompleteArgs`: provider-only prefix → kinds completed on second arg.
+- `/login` empty store → lists available sign-on options; non-empty → both.
+- Kind picker: fake host selector chooses oauth-device → device flow invoked;
+  apikey → key prompt. Headless (no UIHost) → text list (unchanged).
+- Provider picker: codex preset + OAuth choice → login flow runs, no key
+  prompt; API-key choice → key prompt (regression).
+- All existing login/provider tests still green.
+
+### Validation
+`go vet`, `staticcheck`, `gocognit -over 15`, `gocyclo -over 12`,
+`go test -race -cover ./...`; terminal-output tests for the new menus.
 
 # Archive
 

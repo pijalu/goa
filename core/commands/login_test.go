@@ -14,6 +14,7 @@ import (
 	"github.com/pijalu/goa/core"
 	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
 	"github.com/pijalu/goa/internal/auth"
+	"github.com/pijalu/goa/tui"
 )
 
 type fakePrompter struct {
@@ -160,9 +161,11 @@ func TestLoginCommandFakeOAuthFlow(t *testing.T) {
 type fakeOAuthFlow struct {
 	tokens *oauth.Tokens
 	err    error
+	ran    bool
 }
 
 func (f *fakeOAuthFlow) Run(_ context.Context, _ uiWriter, _ prompter) (*oauth.Tokens, error) {
+	f.ran = true
 	return f.tokens, f.err
 }
 
@@ -437,6 +440,107 @@ func TestLoginOpenAI_TerminalOutput_OAuthSuccess(t *testing.T) {
 	}
 }
 
+// --- Login UX: discovery list, kind completion, interactive picker ---
+
+func TestCompleteArgs_ProviderPrefix(t *testing.T) {
+	cmd := &LoginCommand{}
+	comps := cmd.CompleteArgs(core.Context{}, "open")
+	var vals []string
+	for _, c := range comps {
+		vals = append(vals, c.Value)
+	}
+	for _, want := range []string{"openai", "openai-codex"} {
+		if !contains(vals, want) {
+			t.Errorf("provider completion missing %q in %v", want, vals)
+		}
+	}
+}
+
+func TestCompleteArgs_KindCompletion(t *testing.T) {
+	cmd := &LoginCommand{}
+	// "openai-codex " (trailing space) → complete auth kinds.
+	comps := cmd.CompleteArgs(core.Context{}, "openai-codex ")
+	var vals []string
+	for _, c := range comps {
+		vals = append(vals, c.Value)
+	}
+	for _, want := range []string{"apikey", "oauth", "oauth:device"} {
+		if !contains(vals, want) {
+			t.Errorf("kind completion missing %q in %v", want, vals)
+		}
+	}
+}
+
+func TestCompleteArgs_KindPrefixFilter(t *testing.T) {
+	cmd := &LoginCommand{}
+	comps := cmd.CompleteArgs(core.Context{}, "openai-codex o")
+	for _, c := range comps {
+		if !strings.HasPrefix(c.Value, "o") {
+			t.Errorf("unexpected completion %q for prefix 'o'", c.Value)
+		}
+	}
+}
+
+func TestLoginList_ShowsAvailableSignOn(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	out := runCapturing(t, cmd, nil)
+	for _, want := range []string{"Available sign-on:", "openai-codex", "Run /login:<provider>:<kind>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("discovery output missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestLoginKindPicker_SelectsOAuthDevice(t *testing.T) {
+	store := mustStore(t)
+	flow := &fakeOAuthFlow{tokens: &oauth.Tokens{AccessToken: "tok"}}
+	cmd := &LoginCommand{Store: store, flowFactory: func(string) oauthFlow { return flow }}
+
+	var gotTitle string
+	var gotItems []tui.SelectorItem
+	ctx := core.Context{
+		OutputBuffer: &strings.Builder{},
+		SelectOptionFunc: func(title string, items []tui.SelectorItem, current string, onSel func(string, bool)) {
+			gotTitle, gotItems = title, items
+			onSel("oauth:device", true) // user picks device-code
+		},
+	}
+	if err := cmd.Run(ctx, []string{"openai-codex"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(gotTitle, "openai-codex") {
+		t.Errorf("picker title = %q", gotTitle)
+	}
+	// Picker must offer oauth, apikey, and oauth:device.
+	var vals []string
+	for _, it := range gotItems {
+		vals = append(vals, it.Value)
+	}
+	for _, want := range []string{"oauth", "apikey", "oauth:device"} {
+		if !contains(vals, want) {
+			t.Errorf("picker items missing %q in %v", want, vals)
+		}
+	}
+	// device flow ran and stored the token.
+	if !flow.ran {
+		t.Error("device flow was not invoked")
+	}
+	if _, ok := store.GetOAuth("openai"); !ok {
+		t.Error("oauth tokens not stored after device selection")
+	}
+}
+
+func TestLoginKindPicker_HeadlessFallsBackToText(t *testing.T) {
+	store := mustStore(t)
+	cmd := &LoginCommand{Store: store}
+	// No SelectOptionFunc → text list, no panic.
+	out := runCapturing(t, cmd, []string{"openai"})
+	if !strings.Contains(out, "supports:") {
+		t.Errorf("headless output = %q, want kind list", out)
+	}
+}
+
 func TestLoginList_TerminalOutput_ShowsKind(t *testing.T) {
 	store := mustStore(t)
 	_ = store.SetOAuth("openai", &oauth.Tokens{AccessToken: "tok", AccountID: "acct-1"})
@@ -445,4 +549,13 @@ func TestLoginList_TerminalOutput_ShowsKind(t *testing.T) {
 	if !strings.Contains(out, "openai (oauth)") {
 		t.Errorf("list output = %q, want 'openai (oauth)'", out)
 	}
+}
+
+func contains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

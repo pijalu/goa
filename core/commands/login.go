@@ -61,6 +61,37 @@ func (c *LoginCommand) Name() string { return "login" }
 // Aliases returns command aliases.
 func (c *LoginCommand) Aliases() []string { return nil }
 
+// NewLoginCommand builds a login command bound to an auth store.
+func NewLoginCommand(store *auth.Store) *LoginCommand { return &LoginCommand{Store: store} }
+
+// loginStoreFactory supplies the shared auth store to other commands (the
+// provider picker) that need to launch a codex OAuth login without holding a
+// *LoginCommand. Set during RegisterAll; nil until then.
+var loginStoreFactory func() *auth.Store
+
+// registerLoginStore wires the auth-store accessor used by the provider
+// picker's codex auth choice.
+func registerLoginStore(store *auth.Store) { loginStoreFactory = func() *auth.Store { return store } }
+
+// sharedAuthStore returns the registered auth store, or nil.
+func sharedAuthStore() *auth.Store {
+	if loginStoreFactory == nil {
+		return nil
+	}
+	return loginStoreFactory()
+}
+
+// loginFlowRunner runs a provider OAuth login from another command. It is a
+// package-level seam so tests can substitute a fake flow and avoid real
+// network/browser interaction. Defaults to the real login command.
+var loginFlowRunner = func(ctx core.Context, provider string) error {
+	store := sharedAuthStore()
+	if store == nil {
+		return fmt.Errorf("auth store not configured")
+	}
+	return NewLoginCommand(store).Run(ctx, []string{provider, "oauth"})
+}
+
 // ShortHelp returns a short description.
 func (c *LoginCommand) ShortHelp() string { return "Manage OAuth logins and API keys for providers" }
 
@@ -69,13 +100,52 @@ func (c *LoginCommand) LongHelp() string {
 	return help.LongHelp(c.Name())
 }
 
+// loginProviders lists the providers that expose a sign-on flow, in display
+// order. openai-codex is the canonical Codex entry; codex is kept as an alias.
+var loginProviders = []string{"copilot", "github", "openai", "openai-codex", "codex", "anthropic", "kimi"}
+
 // CompleteArgs provides argument completions for providers and auth kinds.
+// prefix is the raw text after "/login:" (e.g. "openai-codex o"). When the
+// first token is a known provider, the second token completes to that
+// provider's auth kinds.
 func (c *LoginCommand) CompleteArgs(ctx core.Context, prefix string) []core.ArgCompletion {
-	providers := []string{"copilot", "github", "codex", "openai", "openai-codex", "anthropic", "kimi"}
+	provider, kindPrefix, completingKind := splitLoginPrefix(prefix)
+	if completingKind {
+		return completeAuthKinds(provider, kindPrefix)
+	}
 	var comps []core.ArgCompletion
-	for _, p := range providers {
+	for _, p := range loginProviders {
 		if prefix == "" || strings.HasPrefix(p, prefix) {
 			comps = append(comps, core.ArgCompletion{Value: p, Description: "provider"})
+		}
+	}
+	return comps
+}
+
+// splitLoginPrefix splits the raw completion prefix into the provider token and
+// the in-progress kind token. completingKind is true once the user has typed a
+// provider followed by a space.
+func splitLoginPrefix(prefix string) (provider, kindPrefix string, completingKind bool) {
+	i := strings.IndexByte(prefix, ' ')
+	if i < 0 {
+		return prefix, "", false
+	}
+	return prefix[:i], prefix[i+1:], true
+}
+
+// completeAuthKinds returns kind completions for a provider. Codex providers
+// additionally expose the explicit oauth:device variant.
+func completeAuthKinds(provider, prefix string) []core.ArgCompletion {
+	kinds := supportedAuthKinds(normalizeProviderID(provider))
+	var comps []core.ArgCompletion
+	for _, k := range kinds {
+		if prefix == "" || strings.HasPrefix(k, prefix) {
+			comps = append(comps, core.ArgCompletion{Value: k, Description: "auth kind"})
+		}
+		if k == "oauth" && isCodexProvider(normalizeProviderID(provider)) {
+			if prefix == "" || strings.HasPrefix("oauth:device", prefix) {
+				comps = append(comps, core.ArgCompletion{Value: "oauth:device", Description: "headless device code"})
+			}
 		}
 	}
 	return comps
@@ -104,7 +174,7 @@ func (c *LoginCommand) Run(ctx core.Context, args []string) error {
 
 	provider := normalizeProviderID(args[0])
 	if len(args) == 1 {
-		return c.listKindsOrStartDefault(ctx, provider)
+		return c.listKindsOrStartDefault(ctx, provider, args[0])
 	}
 
 	authKind := strings.ToLower(args[1])
@@ -123,20 +193,25 @@ func (c *LoginCommand) Run(ctx core.Context, args []string) error {
 
 func (c *LoginCommand) listProviders(ctx uiWriter) error {
 	providers := c.Store.Providers()
-	if len(providers) == 0 {
-		ctx.Writef("No credentials stored.\n")
-		return nil
+	if len(providers) > 0 {
+		ctx.Writef("Stored providers:\n")
+		for _, p := range providers {
+			cred, _ := c.Store.Get(p)
+			ctx.Writef("  %s (%s)\n", p, string(cred.Kind))
+		}
+		ctx.Writef("\n")
 	}
-	ctx.Writef("Stored providers:\n")
-	for _, p := range providers {
-		cred, _ := c.Store.Get(p)
-		kind := string(cred.Kind)
-		ctx.Writef("  %s (%s)\n", p, kind)
+	// Always advertise the available sign-on options so /login doubles as
+	// discovery, not only a view of stored credentials.
+	ctx.Writef("Available sign-on:\n")
+	for _, p := range loginProviders {
+		ctx.Writef("  %-14s %s\n", p, strings.Join(supportedAuthKinds(normalizeProviderID(p)), ", "))
 	}
+	ctx.Writef("Run /login:<provider>:<kind> to authenticate.\n")
 	return nil
 }
 
-func (c *LoginCommand) listKindsOrStartDefault(ctx core.Context, provider string) error {
+func (c *LoginCommand) listKindsOrStartDefault(ctx core.Context, provider, display string) error {
 	kinds := supportedAuthKinds(provider)
 	if len(kinds) == 0 {
 		ctx.Writef("Unknown provider %q. Supported auth: apikey.\n", provider)
@@ -144,8 +219,12 @@ func (c *LoginCommand) listKindsOrStartDefault(ctx core.Context, provider string
 	}
 	if len(kinds) == 1 {
 		// Default to the only supported kind.
-		args := []string{provider, kinds[0]}
-		return c.Run(ctx, args)
+		return c.Run(ctx, []string{provider, kinds[0]})
+	}
+	// Multi-kind provider: offer an interactive picker when a selector callback
+	// is available (pi wizard style); otherwise print the kinds as text.
+	if ctx.SelectOptionFunc != nil {
+		return c.pickAuthKind(ctx, provider, display, kinds)
 	}
 	ctx.Writef("Provider %q supports:\n", provider)
 	for _, k := range kinds {
@@ -153,6 +232,60 @@ func (c *LoginCommand) listKindsOrStartDefault(ctx core.Context, provider string
 	}
 	ctx.Writef("Run /login:%s:<kind> to authenticate.\n", provider)
 	return nil
+}
+
+// pickAuthKind renders a selectable auth-kind menu for a multi-kind provider
+// and dispatches the chosen kind into the normal Run path. display is the
+// user-typed provider alias shown in the title; provider is the store key.
+func (c *LoginCommand) pickAuthKind(ctx core.Context, provider, display string, kinds []string) error {
+	items := make([]tui.SelectorItem, 0, len(kinds)+1)
+	for _, k := range kinds {
+		items = append(items, tui.SelectorItem{
+			Value:       k,
+			Label:       authKindLabel(k),
+			Description: authKindDescription(k, provider),
+		})
+	}
+	if isCodexProvider(provider) {
+		items = append(items, tui.SelectorItem{
+			Value:       "oauth:device",
+			Label:       "Sign in with ChatGPT (device code)",
+			Description: "Headless login — paste a code on another device",
+		})
+	}
+	ctx.SelectOption("Sign in to "+display+":", items, kinds[0], func(v string, ok bool) {
+		if !ok || v == "" {
+			return
+		}
+		args := []string{provider, v}
+		if v == "oauth:device" {
+			args = []string{provider, "oauth", "device"}
+		}
+		_ = c.Run(ctx, args)
+	})
+	return nil
+}
+
+func authKindLabel(kind string) string {
+	switch kind {
+	case "oauth":
+		return "Sign in with OAuth (browser)"
+	case "apikey":
+		return "Use an API key"
+	default:
+		return kind
+	}
+}
+
+func authKindDescription(kind, provider string) string {
+	switch kind {
+	case "oauth":
+		return "Browser-based sign-in for " + provider
+	case "apikey":
+		return "Paste a pre-generated API key"
+	default:
+		return ""
+	}
 }
 
 func (c *LoginCommand) handleAPIKey(ctx core.Context, provider string, rest []string) error {
