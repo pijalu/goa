@@ -577,21 +577,6 @@ func (a *App) startBackgroundHistoryLoad(inp *tui.Editor, engine *tui.TUI) {
 	}()
 }
 
-// saveInputHistory saves the input history to the state store.
-// Deprecated: Input history is now persisted per-session via session input
-// files. This function is retained for backward compatibility during migration.
-func (a *App) saveInputHistory(inp *tui.Editor) {
-	subs := a.subs
-	if subs.agentMgr == nil {
-		return
-	}
-	history := inp.GetHistory()
-	if err := subs.agentMgr.SetInputHistory(history); err != nil {
-		// Log error but don't fail the exit
-		subs.logger.Log(agentic.Error, "failed to save input history: %v", err)
-	}
-}
-
 // applyThinkingLevelToUI propagates the thinking level to components that
 // color their separator lines based on it.
 func (a *App) applyThinkingLevelToUI(level string) {

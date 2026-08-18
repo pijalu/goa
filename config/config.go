@@ -651,6 +651,7 @@ type SkillsConfig struct {
 	// only.
 	StickyOff []string `yaml:"sticky_off,omitempty"`
 }
+
 // ToolsConfig holds tool-specific sub-configurations.
 type ToolsConfig struct {
 	Bash        BashConfig           `yaml:"bash"`
@@ -1097,8 +1098,8 @@ type ContextCompressionConfig struct {
 	// OnErrorStrategy selects the strategy applied when a context-length
 	// error triggers recovery (used when on_context_error is true). Empty =
 	// "hybrid" (tool_elision → selective → summarize as last resort).
-	OnErrorStrategy   string                              `yaml:"on_error_strategy,omitempty"`
-	Strategy          string                              `yaml:"strategy"`
+	OnErrorStrategy string `yaml:"on_error_strategy,omitempty"`
+	Strategy        string `yaml:"strategy"`
 	// CacheGate controls the prefix-cache gate that defers proactive
 	// compression while the provider cache is presumed hot: "on" (default)
 	// or "off". Per-model overrides win over the global value. Turn it off

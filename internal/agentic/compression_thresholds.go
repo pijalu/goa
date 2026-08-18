@@ -155,19 +155,32 @@ const (
 //     presumed hot (cheap in-place maintenance churns the hot prefix cache, so
 //     it is deferred); the hard tier is never deferred.
 func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) compressionTier {
-	if rt.hardEnabled() && usagePercent >= rt.effectiveHard() {
+	cacheHot := !a.cacheAssumedColdForProactive()
+	if a.cfg.ContextCompression.DisableCacheGate {
+		cacheHot = false
+	}
+	decision := DecideCompactionPolicy(CompactionPolicyInput{
+		EstimatedTokens:            usagePercent,
+		MaxTokens:                  100,
+		SoftPercent:                rt.soft,
+		HighMarkPercent:            rt.hard,
+		HardPercent:                rt.hard,
+		CacheHot:                   cacheHot,
+		SoftStrategyAvailable:      rt.soft > 0,
+		HighMarkStrategyAvailable:  rt.hardEnabled(),
+		EmergencyStrategyAvailable: true,
+	})
+	switch decision {
+	case EmergencyFallback, HighMarkCompaction:
 		return tierHard
-	}
-	if rt.soft > 0 && usagePercent >= rt.soft {
-		// Simplified cache gate: defer ONLY soft maintenance while the cache is
-		// hot (the hard tier above already returned, bypassing the gate).
-		if !a.cfg.ContextCompression.DisableCacheGate && !a.cacheAssumedColdForProactive() {
-			a.logDeferral(usagePercent)
-			return tierNone
-		}
+	case SoftMaintenance:
 		return tierSoft
+	default:
+		if rt.soft > 0 && usagePercent >= rt.soft && cacheHot {
+			a.logDeferral(usagePercent)
+		}
+		return tierNone
 	}
-	return tierNone
 }
 
 // logDeferral records a cache-hot deferral of the SOFT layer at Info level:

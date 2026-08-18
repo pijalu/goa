@@ -578,16 +578,6 @@ func (a *App) echoScrolledOffToolResult(tc *tui.ToolExecutionComponent, ev *agen
 	a.subs.chat.AddToolResult(icon + " " + strings.Join(lines, "\n"))
 }
 
-// applyToolResultToWidget is retained for the orchestrator/multi-agent path
-// and any caller that applies a result directly to a known widget. The
-// foreground path delegates result application to the ToolCallTracker.
-func (a *App) applyToolResultToWidget(tc *tui.ToolExecutionComponent, ev *agentic.OutputEvent) {
-	tc.SetOutput(ev.Text)
-	tc.SetStatus(a.toolStatusFromResult(ev.Text))
-	tc.SetPartial(false)
-	a.clearToolBusy()
-}
-
 // handleToolStart flips a tool widget from waiting (⧖, queued) to running
 // (elapsed) at the TRUE execution start: the scheduler started the task
 // (EventToolStart). Until this arrives a finalized call stays Pending and

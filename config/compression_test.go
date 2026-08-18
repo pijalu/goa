@@ -218,8 +218,8 @@ func TestConfigValidateCompressionThresholds(t *testing.T) {
 		{
 			name: "unknown on_error_strategy rejected",
 			cfg: ContextCompressionConfig{
-				Enabled:          boolPtr(true),
-				OnErrorStrategy:  "bogus",
+				Enabled:         boolPtr(true),
+				OnErrorStrategy: "bogus",
 			},
 			wantErr: `on_error_strategy: unknown strategy "bogus"`,
 		},

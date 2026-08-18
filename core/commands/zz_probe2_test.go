@@ -15,7 +15,9 @@ func TestProbeEngineBlock(t *testing.T) {
 	term := &fakeTerm{w: 100, h: 30}
 	engine := tui.NewTUI(term)
 	engine.AddChild(tui.NewChatViewport())
-	if err := engine.Start(); err != nil { t.Fatal(err) }
+	if err := engine.Start(); err != nil {
+		t.Fatal(err)
+	}
 	defer engine.Stop()
 	engine.RunLoops()
 
@@ -49,6 +51,8 @@ func TestProbeEngineBlock(t *testing.T) {
 
 func values(items []tui.SelectorItem) []string {
 	var v []string
-	for _, it := range items { v = append(v, it.Value) }
+	for _, it := range items {
+		v = append(v, it.Value)
+	}
 	return v
 }

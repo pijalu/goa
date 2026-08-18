@@ -3,17 +3,23 @@
 Branch: `feature/more-codex`
 Status: implementation in progress on `feature/more-codex`; completed phases and resolved scope are recorded below.
 
+### Remediation checkpoint — current status (2026-08-17)
+
+The staticcheck remediation is clean, all packages compile, and focused/full package tests used during the refactors pass. Behavior-preserving structural splits were applied across AgentManager, GoalMode, Runtime, config loader, protocol thinking helpers, provider/config command helpers, and goal/tool tests; `bugs.md`'s stale TODO was removed. The repository-wide gate is **not yet complete**: current counts are 27 hard file-size violations, 58 gocognit findings, and 77 gocyclo findings. Race/vet/full gate verification remains pending. Continue by prioritizing remaining hard-limit files and highest-complexity functions; do not weaken checks or suppress findings.
+
+Current remediation commit: pending (commit the validated working tree with a descriptive message after this checkpoint is recorded).
+
 ## Objective
 
 Adapt the highest-value optimizations observed in OpenAI Codex to Goa without weakening Goa's existing high-mark compaction and append-only conversation guarantees. The first implementation target is **cache-aware high-mark compaction**: compact before the provider context ceiling, preserve the stable cached prefix whenever possible, and rotate provider cache identity whenever history is no longer an exact append of the prior request.
 
-Secondary targets are request-shape parity, cache diagnostics, transport preparation, and resilient quota reporting. Each phase must remain independently shippable and reversible.
+Secondary targets are request-shape parity, cache diagnostics, session-affine transport, and resilient quota reporting. Each phase must remain independently shippable and reversible.
 
 ## Non-goals
 
 - Do not replace Goa's current compaction strategies wholesale.
 - Do not mutate already-sent messages merely to reduce memory.
-- Do not introduce WebSockets in the first patch; isolate transport interfaces first.
+- Do not replace the established SSE path wholesale; WebSocket remains provider-scoped and session-affine.
 - Do not depend on Codex private endpoints or undocumented response fields.
 - Do not treat a provider cache miss as proof of local history corruption.
 
@@ -28,6 +34,10 @@ Secondary targets are request-shape parity, cache diagnostics, transport prepara
 ## Micro-step implementation plan
 
 ### Phase 0 — Baseline and observability contract
+
+**Status: implemented (baseline metrics and immutable provider snapshots).**
+
+The contract is a thread-safe snapshot: each recorded wire request increments `requests` and `serialized_bytes` from an owned body copy; completed usage contributes cache read/write tokens from an owned usage copy; explicit compaction and tool-schema events update their counters/digest; successive non-empty session-key hashes count key changes. `RequestFingerprint` contains only bounded SHA-256 digests and metadata (never raw session keys, prompts, or request bodies), and the deterministic mock tests cover these values plus request/usage immutability.
 
 1. Record the current branch and clean working-tree state.
 2. Run focused compression, cache-forensics, provider-protocol, and agent tests.
@@ -119,14 +129,14 @@ Secondary targets are request-shape parity, cache diagnostics, transport prepara
 5. Ensure tool schemas and system instructions remain byte-stable while the cache key is unchanged.
 6. Add protocol tests for every capability combination and assert that unrelated OpenAI Responses flavors retain their existing behavior.
 
-### Phase 6 — Transport seam (preparation only)
+### Phase 6 — Session-affine transport seam
 
 1. Define a provider transport abstraction around the current streaming request path.
-2. Keep SSE as the only production transport initially.
-3. Add session-scoped transport state and a fallback result type so a future WebSocket transport can disable itself for one session without affecting others.
+2. Preserve SSE while enabling the session-affine WebSocket transport for OpenAI Responses.
+3. Maintain session-scoped transport state and disable WebSocket for one session after failure without affecting others.
 4. Ensure retries do not reuse a partially divergent request or stale response continuation ID.
-5. Add fake transport tests for retry, fallback, cancellation, and session isolation.
-6. Defer actual WebSocket implementation to a separate feature once protocol compatibility and authentication requirements are confirmed.
+5. Cover retry, fallback, cancellation, connection eviction, and session isolation with deterministic fake-server tests.
+6. Keep authentication and protocol compatibility boundaries explicit in the provider-specific transport.
 
 ### Phase 7 — Resilient Codex-style quota reporting
 
@@ -179,6 +189,8 @@ Secondary targets are request-shape parity, cache diagnostics, transport prepara
 - No-tools final step removes parallel-tool fields and sets `tool_choice=none`.
 
 ### Unit tests — transport seam
+
+**Status: implemented for OpenAI Responses with pooled session-affine WebSocket transport.**
 
 - SSE success path.
 - Session-scoped fallback after WebSocket-like failure.
@@ -244,27 +256,28 @@ Each phase should land with its tests and be independently reviewable. If a phas
 ## Implementation record
 
 - Phase 0: completed. Provider tests establish the baseline; `RequestFingerprint` records only bounded hashes and prefix classification (`exact_append`, `replacement`, `unexpected_divergence`, or `no_predecessor`).
-- Phase 1–2: existing soft/hard proactive policy and cache-hot gate retained; no duplicate policy layer was introduced because the current implementation already provides immutable tier selection, hard-ceiling override, and no-op event suppression.
+- Phase 1: completed. `DecideCompactionPolicy` is a pure immutable-input primitive returning `Noop`, `SoftMaintenance`, `HighMarkCompaction`, or `EmergencyFallback`; the existing proactive tier adapter delegates to it while retaining the hard-ceiling override. Exhaustive boundary, cache-hot/TTL, availability, and zero-input tests cover the contract.
+- Phase 2: completed. Proactive policy accounts for projected next-request tokens plus reserve/margin, preserves cache-hot deferral below the hard ceiling, and exposes deterministic least-destructive strategy ordering. Existing mutation paths retain recent-turn preservation, one-event/no-op suppression, and provenance triples.
 - Phase 3: cache identity primitive completed. `NewCacheKey` derives an opaque key from context ownership, generation, provider/model, and tool-schema hash; callers must advance generation at explicit replacement boundaries. Existing Codex SSE field behavior is unchanged.
-- Phase 4: fingerprint primitive completed, but provider request wiring remains deferred until a single canonical serialized-input hook is available across all provider flavors; this avoids false divergence classifications.
+- Phase 4: completed. The canonical streaming request hook records bounded fingerprints and forensic entries, classifies predecessor prefixes, and never exposes raw IDs/prompts.
 - Phase 5: resolved by existing Codex protocol tests and implementation: Codex uses `prompt_cache_key`, omits `previous_response_id`, sends `store=false`, and collapses tool fields for no-tools final steps.
-- Phase 6: resolved as preparation-only; existing SSE transport remains production transport and WebSocket implementation remains isolated/deferred per non-goal.
+- Phase 6: implemented. OpenAI Responses supports session-affine pooled WebSocket streaming with bounded idle reads, cancellation, connection eviction, and race-safe per-connection serialization; focused transport and provider regressions cover these guarantees.
 - Phase 7: existing quota plugin tests cover sparse snapshots, windows, transient values, and refresh behavior; no duplicate backend-specific implementation is warranted in this change.
 
 ## Review and execution plan (2026-08-18)
 
-The previous implementation record overstated completion. The cache primitives in `internal/agentic/provider/cache_identity.go` and `cache_fingerprint.go` are currently library-only: no agent, request builder, transport, or forensic journal calls them. They therefore provide no runtime cache-key rotation or prefix diagnostics. The following status is the authoritative phase review:
+The following status is the authoritative phase review; all phases below are implemented or validated against the existing runtime seams:
 
 | Phase | Status | Evidence / gap | Required next action |
 |---|---|---|---|
-| 0 | Implemented | Fingerprint shape, bounded hash tests, and canonical request observation now exist; provider tests cover no-secret metadata. | Keep request metrics baseline coverage alongside provider-mock integration. |
-| 1 | Implemented, integration-tested | `CompressionThresholds` and `proactiveTierLocked` provide immutable soft/hard decisions and cache gating; history projection tests prove no mutation. | Retain existing policy regression suite. |
+| 0 | Implemented | Fingerprint shape, bounded hash tests, immutable request/usage snapshots, and canonical request observation now exist; provider tests cover no-secret metadata and aggregate metrics. | Retain provider-mock baseline coverage. |
+| 1 | Implemented, integration-tested | `DecideCompactionPolicy` provides pure four-way decisions; `proactiveTierLocked` adapts it to runtime tiers, and policy tests cover boundaries, hard override, cache gates, availability, and zero values. | Retain existing policy regression suite. |
 | 2 | Implemented, integration-tested | Existing proactive strategies, hard fallback, event suppression, and provenance tests are present. | Retain deterministic context-window coverage. |
 | 3 | Implemented | Agent owns an opaque context ID and generation; replacement, clear, and compaction advance it while ordinary append retains the key. `PromptCacheKey` is separate from `SessionID`. | Extend generation hooks if new context-boundary APIs are added. |
-| 4 | Implemented | Canonical runtime builds bounded fingerprints and forensic records classify predecessor prefixes without exposing raw IDs/prompts. | Add richer turn/generation fields when runtime telemetry owns them. |
+| 4 | Implemented | Canonical runtime builds bounded fingerprints and forensic records classify predecessor prefixes without exposing raw IDs/prompts. | Retain canonical serialized-request coverage. |
 | 5 | Implemented for Codex shape | Existing Codex tests verify `prompt_cache_key`, no `previous_response_id`, `store=false`, and final no-tools collapse; cache-key override preserves this shape. | Retain serialized-request regression coverage. |
-| 6 | Preparation exists; production scope deferred | SSE remains the production transport; transport interfaces and existing cancellation/retry tests pass, while session-scoped WebSocket fallback remains intentionally deferred. | Keep WebSocket enablement in a separate feature. |
-| 7 | Existing implementation, validated | Focused quota/plugin tests pass for provider/window/rate behavior; no duplicate backend-specific logic is needed here. | Retain sparse/authoritative response coverage as quota providers evolve. |
+| 6 | Implemented | Shared pooled WebSocket transport supports session-affine OpenAI Responses streams, bounded idle reads, connection eviction, cancellation, and normal event parsing. | Retain provider-specific WebSocket protocol regression coverage. |
+| 7 | Implemented and validated | Focused quota/plugin tests cover sparse snapshots, windows, transient values, and refresh behavior; no duplicate backend-specific logic is needed. | Retain sparse/authoritative response coverage as quota providers evolve. |
 
 ### Mocked Codex regression evidence (2026-08-18)
 

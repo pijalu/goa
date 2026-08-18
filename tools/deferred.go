@@ -14,11 +14,11 @@ package tools
 // every request yet still ship multi-hundred-byte schemas. Core tools
 // (read/write/edit/bash/search/python/ask/goal/run_skill) stay eager.
 
-func (*TerminalsTool) Deferred() bool       { return true }
-func (*WebFetchTool) Deferred() bool        { return true }
-func (*BGExecTool) Deferred() bool          { return true }
-func (*MementoTool) Deferred() bool         { return true }
-func (*SmartSearchTool) Deferred() bool     { return true }
-func (*SSHBashTool) Deferred() bool         { return true }
-func (*SessionSearchTool) Deferred() bool   { return true }
+func (*TerminalsTool) Deferred() bool        { return true }
+func (*WebFetchTool) Deferred() bool         { return true }
+func (*BGExecTool) Deferred() bool           { return true }
+func (*MementoTool) Deferred() bool          { return true }
+func (*SmartSearchTool) Deferred() bool      { return true }
+func (*SSHBashTool) Deferred() bool          { return true }
+func (*SessionSearchTool) Deferred() bool    { return true }
 func (*SessionEventReadTool) Deferred() bool { return true }

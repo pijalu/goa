@@ -963,44 +963,6 @@ func parsePerModelCompressionKey(path []string) (modelID, field string, ok bool)
 	return modelID, field, field != ""
 }
 
-func parseBool(value string) bool {
-	switch strings.ToLower(value) {
-	case "true", "on", "1", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
-// boolPtrValue dereferences a tri-state *bool config field; nil means the
-// feature is at its default (enabled, i.e. not disabled → false).
-func boolPtrValue(v *bool) bool {
-	return v != nil && *v
-}
-
-// parseToggle parses a UI-friendly on/off value.
-// When inverted is true, "off" means the underlying boolean is true (used for
-// thinking_collapsed, where off = collapse = true).
-func parseToggle(value string, inverted bool) bool {
-	v := parseBool(value)
-	if isOnOff(value) {
-		v = strings.ToLower(value) == "on"
-	}
-	if inverted {
-		return !v
-	}
-	return v
-}
-
-func isOnOff(value string) bool {
-	switch strings.ToLower(value) {
-	case "on", "off":
-		return true
-	default:
-		return false
-	}
-}
-
 func handleConfigReload(ctx core.Context) error {
 	if ctx.ConfigSaver == nil {
 		writeStr(ctx, "Config saver not available. Cannot reload.\n")

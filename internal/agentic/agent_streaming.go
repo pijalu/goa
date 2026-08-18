@@ -304,33 +304,6 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 	return nil
 }
 
-// hasStalled reports whether the model has stopped making progress in the
-// current turn. It checks whether any tool call in the most recent batch
-// was actually executed (not budget-exceeded, repeated, or looped). A model
-// that keeps calling the same tool with the same arguments, or whose calls
-// are all budget-exceeded, has stalled.
-func (a *Agent) hasStalled() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	// If no buffered calls at all, we can't judge progress from them,
-	// but if real tools were executed this round the model is not stalled.
-	if len(a.bufferedToolCalls) == 0 {
-		return !a.turnHadToolExecution
-	}
-
-	// If any buffered call was NOT in budgetToolCalls, it was executed
-	// for real — the model is making progress.
-	for _, tc := range a.bufferedToolCalls {
-		if _, skipped := a.budgetToolCalls[tc.ToolCallID]; !skipped {
-			return false
-		}
-	}
-
-	// All calls were budget-skipped, repeated, or looped — stalled.
-	return true
-}
-
 // prepareTurn resets per-turn state, applies proactive compression, and builds
 // the initial provider context and request options.
 

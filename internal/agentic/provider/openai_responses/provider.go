@@ -74,7 +74,7 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 
 	useWebSocket := opts.Transport == provider.TransportWebSocket
 	if useWebSocket {
-		return streamResponsesWebSocket(model, ctx, opts, bodyBytes)
+		return streamResponsesWebSocket(model, ctx, opts, bodyBytes, baseURL, flavor)
 	}
 
 	req, err := http.NewRequestWithContext(ctx.GoContext(), "POST", baseURL, bytes.NewReader(bodyBytes))
@@ -409,11 +409,6 @@ func parseResponsesSSE(body io.ReadCloser, stream *provider.AssistantMessageEven
 		}
 		stream.End(&provider.AssistantMessage{Content: blocks, StopReason: provider.StopReasonEndTurn})
 	}
-}
-
-// WebSocket streaming for OpenAI Responses API
-func streamResponsesWebSocket(model provider.Model, ctx provider.Context, opts provider.StreamOptions, bodyBytes []byte) (*provider.AssistantMessageEventStream, error) {
-	return nil, fmt.Errorf("OpenAI Responses WebSocket: not yet implemented (needs gorilla/websocket)")
 }
 
 // Azure OpenAI Responses

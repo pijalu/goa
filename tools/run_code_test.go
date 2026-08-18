@@ -133,10 +133,10 @@ func newRunCodeFixture(t *testing.T, mods ...func(*RunCodeTool)) (*RunCodeTool, 
 	rec := newDispatchRecorder()
 	rec.reg = reg
 	tool := &RunCodeTool{
-		ProjectDir:       t.TempDir(),
-		Jail:             true,
-		Registry:         reg,
-		DispatchDir:      t.TempDir(),
+		ProjectDir:        t.TempDir(),
+		Jail:              true,
+		Registry:          reg,
+		DispatchDir:       t.TempDir(),
 		MaxLogResultBytes: 256,
 	}
 	for _, m := range mods {

@@ -26,18 +26,6 @@ func (r *eventRecorder) OnEvent(ev agentic.OutputEvent) {
 	r.events = append(r.events, ev)
 }
 
-func (r *eventRecorder) count(pred func(agentic.OutputEvent) bool) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, e := range r.events {
-		if pred(e) {
-			n++
-		}
-	}
-	return n
-}
-
 // orchestratorStreamRecorder captures the OrchestratorMessage stream that the
 // UI actually renders (the ForegroundOrchestrator.events channel surface).
 type orchestratorStreamRecorder struct {
@@ -49,16 +37,6 @@ func (r *orchestratorStreamRecorder) Emit(from, to, content string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messages = append(r.messages, OrchestratorMessage{From: from, To: to, Content: content, Kind: "content"})
-}
-
-func (r *orchestratorStreamRecorder) kinds() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]string, 0, len(r.messages))
-	for _, m := range r.messages {
-		out = append(out, m.Kind+":"+m.To)
-	}
-	return out
 }
 
 // A foreground `agent` tool sub-agent must forward its streamed work —

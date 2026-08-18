@@ -158,9 +158,9 @@ func TestConfigValidateMaxInlineBytes(t *testing.T) {
 		v       int
 		wantErr bool
 	}{
-		{0, false},     // disabled (default)
-		{4096, false},  // typical cap
-		{-1, true},     // negative would spill every result
+		{0, false},    // disabled (default)
+		{4096, false}, // typical cap
+		{-1, true},    // negative would spill every result
 		{-4096, true},
 	} {
 		cfg := &Config{Tools: ToolsConfig{MaxInlineBytes: tt.v}}
@@ -186,9 +186,9 @@ func TestConfigValidateStreamLoopMinPeriod(t *testing.T) {
 		v       int
 		wantErr bool
 	}{
-		{0, false},   // default (50)
-		{8, false},   // absolute scan floor
-		{50, false},  // default value spelled out
+		{0, false},  // default (50)
+		{8, false},  // absolute scan floor
+		{50, false}, // default value spelled out
 		{4096, false},
 		{7, true},
 		{1, true},

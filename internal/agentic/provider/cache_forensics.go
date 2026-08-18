@@ -142,7 +142,10 @@ func (r *cacheForensicsRecord) complete(usage *schema.Usage) {
 	if entry == nil {
 		return // evicted before the response landed (heavy interleave)
 	}
-	entry.Usage = usage
+	usageSnapshot := *usage
+	entry.Usage = &usageSnapshot
+	j.metrics.CacheReadTokens += int64(usage.CacheReadTokens)
+	j.metrics.CacheWriteTokens += int64(usage.CacheCreationTokens)
 	st := j.seqState[r.seqKey]
 	if st == nil {
 		st = &cacheSeqState{}
@@ -156,16 +159,29 @@ func (r *cacheForensicsRecord) complete(usage *schema.Usage) {
 }
 
 // cacheForensicsJournal is the thread-safe rolling buffer + detector.
+type CacheForensicsMetrics struct {
+	Requests         int64              `json:"requests"`
+	SerializedBytes  int64              `json:"serialized_bytes"`
+	CacheReadTokens  int64              `json:"cache_read_tokens"`
+	CacheWriteTokens int64              `json:"cache_write_tokens"`
+	CompactionCount  int64              `json:"compaction_count"`
+	CacheKeyChanges  int64              `json:"cache_key_changes"`
+	ToolSchemaHash   string             `json:"tool_schema_hash,omitempty"`
+	LastFingerprint  RequestFingerprint `json:"last_fingerprint,omitempty"`
+}
+
 type cacheForensicsJournal struct {
-	mu        sync.Mutex
-	entries   []*CacheForensicsEntry // ring of complete requests, all sequences
-	pos       int
-	count     int
-	seq       int64
-	seqState  map[string]*cacheSeqState
-	reports   []CacheMissReport
-	reportSeq int64
-	notices   []CacheMissNotice
+	mu          sync.Mutex
+	entries     []*CacheForensicsEntry // ring of complete requests, all sequences
+	pos         int
+	count       int
+	seq         int64
+	seqState    map[string]*cacheSeqState
+	reports     []CacheMissReport
+	reportSeq   int64
+	notices     []CacheMissNotice
+	metrics     CacheForensicsMetrics
+	lastKeyHash string
 }
 
 func newCacheForensicsJournal() *cacheForensicsJournal {
@@ -223,6 +239,15 @@ func (j *cacheForensicsJournal) record(model schema.Model, sessionID, systemProm
 	j.mu.Lock()
 	j.seq++
 	entry.Seq = j.seq
+	j.metrics.Requests++
+	j.metrics.SerializedBytes += int64(len(bodySnapshot))
+	if fingerprint.SessionKeyHash != "" && j.lastKeyHash != "" && fingerprint.SessionKeyHash != j.lastKeyHash {
+		j.metrics.CacheKeyChanges++
+	}
+	if fingerprint.SessionKeyHash != "" {
+		j.lastKeyHash = fingerprint.SessionKeyHash
+	}
+	j.metrics.LastFingerprint = fingerprint
 	j.entries[j.pos] = entry
 	j.pos = (j.pos + 1) % cacheForensicsRingCapacity
 	if j.count < cacheForensicsRingCapacity {
@@ -337,6 +362,8 @@ func (j *cacheForensicsJournal) reset() {
 	j.reports = nil
 	j.reportSeq = 0
 	j.notices = nil
+	j.metrics = CacheForensicsMetrics{}
+	j.lastKeyHash = ""
 }
 
 // cacheSeqKey identifies one conversation's provider-cache sequence. The
@@ -369,8 +396,31 @@ func recordCacheForensicsRequest(model schema.Model, sessionID, systemPrompt, ur
 // first). Each report carries the complete request that missed and the
 // sequence's request before it. The slice is a snapshot safe for the caller
 // to marshal.
+
 func CacheForensicsReports() []CacheMissReport {
 	return cacheForensics.reportsSnapshot()
+}
+
+// RecordCompaction records one completed history compaction in baseline metrics.
+func RecordCompaction() {
+	cacheForensics.mu.Lock()
+	defer cacheForensics.mu.Unlock()
+	cacheForensics.metrics.CompactionCount++
+}
+
+// RecordToolSchemaHash stores the current non-sensitive tool-schema digest.
+func RecordToolSchemaHash(hash string) {
+	cacheForensics.mu.Lock()
+	defer cacheForensics.mu.Unlock()
+	cacheForensics.metrics.ToolSchemaHash = hash
+}
+
+// CacheForensicsMetricsSnapshot returns deterministic aggregate observations
+// for baseline tests and debug telemetry. The returned value is a snapshot.
+func CacheForensicsMetricsSnapshot() CacheForensicsMetrics {
+	cacheForensics.mu.Lock()
+	defer cacheForensics.mu.Unlock()
+	return cacheForensics.metrics
 }
 
 // TakeCacheMissNotices drains the pending cache-miss notices (oldest first).

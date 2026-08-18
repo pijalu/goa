@@ -40,6 +40,8 @@ func (c *sdkClient) connect(ctx context.Context, t sdk.Transport) error {
 	}
 	if c.loggingFn != nil {
 		fn := c.loggingFn
+		// The SDK retains this callback for compatibility; MCP logging is deprecated.
+		//lint:ignore SA1019 Goa exposes logging for protocol compatibility.
 		opts.LoggingMessageHandler = func(ctx context.Context, req *sdk.LoggingMessageRequest) {
 			msg := ""
 			if s, ok := req.Params.Data.(string); ok {
@@ -50,6 +52,7 @@ func (c *sdkClient) connect(ctx context.Context, t sdk.Transport) error {
 	}
 	c.client = sdk.NewClient(clientInfo, opts)
 	for _, uri := range c.roots {
+		//lint:ignore SA1019 Goa supports MCP roots for older servers.
 		c.client.AddRoots(&sdk.Root{URI: uri})
 	}
 	session, err := c.client.Connect(ctx, t, nil)

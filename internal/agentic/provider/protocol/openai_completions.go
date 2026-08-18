@@ -19,14 +19,8 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
 
-// protocolLog emits protocol-level diagnostics (P21 default-materialization
-// markers: which request fields came from defaults instead of an explicit
-// value, dsh's adapterDefaults reporting). It defaults to stderr like the
-// agentic logger; tests can capture output via setProtocolLogOutput.
+// protocolLog emits diagnostics for materialized provider defaults.
 var protocolLog = log.New(os.Stderr, "goa/protocol: ", log.LstdFlags)
-
-// setProtocolLogOutput redirects the package diagnostic logger. Test-only.
-func setProtocolLogOutput(w io.Writer) { protocolLog.SetOutput(w) }
 
 func init() {
 	Register(&openAICompletions{})
@@ -971,77 +965,3 @@ func parseRootFields(raw map[string]any) []parserMessage {
 	}
 	return out
 }
-
-func resolveThinkingLevel(model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile) string {
-	if opts.Reasoning != "" && opts.Reasoning != schema.ThinkingOff {
-		if native, ok := profile.Defaults.ThinkingLevelMap[opts.Reasoning]; ok {
-			return native
-		}
-		return string(opts.Reasoning)
-	}
-	if profile.Defaults.Thinking != "" {
-		return profile.Defaults.Thinking
-	}
-	return "medium"
-}
-
-func thinkingBodyForFormat(format, level string) map[string]any {
-	builders := map[string]func(string) map[string]any{
-		"openai":             openaiThinking,
-		"ant-ling":           openaiThinking,
-		"deepseek":           deepseekThinking,
-		"zai":                zaiThinking,
-		"together":           togetherThinking,
-		"openrouter":         openrouterThinking,
-		"string-thinking":    deepseekThinking,
-		"qwen":               qwenThinking,
-		"qwen-chat-template": qwenThinking,
-		"chat-template":      qwenThinking,
-		"chat-template-arg":  qwenThinking,
-	}
-	if b, ok := builders[format]; ok {
-		return b(level)
-	}
-	return nil
-}
-
-func openaiThinking(level string) map[string]any { return map[string]any{"reasoning_effort": level} }
-func deepseekThinking(level string) map[string]any {
-	body := map[string]any{"thinking": map[string]any{"type": "enabled"}}
-	if level != "" {
-		body["reasoning_effort"] = level
-	}
-	return body
-}
-func zaiThinking(level string) map[string]any {
-	return map[string]any{"thinking": map[string]any{"type": "enabled", "clear_thinking": false}}
-}
-
-// thinkingDisabledBodyForFormat returns the explicit "thinking off" body for
-// formats that support one. Formats without a disable signal return nil (the
-// body is simply omitted, as before). DeepSeek-compat formats send the
-// explicit disabled signal because DeepSeek defaults thinking ON for
-// thinking-capable models — omitting the body would leave the server-side
-// sticky default in effect (dsh wire-format note: "The adapter-owned off
-// effort maps to thinking: {type: 'disabled'}").
-func thinkingDisabledBodyForFormat(format string) map[string]any {
-	switch format {
-	case "zai":
-		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
-	case "deepseek", "string-thinking":
-		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
-	}
-	return nil
-}
-
-func togetherThinking(level string) map[string]any {
-	body := map[string]any{"reasoning": map[string]any{"enabled": true}}
-	if level != "" {
-		body["reasoning_effort"] = level
-	}
-	return body
-}
-func openrouterThinking(level string) map[string]any {
-	return map[string]any{"reasoning": map[string]any{"effort": level}}
-}
-func qwenThinking(level string) map[string]any { return map[string]any{"thinking": true} }

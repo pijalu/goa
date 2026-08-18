@@ -175,13 +175,13 @@ func (t *RunCodeTool) maxLogResultBytes() int {
 
 // runCodeRun carries the per-execution state shared by the tools binding.
 type runCodeRun struct {
-	tool    *RunCodeTool
-	ctx     context.Context
-	runID   string
-	seq     int
-	log     *common.DispatchLog
-	spill   *common.SpillStore
-	start   time.Time
+	tool     *RunCodeTool
+	ctx      context.Context
+	runID    string
+	seq      int
+	log      *common.DispatchLog
+	spill    *common.SpillStore
+	start    time.Time
 	toolsMod *py.Module
 }
 

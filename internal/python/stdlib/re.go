@@ -736,14 +736,6 @@ func (m *Match) getGroupIndex(idx int) int {
 	return m.indices[idx]
 }
 
-// parseTwoArgs extracts two required positional arguments from args.
-func parseTwoArgs(args py.Tuple, fn string) (py.Object, py.Object, error) {
-	var a, b py.Object
-	if err := py.UnpackTuple(args, nil, fn, 2, 2, &a, &b); err != nil {
-		return nil, nil, err
-	}
-	return a, b, nil
-}
 
 // parseTwoOrThreeArgs extracts two required positional arguments and one
 // optional int64 flags argument from args.

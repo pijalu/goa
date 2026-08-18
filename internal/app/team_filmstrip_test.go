@@ -47,7 +47,9 @@ func (s *filmstripSession) SetThinkingLevel(l string) error     { s.thinking = l
 func (s *filmstripSession) CurrentThinkingLevel() string        { return s.thinking }
 
 // filmstripPool records applied pool configs.
-type filmstripPool struct{ configs map[string]multiagent.AgentConfig }
+type filmstripPool struct {
+	configs map[string]multiagent.AgentConfig
+}
 
 func (p *filmstripPool) ApplyMember(role string, cfg multiagent.AgentConfig) error {
 	p.configs[role] = cfg
@@ -182,10 +184,7 @@ func TestTeamConfigMenuCRUD_Filmstrip(t *testing.T) {
 	sc.app.subs.cfg = cfg
 
 	// Capture the team definitions list as it would render in the selector.
-	items := make([]string, 0, len(cfg.Teams.Definitions))
-	for _, name := range cfg.TeamNames() {
-		items = append(items, name)
-	}
+	items := append([]string(nil), cfg.TeamNames()...)
 	sc.engine.ApplySync(func() {
 		sc.chat.AddSystemMessage("Teams: " + joinComma(items))
 	})

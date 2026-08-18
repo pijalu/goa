@@ -138,6 +138,7 @@ func (e *MessageTooBigError) Error() string {
 // WebSocketTransport executes WebSocket requests with session affinity.
 type WebSocketTransport struct {
 	Pool           *WebSocketPool
+	poolMu         sync.Mutex
 	HeaderTimeout  time.Duration
 	StreamFailures int
 	// IdleTimeout bounds the gap between received messages. Zero falls back to
@@ -179,10 +180,12 @@ func (t *WebSocketTransport) Do(ctx context.Context, req *TransportRequest) (*Tr
 }
 
 func (t *WebSocketTransport) pool() *WebSocketPool {
-	if t.Pool != nil {
-		return t.Pool
+	t.poolMu.Lock()
+	defer t.poolMu.Unlock()
+	if t.Pool == nil {
+		t.Pool = NewWebSocketPool()
 	}
-	return NewWebSocketPool()
+	return t.Pool
 }
 
 func (t *WebSocketTransport) maxFailures() int {
@@ -285,7 +288,11 @@ func (t *WebSocketTransport) copyMessages(conn *WebSocketConnection, pw *io.Pipe
 				_ = pw.CloseWithError(&MessageTooBigError{Size: len(msg)})
 				return
 			}
-			t.removeOnFailure(pool, sessionID, conn)
+			// A read failure makes this connection unusable for the next stream;
+			// evict it immediately so session affinity can redial cleanly.
+			if sessionID != "" {
+				pool.Remove(sessionID)
+			}
 			return
 		}
 		conn.mu.Lock()

@@ -577,7 +577,7 @@ func loopingTextEvents(unit string, copies int) []provider.AssistantMessageEvent
 // runStrikeTurn drives a full turn against a scripted provider, collecting
 // the emitted content texts, and returns the turn error, the texts, and the
 // agent (for inspecting the strike counter after the turn).
-func runStrikeTurn(t *testing.T, p *scriptedStreamProvider, cfg Config) (error, []string, *Agent) {
+func runStrikeTurn(t *testing.T, p *scriptedStreamProvider, cfg Config) (texts []string, agent *Agent, err error) {
 	t.Helper()
 	provider.RegisterApiProvider(p)
 	cfg.Model = provider.Model{
@@ -592,7 +592,7 @@ func runStrikeTurn(t *testing.T, p *scriptedStreamProvider, cfg Config) (error, 
 	if cfg.SystemPrompt == "" {
 		cfg.SystemPrompt = "test"
 	}
-	agent := NewAgent(cfg)
+	agent = NewAgent(cfg)
 
 	obs := &mockEventObserver{}
 	agent.AddObserver(obs)
@@ -603,15 +603,15 @@ func runStrikeTurn(t *testing.T, p *scriptedStreamProvider, cfg Config) (error, 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	err := agent.Run(ctx, "prompt")
+	err = agent.Run(ctx, "prompt")
 
-	var texts []string
+	texts = nil
 	for _, ev := range obs.Events() {
 		if ev.Type == EventContent && ev.Text != "" {
 			texts = append(texts, ev.Text)
 		}
 	}
-	return err, texts, agent
+	return texts, agent, err
 }
 
 func newStrikeProvider(name string, steps ...scriptedStreamStep) *scriptedStreamProvider {
@@ -630,7 +630,7 @@ func TestStreamLoopStrike_WarnsThenRecovers(t *testing.T) {
 			{Type: provider.EventTextDelta, Delta: "All done — concise answer without repetition."},
 		}},
 	)
-	err, texts, agent := runStrikeTurn(t, p, Config{})
+	texts, agent, err := runStrikeTurn(t, p, Config{})
 	if err != nil {
 		t.Fatalf("turn failed after soft strike: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestStreamLoopStrike_ThirdStrikeStopsTurn(t *testing.T) {
 	p := newStrikeProvider("test-hardstrike",
 		scriptedStreamStep{events: loopingTextEvents(streamLoopStrikeUnit, 6)},
 	)
-	err, texts, _ := runStrikeTurn(t, p, Config{})
+	texts, _, err := runStrikeTurn(t, p, Config{})
 	if err == nil {
 		t.Fatal("turn succeeded despite the model looping on every round")
 	}
@@ -683,7 +683,7 @@ func TestStreamLoopStrike_MaxStrikesOneStopsImmediately(t *testing.T) {
 	p := newStrikeProvider("test-onestrike",
 		scriptedStreamStep{events: loopingTextEvents(streamLoopStrikeUnit, 6)},
 	)
-	err, _, _ := runStrikeTurn(t, p, Config{StreamLoopMaxStrikes: 1})
+	_, _, err := runStrikeTurn(t, p, Config{StreamLoopMaxStrikes: 1})
 	if err == nil {
 		t.Fatal("turn succeeded despite maxStrikes=1 and a looping model")
 	}

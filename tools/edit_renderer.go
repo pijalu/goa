@@ -201,11 +201,6 @@ func parseOptionalInt(s string, fallback int) int {
 	return v
 }
 
-// renderDiffLines turns unified-diff lines into colored, numbered lines.
-func renderDiffLines(lines []string, oldStart, newStart int) []string {
-	return renderDiffLinesWithWidth(lines, oldStart, newStart, diffLineNumberWidth(lines, oldStart, newStart))
-}
-
 // renderDiffLinesWithWidth renders diff lines using a pre-computed line-number
 // width, so callers can cap the slice to the display size while keeping
 // line-number alignment consistent with the full diff.
