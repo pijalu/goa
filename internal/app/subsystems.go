@@ -96,6 +96,7 @@ type subsystems struct {
 	orchActive        *orchestrator.ActiveRuntime
 	orchCmd           *commands.OrchestrateCommand
 	trustMgr          *trust.Manager
+	authStore         *auth.Store
 	lifecycleRegistry *plugins.LifecycleRegistry
 	pluginMgr         *plugins.Manager
 	// pluginRT holds loaded plugin bridges, set by loadEnabledPlugins. It is
@@ -951,6 +952,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		log.Printf("Warning: auth store unavailable, falling back to in-memory: %v", err)
 		authStore, _ = auth.NewStore("")
 	}
+
 	if providerMgr != nil {
 		providerMgr.SetAuthStore(authStore)
 	}
@@ -996,6 +998,7 @@ func initSkillAndCommandLayer(cfg *config.Config, projectDir string, providerMgr
 		cmdRouter:     cmdRouter,
 		goaTool:       goaTool,
 		pluginMgr:     pluginMgr,
+		authStore:     authStore,
 	}
 }
 
@@ -1087,6 +1090,7 @@ type skillCommandBundle struct {
 	modeRegistry  *core.ModeRegistry
 	goaTool       *core.GoaCommandTool
 	pluginMgr     *plugins.Manager
+	authStore     *auth.Store
 }
 
 func initPromptAndWorkflowLayer(cfg *config.Config, projectDir string) (*prompts.Registry, *multiagent.WorkflowRegistry) {
@@ -1388,6 +1392,7 @@ func assembleSubsystems(cfg *config.Config, loader *config.CascadeLoader, projec
 		logger:            ab.agentLogger,
 		lifecycleRegistry: base.lifecycleRegistry,
 		pluginMgr:         sc.pluginMgr,
+		authStore:         sc.authStore,
 		noPlugins:         opts.NoPlugins,
 		MemoryEnabled:     !opts.NoMemory,
 		MemoryBudget:      opts.MemoryBudget,

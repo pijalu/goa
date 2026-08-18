@@ -12,6 +12,8 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
+	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	authstore "github.com/pijalu/goa/internal/auth"
 	"github.com/pijalu/goa/internal/event"
 	"github.com/pijalu/goa/plugins"
 	"github.com/pijalu/goa/plugins/bundled"
@@ -145,9 +147,7 @@ func (rt *pluginRuntime) contextFor(s *subsystems) plugins.PluginContext {
 
 // extendedContext assembles the optional bridges (http, storage, timers, ui,
 // hotkeys, browser, output, sessionUsage). Storage is rooted per-plugin under
-// the manager root; the loader swaps in the per-plugin id at RunFile time, so
-// a single shared StorageBridge rooted at the plugins dir suffices (each
-// plugin namespaced by its own id directory).
+// the manager root.
 func (rt *pluginRuntime) extendedContext(s *subsystems) *plugins.ExtendContext {
 	root := ""
 	if s.pluginMgr != nil {
@@ -170,7 +170,47 @@ func (rt *pluginRuntime) extendedContext(s *subsystems) *plugins.ExtendContext {
 			return pluginSessionUsage(s)
 		},
 		SegmentColor: pluginSegmentColor,
+		OAuthToken: func(ctx context.Context, provider string) (map[string]any, error) {
+			return pluginOAuthToken(ctx, s.authStore, provider)
+		},
 	}
+}
+
+func codexOAuthTokens(store *authstore.Store) (string, *oauth.Tokens, bool) {
+	for _, key := range []string{"codex", "openai-codex", "openai"} {
+		if tokens, ok := store.GetOAuth(key); ok && tokens != nil && tokens.AccessToken != "" {
+			return key, tokens, true
+		}
+	}
+	return "", nil, false
+}
+
+func pluginOAuthToken(ctx context.Context, store *authstore.Store, provider string) (map[string]any, error) {
+	if provider != "openai" && provider != "codex" && provider != "openai-codex" {
+		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
+	}
+	if store == nil {
+		return nil, fmt.Errorf("Goa auth store unavailable")
+	}
+	storeKey, tokens, ok := codexOAuthTokens(store)
+	if !ok {
+		return nil, fmt.Errorf("OAuth login required for Codex (use /login:codex:oauth)")
+	}
+	codex, err := oauth.NewOpenAICodexOAuth()
+	if err != nil {
+		return nil, fmt.Errorf("create Codex OAuth provider: %w", err)
+	}
+	source := oauth.NewTokenSource(codex, tokens)
+	if _, err := source.Token(ctx); err != nil {
+		return nil, err
+	}
+	current := source.Current()
+	if current != tokens {
+		if err := store.SetOAuth(storeKey, current); err != nil {
+			return nil, fmt.Errorf("persist refreshed OAuth token: %w", err)
+		}
+	}
+	return map[string]any{"accessToken": current.AccessToken, "accountId": current.AccountID}, nil
 }
 
 // pluginSegmentColor maps a semantic segment color name to the active theme's
