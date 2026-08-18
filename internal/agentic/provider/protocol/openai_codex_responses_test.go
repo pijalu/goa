@@ -54,6 +54,57 @@ func TestCodexBodyShape(t *testing.T) {
 	}
 }
 
+// TestCodexBodyOmitsPreviousResponseID pins the fix for the codex 400
+// "Unsupported parameter: previous_response_id": over SSE the ChatGPT Codex
+// subscription backend rejects previous_response_id outright, so session
+// affinity must be carried solely via prompt_cache_key (matching Pi's
+// buildRequestBody, where previous_response_id only exists on the WebSocket
+// continuation path Goa does not use).
+func TestCodexBodyOmitsPreviousResponseID(t *testing.T) {
+	model := schema.Model{
+		ID: "gpt-5.6-luna", Api: schema.ApiOpenAICodexResponses,
+		Provider: schema.ProviderOpenAICodex, Reasoning: true,
+	}
+	ctx := schema.Context{
+		SystemPrompt: "You are a coding agent.",
+		Messages: []schema.Message{
+			{Role: schema.RoleUser, Content: []schema.ContentBlock{{Type: schema.ContentBlockText, Text: "hi"}}},
+		},
+	}
+	profile := schema.ResolveProfile(model)
+
+	body, err := buildResponsesBody(model, ctx, schema.StreamOptions{SessionID: "session-abc"}, profile, "codex")
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(body, &m))
+
+	_, hasPrev := m["previous_response_id"]
+	assert.False(t, hasPrev, "codex SSE body must not send previous_response_id")
+	assert.Equal(t, "session-abc", m["prompt_cache_key"], "codex session affinity goes to prompt_cache_key")
+	assert.Equal(t, false, m["store"], "codex subscription requires store=false")
+}
+
+// TestOpenAIResponsesSendsPreviousResponseID ensures the plain OpenAI
+// Responses flavor still chains turns via previous_response_id (only the
+// codex flavor omits it), so the codex carve-out did not regress other
+// responses providers.
+func TestOpenAIResponsesSendsPreviousResponseID(t *testing.T) {
+	model := schema.Model{ID: "gpt-5", Api: schema.ApiOpenAIResponses, Provider: schema.ProviderOpenAI}
+	ctx := schema.Context{
+		Messages: []schema.Message{
+			{Role: schema.RoleUser, Content: []schema.ContentBlock{{Type: schema.ContentBlockText, Text: "hi"}}},
+		},
+	}
+	profile := schema.ResolveProfile(model)
+
+	body, err := buildResponsesBody(model, ctx, schema.StreamOptions{SessionID: "session-xyz"}, profile, "")
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(body, &m))
+
+	assert.Equal(t, "session-xyz", m["previous_response_id"], "plain responses flavor keeps previous_response_id chaining")
+}
+
 // TestCodexBodyNoToolsCollapse ensures the final-step text-only collapse
 // overrides codex's tool_choice:auto and drops parallel_tool_calls.
 func TestCodexBodyNoToolsCollapse(t *testing.T) {

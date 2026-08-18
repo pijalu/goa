@@ -208,7 +208,10 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	assert.Equal(t, "azure-session", req["previous_response_id"])
 	assert.Equal(t, "azure-session", req["prompt_cache_key"])
 
-	// Codex Responses: sends prompt_cache_key whenever a session ID is present.
+	// Codex Responses: sends prompt_cache_key whenever a session ID is present,
+	// but never previous_response_id — the ChatGPT Codex SSE backend rejects it
+	// (HTTP 400 "Unsupported parameter: previous_response_id"). Session affinity
+	// is carried by prompt_cache_key only (mirrors Pi/opencode codex).
 	codex := ForAPI(schema.ApiOpenAICodexResponses)
 	require.NotNil(t, codex)
 	body, err = codex.BuildRequest(
@@ -220,7 +223,7 @@ func TestOpenAIResponsesPromptCacheKey(t *testing.T) {
 	require.NoError(t, err)
 	req = map[string]any{}
 	require.NoError(t, json.Unmarshal(body, &req))
-	assert.Equal(t, "codex-session", req["previous_response_id"])
+	assert.NotContains(t, req, "previous_response_id", "codex SSE body must omit previous_response_id")
 	assert.Equal(t, "codex-session", req["prompt_cache_key"])
 }
 

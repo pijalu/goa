@@ -87,3 +87,55 @@ func TestApplyCodexHeaders_PreservesExplicitOriginator(t *testing.T) {
 		t.Errorf("explicit originator overwritten: %q", got)
 	}
 }
+
+// TestBuildResponsesBodyCodexSession pins the legacy codex request contract:
+// session affinity is carried via prompt_cache_key only — the ChatGPT Codex
+// SSE backend rejects previous_response_id (HTTP 400), store must be false,
+// and the system prompt rides in instructions rather than a leading message.
+func TestBuildResponsesBodyCodexSession(t *testing.T) {
+	model := provider.Model{ID: "gpt-5.6-luna"}
+	ctx := provider.Context{
+		SystemPrompt: "You are a coding agent.",
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "hi"}}},
+		},
+	}
+	body := buildResponsesBody(model, ctx, provider.StreamOptions{SessionID: "codex-session"}, "codex")
+
+	if _, hasPrev := body["previous_response_id"]; hasPrev {
+		t.Errorf("codex SSE body must not send previous_response_id")
+	}
+	if got := body["prompt_cache_key"]; got != "codex-session" {
+		t.Errorf("prompt_cache_key = %v, want codex-session", got)
+	}
+	if got := body["store"]; got != false {
+		t.Errorf("store = %v, want false", got)
+	}
+	if got := body["instructions"]; got != "You are a coding agent." {
+		t.Errorf("instructions = %v", got)
+	}
+	// The system prompt must not also appear as a leading input message.
+	for _, item := range body["input"].([]map[string]interface{}) {
+		if item["role"] == "system" {
+			t.Errorf("codex system prompt must not be an input message")
+		}
+	}
+}
+
+// TestBuildResponsesBodyPlainSession ensures non-codex responses flavors still
+// chain turns via previous_response_id (the codex carve-out did not regress).
+func TestBuildResponsesBodyPlainSession(t *testing.T) {
+	model := provider.Model{ID: "gpt-5"}
+	ctx := provider.Context{
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.ContentBlockText, Text: "hi"}}},
+		},
+	}
+	body := buildResponsesBody(model, ctx, provider.StreamOptions{SessionID: "s-1"}, "")
+	if got := body["previous_response_id"]; got != "s-1" {
+		t.Errorf("previous_response_id = %v, want s-1", got)
+	}
+	if _, hasCache := body["prompt_cache_key"]; hasCache {
+		t.Errorf("plain responses body must not send prompt_cache_key here")
+	}
+}

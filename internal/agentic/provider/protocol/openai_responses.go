@@ -97,7 +97,7 @@ func buildResponsesBody(model schema.Model, ctx schema.Context, opts schema.Stre
 		applyCodexBodyFields(body, ctx)
 	}
 	applyResponsesToolFields(body, ctx)
-	applyResponsesSessionFields(body, model, opts)
+	applyResponsesSessionFields(body, model, opts, isCodex)
 	applyResponsesSamplingFields(body, model, opts, profile)
 	if store := profile.Compat.SupportsStore; store != nil {
 		body["store"] = *store
@@ -133,13 +133,21 @@ func applyResponsesToolFields(body map[string]any, ctx schema.Context) {
 	body["tools"] = convertResponsesTools(ctx.Tools)
 }
 
-// applyResponsesSessionFields wires session continuation and prompt caching
-// (previous_response_id + prompt_cache_key) when a session ID is present.
-func applyResponsesSessionFields(body map[string]any, model schema.Model, opts schema.StreamOptions) {
+// applyResponsesSessionFields wires session continuation and prompt caching.
+// Plain and Azure Responses send previous_response_id + prompt_cache_key when
+// a session ID is present. The ChatGPT Codex subscription transport is
+// different: it rejects previous_response_id outright over SSE (HTTP 400
+// "Unsupported parameter: previous_response_id") and carries session affinity
+// solely via prompt_cache_key — matching Pi's buildRequestBody and opencode,
+// where previous_response_id only appears on the WebSocket continuation path
+// (which Goa does not use; Goa is SSE-only).
+func applyResponsesSessionFields(body map[string]any, model schema.Model, opts schema.StreamOptions, isCodex bool) {
 	if opts.SessionID == "" {
 		return
 	}
-	body["previous_response_id"] = opts.SessionID
+	if !isCodex {
+		body["previous_response_id"] = opts.SessionID
+	}
 	if shouldSendOpenAIResponsesPromptCacheKey(model, opts) {
 		body["prompt_cache_key"] = ClampOpenAIPromptCacheKey(opts.SessionID)
 		if opts.CacheRetention == schema.CacheRetentionLong {

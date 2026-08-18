@@ -66,7 +66,7 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 		}
 	}
 
-	body := buildResponsesBody(model, ctx, opts)
+	body := buildResponsesBody(model, ctx, opts, flavor)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -144,15 +144,31 @@ func applyCodexHeaders(req *http.Request, opts provider.StreamOptions) {
 	}
 }
 
-func buildResponsesBody(model provider.Model, ctx provider.Context, opts provider.StreamOptions) map[string]interface{} {
+func buildResponsesBody(model provider.Model, ctx provider.Context, opts provider.StreamOptions, flavor string) map[string]interface{} {
+	isCodex := flavor == "codex"
 	body := map[string]interface{}{
 		"model":  model.ID,
-		"input":  convertResponsesInput(ctx.Messages, ctx.SystemPrompt),
+		"input":  convertResponsesInput(ctx.Messages, systemPromptFor(ctx, isCodex)),
 		"stream": true,
+	}
+	if isCodex {
+		// ChatGPT Codex subscription transport (mirrors Pi/opencode): the system
+		// prompt rides in the dedicated instructions field, the store must be
+		// false (the subscription rejects store=true), and tool calls run auto /
+		// parallel by default.
+		instructions := ctx.SystemPrompt
+		if instructions == "" {
+			instructions = "You are a helpful assistant."
+		}
+		body["instructions"] = instructions
+		body["store"] = false
+		body["parallel_tool_calls"] = true
+		body["tool_choice"] = "auto"
 	}
 	if ctx.NoTools {
 		// Final-step collapse (P7): the model must answer text-only.
 		body["tool_choice"] = "none"
+		delete(body, "parallel_tool_calls")
 	} else {
 		body["tools"] = convertResponsesTools(ctx.Tools)
 	}
@@ -163,9 +179,25 @@ func buildResponsesBody(model provider.Model, ctx provider.Context, opts provide
 		body["temperature"] = *opts.Temperature
 	}
 	if opts.SessionID != "" {
-		body["previous_response_id"] = opts.SessionID
+		// Codex carries session affinity via prompt_cache_key only; the SSE
+		// backend rejects previous_response_id (HTTP 400). Other responses
+		// flavors chain turns via previous_response_id.
+		if isCodex {
+			body["prompt_cache_key"] = opts.SessionID
+		} else {
+			body["previous_response_id"] = opts.SessionID
+		}
 	}
 	return body
+}
+
+// systemPromptFor returns the system prompt to inline as a leading input
+// message; codex omits it because the prompt rides in the instructions field.
+func systemPromptFor(ctx provider.Context, isCodex bool) string {
+	if isCodex {
+		return ""
+	}
+	return ctx.SystemPrompt
 }
 
 func convertResponsesInput(messages []provider.Message, systemPrompt string) []map[string]interface{} {
@@ -404,7 +436,7 @@ func streamAzureResponses(model provider.Model, ctx provider.Context, opts provi
 		}
 	}
 
-	body := buildResponsesBody(model, ctx, opts)
+	body := buildResponsesBody(model, ctx, opts, "")
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
