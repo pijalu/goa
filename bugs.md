@@ -167,6 +167,53 @@ fixture reproducing all eight observed miss signatures.
 
 # Archive
 
+## ~~Text tool-call recovery does not recognize the `<invoke name=...>` dialect — GLM-emitted call rendered as content, never executed~~ — FIXED (2026-08-19)
+
+**Fix record.** `internal/agentic/toolcallparser.go` now recognizes the
+Anthropic-legacy dialect end to end: `invokeStartRE`/`invokeParamRE`/
+`</invoke>` regexes, `allInvokeCalls`/`nextInvokeCall` scanner (forward
+cursor, body bounded at the close or the next open under `allowIncomplete` —
+mirroring the DSML scanner), `parseInvokeParameters` folding
+`<parameter name="k">v</parameter>` pairs into the JSON argument object with
+the function form's value semantics, chained JSON → function → **invoke** →
+DSML in `parseToolCallsFromText`; `toolXMLSignals` gained `<invoke name`; and
+`stripToolMarkup` strips closed/incomplete/orphan-closer invoke blocks so
+recovered calls leave no display residue.
+
+Recovery is gated behind `auto_heal_tool_calls` (the malformed-fallback shape,
+unlike first-class DSML) — and the silent-loss hole is closed separately:
+`warnUnrecoveredInvokeCall` (`agent_streaming.go`) fires when recovery is off,
+no native call superseded, and a CLOSED invoke block names a registered tool
+(prose discussing the XML shape stays quiet). Config unchanged.
+
+Tests: parser table (`TestParseToolCallsInvokeForm`, `...FormIncomplete`,
+`...GarbagePrefix` — the exact "learance" incident shape, `...MultipleInvokes`,
+`TestParseInvokeParametersEmptyBody`, `TestHasToolSignal_Invoke`,
+`TestStripToolMarkup_Invoke`) plus the export replay
+`TestParseToolCallsInvokeRegressionFromExport` (4-parameter goal create,
+values intact); agent-level `TestInvokeToolCallRecoveredWithAutoHealOn` and
+`TestInvokeToolCallWarnsWithAutoHealOff` (executes on opt-in, warns exactly
+once naming the tool otherwise). Complexity note: `tryAutoHealToolCalls`
+gocyclo 13 is pre-existing at HEAD, unchanged by this fix (no branch added).
+
+<details><summary>Original investigation</summary>
+
+**Observed** (export `goa-export-20260819-004622.zip`, "Tool error"): the
+model (zai glm-5.3) degraded mid-sentence (garbled "learance") and emitted
+the next tool call as **text content** in the Anthropic-legacy XML dialect
+instead of native `tool_calls` — SSE deltas carried the block as `content`
+chunks (zero `tool_calls` deltas, finish_reason `stop`); the preceding native
+`goal:update` executed fine, so the transport was healthy and the model
+simply fell back to text for the second call. The block rendered verbatim and
+the `goal create` **never executed** — silent loss of intended work.
+
+**Root cause:** the parser supported `<tool_call>{json}`, `<function=name>`,
+and DSML — but not `<invoke name=...>/<parameter name=...>`; the gap was
+double (`hasToolSignal` never fired, no scanner existed), so even enabling
+`auto_heal_tool_calls` would not have recovered it.
+
+</details>
+
 ## ~~Z.ai/GLM requests carry no cache-affinity identity; server-side prefix evictions observed unrecoverable client-side~~ — FIXED (2026-08-19)
 
 **Fix record.** W1 executed as a catalog default rather than a user-config

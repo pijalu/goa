@@ -584,6 +584,7 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 	// DSML is recovered unconditionally; the generic XML forms only when the
 	// operator opted in to healing malformed local-model output.
 	if !hasDSMLSignal(combined) && !(a.cfg.AutoHealToolCalls && hasToolSignal(combined)) {
+		a.warnUnrecoveredInvokeCall(combined)
 		return false
 	}
 
@@ -637,6 +638,45 @@ func (a *Agent) tryAutoHealToolCalls() bool {
 		}
 	}
 	return len(a.bufferedToolCalls) > 0 || controller.ForceFinalAnswer()
+}
+
+// warnUnrecoveredInvokeCall surfaces a closed invoke-dialect tool call that
+// arrived as text while recovery is disabled (auto_heal_tool_calls off) and
+// no native call superseded it. Without this the call is silently rendered
+// as content and never executed — the exact loss observed in export
+// goa-export-20260819-004622 (a goal create emitted as text after a garbled
+// token). Only a closed block naming a REGISTERED tool with parseable
+// parameters warns, so prose merely discussing the XML shape stays quiet.
+func (a *Agent) warnUnrecoveredInvokeCall(combined string) {
+	if a.cfg.AutoHealToolCalls || len(a.bufferedToolCalls) > 0 {
+		return
+	}
+	sc := &toolCallScanner{content: combined, allowIncomplete: false}
+	for {
+		pc, ok := sc.nextInvokeCall()
+		if !ok {
+			return
+		}
+		if a.registeredToolName(pc.name) {
+			a.emitEvent(OutputEvent{
+				Type: EventProgress,
+				Text: fmt.Sprintf("warning: model emitted tool %q as text (<invoke>) and it was NOT executed — enable auto_heal_tool_calls to recover text tool calls", pc.name),
+			})
+			return
+		}
+	}
+}
+
+// registeredToolName reports whether name matches a tool in the agent's
+// current registry. Callers run in the same context as the other registry
+// reads in the stream-completion path (see toolListHashLocked).
+func (a *Agent) registeredToolName(name string) bool {
+	for _, s := range a.reg.Schemas() {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // completeStreamTurn finalizes the assistant buffer, executes buffered tool
