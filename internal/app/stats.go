@@ -139,7 +139,15 @@ type sessionStats struct {
 	PredictedN       int
 	CacheReadTotal   int
 	CacheWriteTotal  int
-	CacheMisses      int     // cache-bust count: zero-cache-read requests after the cache was established
+	// Cache-miss counters, split by failure mode (CM footer part and the
+	// persisted session summary): full = zero cache-read after establishment
+	// (entire prefix recomputed), partial = cache-read drop beyond tolerance
+	// (a suffix recomputed). CacheMissedTokens is the exact token damage
+	// summed over the counted misses (missed = prevCacheRead for full,
+	// prevCacheRead-cacheRead for partial).
+	CacheMissesFull    int   `json:"cm_full,omitempty"`
+	CacheMissesPartial int   `json:"cm_partial,omitempty"`
+	CacheMissedTokens  int64 `json:"cm_tokens,omitempty"`
 	SpeedTokPerSec   float64 // last turn output tok/s
 	ContextEstimate  int
 	ContextProjected int
@@ -316,7 +324,9 @@ func (a *App) clearStats() {
 	a.tokenPredictedTotal = 0
 	a.tokenCacheReadTotal = 0
 	a.tokenCacheWriteTotal = 0
-	a.tokenCacheMisses = 0
+	a.tokenCacheFullMisses = 0
+	a.tokenCachePartialMisses = 0
+	a.tokenCacheMissedTokens = 0
 	a.cacheReadEstablished = false
 	a.lastTurnPromptN = 0
 	a.lastTurnPredictedN = 0
@@ -736,7 +746,8 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 	tokenTotalPredicted := a.tokenPredictedTotal
 	tokenCacheRead := a.tokenCacheReadTotal
 	tokenCacheWrite := a.tokenCacheWriteTotal
-	cacheMisses := a.tokenCacheMisses
+	cacheMissesFull := a.tokenCacheFullMisses
+	cacheMissesPartial := a.tokenCachePartialMisses
 	statsSeen := a.turnStatsSeen
 	a.turnStatsSeen = false // next turn starts with no stats observed
 	a.statsMu.Unlock()
@@ -753,8 +764,8 @@ func (a *App) logTurnStats(ev *agentic.OutputEvent) {
 
 	line := fmt.Sprintf("[stats] turn %d: in=%d out=%d speed=%.1f ctx=%.1f%%/%d",
 		turn, promptN, predictedN, speed, ctxPct, ctxMax)
-	if cacheMisses > 0 {
-		line += fmt.Sprintf(" cm=%d", cacheMisses)
+	if cacheMissesFull > 0 || cacheMissesPartial > 0 {
+		line += fmt.Sprintf(" cm=%d|%d", cacheMissesFull, cacheMissesPartial)
 	}
 
 	if modelCfg != nil && modelCfg.Pricing != nil {
@@ -1055,9 +1066,19 @@ func (a *App) applyTokenTimingsLocked(timings *agentic.TokenTimings) {
 	if timings.CacheReadTokens > 0 {
 		a.cacheReadEstablished = true
 	}
-	if (timings.CacheReadTokens == 0 && a.cacheReadEstablished) ||
-		(prevCacheRead > 0 && timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead) {
-		a.tokenCacheMisses++
+	// The two failure modes carry different token damage:
+	//   - full miss (zero read after establishment): the ENTIRE previous
+	//     prefix was recomputed — missed = prevCacheRead.
+	//   - partial miss (drop beyond tolerance): only a SUFFIX was
+	//     recomputed — missed = prevCacheRead - cacheRead.
+	// The zero-read rule takes precedence so a miss is never double-counted.
+	switch {
+	case timings.CacheReadTokens == 0 && a.cacheReadEstablished:
+		a.tokenCacheFullMisses++
+		a.tokenCacheMissedTokens += int64(prevCacheRead)
+	case prevCacheRead > 0 && timings.CacheReadTokens+cacheBustDropToleranceTokens < prevCacheRead:
+		a.tokenCachePartialMisses++
+		a.tokenCacheMissedTokens += int64(prevCacheRead - timings.CacheReadTokens)
 	}
 
 	// Capture last-turn output speed
@@ -1129,7 +1150,9 @@ func (a *App) buildFooterStatsLocked() sessionStats {
 	applyPricing(&st, a.subs.cfg, a.subs.cfg.ActiveModel)
 	st.MicroCompacts = a.microCompacts
 	st.Compacts = a.compacts
-	st.CacheMisses = a.tokenCacheMisses
+	st.CacheMissesFull = a.tokenCacheFullMisses
+	st.CacheMissesPartial = a.tokenCachePartialMisses
+	st.CacheMissedTokens = a.tokenCacheMissedTokens
 	st.LastCacheHit = a.lastCacheHit
 	st.Compactions = append([]CompactionRound(nil), a.compactions...)
 	return st
@@ -1352,10 +1375,11 @@ func buildFooterStatParts(s sessionStats) []string {
 	if s.LastCacheHit.Seen {
 		parts = append(parts, formatLastCacheHitPart(s.LastCacheHit))
 	}
-	// Cache-miss counter, next to CH and only when non-zero (a miss means the
-	// established cache was bypassed — compression, TTL expiry, prefix churn).
-	if s.CacheMisses > 0 {
-		parts = append(parts, formatCacheMissPart(s.CacheMisses))
+	// Cache-miss counter, next to CH and only when at least one kind is
+	// non-zero (a miss means the established cache was bypassed —
+	// compression, TTL expiry, prefix churn).
+	if part := formatCacheMissPartIfAny(s); part != "" {
+		parts = append(parts, part)
 	}
 	if s.ToolCalls > 0 {
 		parts = append(parts, formatToolCallPart(s.ToolCalls, s.ToolCallLevel))
@@ -1461,11 +1485,79 @@ func cacheHitColorFor(pct, prevPct float64, hasPrev bool) string {
 	}
 }
 
-// formatCacheMissPart renders the cache-miss counter in warning orange:
-// misses mean the established prefix cache was bypassed, so they are always
-// worth noticing (and hidden at zero).
-func formatCacheMissPart(misses int) string {
-	return ansi.Fg("#d29922") + fmt.Sprintf("CM:%d", misses) + ansi.Reset
+// CM part colors. Both values reuse hexes already established in this
+// file/theme: the red is the cache-hit drop / token_critical red, the
+// orange is the historical CM warning color.
+const (
+	cacheMissFullColor    = "#f85149"
+	cacheMissPartialColor = "#d29922"
+)
+
+// formatCacheMissPartIfAny renders the CM part, or "" when both miss kinds
+// are zero (a clean session keeps the part hidden).
+func formatCacheMissPartIfAny(s sessionStats) string {
+	if s.CacheMissesFull == 0 && s.CacheMissesPartial == 0 {
+		return ""
+	}
+	return formatCacheMissPart(s.CacheMissesFull, s.CacheMissesPartial, s.CacheMissedTokens)
+}
+
+// formatCacheMissPart renders the cache-miss counter split by failure mode:
+// CM:X|Y·N where X counts FULL misses (red — the entire prefix was
+// recomputed) and Y counts PARTIAL misses (warning orange — a suffix was
+// recomputed). N is the exact token damage summed over the counted misses,
+// rendered dim. A zero count is omitted per kind (CM:2 full-only, CM:|3
+// partial-only); the caller hides the whole part when both are zero.
+func formatCacheMissPart(full, partial int, missedTokens int64) string {
+	var b strings.Builder
+	// The label rides the color of the first rendered count.
+	labelColor := cacheMissPartialColor
+	if full > 0 {
+		labelColor = cacheMissFullColor
+	}
+	b.WriteString(ansi.Fg(labelColor))
+	b.WriteString("CM:")
+	if full > 0 {
+		fmt.Fprintf(&b, "%d", full)
+	}
+	if partial > 0 {
+		if full > 0 {
+			b.WriteString(ansi.Reset)
+			b.WriteString(ansi.Fg(cacheMissPartialColor))
+		}
+		b.WriteString("|")
+		fmt.Fprintf(&b, "%d", partial)
+	}
+	b.WriteString(ansi.Reset)
+	if missedTokens > 0 {
+		b.WriteString(ansi.Faint + "·" + groupThousands(missedTokens) + ansi.Reset)
+	}
+	return b.String()
+}
+
+// groupThousands renders n with comma thousands separators (145312 →
+// "145,312") so the CM token damage reads at a glance.
+func groupThousands(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	digits := fmt.Sprintf("%d", n)
+	var b strings.Builder
+	first := len(digits) % 3
+	if first > 0 {
+		b.WriteString(digits[:first])
+	}
+	for i := first; i < len(digits); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(digits[i : i+3])
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
 // formatToolCallPart renders the TC:N display with color coding:

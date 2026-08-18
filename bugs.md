@@ -27,61 +27,41 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## CM status does not separate full vs partial cache misses and shows no token cost
-
-**Observed:** the status/TUI cache-miss indicator is a single counter `CM:N` (always
-orange) produced by `internal/app/stats.go`: `tokenCacheMisses++` conflates the two
-distinct failure modes detected at `stats.go:1058-1061` — (a) **full miss**: zero
-cache-read after establishment (entire prefix recomputed), (b) **partial miss**:
-`cache_read + tolerance < prev_cache_read` (a suffix of the prefix recomputed, e.g. the
-eight zai evictions: 38144→7872 = ~30k tokens silently recomputed). The token damage is
-the actionable number and is currently invisible; one full miss and one 100k-token
-partial miss render identically.
-
-**Expected:**
-
-- Split display `CM:X|Y` — `X` = count of **full** misses (rendered red), `Y` = count of
-  **partial** misses (rendered orange, current `#d29922`).
-- The stats line must show the exact number of tokens missed (sum of
-  `prev_cache_read - cache_read` over counted misses; for full misses the full previous
-  prefix), e.g. `CM:1|2·145,312` (thousands-separated; token figure in dim/secondary).
-- Omit zeros per-kind (`CM:2` full-only, `CM:|3` partial-only) and hide the whole part
-  when both are zero (preserves today's hidden-when-zero behavior).
-
-### Fix plan (detailed)
-- `stats.go`: replace `tokenCacheMisses int` with `tokenCacheFullMisses`,
-  `tokenCachePartialMisses`, `tokenCacheMissedTokens` (int64); at the detection site,
-  branch: zero-read → full (`missed = prevCacheRead`), drop-beyond-tolerance → partial
-  (`missed = prevCacheRead - cacheRead`). Reset all three where `tokenCacheMisses` is
-  reset today (`clearStats`, context-reset re-arm path at `stats.go:319/343` — keep the
-  CM counters session-scoped exactly as now, per the comment block above the site).
-- `SessionTokenStats.CacheMisses` (`stats.go:1132`) → `CacheMissesFull`,
-  `CacheMissesPartial`, `CacheMissedTokens` (JSON keys `cm_full`, `cm_partial`,
-  `cm_tokens` for the persisted/session summary).
-- Renderer: `formatCacheMissPart` (`stats.go:1464-1468`) gains the two counts + token
-  figure; red = theme danger/red constant from `internal/ansi` (reuse, do not hardcode a
-  new hex unless no constant exists). Text-mode status line `cm=%d` (`stats.go:757`) →
-  `cm=%d|%d`.
-- TUI: update the stats component/renderer that consumes `CacheMisses` (search
-  `CacheMisses` in `core/` + `tui/` renderers) to the new fields; keep width stable when
-  hidden.
-- `provider/cache_forensics.go` notice/report side already distinguishes the two shapes
-  via `PrevCacheRead`/`CacheRead` — no change needed there, but the agent-log notice line
-  should tag `[full]`/`[partial]` for symmetry.
-
-**Test approach:** table tests in the existing stats test file: established baseline
-then zero-read → full counter + missed=prev; partial drop → partial counter +
-missed=delta; drop within tolerance → no count; unestablished zero → no count;
-both-zero → part absent from rendered line (golden string with ANSI codes); full-only
-and partial-only renderings; `/clear` resets all three. Renderer unit test for exact ANSI
-color codes. Session-summary JSON field assertions.
-
-**Validation steps:** `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
-`gocyclo -over 12 .`, `go test -count=1 -race -cover ./...`; interactive TUI run on a
-zai session reproducing both kinds (any of the archived exports' sequences) to eyeball
-`CM:X|Y` red/orange split and token figure.
-
 # Archive
+
+## ~~CM status does not separate full vs partial cache misses and shows no token cost~~ — FIXED (2026-08-20)
+
+**Fix record.** The cache-miss indicator now splits the two failure modes and
+exposes the exact token damage. `internal/app/stats.go` replaces the single
+`tokenCacheMisses` counter with `tokenCacheFullMisses`,
+`tokenCachePartialMisses`, and `tokenCacheMissedTokens` (int64). The detection
+site (`applyTokenTimingsLocked`) branches: zero cache-read after establishment
+→ **full** (missed = `prevCacheRead`); drop beyond tolerance → **partial**
+(missed = `prevCacheRead - cacheRead`), with the zero-read rule taking
+precedence so a miss never double-counts. All reset sites (`clearStats`,
+`/clear`) zero all three accumulators.
+
+The footer renders `CM:X|Y·N`: `X` full misses in red (`#f85149`), `Y` partial
+in warning orange (`#d29922`), and `N` the exact missed-token sum (dim,
+thousands-grouped, e.g. `CM:2|1·145,312`). Per-kind zeros are omitted
+(`CM:2` full-only, `CM:|3` partial-only); the whole part is hidden when both
+are zero (`formatCacheMissPartIfAny`). Text-mode status line `cm=%d` →
+`cm=%d|%d`. `sessionStats` (the persisted session summary) carries
+`cm_full`/`cm_partial`/`cm_tokens` JSON keys. The agent-log forensics notice
+line is tagged `[full]`/`[partial]` (`cacheMissNoticeKind`).
+
+**Tests.** `internal/app/stats_cm_test.go`: table-driven detection spec
+(`TestHandleTokenStats_CacheMissDetection`), missed-token math, golden-ANSI
+renderer test (`TestFormatCacheMissPart`), `groupThousands`, JSON keys
+(`TestSessionStats_CacheMissJSONKeys`), `/clear` reset
+(`TestClearStats_ResetsCacheMissCounters`), footer rendering, plus the
+existing partial-bust / session-export-replay / fresh-context-reset
+regressions updated to the split counters. `internal/agentic/
+cache_miss_log_test.go` asserts the `[full]`/`[partial]` tags.
+
+**Validation:** `go vet`, `staticcheck`, `gocognit -over 15`,
+`gocyclo -over 12`, `go test -count=1 -race -cover` all green (only
+pre-existing over-budget functions remain, unrelated to this change).
 
 ## ~~Cache-miss forensics lack timing gap and checkpoint attribution (cannot self-classify server-side eviction)~~ — FIXED (2026-08-19)
 

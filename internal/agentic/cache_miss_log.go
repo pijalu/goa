@@ -37,12 +37,23 @@ func (a *Agent) drainCacheMissNoticesForKey(key string) {
 	logCacheMissNotices(a.cfg.Logger, notices)
 }
 
-// logCacheMissNotices writes one log line per notice. The likely cause
-// (identity_change / server_eviction / ttl_expiry / param_change / unknown)
-// makes the line actionable without opening the debug bundle.
+// logCacheMissNotices writes one log line per notice. The kind tag
+// ([full]/[partial]) and the likely cause (identity_change /
+// server_eviction / ttl_expiry / param_change / unknown) make the line
+// actionable without opening the debug bundle.
 func logCacheMissNotices(logger *Logger, notices []provider.CacheMissNotice) {
 	for _, n := range notices {
-		logger.Log(Warn, "provider cache miss #%d: model=%s cache_read %d -> %d tokens (likely cause: %s); complete API requests of the bust and the preceding call retained in the cache-forensics journal (debug bundle: logs/cache_miss_requests.json)",
-			n.ReportID, n.Model, n.PrevCacheRead, n.CacheRead, n.LikelyCause)
+		logger.Log(Warn, "provider cache miss #%d [%s]: model=%s cache_read %d -> %d tokens (likely cause: %s); complete API requests of the bust and the preceding call retained in the cache-forensics journal (debug bundle: logs/cache_miss_requests.json)",
+			n.ReportID, cacheMissNoticeKind(n), n.Model, n.PrevCacheRead, n.CacheRead, n.LikelyCause)
 	}
+}
+
+// cacheMissNoticeKind classifies a notice with the same rule the footer's
+// CM part uses: a zero cache-read is a full miss (the entire prefix was
+// recomputed), anything else a partial one (a suffix was recomputed).
+func cacheMissNoticeKind(n provider.CacheMissNotice) string {
+	if n.CacheRead == 0 {
+		return "full"
+	}
+	return "partial"
 }

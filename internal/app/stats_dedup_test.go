@@ -8,6 +8,20 @@ import (
 	"github.com/pijalu/goa/internal/agentic"
 )
 
+// assertTokenTotals checks the cumulative session token totals in one call.
+func assertTokenTotals(t *testing.T, a *App, wantPrompt, wantPredicted, wantCacheRead int) {
+	t.Helper()
+	if a.tokenPromptTotal != wantPrompt {
+		t.Errorf("tokenPromptTotal = %d, want %d", a.tokenPromptTotal, wantPrompt)
+	}
+	if a.tokenPredictedTotal != wantPredicted {
+		t.Errorf("tokenPredictedTotal = %d, want %d", a.tokenPredictedTotal, wantPredicted)
+	}
+	if a.tokenCacheReadTotal != wantCacheRead {
+		t.Errorf("tokenCacheReadTotal = %d, want %d", a.tokenCacheReadTotal, wantCacheRead)
+	}
+}
+
 // TestHandleTokenStats_DuplicateRoundStatsDeduped is the regression test for
 // the 2026-08-04 session-export finding: emitTurnStats re-emits the unchanged
 // providerUsage on consecutive round ends (the provider-usage path never sets
@@ -31,27 +45,14 @@ func TestHandleTokenStats_DuplicateRoundStatsDeduped(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 1500, 120, 140000, 0) // round end: provider usage emitted
 		feed(a, 1500, 120, 140000, 0) // duplicate: same unchanged providerUsage re-emitted
-		if a.tokenPromptTotal != 1500 {
-			t.Errorf("tokenPromptTotal = %d, want 1500 (duplicate must not double-count)", a.tokenPromptTotal)
-		}
-		if a.tokenPredictedTotal != 120 {
-			t.Errorf("tokenPredictedTotal = %d, want 120", a.tokenPredictedTotal)
-		}
-		if a.tokenCacheReadTotal != 140000 {
-			t.Errorf("tokenCacheReadTotal = %d, want 140000", a.tokenCacheReadTotal)
-		}
+		assertTokenTotals(t, a, 1500, 120, 140000)
 	})
 
 	t.Run("distinct rounds in a turn all count", func(t *testing.T) {
 		a := New(testSubsystems())
 		feed(a, 1500, 120, 140000, 0) // round 1
 		feed(a, 1600, 95, 141000, 0)  // round 2: genuinely different usage — must count
-		if a.tokenPromptTotal != 3100 {
-			t.Errorf("tokenPromptTotal = %d, want 3100 (distinct rounds must both count)", a.tokenPromptTotal)
-		}
-		if a.tokenCacheReadTotal != 281000 {
-			t.Errorf("tokenCacheReadTotal = %d, want 281000", a.tokenCacheReadTotal)
-		}
+		assertTokenTotals(t, a, 3100, 215, 281000)
 	})
 
 	t.Run("duplicate bust is not double-counted", func(t *testing.T) {
@@ -59,8 +60,11 @@ func TestHandleTokenStats_DuplicateRoundStatsDeduped(t *testing.T) {
 		feed(a, 1500, 120, 140000, 0) // establishes cache
 		feed(a, 138000, 299, 0, 0)    // bust: cache_read 140000 -> 0 (miss 1)
 		feed(a, 138000, 299, 0, 0)    // duplicate of the bust emission (still miss 1)
-		if a.tokenCacheMisses != 1 {
-			t.Errorf("tokenCacheMisses = %d, want 1 (duplicate bust emission must not recount)", a.tokenCacheMisses)
+		if a.tokenCacheFullMisses != 1 {
+			t.Errorf("tokenCacheFullMisses = %d, want 1 (duplicate bust emission must not recount)", a.tokenCacheFullMisses)
+		}
+		if a.tokenCacheMissedTokens != 140000 {
+			t.Errorf("tokenCacheMissedTokens = %d, want 140000 (missed tokens must not recount either)", a.tokenCacheMissedTokens)
 		}
 	})
 
@@ -69,8 +73,6 @@ func TestHandleTokenStats_DuplicateRoundStatsDeduped(t *testing.T) {
 		feed(a, 1500, 120, 140000, 0)
 		a.turnCount++                 // EventEnd: new user turn begins
 		feed(a, 1500, 120, 140000, 0) // identical numbers, but a different turn — must count
-		if a.tokenPromptTotal != 3000 {
-			t.Errorf("tokenPromptTotal = %d, want 3000 (same values in a NEW turn must count)", a.tokenPromptTotal)
-		}
+		assertTokenTotals(t, a, 3000, 240, 280000)
 	})
 }
