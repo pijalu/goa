@@ -81,12 +81,42 @@ color codes. Session-summary JSON field assertions.
 zai session reproducing both kinds (any of the archived exports' sequences) to eyeball
 `CM:X|Y` red/orange split and token figure.
 
-## Cache-miss forensics lack timing gap and checkpoint attribution (cannot self-classify server-side eviction)
+# Archive
+
+## ~~Cache-miss forensics lack timing gap and checkpoint attribution (cannot self-classify server-side eviction)~~ — FIXED (2026-08-19)
+
+**Fix record.** `CacheMissReport` (`internal/agentic/provider/cache_forensics.go`)
+now carries the full attribution the investigation had to reconstruct by hand:
+`gap_since_prev_response_ms` (previous stream completion → miss send;
+`completedAt` stamped on the entry when usage lands, send-to-send fallback for
+never-completed predecessors), `prev_total_prompt_tokens`
+(`Usage.TotalInputTokens()` of the predecessor), `partial_hit_prev_seq`
+(ring scan for the newest earlier same-sequence request whose cache_read
+equals the miss's — the checkpoint the provider fell back to; 0 for full
+misses / evicted checkpoints), and `affinity_hint_sent` (body carries
+`prompt_cache_key`).
+
+`likely_cause` is derived at report time (`attributionLocked`), precedence:
+fingerprint `param_change` → **param_change**; fingerprint `replacement` →
+**identity_change** (client-side causes win over timing); else gap ≥ 60s →
+**ttl_expiry**; else **server_eviction**; no attributable predecessor
+retained → **unknown**. `CacheMissNotice` carries `LikelyCause` and the agent
+log line renders "(likely cause: %s)" so a miss is actionable without the
+bundle. All five values from the plan's enumeration are implemented.
+
+Tests (`cache_forensics_cause_test.go`): steady climb → no report; partial
+cliff at 400ms → server_eviction + checkpoint seq + gap + hint flags;
+120s-idle cliff → ttl_expiry; full miss short/long gap → eviction/ttl;
+param_change/replacement fingerprints (incl. classification-beats-gap);
+ring eviction of the predecessor → unknown with requests=[miss]; notice
+carries the cause; and a replay of the live session's 7872-checkpoint ladder.
+
+<details><summary>Original investigation</summary>
 
 **Observed:** investigating the eight misses required manual reconstruction: gap between
 previous response and miss request (from http log timestamps), and matching the partial
 `cache_read` value against earlier requests' prefixes to prove "fell back to req-N's
-checkpoint". `CacheMissReport` carries neither, so every miss reads as unexplained.
+checkpoint". `CacheMissReport` carried neither, so every miss read as unexplained.
 
 **Expected:** a report should answer, without external data: how long after the previous
 response it fired (TTL vs eviction), which earlier checkpoint the partial hit matches
@@ -110,8 +140,6 @@ gone) degrades to `unknown`.
 fixture reproducing all eight observed miss signatures.
 
 </details>
-
-# Archive
 
 ## ~~Prefix fingerprint classifier never reports `exact_append` (whole-body `bytes.HasPrefix` is structurally wrong)~~ — FIXED (2026-08-19)
 

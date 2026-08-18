@@ -74,6 +74,10 @@ type CacheForensicsEntry struct {
 	Usage       *schema.Usage      `json:"usage,omitempty"`
 	Fingerprint RequestFingerprint `json:"fingerprint,omitempty"`
 
+	// completedAt is when the response usage landed (stream end); internal
+	// only (never serialized) — the idle-gap attribution anchors on it.
+	completedAt time.Time
+
 	// seqKey groups entries of one conversation's provider-cache sequence;
 	// internal only (never serialized).
 	seqKey string
@@ -81,7 +85,12 @@ type CacheForensicsEntry struct {
 
 // CacheMissReport bundles the complete requests that explain one detected
 // cache miss: the same sequence's request before the miss (when available)
-// followed by the request that missed — oldest first.
+// followed by the request that missed — oldest first. The attribution
+// fields answer, without external data, what most likely caused the miss:
+// how long after the previous response completed it fired (TTL vs eviction),
+// which earlier checkpoint a partial hit matches (routing/eviction), the
+// previous request's total prompt size, and whether an affinity hint
+// (prompt_cache_key) was on the wire.
 type CacheMissReport struct {
 	ID            int64                 `json:"id"`
 	Timestamp     time.Time             `json:"timestamp"`
@@ -89,16 +98,72 @@ type CacheMissReport struct {
 	PrevCacheRead int                   `json:"prev_cache_read_tokens"`
 	CacheRead     int                   `json:"cache_read_tokens"`
 	Requests      []CacheForensicsEntry `json:"requests"`
+
+	// GapSincePrevResponseMs is the idle between the previous request's
+	// stream completing (its usage landing) and the miss request being sent.
+	// 0 means unknown (no attributable predecessor in the ring).
+	GapSincePrevResponseMs int64 `json:"gap_since_prev_response_ms,omitempty"`
+	// PrevTotalPromptTokens is the predecessor's total prompt size
+	// (input + cache-read + cache-write) — the prefix that would have been
+	// cache-served without the miss.
+	PrevTotalPromptTokens int `json:"prev_total_prompt_tokens,omitempty"`
+	// PartialHitPrevSeq attributes a partial hit: the newest earlier request
+	// of the sequence whose cache_read equals this miss's — the checkpoint
+	// the provider fell back to. 0 when the miss is full (cache_read 0) or
+	// the checkpoint entry is no longer in the ring.
+	PartialHitPrevSeq int64 `json:"partial_hit_prev_seq,omitempty"`
+	// AffinityHintSent reports whether the miss request carried an explicit
+	// cache-affinity identity (prompt_cache_key) on the wire — distinguishing
+	// "no hint available" from "hint ignored".
+	AffinityHintSent bool `json:"affinity_hint_sent"`
+	// LikelyCause is the derived most-probable origin of the miss.
+	LikelyCause LikelyCause `json:"likely_cause"`
 }
+
+// LikelyCause classifies the most probable origin of a detected cache miss,
+// derived at report time from the evidence the journal holds.
+type LikelyCause string
+
+const (
+	// LikelyCauseIdentityChange: the request was flagged as a deliberate
+	// context replacement (fingerprint classification "replacement") — a new
+	// cache identity, so the miss is expected, not provider-side.
+	LikelyCauseIdentityChange LikelyCause = "identity_change"
+	// LikelyCauseServerEviction: the provider lost (part of) the cached
+	// prefix despite a short idle — e.g. per-node caches behind a load
+	// balancer, or tail-block eviction pressure. Partial hits attributed to an
+	// older request's checkpoint carry that seq in PartialHitPrevSeq.
+	LikelyCauseServerEviction LikelyCause = "server_eviction"
+	// LikelyCauseTTLExpiry: the miss fired after a long idle gap, the classic
+	// provider TTL expiry signature (cache_read collapsing to zero or an
+	// older checkpoint after minutes of inactivity).
+	LikelyCauseTTLExpiry LikelyCause = "ttl_expiry"
+	// LikelyCauseParamChange: the request changed a cache-relevant parameter
+	// (tools/thinking) while appending history (fingerprint classification
+	// "param_change") — some providers key the cache on the full request.
+	LikelyCauseParamChange LikelyCause = "param_change"
+	// LikelyCauseUnknown: not enough evidence to attribute (no attributable
+	// predecessor retained in the ring).
+	LikelyCauseUnknown LikelyCause = "unknown"
+)
+
+// cacheForensicsTTLExpiryGapMs is the idle threshold at or above which a miss
+// reads as ttl_expiry rather than server_eviction. It must sit well below
+// real provider TTLs (single-digit minutes) while covering normal
+// intra-turn pacing (a tool round trip is seconds), so the observed 60s
+// default separates "conversation paced along" from "user went away".
+const cacheForensicsTTLExpiryGapMs = 60_000
 
 // CacheMissNotice is a lightweight signal that a report was captured. The
 // agent drains notices into the agent log; the report carrying the complete
-// requests stays in the journal for the debug bundle.
+// requests stays in the journal for the debug bundle. LikelyCause makes the
+// log line actionable without opening the bundle.
 type CacheMissNotice struct {
 	ReportID      int64
 	Model         string
 	PrevCacheRead int
 	CacheRead     int
+	LikelyCause   LikelyCause
 }
 
 // cacheSeqState is the per-sequence miss-detection baseline.
@@ -147,6 +212,7 @@ func (r *cacheForensicsRecord) complete(usage *schema.Usage) {
 	}
 	usageSnapshot := *usage
 	entry.Usage = &usageSnapshot
+	entry.completedAt = time.Now()
 	j.metrics.CacheReadTokens += int64(usage.CacheReadTokens)
 	j.metrics.CacheWriteTokens += int64(usage.CacheCreationTokens)
 	st := j.seqState[r.seqKey]
@@ -302,19 +368,27 @@ func (j *cacheForensicsJournal) prevEntryLocked(seqKey string, beforeSeq int64) 
 // addReportLocked retains a miss report (evicting the oldest at capacity)
 // and queues its notice.
 func (j *cacheForensicsJournal) addReportLocked(seqKey string, prevCacheRead, cacheRead int, miss *CacheForensicsEntry) {
+	prev := j.prevEntryLocked(seqKey, miss.Seq)
+	attribution := j.attributionLocked(seqKey, miss, prev, cacheRead)
+
 	requests := make([]CacheForensicsEntry, 0, 2)
-	if prev := j.prevEntryLocked(seqKey, miss.Seq); prev != nil {
+	if prev != nil {
 		requests = append(requests, *prev)
 	}
 	requests = append(requests, *miss)
 	j.reportSeq++
 	report := CacheMissReport{
-		ID:            j.reportSeq,
-		Timestamp:     time.Now(),
-		Model:         miss.Model,
-		PrevCacheRead: prevCacheRead,
-		CacheRead:     cacheRead,
-		Requests:      requests,
+		ID:                     j.reportSeq,
+		Timestamp:              time.Now(),
+		Model:                  miss.Model,
+		PrevCacheRead:          prevCacheRead,
+		CacheRead:              cacheRead,
+		Requests:               requests,
+		GapSincePrevResponseMs: attribution.gapMs,
+		PrevTotalPromptTokens:  attribution.prevTotalTokens,
+		PartialHitPrevSeq:      attribution.partialHitPrevSeq,
+		AffinityHintSent:       attribution.affinityHintSent,
+		LikelyCause:            attribution.cause,
 	}
 	if len(j.reports) >= cacheForensicsReportCapacity {
 		copy(j.reports, j.reports[1:])
@@ -331,12 +405,98 @@ func (j *cacheForensicsJournal) addReportLocked(seqKey string, prevCacheRead, ca
 			Model:         report.Model,
 			PrevCacheRead: prevCacheRead,
 			CacheRead:     cacheRead,
+			LikelyCause:   report.LikelyCause,
 		},
 		// miss.SessionID carries the cache session key (PromptCacheKey, or the
 		// transport SessionID when no cache key was set) — the attribution key
 		// for scoped draining.
 		sessionKey: miss.SessionID,
 	})
+}
+
+// missAttribution carries the derived evidence for one miss report.
+type missAttribution struct {
+	gapMs             int64
+	prevTotalTokens   int
+	partialHitPrevSeq int64
+	affinityHintSent  bool
+	cause             LikelyCause
+}
+
+// attributionLocked derives the report's attribution fields: idle gap since
+// the previous response completed, the predecessor's total prompt size, the
+// checkpoint attribution of a partial hit, affinity-hint presence, and the
+// resulting likely cause.
+func (j *cacheForensicsJournal) attributionLocked(seqKey string, miss *CacheForensicsEntry, prev *CacheForensicsEntry, cacheRead int) missAttribution {
+	attr := missAttribution{cause: LikelyCauseUnknown}
+	if prev == nil {
+		// No attributable predecessor retained (heavy interleave/ring churn):
+		// cause stays unknown rather than guessing.
+		return attr
+	}
+	// Client-side causes first — the fingerprint already classified the
+	// request's relation to its predecessor.
+	switch miss.Fingerprint.Classification {
+	case PrefixParamChange:
+		attr.cause = LikelyCauseParamChange
+	case PrefixReplacement:
+		attr.cause = LikelyCauseIdentityChange
+	}
+	if prev.Usage != nil {
+		attr.prevTotalTokens = prev.Usage.TotalInputTokens()
+	}
+	// Idle gap: previous stream completion → miss request send. Fall back to
+	// send-to-send when the predecessor never completed (its usage arrived
+	// only as a fallback entry), which overestimates by its stream duration.
+	anchor := prev.completedAt
+	if anchor.IsZero() {
+		anchor = prev.Timestamp
+	}
+	if gap := miss.Timestamp.Sub(anchor).Milliseconds(); gap > 0 {
+		attr.gapMs = gap
+	}
+	if attr.cause == LikelyCauseUnknown && attr.gapMs >= cacheForensicsTTLExpiryGapMs {
+		attr.cause = LikelyCauseTTLExpiry
+	}
+	// Partial-hit checkpoint attribution: which earlier request's cached
+	// prefix did the provider fall back to.
+	if cacheRead > 0 {
+		attr.partialHitPrevSeq = j.partialHitPrevSeqLocked(seqKey, miss.Seq, cacheRead)
+	}
+	if attr.cause == LikelyCauseUnknown {
+		// Short idle, no client-side cause, cache still (partially) warm or
+		// fully cold: the provider lost it — eviction/routing.
+		attr.cause = LikelyCauseServerEviction
+	}
+	attr.affinityHintSent = bodyHasAffinityHint(miss.Body)
+	return attr
+}
+
+// partialHitPrevSeqLocked returns the newest earlier entry of the sequence
+// whose cache_read equals cacheRead — the checkpoint a partial hit fell back
+// to — or 0 when none is retained in the ring.
+func (j *cacheForensicsJournal) partialHitPrevSeqLocked(seqKey string, beforeSeq int64, cacheRead int) int64 {
+	for i := 0; i < j.count; i++ {
+		e := j.entries[(j.pos-1-i+cacheForensicsRingCapacity)%cacheForensicsRingCapacity]
+		if e == nil || e.seqKey != seqKey || e.Seq >= beforeSeq || e.Usage == nil {
+			continue
+		}
+		if e.Usage.CacheReadTokens == cacheRead {
+			return e.Seq
+		}
+	}
+	return 0
+}
+
+// bodyHasAffinityHint reports whether a serialized request body carries an
+// explicit cache-affinity identity (OpenAI-style prompt_cache_key).
+func bodyHasAffinityHint(body json.RawMessage) bool {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return false
+	}
+	_, ok := probe["prompt_cache_key"]
+	return ok
 }
 
 func (j *cacheForensicsJournal) reportsSnapshot() []CacheMissReport {

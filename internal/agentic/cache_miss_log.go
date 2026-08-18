@@ -37,10 +37,12 @@ func (a *Agent) drainCacheMissNoticesForKey(key string) {
 	logCacheMissNotices(a.cfg.Logger, notices)
 }
 
-// logCacheMissNotices writes one log line per notice.
+// logCacheMissNotices writes one log line per notice. The likely cause
+// (identity_change / server_eviction / ttl_expiry / param_change / unknown)
+// makes the line actionable without opening the debug bundle.
 func logCacheMissNotices(logger *Logger, notices []provider.CacheMissNotice) {
 	for _, n := range notices {
-		logger.Log(Warn, "provider cache miss #%d: model=%s cache_read %d -> %d tokens; complete API requests of the bust and the preceding call retained in the cache-forensics journal (debug bundle: logs/cache_miss_requests.json)",
-			n.ReportID, n.Model, n.PrevCacheRead, n.CacheRead)
+		logger.Log(Warn, "provider cache miss #%d: model=%s cache_read %d -> %d tokens (likely cause: %s); complete API requests of the bust and the preceding call retained in the cache-forensics journal (debug bundle: logs/cache_miss_requests.json)",
+			n.ReportID, n.Model, n.PrevCacheRead, n.CacheRead, n.LikelyCause)
 	}
 }
