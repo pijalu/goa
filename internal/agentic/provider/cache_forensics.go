@@ -61,14 +61,15 @@ const (
 // until the response stream has been fully parsed (and stays nil for failed
 // requests); a nil Usage entry never participates in miss detection.
 type CacheForensicsEntry struct {
-	Seq       int64           `json:"seq"`
-	Timestamp time.Time       `json:"timestamp"`
-	Provider  string          `json:"provider,omitempty"`
-	Model     string          `json:"model,omitempty"`
-	URL       string          `json:"url,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Body      json.RawMessage `json:"body"`
-	Usage     *schema.Usage   `json:"usage,omitempty"`
+	Seq         int64              `json:"seq"`
+	Timestamp   time.Time          `json:"timestamp"`
+	Provider    string             `json:"provider,omitempty"`
+	Model       string             `json:"model,omitempty"`
+	URL         string             `json:"url,omitempty"`
+	SessionID   string             `json:"session_id,omitempty"`
+	Body        json.RawMessage    `json:"body"`
+	Usage       *schema.Usage      `json:"usage,omitempty"`
+	Fingerprint RequestFingerprint `json:"fingerprint,omitempty"`
 
 	// seqKey groups entries of one conversation's provider-cache sequence;
 	// internal only (never serialized).
@@ -122,9 +123,10 @@ func (st *cacheSeqState) observe(cacheRead int) bool {
 // cacheForensicsRecord is the handle for one in-flight request: recorded at
 // send time, completed with the response usage once the stream ends.
 type cacheForensicsRecord struct {
-	journal *cacheForensicsJournal
-	seq     int64
-	seqKey  string
+	journal     *cacheForensicsJournal
+	seq         int64
+	seqKey      string
+	fingerprint RequestFingerprint
 }
 
 // complete attaches the response usage to the recorded request and runs
@@ -177,9 +179,26 @@ func newCacheForensicsJournal() *cacheForensicsJournal {
 // cacheForensics is the global journal fed by the generic streaming runtime.
 var cacheForensics = newCacheForensicsJournal()
 
+func (j *cacheForensicsJournal) previousRequest(model schema.Model, sessionID, systemPrompt string) []byte {
+	key := cacheSeqKey(model, sessionID, systemPrompt)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	for i := 0; i < j.count; i++ {
+		entry := j.entries[(j.pos-1-i+cacheForensicsRingCapacity)%cacheForensicsRingCapacity]
+		if entry != nil && entry.seqKey == key {
+			return append([]byte(nil), entry.Body...)
+		}
+	}
+	return nil
+}
+
 // record adds one complete API request to the ring and returns the handle to
 // complete with the response usage.
-func (j *cacheForensicsJournal) record(model schema.Model, sessionID, systemPrompt, url string, body []byte) *cacheForensicsRecord {
+func (j *cacheForensicsJournal) record(model schema.Model, sessionID, systemPrompt, url string, body []byte, fingerprints ...RequestFingerprint) *cacheForensicsRecord {
+	var fingerprint RequestFingerprint
+	if len(fingerprints) > 0 {
+		fingerprint = fingerprints[0]
+	}
 	if !json.Valid(body) {
 		// Bodies come from the protocol serializers (always valid JSON); if a
 		// future transport sends something else, keep it as a JSON string so
@@ -189,13 +208,14 @@ func (j *cacheForensicsJournal) record(model schema.Model, sessionID, systemProm
 		}
 	}
 	entry := &CacheForensicsEntry{
-		Timestamp: time.Now(),
-		Provider:  string(model.Provider),
-		Model:     model.ID,
-		URL:       url,
-		SessionID: sessionID,
-		Body:      json.RawMessage(body),
-		seqKey:    cacheSeqKey(model, sessionID, systemPrompt),
+		Timestamp:   time.Now(),
+		Provider:    string(model.Provider),
+		Model:       model.ID,
+		URL:         url,
+		SessionID:   sessionID,
+		Body:        json.RawMessage(body),
+		Fingerprint: fingerprint,
+		seqKey:      cacheSeqKey(model, sessionID, systemPrompt),
 	}
 	j.mu.Lock()
 	j.seq++
@@ -338,8 +358,8 @@ func usageEmpty(u *schema.Usage) bool {
 // recordCacheForensicsRequest adds one complete API request to the global
 // journal; the returned record must be completed with the response usage so
 // miss detection can run.
-func recordCacheForensicsRequest(model schema.Model, sessionID, systemPrompt, url string, body []byte) *cacheForensicsRecord {
-	return cacheForensics.record(model, sessionID, systemPrompt, url, body)
+func recordCacheForensicsRequest(model schema.Model, sessionID, systemPrompt, url string, body []byte, fingerprint ...RequestFingerprint) *cacheForensicsRecord {
+	return cacheForensics.record(model, sessionID, systemPrompt, url, body, fingerprint...)
 }
 
 // CacheForensicsReports returns the retained cache-miss reports (oldest
@@ -382,7 +402,13 @@ func CacheForensicsInterceptor(next StreamHandler) StreamHandler {
 		if req.URL == "" {
 			return next(ctx, req)
 		}
-		rec := recordCacheForensicsRequest(req.Model, req.Options.SessionID, req.Context.SystemPrompt, req.URL, req.Body)
+		sessionKey := req.Options.PromptCacheKey
+		if sessionKey == "" {
+			sessionKey = req.Options.SessionID
+		}
+		previous := cacheForensics.previousRequest(req.Model, sessionKey, req.Context.SystemPrompt)
+		fingerprint := BuildRequestFingerprint(string(req.Model.Provider), req.Model.ID, sessionKey, previous, req.Body, 0, 0, string(req.Options.Transport), "", false)
+		rec := recordCacheForensicsRequest(req.Model, sessionKey, req.Context.SystemPrompt, req.URL, req.Body, fingerprint)
 		stream, err := next(ctx, req)
 		if err != nil || stream == nil {
 			return stream, err

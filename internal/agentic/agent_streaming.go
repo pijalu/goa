@@ -4,6 +4,9 @@ package agentic
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"strings"
@@ -1775,6 +1778,7 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	// to provider.Stream. Without this, a Config that leaves StreamOptions zero
 	// would get MaxRetries=0 and the stream retry loop would never run.
 	opts = provider.BuildBaseOptions(model, opts)
+	opts.PromptCacheKey = a.cacheKey(model)
 
 	return model, opts, pCtx
 }
@@ -2067,6 +2071,18 @@ func defaultRetryPolicy(opts provider.StreamOptions) *provider.RetryPolicy {
 		Backoff:    provider.RetryBackoff{InitialDelay: time.Second, MaxDelay: maxDelay, Jitter: 0},
 		Codes:      nil,
 	}
+}
+
+func (a *Agent) cacheKey(model provider.Model) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	schemas, _ := json.Marshal(migrateSchemas(a.reg.Schemas(), model))
+	sum := sha256.Sum256(schemas)
+	return provider.NewCacheKey(provider.CacheIdentity{
+		ContextID: a.cacheContextID, Generation: a.cacheGeneration,
+		Provider: string(model.Provider), Model: model.ID,
+		ToolSchemaHash: hex.EncodeToString(sum[:]),
+	})
 }
 
 func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {

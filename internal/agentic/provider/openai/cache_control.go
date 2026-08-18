@@ -119,17 +119,24 @@ func addCacheControlToTextContent(msg map[string]interface{}, cc *cacheControl) 
 // prompt caching. For OpenAI's official API it is sent whenever caching is
 // enabled; for local servers (LM Studio, Ollama) it is sent whenever a
 // session ID is available to improve slot/cache affinity.
+func promptCacheIdentity(opts provider.StreamOptions) string {
+	if opts.PromptCacheKey != "" {
+		return opts.PromptCacheKey
+	}
+	return opts.SessionID
+}
+
 func promptCacheKey(model provider.Model, opts provider.StreamOptions, compat provider.OpenAICompletionsCompat) string {
 	if opts.CacheRetention == provider.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) {
 		return ""
 	}
-	if opts.SessionID == "" {
+	if opts.PromptCacheKey == "" && opts.SessionID == "" {
 		return ""
 	}
 	isOpenAI := strings.Contains(model.BaseURL, "api.openai.com")
 	supportsLong := provider.ToBool(compat.SupportsLongCacheRetention, false)
 	if isOpenAI || (opts.CacheRetention == provider.CacheRetentionLong && supportsLong) || isLocalProvider(model.Provider, model.BaseURL) {
-		return clampOpenAIPromptCacheKey(opts.SessionID)
+		return clampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 	}
 	return ""
 }

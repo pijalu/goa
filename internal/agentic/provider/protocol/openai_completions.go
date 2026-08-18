@@ -522,12 +522,12 @@ func promptCacheKey(model schema.Model, opts schema.StreamOptions, compat openAI
 	if opts.CacheRetention == schema.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) {
 		return ""
 	}
-	if opts.SessionID == "" {
+	if promptCacheIdentity(opts) == "" {
 		return ""
 	}
 	isOpenAI := strings.Contains(model.BaseURL, "api.openai.com")
 	if isOpenAI || (opts.CacheRetention == schema.CacheRetentionLong && compat.SupportsLongCacheRetention) || isLocalProvider(model.Provider, model.BaseURL) {
-		return ClampOpenAIPromptCacheKey(opts.SessionID)
+		return ClampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 	}
 	return ""
 }

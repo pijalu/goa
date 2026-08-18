@@ -149,7 +149,7 @@ func applyResponsesSessionFields(body map[string]any, model schema.Model, opts s
 		body["previous_response_id"] = opts.SessionID
 	}
 	if shouldSendOpenAIResponsesPromptCacheKey(model, opts) {
-		body["prompt_cache_key"] = ClampOpenAIPromptCacheKey(opts.SessionID)
+		body["prompt_cache_key"] = ClampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 		if opts.CacheRetention == schema.CacheRetentionLong {
 			body["prompt_cache_retention"] = "24h"
 		}
@@ -179,13 +179,20 @@ func applyResponsesSamplingFields(body map[string]any, model schema.Model, opts 
 // Responses send prompt_cache_key whenever a session ID is present, while plain
 // OpenAI Responses only send it when prompt caching is not explicitly disabled.
 func shouldSendOpenAIResponsesPromptCacheKey(model schema.Model, opts schema.StreamOptions) bool {
-	if opts.SessionID == "" {
+	if promptCacheIdentity(opts) == "" {
 		return false
 	}
 	if model.Api == schema.ApiAzureOpenAIResponses || model.Api == schema.ApiOpenAICodexResponses {
 		return true
 	}
 	return opts.CacheRetention != schema.CacheRetentionNone
+}
+
+func promptCacheIdentity(opts schema.StreamOptions) string {
+	if opts.PromptCacheKey != "" {
+		return opts.PromptCacheKey
+	}
+	return opts.SessionID
 }
 
 func convertResponsesInput(messages []schema.Message, systemPrompt string, profile schema.VariantProfile) []map[string]any {

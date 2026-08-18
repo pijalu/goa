@@ -9,6 +9,8 @@ package agentic
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"sync"
@@ -54,10 +56,15 @@ const (
 //	})
 //	agent.Run(ctx, "Hello!")
 type Agent struct {
-	cfg       Config
-	reg       ToolLookup
-	history   []Message
-	observers []observerEntry
+	cfg     Config
+	reg     ToolLookup
+	history []Message
+	// cacheContextID owns this agent's provider cache namespace. Generation is
+	// advanced only when history is replaced or explicitly reset; append-only
+	// turns retain the same opaque prompt-cache key.
+	cacheContextID  string
+	cacheGeneration uint64
+	observers       []observerEntry
 	// observerCounter is a per-agent source of unique observer ids used as
 	// removal handles (see AddObserver). Per-agent (not package-global) so
 	// agents do not share mutable state and tests stay isolated.
@@ -790,6 +797,16 @@ type Config struct {
 	AllowEmptyResponse bool
 }
 
+func newCacheContextID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	// crypto/rand failure is exceptionally unlikely; a process-local opaque
+	// fallback still prevents accidental sharing between Agent instances.
+	return fmt.Sprintf("agent-%p", &raw)
+}
+
 // NewAgent creates a new Agent with the given configuration.
 func NewAgent(cfg Config) *Agent {
 	// Apply documented micro-compaction defaults when the strategy is micro but
@@ -803,12 +820,13 @@ func NewAgent(cfg Config) *Agent {
 		cfg.ContextCompression.MicroCompaction = DefaultMicroCompactionConfig
 	}
 	a := &Agent{
-		cfg:           cfg,
-		reg:           NewToolRegistry(cfg.Tools),
-		Output:        make(chan Message, 10),
-		turnToolCalls: make(map[string]int),
-		bashReuse:     newBashReuseTracker(),
-		bashNearDup:   make(map[string]bool),
+		cfg:            cfg,
+		cacheContextID: newCacheContextID(),
+		reg:            NewToolRegistry(cfg.Tools),
+		Output:         make(chan Message, 10),
+		turnToolCalls:  make(map[string]int),
+		bashReuse:      newBashReuseTracker(),
+		bashNearDup:    make(map[string]bool),
 		// Negative means "not initialized yet"; undoLastAssistantMessage falls
 		// back to the last user message in that case (e.g. direct test calls).
 		turnStartHistoryLen: -1,
@@ -843,6 +861,7 @@ func (a *Agent) SetHistory(history []Message) {
 	}
 
 	a.history = history
+	a.cacheGeneration++
 	// History was replaced wholesale (session restore): any recorded provider
 	// prompt size belongs to the previous conversation, and the sticky dedup
 	// state no longer reflects what's in history — re-persist on next turn
@@ -1562,6 +1581,7 @@ func (a *Agent) Clear() {
 	}
 
 	a.history = nil
+	a.cacheGeneration++
 	a.queue = nil
 	a.processing = false
 	a.lastRoundActivity = time.Time{}

@@ -173,6 +173,7 @@ func (a *Agent) Compact(ctx context.Context) error {
 		{Type: Content, Role: User, Content: frameCompactedSummary(summary)},
 		{Type: Content, Role: Assistant, Content: summary},
 	}
+	a.cacheGeneration++
 	// History was replaced wholesale: the recorded provider prompt is stale.
 	a.invalidateContextUsageLocked()
 	a.mu.Unlock()
@@ -340,6 +341,7 @@ func (a *Agent) dropOldestToFitLocked(budget int) compactionResult {
 		cut++
 	}
 	a.history = append(a.history[:1:1], a.history[cut:]...)
+	a.cacheGeneration++
 	a.invalidateContextUsageLocked()
 	return compactionResult{removed: cut - 1, freedTokens: dropped}
 }
@@ -1084,6 +1086,7 @@ func (a *Agent) compressSelective() compactionResult {
 	removed := len(a.history) - len(newHistory)
 	a.history = newHistory
 	if removed > 0 {
+		a.cacheGeneration++
 		// Messages were dropped: the recorded provider prompt is stale.
 		a.invalidateContextUsageLocked()
 	}

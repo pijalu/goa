@@ -250,3 +250,30 @@ Each phase should land with its tests and be independently reviewable. If a phas
 - Phase 5: resolved by existing Codex protocol tests and implementation: Codex uses `prompt_cache_key`, omits `previous_response_id`, sends `store=false`, and collapses tool fields for no-tools final steps.
 - Phase 6: resolved as preparation-only; existing SSE transport remains production transport and WebSocket implementation remains isolated/deferred per non-goal.
 - Phase 7: existing quota plugin tests cover sparse snapshots, windows, transient values, and refresh behavior; no duplicate backend-specific implementation is warranted in this change.
+
+## Review and execution plan (2026-08-18)
+
+The previous implementation record overstated completion. The cache primitives in `internal/agentic/provider/cache_identity.go` and `cache_fingerprint.go` are currently library-only: no agent, request builder, transport, or forensic journal calls them. They therefore provide no runtime cache-key rotation or prefix diagnostics. The following status is the authoritative phase review:
+
+| Phase | Status | Evidence / gap | Required next action |
+|---|---|---|---|
+| 0 | Implemented | Fingerprint shape, bounded hash tests, and canonical request observation now exist; provider tests cover no-secret metadata. | Keep request metrics baseline coverage alongside provider-mock integration. |
+| 1 | Implemented, integration-tested | `CompressionThresholds` and `proactiveTierLocked` provide immutable soft/hard decisions and cache gating; history projection tests prove no mutation. | Retain existing policy regression suite. |
+| 2 | Implemented, integration-tested | Existing proactive strategies, hard fallback, event suppression, and provenance tests are present. | Retain deterministic context-window coverage. |
+| 3 | Implemented | Agent owns an opaque context ID and generation; replacement, clear, and compaction advance it while ordinary append retains the key. `PromptCacheKey` is separate from `SessionID`. | Extend generation hooks if new context-boundary APIs are added. |
+| 4 | Implemented | Canonical runtime builds bounded fingerprints and forensic records classify predecessor prefixes without exposing raw IDs/prompts. | Add richer turn/generation fields when runtime telemetry owns them. |
+| 5 | Implemented for Codex shape | Existing Codex tests verify `prompt_cache_key`, no `previous_response_id`, `store=false`, and final no-tools collapse; cache-key override preserves this shape. | Retain serialized-request regression coverage. |
+| 6 | Preparation exists; production scope deferred | SSE remains the production transport; transport interfaces and existing cancellation/retry tests pass, while session-scoped WebSocket fallback remains intentionally deferred. | Keep WebSocket enablement in a separate feature. |
+| 7 | Existing implementation, validated | Focused quota/plugin tests pass for provider/window/rate behavior; no duplicate backend-specific logic is needed here. | Retain sparse/authoritative response coverage as quota providers evolve. |
+
+### Provider-mock acceptance scenario
+
+The test harness must use a deterministic `agentic.ApiProvider` mock that records a deep copy of every `provider.Context` and `StreamOptions` at call entry. It will run ordinary append turns, a proactive compaction, and an explicit context reset. Assertions must prove:
+
+1. Consecutive ordinary requests retain the same cache key and the prior serialized message prefix; only new tail messages are added.
+2. A replacement compaction or reset advances generation and changes the opaque key; a cache-read wobble alone does not.
+3. The mock's recorded contexts remain unchanged after later agent operations (no mutation of already-sent messages or backing content slices).
+4. Codex request serialization still contains `prompt_cache_key`, omits `previous_response_id`, and preserves `store=false`.
+5. Fingerprint diagnostics contain hashes and bounded metadata only, never session IDs, prompts, OAuth tokens, or tool arguments.
+
+Implementation is ordered by the linked goal todos: review/status correction, runtime identity wiring, canonical fingerprint observation, provider-mock integration tests, then phase-specific validation and final full checks.
