@@ -1,7 +1,7 @@
 # Plan: More Codex Optimizations for Goa
 
 Branch: `feature/more-codex`
-Status: planning only (no feature implementation in this change)
+Status: implementation in progress on `feature/more-codex`; completed phases and resolved scope are recorded below.
 
 ## Objective
 
@@ -240,3 +240,13 @@ Secondary targets are request-shape parity, cache diagnostics, transport prepara
 8. Phase 7 quota resilience.
 
 Each phase should land with its tests and be independently reviewable. If a phase changes cache identity semantics, include an explicit migration note and update the cache-forensics documentation before merging.
+
+## Implementation record
+
+- Phase 0: completed. Provider tests establish the baseline; `RequestFingerprint` records only bounded hashes and prefix classification (`exact_append`, `replacement`, `unexpected_divergence`, or `no_predecessor`).
+- Phase 1–2: existing soft/hard proactive policy and cache-hot gate retained; no duplicate policy layer was introduced because the current implementation already provides immutable tier selection, hard-ceiling override, and no-op event suppression.
+- Phase 3: cache identity primitive completed. `NewCacheKey` derives an opaque key from context ownership, generation, provider/model, and tool-schema hash; callers must advance generation at explicit replacement boundaries. Existing Codex SSE field behavior is unchanged.
+- Phase 4: fingerprint primitive completed, but provider request wiring remains deferred until a single canonical serialized-input hook is available across all provider flavors; this avoids false divergence classifications.
+- Phase 5: resolved by existing Codex protocol tests and implementation: Codex uses `prompt_cache_key`, omits `previous_response_id`, sends `store=false`, and collapses tool fields for no-tools final steps.
+- Phase 6: resolved as preparation-only; existing SSE transport remains production transport and WebSocket implementation remains isolated/deferred per non-goal.
+- Phase 7: existing quota plugin tests cover sparse snapshots, windows, transient values, and refresh behavior; no duplicate backend-specific implementation is warranted in this change.
