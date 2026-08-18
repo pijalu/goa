@@ -26,8 +26,11 @@ import (
 // the requests that explain it — the one that missed and the same sequence's
 // request before it — as a CacheMissReport. Reports surface two ways:
 //
-//   - TakeCacheMissNotices: drained by the agent into the agent log (goa.log
-//     and the always-on ring exported as logs/agent.log);
+//   - TakeCacheMissNoticesFor: drained by the agent into the agent log
+//     (goa.log and the always-on ring exported as logs/agent.log), scoped to
+//     the agent's own cache session key so concurrent agents never steal
+//     each other's notices; TakeCacheMissNotices remains as the drain-all
+//     variant for diagnostics and tests;
 //   - CacheForensicsReports: exported by the debug bundle as
 //     logs/cache_miss_requests.json.
 //
@@ -179,9 +182,17 @@ type cacheForensicsJournal struct {
 	seqState    map[string]*cacheSeqState
 	reports     []CacheMissReport
 	reportSeq   int64
-	notices     []CacheMissNotice
+	notices     []cacheMissNoticeEntry
 	metrics     CacheForensicsMetrics
 	lastKeyHash string
+}
+
+// cacheMissNoticeEntry pairs a drainable notice with the cache session key
+// of the sequence that produced it, so concurrent agents can drain only
+// their own notices instead of racing to steal each other's.
+type cacheMissNoticeEntry struct {
+	notice     CacheMissNotice
+	sessionKey string
 }
 
 func newCacheForensicsJournal() *cacheForensicsJournal {
@@ -314,11 +325,17 @@ func (j *cacheForensicsJournal) addReportLocked(seqKey string, prevCacheRead, ca
 		copy(j.notices, j.notices[1:])
 		j.notices = j.notices[:cacheForensicsNoticeCapacity-1]
 	}
-	j.notices = append(j.notices, CacheMissNotice{
-		ReportID:      report.ID,
-		Model:         report.Model,
-		PrevCacheRead: prevCacheRead,
-		CacheRead:     cacheRead,
+	j.notices = append(j.notices, cacheMissNoticeEntry{
+		notice: CacheMissNotice{
+			ReportID:      report.ID,
+			Model:         report.Model,
+			PrevCacheRead: prevCacheRead,
+			CacheRead:     cacheRead,
+		},
+		// miss.SessionID carries the cache session key (PromptCacheKey, or the
+		// transport SessionID when no cache key was set) — the attribution key
+		// for scoped draining.
+		sessionKey: miss.SessionID,
 	})
 }
 
@@ -337,8 +354,31 @@ func (j *cacheForensicsJournal) takeNotices() []CacheMissNotice {
 		return nil
 	}
 	out := make([]CacheMissNotice, len(j.notices))
-	copy(out, j.notices)
+	for i, e := range j.notices {
+		out[i] = e.notice
+	}
 	j.notices = j.notices[:0]
+	return out
+}
+
+// takeNoticesFor drains only the notices recorded under sessionKey, leaving
+// other sequences' notices queued for their own owners.
+func (j *cacheForensicsJournal) takeNoticesFor(sessionKey string) []CacheMissNotice {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if sessionKey == "" || len(j.notices) == 0 {
+		return nil
+	}
+	var out []CacheMissNotice
+	kept := j.notices[:0]
+	for _, e := range j.notices {
+		if e.sessionKey == sessionKey {
+			out = append(out, e.notice)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	j.notices = kept
 	return out
 }
 
@@ -423,10 +463,20 @@ func CacheForensicsMetricsSnapshot() CacheForensicsMetrics {
 	return cacheForensics.metrics
 }
 
-// TakeCacheMissNotices drains the pending cache-miss notices (oldest first).
-// One notice is queued per retained report.
+// TakeCacheMissNotices drains ALL pending cache-miss notices (oldest first).
+// One notice is queued per retained report. Intended for diagnostics and
+// tests; concurrent agents should use TakeCacheMissNoticesFor so each drains
+// only its own sequence's notices.
 func TakeCacheMissNotices() []CacheMissNotice {
 	return cacheForensics.takeNotices()
+}
+
+// TakeCacheMissNoticesFor drains only the notices recorded under the given
+// cache session key — the PromptCacheKey the requests carried (falling back
+// to the transport SessionID when none was set). Notices of other sequences
+// stay queued for their owners.
+func TakeCacheMissNoticesFor(sessionKey string) []CacheMissNotice {
+	return cacheForensics.takeNoticesFor(sessionKey)
 }
 
 // ResetCacheForensicsBaseline re-arms miss detection for ALL sequences: the

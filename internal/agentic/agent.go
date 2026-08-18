@@ -62,9 +62,22 @@ type Agent struct {
 	// cacheContextID owns this agent's provider cache namespace. Generation is
 	// advanced only when history is replaced or explicitly reset; append-only
 	// turns retain the same opaque prompt-cache key.
-	cacheContextID  string
+	cacheContextID string
+	// cacheGeneration advances whenever retained history changes IDENTITY —
+	// wholesale replacement, summarization, or dropping oldest messages — so
+	// the derived cache key rotates and can never alias a prefix the provider
+	// no longer has (Hard Rule 7: only a byte-exact append may keep the key).
+	// In-place payload rewrites that preserve the message SKELETON (tool-result
+	// elision, micro-compaction, ephemeral strips) deliberately keep the
+	// generation: providers with partial-prefix matching can still hit the
+	// unchanged head, and the residual miss is exactly what the forensics
+	// journal reports.
 	cacheGeneration uint64
-	observers       []observerEntry
+	// activeCacheKey is the cache identity stamped on the most recently opened
+	// provider stream (see Agent.stream); cache-miss notices are drained for
+	// this key so concurrent agents never steal each other's notices.
+	activeCacheKey string
+	observers      []observerEntry
 	// observerCounter is a per-agent source of unique observer ids used as
 	// removal handles (see AddObserver). Per-agent (not package-global) so
 	// agents do not share mutable state and tests stay isolated.
@@ -681,8 +694,12 @@ type Config struct {
 	// (no rolling-window duplicate guardrail).
 	MaxToolCalls int
 	// MaxStreamRounds is the maximum number of LLM stream rounds per turn.
-	// After this many rounds, if the model is still making tool calls, a
-	// recovery hint is injected. Set to 0 for unlimited (default).
+	// When the limit is reached a recovery hint is injected so the model
+	// answers with what it has. Set to 0 for unlimited — this is also the
+	// default, and there is deliberately NO hidden fallback: SDK consumers
+	// embedding the agent without an application config get an unbounded
+	// (convergence-driven) turn loop unless they set this explicitly. The goa
+	// application exposes it as execution.max_stream_rounds.
 	MaxStreamRounds int
 	// MaxConsecutiveToolRounds is the maximum number of consecutive LLM rounds
 	// that end with finish_reason="tool_calls" before a forced-answer hint is
@@ -691,7 +708,10 @@ type Config struct {
 	// produced no visible answer and requested more tool calls, catching the
 	// "infinite tool-calling loop" where every call has unique inputs. When the
 	// limit is reached, the model is told to stop calling tools and answer with
-	// what it has. Set to 0 to disable. The application default is 15.
+	// what it has. Set to 0 to disable — and NOTE for SDK consumers: 0/unset
+	// really means DISABLED (no hidden fallback), so an embedded agent with no
+	// application config has no numeric guardrail at all; set this explicitly.
+	// The goa application supplies 15 via execution.max_consecutive_tool_rounds.
 	MaxConsecutiveToolRounds int
 	// DisableToolBudget when true disables the per-turn tool-call budget check
 	// entirely, allowing unlimited tool calls per turn. Useful for sessions with

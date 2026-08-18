@@ -330,6 +330,13 @@ func (a *Agent) dropOldestToCeilingLocked(hist []Message, tok []int, total, hist
 	a.history = kept
 	// History shrank: the recorded provider prompt no longer corresponds.
 	a.invalidateContextUsageLocked()
+	if cut > 1 {
+		// Oldest messages were dropped — the prefix a provider may have cached
+		// under this conversation's key no longer matches (Hard Rule 7: only a
+		// byte-exact append may keep the cache identity). Rotate like every other
+		// drop-oldest path (compressSelective, wholesale replacement).
+		a.cacheGeneration++
+	}
 
 	if messageTokenCount(&hist[0])+(total-system-droppedTokens) > historyCeiling {
 		a.cfg.Logger.Log(Error, "Context ceiling cannot be enforced: even minimal history + fixed cost exceeds %d tokens", hardCeiling)

@@ -478,7 +478,7 @@ func (a *Agent) summarizeHistory(ctx context.Context) (string, *provider.Usage, 
 	// traffic from conversation requests (dsh GenerateOptions.purpose).
 	opts.Purpose = provider.PurposeCompaction
 
-	stream, err := provider.Stream(model, pCtx, opts)
+	stream, err := a.stream(model, pCtx, opts)
 	if err != nil {
 		return "", nil, fmt.Errorf("summarization stream: %w", err)
 	}

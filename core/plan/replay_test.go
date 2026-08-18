@@ -82,6 +82,13 @@ func mustReplay(t *testing.T, err error) {
 
 func verifyReplayPlan(t *testing.T, s *Store, id1, id2, cid2 string) {
 	t.Helper()
+	verifyReplayHeader(t, s)
+	verifyReplayItems(t, s, id1, id2)
+	verifyReplayComments(t, s, cid2)
+}
+
+func verifyReplayHeader(t *testing.T, s *Store) {
+	t.Helper()
 	if s.plan.Name == "" {
 		t.Error("plan name should be set after replay")
 	}
@@ -97,6 +104,10 @@ func verifyReplayPlan(t *testing.T, s *Store, id1, id2, cid2 string) {
 	if s.plan.RunID != "run-abc123" {
 		t.Errorf("RunID = %q", s.plan.RunID)
 	}
+}
+
+func verifyReplayItems(t *testing.T, s *Store, id1, id2 string) {
+	t.Helper()
 	if len(s.plan.Items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(s.plan.Items))
 	}
@@ -108,6 +119,10 @@ func verifyReplayPlan(t *testing.T, s *Store, id1, id2, cid2 string) {
 	}
 	assertReplayItem(t, s.plan.Item(id1), "Updated Item 1", "Updated description", ItemSkipped, "")
 	assertReplayItem(t, s.plan.Item(id2), "", "", ItemDone, "All done")
+}
+
+func verifyReplayComments(t *testing.T, s *Store, cid2 string) {
+	t.Helper()
 	if len(s.plan.Comments) != 1 {
 		t.Fatalf("expected 1 comment, got %d", len(s.plan.Comments))
 	}

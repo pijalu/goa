@@ -426,7 +426,6 @@ func overlayCompressionForModel(cc config.ContextCompressionConfig, modelID stri
 	}
 	applyCompressionOverride(&ov, o)
 	return ov
-	return ov
 }
 
 // resolveAgenticThresholds folds the config-layer thresholds with the legacy

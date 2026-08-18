@@ -10,7 +10,27 @@ import "github.com/pijalu/goa/internal/agentic/provider"
 // retains ONLY the complete requests that explain each miss (the bust and
 // the preceding call); the notices point at those reports.
 func (a *Agent) drainCacheMissNotices() {
-	notices := provider.TakeCacheMissNotices()
+	a.mu.Lock()
+	key := a.activeCacheKey
+	a.mu.Unlock()
+	a.drainCacheMissNoticesForKey(key)
+}
+
+// drainCacheMissNoticesLocked is the variant for callers already holding
+// a.mu (captureStreamResult): sync.Mutex is not reentrant, so the key is read
+// directly instead of re-locking.
+func (a *Agent) drainCacheMissNoticesLocked() {
+	a.drainCacheMissNoticesForKey(a.activeCacheKey)
+}
+
+func (a *Agent) drainCacheMissNoticesForKey(key string) {
+	if key == "" {
+		// This agent never opened a stream, so no notice can be attributed to
+		// it; draining everything here would steal other agents' notices (the
+		// journal is global).
+		return
+	}
+	notices := provider.TakeCacheMissNoticesFor(key)
 	if len(notices) == 0 || a.cfg.Logger == nil {
 		return
 	}

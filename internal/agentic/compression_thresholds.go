@@ -81,14 +81,6 @@ func (t resolvedThresholds) effectiveHard() int {
 	return DefaultHardPercent
 }
 
-// hardEnabled reports whether the proactive hard tier can fire: only a
-// positive value enables it (the goa default config sets 95). 0 and negative
-// values disable the proactive hard tier while leaving the reactive safety
-// net (effectiveHard) intact.
-func (t resolvedThresholds) hardEnabled() bool {
-	return t.hard > 0
-}
-
 // EffectiveHardPercent returns the reactive ceiling actually in force for the
 // given configured hard percent: the value itself, or DefaultHardPercent when 0.
 func EffectiveHardPercent(hard int) int {
@@ -159,28 +151,29 @@ func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) com
 	if a.cfg.ContextCompression.DisableCacheGate {
 		cacheHot = false
 	}
+	// There is no distinct high-mark threshold in the resolved config (the
+	// legacy trigger folds into hard), so HighMarkPercent is intentionally
+	// left zero: DecideCompactionPolicy then never selects HighMarkCompaction
+	// and the hard ceiling arrives as EmergencyFallback.
 	decision := DecideCompactionPolicy(CompactionPolicyInput{
 		EstimatedTokens:            usagePercent,
 		MaxTokens:                  100,
 		SoftPercent:                rt.soft,
-		HighMarkPercent:            rt.hard,
 		HardPercent:                rt.hard,
 		CacheHot:                   cacheHot,
 		SoftStrategyAvailable:      rt.soft > 0,
-		HighMarkStrategyAvailable:  rt.hardEnabled(),
 		EmergencyStrategyAvailable: true,
 	})
 	switch decision {
-	case EmergencyFallback, HighMarkCompaction:
+	case EmergencyFallback:
 		return tierHard
 	case SoftMaintenance:
 		return tierSoft
-	default:
-		if rt.soft > 0 && usagePercent >= rt.soft && cacheHot {
-			a.logDeferral(usagePercent)
-		}
-		return tierNone
 	}
+	if rt.soft > 0 && usagePercent >= rt.soft && cacheHot {
+		a.logDeferral(usagePercent)
+	}
+	return tierNone
 }
 
 // logDeferral records a cache-hot deferral of the SOFT layer at Info level:

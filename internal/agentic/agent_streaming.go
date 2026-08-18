@@ -31,13 +31,25 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 		return err
 	}
 
-	maxStreams := a.effectiveMaxStreamRounds()
+	maxRounds := a.effectiveMaxStreamRounds()
 
 	for round := 0; ; round++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		done, err := a.runStreamRound(ctx, round, model, opts, initCtx, &maxStreams)
+		// Explicit per-turn round cap. The loop is otherwise convergence-driven
+		// only (Issue 13); MaxStreamRounds > 0 restores a numeric bound for
+		// callers that want one. Zero/unset disables the cap — there is
+		// deliberately no hidden default (same contract as
+		// MaxConsecutiveToolRounds; the application layer supplies defaults).
+		if maxRounds > 0 && round >= maxRounds {
+			if err := a.runRecoveryStream(ctx, model, opts,
+				fmt.Sprintf("per-turn stream round limit (%d) reached", maxRounds)); err != nil {
+				return err
+			}
+			return nil
+		}
+		done, err := a.runStreamRound(ctx, round, model, opts, initCtx)
 		if err != nil {
 			return err
 		}
@@ -56,7 +68,7 @@ func (a *Agent) processTurnWithStream(ctx context.Context) error {
 // runStreamRound performs one LLM stream round, handling tool calls,
 // progress checks, and stream failures. It returns done=true when the turn
 // should end after this round (no further tool calls to process).
-func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context, maxStreams *int) (done bool, err error) {
+func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Model, opts provider.StreamOptions, initCtx provider.Context) (done bool, err error) {
 	stream, streamErr := a.startStreamRound(ctx, round, model, opts, initCtx)
 	if streamErr != nil {
 		// An error opening the stream (e.g. HTTP 408 before any events arrive)
@@ -86,7 +98,9 @@ func (a *Agent) runStreamRound(ctx context.Context, round int, model provider.Mo
 	// reaches this and is never cut off by an arbitrary round number — this
 	// replaces both the old forced-answer nudge and the hard 250-round cap.
 	if a.trackToolCallingRound() {
-		if err := a.runRecoveryStream(ctx, model, opts, *maxStreams); err != nil {
+		reason := fmt.Sprintf("model went silent for %d consecutive tool-only rounds (limit %d)",
+			a.silentRoundStreak(), a.effectiveMaxConsecutiveToolRounds())
+		if err := a.runRecoveryStream(ctx, model, opts, reason); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -192,10 +206,10 @@ func (a *Agent) startStreamRound(ctx context.Context, round int, model provider.
 			pCtx.NoTools = true
 			a.toolCollapseNextRound = false
 		}
-		return provider.Stream(model, pCtx, opts)
+		return a.stream(model, pCtx, opts)
 	}
 	a.logProviderContext(initCtx, 0)
-	return provider.Stream(model, initCtx, opts)
+	return a.stream(model, initCtx, opts)
 }
 
 // effectiveEventStallTimeout returns the maximum wall-clock time the agent
@@ -215,12 +229,23 @@ func (a *Agent) effectiveEventStallTimeout(opts provider.StreamOptions) time.Dur
 	return provider.DefaultStreamIdleTimeout
 }
 
-// effectiveMaxStreamRounds returns the configured max stream rounds, defaulting to 50.
+// effectiveMaxStreamRounds returns the configured per-turn stream round
+// cap. Zero or negative disables the cap: there is deliberately no hidden
+// fallback (matching the MaxConsecutiveToolRounds contract) — the application
+// layer supplies any desired default via config/flags.
 func (a *Agent) effectiveMaxStreamRounds() int {
 	if a.cfg.MaxStreamRounds > 0 {
 		return a.cfg.MaxStreamRounds
 	}
-	return 50
+	return 0
+}
+
+// silentRoundStreak snapshots the current silent tool-round streak for
+// logging; the limit decision itself lives in trackToolCallingRound.
+func (a *Agent) silentRoundStreak() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.consecutiveToolRounds
 }
 
 // effectiveMaxConsecutiveToolRounds returns the configured max consecutive
@@ -237,17 +262,19 @@ func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
 	return a.cfg.MaxConsecutiveToolRounds
 }
 
-// runRecoveryStream sends a clear system message to the LLM when the per-turn
-// stream round limit is reached, then performs one final stream so the model
-// can self-heal and produce an answer from information already gathered.
+// runRecoveryStream sends a clear system message to the LLM when a per-turn
+// convergence bound fires (silent tool-round streak or the explicit
+// MaxStreamRounds cap — the caller supplies the reason), then performs a
+// final stream so the model can self-heal and produce an answer from
+// information already gathered.
 //
 // If the model ignores the hint and still calls tools, we allow up to
 // maxRecoveryRounds additional rounds so the model can see tool results and
 // produce a text response. Without this, tool results get silently appended
 // to history with no chance for the model to respond, leaving the user with
 // no visible output and a seemingly hung session.
-func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opts provider.StreamOptions, limit int) error {
-	a.cfg.Logger.Log(Warn, "per-turn stream round limit (%d) reached; sending recovery hint", limit)
+func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opts provider.StreamOptions, reason string) error {
+	a.cfg.Logger.Log(Warn, "%s; sending recovery hint", reason)
 	recovery := "[goa-system] Internal control note (never show or mention to the user): the per-turn tool-call round limit was reached. Complete the task now using the information already gathered, without referencing this note or any internal limit."
 	// The recovery hint is a transient nudge for the recovery rounds only; mark
 	// it ephemeral so it is stripped at turn end and does not pollute future
@@ -268,9 +295,9 @@ func (a *Agent) runRecoveryStream(ctx context.Context, model provider.Model, opt
 		// step — the model must answer with what it has gathered, so the
 		// request carries no tools and tool_choice none.
 		pCtx.NoTools = true
-		a.logProviderContext(pCtx, limit+1+round)
+		a.logProviderContext(pCtx, round)
 
-		recoveryStream, err := provider.Stream(model, pCtx, opts)
+		recoveryStream, err := a.stream(model, pCtx, opts)
 		if err != nil {
 			return fmt.Errorf("recovery stream: %w", err)
 		}
@@ -500,7 +527,8 @@ func (a *Agent) captureStreamResult(stream *provider.AssistantMessageEventStream
 	}
 	// Flush cache-miss notices: the provider journal flags misses as streams
 	// complete; logging here keeps the notice next to the round that missed.
-	a.drainCacheMissNotices()
+	// mu is held here — use the locked variant (sync.Mutex is not reentrant).
+	a.drainCacheMissNoticesLocked()
 }
 
 // toolListHashLocked returns a cheap fingerprint of the tool schemas actually
@@ -1750,7 +1778,6 @@ func (a *Agent) prepareTurn(ctx context.Context) (provider.Model, provider.Strea
 	// to provider.Stream. Without this, a Config that leaves StreamOptions zero
 	// would get MaxRetries=0 and the stream retry loop would never run.
 	opts = provider.BuildBaseOptions(model, opts)
-	opts.PromptCacheKey = a.cacheKey(model)
 
 	return model, opts, pCtx
 }
@@ -1976,7 +2003,7 @@ const (
 // it.
 func (a *Agent) executeRetryAttempt(ctx context.Context, model provider.Model, opts provider.StreamOptions, retry, maxRetries int, always bool) (retryAttemptOutcome, bool, error) {
 	pCtx := a.buildProviderContext(ctx)
-	stream, err := provider.Stream(model, pCtx, opts)
+	stream, err := a.stream(model, pCtx, opts)
 	if err != nil {
 		a.cfg.Logger.Log(Warn, "retry stream failed: %v", err)
 		return retryAttemptOpenError, false, err
@@ -2055,6 +2082,24 @@ func (a *Agent) cacheKey(model provider.Model) string {
 		Provider: string(model.Provider), Model: model.ID,
 		ToolSchemaHash: hex.EncodeToString(sum[:]),
 	})
+}
+
+// stream opens a provider stream with the agent's CURRENT conversation cache
+// identity stamped on the options, and records that identity so cache-miss
+// notices drained at stream completion are attributed to this agent. Every
+// provider request derived from the conversation goes through here — initial
+// round, re-streams after tool calls, retries, recovery, and the summarize
+// call (whose request is the conversation prefix plus an appended
+// instruction, i.e. legitimate append semantics). Deriving the key from live
+// agent state at open time means a mid-turn generation rotation (compression)
+// can never leave a stale identity on a later request (Hard Rule 7).
+func (a *Agent) stream(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
+	key := a.cacheKey(model)
+	opts.PromptCacheKey = key
+	a.mu.Lock()
+	a.activeCacheKey = key
+	a.mu.Unlock()
+	return provider.Stream(model, ctx, opts)
 }
 
 func (a *Agent) buildProviderContext(ctx context.Context) provider.Context {
