@@ -178,13 +178,17 @@ func buildResponsesBody(model provider.Model, ctx provider.Context, opts provide
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
-	if opts.SessionID != "" {
+	cacheKey := opts.PromptCacheKey
+	if cacheKey == "" {
+		cacheKey = opts.SessionID
+	}
+	if opts.SessionID != "" || cacheKey != "" {
 		// Codex carries session affinity via prompt_cache_key only; the SSE
 		// backend rejects previous_response_id (HTTP 400). Other responses
 		// flavors chain turns via previous_response_id.
 		if isCodex {
-			body["prompt_cache_key"] = opts.SessionID
-		} else {
+			body["prompt_cache_key"] = cacheKey
+		} else if opts.SessionID != "" {
 			body["previous_response_id"] = opts.SessionID
 		}
 	}

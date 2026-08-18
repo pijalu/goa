@@ -266,7 +266,12 @@ The previous implementation record overstated completion. The cache primitives i
 | 6 | Preparation exists; production scope deferred | SSE remains the production transport; transport interfaces and existing cancellation/retry tests pass, while session-scoped WebSocket fallback remains intentionally deferred. | Keep WebSocket enablement in a separate feature. |
 | 7 | Existing implementation, validated | Focused quota/plugin tests pass for provider/window/rate behavior; no duplicate backend-specific logic is needed here. | Retain sparse/authoritative response coverage as quota providers evolve. |
 
-### Provider-mock acceptance scenario
+### Mocked Codex regression evidence (2026-08-18)
+
+- `internal/agentic/provider/openai_responses/codex_mock_endpoint_test.go` runs an `httptest.Server` with Codex-style SSE (`response.output_text.delta` followed by `response.completed`). It snapshots the request body and headers before mutating the caller's context, and asserts the snapshot contains `instructions`, `store=false`, opaque `prompt_cache_key`, Codex headers, and no `previous_response_id`.
+- The request shape was cross-checked against `logs/http.jsonl` from `/Users/muaddib/dev/goa/.goa/exports/goa-export-20260818-113201.zip`: the export shows repeated `POST https://chatgpt.com/backend-api/codex/responses` exchanges and the same Codex SSE endpoint family. Export payloads are intentionally not copied into tests because they contain sensitive prompts/tool schemas.
+- The mock test passes together with existing Codex body/SSE parser tests. Limitation: the export's redacted request bodies are not replayed byte-for-byte; comparison is contract-level to avoid committing secrets.
+
 
 The test harness must use a deterministic `agentic.ApiProvider` mock that records a deep copy of every `provider.Context` and `StreamOptions` at call entry. It will run ordinary append turns, a proactive compaction, and an explicit context reset. Assertions must prove:
 

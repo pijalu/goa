@@ -123,10 +123,9 @@ func (st *cacheSeqState) observe(cacheRead int) bool {
 // cacheForensicsRecord is the handle for one in-flight request: recorded at
 // send time, completed with the response usage once the stream ends.
 type cacheForensicsRecord struct {
-	journal     *cacheForensicsJournal
-	seq         int64
-	seqKey      string
-	fingerprint RequestFingerprint
+	journal *cacheForensicsJournal
+	seq     int64
+	seqKey  string
 }
 
 // complete attaches the response usage to the recorded request and runs
@@ -207,13 +206,17 @@ func (j *cacheForensicsJournal) record(model schema.Model, sessionID, systemProm
 			body = quoted
 		}
 	}
+	// Own the serialized bytes: protocol buffers may be reused or mutated by
+	// the caller after recording. Reports must remain an immutable snapshot of
+	// the wire request, not an alias into a later request's backing array.
+	bodySnapshot := append([]byte(nil), body...)
 	entry := &CacheForensicsEntry{
 		Timestamp:   time.Now(),
 		Provider:    string(model.Provider),
 		Model:       model.ID,
 		URL:         url,
 		SessionID:   sessionID,
-		Body:        json.RawMessage(body),
+		Body:        json.RawMessage(bodySnapshot),
 		Fingerprint: fingerprint,
 		seqKey:      cacheSeqKey(model, sessionID, systemPrompt),
 	}
