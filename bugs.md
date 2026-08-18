@@ -27,60 +27,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## Prefix fingerprint classifier never reports `exact_append` (whole-body `bytes.HasPrefix` is structurally wrong)
-
-**Observed:** every recorded request is classified `unexpected_divergence`, even provably
-append-only ones. Evidence: export `goa-export-20260819-000114.zip` and
-`goa-export-20260819-000743.zip` — all 5 request pairs (10 complete request bodies) around
-the detected cache misses
-have byte-identical message prefixes (canonical-JSON comparison + `B.input_prefix_hash ==
-A.request_hash` holds for every pair), identical non-message body fields, constant tools
-schema hash — yet `classification` is `unexpected_divergence` for 100% of them.
-
-**Root cause:** `BuildRequestFingerprint` (`internal/agentic/provider/cache_fingerprint.go`)
-tests `bytes.HasPrefix(request, previousRequest)` on the **whole serialized request body**.
-Go's `encoding/json` marshals map keys alphabetically, so `messages` is the first key but a
-history append lands **inside** the body, after the closing `]` of nothing — the new body
-is never a byte-prefix of the old one (only byte-identical retries can pass). The
-`exact_append` classification is unreachable, so the strongest signal the forensics
-journal has ("the client did everything right") is never produced and every request looks
-like a suspect divergence.
-
-**Expected:** an append-only request chain with unchanged params must classify as
-`exact_append`; only real rewrites (compaction, elision, message edits) may classify as
-`unexpected_divergence`/`replacement`.
-
-### Fix plan (detailed)
-- Classify on the `messages` array, not the whole body:
-  1. Parse both bodies (they are JSON objects), extract `messages` plus the set of
-     non-message fields.
-  2. `messages` prefix check: compare per-message canonical hashes
-     (`sha256(prev_msg_hash || msg_i)` chain or canonical re-marshal equality) so the
-     classification does not depend on map key order.
-  3. Non-message fields: byte-compare each canonically re-marshal ed field.
-- Classification matrix: messages-prefix AND fields equal → `exact_append`;
-  messages-prefix but a field differs → new `param_change` value (tools/thinking change
-  with appended history — cache-relevant, distinct from history rewrite); no prefix and
-  `replacement` → `replacement`; otherwise → `unexpected_divergence`; no predecessor →
-  `no_predecessor`.
-- Keep `RequestHash`/`InputPrefixHash` as whole-body hashes (wire-faithful), add
-  `MessagesPrefixHash` if useful for quick eyeballing.
-- Update the journal/notice plumbing only if a new classification value needs mapping.
-
-**Test approach:**
-- Table-driven tests in `cache_fingerprint_test.go` using bodies produced by the real
-  serializer (map marshal, not hand-written strings): append N messages → `exact_append`;
-  rewrite one old message → `unexpected_divergence`; change `tools` only → `param_change`;
-  identical body → `exact_append`; empty predecessor → `no_predecessor`; `replacement`
-  flag → `replacement`.
-- Regression: `cache_forensics_fingerprint_test.go` expectations updated deliberately
-  (they currently encode the bug).
-- Live validation: run a short session, export the debug bundle, confirm healthy turns
-  report `exact_append`.
-
-**Validation steps:** `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
-`gocyclo -over 12 .`, `go test -count=1 -race -cover ./...`.
-
 ## CM status does not separate full vs partial cache misses and shows no token cost
 
 **Observed:** the status/TUI cache-miss indicator is a single counter `CM:N` (always
@@ -166,6 +112,50 @@ fixture reproducing all eight observed miss signatures.
 </details>
 
 # Archive
+
+## ~~Prefix fingerprint classifier never reports `exact_append` (whole-body `bytes.HasPrefix` is structurally wrong)~~ — FIXED (2026-08-19)
+
+**Fix record.** `BuildRequestFingerprint` (`internal/agentic/provider/cache_fingerprint.go`)
+now classifies semantically instead of byte-level: `classifyPrefix` →
+`compareBodies` decomposes both bodies into their `messages` arrays and
+non-message fields (`json.RawMessage` maps, key-order independent),
+`messagesArePrefix` + `nonMessageFieldsEqual` compare canonically (decode +
+re-marshal sorts keys; byte-equal fast path), and the matrix is:
+messages-prefix + params equal → `exact_append`; messages-prefix + params
+differ → new `param_change`; non-prefix + flag → `replacement`; else
+`unexpected_divergence`; no predecessor → `no_predecessor`/`replacement`.
+`RequestHash`/`InputPrefixHash` stay whole-body (wire-faithful). Non-JSON
+bodies keep the historical byte-prefix fallback for exotic transports.
+
+Tests rebuilt on serializer-shaped bodies (Go map marshal — the shape where
+appends land mid-array, which the old hand-crafted test could never express):
+`TestBuildRequestFingerprintClassifiesRealAppend` (append → exact_append,
+identical-retry fast path), `...ParamChange` (tools change mid-conversation),
+`...DivergenceAndReplacement` (rewritten message, flagged compaction,
+key-order churn still exact), `...NoPredecessor`, `...NonJSONFallback`,
+`...HashesAreBounded`. Forensics tests needed no change (only no_predecessor
+was asserted). Live validation: run a session, export the debug bundle,
+confirm healthy turns now report `exact_append`.
+
+<details><summary>Original investigation</summary>
+
+**Observed:** every recorded request is classified `unexpected_divergence`, even provably
+append-only ones. Evidence: export `goa-export-20260819-000114.zip` and
+`goa-export-20260819-000743.zip` — all 5 request pairs (10 complete request bodies) around
+the detected cache misses
+have byte-identical message prefixes (canonical-JSON comparison + `B.input_prefix_hash ==
+A.request_hash` holds for every pair), identical non-message body fields, constant tools
+schema hash — yet `classification` is `unexpected_divergence` for 100% of them.
+
+**Root cause:** `BuildRequestFingerprint`
+tests `bytes.HasPrefix(request, previousRequest)` on the **whole serialized request body**.
+Go's `encoding/json` marshals map keys alphabetically, so `messages` is the first key but a
+history append lands **inside** the body — the new body is never a byte-prefix of the old
+one (only byte-identical retries can pass). The `exact_append` classification was
+unreachable, so the strongest signal the forensics journal has ("the client did everything
+right") was never produced.
+
+</details>
 
 ## ~~Text tool-call recovery does not recognize the `<invoke name=...>` dialect — GLM-emitted call rendered as content, never executed~~ — FIXED (2026-08-19)
 
