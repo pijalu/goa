@@ -258,13 +258,13 @@ type SkillRegistry struct {
 	// (skills.sticky / skills.sticky_off): on forces a knowledge skill
 	// sticky, off forces a frontmatter-sticky skill back to on-demand (off
 	// wins). Applied to Meta.Sticky during LoadAll.
-	stickyOn map[string]bool
+	stickyOn  map[string]bool
 	stickyOff map[string]bool
 	// stickyFront records the pristine frontmatter sticky flag per loaded
 	// skill (before overrides) so toggles can write the minimal config list.
 	stickyFront map[string]bool
-	homeDir         string          // home dir path for source labeling ("home")
-	projectDir      string          // project dir path for source labeling ("project")
+	homeDir     string // home dir path for source labeling ("home")
+	projectDir  string // project dir path for source labeling ("project")
 }
 
 // NewSkillRegistry creates a registry that scans the given directories.
@@ -395,13 +395,13 @@ func (r *SkillRegistry) FrontmatterSticky(name string) (bool, bool) {
 	return fm, ok
 }
 
-
 // embeddedDefaultOff reports whether an embedded skill is suppressed by the
 // default-off policy: it is in the default-disabled set AND the user has not
 // explicitly opted it back in. Re-enable paths (either is sufficient):
 //   - the embedded opt-in list (embeddedEnabled) — embedded-scoped, no
 //     side-effects on file skills, or
 //   - the global Enabled allowlist (explicitly naming the skill).
+//
 // Explicitly Disabled skills are already excluded by allowed() regardless.
 func (r *SkillRegistry) embeddedDefaultOff(name string) bool {
 	if !r.embeddedDefaultDisabled[name] {
@@ -697,7 +697,6 @@ func (r *SkillRegistry) IsEmbeddedDefaultOff(name string) bool {
 
 // DefaultOnEmbeddedSkill is the single agent-facing embedded skill that stays
 // ON by default; every other agent-facing embedded skill is OFF by default
-//
 const DefaultOnEmbeddedSkill = "telegram"
 
 // DefaultEmbeddedOffNames returns the names of all embedded skills that are

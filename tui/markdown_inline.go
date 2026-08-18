@@ -348,50 +348,49 @@ func renderInlineItalic(text string) string {
 func renderItalicMarker(text string, marker byte) string {
 	var out strings.Builder
 	pos := 0
-	for {
-		idx := strings.IndexByte(text[pos:], marker)
-		if idx < 0 {
+	for pos < len(text) {
+		fragment, next, stop := italicMarkerStep(text, pos, marker)
+		out.WriteString(fragment)
+		if stop {
 			break
 		}
-		idx += pos
-		// Skip the double (bold) marker — already processed by renderInlineBold.
-		if idx+1 < len(text) && text[idx+1] == marker {
-			out.WriteString(text[pos : idx+2])
-			pos = idx + 2
-			continue
-		}
-		if idx > 0 && text[idx-1] == marker {
-			out.WriteString(text[pos : idx+1])
-			pos = idx + 1
-			continue
-		}
-		// Find the closing single marker.
-		closeIdx := strings.IndexByte(text[idx+1:], marker)
-		if closeIdx < 0 {
-			break
-		}
-		closeIdx += idx + 1
-		// Ensure closing is not part of a double marker.
-		if closeIdx+1 < len(text) && text[closeIdx+1] == marker {
-			out.WriteString(text[pos : closeIdx+2])
-			pos = closeIdx + 2
-			continue
-		}
-		// '_' cannot open/close emphasis intra-word (snake_case stays literal).
-		if marker == '_' && isIntraWord(text, idx, closeIdx) {
-			out.WriteString(text[pos : idx+1])
-			pos = idx + 1
-			continue
-		}
-		content := text[idx+1 : closeIdx]
-		out.WriteString(text[pos:idx])
-		out.WriteString(ansi.StyleItalic())
-		out.WriteString(content)
-		out.WriteString(ansi.Reset)
-		pos = closeIdx + 1
+		pos = next
 	}
-	out.WriteString(text[pos:])
+	if pos < len(text) {
+		out.WriteString(text[pos:])
+	}
 	return out.String()
+}
+
+func italicMarkerStep(text string, pos int, marker byte) (fragment string, next int, stop bool) {
+	idx := strings.IndexByte(text[pos:], marker)
+	if idx < 0 {
+		return "", pos, true
+	}
+	idx += pos
+	if idx+1 < len(text) && text[idx+1] == marker {
+		return text[pos : idx+2], idx + 2, false
+	}
+	if idx > 0 && text[idx-1] == marker {
+		return text[pos : idx+1], idx + 1, false
+	}
+	closeIdx := strings.IndexByte(text[idx+1:], marker)
+	if closeIdx < 0 {
+		return "", pos, true
+	}
+	closeIdx += idx + 1
+	if closeIdx+1 < len(text) && text[closeIdx+1] == marker {
+		return text[pos : closeIdx+2], closeIdx + 2, false
+	}
+	if marker == '_' && isIntraWord(text, idx, closeIdx) {
+		return text[pos : idx+1], idx + 1, false
+	}
+	var out strings.Builder
+	out.WriteString(text[pos:idx])
+	out.WriteString(ansi.StyleItalic())
+	out.WriteString(text[idx+1 : closeIdx])
+	out.WriteString(ansi.Reset)
+	return out.String(), closeIdx + 1, false
 }
 
 // isIntraWord reports whether an opening '_' at openIdx (closing at closeIdx)

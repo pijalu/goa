@@ -23,60 +23,59 @@ func TestToolExecution_RenderResizeExtendsBackground(t *testing.T) {
 		status ToolStatus
 		bgKey  string
 	}{
-		{"success", ToolSuccess, "tool_success_bg"},
-		{"error", ToolError, "tool_error_bg"},
+		{"success", ToolSuccess, "tool_success_bg"}, {"error", ToolError, "tool_error_bg"},
 	}
-	for _, st := range statuses {
-		t.Run(st.name, func(t *testing.T) {
-			tc := NewToolExecution("read", `{"path":"x.go"}`)
-			tc.SetArgsComplete()
-			tc.SetOutput("line one\nline two")
-			tc.SetStatus(st.status)
-
-			bg := ansi.Bg(TheTheme.ColorHex(st.bgKey))
-			narrow := tc.Render(80)
-			if len(narrow) == 0 {
-				t.Fatal("no lines rendered at width 80")
-			}
-			bgLines := 0
-			for i, line := range narrow {
-				if got := visibleWidth(ansi.Strip(line)); got != 80 {
-					t.Fatalf("narrow line %d visible width %d, want 80", i, got)
-				}
-				if strings.Contains(line, bg) {
-					bgLines++
-				}
-			}
-			if bgLines == 0 {
-				t.Fatalf("no background-painted lines at width 80 (bg %q missing)", st.bgKey)
-			}
-
-			// Resize wider: every line must be rebuilt at the new width, with
-			// the background still wrapping content + padding.
-			wide := tc.Render(120)
-			if len(wide) != len(narrow) {
-				t.Fatalf("resize changed line count %d → %d", len(narrow), len(wide))
-			}
-			wideBg := 0
-			for i, line := range wide {
-				if got := visibleWidth(ansi.Strip(line)); got != 120 {
-					t.Errorf("wide line %d visible width %d, want 120 (stale cached render from width 80?)", i, got)
-				}
-				if strings.Contains(line, bg) {
-					wideBg++
-				}
-			}
-			if wideBg != bgLines {
-				t.Errorf("background-painted lines %d after resize, want %d (same box rows painted)", wideBg, bgLines)
-			}
-
-			// Resize narrower must also rebuild (no overflow past the width).
-			small := tc.Render(60)
-			for i, line := range small {
-				if got := visibleWidth(ansi.Strip(line)); got > 60 {
-					t.Errorf("narrowed line %d visible width %d exceeds 60 (stale cached render?)", i, got)
-				}
-			}
-		})
+	for _, status := range statuses {
+		t.Run(status.name, func(t *testing.T) { testResizeStatus(t, status.status, status.bgKey) })
 	}
+}
+
+func testResizeStatus(t *testing.T, status ToolStatus, bgKey string) {
+	t.Helper()
+	tc := NewToolExecution("read", `{"path":"x.go"}`)
+	tc.SetArgsComplete()
+	tc.SetOutput("line one\nline two")
+	tc.SetStatus(status)
+	bg := ansi.Bg(TheTheme.ColorHex(bgKey))
+	narrow := assertRenderedWidth(t, tc, 80)
+	bgLines := countBackgroundLines(narrow, bg)
+	if bgLines == 0 {
+		t.Fatalf("no background-painted lines at width 80 (bg %q missing)", bgKey)
+	}
+	wide := assertRenderedWidth(t, tc, 120)
+	if len(wide) != len(narrow) {
+		t.Fatalf("resize changed line count %d → %d", len(narrow), len(wide))
+	}
+	if got := countBackgroundLines(wide, bg); got != bgLines {
+		t.Errorf("background-painted lines %d after resize, want %d", got, bgLines)
+	}
+	for i, line := range tc.Render(60) {
+		if width := visibleWidth(ansi.Strip(line)); width > 60 {
+			t.Errorf("narrowed line %d visible width %d exceeds 60", i, width)
+		}
+	}
+}
+
+func assertRenderedWidth(t *testing.T, tc *ToolExecutionComponent, width int) []string {
+	t.Helper()
+	lines := tc.Render(width)
+	if len(lines) == 0 {
+		t.Fatalf("no lines rendered at width %d", width)
+	}
+	for i, line := range lines {
+		if got := visibleWidth(ansi.Strip(line)); got != width {
+			t.Fatalf("line %d visible width %d, want %d", i, got, width)
+		}
+	}
+	return lines
+}
+
+func countBackgroundLines(lines []string, bg string) int {
+	count := 0
+	for _, line := range lines {
+		if strings.Contains(line, bg) {
+			count++
+		}
+	}
+	return count
 }

@@ -239,28 +239,24 @@ func (c *StatsCommand) usageView() *UsageCommand {
 // per-turn detail. This realizes the "Full usage statistics" feature: global
 // insights by default, project/session drill-down on demand.
 func (c *StatsCommand) Run(ctx core.Context, args []string) error {
-	if len(args) > 0 && (args[0] == "session" || args[0] == ":session") {
+	if len(args) == 0 {
+		return c.usageView().Run(ctx, args)
+	}
+	switch args[0] {
+	case "session", ":session":
 		return showStats(ctx, ctx, args[1:])
-	}
-	if len(args) > 0 && (args[0] == "project" || args[0] == ":project") {
-		// Project-level view: usage store scoped to this project, broken down
-		// by provider and model, including cache read/write totals.
+	case "project", ":project":
 		return c.usageView().Run(ctx, []string{"here"})
-	}
-	if len(args) > 0 && (args[0] == "verbose" || args[0] == ":verbose") {
-		// Verbose view: every known project, each split by provider and model.
+	case "verbose", ":verbose":
 		return c.usageView().Run(ctx, []string{"verbose"})
-	}
-	if len(args) > 0 && (args[0] == "cache" || args[0] == ":cache") {
-		// Cache view: per-completion hit-rate evolution chart + drop table.
+	case "cache", ":cache":
 		return c.runCacheStats(ctx, args[1:])
+	default:
+		if isNumeric(args[0]) {
+			return showStats(ctx, ctx, args)
+		}
+		return c.usageView().Run(ctx, args)
 	}
-	if len(args) > 0 && isNumeric(args[0]) {
-		// /stats <n> drills into turn #n of the current session.
-		return showStats(ctx, ctx, args)
-	}
-	// Default: global usage summary across projects/providers/models.
-	return c.usageView().Run(ctx, args)
 }
 
 func isNumeric(s string) bool {

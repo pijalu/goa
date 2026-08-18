@@ -2,6 +2,7 @@ package goal
 
 import (
 	"fmt"
+
 	coregoal "github.com/pijalu/goa/core/goal"
 )
 

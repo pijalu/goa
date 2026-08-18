@@ -113,6 +113,33 @@ func (c *Config) mergeMode(other *Config) {
 	}
 }
 
+func mergeExecutionLoopSettings(dst, src *ExecutionConfig) {
+	if src.DisableThinkingLoopDetection != nil {
+		dst.DisableThinkingLoopDetection = src.DisableThinkingLoopDetection
+	}
+	if src.DisableToolLoopDetection != nil {
+		dst.DisableToolLoopDetection = src.DisableToolLoopDetection
+	}
+	if src.DisableStreamLoopDetection != nil {
+		dst.DisableStreamLoopDetection = src.DisableStreamLoopDetection
+	}
+	if src.DisableThinkingStallDetection != nil {
+		dst.DisableThinkingStallDetection = src.DisableThinkingStallDetection
+	}
+	if src.StreamLoopMaxRepeats != 0 {
+		dst.StreamLoopMaxRepeats = src.StreamLoopMaxRepeats
+	}
+	if src.StreamLoopMinPeriod != 0 {
+		dst.StreamLoopMinPeriod = src.StreamLoopMinPeriod
+	}
+	if src.StreamLoopMaxStrikes != 0 {
+		dst.StreamLoopMaxStrikes = src.StreamLoopMaxStrikes
+	}
+	if src.StreamLoopResetAfter != 0 {
+		dst.StreamLoopResetAfter = src.StreamLoopResetAfter
+	}
+}
+
 // mergeExecution merges fields from src into dst.
 func mergeExecution(dst, src *ExecutionConfig) {
 	if src.Mode != "" {
@@ -153,30 +180,7 @@ func mergeExecution(dst, src *ExecutionConfig) {
 	mergeIntIfSet(&dst.MaxConsecutiveToolRounds, src.MaxConsecutiveToolRounds)
 	mergeIntIfSet(&dst.ThinkingStallWarnSeconds, src.ThinkingStallWarnSeconds)
 	mergeIntIfSet(&dst.ThinkingStallStopSeconds, src.ThinkingStallStopSeconds)
-	if src.DisableThinkingLoopDetection != nil {
-		dst.DisableThinkingLoopDetection = src.DisableThinkingLoopDetection
-	}
-	if src.DisableToolLoopDetection != nil {
-		dst.DisableToolLoopDetection = src.DisableToolLoopDetection
-	}
-	if src.DisableStreamLoopDetection != nil {
-		dst.DisableStreamLoopDetection = src.DisableStreamLoopDetection
-	}
-	if src.DisableThinkingStallDetection != nil {
-		dst.DisableThinkingStallDetection = src.DisableThinkingStallDetection
-	}
-	if src.StreamLoopMaxRepeats != 0 {
-		dst.StreamLoopMaxRepeats = src.StreamLoopMaxRepeats
-	}
-	if src.StreamLoopMinPeriod != 0 {
-		dst.StreamLoopMinPeriod = src.StreamLoopMinPeriod
-	}
-	if src.StreamLoopMaxStrikes != 0 {
-		dst.StreamLoopMaxStrikes = src.StreamLoopMaxStrikes
-	}
-	if src.StreamLoopResetAfter != 0 {
-		dst.StreamLoopResetAfter = src.StreamLoopResetAfter
-	}
+	mergeExecutionLoopSettings(dst, src)
 }
 
 // mergeIntIfSet copies src into dst when src is non-zero.
@@ -378,45 +382,57 @@ func uniqueStrings(input []string) []string {
 	return result
 }
 
+func mergeBashConfig(dst, src *BashConfig) {
+	if src.BlockedCommands != nil {
+		dst.BlockedCommands = src.BlockedCommands
+	}
+	if src.AllowedCommands != nil {
+		dst.AllowedCommands = src.AllowedCommands
+	}
+	if src.EnvMaskPatterns != nil {
+		dst.EnvMaskPatterns = src.EnvMaskPatterns
+	}
+	if src.MaxOutputBytes != 0 {
+		dst.MaxOutputBytes = src.MaxOutputBytes
+	}
+	if src.MaxComplexityScore != 0 {
+		dst.MaxComplexityScore = src.MaxComplexityScore
+	}
+	if src.EnableComplexityAnalysis {
+		dst.EnableComplexityAnalysis = true
+	}
+	if src.CompressOutput != nil {
+		dst.CompressOutput = src.CompressOutput
+	}
+	if src.WarnFileEdits != nil {
+		dst.WarnFileEdits = src.WarnFileEdits
+	}
+}
+
+func mergeSearchConfig(dst, src *SearchConfig) {
+	if src.Threads != 0 {
+		dst.Threads = src.Threads
+	}
+	if src.MaxResults != 0 {
+		dst.MaxResults = src.MaxResults
+	}
+	if src.Exclude != nil {
+		dst.Exclude = src.Exclude
+	}
+}
+
+func mergeToolsBashAndSearch(dst, src *Config) {
+	mergeBashConfig(&dst.Tools.Bash, &src.Tools.Bash)
+	if src.Tools.SSH.Hosts != nil {
+		dst.Tools.SSH.Hosts = src.Tools.SSH.Hosts
+	}
+	mergeSearchConfig(&dst.Tools.Search, &src.Tools.Search)
+}
+
 // mergeTools merges the tools config section.
 func (c *Config) mergeTools(other *Config) {
-	if other.Tools.Bash.BlockedCommands != nil {
-		c.Tools.Bash.BlockedCommands = other.Tools.Bash.BlockedCommands
-	}
-	if other.Tools.Bash.AllowedCommands != nil {
-		c.Tools.Bash.AllowedCommands = other.Tools.Bash.AllowedCommands
-	}
-	if other.Tools.Bash.EnvMaskPatterns != nil {
-		c.Tools.Bash.EnvMaskPatterns = other.Tools.Bash.EnvMaskPatterns
-	}
-	if other.Tools.Bash.MaxOutputBytes != 0 {
-		c.Tools.Bash.MaxOutputBytes = other.Tools.Bash.MaxOutputBytes
-	}
-	if other.Tools.Bash.MaxComplexityScore != 0 {
-		c.Tools.Bash.MaxComplexityScore = other.Tools.Bash.MaxComplexityScore
-	}
-	if other.Tools.Bash.EnableComplexityAnalysis {
-		c.Tools.Bash.EnableComplexityAnalysis = other.Tools.Bash.EnableComplexityAnalysis
-	}
-	if other.Tools.Bash.CompressOutput != nil {
-		c.Tools.Bash.CompressOutput = other.Tools.Bash.CompressOutput
-	}
-	if other.Tools.Bash.WarnFileEdits != nil {
-		c.Tools.Bash.WarnFileEdits = other.Tools.Bash.WarnFileEdits
-	}
+	mergeToolsBashAndSearch(c, other)
 	mergeTerminal(&c.Tools.Terminal, &other.Tools.Terminal)
-	if other.Tools.SSH.Hosts != nil {
-		c.Tools.SSH.Hosts = other.Tools.SSH.Hosts
-	}
-	if other.Tools.Search.Threads != 0 {
-		c.Tools.Search.Threads = other.Tools.Search.Threads
-	}
-	if other.Tools.Search.MaxResults != 0 {
-		c.Tools.Search.MaxResults = other.Tools.Search.MaxResults
-	}
-	if other.Tools.Search.Exclude != nil {
-		c.Tools.Search.Exclude = other.Tools.Search.Exclude
-	}
 	mergeSmartSearch(&c.Tools.SmartSearch, &other.Tools.SmartSearch)
 	mergeWebFetch(&c.Tools.WebFetch, &other.Tools.WebFetch)
 	mergeReadFile(&c.Tools.ReadFile, &other.Tools.ReadFile)

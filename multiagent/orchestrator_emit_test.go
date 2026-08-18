@@ -62,23 +62,9 @@ func TestEmitKind_StructuralEventsNotDropped(t *testing.T) {
 		select {
 		case m := <-o.events:
 			drained++
-			if m.To == "stream_start" && m.Kind == "content" {
-				want["stream_start"] = true
-			}
-			if m.Kind == "thinking_start" {
-				want["thinking_start"] = true
-			}
-			if m.To == "stream_end" {
-				want["stream_end"] = true
-			}
-			if m.Kind == "thinking_end" {
-				want["thinking_end"] = true
-			}
-			if m.From == "gate" {
-				want["gate"] = true
-			}
-			if want["stream_start"] && want["thinking_start"] && want["stream_end"] && want["thinking_end"] && want["gate"] {
-				return // all structural events survived a full buffer
+			markStructuralEvent(want, m)
+			if structuralEventsComplete(want) {
+				return
 			}
 		case <-timeout:
 			t.Fatalf("structural/gate events lost with a full buffer (drained=%d): %v", drained, want)

@@ -154,84 +154,83 @@ func TestModelsDev_ProviderPickerShowsModelsDevProviders_Filmstrip(t *testing.T)
 // models.dev are visible in the TUI": the models.dev catalog → picker data →
 // rendered pixel rows reach the agent-visible filmstrip.
 func TestModelsDev_ModelsVisibleInTUIPicker_Filmstrip(t *testing.T) {
-	// One mapped provider (zai → zai-api) and one unmapped-fallback provider
-	// (tensorx, the historical invisible case), plus deepseek (mapped) to span
-	// the mapping paths without rendering all 4927 models.dev models.
 	for _, key := range []string{"zai", "tensorx", "deepseek"} {
-		t.Run(key, func(t *testing.T) {
-			want := expectedModelsDevModels(t, key)
-			ident := ""
-			for _, p := range agenticmodels.ModelsDevProviders() {
-				if p.Key == key {
-					ident = string(p.Identity)
-					break
-				}
-			}
-			cfg := &config.Config{Providers: []config.ProviderConfig{
-				{ID: key, Provider: ident, Endpoint: deadEndpoint},
-			}}
-			pm := provider.NewProviderManager(cfg)
+		t.Run(key, func(t *testing.T) { assertModelsDevPicker(t, key) })
+	}
+}
 
-			// Items exactly as modelListForProvider builds them from the registry
-			// when the live /models fetch fails (the common keyless case).
-			models := pm.ListRegistryModels(key)
-			if len(models) == 0 {
-				t.Fatalf("ListRegistryModels(%q) empty for provider in filmstrip", key)
-			}
-			items := make([]tui.SelectorItem, 0, len(models)+1)
-			for _, m := range models {
-				items = append(items, tui.SelectorItem{Value: m.ID, Label: m.ID, Description: key})
-			}
-			items = append(items, tui.SelectorItem{Value: "__custom__", Label: "—— custom model ——"})
+func assertModelsDevPicker(t *testing.T, key string) {
+	t.Helper()
+	want := expectedModelsDevModels(t, key)
+	ident := modelsDevIdentity(key)
+	cfg := &config.Config{Providers: []config.ProviderConfig{{ID: key, Provider: ident, Endpoint: deadEndpoint}}}
+	pm := provider.NewProviderManager(cfg)
+	models := pm.ListRegistryModels(key)
+	if len(models) == 0 {
+		t.Fatalf("ListRegistryModels(%q) empty for provider in filmstrip", key)
+	}
+	items := pickerItems(key, models)
+	term := &testTerminal{w: 100, h: 40}
+	engine := tui.NewTUI(term)
+	if err := engine.Start(); err != nil {
+		t.Fatalf("engine Start: %v", err)
+	}
+	defer engine.Stop()
+	engine.ShowSelector("Select model to add:", items, "")
+	seen, film := capturePicker(t, engine, key, items, want)
+	var unseen []string
+	for _, id := range want {
+		if !seen[id] {
+			unseen = append(unseen, id)
+		}
+	}
+	if len(unseen) > 0 {
+		t.Errorf("provider %s: models.dev models not visible in TUI picker: %v\nfilm:\n%s", key, unseen, film.Render())
+	}
+}
 
-			term := &testTerminal{w: 100, h: 40}
-			engine := tui.NewTUI(term)
-			if err := engine.Start(); err != nil {
-				t.Fatalf("engine Start: %v", err)
-			}
-			defer engine.Stop()
+func modelsDevIdentity(key string) string {
+	for _, p := range agenticmodels.ModelsDevProviders() {
+		if p.Key == key {
+			return string(p.Identity)
+		}
+	}
+	return ""
+}
 
-			engine.ShowSelector("Select model to add:", items, "")
-			film := tui.NewFilmstrip()
+func pickerItems(key string, models []provider.ModelInfo) []tui.SelectorItem {
+	items := make([]tui.SelectorItem, 0, len(models)+1)
+	for _, m := range models {
+		items = append(items, tui.SelectorItem{Value: m.ID, Label: m.ID, Description: key})
+	}
+	return append(items, tui.SelectorItem{Value: "__custom__", Label: "—— custom model ——"})
+}
 
-			seen := map[string]bool{}
-			// Capture the first window, then scroll the selector far enough that
-			// every 8-item window is rendered at least once. The Selector window
-			// advances only as the highlight moves past maxShow/2, so we must send
-			// up to len(items) KeyDowns (the highlight wraps) to guarantee every
-			// model row is visible in some captured frame.
-			for step := 0; step < len(items)+8 && len(seen) < len(want); step++ {
-				engine.RenderNow()
-				label := strings.TrimSpace("model-picker-" + key + "-window@" + itoaApp(step))
-				film.Capture(label, engine.AgentFrame(), "")
-				last := film.Last()
-				if last == nil {
-					continue
-				}
-				for _, line := range last.Frame.Visible {
-					for _, id := range want {
-						if strings.Contains(line, id) {
-							seen[id] = true
-						}
-					}
-				}
-				if len(seen) == len(want) {
-					break
-				}
-				engine.SendKey(tui.KeyDown) // scroll to the next window
-			}
+func capturePicker(t *testing.T, engine *tui.TUI, key string, items []tui.SelectorItem, want []string) (map[string]bool, *tui.Filmstrip) {
+	t.Helper()
+	film := tui.NewFilmstrip()
+	seen := map[string]bool{}
+	for step := 0; step < len(items)+8 && len(seen) < len(want); step++ {
+		engine.RenderNow()
+		film.Capture("model-picker-"+key+"-window@"+itoaApp(step), engine.AgentFrame(), "")
+		last := film.Last()
+		if last != nil {
+			collectVisibleModels(last.Frame.Visible, want, seen)
+		}
+		if len(seen) < len(want) {
+			engine.SendKey(tui.KeyDown)
+		}
+	}
+	return seen, film
+}
 
-			var unseen []string
-			for _, id := range want {
-				if !seen[id] {
-					unseen = append(unseen, id)
-				}
+func collectVisibleModels(lines, want []string, seen map[string]bool) {
+	for _, line := range lines {
+		for _, id := range want {
+			if strings.Contains(line, id) {
+				seen[id] = true
 			}
-			if len(unseen) > 0 {
-				t.Errorf("provider %s: models.dev models not visible in TUI picker: %v\nfilm:\n%s",
-					key, unseen, film.Render())
-			}
-		})
+		}
 	}
 }
 

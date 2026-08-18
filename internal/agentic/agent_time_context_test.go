@@ -118,37 +118,41 @@ func TestTimeContextInjectsDurableUserMessage(t *testing.T) {
 	a := timeCtxTestAgent(0)
 	now := time.Date(2026, 7, 16, 10, 30, 0, 0, time.UTC)
 	a.turnCounter = 1
-
-	// First step of turn 1: injects.
 	if !a.injectTimeContextIfDue(now) {
 		t.Fatal("first step of turn 1 must inject")
 	}
+	assertTimeReading(t, a, now)
+	if !historyContainsTimeReading(a) {
+		t.Error("reading must be visible in buildProviderHistory")
+	}
+}
+
+func assertTimeReading(t *testing.T, a *Agent, now time.Time) {
 	readings := timeCtxReadings(a)
 	if len(readings) != 1 {
 		t.Fatalf("expected 1 reading, got %d", len(readings))
 	}
 	r := readings[0]
 	if r.Role != User || r.Type != Content {
-		t.Errorf("reading role/type = %v/%v, want User/Content", r.Role, r.Type)
+		t.Errorf("reading role/type = %v/%v", r.Role, r.Type)
 	}
 	if v, ok := r.Metadata[timeContextMetaKey]; !ok || v != now.Format(time.RFC3339Nano) {
-		t.Errorf("reading metadata marker = %q (ok=%v), want %q", v, ok, now.Format(time.RFC3339Nano))
+		t.Errorf("reading marker = %q (ok=%v)", v, ok)
 	}
-	// The reading is durable: it must appear in buildProviderHistory output.
-	hist := a.buildProviderHistory()
-	found := false
-	for _, m := range hist {
-		if m.Role == "user" {
-			for _, block := range m.Content {
-				if strings.HasPrefix(block.Text, "Time sampled while preparing turn 1, step 1:") {
-					found = true
-				}
+}
+
+func historyContainsTimeReading(a *Agent) bool {
+	for _, message := range a.buildProviderHistory() {
+		if message.Role != "user" {
+			continue
+		}
+		for _, block := range message.Content {
+			if strings.HasPrefix(block.Text, "Time sampled while preparing turn 1, step 1:") {
+				return true
 			}
 		}
 	}
-	if !found {
-		t.Error("reading must be visible in buildProviderHistory")
-	}
+	return false
 }
 
 // TestTimeContextIntervalSuppression verifies the refresh interval suppresses

@@ -219,33 +219,43 @@ func (ir *IncrementalMDRenderer) Render(text string) []string {
 // line is NOT a quote/list-item/table-row.
 func lastStableBoundary(text string) int {
 	lines := strings.SplitAfter(text, "\n")
-	inFence := false
-	lastBoundary := 0
-	pos := 0
-	prevAbsorbsBlank := false
-	for i, l := range lines {
-		trimmed := strings.TrimRight(l, "\n")
-		isLast := i == len(lines)-1
-		switch {
-		case strings.HasPrefix(trimmed, "```"):
-			inFence = !inFence
-			prevAbsorbsBlank = false // fence open/close lines terminate cleanly
-		case !inFence && trimmed == "" && l != "" && !isLast:
-			// Candidate blank-line boundary (real blank line with content after).
-			if !prevAbsorbsBlank {
-				lastBoundary = pos + len(l)
-			}
-			prevAbsorbsBlank = false
-		case trimmed == "" && isLast && l == "":
-			// Trailing-newline artifact: not a real blank line.
-		default:
-			// A content line: does its block type absorb a following blank?
-			t := strings.TrimLeft(trimmed, " \t")
-			prevAbsorbsBlank = strings.HasPrefix(t, ">") ||
-				isUnorderedListItem(trimmed) || isOrderedListItem(trimmed) ||
-				isTableRow(trimmed) || isTableSeparator(trimmed)
-		}
-		pos += len(l)
+	state := boundaryState{}
+	for i, line := range lines {
+		state.consume(line, i == len(lines)-1)
 	}
-	return lastBoundary
+	return state.boundary
+}
+
+type boundaryState struct {
+	fence         bool
+	boundary, pos int
+	absorbs       bool
+}
+
+func (s *boundaryState) consume(line string, last bool) {
+	trimmed := strings.TrimRight(line, "\n")
+	if strings.HasPrefix(trimmed, "```") {
+		s.fence = !s.fence
+		s.absorbs = false
+	} else if s.isCandidate(trimmed, line, last) {
+		s.updateCandidate(line)
+	} else if !(trimmed == "" && last && line == "") {
+		s.absorbs = absorbsBlank(trimmed)
+	}
+	s.pos += len(line)
+}
+
+func (s *boundaryState) isCandidate(trimmed, line string, last bool) bool {
+	return !s.fence && trimmed == "" && line != "" && !last
+}
+func (s *boundaryState) updateCandidate(line string) {
+	if !s.absorbs {
+		s.boundary = s.pos + len(line)
+	}
+	s.absorbs = false
+}
+
+func absorbsBlank(line string) bool {
+	t := strings.TrimLeft(line, " \t")
+	return strings.HasPrefix(t, ">") || isUnorderedListItem(line) || isOrderedListItem(line) || isTableRow(line) || isTableSeparator(line)
 }

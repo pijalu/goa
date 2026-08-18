@@ -76,7 +76,18 @@ func TestPruneStaleToolOutput_ProtectsRecentWindow(t *testing.T) {
 	if reclaimed < stalePruneGateTokens {
 		t.Errorf("reclaimed %d < gate %d", reclaimed, stalePruneGateTokens)
 	}
-	// The oldest bodies must be pruned...
+	assertPrunedBodies(t, h, bodies, recent)
+	assertRecentMessages(t, h, bodies, recent)
+	if h[0].Content != "start" {
+		t.Error("leading user message changed")
+	}
+	idx := toolResultIndex(0)
+	if h[idx].ToolCallID != "c0" || h[idx].ToolName != "bash" {
+		t.Errorf("pruned body lost pairing: id=%q name=%q", h[idx].ToolCallID, h[idx].ToolName)
+	}
+}
+
+func assertPrunedBodies(t *testing.T, h []Message, bodies, recent int) {
 	pruned := 0
 	for i := 0; i < bodies; i++ {
 		if strings.HasPrefix(h[toolResultIndex(i)].Content, stalePrunePrefix) {
@@ -87,34 +98,25 @@ func TestPruneStaleToolOutput_ProtectsRecentWindow(t *testing.T) {
 		t.Error("no body was pruned")
 	}
 	if pruned > bodies-recent {
-		t.Errorf("pruned %d bodies, expected the recent window to protect at least the last %d", pruned, recent)
+		t.Errorf("pruned %d bodies, expected recent window to protect %d", pruned, recent)
 	}
-	// ...and the newest bodies (inside the protected window) must be untouched.
 	protected := 0
 	for i := bodies - 1; i >= 0; i-- {
-		content := h[toolResultIndex(i)].Content
-		if strings.HasPrefix(content, stalePrunePrefix) {
+		if strings.HasPrefix(h[toolResultIndex(i)].Content, stalePrunePrefix) {
 			break
 		}
 		protected++
 	}
 	if protected < 25 {
-		t.Errorf("recent window should protect the newest bodies, protected=%d", protected)
+		t.Errorf("recent window should protect newest bodies, protected=%d", protected)
 	}
-	// The recent user messages are never touched.
+}
+
+func assertRecentMessages(t *testing.T, h []Message, bodies, recent int) {
 	for i := 0; i < recent; i++ {
-		want := fmt.Sprintf("recent %d", i)
-		if got := h[bodies*2+1+i].Content; got != want {
+		if got, want := h[bodies*2+1+i].Content, fmt.Sprintf("recent %d", i); got != want {
 			t.Errorf("recent message %d changed to %q", i, got)
 		}
-	}
-	if h[0].Content != "start" {
-		t.Error("leading user message changed")
-	}
-	// Tool pairing fields survive on a pruned body.
-	idx := toolResultIndex(0)
-	if h[idx].ToolCallID != "c0" || h[idx].ToolName != "bash" {
-		t.Errorf("pruned body lost pairing: id=%q name=%q", h[idx].ToolCallID, h[idx].ToolName)
 	}
 }
 

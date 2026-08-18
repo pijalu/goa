@@ -3,9 +3,10 @@ package config
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 func (cl *CascadeLoader) SaveProjectConfig(cfg *Config) error {

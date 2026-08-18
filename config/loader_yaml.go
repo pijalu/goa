@@ -3,8 +3,9 @@ package config
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 func deleteYamlNode(node *yaml.Node, path []string) {

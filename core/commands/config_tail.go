@@ -2,10 +2,11 @@
 package commands
 
 import (
+	"strings"
+
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/tui"
-	"strings"
 )
 
 func (m *configMenu) applySet(k, v string) { _ = applyConfigSet(m.ctx, k, v) }

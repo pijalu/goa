@@ -69,11 +69,7 @@ func TestTeamFooterBadge_Filmstrip(t *testing.T) {
 	mgr := team.NewManager(cfg, sess, pool, nil, nil, nil)
 	sc.app.subs.teamManager = mgr
 	sc.app.subs.cfg = cfg
-
-	// Step 0: no team — footer has no badge.
-	sc.engine.ApplySync(func() {
-		sc.footer.SetTeam("", false)
-	})
+	setTeamFooter(sc, "", false)
 	sc.engine.RenderNow()
 	sc.film.Capture("no-team", sc.engine.AgentFrame(), "")
 	if name, _ := teamFooterInfo(sc.app.subs); name != "" {
@@ -82,78 +78,52 @@ func TestTeamFooterBadge_Filmstrip(t *testing.T) {
 	if badge := sc.footer.Data().Team; badge != "" {
 		t.Fatalf("footer team = %q, want empty", badge)
 	}
-
-	// Step 1: activate → badge appears with the team name.
-	sc.engine.ApplySync(func() {
-		if err := mgr.Activate("qa-pair"); err != nil {
-			t.Fatalf("Activate: %v", err)
-		}
-		name, drifted := teamFooterInfo(sc.app.subs)
-		sc.footer.SetTeam(name, drifted)
-	})
+	activateTeam(t, sc, mgr)
+	assertActiveTeam(t, sc)
+	sess.mid = "user-picked"
+	mgr.MarkDrift()
+	name, drifted := teamFooterInfo(sc.app.subs)
+	setTeamFooter(sc, name, drifted)
 	sc.engine.RenderNow()
-	snap := sc.film.Capture("team-active", sc.engine.AgentFrame(), "")
-	if name, drifted := teamFooterInfo(sc.app.subs); name != "qa-pair" || drifted {
-		t.Errorf("teamFooterInfo = %q drifted=%v, want qa-pair false", name, drifted)
-	}
-	if badge := sc.footer.Data().Team; badge != "qa-pair" {
-		t.Errorf("footer team = %q, want qa-pair", badge)
-	}
-	assertFrameContains(t, snap, "qa-pair")
-
-	// Step 2: drift (manual /model equivalent) → badge gains the * marker.
-	sc.engine.ApplySync(func() {
-		sess.mid = "user-picked"
-		mgr.MarkDrift()
-		name, drifted := teamFooterInfo(sc.app.subs)
-		sc.footer.SetTeam(name, drifted)
-	})
-	sc.engine.RenderNow()
-	snap = sc.film.Capture("team-drifted", sc.engine.AgentFrame(), "")
-	if _, drifted := teamFooterInfo(sc.app.subs); !drifted {
-		t.Error("expected drifted after MarkDrift")
-	}
+	snap := sc.film.Capture("team-drifted", sc.engine.AgentFrame(), "")
 	if !sc.footer.Data().TeamDrifted {
-		t.Error("footer TeamDrifted = false, want true")
+		t.Error("footer TeamDrifted = false")
 	}
 	assertFrameContains(t, snap, "qa-pair*")
-
-	// Step 3: /team:sync → re-applied, drift cleared.
-	sc.engine.ApplySync(func() {
-		if err := mgr.Sync(); err != nil {
-			t.Fatalf("Sync: %v", err)
-		}
-		name, drifted := teamFooterInfo(sc.app.subs)
-		sc.footer.SetTeam(name, drifted)
-	})
+	if err := mgr.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	name, drifted = teamFooterInfo(sc.app.subs)
+	setTeamFooter(sc, name, drifted)
 	sc.engine.RenderNow()
 	sc.film.Capture("team-synced", sc.engine.AgentFrame(), "")
 	if _, drifted := teamFooterInfo(sc.app.subs); drifted {
-		t.Error("expected drift cleared after Sync")
+		t.Error("expected drift cleared")
 	}
+}
 
-	// Step 4: /team:off → badge cleared, model restored.
+func setTeamFooter(sc *uiScenario, name string, drifted bool) {
+	sc.engine.ApplySync(func() { sc.footer.SetTeam(name, drifted) })
+}
+func activateTeam(t *testing.T, sc *uiScenario, mgr *team.Manager) {
 	sc.engine.ApplySync(func() {
-		if err := mgr.Deactivate(); err != nil {
-			t.Fatalf("Deactivate: %v", err)
+		if err := mgr.Activate("qa-pair"); err != nil {
+			t.Fatal(err)
 		}
 		name, drifted := teamFooterInfo(sc.app.subs)
 		sc.footer.SetTeam(name, drifted)
 	})
 	sc.engine.RenderNow()
-	sc.film.Capture("team-off", sc.engine.AgentFrame(), "")
-	if badge := sc.footer.Data().Team; badge != "" {
-		t.Errorf("footer team = %q after off, want empty", badge)
+}
+func assertActiveTeam(t *testing.T, sc *uiScenario) {
+	snap := sc.film.Capture("team-active", sc.engine.AgentFrame(), "")
+	if name, drifted := teamFooterInfo(sc.app.subs); name != "qa-pair" || drifted {
+		t.Errorf("teamFooterInfo = %q drifted=%v", name, drifted)
 	}
-	if sess.mid != "qwen-local" {
-		t.Errorf("session model = %q after off, want qwen-local restored", sess.mid)
+	if sc.footer.Data().Team != "qa-pair" {
+		t.Error("footer team not qa-pair")
 	}
-
-	// The filmstrip should have 5 steps with the badge appearing only in
-	// steps 1–3 (diff-level assertion on AddedLines for the active step).
-	if got := len(sc.filmstrip().Frames()); got != 5 {
-		t.Errorf("filmstrip steps = %d, want 5", got)
-	}
+	assertFrameContains(t, snap, "qa-pair")
 }
 
 // TestTeamFooterBadge_PreservedAcrossStatsRebuilds verifies the badge

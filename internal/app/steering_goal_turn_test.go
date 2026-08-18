@@ -217,62 +217,60 @@ func (p *goalSteeringCaptureProvider) lastRequestLastUserText() string {
 // runAgentTurn's leftover flush, so the text stayed queued (bubble stuck)
 // until some unrelated future turn happened to drain it.
 func TestAgentManagerRunner_DispatchesLeftoverSteeringAfterGoalTurn(t *testing.T) {
-	p := &goalSteeringCaptureProvider{api: goalSteeringAPI("test-goal-steering-leftover")}
-	provider.RegisterApiProvider(p)
-
-	cfg := &config.Config{}
-	bus := event.MakeBus(100, 100, 100, 100)
-	am := core.NewAgentManager(cfg, nil, nil, nil, bus, "")
-	if _, err := am.StartSession(goalSteeringModel(p.api), provider.StreamOptions{}, "sys", nil, cfg); err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-
-	p.onFirstStream = func() {
-		// Steering typed during the goal turn's final round: the between-round
-		// drain never runs for it, so it is leftover at turn end.
-		am.SteeringQueue().Append("leftover steering")
-	}
-
+	p, am, bus := setupLeftoverSteering(t)
+	p.onFirstStream = func() { am.SteeringQueue().Append("leftover steering") }
 	runner := &agentManagerRunner{agentMgr: am}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := runner.Run(ctx, core.ContinuationPrompt); err != nil {
-		t.Fatalf("goal turn Run: %v", err)
+		t.Fatal(err)
 	}
+	waitForFollowup(t, p)
+	if got := p.lastRequestLastUserText(); !strings.Contains(got, "leftover steering") {
+		t.Errorf("follow-up text = %q", got)
+	}
+	if got := am.SteeringQueue().Len(); got != 0 {
+		t.Errorf("queue length = %d", got)
+	}
+	assertSteeringInjected(t, bus)
+}
 
-	// The follow-up turn runs on its own goroutine; wait for its request.
+func setupLeftoverSteering(t *testing.T) (*goalSteeringCaptureProvider, *core.AgentManager, *event.Bus) {
+	p := &goalSteeringCaptureProvider{api: goalSteeringAPI("test-goal-steering-leftover")}
+	provider.RegisterApiProvider(p)
+	cfg := &config.Config{}
+	bus := event.MakeBus(100, 100, 100, 100)
+	am := core.NewAgentManager(cfg, nil, nil, nil, bus, "")
+	if _, err := am.StartSession(goalSteeringModel(p.api), provider.StreamOptions{}, "sys", nil, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return p, am, bus
+}
+
+func waitForFollowup(t *testing.T, p *goalSteeringCaptureProvider) {
 	deadline := time.Now().Add(2 * time.Second)
 	for p.requestCount() < 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if got := p.requestCount(); got < 2 {
-		t.Fatalf("requests = %d, want >= 2: leftover steering was not dispatched as a follow-up turn", got)
+		t.Fatalf("requests = %d, want >= 2", got)
 	}
-	if got := p.lastRequestLastUserText(); !strings.Contains(got, "leftover steering") {
-		t.Errorf("follow-up turn last user message = %q, want it to contain the leftover steering", got)
-	}
-	if got := am.SteeringQueue().Len(); got != 0 {
-		t.Errorf("steering queue length = %d after dispatch, want 0", got)
-	}
+}
 
-	// The app clears the pending bubble on SteeringInjected; it must have been
-	// emitted with the dispatched text.
-	var injected *event.SteeringInput
-	drain := time.After(500 * time.Millisecond)
-loop:
+func assertSteeringInjected(t *testing.T, bus *event.Bus) {
+	deadline := time.After(500 * time.Millisecond)
 	for {
 		select {
 		case ev := <-bus.Chat:
 			if ev.SteeringInjected != nil {
-				injected = ev.SteeringInjected
+				if !strings.Contains(ev.SteeringInjected.Text, "leftover steering") {
+					t.Errorf("injected text = %q", ev.SteeringInjected.Text)
+				}
+				return
 			}
-		case <-drain:
-			break loop
+		case <-deadline:
+			t.Error("no SteeringInjected event emitted")
+			return
 		}
-	}
-	if injected == nil {
-		t.Error("no SteeringInjected event emitted; the pending steering bubble would not clear (requirement 2 violated)")
-	} else if !strings.Contains(injected.Text, "leftover steering") {
-		t.Errorf("SteeringInjected text = %q, want it to contain the leftover steering", injected.Text)
 	}
 }

@@ -379,66 +379,64 @@ func toggleTool(ctx core.Context, name, onOff string) error {
 	if ctx.Config == nil {
 		return fmt.Errorf("configuration not available")
 	}
-
 	enabled := strings.ToLower(onOff) == "on"
-	wasEnabled := getToolEnabled(ctx.Config, name)
-
-	if wasEnabled == enabled {
+	if getToolEnabled(ctx.Config, name) == enabled {
 		ctx.Writef("Tool %s is already %s.\n", name, onOffLabel(enabled))
 		return nil
 	}
-
 	setToolEnabled(ctx.Config, name, enabled)
-
-	if ctx.ConfigSaver != nil {
-		path, value := toolSaveKeyValue(name, enabled)
-		// Persist to the PROJECT config, not home: the cascade resolves
-		// conflicts in favour of the project layer, so a tool flag written only
-		// to the home config is silently overridden by any project-level pin
-		// (e.g. a stale goal:false). Writing the toggle to the project config
-		// makes the user's explicit change take effect, matching how /mode and
-		// /autonomy persist. (SaveProjectField creates the file when missing.)
-		if err := ctx.ConfigSaver.SaveProjectField(path, value); err != nil {
-			ctx.Writef("Failed to save config: %v\n", err)
-			return nil
-		}
+	if !persistToolToggle(ctx, name, enabled) {
+		return nil
 	}
-
 	if enabled {
-		// Instantiate and register the tool at runtime so the model can use
-		// it on the next turn without restarting the session.
-		if ctx.ToolFactory != nil {
-			tool, ok := ctx.ToolFactory(name)
-			if !ok {
-				ctx.Writef("Tool %s could not be instantiated at runtime. Restart Goa to apply the change.\n", name)
-				return nil
-			}
-			ctx.ToolRegistry.Register(tool)
-		}
-		if ctx.AgentManager != nil {
-			_ = ctx.AgentManager.SetTools(ctx.ToolRegistry.All())
-			_ = ctx.AgentManager.InjectSystemMessage(fmt.Sprintf("A new tool is now available to you: %s. You may use it on subsequent turns.", name))
-		}
+		enableRuntimeTool(ctx, name)
 	} else {
-		// Remove the tool from the runtime registry immediately so the model
-		// cannot call it on the next turn.
-		ctx.ToolRegistry.Unregister(name)
-		if ctx.AgentManager != nil {
-			_ = ctx.AgentManager.SetTools(ctx.ToolRegistry.All())
-		}
-		// Let integrations bound to the tool tear down live (e.g. lsp closes
-		// its manager and detaches read/edit/write linking).
-		if ctx.ToolTeardown != nil {
-			ctx.ToolTeardown(name)
-		}
+		disableRuntimeTool(ctx, name)
 	}
-
 	ctx.Writef("Tool %s %s. %s\n", name, onOffLabel(enabled), restartHint(enabled))
-
-	// Notify the user (and indirectly the model on the next turn) that the
-	// available tool set has changed.
 	ctx.Flash(fmt.Sprintf("Tool %s %s", name, onOffLabel(enabled)))
 	return nil
+}
+
+func persistToolToggle(ctx core.Context, name string, enabled bool) bool {
+	if ctx.ConfigSaver == nil {
+		return true
+	}
+	path, value := toolSaveKeyValue(name, enabled)
+	if err := ctx.ConfigSaver.SaveProjectField(path, value); err != nil {
+		ctx.Writef("Failed to save config: %v\n", err)
+		return false
+	}
+	return true
+}
+
+func enableRuntimeTool(ctx core.Context, name string) {
+	if ctx.ToolFactory != nil {
+		tool, ok := ctx.ToolFactory(name)
+		if !ok {
+			ctx.Writef("Tool %s could not be instantiated at runtime. Restart Goa to apply the change.\n", name)
+			return
+		}
+		ctx.ToolRegistry.Register(tool)
+	}
+	refreshToolRegistry(ctx)
+	if ctx.AgentManager != nil {
+		_ = ctx.AgentManager.InjectSystemMessage(fmt.Sprintf("A new tool is now available to you: %s. You may use it on subsequent turns.", name))
+	}
+}
+
+func disableRuntimeTool(ctx core.Context, name string) {
+	ctx.ToolRegistry.Unregister(name)
+	refreshToolRegistry(ctx)
+	if ctx.ToolTeardown != nil {
+		ctx.ToolTeardown(name)
+	}
+}
+
+func refreshToolRegistry(ctx core.Context) {
+	if ctx.AgentManager != nil {
+		_ = ctx.AgentManager.SetTools(ctx.ToolRegistry.All())
+	}
 }
 
 func onOffLabel(enabled bool) string {

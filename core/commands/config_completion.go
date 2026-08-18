@@ -156,41 +156,53 @@ func configKeyCompletions(prefix string) []core.ArgCompletion {
 }
 
 func configValueCompletions(ctx core.Context, key, prefix string) []core.ArgCompletion {
-	switch key {
-	case "mode.default.major":
-		return profileCompletionValues(ctx, prefix)
-	case "execution.mode":
-		return modeCompletionValues(prefix)
-	case "mode.plan_file_path":
-		return []core.ArgCompletion{{Value: ".goa/plan.md", Description: "default plan file in project root"}}
-	case "tui.theme":
-		return themeCompletionValues(prefix)
-	case "tui.transparency.show_thinking", "tui.transparency.thinking_collapsed", "multi_agent.enabled":
-		return configBoolCompletionValues(ctx, key, prefix)
-	case "thinking_level":
-		return thinkingLevelCompletionValues(prefix)
-	case "active_model":
-		return modelCompletionValues(ctx, prefix)
-	case "active_provider", "multi_agent.companion_provider":
-		return providerCompletionValues(ctx, prefix)
-	case "tools.enabled.goal", "tools.bash.enable_complexity_analysis", "tools.bash.jail", "tools.terminal.sandbox.enabled":
-		return boolCompletionValues(prefix)
-	case "orchestrator.defaults.topology":
-		return filteredCompletions([]string{"hub", "fanout", "pipeline"}, prefix, "")
-	case "teams.definitions.*.review":
-		return filteredCompletions([]string{"off", "agent", "framework", "gated"}, prefix, "")
-	case "teams.definitions.*.members.*.role":
-		return filteredCompletions([]string{"main", "reviewer", "worker"}, prefix, "")
-	case "teams.definitions.*.members.*.thinking_level":
-		return thinkingLevelCompletionValues(prefix)
-	case "teams.definitions.*.review_gates.quorum":
-		return filteredCompletions([]string{"all", "any"}, prefix, "")
-	case "teams.definitions.*.delegation":
-		return filteredCompletions([]string{"agent", "off"}, prefix, "")
-	case "teams.active":
-		return teamCompletionValues(ctx, prefix)
+	if completion := contextCompletion(key, ctx); completion != nil {
+		return completion(prefix)
 	}
-	return nil
+	return staticCompletion(key, prefix)
+}
+
+type completionFunc func(string) []core.ArgCompletion
+
+func contextCompletion(key string, ctx core.Context) completionFunc {
+	return map[string]completionFunc{
+		"mode.default.major":                  func(prefix string) []core.ArgCompletion { return profileCompletionValues(ctx, prefix) },
+		"tui.transparency.show_thinking":      func(prefix string) []core.ArgCompletion { return configBoolCompletionValues(ctx, key, prefix) },
+		"tui.transparency.thinking_collapsed": func(prefix string) []core.ArgCompletion { return configBoolCompletionValues(ctx, key, prefix) },
+		"multi_agent.enabled":                 func(prefix string) []core.ArgCompletion { return configBoolCompletionValues(ctx, key, prefix) },
+		"active_model":                        func(prefix string) []core.ArgCompletion { return modelCompletionValues(ctx, prefix) },
+		"active_provider":                     func(prefix string) []core.ArgCompletion { return providerCompletionValues(ctx, prefix) },
+		"multi_agent.companion_provider":      func(prefix string) []core.ArgCompletion { return providerCompletionValues(ctx, prefix) },
+		"teams.active":                        func(prefix string) []core.ArgCompletion { return teamCompletionValues(ctx, prefix) },
+	}[key]
+}
+
+func staticCompletion(key, prefix string) []core.ArgCompletion {
+	values := map[string]completionFunc{
+		"execution.mode": modeCompletionValues, "tui.theme": themeCompletionValues,
+		"thinking_level":     thinkingLevelCompletionValues,
+		"tools.enabled.goal": boolCompletionValues, "tools.bash.enable_complexity_analysis": boolCompletionValues,
+		"tools.bash.jail": boolCompletionValues, "tools.terminal.sandbox.enabled": boolCompletionValues,
+		"orchestrator.defaults.topology": func(p string) []core.ArgCompletion {
+			return filteredCompletions([]string{"hub", "fanout", "pipeline"}, p, "")
+		},
+		"teams.definitions.*.review": func(p string) []core.ArgCompletion {
+			return filteredCompletions([]string{"off", "agent", "framework", "gated"}, p, "")
+		},
+		"teams.definitions.*.members.*.role": func(p string) []core.ArgCompletion {
+			return filteredCompletions([]string{"main", "reviewer", "worker"}, p, "")
+		},
+		"teams.definitions.*.members.*.thinking_level": thinkingLevelCompletionValues,
+		"teams.definitions.*.review_gates.quorum":      func(p string) []core.ArgCompletion { return filteredCompletions([]string{"all", "any"}, p, "") },
+		"teams.definitions.*.delegation":               func(p string) []core.ArgCompletion { return filteredCompletions([]string{"agent", "off"}, p, "") },
+		"mode.plan_file_path": func(string) []core.ArgCompletion {
+			return []core.ArgCompletion{{Value: ".goa/plan.md", Description: "default plan file in project root"}}
+		},
+	}[key]
+	if values == nil {
+		return nil
+	}
+	return values(prefix)
 }
 
 // teamCompletionValues completes team names from the merged definitions.

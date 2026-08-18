@@ -451,27 +451,40 @@ const (
 
 func (c *Config) validateOrchestrator(ve *internal.ValidationError) {
 	oc := c.Orchestrator
-	switch oc.Defaults.Topology {
+	validateTopology(ve, oc.Defaults.Topology)
+	knownModels := modelIDs(c.Models)
+	validateRoles(ve, oc.Roles, knownModels, len(knownModels) == 0)
+	validatePool(ve, oc.Pool)
+	if oc.Retention.Days < 0 {
+		ve.Add(fmt.Sprintf("orchestrator.retention.days: must be >= 0 (got %d)", oc.Retention.Days))
+	}
+}
+
+func validateTopology(ve *internal.ValidationError, topology string) {
+	switch topology {
 	case "", OrchestratorTopologyHub, OrchestratorTopologyFanout, OrchestratorTopologyPipeline:
 	default:
 		ve.Add(fmt.Sprintf("orchestrator.defaults.topology: must be %q, %q, or %q (got %q)",
-			OrchestratorTopologyHub, OrchestratorTopologyFanout, OrchestratorTopologyPipeline,
-			oc.Defaults.Topology))
+			OrchestratorTopologyHub, OrchestratorTopologyFanout, OrchestratorTopologyPipeline, topology))
 	}
-	// When no models are configured at all (early bootstrap), skip model
-	// existence checks so an empty embedded config validates cleanly.
-	skipModelCheck := len(c.Models) == 0
-	knownModels := make(map[string]struct{}, len(c.Models))
-	for _, m := range c.Models {
-		knownModels[m.ID] = struct{}{}
+}
+
+func modelIDs(models []ModelConfig) map[string]struct{} {
+	ids := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		ids[model.ID] = struct{}{}
 	}
-	for name, role := range oc.Roles {
+	return ids
+}
+
+func validateRoles(ve *internal.ValidationError, roles map[string]OrchestratorRole, known map[string]struct{}, skipModelCheck bool) {
+	for name, role := range roles {
 		if role.Model == "" {
 			ve.Add(fmt.Sprintf("orchestrator.roles.%s.model: must be set", name))
 			continue
 		}
 		if !skipModelCheck {
-			if _, ok := knownModels[role.Model]; !ok {
+			if _, ok := known[role.Model]; !ok {
 				ve.Add(fmt.Sprintf("orchestrator.roles.%s.model: model %q not found in models list", name, role.Model))
 			}
 		}
@@ -482,16 +495,16 @@ func (c *Config) validateOrchestrator(ve *internal.ValidationError) {
 			ve.Add(fmt.Sprintf("orchestrator.roles.%s.max_tokens: must be >= 0 (got %d)", name, role.MaxTokens))
 		}
 	}
-	if oc.Pool.MaxTotalAgents < 0 {
-		ve.Add(fmt.Sprintf("orchestrator.pool.max_total_agents: must be >= 0 (got %d)", oc.Pool.MaxTotalAgents))
+}
+
+func validatePool(ve *internal.ValidationError, pool OrchestratorPoolConfig) {
+	if pool.MaxTotalAgents < 0 {
+		ve.Add(fmt.Sprintf("orchestrator.pool.max_total_agents: must be >= 0 (got %d)", pool.MaxTotalAgents))
 	}
-	for m, n := range oc.Pool.MaxAgentsPerModel {
-		if n < 1 {
-			ve.Add(fmt.Sprintf("orchestrator.pool.max_agents_per_model.%s: must be >= 1 (got %d)", m, n))
+	for model, count := range pool.MaxAgentsPerModel {
+		if count < 1 {
+			ve.Add(fmt.Sprintf("orchestrator.pool.max_agents_per_model.%s: must be >= 1 (got %d)", model, count))
 		}
-	}
-	if oc.Retention.Days < 0 {
-		ve.Add(fmt.Sprintf("orchestrator.retention.days: must be >= 0 (got %d)", oc.Retention.Days))
 	}
 }
 

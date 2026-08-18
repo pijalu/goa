@@ -2,10 +2,11 @@
 package core
 
 import (
+	"strings"
+
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/internal/agentic"
 	"github.com/pijalu/goa/internal/event"
-	"strings"
 )
 
 func (am *AgentManager) queueMajorModePrompt(major internal.MajorMode) {

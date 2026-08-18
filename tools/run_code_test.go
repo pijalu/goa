@@ -160,32 +160,36 @@ func readDispatchEntries(t *testing.T, dir string) []common.DispatchEntry {
 	t.Helper()
 	var entries []common.DispatchEntry
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
-			return nil
-		}
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return rerr
-		}
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			var e common.DispatchEntry
-			if derr := json.Unmarshal([]byte(line), &e); derr != nil {
-				return derr
-			}
-			entries = append(entries, e)
-		}
-		return nil
+		fileEntries, err := readDispatchFile(path)
+		entries = append(entries, fileEntries...)
+		return err
 	})
 	if err != nil {
 		t.Fatalf("reading dispatch log: %v", err)
 	}
 	return entries
+}
+
+func readDispatchFile(path string) ([]common.DispatchEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []common.DispatchEntry
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry common.DispatchEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 // TestRunCodeTool_Schema verifies the run_code schema shape.
@@ -269,12 +273,7 @@ print("SEARCH:", r2)
 // durably logged with tool name, arguments, timing, and outcome.
 func TestRunCodeTool_DispatchLogRecordsSubCalls(t *testing.T) {
 	tool, rec := newRunCodeFixture(t)
-	code := `
-tools.read({"path": "a.txt"})
-tools.search({"query": "foo"})
-tools.write({"path": "b.txt", "content": "x"})
-print("DONE")
-`
+	code := "tools.read({\"path\": \"a.txt\"})\ntools.search({\"query\": \"foo\"})\ntools.write({\"path\": \"b.txt\", \"content\": \"x\"})\nprint(\"DONE\")"
 	if _, err := runWithDispatcher(t, tool, rec, code); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -282,33 +281,32 @@ print("DONE")
 	if len(entries) != 3 {
 		t.Fatalf("logged %d entries, want 3: %+v", len(entries), entries)
 	}
-	names := []string{"read", "search", "write"}
-	for i, e := range entries {
-		if e.Tool != names[i] {
-			t.Errorf("entry %d tool = %q, want %q", i, e.Tool, names[i])
-		}
-		if !e.OK {
-			t.Errorf("entry %d OK = false, want true (error=%q)", i, e.Error)
-		}
-		if e.RunID == "" || e.CallID == "" {
-			t.Errorf("entry %d missing RunID/CallID: %+v", i, e)
-		}
-		if e.Seq != i+1 {
-			t.Errorf("entry %d Seq = %d, want %d", i, e.Seq, i+1)
-		}
-		if e.Arguments == "" {
-			t.Errorf("entry %d missing arguments", i)
-		}
-		if e.StartedAt.IsZero() || e.FinishedAt.IsZero() {
-			t.Errorf("entry %d missing timing", i)
-		}
-		if e.Result == "" {
-			t.Errorf("entry %d missing result", i)
-		}
+	for i, entry := range entries {
+		assertDispatchEntry(t, entry, []string{"read", "search", "write"}[i], i+1)
 	}
-	// The log survives: the JSONL file must exist after the run.
-	if len(entries) != 3 {
-		return
+}
+
+func assertDispatchEntry(t *testing.T, entry common.DispatchEntry, wantTool string, wantSeq int) {
+	if entry.Tool != wantTool {
+		t.Errorf("tool = %q, want %q", entry.Tool, wantTool)
+	}
+	if !entry.OK {
+		t.Errorf("OK = false (error=%q)", entry.Error)
+	}
+	if entry.RunID == "" || entry.CallID == "" {
+		t.Errorf("missing RunID/CallID: %+v", entry)
+	}
+	if entry.Seq != wantSeq {
+		t.Errorf("Seq = %d, want %d", entry.Seq, wantSeq)
+	}
+	if entry.Arguments == "" {
+		t.Error("missing arguments")
+	}
+	if entry.StartedAt.IsZero() || entry.FinishedAt.IsZero() {
+		t.Error("missing timing")
+	}
+	if entry.Result == "" {
+		t.Error("missing result")
 	}
 }
 

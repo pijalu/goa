@@ -57,58 +57,65 @@ func headerFrom(projectDir string) *tui.Header {
 }
 
 func (a *App) createTUIComponents() (*tui.TUI, *tui.ChatViewport, *orchpanel.AgentContent, *orchpanel.AgentTabBar, *tui.StatusMsg, *goaltui.Bubble, *tui.SteeringChrome, *tui.Editor, *tui.Footer, *bgpanel.Panel) {
-	projectDir := a.subs.projectDir
-	var ft tui.Terminal = tui.NewProcessTerminal()
+	ft := a.createTerminal()
+	engine := tui.NewTUI(ft)
+	a.configureRenderTrace(engine)
+	a.initTitleController(engine)
+	chat := tui.NewChatViewport()
+	a.configureChat(chat)
+	return engine, chat, orchpanel.NewAgentContent(), orchpanel.NewAgentTabBar(), tui.NewStatusMsg(), goaltui.NewBubble(), tui.NewSteeringChrome(), tui.NewEditor(), a.newFooter(), bgpanel.NewPanel(nil)
+}
+
+func (a *App) createTerminal() tui.Terminal {
+	terminal := tui.Terminal(tui.NewProcessTerminal())
 	logPath := a.subs.cfg.Logging.TerminalLog
 	if logPath == "" {
 		logPath = os.Getenv("GOA_DEBUG_TERMINAL")
 	}
-	if logPath != "" {
-		if lt, err := tui.NewLogTerminal(ft, logPath); err == nil {
-			ft = lt
-			if a.subs.logger != nil {
-				a.subs.logger.Log(agentic.Info, "terminal debug log enabled: %s", logPath)
-			}
-		} else if a.subs.logger != nil {
+	if logPath == "" {
+		return terminal
+	}
+	lt, err := tui.NewLogTerminal(terminal, logPath)
+	if err != nil {
+		if a.subs.logger != nil {
 			a.subs.logger.Log(agentic.Error, "failed to enable terminal debug log %s: %v", logPath, err)
 		}
+		return terminal
 	}
-	engine := tui.NewTUI(ft)
-	if rt := a.renderTracePath(); rt != "" {
-		if err := engine.SetRenderTrace(rt); err == nil {
-			if a.subs.logger != nil {
-				a.subs.logger.Log(agentic.Info, "render trace enabled: %s", rt)
-			}
-		} else if a.subs.logger != nil {
-			a.subs.logger.Log(agentic.Error, "failed to enable render trace %s: %v", rt, err)
-		}
+	if a.subs.logger != nil {
+		a.subs.logger.Log(agentic.Info, "terminal debug log enabled: %s", logPath)
 	}
-
-	// Title controller: single writer for the window title (boot brand,
-	// startup transition, working animation — see initTitleController).
-	a.initTitleController(engine)
-
-	chat := tui.NewChatViewport()
-	if cfg := a.subs.cfg; cfg != nil {
-		chat.SetToolsConfig(
-			cfg.TUI.Tools.View == config.ToolViewFull,
-			cfg.TUI.Tools.PreviewLines,
-			cfg.TUI.Tools.ShowRead,
-		)
-	}
-	agentContent := orchpanel.NewAgentContent()
-	agentTabBar := orchpanel.NewAgentTabBar()
-	statusBar := tui.NewStatusMsg()
-	inp := tui.NewEditor()
-	goalBubble := goaltui.NewBubble()
-	steeringChrome := tui.NewSteeringChrome()
-	statusFooter := tui.NewFooter()
-	statusFooter.SetData(tui.FooterData{Workdir: projectDir})
-	statusFooter.RefreshGit()
-	bgPanel := bgpanel.NewPanel(nil)
-	return engine, chat, agentContent, agentTabBar, statusBar, goalBubble, steeringChrome, inp, statusFooter, bgPanel
+	return lt
 }
 
+func (a *App) configureRenderTrace(engine *tui.TUI) {
+	path := a.renderTracePath()
+	if path == "" {
+		return
+	}
+	if err := engine.SetRenderTrace(path); err != nil {
+		if a.subs.logger != nil {
+			a.subs.logger.Log(agentic.Error, "failed to enable render trace %s: %v", path, err)
+		}
+		return
+	}
+	if a.subs.logger != nil {
+		a.subs.logger.Log(agentic.Info, "render trace enabled: %s", path)
+	}
+}
+
+func (a *App) configureChat(chat *tui.ChatViewport) {
+	if cfg := a.subs.cfg; cfg != nil {
+		chat.SetToolsConfig(cfg.TUI.Tools.View == config.ToolViewFull, cfg.TUI.Tools.PreviewLines, cfg.TUI.Tools.ShowRead)
+	}
+}
+
+func (a *App) newFooter() *tui.Footer {
+	footer := tui.NewFooter()
+	footer.SetData(tui.FooterData{Workdir: a.subs.projectDir})
+	footer.RefreshGit()
+	return footer
+}
 func (a *App) configureKeyLogging(engine *tui.TUI) {
 	cfg := a.subs.cfg
 	if !cfg.Logging.TraceKeys {

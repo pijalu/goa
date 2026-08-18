@@ -2,8 +2,9 @@
 package commands
 
 import (
-	"github.com/pijalu/goa/core"
 	"strings"
+
+	"github.com/pijalu/goa/core"
 )
 
 var goalSubcommands = []struct{ value, desc string }{{"new", "create a new goal"}, {"next", "queue a goal to run after the current one"}, {"replace", "replace the current goal"}, {"manage", "open the queued-goals manager"}, {"reorder", "reorder queue with letter mapping"}, {"status", "show current goal status"}, {"list", "list active + queued goals with full objectives"}, {"log", "show recent goal event records"}, {"verify", "run the recorded verify command now"}, {"settings", "toggle goal settings (auto-unblock)"}, {"pause", "pause the active goal (:next to pause after completion)"}, {"resume", "resume a paused goal (or start the first queued goal)"}, {"cancel", "discard the current goal (next queued promotes paused)"}}

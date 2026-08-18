@@ -11,6 +11,7 @@ import (
 
 	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/internal/agentic"
+	"github.com/pijalu/goa/tui"
 )
 
 func TestListSessions_NoStore(t *testing.T) {
@@ -217,54 +218,48 @@ func TestShowSessionPicker_DeleteCancel(t *testing.T) {
 func TestBuildSessionItems(t *testing.T) {
 	today := time.Now()
 	yesterday := today.AddDate(0, 0, -1)
-	sessions := []core.SessionInfo{
-		{Name: "s1", EventCount: 10, TokenTotal: 500, Date: today, HasModelTurn: true},
-		{Name: "s2", EventCount: 3, TokenTotal: 0, Date: yesterday, HasModelTurn: true},
-		{Name: "s3", EventCount: 5, TokenTotal: 200, FirstMessage: "summarize current project", Date: today, HasModelTurn: true},
-		{Name: "s4", EventCount: 1, TokenTotal: 0, FirstMessage: "Read the first 500 lines of go.mod for me and summarize what you find", Date: yesterday, HasModelTurn: true},
-	}
-
+	sessions := []core.SessionInfo{{Name: "s1", EventCount: 10, TokenTotal: 500, Date: today, HasModelTurn: true}, {Name: "s2", EventCount: 3, Date: yesterday, HasModelTurn: true}, {Name: "s3", EventCount: 5, TokenTotal: 200, FirstMessage: "summarize current project", Date: today, HasModelTurn: true}, {Name: "s4", EventCount: 1, FirstMessage: "Read the first 500 lines of go.mod for me and summarize what you find", Date: yesterday, HasModelTurn: true}}
 	items := buildSessionItems(sessions)
 	if len(items) != 4 {
 		t.Fatalf("expected 4 items, got %d", len(items))
 	}
-	// Order is preserved (newest-first as given), not re-sorted alphabetically.
-	if items[0].Value != "s1" || items[1].Value != "s2" || items[2].Value != "s3" || items[3].Value != "s4" {
-		t.Fatalf("store order not preserved: %+v", items)
-	}
-	// Today's session label carries an hh:mm time prefix; the value stays the raw name.
-	if items[0].Value != "s1" {
-		t.Errorf("value must stay the raw session name, got %q", items[0].Value)
-	}
-	if !strings.HasSuffix(items[0].Label, "  s1") {
-		t.Errorf("label must be '<timestamp>  <name>', got %q", items[0].Label)
-	}
-	if !strings.Contains(items[0].Label, today.Format("15:04")) {
-		t.Errorf("today's session must show hh:mm, got %q", items[0].Label)
-	}
-	// A non-today session shows the date instead of a time.
-	if !strings.Contains(items[1].Label, yesterday.Format("2006-01-02")) {
-		t.Errorf("non-today session must show the date, got %q", items[1].Label)
+	assertSessionOrder(t, items)
+	assertSessionLabels(t, items, today, yesterday)
+	assertSessionDescriptions(t, items)
+}
+
+func assertSessionOrder(t *testing.T, items []tui.SelectorItem) {
+	for i, want := range []string{"s1", "s2", "s3", "s4"} {
+		if items[i].Value != want {
+			t.Fatalf("item %d = %q, want %q", i, items[i].Value, want)
+		}
 	}
 	if !items[0].PreserveOrder {
-		t.Errorf("items must opt out of alphabetical sorting, got %+v", items[0])
+		t.Error("items must preserve order")
 	}
+}
+
+func assertSessionLabels(t *testing.T, items []tui.SelectorItem, today, yesterday time.Time) {
+	if !strings.HasSuffix(items[0].Label, "  s1") || !strings.Contains(items[0].Label, today.Format("15:04")) {
+		t.Errorf("today label = %q", items[0].Label)
+	}
+	if !strings.Contains(items[1].Label, yesterday.Format("2006-01-02")) {
+		t.Errorf("date label = %q", items[1].Label)
+	}
+}
+
+func assertSessionDescriptions(t *testing.T, items []tui.SelectorItem) {
 	if !strings.Contains(items[0].Description, "500 tokens") {
-		t.Errorf("expected token count in desc, got: %s", items[0].Description)
+		t.Errorf("token count missing: %s", items[0].Description)
 	}
 	if strings.Contains(items[1].Description, "tokens") {
-		t.Errorf("s2 with 0 tokens should not show token count, got: %s", items[1].Description)
+		t.Errorf("zero token count shown: %s", items[1].Description)
 	}
-	// s3 has a short first message prepended.
-	if !strings.Contains(items[2].Description, "summarize current project") {
-		t.Errorf("expected first message in desc, got: %s", items[2].Description)
+	if !strings.Contains(items[2].Description, "summarize current project") || !strings.Contains(items[2].Description, "5 events") {
+		t.Errorf("s3 description = %s", items[2].Description)
 	}
-	if !strings.Contains(items[2].Description, "5 events") {
-		t.Errorf("expected event count in desc, got: %s", items[2].Description)
-	}
-	// s4 has a long first message that should be truncated.
 	if strings.Contains(items[3].Description, "what you find") {
-		t.Errorf("expected truncated message, got: %s", items[3].Description)
+		t.Errorf("s4 was not truncated: %s", items[3].Description)
 	}
 }
 

@@ -265,6 +265,20 @@ func (t *WebSocketTransport) streamResponse(conn *WebSocketConnection, sessionID
 	}
 }
 
+func handleCopyMessageError(err error, msg []byte, pw *io.PipeWriter, sessionID string, pool *WebSocketPool) {
+	if isDeadlineTimeout(err) {
+		_ = pw.CloseWithError(ErrWSStreamIdle)
+		return
+	}
+	if websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
+		_ = pw.CloseWithError(&MessageTooBigError{Size: len(msg)})
+		return
+	}
+	if sessionID != "" {
+		pool.Remove(sessionID)
+	}
+}
+
 // copyMessages reads frames from the WebSocket into the pipe until the stream
 // ends. It enforces an idle deadline (so a stalled connection surfaces
 // ErrWSStreamIdle instead of hanging forever) and releases the connection's
@@ -280,19 +294,7 @@ func (t *WebSocketTransport) copyMessages(conn *WebSocketConnection, pw *io.Pipe
 		}
 		_, msg, err := conn.conn.ReadMessage()
 		if err != nil {
-			if isDeadlineTimeout(err) {
-				_ = pw.CloseWithError(ErrWSStreamIdle)
-				return
-			}
-			if websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
-				_ = pw.CloseWithError(&MessageTooBigError{Size: len(msg)})
-				return
-			}
-			// A read failure makes this connection unusable for the next stream;
-			// evict it immediately so session affinity can redial cleanly.
-			if sessionID != "" {
-				pool.Remove(sessionID)
-			}
+			handleCopyMessageError(err, msg, pw, sessionID, pool)
 			return
 		}
 		conn.mu.Lock()

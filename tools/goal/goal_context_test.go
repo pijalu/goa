@@ -1,8 +1,9 @@
 package goal
 
 import (
-	coregoal "github.com/pijalu/goa/core/goal"
 	"testing"
+
+	coregoal "github.com/pijalu/goa/core/goal"
 )
 
 func TestGoalTool_CreateFreshContextDefaults(t *testing.T) {

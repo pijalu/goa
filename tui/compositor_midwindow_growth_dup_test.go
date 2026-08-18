@@ -27,6 +27,60 @@ import (
 // faithful terminal replay, that every transcript row appears exactly once
 // across scrollback+screen (no duplicate within either, none lost, and none
 // on both sides of the boundary).
+func midWindowBuild(head, tool, tail []string, w, h, chromeH int) *Scene {
+	content := make([]string, 0, len(head)+len(tool)+len(tail)+chromeH)
+	content = append(content, head...)
+	content = append(content, tool...)
+	content = append(content, tail...)
+	for i := 0; i < chromeH; i++ {
+		content = append(content, "CHROME")
+	}
+	return &Scene{TerminalW: w, TerminalH: h, ChromeHeight: chromeH,
+		Layers: []Layer{{Name: "c", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: w, H: len(content)}, Content: content}}}
+}
+
+func midWindowCounts(emu *TermEmulator, want string, h int) (sb, sc int) {
+	for _, line := range emu.Scrollback() {
+		if strings.TrimSpace(line) == want {
+			sb++
+		}
+	}
+	for row := 0; row < h; row++ {
+		if strings.TrimSpace(emu.Visible(row)) == want {
+			sc++
+		}
+	}
+	return sb, sc
+}
+
+func midWindowDump(emu *TermEmulator, h int) string {
+	var b strings.Builder
+	b.WriteString("\n=== scrollback ===\n")
+	for i, line := range emu.Scrollback() {
+		fmt.Fprintf(&b, "sb[%d]: %s\n", i, line)
+	}
+	b.WriteString("=== screen ===\n")
+	for row := 0; row < h; row++ {
+		fmt.Fprintf(&b, "sc[%d]: %s\n", row, emu.Visible(row))
+	}
+	return b.String()
+}
+
+func assertMidWindowRow(t *testing.T, emu *TermEmulator, want string, h int) {
+	t.Helper()
+	sb, sc := midWindowCounts(emu, want, h)
+	switch {
+	case sb > 1:
+		t.Errorf("%q duplicated WITHIN scrollback (%d)%s", want, sb, midWindowDump(emu, h))
+	case sc > 1:
+		t.Errorf("%q duplicated WITHIN screen (%d)%s", want, sc, midWindowDump(emu, h))
+	case sb+sc == 0:
+		t.Errorf("%q LOST%s", want, midWindowDump(emu, h))
+	case sb >= 1 && sc >= 1:
+		t.Errorf("%q on BOTH sides of the history↔screen boundary (sb=%d sc=%d)%s", want, sb, sc, midWindowDump(emu, h))
+	}
+}
+
 func TestCompositor_MidWindowToolGrowth_NoBoundaryDuplicate(t *testing.T) {
 	const w, h, chromeH = 46, 11, 2 // transcript window = 9 rows
 	term := &fakeTerminal{w: w, h: h}
@@ -42,19 +96,7 @@ func TestCompositor_MidWindowToolGrowth_NoBoundaryDuplicate(t *testing.T) {
 		tail = append(tail, fmt.Sprintf("tail-%02d", i))
 	}
 
-	build := func() *Scene {
-		var c []string
-		c = append(c, head...)
-		c = append(c, tool...)
-		c = append(c, tail...)
-		for i := 0; i < chromeH; i++ {
-			c = append(c, "CHROME")
-		}
-		return &Scene{TerminalW: w, TerminalH: h, ChromeHeight: chromeH,
-			Layers: []Layer{{Name: "c", Kind: LayerBase, Rect: Rect{X: 0, Y: 0, W: w, H: len(c)}, Content: c}}}
-	}
-
-	comp.Render(build())
+	comp.Render(midWindowBuild(head, tool, tail, w, h, chromeH))
 
 	// Grow the tool by one body line per frame (insert before its trailing
 	// row), advancing the watermark one row per frame so head rows scroll off
@@ -64,7 +106,7 @@ func TestCompositor_MidWindowToolGrowth_NoBoundaryDuplicate(t *testing.T) {
 		tool = append(tool, "")
 		copy(tool[ins:], tool[ins-1:])
 		tool[ins-1] = fmt.Sprintf("TOOL-LINE-G%02d", step)
-		comp.Render(build())
+		comp.Render(midWindowBuild(head, tool, tail, w, h, chromeH))
 	}
 
 	emu := NewTermEmulator(h, w)
@@ -72,56 +114,16 @@ func TestCompositor_MidWindowToolGrowth_NoBoundaryDuplicate(t *testing.T) {
 		emu.Process(string(wr))
 	}
 
-	count := func(want string) (sb, sc int) {
-		for _, l := range emu.Scrollback() {
-			if strings.TrimSpace(l) == want {
-				sb++
-			}
-		}
-		for r := 0; r < h; r++ {
-			if strings.TrimSpace(emu.Visible(r)) == want {
-				sc++
-			}
-		}
-		return sb, sc
-	}
-
-	dump := func() string {
-		var b strings.Builder
-		b.WriteString("\n=== scrollback ===\n")
-		for i, l := range emu.Scrollback() {
-			fmt.Fprintf(&b, "sb[%d]: %s\n", i, l)
-		}
-		b.WriteString("=== screen ===\n")
-		for r := 0; r < h; r++ {
-			fmt.Fprintf(&b, "sc[%d]: %s\n", r, emu.Visible(r))
-		}
-		return b.String()
-	}
-
-	check := func(want string) {
-		sb, sc := count(want)
-		switch {
-		case sb > 1:
-			t.Errorf("%q duplicated WITHIN scrollback (%d)%s", want, sb, dump())
-		case sc > 1:
-			t.Errorf("%q duplicated WITHIN screen (%d)%s", want, sc, dump())
-		case sb+sc == 0:
-			t.Errorf("%q LOST%s", want, dump())
-		case sb >= 1 && sc >= 1:
-			t.Errorf("%q on BOTH sides of the history↔screen boundary (sb=%d sc=%d)%s", want, sb, sc, dump())
-		}
-	}
 	for i := range head {
-		check(fmt.Sprintf("head-%02d", i))
+		assertMidWindowRow(t, emu, fmt.Sprintf("head-%02d", i), h)
 	}
 	for _, l := range tool {
 		if strings.TrimSpace(l) != "" {
-			check(l)
+			assertMidWindowRow(t, emu, l, h)
 		}
 	}
 	for i := range tail {
-		check(fmt.Sprintf("tail-%02d", i))
+		assertMidWindowRow(t, emu, fmt.Sprintf("tail-%02d", i), h)
 	}
 }
 

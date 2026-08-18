@@ -1,9 +1,10 @@
 package config
 
 import (
-	"github.com/pijalu/goa/internal"
 	"path/filepath"
 	"testing"
+
+	"github.com/pijalu/goa/internal"
 )
 
 func TestLegacyMigrationFallback(t *testing.T) {

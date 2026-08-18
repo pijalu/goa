@@ -86,35 +86,45 @@ func TestUI_GoalBubble_MultiLineObjective(t *testing.T) {
 	frame := sc.engine.AgentFrame()
 	sc.filmstrip().Capture("bubble", frame, "")
 
-	var bubbleRows []string
-	for _, row := range frame.Visible {
-		if strings.Contains(row, "\n") {
-			t.Fatalf("visible row contains an embedded newline: %q", row)
-		}
-		if strings.Contains(row, "◈ [") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
-			bubbleRows = append(bubbleRows, row)
-		}
-	}
+	bubbleRows := goalBubbleRows(frame.Visible)
 	if len(bubbleRows) == 0 {
 		t.Fatalf("goal bubble not visible\n%s", frame.Dump())
 	}
-	// Cap: at most 3 body rows (◈ + content) between separators. The marker
-	// filter uses "◈ [" (bubble header: marker + name bracket) so the footer's
-	// line-1 active-goal ◈ profile marker is not miscounted as bubble body.
-	body := 0
-	for _, row := range frame.Visible {
+	body := goalBodyRows(frame.Visible)
+	if body > 3 {
+		t.Errorf("bubble body exceeds the 3-line cap: %d rows\n%s", body, frame.Dump())
+	}
+	assertNoGoalNewlines(t, frame.Visible)
+}
+
+func goalBubbleRows(rows []string) []string {
+	var out []string
+	for _, row := range rows {
+		if strings.Contains(row, "\n") {
+			continue
+		}
+		if strings.Contains(row, "◈ [") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func goalBodyRows(rows []string) int {
+	count := 0
+	for _, row := range rows {
 		if strings.Contains(row, "─") && !strings.Contains(row, "◈") {
 			continue
 		}
 		if strings.Contains(row, "◈ [") || strings.Contains(row, "analyze") || strings.Contains(row, "UNBLOCKING") {
-			body++
+			count++
 		}
 	}
-	if body > 3 {
-		t.Errorf("bubble body exceeds the 3-line cap: %d rows\n%s", body, frame.Dump())
-	}
-	// The footer goal segment must also be newline-free.
-	for _, row := range frame.Visible {
+	return count
+}
+
+func assertNoGoalNewlines(t *testing.T, rows []string) {
+	for _, row := range rows {
 		if strings.Contains(row, "◈") && strings.Contains(row, "\n") {
 			t.Errorf("footer goal segment contains newline: %q", row)
 		}

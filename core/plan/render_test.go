@@ -9,6 +9,44 @@ import (
 	"testing"
 )
 
+func assertBasicRenderAnchors(t *testing.T, md string, anchors []LineAnchor) {
+	t.Helper()
+	if len(anchors) != 3 {
+		t.Fatalf("expected 3 anchors, got %d: %v", len(anchors), anchors)
+	}
+	for _, id := range []string{"item-1", "item-2", "item-3"} {
+		found := false
+		for _, anchor := range anchors {
+			if anchor.ItemID == id {
+				found = true
+				if anchor.Line <= 0 {
+					t.Errorf("anchor %q has line %d", id, anchor.Line)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("anchor for %q not found", id)
+		}
+		if !strings.Contains(md, "<!-- anchor: "+id+" -->") {
+			t.Errorf("anchor marker for %q not found in render", id)
+		}
+	}
+}
+
+func assertBasicRenderDetails(t *testing.T, md string) {
+	t.Helper()
+	checks := map[string]string{
+		"done status": "_Status: done_", "pending status": "_Status: pending_", "blocked status": "_Status: blocked_",
+		"dependency": "_Depends on: item-1", "result": "_Result:", "role": "_Role: coder_",
+	}
+	for name, text := range checks {
+		if !strings.Contains(md, text) {
+			t.Errorf("%s missing", name)
+		}
+	}
+}
+
 func TestRender_Basic(t *testing.T) {
 	p := &Plan{
 		Name:      "happy.hare",
@@ -46,84 +84,20 @@ func TestRender_Basic(t *testing.T) {
 
 	md, anchors := Render(p)
 
-	// Check header
-	if !strings.Contains(md, "# Plan: happy.hare (revision 2)") {
-		t.Errorf("header missing, got:\n%s", md)
-	}
-	if !strings.Contains(md, "**Objective:** Build authentication system") {
-		t.Errorf("objective missing")
-	}
-	if !strings.Contains(md, "**Status:** in_review") {
-		t.Errorf("status missing")
-	}
+	assertRenderContains(t, md, map[string]string{
+		"header": "# Plan: happy.hare (revision 2)", "objective": "**Objective:** Build authentication system", "status": "**Status:** in_review",
+		"item 1": "## 1. Setup database schema", "item 2": "## 2. Implement login API", "item 3": "## 3. Add email verification",
+	})
+	assertBasicRenderAnchors(t, md, anchors)
+	assertBasicRenderDetails(t, md)
+}
 
-	// Check items
-	if !strings.Contains(md, "## 1. Setup database schema") {
-		t.Errorf("item 1 heading missing")
-	}
-	if !strings.Contains(md, "## 2. Implement login API") {
-		t.Errorf("item 2 heading missing")
-	}
-	if !strings.Contains(md, "## 3. Add email verification") {
-		t.Errorf("item 3 heading missing")
-	}
-
-	// Check anchors
-	if len(anchors) != 3 {
-		t.Fatalf("expected 3 anchors, got %d: %v", len(anchors), anchors)
-	}
-
-	anchorCheck := func(line int, id string) {
-		found := false
-		for _, a := range anchors {
-			if a.ItemID == id {
-				found = true
-				if a.Line <= 0 {
-					t.Errorf("anchor %q has line %d", id, a.Line)
-				}
-				break
-			}
+func assertRenderContains(t *testing.T, md string, expected map[string]string) {
+	t.Helper()
+	for name, text := range expected {
+		if !strings.Contains(md, text) {
+			t.Errorf("%s missing", name)
 		}
-		if !found {
-			t.Errorf("anchor for %q not found", id)
-		}
-	}
-	anchorCheck(0, "item-1")
-	anchorCheck(0, "item-2")
-	anchorCheck(0, "item-3")
-
-	// Check anchor comment markers in markdown
-	for _, id := range []string{"item-1", "item-2", "item-3"} {
-		marker := "<!-- anchor: " + id + " -->"
-		if !strings.Contains(md, marker) {
-			t.Errorf("anchor marker %q not found in render", marker)
-		}
-	}
-
-	// Check status lines
-	if !strings.Contains(md, "_Status: done_") {
-		t.Errorf("item-1 status missing")
-	}
-	if !strings.Contains(md, "_Status: pending_") {
-		t.Errorf("item-2 status missing")
-	}
-	if !strings.Contains(md, "_Status: blocked_") {
-		t.Errorf("item-3 status missing")
-	}
-
-	// Check dependency references
-	if !strings.Contains(md, "_Depends on: item-1") {
-		t.Errorf("dependency reference missing")
-	}
-
-	// Check result line
-	if !strings.Contains(md, "_Result:") {
-		t.Errorf("result line missing for item-1")
-	}
-
-	// Check role lines
-	if !strings.Contains(md, "_Role: coder_") {
-		t.Errorf("role line missing for coder role")
 	}
 }
 

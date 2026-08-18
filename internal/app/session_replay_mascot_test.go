@@ -7,6 +7,7 @@ package app
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -81,110 +82,127 @@ func TestSessionReplay_MascotNeverRedrawn(t *testing.T) {
 		return chat.AddToolExecution(name, input)
 	})
 
-	// Marker bytes unique to the mascot/logo art. The logo is pure ⬡ block
-	// art; a long run of the hexagon glyph cannot appear in chat content.
-	const mascotMarker = "⬡⬡⬡⬡"
-
-	// headerOff flips true once the header has scrolled out of the visible
-	// window (enough content emitted that canvasLen > h).
-	headerOff := false
-	assistantOpen := false
-	resized := 0
-	var tcRunning *tui.ToolExecutionComponent // last widget that entered Running
-
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 4<<20), 4<<20)
-	line := 0
-	for sc.Scan() {
-		line++
-		var ev agentic.OutputEvent
-		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-			continue
-		}
-		switch ev.Type {
-		case agentic.EventContent:
-			switch {
-			case ev.Role == agentic.User:
-				chat.AddUserMessage(ev.Text)
-				assistantOpen = false
-			case ev.Role == agentic.System:
-				chat.AddSystemMessage(ev.Text)
-				assistantOpen = false
-			case ev.Role == agentic.Assistant:
-				if !assistantOpen {
-					chat.AddAssistantMessage("")
-					assistantOpen = true
-				}
-				chat.UpdateLastMessage(ev.Text, tui.ConsoleAssistantMessage)
-			}
-		case agentic.EventToolCall:
-			tc, _ := tracker.OnCall(&ev)
-			// Mirror App.handleToolCall: a FINAL (non-delta) call transitions
-			// its widget to Running (stats.go:574-576) — the state change that
-			// drives the live repaint ticker during tool calls.
-			if !ev.IsDelta && tc != nil {
-				tc.SetStatus(tui.ToolRunning)
-				tcRunning = tc
-			}
-			assistantOpen = false
-		case agentic.EventToolProgress:
-			tracker.OnProgress(&ev)
-		case agentic.EventToolResult:
-			if ev.Text == "" {
-				ev.Text = ev.ToolResult
-			}
-			// The tracker's onResult applies the terminal status (Success/
-			// Error from the text heuristic) — the second state change.
-			tracker.OnResult(&ev)
-			tcRunning = nil
-			assistantOpen = false
-		default:
-			continue // stats/progress/context events don't touch the chat
-		}
-
-		engine.RenderNow()
-
-		// Inject a resize right after a tool call enters Running — the
-		// tab-switch-during-tool-call trigger from the bug report that the
-		// event stream itself never contains. The resize frame goes through
-		// the full-repaint path (resized || hasOverlay), the historical
-		// mascot-flash route. Height-only so the scrollback stays valid.
-		if resized == 0 && headerOff && tcRunning != nil {
-			resized++
-			term.h = h + 6 // grow; shrink back on the next tool transition
-			engine.RenderNow()
-		} else if resized == 1 && tcRunning == nil {
-			resized++
-			term.h = h
-			engine.RenderNow()
-		}
-
-		// Detect when the header has left the visible window: once the
-		// chat's transcript alone exceeds the screen, the header (rows 0..n)
-		// is in scrollback and must never be repainted.
-		if !headerOff && chat.TotalHeight() > h {
-			headerOff = true
-		}
-		if headerOff {
-			wr := term.writes[len(term.writes)-1]
-			if strings.Contains(wr, mascotMarker) {
-				t.Fatalf("line %d (%s %s): mascot bytes repainted after the header scrolled off (resized=%d).\nwrite: %q",
-					line, ev.Type, ev.ToolName, resized, wr[:minInt(400, len(wr))])
-			}
-		}
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	line, headerOff := replaySession(t, f, engine, chat, tracker, term, w, h)
 	if !headerOff {
 		t.Fatalf("fixture never scrolled the header off screen (chat height %d <= %d) — replay cannot validate mascot redraw", chat.TotalHeight(), h)
 	}
 	t.Logf("replayed %d events, %d writes, header scrolled off cleanly, mascot never repainted", line, len(term.writes))
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
+type replayRunner struct {
+	engine        *tui.TUI
+	chat          *tui.ChatViewport
+	tracker       *tooltracker.Tracker
+	term          *testTerminal
+	width, height int
+	headerOff     bool
+	resized       int
+	state         replayState
+}
+
+func replaySession(t *testing.T, file *os.File, engine *tui.TUI, chat *tui.ChatViewport, tracker *tooltracker.Tracker, term *testTerminal, width, height int) (int, bool) {
+	runner := &replayRunner{engine: engine, chat: chat, tracker: tracker, term: term, width: width, height: height}
+	runner.state = replayState{chat: chat, tracker: tracker}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4<<20), 4<<20)
+	line := 0
+	for scanner.Scan() {
+		line++
+		if runner.apply(scanner.Bytes()) {
+			runner.render(line)
+		}
 	}
-	return b
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	return line, runner.headerOff
+}
+
+func (r *replayRunner) apply(data []byte) bool {
+	var event agentic.OutputEvent
+	if json.Unmarshal(data, &event) != nil || !r.state.apply(&event) {
+		return false
+	}
+
+	return true
+}
+
+func (r *replayRunner) render(line int) {
+	r.engine.RenderNow()
+	if r.resized == 0 && r.headerOff && r.state.running != nil {
+		r.resized++
+		r.term.h = r.height + 6
+		r.engine.RenderNow()
+	}
+	if r.resized == 1 && r.state.running == nil {
+		r.resized++
+		r.term.h = r.height
+		r.engine.RenderNow()
+	}
+	if !r.headerOff && r.chat.TotalHeight() > r.height {
+		r.headerOff = true
+	}
+	if r.headerOff {
+		r.assertMascotAbsent(line)
+	}
+}
+
+func (r *replayRunner) assertMascotAbsent(line int) {
+	write := r.term.writes[len(r.term.writes)-1]
+	if strings.Contains(write, "⬡⬡⬡⬡") {
+		panic(fmt.Sprintf("line %d: mascot bytes repainted", line))
+	}
+}
+
+type replayState struct {
+	chat          *tui.ChatViewport
+	tracker       *tooltracker.Tracker
+	assistantOpen bool
+	running       *tui.ToolExecutionComponent
+}
+
+func (s *replayState) apply(ev *agentic.OutputEvent) bool {
+	switch ev.Type {
+	case agentic.EventContent:
+		return s.content(ev)
+	case agentic.EventToolCall:
+		tc, _ := s.tracker.OnCall(ev)
+		if !ev.IsDelta && tc != nil {
+			tc.SetStatus(tui.ToolRunning)
+			s.running = tc
+		}
+		s.assistantOpen = false
+	case agentic.EventToolProgress:
+		s.tracker.OnProgress(ev)
+	case agentic.EventToolResult:
+		if ev.Text == "" {
+			ev.Text = ev.ToolResult
+		}
+		s.tracker.OnResult(ev)
+		s.running = nil
+		s.assistantOpen = false
+	default:
+		return false
+	}
+	return true
+}
+
+func (s *replayState) content(ev *agentic.OutputEvent) bool {
+	switch ev.Role {
+	case agentic.User:
+		s.chat.AddUserMessage(ev.Text)
+		s.assistantOpen = false
+	case agentic.System:
+		s.chat.AddSystemMessage(ev.Text)
+		s.assistantOpen = false
+	case agentic.Assistant:
+		if !s.assistantOpen {
+			s.chat.AddAssistantMessage("")
+			s.assistantOpen = true
+		}
+		s.chat.UpdateLastMessage(ev.Text, tui.ConsoleAssistantMessage)
+	default:
+		return false
+	}
+	return true
 }

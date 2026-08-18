@@ -120,18 +120,7 @@ func TestBuildProviderContext_GoalProgressSeparateMessage(t *testing.T) {
 		t.Errorf("goal reminders must immediately follow the turn's user message (static, then dynamic): turn@%d static@%d progress@%d",
 			turnIdx, staticIdx, progressIdx)
 	}
-	// No system-role message may carry goal text — the only system content
-	// allowed is the leading system prompt itself (LM Studio 400 contract).
-	for i, m := range pctx.Messages {
-		if m.Role != provider.RoleSystem {
-			continue
-		}
-		for _, b := range m.Content {
-			if strings.Contains(b.Text, "STATIC GOAL REMINDER") || strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") {
-				t.Errorf("goal text in system-role message %d breaks strict chat templates (400): %q", i, b.Text)
-			}
-		}
-	}
+	assertGoalSystemClean(t, pctx)
 	// The turn's user message must carry only the verbatim user text.
 	for _, b := range pctx.Messages[turnIdx].Content {
 		if strings.Contains(b.Text, "DYNAMIC PROGRESS LINE") || strings.Contains(b.Text, "STATIC GOAL REMINDER") {

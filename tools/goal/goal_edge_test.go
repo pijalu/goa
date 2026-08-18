@@ -1,10 +1,11 @@
 package goal
 
 import (
-	coregoal "github.com/pijalu/goa/core/goal"
-	"github.com/pijalu/goa/internal/toolaccess"
 	"strings"
 	"testing"
+
+	coregoal "github.com/pijalu/goa/core/goal"
+	"github.com/pijalu/goa/internal/toolaccess"
 )
 
 func TestGoalTool_CreateRejectsOversizedObjective(t *testing.T) {
