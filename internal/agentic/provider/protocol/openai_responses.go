@@ -539,8 +539,12 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 		Response struct {
 			Status string `json:"status"`
 			Usage  struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens        int `json:"input_tokens"`
+				OutputTokens       int `json:"output_tokens"`
+				InputTokensDetails struct {
+					CachedTokens     int `json:"cached_tokens"`
+					CacheWriteTokens int `json:"cache_write_tokens"`
+				} `json:"input_tokens_details"`
 			} `json:"usage"`
 		} `json:"response"`
 	}
@@ -560,12 +564,23 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 	if resp.Response.Status == "incomplete" {
 		stopReason = schema.StopReasonMaxTokens
 	}
+	usage := resp.Response.Usage
+	cachedTokens := usage.InputTokensDetails.CachedTokens
+	cacheWriteTokens := usage.InputTokensDetails.CacheWriteTokens
+	// Responses input_tokens is gross; expose net input separately from cache
+	// reads/writes so context accounting and pricing do not double-count them.
+	netInputTokens := usage.InputTokens - cachedTokens - cacheWriteTokens
+	if netInputTokens < 0 {
+		netInputTokens = 0
+	}
 	ctx.stream.End(&schema.AssistantMessage{
 		Content:    blocks,
 		StopReason: stopReason,
 		Usage: &schema.Usage{
-			InputTokens:  resp.Response.Usage.InputTokens,
-			OutputTokens: resp.Response.Usage.OutputTokens,
+			InputTokens:         netInputTokens,
+			OutputTokens:        usage.OutputTokens,
+			CacheReadTokens:     cachedTokens,
+			CacheCreationTokens: cacheWriteTokens,
 		},
 	})
 	ctx.ended = true

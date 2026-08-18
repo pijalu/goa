@@ -202,6 +202,29 @@ func TestCodexParseToolCallArgumentStreaming(t *testing.T) {
 	assert.JSONEq(t, `{"city":"Paris"}`, tc.ToolArguments, "streamed arguments must accumulate")
 }
 
+// TestCodexParseCacheUsage verifies nested Responses usage details are retained.
+// Codex reports input_tokens as gross input, so the parser must expose net input
+// alongside cached and cache-write token counts.
+func TestCodexParseCacheUsage(t *testing.T) {
+	p := ForAPI(schema.ApiOpenAICodexResponses)
+	require.NotNil(t, p)
+
+	stream := schema.NewAssistantMessageEventStream(8)
+	go p.ParseResponse(sseBody(
+		`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":700,"cache_write_tokens":100},"output_tokens":25}}}`,
+	), stream)
+
+	result := stream.Result()
+	require.NotNil(t, result)
+	require.NoError(t, stream.Err())
+	require.NotNil(t, result.Usage)
+	assert.Equal(t, 200, result.Usage.InputTokens)
+	assert.Equal(t, 25, result.Usage.OutputTokens)
+	assert.Equal(t, 700, result.Usage.CacheReadTokens)
+	assert.Equal(t, 100, result.Usage.CacheCreationTokens)
+	assert.Equal(t, 1000, result.Usage.TotalInputTokens())
+}
+
 // TestCodexParseToolCallInlineArguments covers backends that send the full
 // arguments inline on output_item.done with no streaming delta events.
 func TestCodexParseToolCallInlineArguments(t *testing.T) {
