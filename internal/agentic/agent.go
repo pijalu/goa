@@ -691,7 +691,7 @@ type Config struct {
 	// produced no visible answer and requested more tool calls, catching the
 	// "infinite tool-calling loop" where every call has unique inputs. When the
 	// limit is reached, the model is told to stop calling tools and answer with
-	// what it has. Set to 0 to disable (default: 10).
+	// what it has. Set to 0 to disable. The application default is 15.
 	MaxConsecutiveToolRounds int
 	// DisableToolBudget when true disables the per-turn tool-call budget check
 	// entirely, allowing unlimited tool calls per turn. Useful for sessions with
@@ -1032,18 +1032,12 @@ func (a *Agent) InjectEphemeralSystemMessage(content string) {
 	a.history = append(a.history, msg)
 	a.mu.Unlock()
 
-	// Surface the FULL nudge text to the user as a persistent chat bubble
-	// (the user MUST be aware of every nudge sent to the model).
-	// Previously only a transient EventProgress ("System guardrail…") was shown,
-	// hiding the actual content/numbers and leaving the user unable to tell what
-	// the model was told. Now every host control note (prefixed "[goa-system]")
-	// is emitted as a system-notification content event so it renders as a
-	// durable bubble and is part of the chat history.
+	// Surface control nudges so the user can see why the agent changed behavior.
+	// The message is ephemeral to the model history, but the notification is
+	// intentionally visible in the chat transcript.
 	if strings.HasPrefix(content, "[goa-system]") {
 		a.emitEvent(OutputEvent{
-			Type:     EventContent,
-			Role:     System,
-			Text:     content,
+			Type: EventContent, Role: System, Text: content,
 			Metadata: map[string]string{"category": "system-notification"},
 		})
 	}

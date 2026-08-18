@@ -29,6 +29,12 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # Archive
 
+## ~~Per-turn tool-round limit unexpectedly enabled~~ — FIXED (2026-08-18)
+
+`MaxConsecutiveToolRounds` was documented as `0 = disabled`, but the agent-level fallback converted zero to `15`, creating a hidden limit for callers that did not provide application defaults. Positive values now trigger exactly at the configured threshold; zero and negative values disable the guardrail. The application default remains `15` in `config/configs/default.yaml`. Recovery control notes remain visible as system notifications.
+
+Tests cover visible recovery notifications, zero-disabled behavior, configured thresholds, and config loading.
+
 ## ~~Codex cannot list models~~ — FIXED (2026-08-17)
 
 Error:

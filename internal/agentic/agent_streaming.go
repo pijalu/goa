@@ -224,18 +224,17 @@ func (a *Agent) effectiveMaxStreamRounds() int {
 }
 
 // effectiveMaxConsecutiveToolRounds returns the configured max consecutive
-// tool-calling rounds, defaulting to 15. A value of 0 disables the guardrail.
-// The default is deliberately higher than a typical investigation's round
-// count so legitimate multi-round work (codebase archaeology) is not
-// interrupted; the nudge also fires at most once per turn (toolRoundNudgeFired).
+// tool-calling rounds. Non-positive values disable the guardrail; the
+// application layer supplies the normal default of 15. The nudge also fires
+// at most once per turn (toolRoundNudgeFired).
 func (a *Agent) effectiveMaxConsecutiveToolRounds() int {
-	if a.cfg.MaxConsecutiveToolRounds > 0 {
-		return a.cfg.MaxConsecutiveToolRounds
+	// Zero is an explicit disable value. The application config supplies the
+	// normal default (15); keeping the agent fallback disabled avoids turning a
+	// missing/zero value into a surprising hidden limit.
+	if a.cfg.MaxConsecutiveToolRounds <= 0 {
+		return 0
 	}
-	if a.cfg.MaxConsecutiveToolRounds < 0 {
-		return 0 // explicitly disabled
-	}
-	return 15
+	return a.cfg.MaxConsecutiveToolRounds
 }
 
 // runRecoveryStream sends a clear system message to the LLM when the per-turn

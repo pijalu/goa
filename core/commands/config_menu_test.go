@@ -1109,16 +1109,17 @@ func TestConfigMenu_LoopThresholdsShowEffectiveValues(t *testing.T) {
 		t.Fatalf("title = %q, want Loop threshold settings:", sr.title)
 	}
 	want := map[string]string{
-		"loop_warning":            "3 (default)",
-		"loop_interrupt":          "5 (default)",
-		"tool_repeat_total":       "off",
-		"tool_repeat_consecutive": "2 (default)",
-		"max_tool_calls":          "3 (default)",
-		"disable_tool_budget":     "off",
-		"stream_repeats":          "5 (default)",
-		"stream_min_period":       "50 (default)",
-		"stream_strikes":          "3 (default)",
-		"stream_reset_after":      "10 (default)",
+		"loop_warning":                "3 (default)",
+		"loop_interrupt":              "5 (default)",
+		"tool_repeat_total":           "off",
+		"tool_repeat_consecutive":     "2 (default)",
+		"max_tool_calls":              "3 (default)",
+		"max_consecutive_tool_rounds": "15 (default)",
+		"disable_tool_budget":         "off",
+		"stream_repeats":              "5 (default)",
+		"stream_min_period":           "50 (default)",
+		"stream_strikes":              "3 (default)",
+		"stream_reset_after":          "10 (default)",
 	}
 	if len(sr.options) != len(want) {
 		t.Fatalf("expected %d threshold options, got %d", len(want), len(sr.options))

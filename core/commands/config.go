@@ -799,6 +799,7 @@ func (m *configMenu) settingLoopThresholds() {
 		{Value: "tool_repeat_total", Label: "Max tool repeats (total)", Description: disabledThresholdLabel(cfg.Execution.MaxToolRepeatTotal)},
 		{Value: "tool_repeat_consecutive", Label: "Max tool repeats (consecutive)", Description: thresholdLabel(cfg.Execution.MaxToolRepeatConsecutive, 2)},
 		{Value: "max_tool_calls", Label: "Max tool calls per turn", Description: thresholdLabel(cfg.Execution.MaxToolCalls, 3)},
+		{Value: "max_consecutive_tool_rounds", Label: "Max consecutive tool-call rounds", Description: thresholdLabel(cfg.Execution.MaxConsecutiveToolRounds, 15)},
 		{Value: "disable_tool_budget", Label: "Disable tool budget", Description: boolLabel(cfg.Execution.DisableToolBudget)},
 		{Value: "stream_repeats", Label: "Stream-loop stop repeats", Description: thresholdLabel(cfg.Execution.StreamLoopMaxRepeats, 5)},
 		{Value: "stream_min_period", Label: "Stream-loop min unit length (chars)", Description: thresholdLabel(cfg.Execution.StreamLoopMinPeriod, 50)},
@@ -851,16 +852,17 @@ func (m *configMenu) handleLoopThresholdSetting(selected string) {
 		boolVal *bool
 	}
 	fields := map[string]loopField{
-		"loop_warning":            {key: "execution.loop_warning", prompt: "Loop warning threshold:", intVal: &cfg.Execution.LoopWarning},
-		"loop_interrupt":          {key: "execution.loop_interrupt", prompt: "Loop interrupt threshold:", intVal: &cfg.Execution.LoopInterrupt},
-		"tool_repeat_total":       {key: "execution.max_tool_repeat_total", prompt: "Max total tool repeats:", intVal: &cfg.Execution.MaxToolRepeatTotal},
-		"tool_repeat_consecutive": {key: "execution.max_tool_repeat_consecutive", prompt: "Max consecutive tool repeats:", intVal: &cfg.Execution.MaxToolRepeatConsecutive},
-		"max_tool_calls":          {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
-		"disable_tool_budget":     {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
-		"stream_repeats":          {key: "execution.stream_loop_max_repeats", prompt: "Stream-loop stop repeats (>=2):", intVal: &cfg.Execution.StreamLoopMaxRepeats},
-		"stream_min_period":       {key: "execution.stream_loop_min_period", prompt: "Stream-loop min repeated unit length in chars (>=8, 0 = default 50):", intVal: &cfg.Execution.StreamLoopMinPeriod},
-		"stream_strikes":          {key: "execution.stream_loop_max_strikes", prompt: "Stream-loop warnings before stop (>=1):", intVal: &cfg.Execution.StreamLoopMaxStrikes},
-		"stream_reset_after":      {key: "execution.stream_loop_reset_after", prompt: "Clean messages/tool calls to reset strikes (>=1):", intVal: &cfg.Execution.StreamLoopResetAfter},
+		"loop_warning":                {key: "execution.loop_warning", prompt: "Loop warning threshold:", intVal: &cfg.Execution.LoopWarning},
+		"loop_interrupt":              {key: "execution.loop_interrupt", prompt: "Loop interrupt threshold:", intVal: &cfg.Execution.LoopInterrupt},
+		"tool_repeat_total":           {key: "execution.max_tool_repeat_total", prompt: "Max total tool repeats:", intVal: &cfg.Execution.MaxToolRepeatTotal},
+		"tool_repeat_consecutive":     {key: "execution.max_tool_repeat_consecutive", prompt: "Max consecutive tool repeats:", intVal: &cfg.Execution.MaxToolRepeatConsecutive},
+		"max_tool_calls":              {key: "execution.max_tool_calls", prompt: "Max tool calls per turn:", intVal: &cfg.Execution.MaxToolCalls},
+		"max_consecutive_tool_rounds": {key: "execution.max_consecutive_tool_rounds", prompt: "Max consecutive tool-call rounds (0 = unlimited):", intVal: &cfg.Execution.MaxConsecutiveToolRounds},
+		"disable_tool_budget":         {key: "execution.disable_tool_budget", isBool: true, boolVal: &cfg.Execution.DisableToolBudget},
+		"stream_repeats":              {key: "execution.stream_loop_max_repeats", prompt: "Stream-loop stop repeats (>=2):", intVal: &cfg.Execution.StreamLoopMaxRepeats},
+		"stream_min_period":           {key: "execution.stream_loop_min_period", prompt: "Stream-loop min repeated unit length in chars (>=8, 0 = default 50):", intVal: &cfg.Execution.StreamLoopMinPeriod},
+		"stream_strikes":              {key: "execution.stream_loop_max_strikes", prompt: "Stream-loop warnings before stop (>=1):", intVal: &cfg.Execution.StreamLoopMaxStrikes},
+		"stream_reset_after":          {key: "execution.stream_loop_reset_after", prompt: "Clean messages/tool calls to reset strikes (>=1):", intVal: &cfg.Execution.StreamLoopResetAfter},
 	}
 	f, ok := fields[selected]
 	if !ok {
