@@ -27,7 +27,265 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
+## Prefix fingerprint classifier never reports `exact_append` (whole-body `bytes.HasPrefix` is structurally wrong)
+
+**Observed:** every recorded request is classified `unexpected_divergence`, even provably
+append-only ones. Evidence: export `goa-export-20260819-000114.zip` and
+`goa-export-20260819-000743.zip` — all 5 request pairs (10 complete request bodies) around
+the detected cache misses
+have byte-identical message prefixes (canonical-JSON comparison + `B.input_prefix_hash ==
+A.request_hash` holds for every pair), identical non-message body fields, constant tools
+schema hash — yet `classification` is `unexpected_divergence` for 100% of them.
+
+**Root cause:** `BuildRequestFingerprint` (`internal/agentic/provider/cache_fingerprint.go`)
+tests `bytes.HasPrefix(request, previousRequest)` on the **whole serialized request body**.
+Go's `encoding/json` marshals map keys alphabetically, so `messages` is the first key but a
+history append lands **inside** the body, after the closing `]` of nothing — the new body
+is never a byte-prefix of the old one (only byte-identical retries can pass). The
+`exact_append` classification is unreachable, so the strongest signal the forensics
+journal has ("the client did everything right") is never produced and every request looks
+like a suspect divergence.
+
+**Expected:** an append-only request chain with unchanged params must classify as
+`exact_append`; only real rewrites (compaction, elision, message edits) may classify as
+`unexpected_divergence`/`replacement`.
+
+### Fix plan (detailed)
+- Classify on the `messages` array, not the whole body:
+  1. Parse both bodies (they are JSON objects), extract `messages` plus the set of
+     non-message fields.
+  2. `messages` prefix check: compare per-message canonical hashes
+     (`sha256(prev_msg_hash || msg_i)` chain or canonical re-marshal equality) so the
+     classification does not depend on map key order.
+  3. Non-message fields: byte-compare each canonically re-marshal ed field.
+- Classification matrix: messages-prefix AND fields equal → `exact_append`;
+  messages-prefix but a field differs → new `param_change` value (tools/thinking change
+  with appended history — cache-relevant, distinct from history rewrite); no prefix and
+  `replacement` → `replacement`; otherwise → `unexpected_divergence`; no predecessor →
+  `no_predecessor`.
+- Keep `RequestHash`/`InputPrefixHash` as whole-body hashes (wire-faithful), add
+  `MessagesPrefixHash` if useful for quick eyeballing.
+- Update the journal/notice plumbing only if a new classification value needs mapping.
+
+**Test approach:**
+- Table-driven tests in `cache_fingerprint_test.go` using bodies produced by the real
+  serializer (map marshal, not hand-written strings): append N messages → `exact_append`;
+  rewrite one old message → `unexpected_divergence`; change `tools` only → `param_change`;
+  identical body → `exact_append`; empty predecessor → `no_predecessor`; `replacement`
+  flag → `replacement`.
+- Regression: `cache_forensics_fingerprint_test.go` expectations updated deliberately
+  (they currently encode the bug).
+- Live validation: run a short session, export the debug bundle, confirm healthy turns
+  report `exact_append`.
+
+**Validation steps:** `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
+`gocyclo -over 12 .`, `go test -count=1 -race -cover ./...`.
+
+## CM status does not separate full vs partial cache misses and shows no token cost
+
+**Observed:** the status/TUI cache-miss indicator is a single counter `CM:N` (always
+orange) produced by `internal/app/stats.go`: `tokenCacheMisses++` conflates the two
+distinct failure modes detected at `stats.go:1058-1061` — (a) **full miss**: zero
+cache-read after establishment (entire prefix recomputed), (b) **partial miss**:
+`cache_read + tolerance < prev_cache_read` (a suffix of the prefix recomputed, e.g. the
+eight zai evictions: 38144→7872 = ~30k tokens silently recomputed). The token damage is
+the actionable number and is currently invisible; one full miss and one 100k-token
+partial miss render identically.
+
+**Expected:**
+
+- Split display `CM:X|Y` — `X` = count of **full** misses (rendered red), `Y` = count of
+  **partial** misses (rendered orange, current `#d29922`).
+- The stats line must show the exact number of tokens missed (sum of
+  `prev_cache_read - cache_read` over counted misses; for full misses the full previous
+  prefix), e.g. `CM:1|2·145,312` (thousands-separated; token figure in dim/secondary).
+- Omit zeros per-kind (`CM:2` full-only, `CM:|3` partial-only) and hide the whole part
+  when both are zero (preserves today's hidden-when-zero behavior).
+
+### Fix plan (detailed)
+- `stats.go`: replace `tokenCacheMisses int` with `tokenCacheFullMisses`,
+  `tokenCachePartialMisses`, `tokenCacheMissedTokens` (int64); at the detection site,
+  branch: zero-read → full (`missed = prevCacheRead`), drop-beyond-tolerance → partial
+  (`missed = prevCacheRead - cacheRead`). Reset all three where `tokenCacheMisses` is
+  reset today (`clearStats`, context-reset re-arm path at `stats.go:319/343` — keep the
+  CM counters session-scoped exactly as now, per the comment block above the site).
+- `SessionTokenStats.CacheMisses` (`stats.go:1132`) → `CacheMissesFull`,
+  `CacheMissesPartial`, `CacheMissedTokens` (JSON keys `cm_full`, `cm_partial`,
+  `cm_tokens` for the persisted/session summary).
+- Renderer: `formatCacheMissPart` (`stats.go:1464-1468`) gains the two counts + token
+  figure; red = theme danger/red constant from `internal/ansi` (reuse, do not hardcode a
+  new hex unless no constant exists). Text-mode status line `cm=%d` (`stats.go:757`) →
+  `cm=%d|%d`.
+- TUI: update the stats component/renderer that consumes `CacheMisses` (search
+  `CacheMisses` in `core/` + `tui/` renderers) to the new fields; keep width stable when
+  hidden.
+- `provider/cache_forensics.go` notice/report side already distinguishes the two shapes
+  via `PrevCacheRead`/`CacheRead` — no change needed there, but the agent-log notice line
+  should tag `[full]`/`[partial]` for symmetry.
+
+**Test approach:** table tests in the existing stats test file: established baseline
+then zero-read → full counter + missed=prev; partial drop → partial counter +
+missed=delta; drop within tolerance → no count; unestablished zero → no count;
+both-zero → part absent from rendered line (golden string with ANSI codes); full-only
+and partial-only renderings; `/clear` resets all three. Renderer unit test for exact ANSI
+color codes. Session-summary JSON field assertions.
+
+**Validation steps:** `go vet ./...`, `staticcheck ./...`, `gocognit -over 15 .`,
+`gocyclo -over 12 .`, `go test -count=1 -race -cover ./...`; interactive TUI run on a
+zai session reproducing both kinds (any of the archived exports' sequences) to eyeball
+`CM:X|Y` red/orange split and token figure.
+
+## Cache-miss forensics lack timing gap and checkpoint attribution (cannot self-classify server-side eviction)
+
+**Observed:** investigating the eight misses required manual reconstruction: gap between
+previous response and miss request (from http log timestamps), and matching the partial
+`cache_read` value against earlier requests' prefixes to prove "fell back to req-N's
+checkpoint". `CacheMissReport` carries neither, so every miss reads as unexplained.
+
+**Expected:** a report should answer, without external data: how long after the previous
+response it fired (TTL vs eviction), which earlier checkpoint the partial hit matches
+(routing/eviction vs identity change), and whether an affinity hint was on the wire.
+
+### Fix plan (detailed)
+- Extend `CacheMissReport` with: `gap_since_prev_response_ms`, `prev_total_prompt_tokens`,
+  `partial_hit_prev_seq` (scan the ring for an earlier entry whose `cache_read` equals the
+  miss's, newest match wins), `affinity_hint_sent`.
+- Derive `likely_cause` in the journal at report time: full zero after identity/key change
+  → `identity_change`; partial hit on older checkpoint + short gap → `server_eviction`;
+  long gap (configurable, e.g. >60s) → `ttl_expiry`; params differ → `param_change`.
+- Include `likely_cause` in `CacheMissNotice` so the agent log line is actionable.
+
+**Test approach:** journal-level table tests: synthesize sequences (steady climb, cliff to
+older checkpoint at 0.4s gap, cliff after 120s idle, key rotation) and assert the derived
+cause and the checkpoint attribution seq; ring-eviction edge (checkpoint entry already
+gone) degrades to `unknown`.
+
+**Validation steps:** gates as usual + replay the two archived exports' shapes in a unit
+fixture reproducing all eight observed miss signatures.
+
+</details>
+
 # Archive
+
+## ~~Z.ai/GLM requests carry no cache-affinity identity; server-side prefix evictions observed unrecoverable client-side~~ — FIXED (2026-08-19)
+
+**Fix record.** W1 executed as a catalog default rather than a user-config
+change so defaults are correct out of the box: `ProviderDef.DefaultCacheRetention`
+(`internal/agentic/provider/schema/catalog.go`) — `"long"` on the zai and
+zai-api entries — with `BuildStreamOptions` resolution order **user
+cache_retention → catalog default → short** (`provider/manager.go
+defaultCacheRetention`, catalog looked up by provider identity, then URL
+when only an endpoint is set, then config ID — mirroring the retry-policy
+fallback).
+
+Two additional root causes surfaced while testing (both fixed):
+
+1. **The protocol layer never populated `SupportsLongCacheRetention`** —
+   `resolveOpenAICompat` left it false, so even with retention=long the
+   completions builder's `promptCacheKey()` long branch was dead code for
+   every non-OpenAI, non-local provider. Fixed with a protocol-local
+   `supportsLongCacheRetention(model)` (same exclusion list as
+   compat_detect: together/cloudflare×2/nvidia/ant-ling), wired in
+   `resolveOpenAICompat`.
+2. The old policy assertion in `zai_cache_test.go` ("z.ai must not send
+   prompt_cache_key") encoded the disproven assumption — replaced by the new
+   policy pin: long retention sends the clamped session identity, short does
+   not, and the identity fields never perturb the message prefix or tools.
+
+Server support was live-probed before defaulting: z.ai returns HTTP 200 with
+`prompt_cache_key` (64-char clamped) and `prompt_cache_retention: "24h"`
+present (3-request probe, glm-5.3, 2026-08-19). W2 (affinity header) was not
+needed — the key path is accepted; keep it as fallback only if the observed
+miss-rate does not improve. W3 (`affinity_hint_sent` forensics visibility)
+lives in the remaining forensics entry above.
+
+Tests: `TestDefaultCacheRetention_Zai`, `TestProviderCatalog_DefaultCacheRetentionLegal`
+(schema), `TestBuildStreamOptions_CacheRetentionPrecedence` (user-beats-catalog,
+catalog-beats-global, nil-config safety), `TestZaiLongRetentionSendsCacheKey`
+(protocol wire: key+24h present, prefix/tools unperturbed, clamping).
+Follow-up observation (validation step): ≥20-request zai session, compare
+miss-rate before/after via `logs/cache_miss_requests.json`.
+
+<details><summary>Original investigation (observed evidence, root cause, plan)</summary>
+
+**Observed:** eight provider prefix-cache misses across two sessions
+(`1787087822_2hfu0yfv`: 4, `1787090484_2l35bg5m`: 4 — the live session's
+requests 10, 13, 16, 21), all on provider `zai` / `glm-5.3` over
+`https://api.z.ai/api/coding/paas/v4/chat/completions`.
+
+Client-side audits of the retained complete bodies prove every chain is clean: strict
+message-prefix, single stable cache session key per session, one field-set per session
+(`messages,model,stream,stream_options,thinking,tools`), constant tools hash, single
+positionally-stable `<system-reminder>` injection, usage arithmetic consistent
+(`prompt_tokens = input + cached`). Every miss is a **partial hit at an older request's
+exact checkpoint** (M1: 38144→7872 = req-4 prefix; M2: 59712→46464 = req-11;
+M3: 59200→54528 = req-14; M4: 71936→58368 = req-17), each followed by full recovery on
+the next request. M1 occurred with ~0.4s idle between the previous response and the miss
+request (from the export's http timings), ruling out TTL. Pattern is consistent with
+per-node prefix caches + load-balancer routing (or tail-block eviction pressure) on the
+provider side; the account runs multi-agent worktrees concurrently.
+
+**Root cause (client side):** `promptCacheKey()` (`internal/agentic/provider/openai/cache_control.go`)
+returns `""` for every provider that is not `api.openai.com`, not local (LM Studio/Ollama),
+and not long-retention — so zai requests carry **no** `prompt_cache_key` (nor any session
+affinity) on the wire, leaving routing/affinity entirely to the provider. The Hard-Rule-7
+identity plumbing (agent cache key, `StreamOptions.PromptCacheKey`) exists but the last
+hop is closed for this provider, so nothing pins the conversation to one cache shard.
+
+**Expected:** providers with prefix caching that accept an affinity hint should receive
+one; if the provider honors none, the forensics report should say so instead of leaving
+an "unexplained" miss.
+
+### Fix plan (detailed)
+- W1 Verify server support: check Z.ai docs/support for `prompt_cache_key` (OpenAI-style)
+  or a session/routing header on the coding endpoint. If supported: add a compat
+  capability flag (e.g. `supports_prompt_cache_key`, default off) on the zai provider
+  profile and enable `promptCacheKey()` for it; the agent's cache key then flows end to
+  end. If unsupported: document that GLM caching is best-effort content-keyed only.
+- W2 If unsupported but a routing/affinity header exists (e.g. sticky session header),
+  wire it through `RequestHeaders` for zai with the same capability gating.
+- W3 Surface the state in forensics: `CacheForensicsMetrics`/reports gain a field like
+  `affinity_hint_sent bool` so a miss report can distinguish "no hint available" from
+  "hint ignored".
+
+**Test approach:** unit: with the capability flag on, serialized body contains
+`prompt_cache_key` equal to the clamped agent cache key; off → absent (regression for
+OpenAI/local paths unchanged). Header variant: `RequestHeaders` emits the sticky header
+only when enabled. E2E (qa-e2e skill against a local LM): cache_read monotonic across a
+turn with the flag on.
+
+**Validation steps:** gates as usual + a ≥20-request zai session observing cache_read
+stability and miss-rate before/after; export the bundle and compare
+`logs/cache_miss_requests.json`.
+
+**Findings from reference repos (checked 2026-08-19):**
+
+- `pi` (`~/dev/pi`, `packages/ai`):
+  - `prompt_cache_key` gating is identical to goa's (openai-only or
+    `cacheRetention==="long"` + `supportsLongCacheRetention`, clamped to 64 chars —
+    `api/openai-completions.ts:708-713`, `api/openai-prompt-cache.ts`). Z.ai passes the
+    `supportsLongCacheRetention` default (`true` — excluded providers are only
+    together/cloudflare×2/nvidia/ant-ling), so **pi DOES send `prompt_cache_key` to zai
+    when retention is long** (`PI_CACHE_RETENTION=long` or per-call option). Goa has the
+    same code path (`cache_control.go` supports-long branch) but defaults retention to
+    `short`, so the key never reaches zai. First experiment for W1: flip goa's zai
+    retention to long and observe miss-rate.
+  - pi also has a generic opt-in **session-affinity header** compat
+    (`sendSessionAffinityHeaders` + `sessionAffinityFormat`): "openai" format sends
+    `session_id`, `x-client-request-id`, `x-session-affinity`; "openrouter" format sends
+    `x-session-id`. Default off for zai, but **Fireworks-hosted GLM models enable
+    `x-session-affinity`** — a same-model-family precedent for affinity headers.
+  - pi carries zai-specific quirks: `zaiToolStream`, `thinkingFormat: "zai"`
+    (`thinking: {type, clear_thinking:false}`), URL/provider detection
+    (`api.z.ai`, `open.bigmodel.cn`). No zai cache-eviction handling beyond the above.
+- `opencode` (`~/dev/opencode`): **no z.ai-specific cache code at all** — only generic
+  `prompt_tokens_details.cached_tokens` parsing and per-provider `promptCacheKey` options
+  for openai/openrouter/copilot.
+- Net: no reference implementation pins z.ai cache affinity by default; the
+  long-retention `prompt_cache_key` path (pi) and the affinity-header machinery (pi,
+  fireworks-GLM precedent) are the two candidate mechanisms for W1/W2.
+
+</details>
 
 ## ~~Per-turn tool-round limit unexpectedly enabled~~ — FIXED (2026-08-18)
 

@@ -267,6 +267,51 @@ func TestBuildStreamOptions_WithProvider(t *testing.T) {
 	}
 }
 
+// TestBuildStreamOptions_CacheRetentionPrecedence pins the cache-affinity
+// default (bugs.md 2026-08-19): with no user cache_retention the z.ai catalog
+// default (long) applies so the session cache identity reaches the wire as
+// prompt_cache_key; an explicit user setting still wins; providers without a
+// catalog default stay short. The zai entry mirrors the real user-config
+// shape (id + endpoint, no provider field) to exercise the URL/ID fallbacks.
+func TestBuildStreamOptions_CacheRetentionPrecedence(t *testing.T) {
+	zaiCfg := func(retention string) *config.Config {
+		return &config.Config{
+			ActiveProvider: "zai",
+			Providers: []config.ProviderConfig{{
+				ID:             "zai",
+				Endpoint:       "https://api.z.ai/api/coding/paas/v4",
+				APIKey:         "k",
+				CacheRetention: retention,
+			}},
+		}
+	}
+
+	t.Run("catalog default applies when user is silent", func(t *testing.T) {
+		opts := NewProviderManager(zaiCfg("")).BuildStreamOptions()
+		if opts.CacheRetention != agenticprovider.CacheRetentionLong {
+			t.Errorf("CacheRetention = %q, want long (zai catalog default)", opts.CacheRetention)
+		}
+	})
+	t.Run("explicit user setting beats catalog default", func(t *testing.T) {
+		opts := NewProviderManager(zaiCfg("short")).BuildStreamOptions()
+		if opts.CacheRetention != agenticprovider.CacheRetentionShort {
+			t.Errorf("CacheRetention = %q, want short (user override)", opts.CacheRetention)
+		}
+	})
+	t.Run("provider without catalog default stays short", func(t *testing.T) {
+		cfg := &config.Config{
+			ActiveProvider: "local",
+			Providers: []config.ProviderConfig{{
+				ID: "local", Endpoint: "http://localhost:9999/v1", APIKey: "k",
+			}},
+		}
+		opts := NewProviderManager(cfg).BuildStreamOptions()
+		if opts.CacheRetention != agenticprovider.CacheRetentionShort {
+			t.Errorf("CacheRetention = %q, want short (global default)", opts.CacheRetention)
+		}
+	})
+}
+
 // TestBuildStreamOptions_RetryPolicyBeatsGlobal verifies the P8 (DS4)
 // acceptance criterion: a per-provider retry_policy.max_retries beats the
 // global execution.retries, and the resolved policy is carried in

@@ -892,7 +892,7 @@ func (pm *ProviderManager) BuildStreamOptions() agenticprovider.StreamOptions {
 		opts.Timeout = 5 * time.Minute
 	}
 	if opts.CacheRetention == "" {
-		opts.CacheRetention = agenticprovider.CacheRetentionShort
+		opts.CacheRetention = defaultCacheRetention(pCfg)
 	}
 	opts.Headers = buildStreamHeaders(pCfg, mCfg)
 	return opts
@@ -1052,6 +1052,33 @@ func applyProviderTransportCache(opts *agenticprovider.StreamOptions, pCfg *conf
 	if pCfg.CacheRetention != "" {
 		opts.CacheRetention = agenticprovider.CacheRetention(pCfg.CacheRetention)
 	}
+}
+
+// defaultCacheRetention resolves the prompt-cache retention when the user
+// config is silent: an explicit user cache_retention already won in
+// applyProviderTransportCache, so here the catalog default applies when the
+// provider declares one (z.ai opts into long retention so its session cache
+// identity — the OpenAI-style prompt_cache_key — reaches the wire), and the
+// global default remains short. The catalog is looked up the same way the
+// retry-policy fallback does: by provider identity, then by URL when the
+// config only carries an endpoint, then by config/wizard ID.
+func defaultCacheRetention(pCfg *config.ProviderConfig) agenticprovider.CacheRetention {
+	if pCfg == nil {
+		return agenticprovider.CacheRetentionShort
+	}
+	def := schema.LookupProviderDef(schema.Provider(pCfg.Provider))
+	if def == nil {
+		if pCfg.Provider == "" {
+			def = schema.MatchProviderByURL(pCfg.Endpoint)
+		}
+		if def == nil {
+			def = schema.LookupProviderDefByID(pCfg.ID)
+		}
+	}
+	if def != nil && def.DefaultCacheRetention != "" {
+		return agenticprovider.CacheRetention(def.DefaultCacheRetention)
+	}
+	return agenticprovider.CacheRetentionShort
 }
 
 // applyProviderSessionMetadata applies session id and metadata overrides.

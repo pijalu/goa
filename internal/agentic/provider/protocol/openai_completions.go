@@ -112,6 +112,11 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	if profile.CachePolicy.Mode != "" && profile.CachePolicy.Mode != schema.CacheModeNone {
 		c.CacheControlFormat = "anthropic"
 	}
+	// The long-retention gate must be derived here: the protocol layer owns
+	// the prompt_cache_key emission, and nothing else populates this flag on
+	// the wire path (the provider-layer compat struct never crosses the
+	// boundary). Without it, long retention silently sent no cache identity.
+	c.SupportsLongCacheRetention = supportsLongCacheRetention(model)
 	return c
 }
 
@@ -542,6 +547,27 @@ func isLocalProvider(prov schema.Provider, baseURL string) bool {
 	return p == "lm-studio" || p == "ollama" ||
 		strings.Contains(u, "localhost:1234") || strings.Contains(u, "127.0.0.1:1234") ||
 		strings.Contains(u, "localhost:11434") || strings.Contains(u, "127.0.0.1:11434")
+}
+
+// supportsLongCacheRetention reports whether the provider accepts OpenAI's
+// prompt_cache_key / prompt_cache_retention fields under long retention.
+// It mirrors the provider-layer detection (compat_detect's
+// supportsCacheRetention): every provider except the known-rejecting
+// gateways. Protocol-local (like isLocalProvider) because this package
+// cannot import the provider package without an import cycle — keep the
+// exclusion lists in sync when either changes.
+func supportsLongCacheRetention(model schema.Model) bool {
+	p := strings.ToLower(string(model.Provider))
+	u := strings.ToLower(model.BaseURL)
+	switch {
+	case p == "together" || strings.Contains(u, "api.together.ai") || strings.Contains(u, "api.together.xyz"),
+		p == "cloudflare-workers-ai" || strings.Contains(u, "api.cloudflare.com"),
+		p == "cloudflare-ai-gateway" || strings.Contains(u, "gateway.ai.cloudflare.com"),
+		p == "nvidia" || strings.Contains(u, "integrate.api.nvidia.com"),
+		p == "ant-ling" || strings.Contains(u, "api.ant-ling.com"):
+		return false
+	}
+	return true
 }
 
 const OpenAIPromptCacheKeyMaxLen = 64
