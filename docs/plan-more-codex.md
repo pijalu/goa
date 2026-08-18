@@ -7,7 +7,7 @@ Status: implementation in progress on `feature/more-codex`; completed phases and
 
 The staticcheck remediation is clean, all packages compile, and focused/full package tests used during the refactors pass. Behavior-preserving structural splits were applied across AgentManager, GoalMode, Runtime, config loader, protocol thinking helpers, provider/config command helpers, and goal/tool tests; `bugs.md`'s stale TODO was removed. The repository-wide gate is **not yet complete**: current counts are 27 hard file-size violations, 58 gocognit findings, and 77 gocyclo findings. Race/vet/full gate verification remains pending. Continue by prioritizing remaining hard-limit files and highest-complexity functions; do not weaken checks or suppress findings.
 
-Current remediation commit: pending (commit the validated working tree with a descriptive message after this checkpoint is recorded).
+Current remediation commit: `411f466` (`refactor: remediate staticcheck and structural gate baseline`).
 
 ## Objective
 
