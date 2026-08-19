@@ -28,8 +28,5 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## /goal:next:reuse does not reuse context
-/goal:next:reuse does seems to imply a new context instead of reuse - validate code and check if goals can be created with a reuse - all goal:next command should support an optional reuse - eg: rlast/rfirst to reuse
-
 ## Review cache miss on session export
 Review cache miss on /Users/muaddib/dev/goa/.goa/sessions/1787174084_qqrf2p5v.jsonl

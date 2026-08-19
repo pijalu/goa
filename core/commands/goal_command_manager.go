@@ -206,10 +206,10 @@ func (c *GoalCommand) managerGoalLabel(ctx core.Context, id string) string {
 // goal, the new goal starts immediately regardless of placement.
 func (c *GoalCommand) promptCreateForPlacement(ctx core.Context, placement goalPlacement) {
 	if c.Mode.GetGoal().Goal == nil {
-		_ = c.promptCreateInteractive(ctx, placementAsk)
+		_ = c.promptCreateInteractive(ctx, placementAsk, c.resolveFresh(""))
 		return
 	}
-	_ = c.promptCreateInteractive(ctx, placement)
+	_ = c.promptCreateInteractive(ctx, placement, c.resolveFresh(""))
 }
 
 // promptEditQueuedGoal implements the 'e' hotkey of /goal:manage: it opens an

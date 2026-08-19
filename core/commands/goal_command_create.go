@@ -113,8 +113,10 @@ func (c *GoalCommand) describeActiveGoal(ctx core.Context, g *goal.GoalSnapshot)
 // promptCreateInteractive drives the interactive create/queue flow via the
 // main input line: ctrl-c (or empty) aborts; a typed objective proceeds
 // according to placement (front of queue, end of queue, replace, or — for
-// placementAsk — the first/last prompt follows).
-func (c *GoalCommand) promptCreateInteractive(ctx core.Context, placement goalPlacement) error {
+// placementAsk — the first/last prompt follows). fresh carries the context
+// mode resolved from the command token (/goal:next:reuse with no text must
+// still honor reuse once the objective is typed).
+func (c *GoalCommand) promptCreateInteractive(ctx core.Context, placement goalPlacement, fresh bool) error {
 	promptText := "Set new goal objective (ctrl-c to cancel)"
 	switch placement {
 	case placementNext:
@@ -132,13 +134,13 @@ func (c *GoalCommand) promptCreateInteractive(ctx core.Context, placement goalPl
 		}
 		switch placement {
 		case placementNext:
-			_ = c.queueNext(ctx, objective, c.resolveFresh(""))
+			_ = c.queueNext(ctx, objective, fresh)
 		case placementLast:
-			_ = c.queueLast(ctx, objective, c.resolveFresh(""))
+			_ = c.queueLast(ctx, objective, fresh)
 		case placementFirst:
-			_ = c.startGoal(ctx, objective, true, c.resolveFresh(""))
+			_ = c.startGoal(ctx, objective, true, fresh)
 		default: // placementAsk
-			_ = c.create(ctx, objective, c.resolveFresh(""))
+			_ = c.create(ctx, objective, fresh)
 		}
 	})
 	return nil

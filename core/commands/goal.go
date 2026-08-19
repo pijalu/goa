@@ -95,7 +95,7 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 		return c.queueNext(ctx, p.objective, c.resolveFresh(p.contextMode))
 	},
 	"next-interactive": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
-		return c.promptCreateInteractive(ctx, p.placement)
+		return c.promptCreateInteractive(ctx, p.placement, c.resolveFresh(p.contextMode))
 	},
 	"reorder": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
 		return c.reorderQueue(ctx, p.objective)
@@ -103,8 +103,8 @@ var goalDispatch = map[string]func(c *GoalCommand, ctx core.Context, p parsedGoa
 	"create": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
 		return c.create(ctx, p.objective, c.resolveFresh(p.contextMode))
 	},
-	"create-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error {
-		return c.promptCreateInteractive(ctx, placementAsk)
+	"create-interactive": func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error {
+		return c.promptCreateInteractive(ctx, placementAsk, c.resolveFresh(p.contextMode))
 	},
 	"replace":             func(c *GoalCommand, ctx core.Context, p parsedGoalArgs) error { return c.replace(ctx, p.objective) },
 	"replace-interactive": func(c *GoalCommand, ctx core.Context, _ parsedGoalArgs) error { return c.promptReplaceInteractive(ctx) },
@@ -250,24 +250,33 @@ func parseOptionalGoalArgs(cmd, kind, bareKind, text string) parsedGoalArgs {
 }
 
 // splitGoalNextArgs parses /goal:next arguments: optional leading placement
-// (first|last, default first) and context-mode (fresh|reuse) tokens in any
-// order, followed by the objective text. Examples:
+// (first|last, default first), reuse+placement shorthand (rfirst|rlast), and
+// context-mode (fresh|reuse) tokens in any order, followed by the objective
+// text. Examples:
 //
 //	"fix tests"        → (placementNext, "", "fix tests")
 //	"last fresh audit" → (placementLast, "fresh", "audit")
+//	"rlast audit"      → (placementLast, "reuse", "audit")
 //	"last"             → (placementLast, "", "") → interactive
 func splitGoalNextArgs(text string) (placement goalPlacement, mode, rest string) {
 	placement = placementNext
 	rest = text
 	for {
-		tok, tail, ok := splitLeadingToken(rest, "first", "last", "fresh", "reuse")
+		tok, tail, ok := splitLeadingToken(rest, "first", "last", "fresh", "reuse", "rfirst", "rlast")
 		if !ok {
 			return placement, mode, rest
 		}
-		if tok == "last" {
+		switch tok {
+		case "last":
 			placement = placementLast
-		} else if tok == "fresh" || tok == "reuse" {
+		case "fresh", "reuse":
 			mode = tok
+		case "rfirst":
+			placement = placementNext
+			mode = "reuse"
+		case "rlast":
+			placement = placementLast
+			mode = "reuse"
 		}
 		rest = tail
 	}

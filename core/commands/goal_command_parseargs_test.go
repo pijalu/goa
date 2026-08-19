@@ -108,6 +108,17 @@ func TestGoalCommand_parseNextArgs(t *testing.T) {
 			kind: "next-add", placement: placementLast, mode: "fresh", objective: "audit"},
 		{name: "reuse then first", args: []string{"next", "reuse", "first", "audit"},
 			kind: "next-add", placement: placementNext, mode: "reuse", objective: "audit"},
+		// rfirst/rlast shorthand: reuse + placement in one token
+		{name: "rfirst", args: []string{"next", "rfirst", "audit"},
+			kind: "next-add", placement: placementNext, mode: "reuse", objective: "audit"},
+		{name: "rlast", args: []string{"next", "rlast", "audit"},
+			kind: "next-add", placement: placementLast, mode: "reuse", objective: "audit"},
+		{name: "rlast bare is interactive with reuse", args: []string{"next", "rlast"},
+			kind: "next-interactive", placement: placementLast, mode: "reuse"},
+		{name: "rlast then fresh overrides context", args: []string{"next", "rlast", "fresh", "audit"},
+			kind: "next-add", placement: placementLast, mode: "fresh", objective: "audit"},
+		{name: "fresh then rfirst", args: []string{"next", "fresh", "rfirst", "audit"},
+			kind: "next-add", placement: placementNext, mode: "reuse", objective: "audit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -432,31 +443,33 @@ func TestGoalCommand_CompleteArgs_CancelScopes(t *testing.T) {
 	}
 }
 
+// assertCompletionValues asserts the completion Values match want exactly,
+// in order.
+func assertCompletionValues(t *testing.T, vals []core.ArgCompletion, want []string) {
+	t.Helper()
+	if len(vals) != len(want) {
+		t.Fatalf("completions = %+v, want %d entries %v", vals, len(want), want)
+	}
+	for i, w := range want {
+		if vals[i].Value != w {
+			t.Errorf("completions[%d] = %q, want %q (all: %+v)", i, vals[i].Value, w, vals)
+		}
+	}
+}
+
 func TestGoalCommand_CompleteArgs_NextOptions(t *testing.T) {
 	cmd := &GoalCommand{}
 	ctx := testContext()
 
 	// Level-2: /goal:next:<tab> lists the placement and context options,
 	// fully spelled out (mirrors the /goal:cancel: scopes).
-	vals := cmd.CompleteArgs(ctx, "next:")
-	if len(vals) != 4 {
-		t.Fatalf("CompleteArgs(next:) = %+v, want 4 entries", vals)
-	}
-	want := []string{"next:first", "next:last", "next:fresh", "next:reuse"}
-	for i, w := range want {
-		if vals[i].Value != w {
-			t.Errorf("CompleteArgs(next:)[%d] = %q, want %q", i, vals[i].Value, w)
-		}
-	}
+	assertCompletionValues(t, cmd.CompleteArgs(ctx, "next:"),
+		[]string{"next:first", "next:last", "next:fresh", "next:reuse", "next:rfirst", "next:rlast"})
 
 	// Prefix filtering at the nested level.
-	if vals := cmd.CompleteArgs(ctx, "next:l"); len(vals) != 1 || vals[0].Value != "next:last" {
-		t.Errorf("CompleteArgs(next:l) = %+v, want next:last only", vals)
-	}
-	if vals := cmd.CompleteArgs(ctx, "next:f"); len(vals) != 2 ||
-		vals[0].Value != "next:first" || vals[1].Value != "next:fresh" {
-		t.Errorf("CompleteArgs(next:f) = %+v, want next:first and next:fresh", vals)
-	}
+	assertCompletionValues(t, cmd.CompleteArgs(ctx, "next:l"), []string{"next:last"})
+	assertCompletionValues(t, cmd.CompleteArgs(ctx, "next:f"), []string{"next:first", "next:fresh"})
+	assertCompletionValues(t, cmd.CompleteArgs(ctx, "next:r"), []string{"next:reuse", "next:rfirst", "next:rlast"})
 
 	// Unknown option → nothing.
 	if vals := cmd.CompleteArgs(ctx, "next:zzz"); len(vals) != 0 {

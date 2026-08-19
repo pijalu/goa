@@ -662,6 +662,65 @@ func TestGoalCommand_NextAdd_LastAppendsToQueue(t *testing.T) {
 	}
 }
 
+// TestGoalCommand_NextAdd_ReuseShorthand is the end-to-end regression for
+// bugs.md "/goal:next:reuse": the rfirst/rlast shorthand must queue a
+// REUSE-context goal (FreshContext=false) at the requested placement — before
+// the fix, /goal:next:rfirst:… silently queued a FRESH-context goal whose
+// objective began with the literal word "rfirst".
+func TestGoalCommand_NextAdd_ReuseShorthand(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+
+	if _, err := queue.AppendGoal(goal.UpcomingGoalInput{Objective: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"next", "rfirst", "urgent fix"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Run(ctx, []string{"next", "rlast", "tidy docs"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := queue.Read()
+	if len(queued) != 3 {
+		t.Fatalf("queue = %v, want 3 goals", queued)
+	}
+	// rfirst → front; rlast → end; both reuse (FreshContext=false) with the
+	// token stripped from the objective.
+	if queued[0].Objective != "urgent fix" || queued[0].FreshContext {
+		t.Errorf("rfirst goal = %+v, want objective %q with FreshContext=false", queued[0], "urgent fix")
+	}
+	if queued[2].Objective != "tidy docs" || queued[2].FreshContext {
+		t.Errorf("rlast goal = %+v, want objective %q with FreshContext=false", queued[2], "tidy docs")
+	}
+}
+
+// TestGoalCommand_NextInteractive_ReuseCarriesContextMode covers the bare
+// /goal:next:reuse form (no text): the interactive objective prompt must
+// still honor the reuse token — before the fix the parsed context mode was
+// dropped at dispatch and the typed goal silently got the configured default.
+func TestGoalCommand_NextInteractive_ReuseCarriesContextMode(t *testing.T) {
+	mode := goal.NewGoalMode(nil, nil, nil, nil)
+	queue := core.NewGoalQueueStore(filepath.Join(t.TempDir(), "q.json"))
+	cmd := &GoalCommand{Mode: mode, Queue: queue}
+	ctx := testContext()
+	var submit func(string)
+	ctx.RequestMainInput = func(_ string, onSubmit func(string)) { submit = onSubmit }
+
+	if err := cmd.Run(ctx, []string{"next", "reuse"}); err != nil {
+		t.Fatal(err)
+	}
+	if submit == nil {
+		t.Fatal("expected the interactive objective prompt")
+	}
+	submit("typed objective")
+	queued, _ := queue.Read()
+	if len(queued) != 1 || queued[0].Objective != "typed objective" || queued[0].FreshContext {
+		t.Errorf("queue = %+v, want the typed goal with FreshContext=false (reuse)", queued)
+	}
+}
+
 func TestGoalCommand_FirstOrLast_AppendsToEnd(t *testing.T) {
 	// The "Queue it for later" choice of the first-or-last prompt must keep
 	// APPENDING to the end of the queue (it is not /goal:next).
