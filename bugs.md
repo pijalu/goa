@@ -30,6 +30,10 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 All reported items from this cycle were implemented or verified, tested, validated, and archived under `docs/archive/`. Future reports must restart this process from a new detailed plan.
 
+## Kimi-code cache/compaction comparison follow-up
+
+RCA comparison archived at `docs/archive/bugs-20260819-kimi-cache-comparison.md`. Kimi-code uses the same core `prompt_cache_key` mechanism, but has stronger Kimi-specific cache-break telemetry, compaction baseline reset, idle-expiry UX, and explicit cache-key propagation tests. Potential Goa updates are tracked by priority in that report: Kimi wire-policy probe, key-preservation tests across tool/recovery/compaction requests, intentional tool-policy transition classification, and compaction-aware baseline tests.
+
 ## Cache-miss RCA follow-up: tool-collapse parameter mutation
 
 The RCA of export `goa-export-20260819-090231.zip` found no message rewrite, reorder, stale-context resend, or conversation-ID change. All three misses occur exactly when a request changes from 15 tools with omitted `tool_choice` to no `tools` plus `tool_choice: "none"`. This intentional final-step collapse is a cache-relevant parameter mutation and is the strongest common cause; report 3 also has a 111.879s idle gap that could indicate TTL expiry. No cache-affinity hint was sent.
