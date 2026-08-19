@@ -114,6 +114,20 @@ context_compression:
     cache_miss_threshold: "1h"
     truncated_marker: "[Old tool result content cleared]"
     min_context_ratio: 0.5
+  # fresh_window (Codex TokenBudget mode): a full-window compaction with ZERO
+  # summarization calls — the cheapest full compaction. When enabled (or when
+  # a strategy slot names "fresh_window"), a compaction that would summarize
+  # instead installs a fresh context window: the system prompt plus the
+  # preserved recent-turn/last-user tail. The normal compaction lifecycle
+  # events still fire (provenance start/summary/end + compact event), the
+  # cache generation advances, and the full strategy ordering is:
+  # remote_compact (capability + gate) → fresh_window → local ladder (prune →
+  # micro → selective → summarize) → emergency drop.
+  fresh_window:
+    enabled: false
+    # Turns kept across the window reset (chain-safe; the last user message
+    # always survives). 0 = inherit preserve_recent_turns (default 2).
+    preserve_recent_turns: 0
 
 # time_context controls the per-turn temporal context injection (CX6): a
 # durable context message carrying a zoned timestamp and elapsed-since-last

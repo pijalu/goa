@@ -577,38 +577,9 @@ func registerMCPServers(reg *tools.ToolRegistry, projectDir string, cfg *config.
 // headless suppresses interactive-only tools: ask_user_question requires a
 // human at the input line, which headless mode has none of (Bug C).
 func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, bgMgr *background.Manager, changeTracker *bm25.ChangeTracker, headless bool) {
-	if cfg.Tools.Enabled.Verify {
-		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
-	}
-	if cfg.Tools.Enabled.PythonEnabled {
-		reg.Register(&tools.PythonTool{
-			TimeoutSeconds: cfg.Tools.Python.TimeoutSeconds,
-			ProjectDir:     projectDir,
-			Jail:           cfg.Tools.Python.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
-		})
-	}
-	// run_code code-mode dispatch (gap TL7): a Python program that performs
-	// multiple tool sub-calls through the same guarded pipeline as direct
-	// calls, with a durable per-sub-call dispatch log under
-	// .goa/dispatch/<run>/ (spill-bounded artifacts).
-	if cfg.Tools.Enabled.RunCode {
-		var dispatchDir string
-		if projectDir != "" {
-			dispatchDir = filepath.Join(projectDir, ".goa", "dispatch")
-		}
-		reg.Register(&tools.RunCodeTool{
-			TimeoutSeconds:    cfg.Tools.RunCode.TimeoutSeconds,
-			MaxProgramBytes:   cfg.Tools.RunCode.MaxProgramBytes,
-			MaxLogResultBytes: cfg.Tools.RunCode.MaxLogResultBytes,
-			ProjectDir:        projectDir,
-			// The run_code worker is a "jailed worker" (gap TL7): its own os
-			// file API is confined to the project unless the user explicitly
-			// opts out. Sub-calls still respect their own tools' jails.
-			Jail:        cfg.Tools.RunCode.Jail == nil || *cfg.Tools.RunCode.Jail,
-			Registry:    reg,
-			DispatchDir: dispatchDir,
-		})
-	}
+	registerVerifyTool(reg, projectDir, cfg)
+	registerPythonTool(reg, projectDir, cfg)
+	registerRunCodeTool(reg, projectDir, cfg)
 	if cfg.Tools.Enabled.SSHBash {
 		reg.Register(&tools.SSHBashTool{Hosts: sshHosts(cfg)})
 	}
@@ -625,23 +596,69 @@ func registerOptionalTools(reg *tools.ToolRegistry, wm *internal.WorktreeManager
 	if !cfg.Tools.Enabled.ClarifyDisabled && !headless {
 		reg.Register(&ask.AskUserQuestionTool{})
 	}
+	registerSmartSearchTool(reg, wm, projectDir, cfg, changeTracker)
+}
 
-	// SmartSearch uses BM25 for relevance-ranked code search.
-	// It receives change notifications from edit/write tools for automatic
-	// index refresh. Only registered when enabled in configuration.
-	if cfg.Tools.SmartSearch.Enabled {
-		ss := &tools.SmartSearchTool{
-			WorktreeMgr:   wm,
-			ProjectDir:    projectDir,
-			MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
-			MinScore:      cfg.Tools.SmartSearch.MinScore,
-			ExcludeDirs:   cfg.Tools.SmartSearch.ExcludeDirs,
-			K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
-			B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
-			ChangeTracker: changeTracker,
-		}
-		reg.Register(ss)
+func registerVerifyTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) {
+	if cfg.Tools.Enabled.Verify {
+		reg.Register(&tools.VerifyTool{ProjectDir: projectDir})
 	}
+}
+
+func registerPythonTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) {
+	if !cfg.Tools.Enabled.PythonEnabled {
+		return
+	}
+	reg.Register(&tools.PythonTool{
+		TimeoutSeconds: cfg.Tools.Python.TimeoutSeconds,
+		ProjectDir:     projectDir,
+		Jail:           cfg.Tools.Python.Jail || cfg.DefaultModeState().Autonomy == internal.AutonomySolo,
+	})
+}
+
+// registerRunCodeTool registers run_code code-mode dispatch (gap TL7): a
+// Python program that performs multiple tool sub-calls through the same
+// guarded pipeline as direct calls, with a durable per-sub-call dispatch log
+// under .goa/dispatch/<run>/ (spill-bounded artifacts).
+func registerRunCodeTool(reg *tools.ToolRegistry, projectDir string, cfg *config.Config) {
+	if !cfg.Tools.Enabled.RunCode {
+		return
+	}
+	var dispatchDir string
+	if projectDir != "" {
+		dispatchDir = filepath.Join(projectDir, ".goa", "dispatch")
+	}
+	reg.Register(&tools.RunCodeTool{
+		TimeoutSeconds:    cfg.Tools.RunCode.TimeoutSeconds,
+		MaxProgramBytes:   cfg.Tools.RunCode.MaxProgramBytes,
+		MaxLogResultBytes: cfg.Tools.RunCode.MaxLogResultBytes,
+		ProjectDir:        projectDir,
+		// The run_code worker is a "jailed worker" (gap TL7): its own os
+		// file API is confined to the project unless the user explicitly
+		// opts out. Sub-calls still respect their own tools' jails.
+		Jail:        cfg.Tools.RunCode.Jail == nil || *cfg.Tools.RunCode.Jail,
+		Registry:    reg,
+		DispatchDir: dispatchDir,
+	})
+}
+
+// registerSmartSearchTool registers BM25 relevance-ranked code search. It
+// receives change notifications from edit/write tools for automatic index
+// refresh. Only registered when enabled in configuration.
+func registerSmartSearchTool(reg *tools.ToolRegistry, wm *internal.WorktreeManager, projectDir string, cfg *config.Config, changeTracker *bm25.ChangeTracker) {
+	if !cfg.Tools.SmartSearch.Enabled {
+		return
+	}
+	reg.Register(&tools.SmartSearchTool{
+		WorktreeMgr:   wm,
+		ProjectDir:    projectDir,
+		MaxResults:    defaultInt(cfg.Tools.SmartSearch.MaxResults, 20),
+		MinScore:      cfg.Tools.SmartSearch.MinScore,
+		ExcludeDirs:   cfg.Tools.SmartSearch.ExcludeDirs,
+		K1:            defaultFloat(cfg.Tools.SmartSearch.K1, 1.5),
+		B:             defaultFloat(cfg.Tools.SmartSearch.B, 0.75),
+		ChangeTracker: changeTracker,
+	})
 }
 
 // resolveCompression returns the effective tool output compression setting.

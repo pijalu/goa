@@ -243,6 +243,10 @@ func (am *AgentManager) buildAgenticConfig(mdl agenticprovider.Model, opts agent
 	if cfg.ContextCompression.EnabledValue() || compressionCfg.MaxTokens > 0 {
 		agenticCfg.ContextCompression = compressionCfg
 	}
+	// Remote-compaction opt-in gate (Codex Phase 2b): ANDed with the
+	// provider/model capability inside the agent. Default off keeps the local
+	// compression ladder unchanged; detection/gating only, no request logic.
+	agenticCfg.RemoteCompactionEnabled = cfg.Features.RemoteCompactionEnabled()
 	// Per-turn temporal context injection (gap CX6): off by default. The
 	// refresh interval string is parsed at build time; a malformed value is
 	// rejected by config validation, so an empty parse result here only
@@ -346,6 +350,18 @@ func (am *AgentManager) buildCompressionConfig(cfg *config.Config, modelID strin
 		PreserveRecentTurns: ov.preserveRecentTurns,
 		MicroCompaction:     buildMicroCompactionConfig(cfg.ContextCompression.MicroCompaction),
 		ToolResultPruning:   buildToolResultPruningConfig(cfg.ContextCompression.ToolResultPruning),
+		FreshWindow:         buildFreshWindowConfig(cfg.ContextCompression.FreshWindow),
+	}
+}
+
+// buildFreshWindowConfig maps the YAML fresh-window settings (Codex Phase
+// 2b.3) to the SDK config: the enabled gate plus the preservation tail bound
+// (0 = inherit the SDK inheritance chain, which bottoms out at
+// PreserveRecentTurns → 2).
+func buildFreshWindowConfig(s config.FreshWindowSettings) agentic.FreshWindowConfig {
+	return agentic.FreshWindowConfig{
+		Enabled:             s.Enabled != nil && *s.Enabled,
+		PreserveRecentTurns: s.PreserveRecentTurns,
 	}
 }
 

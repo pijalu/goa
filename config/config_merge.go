@@ -32,6 +32,7 @@ func (c *Config) DeepMerge(other *Config) {
 	c.mergeTeams(other)
 	c.mergePlan(other)
 	c.mergeGoals(other)
+	c.mergeFeatures(other)
 	c.mergeMCP(other)
 }
 
@@ -69,6 +70,15 @@ func (c *Config) mergeGoals(other *Config) {
 	// FreshContext is the same tri-state pattern (explicit false wins).
 	if other.Goals.FreshContext != nil {
 		c.Goals.FreshContext = other.Goals.FreshContext
+	}
+}
+
+// mergeFeatures merges opt-in feature gates. Each gate is a tri-state *bool:
+// an explicit value in a higher cascade layer (true or false) overrides the
+// lower layer, so a gate stays reversible; nil leaves the inherited value.
+func (c *Config) mergeFeatures(other *Config) {
+	if other.Features.RemoteCompaction != nil {
+		c.Features.RemoteCompaction = other.Features.RemoteCompaction
 	}
 }
 
@@ -722,6 +732,7 @@ func (c *Config) mergeContextCompression(other *Config) {
 	mergeCompressionPerModel(&c.ContextCompression.PerModel, cc.PerModel)
 	mergeMicroCompaction(&c.ContextCompression.MicroCompaction, cc.MicroCompaction)
 	mergeToolResultPruning(&c.ContextCompression.ToolResultPruning, cc.ToolResultPruning)
+	mergeFreshWindow(&c.ContextCompression.FreshWindow, cc.FreshWindow)
 }
 
 // contextCompressionLayerEmpty reports whether a cascade layer carries no
@@ -735,11 +746,19 @@ func contextCompressionLayerEmpty(cc ContextCompressionConfig) bool {
 		cc.Strategy == "" &&
 		cc.OnErrorStrategy == "" &&
 		cc.CacheGate == "" &&
-		cc.Thresholds == (CompressionThresholdsConfig{}) &&
+		contextCompressionSubBlocksEmpty(cc)
+}
+
+// contextCompressionSubBlocksEmpty reports whether every nested
+// context_compression sub-block (thresholds, strategies, per-model overrides
+// and the strategy-specific settings) is at its zero value.
+func contextCompressionSubBlocksEmpty(cc ContextCompressionConfig) bool {
+	return cc.Thresholds == (CompressionThresholdsConfig{}) &&
 		cc.Strategies == (CompressionLayerStrategiesConfig{}) &&
 		len(cc.PerModel) == 0 &&
 		cc.MicroCompaction == (MicroCompactionSettings{}) &&
-		cc.ToolResultPruning == (ToolResultPruningSettings{})
+		cc.ToolResultPruning == (ToolResultPruningSettings{}) &&
+		cc.FreshWindow == (FreshWindowSettings{})
 }
 
 // mergeCompressionStrategies overlays non-empty per-layer strategy fields.
@@ -789,6 +808,18 @@ func mergeToolResultPruning(dst *ToolResultPruningSettings, src ToolResultPrunin
 	}
 	if src.TailChars != 0 {
 		dst.TailChars = src.TailChars
+	}
+}
+
+// mergeFreshWindow overlays fresh-window strategy settings field-wise so a
+// higher layer setting one key does not reset the others to zero. Enabled is
+// tri-state: only an explicitly set pointer overrides the lower layer.
+func mergeFreshWindow(dst *FreshWindowSettings, src FreshWindowSettings) {
+	if src.Enabled != nil {
+		dst.Enabled = src.Enabled
+	}
+	if src.PreserveRecentTurns != 0 {
+		dst.PreserveRecentTurns = src.PreserveRecentTurns
 	}
 }
 

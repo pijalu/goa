@@ -328,6 +328,7 @@ func (c *Config) validateContextCompression(ve *internal.ValidationError) {
 	}
 	validateCompressionThresholds(ve, "context_compression.thresholds", cc.Thresholds)
 	validateToolResultPruning(ve, "context_compression.tool_result_pruning", cc.ToolResultPruning)
+	validateFreshWindow(ve, "context_compression.fresh_window", cc.FreshWindow)
 	for id, o := range cc.PerModel {
 		c.validateCompressionOverride(ve, id, o)
 	}
@@ -381,10 +382,18 @@ func validateCacheGate(ve *internal.ValidationError, path, v string) {
 // compression strategy.
 func validCompressionStrategy(s string) bool {
 	switch s {
-	case "", AgenticCompressionToolElision, AgenticCompressionSelective, AgenticCompressionSummarize, AgenticCompressionHybrid, AgenticCompressionMicro:
+	case "", AgenticCompressionToolElision, AgenticCompressionSelective, AgenticCompressionSummarize, AgenticCompressionHybrid, AgenticCompressionMicro, AgenticCompressionFreshWindow:
 		return true
 	}
 	return false
+}
+
+// validateFreshWindow checks the fresh_window strategy settings (Codex Phase
+// 2b.3): the preservation tail must be non-negative (0 = inherit).
+func validateFreshWindow(ve *internal.ValidationError, path string, s FreshWindowSettings) {
+	if s.PreserveRecentTurns < 0 {
+		ve.Add(fmt.Sprintf("%s.preserve_recent_turns: must be >= 0 (got %d)", path, s.PreserveRecentTurns))
+	}
 }
 
 // validateCompressionOverride validates one per-model override entry.

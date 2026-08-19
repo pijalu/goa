@@ -163,6 +163,11 @@ func (a *Agent) proactiveTierLocked(usagePercent int, rt resolvedThresholds) com
 		CacheHot:                   cacheHot,
 		SoftStrategyAvailable:      rt.soft > 0,
 		EmergencyStrategyAvailable: true,
+		// Surface remote-compaction availability (Codex Phase 2b) so the policy
+		// can prefer it once 2b.2 wires the strategy. Detection/gating only:
+		// false unless the operator opted in AND the model advertises support,
+		// so the default local ladder is unchanged.
+		RemoteCompactAvailable: a.remoteCompactionAvailable(),
 	})
 	switch decision {
 	case EmergencyFallback:

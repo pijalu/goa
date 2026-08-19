@@ -416,3 +416,120 @@ func TestConfigValidateToolResultPruning(t *testing.T) {
 		})
 	}
 }
+
+// TestDeepMergeContextCompressionFreshWindow covers the field-wise merge of
+// the fresh_window settings (2b.3): a higher layer setting one key does not
+// reset the others, and the tri-state Enabled only overrides when set.
+func TestDeepMergeContextCompressionFreshWindow(t *testing.T) {
+	base := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:     boolPtr(true),
+		FreshWindow: FreshWindowSettings{Enabled: boolPtr(true), PreserveRecentTurns: 3},
+	}}
+	override := &Config{ContextCompression: ContextCompressionConfig{
+		Enabled:     boolPtr(true),
+		FreshWindow: FreshWindowSettings{PreserveRecentTurns: 1},
+	}}
+	base.DeepMerge(override)
+	got := base.ContextCompression.FreshWindow
+	if got.Enabled == nil || !*got.Enabled {
+		t.Errorf("FreshWindow.Enabled = %v, want preserved true (tri-state merge)", got.Enabled)
+	}
+	if got.PreserveRecentTurns != 1 {
+		t.Errorf("FreshWindow.PreserveRecentTurns = %d, want 1 (higher layer wins)", got.PreserveRecentTurns)
+	}
+	// An explicit false in a higher layer disables the gate (reversible).
+	off := &Config{ContextCompression: ContextCompressionConfig{
+		FreshWindow: FreshWindowSettings{Enabled: boolPtr(false)},
+	}}
+	base.DeepMerge(off)
+	if base.ContextCompression.FreshWindow.Enabled == nil || *base.ContextCompression.FreshWindow.Enabled {
+		t.Errorf("FreshWindow.Enabled = %v, want explicit false to win (reversible gate)", base.ContextCompression.FreshWindow.Enabled)
+	}
+}
+
+// TestConfigValidateFreshWindow covers the 2b.3 validation: fresh_window is a
+// known strategy on every slot, and the preservation tail must be
+// non-negative.
+func TestConfigValidateFreshWindow(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     ContextCompressionConfig
+		wantErr string // substring; empty = valid
+	}{
+		{
+			name: "zero fresh_window block valid",
+			cfg:  ContextCompressionConfig{Enabled: boolPtr(true)},
+		},
+		{
+			name: "fresh_window accepted on hard layer",
+			cfg: ContextCompressionConfig{
+				Enabled:    boolPtr(true),
+				Strategies: CompressionLayerStrategiesConfig{Hard: AgenticCompressionFreshWindow},
+			},
+		},
+		{
+			name: "fresh_window accepted on soft layer",
+			cfg: ContextCompressionConfig{
+				Enabled:    boolPtr(true),
+				Strategies: CompressionLayerStrategiesConfig{Soft: AgenticCompressionFreshWindow},
+			},
+		},
+		{
+			name: "fresh_window accepted as legacy strategy",
+			cfg: ContextCompressionConfig{
+				Enabled:  boolPtr(true),
+				Strategy: AgenticCompressionFreshWindow,
+			},
+		},
+		{
+			name: "fresh_window accepted as on_error_strategy",
+			cfg: ContextCompressionConfig{
+				Enabled:         boolPtr(true),
+				OnErrorStrategy: AgenticCompressionFreshWindow,
+			},
+		},
+		{
+			name: "fresh_window accepted per-model",
+			cfg: ContextCompressionConfig{
+				Enabled:  boolPtr(true),
+				PerModel: map[string]ModelCompressionOverride{"qwen": {Strategy: AgenticCompressionFreshWindow}},
+			},
+		},
+		{
+			name: "valid fresh_window settings",
+			cfg: ContextCompressionConfig{
+				Enabled:     boolPtr(true),
+				FreshWindow: FreshWindowSettings{Enabled: boolPtr(true), PreserveRecentTurns: 2},
+			},
+		},
+		{
+			name: "negative preserve rejected",
+			cfg: ContextCompressionConfig{
+				Enabled:     boolPtr(true),
+				FreshWindow: FreshWindowSettings{PreserveRecentTurns: -1},
+			},
+			wantErr: "fresh_window.preserve_recent_turns: must be >= 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				ContextCompression: tt.cfg,
+				Models:             []ModelConfig{{ID: "qwen", ProviderID: "p", Model: "qwen3"}},
+			}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}

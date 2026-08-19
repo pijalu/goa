@@ -26,6 +26,20 @@ func (e *HeaderTimeoutError) Error() string {
 	return fmt.Sprintf("websocket header timeout for %s", e.URL)
 }
 
+// UpgradeRequiredError is returned when the server rejects the WebSocket
+// upgrade with an HTTP error status (e.g. 426 Upgrade Required, 404, 501).
+// The gorilla dialer reports the rejection as ErrBadHandshake and drops the
+// status from the error text; this typed error preserves it so callers can
+// distinguish "endpoint does not speak WebSocket" from a transient failure.
+type UpgradeRequiredError struct {
+	URL        string
+	StatusCode int
+}
+
+func (e *UpgradeRequiredError) Error() string {
+	return fmt.Sprintf("websocket upgrade rejected for %s: status %d", e.URL, e.StatusCode)
+}
+
 const (
 	maxConnectionAge   = 55 * time.Minute
 	defaultIdleTimeout = 5 * time.Minute
@@ -225,6 +239,13 @@ func (t *WebSocketTransport) dialConnection(ctx context.Context, pool *WebSocket
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, &HeaderTimeoutError{URL: url}
+		}
+		// A handshake rejected with an HTTP status means the endpoint does not
+		// accept the WebSocket transport; preserve the status for the caller's
+		// fallback decision.
+		if errors.Is(err, websocket.ErrBadHandshake) && resp != nil {
+			_ = resp.Body.Close()
+			return nil, &UpgradeRequiredError{URL: url, StatusCode: resp.StatusCode}
 		}
 		return nil, err
 	}

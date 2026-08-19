@@ -55,6 +55,13 @@ type CompactionPolicyInput struct {
 	Now                                                                          time.Time
 	CacheTTL                                                                     time.Duration
 	SoftStrategyAvailable, HighMarkStrategyAvailable, EmergencyStrategyAvailable bool
+	// RemoteCompactAvailable reports that the active provider/model exposes a
+	// usable server-side compaction endpoint (Codex Phase 2b) AND the operator
+	// has opted in via features.remote_compaction. It is purely an availability
+	// input: 2b.1 does not select a remote strategy on it, so the default
+	// (false) leaves the local ladder unchanged. 2b.2 consumes this to prefer
+	// the remote /responses/compact strategy.
+	RemoteCompactAvailable bool
 }
 
 // DecideCompactionPolicy is a pure compaction policy decision primitive. It

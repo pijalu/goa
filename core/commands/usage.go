@@ -134,34 +134,40 @@ type usageRequest struct {
 func parseUsageArgs(args []string, now time.Time, project string) usageRequest {
 	var req usageRequest
 	for _, a := range args {
-		switch strings.ToLower(a) {
-		case "", "all":
-		case "7d":
-			req.since, req.rangeTag = now.AddDate(0, 0, -7), "last 7 days"
-		case "30d":
-			req.since, req.rangeTag = now.AddDate(0, 0, -30), "last 30 days"
-		case "today":
-			y, m, d := now.Date()
-			req.since, req.rangeTag = time.Date(y, m, d, 0, 0, 0, 0, now.Location()), "today"
-		case "here", "this":
-			req.project = project
-		case "project":
-			req.dim, req.dimOnly = usage.ByProject, true
-		case "provider":
-			req.dim, req.dimOnly = usage.ByProvider, true
-		case "model":
-			req.dim, req.dimOnly = usage.ByModel, true
-		case "cost":
-			req.cost = true
-		case "activity", "heatmap":
-			req.activity = true
-		case "verbose":
-			req.verbose = true
-		default:
-			req.unknown = a
-		}
+		req.applyUsageArg(a, now, project)
 	}
 	return req
+}
+
+// applyUsageArg folds one /usage argument into the request (case-insensitive;
+// the raw form is kept for the unknown-arg error message).
+func (req *usageRequest) applyUsageArg(arg string, now time.Time, project string) {
+	switch strings.ToLower(arg) {
+	case "", "all":
+	case "7d":
+		req.since, req.rangeTag = now.AddDate(0, 0, -7), "last 7 days"
+	case "30d":
+		req.since, req.rangeTag = now.AddDate(0, 0, -30), "last 30 days"
+	case "today":
+		y, m, d := now.Date()
+		req.since, req.rangeTag = time.Date(y, m, d, 0, 0, 0, 0, now.Location()), "today"
+	case "here", "this":
+		req.project = project
+	case "project":
+		req.dim, req.dimOnly = usage.ByProject, true
+	case "provider":
+		req.dim, req.dimOnly = usage.ByProvider, true
+	case "model":
+		req.dim, req.dimOnly = usage.ByModel, true
+	case "cost":
+		req.cost = true
+	case "activity", "heatmap":
+		req.activity = true
+	case "verbose":
+		req.verbose = true
+	default:
+		req.unknown = arg
+	}
 }
 
 func (c *UsageCommand) writeStats(b *strings.Builder, st usageStore, req usageRequest) {

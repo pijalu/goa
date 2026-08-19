@@ -91,3 +91,22 @@ func TestCompactionPolicyDecisionString(t *testing.T) {
 		}
 	}
 }
+
+// TestCompactionPolicyRemoteAvailabilityIsNonBinding documents the 2b.1
+// contract: RemoteCompactAvailable is a pure availability INPUT that never
+// changes the local ladder decision by itself. With every reachable mark the
+// decision is identical whether the flag is true or false, so default
+// behavior is unchanged and 2b.2 can layer the remote strategy on top.
+func TestCompactionPolicyRemoteAvailabilityIsNonBinding(t *testing.T) {
+	base := CompactionPolicyInput{
+		MaxTokens: 1000, SoftPercent: 50, HighMarkPercent: 80, HardPercent: 95,
+		SoftStrategyAvailable: true, HighMarkStrategyAvailable: true, EmergencyStrategyAvailable: true,
+	}
+	for _, usage := range []int{100, 500, 800, 950, 1200} {
+		off := DecideCompactionPolicy(withUsage(base, usage))
+		on := DecideCompactionPolicy(withUsage(base, usage, func(in *CompactionPolicyInput) { in.RemoteCompactAvailable = true }))
+		if off != on {
+			t.Fatalf("usage=%d: RemoteCompactAvailable changed decision (%s -> %s); 2b.1 must be detection-only", usage, off, on)
+		}
+	}
+}

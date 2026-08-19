@@ -54,28 +54,48 @@ func (p *AzureOpenAIResponsesProvider) StreamSimple(model provider.Model, ctx pr
 }
 
 func streamResponses(model provider.Model, ctx provider.Context, opts provider.StreamOptions, flavor string) (*provider.AssistantMessageEventStream, error) {
-	stream := provider.NewAssistantMessageEventStream(256)
+	baseURL := streamResponsesBaseURL(model, opts, flavor)
 
-	baseURL := model.BaseURL
-	if baseURL == "" {
-		switch flavor {
-		case "codex":
-			baseURL = codexBaseURL(opts)
-		default:
-			baseURL = "https://api.openai.com/v1/responses"
-		}
+	bodyBytes, err := buildResponsesBodyBytes(model, ctx, opts, flavor)
+	if err != nil {
+		return nil, err
 	}
 
-	body := buildResponsesBody(model, ctx, opts, flavor)
-	bodyBytes, err := json.Marshal(body)
+	if opts.Transport == provider.TransportWebSocket {
+		return streamResponsesWebSocket(model, ctx, opts, bodyBytes, baseURL, flavor)
+	}
+	return sendResponsesSSE(ctx, opts, bodyBytes, baseURL, flavor)
+}
+
+// streamResponsesBaseURL resolves the endpoint for the request: the model's
+// configured base URL, or the flavor default (Codex OAuth/API-key endpoints).
+func streamResponsesBaseURL(model provider.Model, opts provider.StreamOptions, flavor string) string {
+	if model.BaseURL != "" {
+		return model.BaseURL
+	}
+	if flavor == "codex" {
+		return codexBaseURL(opts)
+	}
+	return "https://api.openai.com/v1/responses"
+}
+
+// buildResponsesBodyBytes builds the request body and marshals it. This is the
+// single body-build entry point: the WS full-history path and the SSE path use
+// it unchanged, which keeps SSE request bytes byte-identical to today.
+func buildResponsesBodyBytes(model provider.Model, ctx provider.Context, opts provider.StreamOptions, flavor string) ([]byte, error) {
+	bodyBytes, err := json.Marshal(buildResponsesBody(model, ctx, opts, flavor))
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	return bodyBytes, nil
+}
 
-	useWebSocket := opts.Transport == provider.TransportWebSocket
-	if useWebSocket {
-		return streamResponsesWebSocket(model, ctx, opts, bodyBytes, baseURL, flavor)
-	}
+// sendResponsesSSE executes the full-history SSE POST and streams the parsed
+// events. It is also the fallback transport for Codex sessions whose endpoint
+// has rejected the WebSocket upgrade (per-session mark in ws_fallback.go): the
+// request shape is identical to the regular SSE path, including headers.
+func sendResponsesSSE(ctx provider.Context, opts provider.StreamOptions, bodyBytes []byte, baseURL string, flavor string) (*provider.AssistantMessageEventStream, error) {
+	stream := provider.NewAssistantMessageEventStream(256)
 
 	req, err := http.NewRequestWithContext(ctx.GoContext(), "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -94,6 +114,17 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 		applyCodexHeaders(req, opts)
 	}
 
+	// Replay the sticky-routing token captured at turn start (Codex only).
+	// Absent token = first request of the turn or non-Codex flavor; nothing
+	// to replay. The token is never logged or included in error diagnostics.
+	sessionKey := ""
+	if flavor == "codex" {
+		sessionKey = turnStateSessionKey(opts)
+		if ts := turnState(sessionKey); ts != "" {
+			req.Header.Set(turnStateHeader, ts)
+		}
+	}
+
 	client := provider.NewStreamingHTTPClient()
 
 	resp, err := client.Do(req)
@@ -104,6 +135,15 @@ func streamResponses(model provider.Model, ctx provider.Context, opts provider.S
 		bodyErr, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		return nil, fmt.Errorf("OpenAI Responses returned %d: %s", resp.StatusCode, string(bodyErr))
+	}
+
+	// Capture the server-issued turn-state token at turn start (Codex only).
+	// This is the sticky-routing token that must be replayed on every
+	// subsequent request within the same turn.
+	if flavor == "codex" && sessionKey != "" {
+		if ts := resp.Header.Get(turnStateHeader); ts != "" {
+			captureTurnState(sessionKey, ts)
+		}
 	}
 
 	go provider.CloseStreamOnCancel(ctx.GoContext(), stream)
@@ -371,6 +411,14 @@ func handleResponsesCompleted(ctx *responsesEventContext, chunk string) {
 }
 
 func parseResponsesSSE(body io.ReadCloser, stream *provider.AssistantMessageEventStream) {
+	parseResponsesSSEWithHook(body, stream, nil)
+}
+
+// parseResponsesSSEWithHook parses the Responses event stream, invoking hook
+// for each raw chunk (rawChunk, endedOK=false) and once at the end
+// ("", endedOK) reporting whether the stream completed cleanly. A nil hook
+// behaves exactly like parseResponsesSSE.
+func parseResponsesSSEWithHook(body io.ReadCloser, stream *provider.AssistantMessageEventStream, hook func(rawChunk string, endedOK bool)) {
 	defer body.Close()
 
 	ctx := &responsesEventContext{
@@ -378,6 +426,9 @@ func parseResponsesSSE(body io.ReadCloser, stream *provider.AssistantMessageEven
 	}
 
 	sseErr := provider.ParseSSE(body, func(chunk string) {
+		if hook != nil {
+			hook(chunk, false)
+		}
 		var event struct {
 			Type string           `json:"type"`
 			Data *json.RawMessage `json:"data"`
@@ -409,7 +460,55 @@ func parseResponsesSSE(body io.ReadCloser, stream *provider.AssistantMessageEven
 		}
 		stream.End(&provider.AssistantMessage{Content: blocks, StopReason: provider.StopReasonEndTurn})
 	}
+	if hook != nil {
+		hook("", ctx.ended)
+	}
 }
+
+// parseResponsesSSEWithBaseline behaves like parseResponsesSSE but, after a
+// successful response.completed (no decode/SSE error and the stream ended
+// normally), records the WS session baseline for sessionKey. lastInput is the
+// already-deep-copied request input captured at send time; fingerprint is the
+// property fingerprint of the request that opened the baseline. On any failure
+// the baseline is left untouched (a failed request never advances it).
+func parseResponsesSSEWithBaseline(body io.ReadCloser, stream *provider.AssistantMessageEventStream, sessionKey string, lastInput []provider.Message, fingerprint requestFingerprint) {
+	cap := &baselineCapture{}
+	parseResponsesSSEWithHook(body, stream, func(rawChunk string, endedOK bool) {
+		cap.capture(rawChunk)
+		if endedOK && cap.ready() {
+			recordWSBaseline(sessionKey, lastInput, cap.responseID, cap.addedItems, fingerprint)
+		}
+	})
+}
+
+// baselineCapture accumulates the response id + added output items from the
+// response.completed chunk for the WS session baseline.
+type baselineCapture struct {
+	responseID string
+	addedItems []provider.Message
+}
+
+// capture folds one raw event chunk into the accumulator (no-op unless the
+// chunk is a response.completed with a parseable response payload).
+func (c *baselineCapture) capture(rawChunk string) {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(rawChunk), &event) != nil || event.Type != "response.completed" {
+		return
+	}
+	var resp struct {
+		Response completedResponse `json:"response"`
+	}
+	if json.Unmarshal([]byte(rawChunk), &resp) != nil {
+		return
+	}
+	c.responseID = resp.Response.ID
+	c.addedItems = resp.Response.toAddedItems()
+}
+
+// ready reports whether a completed response was captured.
+func (c *baselineCapture) ready() bool { return c.responseID != "" }
 
 // Azure OpenAI Responses
 func streamAzureResponses(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {

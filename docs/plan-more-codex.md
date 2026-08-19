@@ -19,12 +19,19 @@ motivated the remaining tasks:
 
 Full mechanism detail and Goa seam locations live in `_shared-context.md`.
 
-## Remediation checkpoint (2026-08-17) — folded into the `gate` task
+## Remediation checkpoint (2026-08-17) — split between the `prereq` and `gate` tasks
 
 Staticcheck remediation is clean and all packages compile, but the repo-wide gate was left incomplete:
 27 hard file-size violations, 58 gocognit findings, 77 gocyclo findings, and race/vet/full verification
-pending. That work is captured as the [`gate`](./plan-more-codex/gate-repo-quality.md) task (scheduled last
-so it also validates the new phases). Remediation commit: `411f466`.
+pending. That work is now split in two:
+
+- The **structural blockers** — hard file-size violations (split files per functional subgroups) and all
+  gocyclo findings — are the [`prereq`](./plan-more-codex/prereq-golang-check.md) task, **scheduled first**
+  so the parity tasks below land on already-clean files.
+- The rest — gocognit, staticcheck re-validation, and the race/vet/full verification — stays in the
+  [`gate`](./plan-more-codex/gate-repo-quality.md) task (scheduled last so it also validates the new phases).
+
+Remediation commit: `411f466`.
 
 ## Completed (record only — no tasks needed)
 
@@ -39,24 +46,33 @@ so it also validates the new phases). Remediation commit: `411f466`.
 | 6 | Session-affine pooled WebSocket transport (full-history POST-over-WS; no delta yet). |
 | 7 | Quota plugin sparse/window/transient coverage (see task 7 for the wording correction). |
 
+## Prerequisite (schedule before everything else)
+
+**Fix all golang-check issues first**: clear every hard file-size violation by splitting oversized
+files **per functional subgroups** (cohesive responsibilities, not mechanical line-count chops), and
+clear **all gocyclo** findings. The oversized / high-complexity files are exactly the ones the parity
+tasks below must touch — landing the splits first keeps every later diff small and avoids re-basing
+structural splits on top of new code. Task: [`prereq`](./plan-more-codex/prereq-golang-check.md).
+
 ## Remaining micro-tasks (schedulable goals)
 
 | Task | File | Phase | Size | Depends on | Verify command (goal `verifyCommand`) |
 |---|---|---|---|---|---|
-| **6b.1** | [06b.1-ws-session-baseline.md](./plan-more-codex/06b.1-ws-session-baseline.md) | 6b | small | — | `go test ./internal/agentic/provider/openai_responses/... -run 'Baseline\|ResponseID\|WSCompleted' -count=1 -race` |
-| **6b.2** | [06b.2-request-property-match.md](./plan-more-codex/06b.2-request-property-match.md) | 6b | medium | 6b.1 | `go test ./internal/agentic/provider/openai_responses/... -run 'Incremental\|Delta\|PropertiesMatch' -count=1 -race` + complexity |
-| **6b.3** | [06b.3-ws-delta-send-fallback.md](./plan-more-codex/06b.3-ws-delta-send-fallback.md) | 6b | large | 6b.1, 6b.2 | `go test ./internal/agentic/provider/openai_responses/... -run 'WS\|Incremental\|Delta\|Fallback\|Codex' -count=1 -race && go vet ./internal/agentic/...` |
-| **6c** | [06c-turn-state-routing.md](./plan-more-codex/06c-turn-state-routing.md) | 6c | small | — | `go test ./internal/agentic/provider/openai_responses/... -run 'TurnState\|Sticky' -count=1 -race && go vet ./internal/agentic/...` |
-| **2b.1** | [02b.1-remote-compact-capability.md](./plan-more-codex/02b.1-remote-compact-capability.md) | 2b | small | — | `go test ./internal/agentic/... -run 'RemoteCompact\|Capability\|CompactionPolicy' -count=1 -race && go vet ./internal/agentic/...` |
-| **2b.2** | [02b.2-remote-compact-client.md](./plan-more-codex/02b.2-remote-compact-client.md) | 2b | large | 2b.1 | `go test ./internal/agentic/... -run 'RemoteCompact\|CompactEndpoint' -count=1 -race && go vet ./internal/agentic/...` |
-| **2b.3** | [02b.3-fresh-window-fallback.md](./plan-more-codex/02b.3-fresh-window-fallback.md) | 2b | medium | 2b.2 | `go test ./internal/agentic/... -run 'FreshWindow\|TokenBudget\|CompactionPolicy\|Strategy' -count=1 -race && go vet ./internal/agentic/...` |
-| **7** | [07-quota-preserve-on-absent.md](./plan-more-codex/07-quota-preserve-on-absent.md) | 7 | small | — | `go test ./plugins/... -run 'Quota\|RateLimit\|Codex' -count=1 -race` |
+| **prereq** | [prereq-golang-check.md](./plan-more-codex/prereq-golang-check.md) | cross-cutting | large | — (**schedule first**) | `go vet ./... && go test ./... -count=1 -race && test -z "$(gocyclo -over 12 . \| grep -v '_test.go')" && .agents/skills/golang-check/go-file-size-check.sh` |
+| **6b.1** | [06b.1-ws-session-baseline.md](./plan-more-codex/06b.1-ws-session-baseline.md) | 6b | small | prereq | `go test ./internal/agentic/provider/openai_responses/... -run 'Baseline\|ResponseID\|WSCompleted' -count=1 -race` |
+| **6b.2** | [06b.2-request-property-match.md](./plan-more-codex/06b.2-request-property-match.md) | 6b | medium | prereq, 6b.1 | `go test ./internal/agentic/provider/openai_responses/... -run 'Incremental\|Delta\|PropertiesMatch' -count=1 -race` + complexity |
+| **6b.3** | [06b.3-ws-delta-send-fallback.md](./plan-more-codex/06b.3-ws-delta-send-fallback.md) | 6b | large | prereq, 6b.1, 6b.2 | `go test ./internal/agentic/provider/openai_responses/... -run 'WS\|Incremental\|Delta\|Fallback\|Codex' -count=1 -race && go vet ./internal/agentic/...` |
+| **6c** | [06c-turn-state-routing.md](./plan-more-codex/06c-turn-state-routing.md) | 6c | small | prereq | `go test ./internal/agentic/provider/openai_responses/... -run 'TurnState\|Sticky' -count=1 -race && go vet ./internal/agentic/...` |
+| **2b.1** | [02b.1-remote-compact-capability.md](./plan-more-codex/02b.1-remote-compact-capability.md) | 2b | small | prereq | `go test ./internal/agentic/... -run 'RemoteCompact\|Capability\|CompactionPolicy' -count=1 -race && go vet ./internal/agentic/...` |
+| **2b.2** | [02b.2-remote-compact-client.md](./plan-more-codex/02b.2-remote-compact-client.md) | 2b | large | prereq, 2b.1 | `go test ./internal/agentic/... -run 'RemoteCompact\|CompactEndpoint' -count=1 -race && go vet ./internal/agentic/...` |
+| **2b.3** | [02b.3-fresh-window-fallback.md](./plan-more-codex/02b.3-fresh-window-fallback.md) | 2b | medium | prereq, 2b.2 | `go test ./internal/agentic/... -run 'FreshWindow\|TokenBudget\|CompactionPolicy\|Strategy' -count=1 -race && go vet ./internal/agentic/...` |
+| **7** | [07-quota-preserve-on-absent.md](./plan-more-codex/07-quota-preserve-on-absent.md) | 7 | small | prereq | `go test ./plugins/... -run 'Quota\|RateLimit\|Codex' -count=1 -race` |
 | **gate** | [gate-repo-quality.md](./plan-more-codex/gate-repo-quality.md) | cross-cutting | large | (schedule last) | `go vet ./... && go test ./... -count=1 -race -cover && staticcheck ./...` + complexity budgets |
 
 ### Scheduling notes
 
-- **Dependencies:** only the `Depends on` column is a hard ordering constraint. `6b.*` must go 6b.1 → 6b.2 → 6b.3; `2b.*` must go 2b.1 → 2b.2 → 2b.3. `6c`, `7` are independent of everything. `gate` should be last (it validates the new code too).
-- **Suggested value order:** 6b.1 → 6b.2 → 6b.3 (highest-value parity item), then 6c, then 2b.1 → 2b.2 → 2b.3, then 7, then gate.
+- **Dependencies:** only the `Depends on` column is a hard ordering constraint. **`prereq` must complete before any other task starts** (the parity tasks modify the same files it splits). `6b.*` must go 6b.1 → 6b.2 → 6b.3; `2b.*` must go 2b.1 → 2b.2 → 2b.3. `6c`, `7` are independent of everything except `prereq`. `gate` should be last (it validates the new code too).
+- **Suggested value order:** prereq, then 6b.1 → 6b.2 → 6b.3 (highest-value parity item), then 6c, then 2b.1 → 2b.2 → 2b.3, then 7, then gate.
 - **Budgets:** small tasks ≈ 60k tokens / 15 turns; medium ≈ 100k / 20; large ≈ 150k / 30. Each task file lists the exact `completionCriterion` and `handover` to paste into the goal.
 - **Queueing:** create the first goal active and queue the rest FIFO (`goal create` with `objectives`, or one at a time). The `handover` block in each task is the continuity contract for the next clean-context goal.
 
