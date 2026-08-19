@@ -85,6 +85,15 @@ func TestBuildParams_OpenAI_SendsCacheKey(t *testing.T) {
 	}
 }
 
+func TestBuildParams_KimiCodeSendsSessionCacheKey(t *testing.T) {
+	model := provider.Model{ID: "kimi-for-coding", Provider: provider.ProviderKimiCode, BaseURL: "https://api.kimi.com/coding/v1"}
+	ctx := provider.Context{Messages: []provider.Message{provider.NewUserMessage("Hello")}}
+	body := buildParams(model, ctx, provider.StreamOptions{SessionID: "kimi-session", CacheRetention: provider.CacheRetentionNone}, provider.ResolveOpenAICompat(model))
+	if got := body["prompt_cache_key"]; got != "kimi-session" {
+		t.Fatalf("prompt_cache_key = %v, want kimi-session", got)
+	}
+}
+
 func TestBuildParams_LongRetention_SendsRetention(t *testing.T) {
 	model := provider.Model{
 		ID:       "gpt-4o-mini",

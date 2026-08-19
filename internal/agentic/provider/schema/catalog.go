@@ -67,6 +67,9 @@ type ProviderCompat struct {
 	NoReasoningEffort bool
 	// NoCacheRetention disables long cache retention support.
 	NoCacheRetention bool
+	// SupportsPromptCache sends the session cache identity even when retention
+	// is not explicitly configured, for providers that document this field.
+	SupportsPromptCache bool
 	// NoStrictMode disables OpenAI strict tool-schema mode.
 	NoStrictMode bool
 	// AnthropicCacheControl uses anthropic-style cache_control breakpoints.
@@ -372,7 +375,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.moonshot.cn/v1",
 		DefaultModel: "kimi-k2.6", EnvKeys: []string{"MOONSHOT_API_KEY", "KIMI_API_KEY"},
 		URLPatterns: []string{"api.moonshot.", "moonshotai", "moonshotai-cn"},
-		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true},
+		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true, SupportsPromptCache: true},
 		Extra: map[string]any{
 			"reasoning_key":               "reasoning_content",
 			"thinking_extra_body":         true,
@@ -385,7 +388,7 @@ var providerCatalog = []ProviderDef{
 		API: ApiOpenAICompletions, BaseURL: "https://api.kimi.com/coding/v1",
 		DefaultModel: "kimi-for-coding", EnvKeys: []string{"KIMI_CODE_API_KEY", "MOONSHOT_API_KEY"},
 		URLPatterns: []string{"api.kimi.com/coding"},
-		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true},
+		Compat:      ProviderCompat{NonStandard: true, UseMaxTokens: true, NoReasoningEffort: true, NoStrictMode: true, SupportsPromptCache: true},
 		Extra: map[string]any{
 			"reasoning_key":               "reasoning_content",
 			"thinking_extra_body":         true,

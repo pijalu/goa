@@ -132,6 +132,14 @@ func TestCacheForensicsAttribution_ClientSideCauses(t *testing.T) {
 		recordAttributed(t, j, 2, 0, false, RequestFingerprint{Classification: PrefixParamChange}, base.Add(3*time.Second), base.Add(4*time.Second))
 		require.Equal(t, LikelyCauseParamChange, j.reportsSnapshot()[0].LikelyCause)
 	})
+
+	t.Run("tool policy transition", func(t *testing.T) {
+		j := newCacheForensicsJournal()
+		base := time.Now()
+		recordAttributed(t, j, 1, 40000, false, RequestFingerprint{}, base, base.Add(2*time.Second))
+		recordAttributed(t, j, 2, 0, false, RequestFingerprint{Classification: PrefixToolPolicyTransition}, base.Add(3*time.Second), base.Add(4*time.Second))
+		require.Equal(t, LikelyCauseToolPolicyTransition, j.reportsSnapshot()[0].LikelyCause)
+	})
 	t.Run("replacement is identity change", func(t *testing.T) {
 		j := newCacheForensicsJournal()
 		base := time.Now()

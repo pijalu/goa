@@ -30,6 +30,10 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 All reported items from this cycle were implemented or verified, tested, validated, and archived under `docs/archive/`. Future reports must restart this process from a new detailed plan.
 
+## Kimi follow-up implementation
+
+Implemented on `feature/kimi`: Kimi/Moonshot provider catalog profiles now declare `SupportsPromptCache`; the generic compatibility-driven serializer retains `prompt_cache_key` even when cache retention is `none`, with wire regression coverage. Cache forensics now distinguishes intentional `tools` to `tool_choice=none` transitions as `tool_policy_transition` instead of generic `param_change`; attribution and agent logging preserve this cause. Existing compaction key-rotation and baseline-reset tests were reviewed and remain passing. See commits on this branch.
+
 ## Kimi-code cache/compaction comparison follow-up
 
 RCA comparison archived at `docs/archive/bugs-20260819-kimi-cache-comparison.md`. Kimi-code uses the same core `prompt_cache_key` mechanism, but has stronger Kimi-specific cache-break telemetry, compaction baseline reset, idle-expiry UX, and explicit cache-key propagation tests. Potential Goa updates are tracked by priority in that report: Kimi wire-policy probe, key-preservation tests across tool/recovery/compaction requests, intentional tool-policy transition classification, and compaction-aware baseline tests.

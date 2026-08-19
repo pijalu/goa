@@ -127,7 +127,7 @@ func promptCacheIdentity(opts provider.StreamOptions) string {
 }
 
 func promptCacheKey(model provider.Model, opts provider.StreamOptions, compat provider.OpenAICompletionsCompat) string {
-	if opts.CacheRetention == provider.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) {
+	if opts.CacheRetention == provider.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) && !provider.ToBool(compat.SupportsPromptCache, false) {
 		return ""
 	}
 	if opts.PromptCacheKey == "" && opts.SessionID == "" {
@@ -135,7 +135,7 @@ func promptCacheKey(model provider.Model, opts provider.StreamOptions, compat pr
 	}
 	isOpenAI := strings.Contains(model.BaseURL, "api.openai.com")
 	supportsLong := provider.ToBool(compat.SupportsLongCacheRetention, false)
-	if isOpenAI || (opts.CacheRetention == provider.CacheRetentionLong && supportsLong) || isLocalProvider(model.Provider, model.BaseURL) {
+	if isOpenAI || provider.ToBool(compat.SupportsPromptCache, false) || (opts.CacheRetention == provider.CacheRetentionLong && supportsLong) || isLocalProvider(model.Provider, model.BaseURL) {
 		return clampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 	}
 	return ""
@@ -153,7 +153,6 @@ func promptCacheRetention(opts provider.StreamOptions, compat provider.OpenAICom
 	return "24h"
 }
 
-// isLocalProvider reports whether the endpoint is a local server (LM Studio
 // or Ollama) where prompt_cache_key improves cache affinity across slots.
 func isLocalProvider(prov provider.Provider, baseURL string) bool {
 	p := strings.ToLower(string(prov))

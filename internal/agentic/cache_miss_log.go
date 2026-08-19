@@ -52,6 +52,9 @@ func logCacheMissNotices(logger *Logger, notices []provider.CacheMissNotice) {
 // CM part uses: a zero cache-read is a full miss (the entire prefix was
 // recomputed), anything else a partial one (a suffix was recomputed).
 func cacheMissNoticeKind(n provider.CacheMissNotice) string {
+	if n.LikelyCause == provider.LikelyCauseToolPolicyTransition {
+		return "tool-policy-transition"
+	}
 	if n.CacheRead == 0 {
 		return "full"
 	}

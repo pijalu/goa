@@ -17,11 +17,12 @@ import (
 type PrefixClassification string
 
 const (
-	PrefixExactAppend   PrefixClassification = "exact_append"
-	PrefixParamChange   PrefixClassification = "param_change"
-	PrefixReplacement   PrefixClassification = "replacement"
-	PrefixDivergence    PrefixClassification = "unexpected_divergence"
-	PrefixNoPredecessor PrefixClassification = "no_predecessor"
+	PrefixExactAppend          PrefixClassification = "exact_append"
+	PrefixParamChange          PrefixClassification = "param_change"
+	PrefixToolPolicyTransition PrefixClassification = "tool_policy_transition"
+	PrefixReplacement          PrefixClassification = "replacement"
+	PrefixDivergence           PrefixClassification = "unexpected_divergence"
+	PrefixNoPredecessor        PrefixClassification = "no_predecessor"
 )
 
 // RequestFingerprint contains bounded, non-sensitive request diagnostics.
@@ -83,6 +84,8 @@ func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixCla
 		switch {
 		case msgsPrefix && paramsEq:
 			return PrefixExactAppend
+		case msgsPrefix && isToolPolicyTransition(previousRequest, request):
+			return PrefixToolPolicyTransition
 		case msgsPrefix:
 			return PrefixParamChange
 		}
@@ -102,19 +105,29 @@ func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixCla
 // is canonically equal. ok is false when either body is not a JSON object
 // carrying a messages array.
 func compareBodies(previousRequest, request []byte) (msgsPrefix, paramsEqual, ok bool) {
-	var prevBody, curBody map[string]json.RawMessage
-	if err := json.Unmarshal(previousRequest, &prevBody); err != nil {
+	var prev, cur map[string]json.RawMessage
+	if json.Unmarshal(previousRequest, &prev) != nil || json.Unmarshal(request, &cur) != nil {
 		return false, false, false
 	}
-	if err := json.Unmarshal(request, &curBody); err != nil {
-		return false, false, false
-	}
-	prevMsgs, okPrev := splitMessages(prevBody)
-	curMsgs, okCur := splitMessages(curBody)
+	prevMsgs, okPrev := splitMessages(prev)
+	curMsgs, okCur := splitMessages(cur)
 	if !okPrev || !okCur {
 		return false, false, false
 	}
-	return messagesArePrefix(prevMsgs, curMsgs), nonMessageFieldsEqual(prevBody, curBody), true
+	return messagesArePrefix(prevMsgs, curMsgs), nonMessageFieldsEqual(prev, cur), true
+}
+
+func isToolPolicyTransition(previousRequest, request []byte) bool {
+	var prev, cur map[string]json.RawMessage
+	if json.Unmarshal(previousRequest, &prev) != nil || json.Unmarshal(request, &cur) != nil {
+		return false
+	}
+	var prevTools, curTools []json.RawMessage
+	_ = json.Unmarshal(prev["tools"], &prevTools)
+	_ = json.Unmarshal(cur["tools"], &curTools)
+	var choice string
+	_ = json.Unmarshal(cur["tool_choice"], &choice)
+	return len(prevTools) > 0 && len(curTools) == 0 && choice == "none"
 }
 
 // splitMessages extracts the messages array as raw per-message JSON values.
