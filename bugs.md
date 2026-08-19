@@ -28,5 +28,23 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## Review cache miss on session export
-Review cache miss on /Users/muaddib/dev/goa/.goa/sessions/1787174084_qqrf2p5v.jsonl
+## /stats:cache is incomplete
+/stats:cache is incomplete and does not match requirement - currenly show:
+```
+# Cache misses
+T1 - CM: Full 0 (0t) / Partial 0 (0t) T2 - CM: Full 0 (0t) / Partial 0 (0t) Cache hit rate — latest completions (rightmost = newest)
+# Cache usage per turn
+T2 - CH: 63.74% |███████████████ No cache drops detected.
+```
+
+It should contains key sections
+* Render the last 10 cache hit level - shown as barchart - with exact percentage under - color coded red < 90%, orange < 95%, green >=95% - make sure to have the bar/label correctly center
+* Render bar chart with the average cache per turn - the bar per turn should be horizontal and use color code similar to 10 last cache - eg (use block instead of =):
+```
+T1: 85.98% ==================
+T2: 97.07% ====================
+```
+* Provide a weighted total cache percentage of the complete session
+* Provide the list of all cache miss: Turn - Percent of the miss vs non-miss + miss size in token
+
+Key point: The stats must work across multi-agent/multi-goals - you can repeat the section per "goal/agent"
