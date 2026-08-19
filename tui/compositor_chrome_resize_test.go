@@ -96,6 +96,43 @@ func TestCompositor_ChromeShrinkKeepsScrollback(t *testing.T) {
 // without concurrent transcript growth — the /quota-mid-stream case) and
 // assert no transcript row is lost or duplicated and the chrome band ends
 // correct on screen.
+func chromeIntegrityFrame(t *testing.T, steps [][2]int) {
+	t.Helper()
+	term := &fakeTerminal{w: 40, h: 12}
+	comp := NewCompositor(term)
+	for _, step := range steps {
+		comp.Render(chromeScene(step[0], step[1], 40, 12, "a"))
+	}
+	emu := NewTermEmulator(term.h, term.w)
+	for _, write := range term.Writes() {
+		emu.Process(write)
+	}
+	visible := make([]string, term.h)
+	for row := range visible {
+		visible[row] = emu.Visible(row)
+	}
+	scrollback := emu.Scrollback()
+	joined := "\n" + strings.Join(append(append([]string{}, scrollback...), visible...), "\n") + "\n"
+	sbJoined := "\n" + strings.Join(scrollback, "\n") + "\n"
+	last := steps[len(steps)-1]
+	for i := 0; i < last[0]; i++ {
+		marker := fmt.Sprintf("row %04d", i)
+		if !strings.Contains(joined, marker) {
+			t.Fatalf("row %q LOST\n--- screen ---\n%s\n--- scrollback tail ---\n%s", marker, strings.Join(visible, "\n"), tailLines(scrollback, 12))
+		}
+		if n := strings.Count(sbJoined, marker); n > 1 {
+			t.Fatalf("row %q duplicated WITHIN scrollback (%d times)", marker, n)
+		}
+	}
+	visibleText := strings.Join(visible, "\n")
+	for i := 0; i < last[1]; i++ {
+		marker := fmt.Sprintf("chrome-a-%d", i)
+		if !strings.Contains(visibleText, marker) {
+			t.Errorf("chrome row %q missing from screen:\n%s", marker, visibleText)
+		}
+	}
+}
+
 func TestCompositor_ChromeResizeIntegrity(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -107,43 +144,7 @@ func TestCompositor_ChromeResizeIntegrity(t *testing.T) {
 		{"shrink+stream", [][2]int{{60, 4}, {66, 3}, {70, 2}}},
 		{"oscillate", [][2]int{{60, 2}, {61, 3}, {62, 2}, {63, 3}, {64, 2}}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			term := &fakeTerminal{w: 40, h: 12}
-			comp := NewCompositor(term)
-			for _, step := range tc.steps {
-				comp.Render(chromeScene(step[0], step[1], 40, 12, "a"))
-			}
-
-			emu := NewTermEmulator(term.h, term.w)
-			for _, wr := range term.Writes() {
-				emu.Process(wr)
-			}
-			var visible []string
-			for r := 0; r < term.h; r++ {
-				visible = append(visible, emu.Visible(r))
-			}
-			scrollback := emu.Scrollback()
-			joined := "\n" + strings.Join(append(append([]string{}, scrollback...), visible...), "\n") + "\n"
-			sbJoined := "\n" + strings.Join(scrollback, "\n") + "\n"
-
-			last := tc.steps[len(tc.steps)-1]
-			for i := 0; i < last[0]; i++ {
-				marker := fmt.Sprintf("row %04d", i)
-				if !strings.Contains(joined, marker) {
-					t.Fatalf("row %q LOST\n--- screen ---\n%s\n--- scrollback tail ---\n%s",
-						marker, strings.Join(visible, "\n"), tailLines(scrollback, 12))
-				}
-				if n := strings.Count(sbJoined, marker); n > 1 {
-					t.Fatalf("row %q duplicated WITHIN scrollback (%d times)", marker, n)
-				}
-			}
-			// The final chrome band is on screen, in order, at the bottom.
-			for i := 0; i < last[1]; i++ {
-				marker := fmt.Sprintf("chrome-a-%d", i)
-				if !strings.Contains(strings.Join(visible, "\n"), marker) {
-					t.Errorf("chrome row %q missing from screen:\n%s", marker, strings.Join(visible, "\n"))
-				}
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { chromeIntegrityFrame(t, tc.steps) })
 	}
+
 }

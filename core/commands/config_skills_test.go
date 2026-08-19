@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core"
 	"github.com/pijalu/goa/skills"
 )
 
@@ -393,88 +394,87 @@ func knowledgeTestSkill(name, desc string) *skills.Skill {
 // state and persists it at PROJECT level (skills.sticky / skills.sticky_off),
 // including the minimal-entry rule for frontmatter-sticky skills.
 func TestSkillStickyToggleCommand(t *testing.T) {
+	t.Run("plain skill", testStickyPlainSkill)
+	t.Run("frontmatter skill", testStickyFrontmatterSkill)
+	t.Run("invalid skills", testStickyInvalidSkills)
+}
+
+func testStickyContext(t *testing.T) (*core.Context, *SkillsCommand, *strings.Builder, string) {
 	var buf strings.Builder
 	ctx := skillTestContext(&buf)
-	cfg := ctx.Config
 	projectDir := t.TempDir()
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
-
-	plain := knowledgeTestSkill("plain-k", "Plain knowledge")
-	always := knowledgeTestSkill("always-k", "Frontmatter sticky")
-	always.Meta.Sticky = true
-	action := embeddedTestSkill("refactor", "Action skill")
 	ctx.SkillRegistry = newSkillRegistry(map[string]*skills.Skill{
-		"plain-k":  plain,
-		"always-k": always,
-		"refactor": action,
+		"plain-k": knowledgeTestSkill("plain-k", "Plain knowledge"),
+		"always-k": func() *skills.Skill {
+			s := knowledgeTestSkill("always-k", "Frontmatter sticky")
+			s.Meta.Sticky = true
+			return s
+		}(),
+		"refactor": embeddedTestSkill("refactor", "Action skill"),
 	})
+	return &ctx, &SkillsCommand{}, &buf, filepath.Join(projectDir, ".goa", "config.yaml")
+}
 
-	cmd := &SkillsCommand{}
-	projectCfg := filepath.Join(projectDir, ".goa", "config.yaml")
-
-	// Turn a plain knowledge skill sticky → skills.sticky entry.
-	if err := cmd.Run(ctx, []string{"sticky", "plain-k"}); err != nil {
-		t.Fatalf("sticky plain-k: %v", err)
+func testStickyPlainSkill(t *testing.T) {
+	ctx, cmd, _, projectCfg := testStickyContext(t)
+	if err := cmd.Run(*ctx, []string{"sticky", "plain-k"}); err != nil {
+		t.Fatal(err)
 	}
-	if !stringInSlice(cfg.Skills.Sticky, "plain-k") {
-		t.Error("plain-k should be in Skills.Sticky")
+	if !stringInSlice(ctx.Config.Skills.Sticky, "plain-k") || !skillStickyEffective(*ctx, "plain-k") {
+		t.Error("plain-k should be sticky")
 	}
 	data, err := os.ReadFile(projectCfg)
 	if err != nil {
-		t.Fatalf("read project config: %v", err)
+		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), "sticky") || !strings.Contains(string(data), "plain-k") {
-		t.Errorf("project config should record plain-k sticky, got:\n%s", data)
+		t.Errorf("sticky config missing: %s", data)
 	}
-	if !skillStickyEffective(ctx, "plain-k") {
-		t.Error("plain-k should be sticky now")
+	if err := cmd.Run(*ctx, []string{"sticky", "plain-k"}); err != nil {
+		t.Fatal(err)
 	}
-
-	// Turn it back off → entry removed, key deleted.
-	if err := cmd.Run(ctx, []string{"sticky", "plain-k"}); err != nil {
-		t.Fatalf("sticky plain-k off: %v", err)
-	}
-	if stringInSlice(cfg.Skills.Sticky, "plain-k") {
-		t.Error("plain-k should be out of Skills.Sticky")
+	if stringInSlice(ctx.Config.Skills.Sticky, "plain-k") {
+		t.Error("plain-k should be off")
 	}
 	data, err = os.ReadFile(projectCfg)
 	if err != nil {
-		t.Fatalf("re-read project config: %v", err)
+		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "plain-k") {
-		t.Errorf("project config should no longer mention plain-k, got:\n%s", data)
+		t.Errorf("plain-k remains in config: %s", data)
 	}
+}
 
-	// Turn a frontmatter-sticky skill off → skills.sticky_off entry.
-	if err := cmd.Run(ctx, []string{"sticky", "always-k"}); err != nil {
-		t.Fatalf("sticky always-k off: %v", err)
+func testStickyFrontmatterSkill(t *testing.T) {
+	ctx, cmd, _, projectCfg := testStickyContext(t)
+	if err := cmd.Run(*ctx, []string{"sticky", "always-k"}); err != nil {
+		t.Fatal(err)
 	}
-	if !stringInSlice(cfg.Skills.StickyOff, "always-k") {
-		t.Error("always-k should be in Skills.StickyOff")
+	if !stringInSlice(ctx.Config.Skills.StickyOff, "always-k") || skillStickyEffective(*ctx, "always-k") {
+		t.Error("always-k should be disabled")
 	}
-	if skillStickyEffective(ctx, "always-k") {
-		t.Error("always-k should not be sticky now")
-	}
-	data, err = os.ReadFile(projectCfg)
+	data, err := os.ReadFile(projectCfg)
 	if err != nil {
-		t.Fatalf("read project config after off: %v", err)
+		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), "sticky_off") || !strings.Contains(string(data), "always-k") {
-		t.Errorf("project config should record always-k sticky_off, got:\n%s", data)
+		t.Errorf("sticky_off config missing: %s", data)
 	}
+}
 
-	// Action skills are rejected.
-	buf.Reset()
-	if err := cmd.Run(ctx, []string{"sticky", "refactor"}); err == nil || !strings.Contains(err.Error(), "knowledge") {
-		t.Errorf("sticky on action skill should error about knowledge-only, got %v", err)
-	}
-
-	// Unknown skills are rejected.
-	if err := cmd.Run(ctx, []string{"sticky", "nope"}); err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("sticky unknown skill should error, got %v", err)
-	}
-	if err := cmd.Run(ctx, []string{"sticky"}); err == nil || !strings.Contains(err.Error(), "usage:") {
-		t.Errorf("sticky with no args should return usage error, got %v", err)
+func testStickyInvalidSkills(t *testing.T) {
+	ctx, cmd, buf, _ := testStickyContext(t)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"sticky", "refactor"}, "knowledge"}, {[]string{"sticky", "nope"}, "not found"}, {[]string{"sticky"}, "usage:"},
+	} {
+		buf.Reset()
+		if err := cmd.Run(*ctx, tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("args %v: error %v", tc.args, err)
+		}
 	}
 }
 
@@ -543,13 +543,16 @@ func TestSkillEnableDisableCommand_Errors(t *testing.T) {
 // resolves its source via SourceOf so the toggle lands in the right config
 // layer — including cross-source sequences that previously polluted layers.
 func TestSkillEnableDisableCommand_RealRegistry(t *testing.T) {
+	ctx, cfg, cmd, dir := realRegistrySkillContext(t)
+	disableRealSkills(t, ctx, cfg, cmd, dir)
+	enableRealSkills(t, ctx, cfg, cmd, dir)
+}
+
+func realRegistrySkillContext(t *testing.T) (*core.Context, *config.Config, *SkillsCommand, string) {
 	var buf strings.Builder
 	ctx := skillTestContext(&buf)
-	cfg := ctx.Config
 	projectDir := t.TempDir()
 	ctx.ConfigSaver = config.NewCascadeLoader(projectDir, "", nil)
-
-	// Real registry: embedded skills + one file skill in a temp dir.
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "local-skill")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -561,64 +564,51 @@ func TestSkillEnableDisableCommand_RealRegistry(t *testing.T) {
 	reg := skills.NewSkillRegistry([]string{dir})
 	reg.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	if err := reg.LoadAll(); err != nil {
-		t.Fatalf("LoadAll: %v", err)
+		t.Fatal(err)
 	}
 	ctx.SkillRegistry = reg
+	return &ctx, ctx.Config, &SkillsCommand{}, dir
+}
 
-	cmd := &SkillsCommand{}
-	// Disable an embedded skill → home config only.
-	if err := cmd.Run(ctx, []string{"disable", "refactor"}); err != nil {
-		t.Fatalf("disable refactor: %v", err)
+func disableRealSkills(t *testing.T, ctx *core.Context, cfg *config.Config, cmd *SkillsCommand, dir string) {
+	if err := cmd.Run(*ctx, []string{"disable", "refactor"}); err != nil {
+		t.Fatal(err)
 	}
 	if skillEnabled(cfg, "refactor", nil) {
 		t.Error("refactor should be disabled")
 	}
-	// Disable a file skill → project config only (no home pollution).
-	if err := cmd.Run(ctx, []string{"disable", "local-skill"}); err != nil {
-		t.Fatalf("disable local-skill: %v", err)
+	if err := cmd.Run(*ctx, []string{"disable", "local-skill"}); err != nil {
+		t.Fatal(err)
 	}
 	if skillEnabled(cfg, "local-skill", nil) {
 		t.Error("local-skill should be disabled")
 	}
-
-	// Simulate the reload ReloadHandler performs: a fresh registry built with
-	// the disabled list, so the disabled skills are no longer loaded.
 	reloaded := skills.NewSkillRegistry([]string{dir})
 	reloaded.SetEmbeddedFS(skills.EmbeddedSkillsFS)
 	reloaded.SetDisabled(cfg.Skills.Disabled)
 	if err := reloaded.LoadAll(); err != nil {
-		t.Fatalf("reload: %v", err)
+		t.Fatal(err)
 	}
 	ctx.SkillRegistry = reloaded
-	if _, ok := reloaded.Get("refactor"); ok {
-		t.Fatal("refactor should not be loaded after disable")
+	for _, name := range []string{"refactor", "local-skill"} {
+		if _, ok := reloaded.Get(name); ok {
+			t.Fatalf("%s should not be loaded after disable", name)
+		}
 	}
-	if _, ok := reloaded.Get("local-skill"); ok {
-		t.Fatal("local-skill should not be loaded after disable")
-	}
+}
 
-	// Re-enable both — SourceOf resolves their origin.
-	if err := cmd.Run(ctx, []string{"enable", "refactor"}); err != nil {
-		t.Fatalf("enable refactor: %v", err)
+func enableRealSkills(t *testing.T, ctx *core.Context, cfg *config.Config, cmd *SkillsCommand, dir string) {
+	for _, name := range []string{"refactor", "local-skill"} {
+		if err := cmd.Run(*ctx, []string{"enable", name}); err != nil {
+			t.Fatal(err)
+		}
+		if !skillEnabled(cfg, name, nil) {
+			t.Errorf("%s should be re-enabled", name)
+		}
 	}
-	if !skillEnabled(cfg, "refactor", nil) {
-		t.Error("refactor should be re-enabled")
-	}
-	if err := cmd.Run(ctx, []string{"enable", "local-skill"}); err != nil {
-		t.Fatalf("enable local-skill: %v", err)
-	}
-	if !skillEnabled(cfg, "local-skill", nil) {
-		t.Error("local-skill should be re-enabled")
-	}
-
-	// Both config layers must be clean after re-enabling.
 	homeCfg := filepath.Join(os.Getenv("HOME"), ".goa", "config.yaml")
 	if data, err := os.ReadFile(homeCfg); err == nil && strings.Contains(string(data), "local-skill") {
-		t.Errorf("home config must not contain local-skill (per-project), got:\n%s", data)
-	}
-	projectCfg := filepath.Join(projectDir, ".goa", "config.yaml")
-	if data, err := os.ReadFile(projectCfg); err == nil && strings.Contains(string(data), "refactor") {
-		t.Errorf("project config must not contain refactor (embedded/global), got:\n%s", data)
+		t.Error("home config must not contain local-skill")
 	}
 }
 

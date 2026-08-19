@@ -6,16 +6,17 @@ package commands
 
 import (
 	"context"
-	"github.com/pijalu/goa/core"
-	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
-	"github.com/pijalu/goa/internal/auth"
-	"github.com/pijalu/goa/internal/event"
-	"github.com/pijalu/goa/tui"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pijalu/goa/core"
+	oauth "github.com/pijalu/goa/internal/agentic/provider/oauth"
+	"github.com/pijalu/goa/internal/auth"
+	"github.com/pijalu/goa/internal/event"
+	"github.com/pijalu/goa/tui"
 )
 
 // fakeTerm is a minimal tui.Terminal for driving a real TUI engine in tests.

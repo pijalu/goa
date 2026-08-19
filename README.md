@@ -118,6 +118,7 @@ On first run, Goa walks you through:
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full system architecture |
 | [SETUP.md](docs/SETUP.md) | Installation & setup guide |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Config cascade & all settings |
+| [LOOP-DETECTION.md](docs/LOOP-DETECTION.md) | Loop detection settings and safeguards |
 | [COMMANDS.md](docs/COMMANDS.md) | Complete command system reference |
 | [TOOLS.md](docs/TOOLS.md) | Tool system reference |
 | [SKILLS.md](docs/SKILLS.md) | Skills system reference |

@@ -65,7 +65,7 @@ func (t *LSPTool) Schema() agentic.ToolSchema {
 			"properties": map[string]any{
 				"op": map[string]any{
 					"type": "string",
-					"enum":        []string{"definition", "references", "hover", "symbols"},
+					"enum": []string{"definition", "references", "hover", "symbols"},
 				},
 				"path": map[string]any{
 					"type":        "string",

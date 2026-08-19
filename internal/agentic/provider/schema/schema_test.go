@@ -262,3 +262,58 @@ func TestMergeProfiles_ReasoningContentFlagOR(t *testing.T) {
 	assert.True(t, MergeProfiles(baseOn, VariantProfile{}).Compat.RequiresReasoningContentOnAssistantMessages,
 		"empty override must keep the base requirement")
 }
+
+// TestMergeProfiles_RemoteCompaction verifies the remote-compaction capability
+// (Codex Phase 2b.1) is provider/model-scoped and merges with set-if-non-empty
+// semantics: an override may raise the level, but an empty override never
+// clears a capability the base advertised.
+func TestMergeProfiles_RemoteCompaction(t *testing.T) {
+	// Default is none.
+	assert.Equal(t, RemoteCompactionNone, VariantProfile{}.Compat.RemoteCompaction)
+
+	// An override raising the capability wins.
+	raised := MergeProfiles(VariantProfile{}, VariantProfile{Compat: CompatFlags{RemoteCompaction: RemoteCompactionV2}})
+	assert.Equal(t, RemoteCompactionV2, raised.Compat.RemoteCompaction)
+
+	// An empty override does not clear a base capability.
+	kept := MergeProfiles(VariantProfile{Compat: CompatFlags{RemoteCompaction: RemoteCompactionV1}}, VariantProfile{})
+	assert.Equal(t, RemoteCompactionV1, kept.Compat.RemoteCompaction)
+
+	// A more specific override replaces the base level.
+	over := MergeProfiles(
+		VariantProfile{Compat: CompatFlags{RemoteCompaction: RemoteCompactionV1}},
+		VariantProfile{Compat: CompatFlags{RemoteCompaction: RemoteCompactionV2}},
+	)
+	assert.Equal(t, RemoteCompactionV2, over.Compat.RemoteCompaction)
+}
+
+// TestResolver_RemoteCompactionScoped verifies the capability resolves per
+// provider/model: a variant advertising it yields the level for matching
+// models, while non-matching models fall back to the default (none).
+func TestResolver_RemoteCompactionScoped(t *testing.T) {
+	r := NewResolver([]VariantProfile{
+		{
+			ID:     "codex-remote",
+			Match:  ProfileMatch{API: string(ApiOpenAICodexResponses)},
+			Compat: CompatFlags{RemoteCompaction: RemoteCompactionV1},
+		},
+	})
+	match := r.Resolve(Model{Api: ApiOpenAICodexResponses, Provider: ProviderOpenAI, ID: "gpt-5-codex"})
+	assert.Equal(t, RemoteCompactionV1, match.Compat.RemoteCompaction)
+	assert.True(t, match.Compat.RemoteCompaction.Supported())
+
+	// A non-Codex model does not inherit the capability.
+	other := r.Resolve(Model{Api: ApiOpenAICompletions, Provider: ProviderOpenAI, ID: "gpt-4o"})
+	assert.Equal(t, RemoteCompactionNone, other.Compat.RemoteCompaction)
+	assert.False(t, other.Compat.RemoteCompaction.Supported())
+}
+
+// TestRemoteCompactionJSON verifies the capability round-trips through variant
+// JSON as "v1"/"v2"/absent (default none).
+func TestRemoteCompactionJSON(t *testing.T) {
+	p, err := LoadEmbeddedProfile("openai-codex-responses")
+	require.NoError(t, err)
+	// The embedded Codex variant must NOT advertise remote compaction by
+	// default: detection is explicit opt-in only, keeping behavior unchanged.
+	assert.Equal(t, RemoteCompactionNone, p.Compat.RemoteCompaction)
+}

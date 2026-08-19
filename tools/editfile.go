@@ -83,7 +83,7 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"operation": map[string]any{
 					"type": "string",
-					"enum":        []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
+					"enum": []string{"replace", "replace_lines", "replace_pattern", "insert_after", "insert_before", "delete_lines"},
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
@@ -111,10 +111,10 @@ func (t *EditFileTool) Schema() agentic.ToolSchema {
 				},
 				"indent_mode": map[string]any{
 					"type": "string",
-					"enum":        []string{"preserve", "normalize", "as-is"},
+					"enum": []string{"preserve", "normalize", "as-is"},
 				},
 				"edits": map[string]any{
-					"type": "array",
+					"type":        "array",
 					"description": "Batch of edits to the same file, applied in order, atomically (all or nothing); each element mirrors single-edit fields and sees earlier results.",
 					"items": map[string]any{
 						"type": "object",
@@ -995,75 +995,5 @@ func (t *EditFileTool) searchReplaceError(path, oldStr string, err error, matche
 		return &internal.ToolError{Tool: "edit", Type: "edit_error",
 			Detail:   fmt.Sprintf("Edit failed: %v", err),
 			HintText: "Check the file content with 'read' and try again."}
-	}
-}
-
-// truncateStr returns s truncated to n runes with "..." suffix.
-func truncateStr(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
-	return string(runes[:n]) + "..."
-}
-
-// generateUnifiedDiff produces a unified-diff hunk comparing oldLines (before)
-// and newLines (after), finding the differing region automatically and including
-// surrounding context. Returns the diff hunk text, or empty if no difference.
-func generateUnifiedDiff(oldLines, newLines []string) string {
-	// Find first differing index
-	start := 0
-	for start < len(oldLines) && start < len(newLines) && oldLines[start] == newLines[start] {
-		start++
-	}
-	if start >= len(oldLines) && start >= len(newLines) {
-		return "" // identical
-	}
-
-	// Find last differing index (looking from end)
-	oldEnd := len(oldLines)
-	newEnd := len(newLines)
-	for oldEnd > start && newEnd > start && oldLines[oldEnd-1] == newLines[newEnd-1] {
-		oldEnd--
-		newEnd--
-	}
-
-	const ctxLines = 3
-
-	ctxStart := start - ctxLines
-	if ctxStart < 0 {
-		ctxStart = 0
-	}
-	ctxBeforeLines := start - ctxStart
-
-	ctxOldEnd := oldEnd + ctxLines
-	if ctxOldEnd > len(oldLines) {
-		ctxOldEnd = len(oldLines)
-	}
-	ctxAfterLines := ctxOldEnd - oldEnd
-
-	oldCount := (oldEnd - start) + ctxBeforeLines + ctxAfterLines
-	newCount := (newEnd - start) + ctxBeforeLines + ctxAfterLines
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", ctxStart+1, oldCount, ctxStart+1, newCount)
-
-	// Context before
-	writeDiffRange(&b, " ", oldLines, ctxStart, start)
-	// Removed lines
-	writeDiffRange(&b, "-", oldLines, start, oldEnd)
-	// Added lines
-	writeDiffRange(&b, "+", newLines, start, newEnd)
-	// Context after (from old file since they're identical in this region)
-	writeDiffRange(&b, " ", oldLines, oldEnd, ctxOldEnd)
-
-	return strings.TrimSuffix(b.String(), "\n")
-}
-
-// writeDiffRange writes lines[from:to] to b, each prefixed with prefix and
-// terminated by a newline.
-func writeDiffRange(b *strings.Builder, prefix string, lines []string, from, to int) {
-	for i := from; i < to; i++ {
-		fmt.Fprintf(b, "%s%s\n", prefix, lines[i])
 	}
 }

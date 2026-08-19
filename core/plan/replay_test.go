@@ -12,199 +12,148 @@ import (
 )
 
 func TestReplay_AllEventTypes(t *testing.T) {
-	// This test verifies that every event type can be replayed by:
-	// 1. Creating a plan
-	// 2. Appending events via the public mutation API
-	// 3. Reopening and verifying state
-	root := t.TempDir()
-
-	s, err := Create(root, "replay all events")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	// Add items and perform mutations.
-	id1, err := s.AddItem("Item 1", "Description 1", "", nil, "coder")
-	if err != nil {
-		t.Fatalf("AddItem: %v", err)
-	}
-	id2, err := s.AddItem("Item 2", "Description 2", "", nil, "")
-	if err != nil {
-		t.Fatalf("AddItem: %v", err)
-	}
-
-	// Update item.
-	title := "Updated Item 1"
-	desc := "Updated description"
-	err = s.UpdateItem(id1, PlanItemPatch{Title: &title, Description: &desc})
-	if err != nil {
-		t.Fatalf("UpdateItem: %v", err)
-	}
-
-	// Reorder.
-	err = s.Reorder([]string{id2, id1})
-	if err != nil {
-		t.Fatalf("Reorder: %v", err)
-	}
-
-	// Add comments.
-	cid1, err := s.AddComment("", "Plan-level observation")
-	if err != nil {
-		t.Fatalf("AddComment plan: %v", err)
-	}
-	cid2, err := s.AddComment(id1, "Item 1 needs work")
-	if err != nil {
-		t.Fatalf("AddComment item: %v", err)
-	}
-
-	// Update comment.
-	err = s.UpdateComment(cid2, "Item 1 needs more work")
-	if err != nil {
-		t.Fatalf("UpdateComment: %v", err)
-	}
-
-	// Submit revision.
-	err = s.SubmitRevision()
-	if err != nil {
-		t.Fatalf("SubmitRevision: %v", err)
-	}
-
-	// Resolve one comment.
-	err = s.ResolveComment(cid2, "addressed")
-	if err != nil {
-		t.Fatalf("ResolveComment: %v", err)
-	}
-
-	// Approve.
-	err = s.Approve()
-	if err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
-
-	// Start execution.
-	err = s.StartExecution("run-abc123")
-	if err != nil {
-		t.Fatalf("StartExecution: %v", err)
-	}
-
-	// Execute items.
-	err = s.StartItem(id2, "coder", "agent-1")
-	if err != nil {
-		t.Fatalf("StartItem: %v", err)
-	}
-	err = s.CompleteItem(id2, "All done")
-	if err != nil {
-		t.Fatalf("CompleteItem: %v", err)
-	}
-
-	err = s.StartItem(id1, "coder", "agent-2")
-	if err != nil {
-		t.Fatalf("StartItem: %v", err)
-	}
-
-	// Record clarification.
-	err = s.RecordClarification(id1, "Which approach?", "REST")
-	if err != nil {
-		t.Fatalf("RecordClarification: %v", err)
-	}
-
-	// Block item.
-	err = s.BlockItem(id1, "Can't proceed, missing dependency")
-	if err != nil {
-		t.Fatalf("BlockItem: %v", err)
-	}
-
-	// Skip blocked item.
-	err = s.SkipItem(id1, "Will do manually")
-	if err != nil {
-		t.Fatalf("SkipItem: %v", err)
-	}
-
-	// Remove a comment.
-	err = s.RemoveComment(cid1)
-	if err != nil {
-		t.Fatalf("RemoveComment: %v", err)
-	}
-
-	s.Close()
-
-	// Now reopen and verify everything replayed correctly.
-	s2, err := Open(root, s.id)
+	root, id, id1, id2, cid2 := createReplayFixture(t)
+	s2, err := Open(root, id)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer s2.Close()
+	verifyReplayPlan(t, s2, id1, id2, cid2)
+}
 
-	// Verify plan metadata.
-	if s2.plan.Name == "" {
+func createReplayFixture(t *testing.T) (string, string, string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	s := mustCreatePlan(t, root)
+	id1 := mustAddItem(t, s, "Item 1", "Description 1", "coder")
+	id2 := mustAddItem(t, s, "Item 2", "Description 2", "")
+	title, desc := "Updated Item 1", "Updated description"
+	mustReplay(t, s.UpdateItem(id1, PlanItemPatch{Title: &title, Description: &desc}))
+	mustReplay(t, s.Reorder([]string{id2, id1}))
+	cid1 := mustAddComment(t, s, "", "Plan-level observation")
+	cid2 := mustAddComment(t, s, id1, "Item 1 needs work")
+	mustReplay(t, s.UpdateComment(cid2, "Item 1 needs more work"))
+	mustReplay(t, s.SubmitRevision())
+	mustReplay(t, s.ResolveComment(cid2, "addressed"))
+	mustReplay(t, s.Approve())
+	mustReplay(t, s.StartExecution("run-abc123"))
+	mustReplay(t, s.StartItem(id2, "coder", "agent-1"))
+	mustReplay(t, s.CompleteItem(id2, "All done"))
+	mustReplay(t, s.StartItem(id1, "coder", "agent-2"))
+	mustReplay(t, s.RecordClarification(id1, "Which approach?", "REST"))
+	mustReplay(t, s.BlockItem(id1, "Can't proceed, missing dependency"))
+	mustReplay(t, s.SkipItem(id1, "Will do manually"))
+	mustReplay(t, s.RemoveComment(cid1))
+	id := s.id
+	mustReplay(t, s.Close())
+	return root, id, id1, id2, cid2
+}
+
+func mustCreatePlan(t *testing.T, root string) *Store {
+	t.Helper()
+	s, err := Create(root, "replay all events")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return s
+}
+func mustAddItem(t *testing.T, s *Store, title, desc, role string) string {
+	t.Helper()
+	id, err := s.AddItem(title, desc, "", nil, role)
+	if err != nil {
+		t.Fatalf("AddItem: %v", err)
+	}
+	return id
+}
+func mustAddComment(t *testing.T, s *Store, item, content string) string {
+	t.Helper()
+	id, err := s.AddComment(item, content)
+	if err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+	return id
+}
+func mustReplay(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func verifyReplayPlan(t *testing.T, s *Store, id1, id2, cid2 string) {
+	t.Helper()
+	verifyReplayHeader(t, s)
+	verifyReplayItems(t, s, id1, id2)
+	verifyReplayComments(t, s, cid2)
+}
+
+func verifyReplayHeader(t *testing.T, s *Store) {
+	t.Helper()
+	if s.plan.Name == "" {
 		t.Error("plan name should be set after replay")
 	}
-	if s2.plan.Objective != "replay all events" {
-		t.Errorf("objective = %q", s2.plan.Objective)
+	if s.plan.Objective != "replay all events" {
+		t.Errorf("objective = %q", s.plan.Objective)
 	}
-	if s2.plan.Status != PlanExecuting {
-		t.Errorf("status = %q, want executing", s2.plan.Status)
+	if s.plan.Status != PlanExecuting {
+		t.Errorf("status = %q, want executing", s.plan.Status)
 	}
-	if s2.plan.Revision != 1 {
-		t.Errorf("revision = %d, want 1", s2.plan.Revision)
+	if s.plan.Revision != 1 {
+		t.Errorf("revision = %d, want 1", s.plan.Revision)
 	}
-	if s2.plan.RunID != "run-abc123" {
-		t.Errorf("RunID = %q", s2.plan.RunID)
+	if s.plan.RunID != "run-abc123" {
+		t.Errorf("RunID = %q", s.plan.RunID)
 	}
+}
 
-	// Verify items.
-	if len(s2.plan.Items) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(s2.plan.Items))
+func verifyReplayItems(t *testing.T, s *Store, id1, id2 string) {
+	t.Helper()
+	if len(s.plan.Items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(s.plan.Items))
 	}
+	if s.plan.Items[0].ID != id2 {
+		t.Errorf("first item should be %q, got %q", id2, s.plan.Items[0].ID)
+	}
+	if s.plan.Items[1].ID != id1 {
+		t.Errorf("second item should be %q, got %q", id1, s.plan.Items[1].ID)
+	}
+	assertReplayItem(t, s.plan.Item(id1), "Updated Item 1", "Updated description", ItemSkipped, "")
+	assertReplayItem(t, s.plan.Item(id2), "", "", ItemDone, "All done")
+}
 
-	// Items were reordered to [id2, id1].
-	if s2.plan.Items[0].ID != id2 {
-		t.Errorf("first item should be %q, got %q", id2, s2.plan.Items[0].ID)
+func verifyReplayComments(t *testing.T, s *Store, cid2 string) {
+	t.Helper()
+	if len(s.plan.Comments) != 1 {
+		t.Fatalf("expected 1 comment, got %d", len(s.plan.Comments))
 	}
-	if s2.plan.Items[1].ID != id1 {
-		t.Errorf("second item should be %q, got %q", id1, s2.plan.Items[1].ID)
+	comment := s.plan.Comments[0]
+	if comment.ID != cid2 {
+		t.Errorf("remaining comment should be %q, got %q", cid2, comment.ID)
 	}
-
-	// Item id1 was updated.
-	it1 := s2.plan.Item(id1)
-	if it1 == nil {
-		t.Fatal("item-1 not found after replay")
-	}
-	if it1.Title != "Updated Item 1" {
-		t.Errorf("title = %q", it1.Title)
-	}
-	if it1.Description != "Updated description" {
-		t.Errorf("description = %q", it1.Description)
-	}
-	if it1.Status != ItemSkipped {
-		t.Errorf("status = %q, want skipped", it1.Status)
-	}
-
-	// Item id2 was completed.
-	it2 := s2.plan.Item(id2)
-	if it2 == nil {
-		t.Fatal("item-2 not found after replay")
-	}
-	if it2.Status != ItemDone {
-		t.Errorf("status = %q, want done", it2.Status)
-	}
-	if it2.Result != "All done" {
-		t.Errorf("result = %q", it2.Result)
-	}
-
-	// Verify comments.
-	// cid1 was removed, cid2 remains resolved.
-	if len(s2.plan.Comments) != 1 {
-		t.Fatalf("expected 1 comment, got %d", len(s2.plan.Comments))
-	}
-	if s2.plan.Comments[0].ID != cid2 {
-		t.Errorf("remaining comment should be %q, got %q", cid2, s2.plan.Comments[0].ID)
-	}
-	if !s2.plan.Comments[0].Resolved {
+	if !comment.Resolved {
 		t.Error("comment should be resolved")
 	}
-	if s2.plan.Comments[0].Content != "Item 1 needs more work" {
-		t.Errorf("content = %q", s2.plan.Comments[0].Content)
+	if comment.Content != "Item 1 needs more work" {
+		t.Errorf("content = %q", comment.Content)
+	}
+}
+
+func assertReplayItem(t *testing.T, item *PlanItem, title, desc string, status ItemStatus, result string) {
+	t.Helper()
+	if item == nil {
+		t.Fatal("item not found after replay")
+	}
+	if title != "" && item.Title != title {
+		t.Errorf("title = %q", item.Title)
+	}
+	if desc != "" && item.Description != desc {
+		t.Errorf("description = %q", item.Description)
+	}
+	if item.Status != status {
+		t.Errorf("status = %q, want %q", item.Status, status)
+	}
+	if result != "" && item.Result != result {
+		t.Errorf("result = %q", item.Result)
 	}
 }
 

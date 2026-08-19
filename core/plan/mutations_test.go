@@ -63,31 +63,35 @@ func TestMutAddItem(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, err := s.AddItem(tt.title, tt.description, tt.after, tt.dependsOn, tt.role)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("AddItem: %v", err)
-			}
-			if id == "" {
-				t.Error("expected non-empty ID")
-			}
-
-			item := s.plan.Item(id)
-			if item == nil {
-				t.Fatalf("Item %q not found after AddItem", id)
-			}
-			if item.Title != tt.title {
-				t.Errorf("Title = %q, want %q", item.Title, tt.title)
-			}
-			if item.Status != ItemPending {
-				t.Errorf("Status = %q, want pending", item.Status)
-			}
+			runAddItemCase(t, s, tt.title, tt.description, tt.after, tt.dependsOn, tt.role, tt.wantErr)
 		})
+	}
+}
+
+func runAddItemCase(t *testing.T, s *Store, title, description, after string, dependsOn []string, role string, wantErr bool) {
+	t.Helper()
+	id, err := s.AddItem(title, description, after, dependsOn, role)
+	if wantErr {
+		if err == nil {
+			t.Error("expected error, got nil")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("AddItem: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty ID")
+	}
+	item := s.plan.Item(id)
+	if item == nil {
+		t.Fatalf("Item %q not found after AddItem", id)
+	}
+	if item.Title != title {
+		t.Errorf("Title = %q, want %q", item.Title, title)
+	}
+	if item.Status != ItemPending {
+		t.Errorf("Status = %q, want pending", item.Status)
 	}
 }
 
@@ -207,77 +211,96 @@ func TestMutReorder(t *testing.T) {
 }
 
 func TestMutComments(t *testing.T) {
-	root := t.TempDir()
-	s := setupPlan(t, root)
+	s := setupPlan(t, t.TempDir())
 	defer s.Close()
-	id, _ := s.AddItem("Task", "", "", nil, "")
+	itemID := mustAddCommentTestItem(t, s)
+	commentID := addPlanComment(t, s)
+	addItemComment(t, s, itemID)
+	assertEmptyCommentRejected(t, s)
+	updateComment(t, s, commentID)
+	resolveComment(t, s, commentID)
+	assertMissingCommentRejected(t, s)
+	removeComment(t, s, commentID)
+}
 
-	var commentID string
+func mustAddCommentTestItem(t *testing.T, s *Store) string {
+	t.Helper()
+	id, err := s.AddItem("Task", "", "", nil, "")
+	if err != nil {
+		t.Fatalf("AddItem: %v", err)
+	}
+	return id
+}
 
-	t.Run("add_plan_comment", func(t *testing.T) {
-		cid, err := s.AddComment("", "plan-level comment")
-		if err != nil {
-			t.Fatalf("AddComment: %v", err)
-		}
-		commentID = cid
-	})
+func addPlanComment(t *testing.T, s *Store) string {
+	t.Helper()
+	id, err := s.AddComment("", "plan-level comment")
+	if err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+	return id
+}
 
-	t.Run("add_item_comment", func(t *testing.T) {
-		_, err := s.AddComment(id, "item comment")
-		if err != nil {
-			t.Fatalf("AddComment: %v", err)
-		}
-	})
+func addItemComment(t *testing.T, s *Store, itemID string) {
+	t.Helper()
+	if _, err := s.AddComment(itemID, "item comment"); err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+}
 
-	t.Run("add_empty_comment", func(t *testing.T) {
-		_, err := s.AddComment("", "")
-		if err == nil {
-			t.Error("expected error for empty content")
-		}
-	})
+func assertEmptyCommentRejected(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.AddComment("", ""); err == nil {
+		t.Error("expected error for empty content")
+	}
+}
 
-	t.Run("update_comment", func(t *testing.T) {
-		err := s.UpdateComment(commentID, "updated content")
-		if err != nil {
-			t.Fatalf("UpdateComment: %v", err)
-		}
-		for _, c := range s.plan.Comments {
-			if c.ID == commentID && c.Content != "updated content" {
-				t.Errorf("Content = %q", c.Content)
-			}
-		}
-	})
+func updateComment(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.UpdateComment(id, "updated content"); err != nil {
+		t.Fatalf("UpdateComment: %v", err)
+	}
+	assertCommentContent(t, s, id, "updated content")
+}
 
-	t.Run("resolve_comment", func(t *testing.T) {
-		err := s.ResolveComment(commentID, "fixed")
-		if err != nil {
-			t.Fatalf("ResolveComment: %v", err)
+func resolveComment(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.ResolveComment(id, "fixed"); err != nil {
+		t.Fatalf("ResolveComment: %v", err)
+	}
+	for _, comment := range s.plan.Comments {
+		if comment.ID == id && !comment.Resolved {
+			t.Error("comment should be resolved")
 		}
-		for _, c := range s.plan.Comments {
-			if c.ID == commentID && !c.Resolved {
-				t.Error("comment should be resolved")
-			}
-		}
-	})
+	}
+}
 
-	t.Run("update_nonexistent", func(t *testing.T) {
-		err := s.UpdateComment("c-nonexistent", "content")
-		if err == nil {
-			t.Error("expected error")
-		}
-	})
+func assertMissingCommentRejected(t *testing.T, s *Store) {
+	t.Helper()
+	if err := s.UpdateComment("c-nonexistent", "content"); err == nil {
+		t.Error("expected error")
+	}
+}
 
-	t.Run("remove_comment", func(t *testing.T) {
-		err := s.RemoveComment(commentID)
-		if err != nil {
-			t.Fatalf("RemoveComment: %v", err)
+func removeComment(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.RemoveComment(id); err != nil {
+		t.Fatalf("RemoveComment: %v", err)
+	}
+	for _, comment := range s.plan.Comments {
+		if comment.ID == id {
+			t.Error("comment should be removed")
 		}
-		for _, c := range s.plan.Comments {
-			if c.ID == commentID {
-				t.Error("comment should be removed")
-			}
+	}
+}
+
+func assertCommentContent(t *testing.T, s *Store, id, want string) {
+	t.Helper()
+	for _, comment := range s.plan.Comments {
+		if comment.ID == id && comment.Content != want {
+			t.Errorf("Content = %q, want %q", comment.Content, want)
 		}
-	})
+	}
 }
 
 func TestMutSubmitRevision(t *testing.T) {
@@ -411,75 +434,95 @@ func TestMutStartItem_Sequential(t *testing.T) {
 }
 
 func TestMutBlockAndSkip(t *testing.T) {
-	root := t.TempDir()
-	s := setupPlan(t, root)
+	s := setupExecutingPlan(t)
 	defer s.Close()
-
-	s.SubmitRevision()
-	s.Approve()
-	s.StartExecution("run-test")
-
 	id1, _ := s.AddItem("Item 1", "", "", nil, "")
 	id2, _ := s.AddItem("Item 2", "", "", []string{id1}, "")
 	id3, _ := s.AddItem("Item 3", "", "", []string{id2}, "")
+	assertBlockedByDependency(t, s, id2)
+	completeItem(t, s, id1, "agent-1")
+	blockItem(t, s, id2)
+	skipItem(t, s, id2)
+	startItem(t, s, id3, "agent-3")
+	assertCannotSkipInProgress(t, s, id3)
+	s.CompleteItem(id3, "done")
+	assertCannotSkipDone(t, s, id3)
+}
 
-	t.Run("block_blocked_by_dep", func(t *testing.T) {
-		// Can't start id2 because id1 is pending.
-		err := s.StartItem(id2, "coder", "agent")
-		if err == nil {
-			t.Error("expected error for unsatisfied dep")
-		}
-	})
+func setupExecutingPlan(t *testing.T) *Store {
+	t.Helper()
+	s := setupPlan(t, t.TempDir())
+	if err := s.SubmitRevision(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Approve(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartExecution("run-test"); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
 
-	// Start item 1, complete it.
-	s.StartItem(id1, "coder", "agent-1")
-	s.CompleteItem(id1, "done")
+func assertBlockedByDependency(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.StartItem(id, "coder", "agent"); err == nil {
+		t.Error("expected error for unsatisfied dep")
+	}
+}
 
-	// Start item 2, block it.
-	s.StartItem(id2, "coder", "agent-2")
-	t.Run("block_item", func(t *testing.T) {
-		err := s.BlockItem(id2, "missing credentials")
-		if err != nil {
-			t.Fatalf("BlockItem: %v", err)
-		}
-		if s.plan.Item(id2).Status != ItemBlocked {
-			t.Errorf("Status = %q, want blocked", s.plan.Item(id2).Status)
-		}
-	})
+func completeItem(t *testing.T, s *Store, id, agent string) {
+	t.Helper()
+	if err := s.StartItem(id, "coder", agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteItem(id, "done"); err != nil {
+		t.Fatal(err)
+	}
+}
 
-	t.Run("skip_blocked_item", func(t *testing.T) {
-		err := s.SkipItem(id2, "not needed")
-		if err != nil {
-			t.Fatalf("SkipItem: %v", err)
-		}
-		if s.plan.Item(id2).Status != ItemSkipped {
-			t.Errorf("Status = %q, want skipped", s.plan.Item(id2).Status)
-		}
-	})
+func blockItem(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.StartItem(id, "coder", "agent-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BlockItem(id, "missing credentials"); err != nil {
+		t.Fatalf("BlockItem: %v", err)
+	}
+	if s.plan.Item(id).Status != ItemBlocked {
+		t.Errorf("Status = %q, want blocked", s.plan.Item(id).Status)
+	}
+}
 
-	t.Run("skip_unblocks_dependent", func(t *testing.T) {
-		// id3 depends on id2 which is now skipped → dependency satisfied.
-		err := s.StartItem(id3, "coder", "agent-3")
-		if err != nil {
-			t.Fatalf("StartItem after skip: %v", err)
-		}
-	})
+func skipItem(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.SkipItem(id, "not needed"); err != nil {
+		t.Fatalf("SkipItem: %v", err)
+	}
+	if s.plan.Item(id).Status != ItemSkipped {
+		t.Errorf("Status = %q, want skipped", s.plan.Item(id).Status)
+	}
+}
 
-	t.Run("cannot_skip_in_progress", func(t *testing.T) {
-		// id3 is in_progress, can't skip it.
-		err := s.SkipItem(id3, "why not")
-		if err == nil {
-			t.Error("expected error for skipping in_progress item")
-		}
-	})
+func startItem(t *testing.T, s *Store, id, agent string) {
+	t.Helper()
+	if err := s.StartItem(id, "coder", agent); err != nil {
+		t.Fatalf("StartItem after skip: %v", err)
+	}
+}
 
-	t.Run("cannot_skip_done", func(t *testing.T) {
-		s.CompleteItem(id3, "done")
-		err := s.SkipItem(id3, "already done")
-		if err == nil {
-			t.Error("expected error for skipping done item")
-		}
-	})
+func assertCannotSkipInProgress(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.SkipItem(id, "why not"); err == nil {
+		t.Error("expected error for skipping in_progress item")
+	}
+}
+
+func assertCannotSkipDone(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := s.SkipItem(id, "already done"); err == nil {
+		t.Error("expected error for skipping done item")
+	}
 }
 
 func TestMutFinish(t *testing.T) {

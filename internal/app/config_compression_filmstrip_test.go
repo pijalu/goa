@@ -25,70 +25,53 @@ import (
 // wireInteractiveCallbacks goroutine would run its Apply inline and race
 // the test goroutine under -race. The drain replaces that goroutine with a
 // deterministic pump, preserving the production callback semantics.
-func TestConfigCompressionMenu_Filmstrip(t *testing.T) {
-	sc := newUIScenario(t, 100, 30)
+
+func setupCompressionSelectors(t *testing.T, sc *uiScenario) (core.Context, func(), func(string), func()) {
 	subs := sc.app.subs
-	subs.cfg.ContextCompression.OnContextError = true
-	// Isolated loader: picker applies persist via SaveHomeField into a temp
-	// HOME, never the user's real ~/.goa/config.yaml.
 	subs.loader = config.NewCascadeLoader(t.TempDir(), "", nil)
-
 	ctx := coreContextForCommand(subs, sc.app)
-	ctx.SkillRegistry = skills.NewSkillRegistry(nil) // showRoot renders the skills row
-
-	// Synchronous selector queue: record every shown selector; drainSelectors
-	// delivers the picked value to the menu callback on the test goroutine.
+	ctx.SkillRegistry = skills.NewSkillRegistry(nil)
 	type selReq struct {
 		ch <-chan string
 		cb func(string, bool)
 	}
-	var selQ []selReq
+	var queue []selReq
 	ctx.SelectOptionFunc = func(title string, opts []tui.SelectorItem, current string, cb func(string, bool)) {
-		ch := sc.engine.ShowSelector(title, opts, current)
-		selQ = append(selQ, selReq{ch: ch, cb: cb})
+		queue = append(queue, selReq{ch: sc.engine.ShowSelector(title, opts, current), cb: cb})
 	}
-	drainSelectors := func() {
-		for len(selQ) > 0 {
+	drain := func() {
+		for len(queue) > 0 {
 			select {
-			case v, ok := <-selQ[0].ch:
-				req := selQ[0]
-				selQ = selQ[1:]
-				// Production wiring: empty selection (ESC) reports ok=false.
+			case v, ok := <-queue[0].ch:
+				req := queue[0]
+				queue = queue[1:]
 				req.cb(v, ok && v != "")
-				// req.cb may open the next selector (appended to selQ) — loop.
 			default:
 				return
 			}
 		}
 	}
-
-	sc.engine.ApplySync(func() {
-		cmd := &commands.ConfigCommand{}
-		if err := cmd.Run(ctx, nil); err != nil {
-			t.Errorf("config Run: %v", err)
-		}
-	})
-	pumpEvents(sc)
-	sc.engine.RenderNow()
-	film := sc.filmstrip()
-	film.Capture("config/root", sc.engine.AgentFrame(), "")
-	waitForFrame(t, sc, "Settings:")
-
-	// Type-to-filter navigation (the selector supports a search filter).
 	pick := func(filter string) {
-		t.Helper()
 		for _, ch := range filter {
 			sc.engine.SendKey(string(ch))
 		}
 		sc.engine.SendKey(tui.KeyEnter)
-		drainSelectors()
+		drain()
 	}
-	esc := func() {
-		t.Helper()
-		sc.engine.SendKey(tui.KeyEscape)
-		drainSelectors()
-	}
+	esc := func() { sc.engine.SendKey(tui.KeyEscape); drain() }
+	return ctx, drain, pick, esc
+}
 
+func TestConfigCompressionMenu_Filmstrip(t *testing.T) {
+	sc := newUIScenario(t, 100, 30)
+	subs := sc.app.subs
+	subs.cfg.ContextCompression.OnContextError = true
+	ctx, drainSelectors, pick, esc := setupCompressionSelectors(t, sc)
+	sc.engine.ApplySync(func() { _ = (&commands.ConfigCommand{}).Run(ctx, nil) })
+	drainSelectors()
+	sc.engine.RenderNow()
+	waitForFrame(t, sc, "Settings:")
+	film := sc.filmstrip()
 	pick("Compression")
 	waitForFrame(t, sc, "Compression:")
 	film.Capture("config/compression-menu", sc.engine.AgentFrame(), "")

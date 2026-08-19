@@ -105,54 +105,46 @@ teams:
 }
 
 func TestTeamDefinition_ResolvedMembers(t *testing.T) {
-	t.Run("shorthand", func(t *testing.T) {
-		def := TeamDefinition{
-			Main:      &TeamMember{Model: "m1"},
-			Companion: &TeamMember{Model: "m2"},
-		}
-		members, err := def.ResolvedMembers()
-		if err != nil {
-			t.Fatalf("ResolvedMembers: %v", err)
-		}
-		if len(members) != 2 {
-			t.Fatalf("got %d members, want 2", len(members))
-		}
-		if members[0].Name != "main" || members[0].Member.Role != TeamRoleMain {
-			t.Errorf("members[0] = %+v", members[0])
-		}
-		if members[1].Name != "companion" || members[1].Member.Role != TeamRoleReviewer {
-			t.Errorf("members[1] = %+v", members[1])
-		}
-	})
+	t.Run("shorthand", testResolvedShorthand)
+	t.Run("canonical map defaults worker", testResolvedCanonical)
+	t.Run("mixing forms is an error", testResolvedMixedForms)
+}
 
-	t.Run("canonical map defaults worker", func(t *testing.T) {
-		def := TeamDefinition{Members: map[string]TeamMember{
-			"lead":     {Model: "m1", Role: "main"},
-			"reviewer": {Model: "m2", Role: "reviewer"},
-			"helper":   {Model: "m3"},
-		}}
-		members, err := def.ResolvedMembers()
-		if err != nil {
-			t.Fatalf("ResolvedMembers: %v", err)
-		}
-		if len(members) != 3 {
-			t.Fatalf("got %d members, want 3", len(members))
-		}
-		// sorted by name: helper, lead, reviewer
-		if members[0].Name != "helper" || members[0].Member.Role != TeamRoleWorker {
-			t.Errorf("members[0] = %+v, want helper/worker", members[0])
-		}
-	})
+func testResolvedShorthand(t *testing.T) {
+	members, err := (TeamDefinition{Main: &TeamMember{Model: "m1"}, Companion: &TeamMember{Model: "m2"}}).ResolvedMembers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("got %d members, want 2", len(members))
+	}
+	if members[0].Name != "main" || members[0].Member.Role != TeamRoleMain {
+		t.Errorf("members[0] = %+v", members[0])
+	}
+	if members[1].Name != "companion" || members[1].Member.Role != TeamRoleReviewer {
+		t.Errorf("members[1] = %+v", members[1])
+	}
+}
 
-	t.Run("mixing forms is an error", func(t *testing.T) {
-		def := TeamDefinition{
-			Main:    &TeamMember{Model: "m1"},
-			Members: map[string]TeamMember{"x": {Model: "m2", Role: "main"}},
-		}
-		if _, err := def.ResolvedMembers(); err == nil {
-			t.Fatal("expected error for mixed forms")
-		}
-	})
+func testResolvedCanonical(t *testing.T) {
+	def := TeamDefinition{Members: map[string]TeamMember{"lead": {Model: "m1", Role: "main"}, "reviewer": {Model: "m2", Role: "reviewer"}, "helper": {Model: "m3"}}}
+	members, err := def.ResolvedMembers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 3 {
+		t.Fatalf("got %d members, want 3", len(members))
+	}
+	if members[0].Name != "helper" || members[0].Member.Role != TeamRoleWorker {
+		t.Errorf("members[0] = %+v", members[0])
+	}
+}
+
+func testResolvedMixedForms(t *testing.T) {
+	def := TeamDefinition{Main: &TeamMember{Model: "m1"}, Members: map[string]TeamMember{"x": {Model: "m2", Role: "main"}}}
+	if _, err := def.ResolvedMembers(); err == nil {
+		t.Fatal("expected error for mixed forms")
+	}
 }
 
 func TestTeamDefinition_Accessors(t *testing.T) {

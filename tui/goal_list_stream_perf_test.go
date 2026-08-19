@@ -80,9 +80,9 @@ func benchmarkGoalListDuringStream(b *testing.B, goalListSize, chunks int) {
 	b.StopTimer()
 }
 
-func BenchmarkGoalListDuringStream_Small(b *testing.B)  { benchmarkGoalListDuringStream(b, 2, 10) }
+func BenchmarkGoalListDuringStream_Small(b *testing.B)       { benchmarkGoalListDuringStream(b, 2, 10) }
 func BenchmarkGoalListDuringStream_FillsScreen(b *testing.B) { benchmarkGoalListDuringStream(b, 8, 10) }
-func BenchmarkGoalListDuringStream_Huge(b *testing.B)    { benchmarkGoalListDuringStream(b, 30, 10) }
+func BenchmarkGoalListDuringStream_Huge(b *testing.B)        { benchmarkGoalListDuringStream(b, 30, 10) }
 
 // TestGoalListDuringStream_NoResetStorm asserts the FIX: after /goal:list
 // lands mid-stream, each stream chunk must NOT trigger a full scrollback reset

@@ -83,6 +83,140 @@ func TestHasToolSignal(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsInvokeForm(t *testing.T) {
+	// Real newlines, exactly as emitted on the wire (export shape).
+	content := "<invoke name=\"terminal\">\n" +
+		"<parameter name=\"command\">ls -la</parameter>\n" +
+		"</invoke>"
+	calls := parseToolCallsFromText(content, 0, true)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].name != "terminal" {
+		t.Errorf("name = %q, want terminal", calls[0].name)
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(calls[0].arguments), &args); err != nil {
+		t.Fatalf("arguments not valid JSON: %v", err)
+	}
+	if args["command"] != "ls -la" {
+		t.Errorf("command = %q, want ls -la", args["command"])
+	}
+}
+
+func TestParseToolCallsInvokeFormIncomplete(t *testing.T) {
+	// Streaming cut before the close tag: recoverable under allowIncomplete.
+	content := `<invoke name="terminal">\n<parameter name="command">ls -la`
+	calls := parseToolCallsFromText(content, 0, true)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].name != "terminal" {
+		t.Errorf("name = %q, want terminal", calls[0].name)
+	}
+}
+
+func TestParseToolCallsInvokeGarbagePrefix(t *testing.T) {
+	// The exact incident shape (export goa-export-20260819-004622): the model
+	// degraded mid-sentence and emitted the invoke block as plain content.
+	content := "continuing with the CM display: learance<invoke name=\"goal\">\n" +
+		"<parameter name=\"action\">create</parameter>\n</invoke>"
+	calls := parseToolCallsFromText(content, 0, true)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].name != "goal" {
+		t.Errorf("name = %q, want goal", calls[0].name)
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(calls[0].arguments), &args); err != nil {
+		t.Fatalf("arguments not valid JSON: %v", err)
+	}
+	if args["action"] != "create" {
+		t.Errorf("action = %q, want create", args["action"])
+	}
+}
+
+func TestParseToolCalls_MultipleInvokes(t *testing.T) {
+	content := `<invoke name="bash">\n<parameter name="command">ls</parameter>\n</invoke>\n` +
+		`<invoke name="read">\n<parameter name="path">x.go</parameter>\n</invoke>`
+	calls := parseToolCallsFromText(content, 0, true)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if calls[0].name != "bash" || calls[1].name != "read" {
+		t.Errorf("names = %q,%q; want bash,read", calls[0].name, calls[1].name)
+	}
+}
+
+func TestParseToolCallsInvokeRegressionFromExport(t *testing.T) {
+	// Shape-faithful replay of the lost goal-create call from export
+	// goa-export-20260819-004622: four parameters, long single-line values,
+	// close tag on its own line. The parser must recover name + all four
+	// parameters with values intact.
+	// Real newlines, exactly as emitted on the wire (export shape).
+	content := "<invoke name=\"goal\">\n" +
+		"<parameter name=\"action\">create</parameter>\n" +
+		"<parameter name=\"completionCriterion\">internal/app/stats.go splits tokenCacheMisses into full/partial counters + missed-token total; renderers updated; tests green; committed.</parameter>\n" +
+		"<parameter name=\"handover\">bugs.md TODO entry has the full fix plan. Sites: stats.go:1058, 142, 319, 739, 1060, 1132, 1464.</parameter>\n" +
+		"<parameter name=\"objective\">Fix bugs.md CM entry: split the CM counter (CM:X|Y rendering, red/orange, hide-when-zero).</parameter>\n" +
+		"</invoke>"
+	calls := parseToolCallsFromText(content, 0, true)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].name != "goal" {
+		t.Errorf("name = %q, want goal", calls[0].name)
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(calls[0].arguments), &args); err != nil {
+		t.Fatalf("arguments not valid JSON: %v", err)
+	}
+	for _, k := range []string{"action", "completionCriterion", "handover", "objective"} {
+		if _, ok := args[k]; !ok {
+			t.Errorf("parameter %q missing from %v", k, args)
+		}
+	}
+	if args["action"] != "create" {
+		t.Errorf("action = %q, want create", args["action"])
+	}
+	want := "Fix bugs.md CM entry: split the CM counter (CM:X|Y rendering, red/orange, hide-when-zero)."
+	if args["objective"] != want {
+		t.Errorf("objective = %q\nwant      %q", args["objective"], want)
+	}
+}
+
+func TestParseInvokeParametersEmptyBody(t *testing.T) {
+	args, ok := parseInvokeParameters("\n")
+	if !ok || args != "{}" {
+		t.Errorf("empty body = (%q, %v), want ({}, true)", args, ok)
+	}
+}
+
+func TestHasToolSignal_Invoke(t *testing.T) {
+	if !hasToolSignal("text <invoke name=\"goal\"> more") {
+		t.Error("<invoke name= signal not detected")
+	}
+	if hasToolSignal("plain <invocation of the daemon>") {
+		t.Error("<invocation prose must not trip the signal")
+	}
+}
+
+func TestStripToolMarkup_Invoke(t *testing.T) {
+	closed := stripToolMarkup("before <invoke name=\"x\"><parameter name=\"k\">v</parameter></invoke> after", false)
+	if closed != "before  after" {
+		t.Errorf("closed strip = %q", closed)
+	}
+	incomplete := stripToolMarkup("before <invoke name=\"x\"><parameter name=\"k\">v", true)
+	if incomplete != "before " {
+		t.Errorf("incomplete strip = %q", incomplete)
+	}
+	orphan := stripToolMarkup("text </invoke> tail", true)
+	if orphan != "text  tail" {
+		t.Errorf("orphan closer strip = %q", orphan)
+	}
+}
+
 func TestParseToolCalls_MultipleFunctionCalls(t *testing.T) {
 	content := `<function=terminal><parameter=command>ls</parameter></function>` +
 		`<function=read><parameter=path>/etc/hosts</parameter></function>`

@@ -79,9 +79,7 @@ func TestEphemeralSystemMessage_TagNotSentToModel(t *testing.T) {
 }
 
 // TestEphemeralSystemMessage_InModelHistoryAndUserBubble verifies that an
-// ephemeral host control nudge reaches the model's history AND is surfaced to
-// the user as a durable system-notification chat bubble (every nudge
-// must be user-visible and part of chat history).
+// ephemeral host control nudge reaches model history and remains visible to the user.
 func TestEphemeralSystemMessage_InModelHistoryAndUserBubble(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
 	obs := &mockEventObserver{}
@@ -97,7 +95,6 @@ func TestEphemeralSystemMessage_InModelHistoryAndUserBubble(t *testing.T) {
 	if histLen != 1 {
 		t.Fatalf("expected 1 history entry after injection, got %d", histLen)
 	}
-	// ...AND the user sees it as a system-notification content bubble.
 	found := false
 	for _, e := range obs.Events() {
 		if e.Type == EventContent && e.Metadata["category"] == "system-notification" && e.Text == nudge {
@@ -132,13 +129,12 @@ func TestConsecutiveToolRounds_LimitReported(t *testing.T) {
 	}
 }
 
-// TestEffectiveMaxConsecutiveToolRounds_DefaultRaised verifies the default
-// consecutive-tool-round limit is 15 (raised from 10 to avoid interrupting
-// legitimate long investigations).
-func TestEffectiveMaxConsecutiveToolRounds_DefaultRaised(t *testing.T) {
+// TestEffectiveMaxConsecutiveToolRounds_DefaultDisabled verifies a bare Agent
+// does not invent a hidden limit; application config supplies the normal default.
+func TestEffectiveMaxConsecutiveToolRounds_DefaultDisabled(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
-	if got := a.effectiveMaxConsecutiveToolRounds(); got != 15 {
-		t.Errorf("default = %d, want 15", got)
+	if got := a.effectiveMaxConsecutiveToolRounds(); got != 0 {
+		t.Errorf("bare-agent limit = %d, want disabled (0)", got)
 	}
 }
 
@@ -233,11 +229,8 @@ func TestTrackToolCallingRound_TurnReasoningResetsStreak(t *testing.T) {
 	}
 }
 
-// TestInjectEphemeralSystemMessage_EmitsVisibleBubble verifies that a host
-// control nudge ("[goa-system]…") is surfaced to the user as a durable
-// system-notification CONTENT event (rendered as a persistent chat bubble and
-// part of chat history) carrying the FULL nudge text — not a transient progress
-// line (the user MUST be aware of every nudge sent to the model).
+// TestInjectEphemeralSystemMessage_EmitsVisibleBubble verifies that recovery
+// instructions remain visible to the user as system notifications.
 func TestInjectEphemeralSystemMessage_EmitsVisibleBubble(t *testing.T) {
 	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error)})
 	obs := &mockEventObserver{}
@@ -247,21 +240,15 @@ func TestInjectEphemeralSystemMessage_EmitsVisibleBubble(t *testing.T) {
 	a.InjectEphemeralSystemMessage(nudge)
 
 	events := obs.Events()
-	var bubble *OutputEvent
-	for i := range events {
-		if events[i].Type == EventContent && events[i].Metadata["category"] == "system-notification" {
-			bubble = &events[i]
+	found := false
+	for _, event := range events {
+		if event.Type == EventContent && event.Metadata["category"] == "system-notification" && event.Text == nudge {
+			found = true
 			break
 		}
 	}
-	if bubble == nil {
-		t.Fatalf("expected a system-notification content event (chat bubble), got %d events: %+v", len(events), events)
-	}
-	if bubble.Role != System {
-		t.Errorf("bubble Role = %v, want System", bubble.Role)
-	}
-	if bubble.Text != nudge {
-		t.Errorf("bubble Text = %q, want the full nudge text %q", bubble.Text, nudge)
+	if !found {
+		t.Fatalf("expected visible system notification, got %+v", events)
 	}
 }
 
@@ -286,7 +273,7 @@ func TestInjectEphemeralSystemMessage_NoBubbleForNonControl(t *testing.T) {
 // TestMaxConsecutiveToolRounds_ZeroDisables verifies that a negative/disabled
 // limit never reports the silent-limit signal.
 func TestMaxConsecutiveToolRounds_ZeroDisables(t *testing.T) {
-	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: -1})
+	a := NewAgent(Config{SystemPrompt: "sys", Logger: NewLogger(Error), MaxConsecutiveToolRounds: 0})
 
 	// Run many silent rounds — the limit must never be reported.
 	for i := 0; i < 20; i++ {

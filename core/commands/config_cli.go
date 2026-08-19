@@ -514,6 +514,11 @@ var configSetters = map[string]configSetter{
 	"context_compression.micro_compaction.min_context_ratio":    setMicroMinContextRatio,
 	"context_compression.micro_compaction.cache_miss_threshold": setMicroCacheMissThreshold,
 	"context_compression.micro_compaction.truncated_marker":     setString(func(cfg *config.Config) *string { return &cfg.ContextCompression.MicroCompaction.TruncatedMarker }),
+	// Fresh-window (token-budget) strategy knobs (Codex Phase 2b.3): the
+	// enabled gate and the preservation tail bound, settable like every
+	// other compression knob (no hidden configuration keys).
+	"context_compression.fresh_window.enabled":               setBoolPtr(func(cfg *config.Config) **bool { return &cfg.ContextCompression.FreshWindow.Enabled }),
+	"context_compression.fresh_window.preserve_recent_turns": setIntRange(func(cfg *config.Config) *int { return &cfg.ContextCompression.FreshWindow.PreserveRecentTurns }, 0, 100),
 	// Per-turn temporal context injection (gap CX6): no hidden knobs — the
 	// enable switch, display zone, and refresh interval are settable like
 	// every other runtime behavior.
@@ -687,11 +692,11 @@ func setSpinnerName(cfg *config.Config, value string) error {
 
 func setCompressionStrategy(cfg *config.Config, value string) error {
 	switch strings.ToLower(value) {
-	case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+	case "", "tool_elision", "selective", "summarize", "hybrid", "micro", "fresh_window":
 		cfg.ContextCompression.Strategy = strings.ToLower(value)
 		return nil
 	}
-	return fmt.Errorf("context_compression.strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+	return fmt.Errorf("context_compression.strategy must be one of: tool_elision, selective, summarize, hybrid, micro, fresh_window")
 }
 
 // setOnErrorStrategy validates and sets the on-error recovery strategy
@@ -699,11 +704,11 @@ func setCompressionStrategy(cfg *config.Config, value string) error {
 // (hybrid).
 func setOnErrorStrategy(cfg *config.Config, value string) error {
 	switch strings.ToLower(value) {
-	case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+	case "", "tool_elision", "selective", "summarize", "hybrid", "micro", "fresh_window":
 		cfg.ContextCompression.OnErrorStrategy = strings.ToLower(value)
 		return nil
 	}
-	return fmt.Errorf("context_compression.on_error_strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+	return fmt.Errorf("context_compression.on_error_strategy must be one of: tool_elision, selective, summarize, hybrid, micro, fresh_window")
 }
 
 // setLayerStrategy validates and sets one per-layer compression strategy
@@ -712,11 +717,11 @@ func setLayerStrategy(field func(cfg *config.Config) *string) func(cfg *config.C
 	return func(cfg *config.Config, value string) error {
 		v := strings.ToLower(value)
 		switch v {
-		case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+		case "", "tool_elision", "selective", "summarize", "hybrid", "micro", "fresh_window":
 			*field(cfg) = v
 			return nil
 		}
-		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro, fresh_window")
 	}
 }
 
@@ -756,11 +761,11 @@ func applyPerModelField(ov *config.ModelCompressionOverride, field, value string
 	case "strategy":
 		v := strings.ToLower(value)
 		switch v {
-		case "", "tool_elision", "selective", "summarize", "hybrid", "micro":
+		case "", "tool_elision", "selective", "summarize", "hybrid", "micro", "fresh_window":
 			ov.Strategy = v
 			return nil
 		}
-		return fmt.Errorf("per-model strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+		return fmt.Errorf("per-model strategy must be one of: tool_elision, selective, summarize, hybrid, micro, fresh_window")
 	case "strategies.soft", "strategies.trigger", "strategies.hard":
 		return setPerModelLayerStrategy(ov, field, value)
 	case "thresholds.soft_percent":
@@ -786,18 +791,19 @@ func applyPerModelField(ov *config.ModelCompressionOverride, field, value string
 }
 
 // setPerModelLayerStrategy validates a per-layer strategy override; the soft
-// layer must stay zero-LLM (micro or tool_elision), mirroring the global rule.
+// layer must stay zero-LLM (micro, tool_elision or fresh_window), mirroring
+// the global rule.
 func setPerModelLayerStrategy(ov *config.ModelCompressionOverride, field, value string) error {
 	v := strings.ToLower(value)
 	switch v {
-	case "", "tool_elision", "micro":
+	case "", "tool_elision", "micro", "fresh_window":
 		// valid for every layer
 	case "selective", "summarize", "hybrid":
 		if field == "strategies.soft" {
-			return fmt.Errorf("soft layer strategy must be zero-LLM (micro or tool_elision)")
+			return fmt.Errorf("soft layer strategy must be zero-LLM (micro, tool_elision or fresh_window)")
 		}
 	default:
-		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro")
+		return fmt.Errorf("strategy must be one of: tool_elision, selective, summarize, hybrid, micro, fresh_window")
 	}
 	switch field {
 	case "strategies.soft":
@@ -961,44 +967,6 @@ func parsePerModelCompressionKey(path []string) (modelID, field string, ok bool)
 	}
 	field = strings.Join(path[3:], ".")
 	return modelID, field, field != ""
-}
-
-func parseBool(value string) bool {
-	switch strings.ToLower(value) {
-	case "true", "on", "1", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
-// boolPtrValue dereferences a tri-state *bool config field; nil means the
-// feature is at its default (enabled, i.e. not disabled → false).
-func boolPtrValue(v *bool) bool {
-	return v != nil && *v
-}
-
-// parseToggle parses a UI-friendly on/off value.
-// When inverted is true, "off" means the underlying boolean is true (used for
-// thinking_collapsed, where off = collapse = true).
-func parseToggle(value string, inverted bool) bool {
-	v := parseBool(value)
-	if isOnOff(value) {
-		v = strings.ToLower(value) == "on"
-	}
-	if inverted {
-		return !v
-	}
-	return v
-}
-
-func isOnOff(value string) bool {
-	switch strings.ToLower(value) {
-	case "on", "off":
-		return true
-	default:
-		return false
-	}
 }
 
 func handleConfigReload(ctx core.Context) error {

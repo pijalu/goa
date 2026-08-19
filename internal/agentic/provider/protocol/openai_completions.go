@@ -19,14 +19,8 @@ import (
 	"github.com/pijalu/goa/internal/agentic/provider/transport"
 )
 
-// protocolLog emits protocol-level diagnostics (P21 default-materialization
-// markers: which request fields came from defaults instead of an explicit
-// value, dsh's adapterDefaults reporting). It defaults to stderr like the
-// agentic logger; tests can capture output via setProtocolLogOutput.
+// protocolLog emits diagnostics for materialized provider defaults.
 var protocolLog = log.New(os.Stderr, "goa/protocol: ", log.LstdFlags)
-
-// setProtocolLogOutput redirects the package diagnostic logger. Test-only.
-func setProtocolLogOutput(w io.Writer) { protocolLog.SetOutput(w) }
 
 func init() {
 	Register(&openAICompletions{})
@@ -118,6 +112,11 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	if profile.CachePolicy.Mode != "" && profile.CachePolicy.Mode != schema.CacheModeNone {
 		c.CacheControlFormat = "anthropic"
 	}
+	// The long-retention gate must be derived here: the protocol layer owns
+	// the prompt_cache_key emission, and nothing else populates this flag on
+	// the wire path (the provider-layer compat struct never crosses the
+	// boundary). Without it, long retention silently sent no cache identity.
+	c.SupportsLongCacheRetention = supportsLongCacheRetention(model)
 	return c
 }
 
@@ -522,12 +521,12 @@ func promptCacheKey(model schema.Model, opts schema.StreamOptions, compat openAI
 	if opts.CacheRetention == schema.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) {
 		return ""
 	}
-	if opts.SessionID == "" {
+	if promptCacheIdentity(opts) == "" {
 		return ""
 	}
 	isOpenAI := strings.Contains(model.BaseURL, "api.openai.com")
 	if isOpenAI || (opts.CacheRetention == schema.CacheRetentionLong && compat.SupportsLongCacheRetention) || isLocalProvider(model.Provider, model.BaseURL) {
-		return ClampOpenAIPromptCacheKey(opts.SessionID)
+		return ClampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 	}
 	return ""
 }
@@ -548,6 +547,27 @@ func isLocalProvider(prov schema.Provider, baseURL string) bool {
 	return p == "lm-studio" || p == "ollama" ||
 		strings.Contains(u, "localhost:1234") || strings.Contains(u, "127.0.0.1:1234") ||
 		strings.Contains(u, "localhost:11434") || strings.Contains(u, "127.0.0.1:11434")
+}
+
+// supportsLongCacheRetention reports whether the provider accepts OpenAI's
+// prompt_cache_key / prompt_cache_retention fields under long retention.
+// It mirrors the provider-layer detection (compat_detect's
+// supportsCacheRetention): every provider except the known-rejecting
+// gateways. Protocol-local (like isLocalProvider) because this package
+// cannot import the provider package without an import cycle — keep the
+// exclusion lists in sync when either changes.
+func supportsLongCacheRetention(model schema.Model) bool {
+	p := strings.ToLower(string(model.Provider))
+	u := strings.ToLower(model.BaseURL)
+	switch {
+	case p == "together" || strings.Contains(u, "api.together.ai") || strings.Contains(u, "api.together.xyz"),
+		p == "cloudflare-workers-ai" || strings.Contains(u, "api.cloudflare.com"),
+		p == "cloudflare-ai-gateway" || strings.Contains(u, "gateway.ai.cloudflare.com"),
+		p == "nvidia" || strings.Contains(u, "integrate.api.nvidia.com"),
+		p == "ant-ling" || strings.Contains(u, "api.ant-ling.com"):
+		return false
+	}
+	return true
 }
 
 const OpenAIPromptCacheKeyMaxLen = 64
@@ -971,77 +991,3 @@ func parseRootFields(raw map[string]any) []parserMessage {
 	}
 	return out
 }
-
-func resolveThinkingLevel(model schema.Model, opts schema.StreamOptions, profile schema.VariantProfile) string {
-	if opts.Reasoning != "" && opts.Reasoning != schema.ThinkingOff {
-		if native, ok := profile.Defaults.ThinkingLevelMap[opts.Reasoning]; ok {
-			return native
-		}
-		return string(opts.Reasoning)
-	}
-	if profile.Defaults.Thinking != "" {
-		return profile.Defaults.Thinking
-	}
-	return "medium"
-}
-
-func thinkingBodyForFormat(format, level string) map[string]any {
-	builders := map[string]func(string) map[string]any{
-		"openai":             openaiThinking,
-		"ant-ling":           openaiThinking,
-		"deepseek":           deepseekThinking,
-		"zai":                zaiThinking,
-		"together":           togetherThinking,
-		"openrouter":         openrouterThinking,
-		"string-thinking":    deepseekThinking,
-		"qwen":               qwenThinking,
-		"qwen-chat-template": qwenThinking,
-		"chat-template":      qwenThinking,
-		"chat-template-arg":  qwenThinking,
-	}
-	if b, ok := builders[format]; ok {
-		return b(level)
-	}
-	return nil
-}
-
-func openaiThinking(level string) map[string]any { return map[string]any{"reasoning_effort": level} }
-func deepseekThinking(level string) map[string]any {
-	body := map[string]any{"thinking": map[string]any{"type": "enabled"}}
-	if level != "" {
-		body["reasoning_effort"] = level
-	}
-	return body
-}
-func zaiThinking(level string) map[string]any {
-	return map[string]any{"thinking": map[string]any{"type": "enabled", "clear_thinking": false}}
-}
-
-// thinkingDisabledBodyForFormat returns the explicit "thinking off" body for
-// formats that support one. Formats without a disable signal return nil (the
-// body is simply omitted, as before). DeepSeek-compat formats send the
-// explicit disabled signal because DeepSeek defaults thinking ON for
-// thinking-capable models — omitting the body would leave the server-side
-// sticky default in effect (dsh wire-format note: "The adapter-owned off
-// effort maps to thinking: {type: 'disabled'}").
-func thinkingDisabledBodyForFormat(format string) map[string]any {
-	switch format {
-	case "zai":
-		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
-	case "deepseek", "string-thinking":
-		return map[string]any{"thinking": map[string]any{"type": "disabled"}}
-	}
-	return nil
-}
-
-func togetherThinking(level string) map[string]any {
-	body := map[string]any{"reasoning": map[string]any{"enabled": true}}
-	if level != "" {
-		body["reasoning_effort"] = level
-	}
-	return body
-}
-func openrouterThinking(level string) map[string]any {
-	return map[string]any{"reasoning": map[string]any{"effort": level}}
-}
-func qwenThinking(level string) map[string]any { return map[string]any{"thinking": true} }

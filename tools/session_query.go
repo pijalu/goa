@@ -473,11 +473,11 @@ func (t *SessionEventReadTool) Execute(input string) (string, error) {
 
 type sessionEventWindow struct {
 	// target carries the full parsed event so the JSON body is unabridged.
-	target agentic.OutputEvent
+	target    agentic.OutputEvent
 	targetSeq int
-	before []sessionWindowEvent
-	after  []sessionWindowEvent
-	found  bool
+	before    []sessionWindowEvent
+	after     []sessionWindowEvent
+	found     bool
 }
 
 type sessionWindowEvent struct {

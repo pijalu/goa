@@ -91,15 +91,3 @@ func (r *renderTracer) emit(ft frameTrace) {
 	_ = r.enc.Encode(ft)
 	_ = r.file.Sync()
 }
-
-// sceneLayersTrace snapshots a Scene's layers into trace records.
-func sceneLayersTrace(layers []Layer) []layerTrace {
-	out := make([]layerTrace, 0, len(layers))
-	for _, l := range layers {
-		out = append(out, layerTrace{
-			Name: l.Name, Kind: int(l.Kind), Z: l.Z,
-			Y: l.Rect.Y, H: l.Rect.H, W: l.Rect.W, ContentLen: len(l.Content),
-		})
-	}
-	return out
-}

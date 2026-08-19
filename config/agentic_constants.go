@@ -91,6 +91,9 @@ const (
 	AgenticCompressionSummarize   = "summarize"
 	AgenticCompressionHybrid      = "hybrid"
 	AgenticCompressionMicro       = "micro"
+	// AgenticCompressionFreshWindow is the zero-LLM full-window reset
+	// (Codex TokenBudget mode, Phase 2b.3).
+	AgenticCompressionFreshWindow = "fresh_window"
 )
 
 // AgenticSkillExecutionModes mirror agentic.SkillExecutionMode.

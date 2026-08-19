@@ -191,12 +191,10 @@ func (t *SendMessageTool) ExecuteContext(ctx context.Context, input string) (str
 func (t *SendMessageTool) sendError(err error) error {
 	others := t.otherAgents()
 	if len(others) == 0 {
-		return fmt.Errorf("%w\nThere are no other agents on the bus — you are the only agent (%q) running. "+
-			"Do not use send_message. To ask the user something use the ask_user_question tool; "+
-			"to finish or report a goal's status call the goal tool with action \"update\" (plain text does not stop a goal).", err, t.FromName)
+		return fmt.Errorf("%w: there are no other agents on the bus — you are the only agent (%q) running; "+
+			"do not use send_message; ask the user with ask_user_question or use the goal tool with action update", err, t.FromName)
 	}
-	return fmt.Errorf("%w\nAvailable agents you can message: %s (you are %q). "+
-		"If you meant to ask the user something, use the ask_user_question tool instead.",
+	return fmt.Errorf("%w: available agents you can message: %s (you are %q); ask the user with ask_user_question if needed",
 		err, strings.Join(others, ", "), t.FromName)
 }
 

@@ -68,56 +68,58 @@ func TestCompositor_StreamingContentGrowthNoDuplication(t *testing.T) {
 	comp.Render(scene(content))
 	strip.Capture("expand", scene(content).AgentFrame(termH), "")
 
-	// Invariant 1 (filmstrip): a line added in one frame must not ALSO appear in
-	// the AddedLines of the very next frame — that would mean it was emitted
-	// twice at the shifting boundary.
-	frames := strip.Frames()
+	assertNoConsecutiveAddedLineDuplicates(t, strip.Frames())
+	assertNoReplayDuplicates(t, term, content)
+}
+
+func assertNoConsecutiveAddedLineDuplicates(t *testing.T, frames []Snapshot) {
+	t.Helper()
 	for i := 1; i < len(frames); i++ {
-		prev := frames[i-1].Diff.AddedLines
-		cur := frames[i].Diff.AddedLines
-		seen := make(map[string]bool, len(prev))
-		for _, l := range prev {
-			seen[strings.TrimSpace(l)] = true
-		}
-		for _, l := range cur {
-			tl := strings.TrimSpace(l)
-			if tl == "" {
-				continue
-			}
-			if seen[tl] {
-				t.Errorf("frame %d (%s): line %q duplicated across consecutive AddedLines "+
-					"(emitted twice at the history↔screen boundary)", i, frames[i].Label, tl)
+		previous := streamLineSet(frames[i-1].Diff.AddedLines)
+		for _, line := range frames[i].Diff.AddedLines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" && previous[trimmed] {
+				t.Errorf("frame %d (%s): line %q duplicated across consecutive AddedLines", i, frames[i].Label, trimmed)
 			}
 		}
 	}
+}
 
-	// Invariant 2 (terminal replay): no content line may appear more than once
-	// across scrollback + visible screen.
-	emu := newScreenEmulator(termH, w)
-	for _, wr := range term.writes {
-		emu.Process(wr)
+func streamLineSet(lines []string) map[string]bool {
+	seen := make(map[string]bool, len(lines))
+	for _, line := range lines {
+		seen[strings.TrimSpace(line)] = true
+	}
+	return seen
+}
+
+func assertNoReplayDuplicates(t *testing.T, term *fakeTerminal, content []string) {
+	t.Helper()
+	emu := newScreenEmulator(term.h, term.w)
+	for _, write := range term.writes {
+		emu.Process(write)
 	}
 	all := append([]string{}, emu.Scrollback()...)
-	for r := 0; r < termH; r++ {
-		all = append(all, emu.Visible(r))
+	for row := 0; row < term.h; row++ {
+		all = append(all, emu.Visible(row))
 	}
-	countExact := func(want string) int {
-		n := 0
-		for _, l := range all {
-			if strings.TrimSpace(l) == want {
-				n++
-			}
+	for index := range content {
+		want := fmt.Sprintf("BASE-%02d", index)
+		if index >= 12 {
+			want = fmt.Sprintf("GROW-%03d", index)
 		}
-		return n
-	}
-	for i := 0; i < 12; i++ {
-		if c := countExact(fmt.Sprintf("BASE-%02d", i)); c > 1 {
-			t.Errorf("BASE-%02d appears %d times in scrollback+screen (duplicated on content growth)", i, c)
+		if countExactLine(all, want) > 1 {
+			t.Errorf("%s appears more than once in scrollback+screen", want)
 		}
 	}
-	for idx := 12; idx < len(content); idx++ {
-		if c := countExact(fmt.Sprintf("GROW-%03d", idx)); c > 1 {
-			t.Errorf("GROW-%03d appears %d times in scrollback+screen (duplicated on content growth)", idx, c)
+}
+
+func countExactLine(lines []string, want string) int {
+	count := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == want {
+			count++
 		}
 	}
+	return count
 }

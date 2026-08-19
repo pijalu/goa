@@ -124,11 +124,14 @@ func (e *Editor) Render(width int) []string {
 }
 
 func (e *Editor) computeLayout(width int) editorLayout {
-	fullText := e.prompt + string(e.buf)
+	e.bufMu.RLock()
+	buf, pos := e.buf, e.pos
+	e.bufMu.RUnlock()
+	fullText := e.prompt + string(buf)
 	chunks := wrapChunks(fullText, width)
 	totalVisualLines := len(chunks)
 
-	cursorFullPos := len(e.prompt) + e.pos
+	cursorFullPos := len(e.prompt) + pos
 	cursorVisLine, cursorOffset := cursorChunk(chunks, fullText, cursorFullPos)
 
 	e.maxLines = clampEditorMaxLines(totalVisualLines, e.terminalRows())

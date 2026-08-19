@@ -570,23 +570,7 @@ func TestValidateObjective(t *testing.T) {
 		{"multibyte runes counted as characters", boxObjective, false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateObjective(tc.objective)
-			if tc.wantErr && err == nil {
-				t.Fatal("expected rejection, got nil")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("unexpected rejection: %v", err)
-			}
-			if tc.wantErr {
-				if !strings.Contains(err.Error(), "markdown") {
-					t.Errorf("rejection must hint at the markdown-document workaround: %v", err)
-				}
-				if !strings.Contains(err.Error(), "4000") {
-					t.Errorf("rejection must state the limit: %v", err)
-				}
-			}
-		})
+		t.Run(tc.name, func(t *testing.T) { assertObjectiveCase(t, tc.objective, tc.wantErr) })
 	}
 }
 

@@ -2,10 +2,7 @@
 
 package tui
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 // TestCompositor_OneRowShrinkNoDuplicate verifies that a 1-row transcript
 // shrink does NOT duplicate a scrolled-off row onto the screen. The watermark
@@ -37,33 +34,6 @@ func TestCompositor_OneRowShrinkNoDuplicate(t *testing.T) {
 	for _, w := range term.Writes() {
 		emu.Process(w)
 	}
-	all := append([]string{}, emu.Scrollback()...)
-	for r := 0; r < 10; r++ {
-		all = append(all, emu.Visible(r))
-	}
-	// No row may appear twice across scrollback+screen.
-	for i := 0; i < 21; i++ {
-		row := "row-" + itoaStr(i)
-		count := 0
-		for _, r := range all {
-			if strings.TrimSpace(r) == row {
-				count++
-			}
-		}
-		if count > 1 {
-			t.Errorf("row %q appears %d times (want ≤1)\nscrollback:\n%s\nscreen:\n%s",
-				row, count,
-				strings.Join(emu.Scrollback(), "\n"), joinVisibleEmu(emu, 10))
-		}
-	}
-	// The newest row must still be visible (just not duplicated).
-	found := false
-	for r := 0; r < 10; r++ {
-		if strings.Contains(emu.Visible(r), "row-19") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("newest content missing after 1-row shrink:\n%s", joinVisibleEmu(emu, 10))
-	}
+	assertShrinkRowsUnique(t, emu)
+	assertShrinkNewestVisible(t, emu)
 }
