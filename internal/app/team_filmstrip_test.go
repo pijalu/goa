@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/pijalu/goa/config"
+	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/team"
 	"github.com/pijalu/goa/internal"
 	"github.com/pijalu/goa/multiagent"
+	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
 )
 
@@ -148,6 +150,68 @@ func TestTeamFooterBadge_PreservedAcrossStatsRebuilds(t *testing.T) {
 // TestTeamConfigMenuCRUD_Filmstrip exercises the /config → Teams flow at the
 // menu level inside a UI scenario (F3 from TEAMS-PLAN §8.3): definitions
 // list renders teams, and the wizard adds one.
+// TestTeamConfigMenuDeleteHotkey_Filmstrip drives the real selector overlay:
+// navigate from the add row to the team, press '-', then confirm removal.
+func TestTeamConfigMenuDeleteHotkey_Filmstrip(t *testing.T) {
+	sc := newUIScenario(t, 100, 30)
+	cfg := teamScenarioConfig()
+	sc.app.subs.cfg = cfg
+	ctx := coreContextForCommand(sc.app.subs, sc.app)
+	ctx.ConfigSaver = config.NewCascadeLoader(t.TempDir(), t.TempDir(), nil)
+	ctx.SkillRegistry = skills.NewSkillRegistry(nil)
+	type selReq struct {
+		ch <-chan string
+		cb func(string, bool)
+	}
+	var queue []selReq
+	ctx.SelectOptionFunc = func(title string, opts []tui.SelectorItem, current string, cb func(string, bool)) {
+		queue = append(queue, selReq{ch: sc.engine.ShowSelector(title, opts, current), cb: cb})
+	}
+	drain := func() {
+		for len(queue) > 0 {
+			select {
+			case v := <-queue[0].ch:
+				req := queue[0]
+				queue = queue[1:]
+				req.cb(v, v != "")
+			default:
+				return
+			}
+		}
+	}
+	// The scenario starts with an unrelated active model selector; close it
+	// before opening /config.
+	sc.engine.SendKey(tui.KeyEscape)
+	sc.engine.ApplySync(func() { _ = (&commands.ConfigCommand{}).Run(ctx, nil) })
+	drain()
+	// Select the Teams row from Settings using its search filter.
+	for _, ch := range "Teams" {
+		sc.engine.SendKey(string(ch))
+	}
+	sc.engine.SendKey(tui.KeyEnter)
+	drain()
+	waitForFrame(t, sc, "Teams:")
+	// Add row is initially selected; move to qa-pair and delete it.
+	sc.engine.SendKey(tui.KeyDown)
+	sc.engine.SendKey("-")
+	drain()
+	waitForFrame(t, sc, "Remove team qa-pair?")
+	sc.film.Capture("config/teams-delete-confirm", sc.engine.AgentFrame(), "")
+	if len(queue) == 0 {
+		t.Fatal("expected remove confirmation selector")
+	}
+	// Confirmation selector starts on "no"; navigate to yes and confirm.
+	sc.engine.SendKey(tui.KeyUp)
+	sc.engine.SendKey(tui.KeyEnter)
+	drain()
+	if _, exists := cfg.Teams.Definitions["qa-pair"]; exists {
+		t.Fatal("qa-pair still exists after filmstrip deletion")
+	}
+}
+
+// TestTeamConfigMenuCRUD_Filmstrip exercises the /config → Teams flow at the
+// menu level inside a UI scenario (F3 from TEAMS-PLAN §8.3): definitions
+// list renders teams.
 func TestTeamConfigMenuCRUD_Filmstrip(t *testing.T) {
 	sc := newUIScenario(t, 100, 30)
 	cfg := teamScenarioConfig()

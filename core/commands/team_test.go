@@ -293,6 +293,26 @@ func TestTeamCommand_AddOpensWizard(t *testing.T) {
 	}
 }
 
+func TestTeamCommand_PickerDeleteConfirmsAndRemoves(t *testing.T) {
+	cfg := teamCmdConfig()
+	ctx := teamCmdContext(t, cfg)
+	var callbacks []func(string, bool)
+	ctx.SelectOptionFunc = func(_ string, _ []tui.SelectorItem, _ string, cb func(string, bool)) {
+		callbacks = append(callbacks, cb)
+	}
+	if err := (&TeamCommand{}).Run(ctx, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	callbacks[0]("__delete__beta", true)
+	if len(callbacks) != 2 {
+		t.Fatalf("callbacks = %d, want selector plus confirmation", len(callbacks))
+	}
+	callbacks[1]("yes", true)
+	if _, ok := cfg.Teams.Definitions["beta"]; ok {
+		t.Fatal("beta should be removed after picker confirmation")
+	}
+}
+
 func TestTeamCommand_PickerAddOpensWizard(t *testing.T) {
 	cfg := teamCmdConfig()
 	ctx := teamCmdContext(t, cfg)
@@ -783,6 +803,32 @@ func TestConfigMenu_TeamsRootIsWizardForward(t *testing.T) {
 	sr.onSel("__add__", true)
 	// The wizard's first step is the team-name input.
 	// (inputRecorder.prompt is checked via the inputRecorder, not sr.)
+}
+
+// Regression: deleting a team from the Teams selector emits __delete__<name>.
+// The encoded value must be dispatched to the confirmation flow, not treated as
+// a literal team name and opened for editing.
+func TestConfigMenu_TeamDeleteHotkeyRemovesTeam(t *testing.T) {
+	cfg := teamCmdConfig()
+	cfg.Teams.Active = "beta"
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+
+	menu.openTeams()
+	sr.onSel("__delete__beta", true)
+	if sr.title != "Remove team beta?" {
+		t.Fatalf("delete title = %q, want Remove team beta?", sr.title)
+	}
+	sr.onSel("yes", true)
+	if _, exists := cfg.Teams.Definitions["beta"]; exists {
+		t.Fatal("beta still exists after delete confirmation")
+	}
+	if cfg.Teams.Active != "" {
+		t.Fatalf("active team = %q, want cleared", cfg.Teams.Active)
+	}
+	if _, exists := cfg.Teams.Definitions["alpha"]; !exists {
+		t.Fatal("alpha was unexpectedly deleted")
+	}
 }
 
 func TestConfigMenu_TeamWizardCreatesTeam(t *testing.T) {

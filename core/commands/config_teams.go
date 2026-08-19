@@ -84,6 +84,16 @@ func (m *configMenu) openTeams() {
 		case "active":
 			m.open(m.openTeamsActive)
 		default:
+			// Selector delete hotkeys encode the selected value as a
+			// __delete__ prefix. Handle it here rather than treating the
+			// encoded value as a literal team name (which opened, for
+			// example, "__delete__Local" as an edit page).
+			if name, deleted := strings.CutPrefix(selected, "__delete__"); deleted {
+				if _, exists := cfg.Teams.Definitions[name]; exists {
+					m.open(func() { m.confirmRemoveTeam(name) })
+				}
+				return
+			}
 			// Push the Teams list so ESC from the detail returns here (one
 			// level up) instead of closing the menu.
 			m.open(func() { m.openTeamDetail(selected) })
@@ -569,16 +579,12 @@ func (m *configMenu) confirmRemoveMember(teamName, member string) {
 	})
 }
 
-// confirmRemoveTeam deletes a team; refused while the team is teams.active
-// or bound to a queued goal (§8.3).
+// confirmRemoveTeam asks for confirmation before deleting a team. If the
+// deleted team is active, clear teams.active along with its definition so the
+// selector's delete action always has the expected confirm/remove behavior.
 func (m *configMenu) confirmRemoveTeam(name string) {
 	m.current = func() { m.confirmRemoveTeam(name) }
 	cfg := m.ctx.Config
-	if cfg.Teams.Active == name {
-		m.flash("Cannot remove the active team — deactivate it first (/team:off)")
-		m.openTeamDetail(name)
-		return
-	}
 	items := []tui.SelectorItem{
 		{Value: "yes", Label: "Remove " + name},
 		{Value: "no", Label: "Cancel"},
@@ -589,6 +595,10 @@ func (m *configMenu) confirmRemoveTeam(name string) {
 			return
 		}
 		delete(cfg.Teams.Definitions, name)
+		if cfg.Teams.Active == name {
+			cfg.Teams.Active = ""
+			m.saveTeamsActive()
+		}
 		m.saveTeamsSection()
 		m.openTeams()
 	})
