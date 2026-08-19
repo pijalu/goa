@@ -37,6 +37,13 @@ type cacheTurn struct {
 	PromptN    int
 }
 
+const cacheMissDropTolerance = 1024
+
+type cacheMissTurn struct {
+	num, full, partial int
+	missed             int
+}
+
 // cacheDrop is one detected cache-rate fall between consecutive completions.
 type cacheDrop struct {
 	Turn   int // turn number where the drop occurred
@@ -103,16 +110,69 @@ const cacheChartRows = 8
 // writeCacheView renders the /stats:cache output: a horizontal bar chart of
 // the latest per-completion cache-hit rates plus the cache drop table.
 func writeCacheView(b *strings.Builder, turns []cacheTurn) {
+	writeCacheMisses(b, turns)
 	b.WriteString("Cache hit rate — latest completions (rightmost = newest)\n")
-	b.WriteString(strings.Repeat("-", 60) + "\n")
-
+	b.WriteString("# Cache usage per turn\n")
 	rates, colors := latestCacheRates(turns, cacheChartBars)
 	if len(rates) == 0 {
 		b.WriteString("No cache activity recorded yet.\n")
 		return
 	}
-	writeCacheChart(b, rates, colors)
+	writeHorizontalCacheChart(b, turns, rates, colors)
 	writeCacheDrops(b, detectCacheDrops(turns, cacheDropThresholdPts))
+}
+
+func cacheMisses(turns []cacheTurn) []cacheMissTurn {
+	out := make([]cacheMissTurn, 0, len(turns))
+	prev, established := 0, false
+	for _, t := range turns {
+		m := cacheMissTurn{num: t.Num}
+		if t.CacheRead > 0 {
+			established = true
+		}
+		switch {
+		case established && t.CacheRead == 0 && prev > 0:
+			m.full, m.missed = 1, prev
+		case prev > 0 && t.CacheRead+cacheMissDropTolerance < prev:
+			m.partial, m.missed = 1, prev-t.CacheRead
+		}
+		out = append(out, m)
+		prev = t.CacheRead
+	}
+	return out
+}
+
+func writeCacheMisses(b *strings.Builder, turns []cacheTurn) {
+	b.WriteString("# Cache misses\n")
+	for _, m := range cacheMisses(turns) {
+		fullTokens, partialTokens := 0, 0
+		if m.full != 0 {
+			fullTokens = m.missed
+		}
+		if m.partial != 0 {
+			partialTokens = m.missed
+		}
+		b.WriteString(fmt.Sprintf("T%d - CM: Full %d (%dt) / Partial %d (%dt)\n", m.num, m.full, fullTokens, m.partial, partialTokens))
+	}
+}
+
+func writeHorizontalCacheChart(b *strings.Builder, turns []cacheTurn, rates []float64, colors []string) {
+	active := make([]cacheTurn, 0, len(turns))
+	for _, t := range turns {
+		if t.CacheRead > 0 || t.CacheWrite > 0 {
+			active = append(active, t)
+		}
+	}
+	if len(active) > len(rates) {
+		active = active[len(active)-len(rates):]
+	}
+	for i, r := range rates {
+		width := int(r * 24 / 100)
+		b.WriteString(fmt.Sprintf("T%d - CH: %.2f%% |", active[i].Num, r))
+		b.WriteString(colors[i])
+		b.WriteString(strings.Repeat("█", width))
+		b.WriteString(ansi.Reset + "\n")
+	}
 }
 
 // latestCacheRates extracts the per-completion cache-hit rate of the latest
@@ -234,19 +294,23 @@ func writeCacheChartLabels(b *strings.Builder, rates []float64) {
 // color — minor fluctuations stay green.
 func cacheBarColor(pct, prev float64) string {
 	const (
-		green = "#3fb950"
-		red   = "#f85149"
+		green  = "#3fb950"
+		yellow = "#d29922"
+		orange = "#db6d28"
+		red    = "#f85149"
+		gray   = "#8b949e"
 	)
-	if prev < 0 {
+	switch {
+	case pct >= 95:
 		return ansi.Fg(green)
-	}
-	switch delta := pct - prev; {
-	case delta >= 1.0:
-		return ansi.Bold + ansi.Fg(green)
-	case delta > -cacheDropThresholdPts:
-		return ansi.Fg(green)
-	default:
+	case pct >= 80:
+		return ansi.Fg(yellow)
+	case pct >= 70:
+		return ansi.Fg(orange)
+	case pct >= 60:
 		return ansi.Fg(red)
+	default:
+		return ansi.Fg(gray)
 	}
 }
 

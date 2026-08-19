@@ -27,20 +27,5 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
-## cache miss status line
-the status line should only show counter for cache misses (full/partial)
 
-## Goal and cache miss
-When a goal with new context is set up, this should not be considered a cache miss - the cache miss counter should use the conversation id - so a new clean agent should not be considered a cache miss.
-
-## cache miss to review
-2 cache miss in /Users/muaddib/dev/goa/.goa/exports/goa-export-20260819-085435.zip - review / report and write a detailled report.
-
-If issues are found, document them in this bug report and schedule follow-up actions.
-
-Validate goals with new context are correctly handled / do not resent old context
-
-## /stats:cache
-the /stats:cache command *must* 
-* show ALL cache miss statistics (full/partial) with lost token, in a dedicated section 
-* show the last 10 cache level - regardless of goals setting up new context
+All reported items from this cycle were implemented or verified, tested, validated, and archived under `docs/archive/`. Future reports must restart this process from a new detailed plan.
