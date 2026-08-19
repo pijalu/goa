@@ -196,9 +196,10 @@ func TestQuota_ZaiRealMonitorResponseShape(t *testing.T) {
 
 // TestQuota_ZaiSegmentOrdersWindowsShortToLong is the regression for the
 // status bar showing "[0%|42%]" (monthly|session): the z.ai monitor API
-// returns limits monthly-first and the segment took the first two in emission
-// order. The segment must sort windows shortest-period first — session|weekly
-// — regardless of API order (z.ai status bar quota wrong).
+// returns limits monthly-first and the segment took them in emission order.
+// The segment must sort windows shortest-period first — session|weekly|
+// monthly — regardless of API order (z.ai status bar quota wrong). Since the
+// 3-window segment update the monthly window is shown too (third position).
 func TestQuota_ZaiSegmentOrdersWindowsShortToLong(t *testing.T) {
 	env := newQuotaTestEnv(t)
 	env.setProvider("zai", map[string]any{"provider": "zai", "apiKey": "k", "endpoint": "https://api.z.ai/api/coding/paas/v4"})
@@ -212,7 +213,7 @@ func TestQuota_ZaiSegmentOrdersWindowsShortToLong(t *testing.T) {
 	env.load(t)
 	env.callCommand("quota", "refresh")
 	seg := ansi.Strip(env.renderSegment())
-	if seg != "[41%|38%]" {
-		t.Fatalf("segment = %q, want [41%%|38%%] (session|weekly, shortest window first)", seg)
+	if seg != "[41%|38%|0%]" {
+		t.Fatalf("segment = %q, want [41%%|38%%|0%%] (session|weekly|monthly, shortest window first)", seg)
 	}
 }

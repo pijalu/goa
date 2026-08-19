@@ -452,10 +452,29 @@ func TestQuota_OpencodeSegmentShowsQuota(t *testing.T) {
 	if strings.Contains(seg, "∞") || strings.Contains(seg, "⚠") || strings.Contains(seg, "…") {
 		t.Fatalf("opencode-go segment must show quota, not hidden/warn/pending, got %q", seg)
 	}
+	assertSegmentWindowsOrdered(t, seg, []string{"12%", "34%", "85%"})
 	// /quota must render the provider's window rows, not an empty table.
 	table := env.callCommand("quota")
 	if !strings.Contains(table, "OpenCode") || !strings.Contains(table, "85%") {
 		t.Fatalf("/quota should list OpenCode windows (monthly at 85%%):\n%s", table)
+	}
+}
+
+// assertSegmentWindowsOrdered verifies the footer segment shows every window
+// percentage, shortest period first (session|weekly|monthly). The segment
+// previously capped at 2 windows and dropped the monthly limit.
+func assertSegmentWindowsOrdered(t *testing.T, seg string, pcts []string) {
+	t.Helper()
+	prev := -1
+	for _, p := range pcts {
+		idx := strings.Index(seg, p)
+		if idx < 0 {
+			t.Fatalf("segment %q missing window %s", seg, p)
+		}
+		if idx < prev {
+			t.Fatalf("segment %q windows out of order (want session|weekly|monthly)", seg)
+		}
+		prev = idx
 	}
 }
 
