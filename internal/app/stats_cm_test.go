@@ -382,8 +382,13 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 	withMisses.CacheMissesPartial = 1
 	withMisses.CacheMissedTokens = 45213
 	joined := ansi.Strip(strings.Join(buildFooterStatParts(withMisses), " "))
-	if !strings.Contains(joined, "CM:2|1·45,213") {
-		t.Errorf("parts %q missing CM:2|1·45,213", joined)
+	if !strings.Contains(joined, "CM:2|1") {
+		t.Errorf("parts %q missing CM:2|1", joined)
+	}
+	// The footer shows counts only — the missed-token figure must NOT leak
+	// into the segment (bugs.md: CM:1·71,424 → CM:1).
+	if strings.Contains(joined, "45,213") || strings.Contains(joined, "CM:2|1·") {
+		t.Errorf("CM part must not carry the token damage suffix: %q", joined)
 	}
 	chIdx := strings.Index(joined, "▸")
 	cmIdx := strings.Index(joined, "CM:")
@@ -399,87 +404,55 @@ func TestBuildFooterStatParts_CacheMiss(t *testing.T) {
 }
 
 // TestFormatCacheMissPart is the golden-ANSI spec for the CM part: full
-// count in red, partial in warning orange, exact token damage dim, per-kind
-// zero omission, and thousands grouping.
+// count in red, partial in warning orange, per-kind zero omission. The
+// footer shows counts only — token damage lives in /stats:cache (bugs.md:
+// CM:1·71,424 must render as CM:1).
 func TestFormatCacheMissPart(t *testing.T) {
 	red := ansi.Fg(cacheMissFullColor)
 	orange := ansi.Fg(cacheMissPartialColor)
 
 	tests := []struct {
-		name         string
-		full         int
-		partial      int
-		missedTokens int64
-		want         string
+		name    string
+		full    int
+		partial int
+		want    string
 	}{
 		{
-			name:         "both kinds with token damage",
-			full:         2,
-			partial:      3,
-			missedTokens: 145312,
-			want:         red + "CM:2" + ansi.Reset + orange + "|3" + ansi.Reset + ansi.Faint + "·145,312" + ansi.Reset,
+			name:    "both kinds",
+			full:    2,
+			partial: 3,
+			want:    red + "CM:2" + ansi.Reset + orange + "|3" + ansi.Reset,
 		},
 		{
-			name:         "full only omits the partial segment and keeps the label red",
-			full:         1,
-			partial:      0,
-			missedTokens: 83421,
-			want:         red + "CM:1" + ansi.Reset + ansi.Faint + "·83,421" + ansi.Reset,
+			name:    "full only omits the partial segment and keeps the label red",
+			full:    1,
+			partial: 0,
+			want:    red + "CM:1" + ansi.Reset,
 		},
 		{
-			name:         "partial only omits the full count and keeps the leading bar",
-			full:         0,
-			partial:      4,
-			missedTokens: 9000,
-			want:         orange + "CM:|4" + ansi.Reset + ansi.Faint + "·9,000" + ansi.Reset,
+			name:    "partial only omits the full count and keeps the leading bar",
+			full:    0,
+			partial: 4,
+			want:    orange + "CM:|4" + ansi.Reset,
 		},
 		{
-			name:         "no token damage omits the dim suffix",
-			full:         1,
-			partial:      0,
-			missedTokens: 0,
-			want:         red + "CM:1" + ansi.Reset,
-		},
-		{
-			name:         "both zero still renders the bare label (caller hides it)",
-			full:         0,
-			partial:      0,
-			missedTokens: 0,
-			want:         orange + "CM:" + ansi.Reset,
+			name:    "both zero still renders the bare label (caller hides it)",
+			full:    0,
+			partial: 0,
+			want:    orange + "CM:" + ansi.Reset,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := formatCacheMissPart(tc.full, tc.partial, tc.missedTokens); got != tc.want {
-				t.Errorf("formatCacheMissPart(%d, %d, %d):\n got %q\nwant %q",
-					tc.full, tc.partial, tc.missedTokens, got, tc.want)
+			if got := formatCacheMissPart(tc.full, tc.partial); got != tc.want {
+				t.Errorf("formatCacheMissPart(%d, %d):\n got %q\nwant %q",
+					tc.full, tc.partial, got, tc.want)
 			}
 		})
 	}
 }
 
-// TestGroupThousands pins the comma-grouping helper used for the CM token
-// figure.
-func TestGroupThousands(t *testing.T) {
-	tests := []struct {
-		in   int64
-		want string
-	}{
-		{0, "0"},
-		{5, "5"},
-		{999, "999"},
-		{1000, "1,000"},
-		{83421, "83,421"},
-		{145312, "145,312"},
-		{1234567, "1,234,567"},
-	}
-	for _, tc := range tests {
-		if got := groupThousands(tc.in); got != tc.want {
-			t.Errorf("groupThousands(%d) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
 
 // TestSessionStats_CacheMissJSONKeys pins the persisted session-summary keys
 // so downstream session exports keep a stable schema.

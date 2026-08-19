@@ -195,16 +195,17 @@ func formatCacheMissPartIfAny(s sessionStats) string {
 	if s.CacheMissesFull == 0 && s.CacheMissesPartial == 0 {
 		return ""
 	}
-	return formatCacheMissPart(s.CacheMissesFull, s.CacheMissesPartial, s.CacheMissedTokens)
+	return formatCacheMissPart(s.CacheMissesFull, s.CacheMissesPartial)
 }
 
 // formatCacheMissPart renders the cache-miss counter split by failure mode:
-// CM:X|Y·N where X counts FULL misses (red — the entire prefix was
-// recomputed) and Y counts PARTIAL misses (warning orange — a suffix was
-// recomputed). N is the exact token damage summed over the counted misses,
-// rendered dim. A zero count is omitted per kind (CM:2 full-only, CM:|3
-// partial-only); the caller hides the whole part when both are zero.
-func formatCacheMissPart(full, partial int, missedTokens int64) string {
+// CM:X|Y where X counts FULL misses (red — the entire prefix was recomputed)
+// and Y counts PARTIAL misses (warning orange — a suffix was recomputed).
+// A zero count is omitted per kind (CM:2 full-only, CM:|3 partial-only); the
+// caller hides the whole part when both are zero. The footer shows counts
+// only — the exact token damage lives in /stats:cache and the session export
+// (cm_tokens), keeping the segment compact (CM:1, not CM:1·71,424).
+func formatCacheMissPart(full, partial int) string {
 	var b strings.Builder
 	// The label rides the color of the first rendered count.
 	labelColor := cacheMissPartialColor
@@ -225,34 +226,6 @@ func formatCacheMissPart(full, partial int, missedTokens int64) string {
 		fmt.Fprintf(&b, "%d", partial)
 	}
 	b.WriteString(ansi.Reset)
-	if missedTokens > 0 {
-		b.WriteString(ansi.Faint + "·" + groupThousands(missedTokens) + ansi.Reset)
-	}
-	return b.String()
-}
-
-// groupThousands renders n with comma thousands separators (145312 →
-// "145,312") so the CM token damage reads at a glance.
-func groupThousands(n int64) string {
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	digits := fmt.Sprintf("%d", n)
-	var b strings.Builder
-	first := len(digits) % 3
-	if first > 0 {
-		b.WriteString(digits[:first])
-	}
-	for i := first; i < len(digits); i += 3 {
-		if b.Len() > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(digits[i : i+3])
-	}
-	if neg {
-		return "-" + b.String()
-	}
 	return b.String()
 }
 
