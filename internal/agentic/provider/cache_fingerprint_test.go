@@ -82,6 +82,21 @@ func TestBuildRequestFingerprintParamChange(t *testing.T) {
 	}
 }
 
+func TestBuildRequestFingerprint_ToolPolicyTransition(t *testing.T) {
+	prev := marshalBody(t, map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+		"tools":    []any{map[string]any{"function": map[string]any{"name": "bash"}}},
+	})
+	cur := marshalBody(t, map[string]any{
+		"messages":    []any{map[string]any{"role": "user", "content": "hi"}, map[string]any{"role": "assistant", "content": "done"}},
+		"tool_choice": "none",
+	})
+	fp := BuildRequestFingerprint("kimi-code", "k3", "s", prev, cur, 1, 0, "sse", "t", false)
+	if fp.Classification != PrefixToolPolicyTransition {
+		t.Fatalf("classification = %q, want %q", fp.Classification, PrefixToolPolicyTransition)
+	}
+}
+
 // TestBuildRequestFingerprintDivergenceAndReplacement covers the negative
 // paths: rewriting an already-sent message is unexpected_divergence; the
 // replacement flag marks deliberate resets; key-order differences alone

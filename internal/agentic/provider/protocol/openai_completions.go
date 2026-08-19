@@ -80,6 +80,7 @@ type openAICompletionsCompat struct {
 	CacheControlFormat                          string
 	SendSessionAffinityHeaders                  bool
 	SupportsLongCacheRetention                  bool
+	SupportsPromptCache                         bool
 	ToolResultAsUser                            bool
 	// SupportsTemperature false omits the temperature field (kimi-code
 	// rejects any value but its fixed default with HTTP 400).
@@ -117,6 +118,7 @@ func resolveOpenAICompat(model schema.Model, profile schema.VariantProfile) open
 	// the wire path (the provider-layer compat struct never crosses the
 	// boundary). Without it, long retention silently sent no cache identity.
 	c.SupportsLongCacheRetention = supportsLongCacheRetention(model)
+	c.SupportsPromptCache = profile.Compat.SupportsPromptCache
 	return c
 }
 
@@ -518,14 +520,14 @@ func addOpenAICacheControlToTextContent(msg map[string]any, cc *cacheControl) bo
 }
 
 func promptCacheKey(model schema.Model, opts schema.StreamOptions, compat openAICompletionsCompat) string {
-	if opts.CacheRetention == schema.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) {
+	if opts.CacheRetention == schema.CacheRetentionNone && !isLocalProvider(model.Provider, model.BaseURL) && !compat.SupportsPromptCache {
 		return ""
 	}
 	if promptCacheIdentity(opts) == "" {
 		return ""
 	}
 	isOpenAI := strings.Contains(model.BaseURL, "api.openai.com")
-	if isOpenAI || (opts.CacheRetention == schema.CacheRetentionLong && compat.SupportsLongCacheRetention) || isLocalProvider(model.Provider, model.BaseURL) {
+	if isOpenAI || compat.SupportsPromptCache || (opts.CacheRetention == schema.CacheRetentionLong && compat.SupportsLongCacheRetention) || isLocalProvider(model.Provider, model.BaseURL) {
 		return ClampOpenAIPromptCacheKey(promptCacheIdentity(opts))
 	}
 	return ""

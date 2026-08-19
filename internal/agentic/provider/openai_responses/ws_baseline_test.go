@@ -157,3 +157,59 @@ func TestBaselineEmptySessionKeySkipped(t *testing.T) {
 		t.Errorf("registry should stay empty for empty session key, has %d", n)
 	}
 }
+
+// TestBaselineVisibleWhenStreamEnds is a regression test for the ordering
+// race between baseline capture and stream termination. The baseline must be
+// recorded at the moment the response.completed chunk is parsed — before the
+// handler calls stream.End() — so a consumer that drains the stream and
+// immediately issues a chained turn observes the new baseline. The previous
+// implementation recorded the baseline in a deferred end-hook after ParseSSE
+// returned, which is after End() had already unblocked the consumer: a fast
+// consumer could read a missing/stale baseline and drop previous_response_id.
+//
+// To make the ordering window deterministic, the response.completed event is
+// followed by a blocked read (an io.Pipe with no further data). Once End()
+// fires, the parser is stuck inside ParseSSE waiting for bytes that never
+// arrive, so its deferred end-hook cannot run. The consumer, meanwhile, is
+// unblocked by End(). Under the old ordering wsBaseline is necessarily nil at
+// that point (the end-hook is stuck); under the fixed ordering the baseline
+// was recorded synchronously with the completed chunk, before End().
+func TestBaselineVisibleWhenStreamEnds(t *testing.T) {
+	resetWSBaselines()
+	defer resetWSBaselines()
+
+	lastInput := []provider.Message{provider.NewUserMessage("hello")}
+	completed := `{"type":"response.completed","response":{"id":"resp-ord","status":"completed","usage":{"input_tokens":1,"output_tokens":1},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}}`
+
+	// Use an io.Pipe so that after the completed event is delivered the parser
+	// blocks waiting for more bytes; we never write them, so the parser's
+	// post-ParseSSE end-hook stays parked while the consumer observes End().
+	pr, pw := io.Pipe()
+	stream := provider.NewAssistantMessageEventStream(8)
+	go parseResponsesSSEWithBaseline(pr, stream, "sess-ord", lastInput, requestFingerprint{})
+
+	// Write the completed event, leaving the pipe open (no [DONE], no close),
+	// so ParseSSE blocks on the next read after handling it.
+	go func() {
+		_, _ = pw.Write([]byte("data: " + completed + "\n\n"))
+	}()
+
+	// Drain until the consumer is unblocked by End(). The terminating
+	// response.completed event is pushed to the buffered channel before End()
+	// closes done, so Seq() yields it then returns.
+	for range stream.Seq() {
+	}
+
+	// At this point End() has run but the parser is still blocked in ParseSSE
+	// (pipe open, no data). The baseline must already be visible.
+	b := wsBaseline("sess-ord")
+	if b == nil {
+		t.Fatal("baseline not recorded by the time the stream ended (ordering race)")
+	}
+	if b.ResponseID != "resp-ord" {
+		t.Errorf("ResponseID = %q, want resp-ord", b.ResponseID)
+	}
+
+	// Unblock the parser goroutine so it can exit cleanly.
+	_ = pw.Close()
+}

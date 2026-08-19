@@ -17,11 +17,12 @@ import (
 type PrefixClassification string
 
 const (
-	PrefixExactAppend   PrefixClassification = "exact_append"
-	PrefixParamChange   PrefixClassification = "param_change"
-	PrefixReplacement   PrefixClassification = "replacement"
-	PrefixDivergence    PrefixClassification = "unexpected_divergence"
-	PrefixNoPredecessor PrefixClassification = "no_predecessor"
+	PrefixExactAppend          PrefixClassification = "exact_append"
+	PrefixParamChange          PrefixClassification = "param_change"
+	PrefixToolPolicyTransition PrefixClassification = "tool_policy_transition"
+	PrefixReplacement          PrefixClassification = "replacement"
+	PrefixDivergence           PrefixClassification = "unexpected_divergence"
+	PrefixNoPredecessor        PrefixClassification = "no_predecessor"
 )
 
 // RequestFingerprint contains bounded, non-sensitive request diagnostics.
@@ -54,8 +55,11 @@ type RequestFingerprint struct {
 // bodies: the previous messages must canonically prefix the current ones and
 // every non-message field must be canonically equal. A messages-prefix with a
 // changed field (tools, thinking, …) is param_change — cache-relevant but
-// distinct from a history rewrite. Non-JSON bodies (exotic transports) fall
-// back to the historical byte-level test.
+// distinct from a history rewrite. One sub-case is classified separately:
+// dropping the tools array while forcing tool_choice "none" (the intentional
+// final-step/recovery collapse) is tool_policy_transition, not an opaque
+// param_change. Non-JSON bodies (exotic transports) fall back to the
+// historical byte-level test.
 func BuildRequestFingerprint(providerName, model, sessionID string, previousRequest, request []byte, historyGeneration, compactionGeneration uint64, transport, turnID string, replacement bool) RequestFingerprint {
 	classification := classifyPrefix(previousRequest, request, replacement)
 	return RequestFingerprint{
@@ -70,8 +74,9 @@ func BuildRequestFingerprint(providerName, model, sessionID string, previousRequ
 
 // classifyPrefix derives the prefix classification for a request relative
 // to its predecessor. Precedence: exact_append (canonical messages-prefix +
-// identical params) > param_change (messages-prefix, params differ) >
-// replacement (flagged) > unexpected_divergence.
+// identical params) > tool_policy_transition (messages-prefix, intentional
+// tools → tool_choice "none" collapse) > param_change (messages-prefix,
+// params differ) > replacement (flagged) > unexpected_divergence.
 func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixClassification {
 	if len(previousRequest) == 0 {
 		if replacement {
@@ -83,6 +88,8 @@ func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixCla
 		switch {
 		case msgsPrefix && paramsEq:
 			return PrefixExactAppend
+		case msgsPrefix && isToolPolicyTransition(previousRequest, request):
+			return PrefixToolPolicyTransition
 		case msgsPrefix:
 			return PrefixParamChange
 		}
@@ -102,19 +109,29 @@ func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixCla
 // is canonically equal. ok is false when either body is not a JSON object
 // carrying a messages array.
 func compareBodies(previousRequest, request []byte) (msgsPrefix, paramsEqual, ok bool) {
-	var prevBody, curBody map[string]json.RawMessage
-	if err := json.Unmarshal(previousRequest, &prevBody); err != nil {
+	var prev, cur map[string]json.RawMessage
+	if json.Unmarshal(previousRequest, &prev) != nil || json.Unmarshal(request, &cur) != nil {
 		return false, false, false
 	}
-	if err := json.Unmarshal(request, &curBody); err != nil {
-		return false, false, false
-	}
-	prevMsgs, okPrev := splitMessages(prevBody)
-	curMsgs, okCur := splitMessages(curBody)
+	prevMsgs, okPrev := splitMessages(prev)
+	curMsgs, okCur := splitMessages(cur)
 	if !okPrev || !okCur {
 		return false, false, false
 	}
-	return messagesArePrefix(prevMsgs, curMsgs), nonMessageFieldsEqual(prevBody, curBody), true
+	return messagesArePrefix(prevMsgs, curMsgs), nonMessageFieldsEqual(prev, cur), true
+}
+
+func isToolPolicyTransition(previousRequest, request []byte) bool {
+	var prev, cur map[string]json.RawMessage
+	if json.Unmarshal(previousRequest, &prev) != nil || json.Unmarshal(request, &cur) != nil {
+		return false
+	}
+	var prevTools, curTools []json.RawMessage
+	_ = json.Unmarshal(prev["tools"], &prevTools)
+	_ = json.Unmarshal(cur["tools"], &curTools)
+	var choice string
+	_ = json.Unmarshal(cur["tool_choice"], &choice)
+	return len(prevTools) > 0 && len(curTools) == 0 && choice == "none"
 }
 
 // splitMessages extracts the messages array as raw per-message JSON values.

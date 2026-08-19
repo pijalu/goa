@@ -139,9 +139,11 @@ const (
 	// older checkpoint after minutes of inactivity).
 	LikelyCauseTTLExpiry LikelyCause = "ttl_expiry"
 	// LikelyCauseParamChange: the request changed a cache-relevant parameter
-	// (tools/thinking) while appending history (fingerprint classification
-	// "param_change") — some providers key the cache on the full request.
+	// while appending history.
 	LikelyCauseParamChange LikelyCause = "param_change"
+	// LikelyCauseToolPolicyTransition: an intentional final-step/recovery
+	// request removed tools and selected tool_choice=none while appending.
+	LikelyCauseToolPolicyTransition LikelyCause = "tool_policy_transition"
 	// LikelyCauseUnknown: not enough evidence to attribute (no attributable
 	// predecessor retained in the ring).
 	LikelyCauseUnknown LikelyCause = "unknown"
@@ -439,6 +441,8 @@ func (j *cacheForensicsJournal) attributionLocked(seqKey string, miss *CacheFore
 	switch miss.Fingerprint.Classification {
 	case PrefixParamChange:
 		attr.cause = LikelyCauseParamChange
+	case PrefixToolPolicyTransition:
+		attr.cause = LikelyCauseToolPolicyTransition
 	case PrefixReplacement:
 		attr.cause = LikelyCauseIdentityChange
 	}

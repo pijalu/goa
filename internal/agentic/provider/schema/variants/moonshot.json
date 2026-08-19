@@ -18,7 +18,7 @@
     "supports_store": false,
     "max_tokens_field": "max_tokens",
     "thinking_format": "openai",
-    "supports_prompt_cache": false,
+    "supports_prompt_cache": true,
     "stream_includes_usage": true
   },
   "auth": {
