@@ -204,10 +204,13 @@ func teamRemove(ctx core.Context, m *team.Manager, name string, fromSelector boo
 		}
 		delete(cfg.Teams.Definitions, name)
 		if active == name {
-			cfg.Teams.Active = ""
 			if m != nil && m.Active() == name {
 				_ = m.Deactivate()
 			}
+			// Persist the cleared selection to the project local layer —
+			// without this the stale teams.active resurfaces on next start
+			// and fails validation (teams.active must name a defined team).
+			persistActiveTeam(ctx, "")
 		}
 		persistTeamsDefinitions(ctx)
 		writeFmt(ctx, "Team removed: %s\n", name)

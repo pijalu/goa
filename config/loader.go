@@ -161,6 +161,12 @@ func (cl *CascadeLoader) Load() (*Config, error) {
 	// Drop selector sentinel values ("__add__" etc.) persisted by older versions.
 	cfg.sanitizeSelectorSentinels()
 
+	// Drop a dangling teams.active (team definition removed after the
+	// selection was persisted — e.g. deleted in another layer or by hand).
+	// Starting with no active team is identical to /team:off, so heal
+	// instead of failing validation and refusing to start.
+	cfg.sanitizeDanglingActiveTeam()
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -732,6 +738,24 @@ func (c *Config) sanitizeSelectorSentinels() {
 		}
 	}
 	c.Models = models
+}
+
+// sanitizeDanglingActiveTeam clears teams.active when it names a team that is
+// not defined in teams.definitions. The selection persists in the project
+// LOCAL layer (.goa/config.local.yaml) while definitions live in the home
+// layer, so the two can desync (team deleted via an older build, edited by
+// hand, or the local file copied across projects). Dropping the selection is
+// equivalent to /team:off — safe and self-healing — whereas validation would
+// otherwise hard-fail startup. Runs before validation.
+func (c *Config) sanitizeDanglingActiveTeam() {
+	if c.Teams.Active == "" {
+		return
+	}
+	if _, ok := c.Teams.Definitions[c.Teams.Active]; ok {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: teams.active %q is not defined in teams.definitions — clearing (team deleted?)\n", c.Teams.Active)
+	c.Teams.Active = ""
 }
 
 // migrateLegacyMode converts old config fields to the new mode system.
