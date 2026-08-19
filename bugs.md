@@ -29,3 +29,9 @@ per item with a short title, the observed behavior, and the expected behavior.
 # TODO
 
 All reported items from this cycle were implemented or verified, tested, validated, and archived under `docs/archive/`. Future reports must restart this process from a new detailed plan.
+
+## Cache-miss RCA follow-up: tool-collapse parameter mutation
+
+The RCA of export `goa-export-20260819-090231.zip` found no message rewrite, reorder, stale-context resend, or conversation-ID change. All three misses occur exactly when a request changes from 15 tools with omitted `tool_choice` to no `tools` plus `tool_choice: "none"`. This intentional final-step collapse is a cache-relevant parameter mutation and is the strongest common cause; report 3 also has a 111.879s idle gap that could indicate TTL expiry. No cache-affinity hint was sent.
+
+**Follow-up required:** instrument or test provider behavior for final-step tool collapse. Determine whether the collapse can preserve a cache-compatible request shape, or whether this transition must rotate/re-baseline cache identity and be excluded from miss counters. Do not remove final-step tool safety without compatibility tests. See `docs/archive/bugs-20260819-cache-rca.md`.
