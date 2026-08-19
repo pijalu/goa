@@ -32,6 +32,11 @@ func (am *AgentManager) ActiveModel() agenticprovider.Model {
 func (am *AgentManager) TurnHistory() []TurnRecord { return am.turnRecorder.TurnHistory() }
 func (am *AgentManager) LastTurn() *TurnRecord     { return am.turnRecorder.LastTurn() }
 func (am *AgentManager) CurrentTurn() *TurnRecord  { return am.turnRecorder.CurrentTurn() }
+
+// TurnRecorder exposes the session turn recorder for identity-tagged
+// sub-agent turn ingestion (companion / workflow stage cache stats feeding
+// the per-agent /stats:cache sections).
+func (am *AgentManager) TurnRecorder() *TurnRecorder { return am.turnRecorder }
 func (am *AgentManager) EmitEvent(text string)     { am.emitFlash(text) }
 func (am *AgentManager) SetForegroundOrchestrator(orch *multiagent.ForegroundOrchestrator) {
 	am.mu.Lock()

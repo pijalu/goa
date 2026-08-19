@@ -156,6 +156,28 @@ func (am *AgentManager) SetGoalTokenRecorder(fn func(totalTokens int)) {
 	am.goalTokenRecorder = fn
 }
 
+// SetActiveGoalIDProvider registers a callback returning the ID of the goal
+// active at turn finalize time ("" = none). The main agent's TurnRecord is
+// tagged with it so /stats:cache can group turns per goal. Passing nil
+// disables tagging.
+func (am *AgentManager) SetActiveGoalIDProvider(fn func() string) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.activeGoalID = fn
+}
+
+// currentGoalID resolves the active goal ID at finalize time ("" when no
+// provider is wired or no goal is active).
+func (am *AgentManager) currentGoalID() string {
+	am.mu.Lock()
+	fn := am.activeGoalID
+	am.mu.Unlock()
+	if fn == nil {
+		return ""
+	}
+	return fn()
+}
+
 func (am *AgentManager) dispatchLifecycle(hookType string, payload map[string]any) {
 	if am.lifecycleRegistry == nil {
 		return

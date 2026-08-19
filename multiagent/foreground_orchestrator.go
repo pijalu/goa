@@ -152,6 +152,26 @@ type ForegroundOrchestrator struct {
 	// runCtx is the cancellable context for the currently running workflow.
 	runCtx *workflowRunContext
 	runMu  sync.Mutex
+
+	// CacheStatsCallback, when set, receives each sub-agent's final
+	// EventTokenStats (role + the orchestrator's bound goal ID + the turn's
+	// token usage) so the session turn recorder can include companion and
+	// workflow stage agents in the /stats:cache per-agent sections.
+	// Installed by the app layer; nil = no sub-agent cache tracking.
+	CacheStatsCallback func(role, goalID string, u SubAgentCacheUsage)
+	// cacheGoalID resolves the goal bound to the current run ("" = none),
+	// consulted when a sub-agent's final token stats arrive.
+	cacheGoalID func() string
+}
+
+// SubAgentCacheUsage carries one sub-agent turn's cache-relevant token
+// counts to the session turn recorder (decoupled from agentic.TokenTimings
+// so multiagent does not import the app's types).
+type SubAgentCacheUsage struct {
+	PromptN    int
+	PredictedN int
+	CacheRead  int
+	CacheWrite int
 }
 
 // NewForegroundOrchestrator creates a foreground orchestrator.
@@ -252,8 +272,47 @@ func (o *ForegroundOrchestrator) makeAgentCreatedHook() func(string, *agentic.Ag
 		state := &agentOutputState{}
 		agent.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
 			handleAgentOutputEvent(o, role, state, ev)
+			o.forwardCacheStats(role, ev)
 		}))
 	}
+}
+
+// SetCacheStatsCallback installs the sub-agent cache-stats sink (role, goal
+// ID, usage). goalIDFn resolves the goal bound to the current run at emit
+// time. Passing nil disables tracking. Used by the app to include companion
+// and workflow stage agents in the /stats:cache per-agent sections.
+func (o *ForegroundOrchestrator) SetCacheStatsCallback(cb func(role, goalID string, u SubAgentCacheUsage), goalIDFn func() string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.CacheStatsCallback = cb
+	o.cacheGoalID = goalIDFn
+}
+
+// forwardCacheStats relays a sub-agent's final EventTokenStats to the
+// installed cache-stats callback. EventTokenStats fires once per turn with
+// the turn's cumulative timings (see agent_turn_stats.go), so no
+// accumulation or dedup is needed here.
+func (o *ForegroundOrchestrator) forwardCacheStats(role string, ev agentic.OutputEvent) {
+	if ev.Type != agentic.EventTokenStats || ev.Timings == nil {
+		return
+	}
+	o.mu.RLock()
+	cb := o.CacheStatsCallback
+	goalFn := o.cacheGoalID
+	o.mu.RUnlock()
+	if cb == nil {
+		return
+	}
+	goalID := ""
+	if goalFn != nil {
+		goalID = goalFn()
+	}
+	cb(role, goalID, SubAgentCacheUsage{
+		PromptN:    ev.Timings.PromptN,
+		PredictedN: ev.Timings.PredictedN,
+		CacheRead:  ev.Timings.CacheReadTokens,
+		CacheWrite: ev.Timings.CacheWriteTokens,
+	})
 }
 
 type agentOutputState struct {

@@ -28,23 +28,17 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## /stats:cache is incomplete
-/stats:cache is incomplete and does not match requirement - currenly show:
-```
-# Cache misses
-T1 - CM: Full 0 (0t) / Partial 0 (0t) T2 - CM: Full 0 (0t) / Partial 0 (0t) Cache hit rate — latest completions (rightmost = newest)
-# Cache usage per turn
-T2 - CH: 63.74% |███████████████ No cache drops detected.
-```
+## Cache-miss RCA conclusion disputed — misses WERE counted
+On the Cache-miss RCA — session 1787174084_qqrf2p5v (@docs/archive/bugs-20260819-cache-miss-1787174084.md) — the status bar shows CM:1|2·352,768 — so the "not counted as a CM bust" conclusion is very odd. Review again. The fresh-context boundary and/or sub-agent (companion/team) turns appear to be counted as cache busts when they should not be (a fresh goal context is a new conversation with its own cache key — a cold start is not a bust; a sub-agent's separate conversation likewise).
 
-It should contains key sections
-* Render the last 10 cache hit level - shown as barchart - with exact percentage under - color coded red < 90%, orange < 95%, green >=95% - make sure to have the bar/label correctly center
-* Render bar chart with the average cache per turn - the bar per turn should be horizontal and use color code similar to 10 last cache - eg (use block instead of =):
+## Context compact prunes at hard ceiling instead of summarizing
+Error with context compact:
 ```
-T1: 85.98% ==================
-T2: 97.07% ====================
+⚡ Context compacted (tool_result_pruning): 95% → 49% pruning resolved context pressure; summarize skipped
 ```
-* Provide a weighted total cache percentage of the complete session
-* Provide the list of all cache miss: Turn - Percent of the miss vs non-miss + miss size in token
-
-Key point: The stats must work across multi-agent/multi-goals - you can repeat the section per "goal/agent"
+At hard limit - it should be *summarize* - no pruning !!!
+Config confirms summarize is expected:
+```
+Hard ceiling %  95%
+Hard ceiling method  summarize (default)
+```

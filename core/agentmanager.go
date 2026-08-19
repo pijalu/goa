@@ -48,6 +48,14 @@ type TurnRecord struct {
 	UserInput          string           // the user message that started this turn
 	Thinking           []string         // thinking blocks emitted by the model
 	AssistantResponses []string         // assistant content blocks emitted by the model
+	// AgentRole identifies which agent produced the turn: "" or "main" for
+	// the primary session agent, otherwise the multiagent role (companion,
+	// workflow stage, team member). Drives the per-agent /stats:cache
+	// sections.
+	AgentRole string
+	// GoalID is the active goal at finalize time ("" = no goal), so the
+	// cache view can group turns per goal as well as per agent.
+	GoalID string
 }
 
 // TurnToolCall records a tool call made during a turn.
@@ -130,6 +138,11 @@ type AgentManager struct {
 	// goalTokenRecorder is called with the latest total token count for
 	// the active agent turn. Used by the goal system to track token budget.
 	goalTokenRecorder func(totalTokens int)
+
+	// activeGoalID returns the ID of the goal active at turn finalize time
+	// ("" = none). Tags the main agent's TurnRecord so the cache view can
+	// group turns per goal. Nil = untagged.
+	activeGoalID func() string
 
 	contextWindowRefresher func() int
 	contextWindowRefreshed bool

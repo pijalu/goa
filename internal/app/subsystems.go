@@ -343,6 +343,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr, agentBundle.eventBus)
 			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
 			agentPool.SetOrchestrator(foregroundOrch)
+			wireCacheStatsIdentity(foregroundOrch, agentBundle.agentMgr, goalManager)
 			wireCompanionCreation(agentPool, agentBundle.agentMgr, agentBundle.stateSnapshot)
 			registerSkillRunner(subs.toolRegistry, skillBundle.skillRegistry, agentPool, promptReg, cfg)
 			registerBuiltinWorkflows(workflowReg)
@@ -368,4 +369,26 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 	}
 
 	return assembleSubsystems(cfg, loader, projectDir, subs, agentBundle, skillBundle, promptReg, workflowReg, agentPool, foregroundOrch, requestReviewTool, delegateTool, pipelineRunner, goalManager, goalDriver, opts, registry, swarmState, taskBus)
+}
+
+// wireCacheStatsIdentity connects cache-stats identity: sub-agent turns flow
+// into the session turn recorder (per-agent /stats:cache sections), and the
+// main agent's turns are tagged with the active goal. The goal ID is
+// resolved at emit/finalize time from the live goal mode.
+func wireCacheStatsIdentity(orch *multiagent.ForegroundOrchestrator, agentMgr *core.AgentManager, goalManager *core.GoalManager) {
+	activeGoalID := func() string {
+		if g := goalManager.Mode.GetActiveGoal(); g != nil {
+			return g.GoalID
+		}
+		return ""
+	}
+	orch.SetCacheStatsCallback(func(role, goalID string, u multiagent.SubAgentCacheUsage) {
+		agentMgr.TurnRecorder().RecordSubAgentTurn(role, goalID, core.TurnTokenUsage{
+			PromptN:    u.PromptN,
+			PredictedN: u.PredictedN,
+			CacheRead:  u.CacheRead,
+			CacheWrite: u.CacheWrite,
+		})
+	}, activeGoalID)
+	agentMgr.SetActiveGoalIDProvider(activeGoalID)
 }

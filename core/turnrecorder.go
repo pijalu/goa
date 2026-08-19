@@ -115,8 +115,9 @@ func (tr *TurnRecorder) RecordToolResult(callID, name, result string) {
 
 // FinalizeTurn builds a TurnRecord from the accumulated state, appends it to
 // history, and returns the record. The active agent is used to capture the
-// request/response JSON.
-func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent) TurnRecord {
+// request/response JSON. goalID tags the record with the goal active at
+// finalize time ("" = none).
+func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent, goalID string) TurnRecord {
 	requestJSON, responseJSON := buildTurnJSON(agent)
 
 	tr.mu.Lock()
@@ -146,6 +147,8 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent) TurnRecord {
 		UserInput:          tr.turnUserInput,
 		Thinking:           thinking,
 		AssistantResponses: responses,
+		AgentRole:          "main",
+		GoalID:             goalID,
 	}
 	tr.turnHistory = append(tr.turnHistory, record)
 	tr.turnToolCallsAccum = nil
@@ -154,6 +157,27 @@ func (tr *TurnRecorder) FinalizeTurn(agent *agentic.Agent) TurnRecord {
 	tr.turnUserInput = ""
 	tr.turnStartTime = time.Time{} // mark no active turn
 	tr.mu.Unlock()
+	return record
+}
+
+// RecordSubAgentTurn appends a completed sub-agent turn (companion, workflow
+// stage, team member) directly to history. Sub-agent turns are observed
+// end-of-turn through the multiagent pool's per-agent observer — they are
+// never accumulated incrementally like the main agent's — so this takes the
+// final token usage as a whole. Numbering continues the shared sequence so
+// the cache view can interleave main and sub-agent turns chronologically.
+func (tr *TurnRecorder) RecordSubAgentTurn(role, goalID string, u TurnTokenUsage) TurnRecord {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	record := TurnRecord{
+		Number:     len(tr.turnHistory) + 1,
+		TokensUsed: u.PromptN + u.PredictedN,
+		TokenUsage: u,
+		Timing:     TurnTiming{Phases: make(map[string]float64)},
+		AgentRole:  role,
+		GoalID:     goalID,
+	}
+	tr.turnHistory = append(tr.turnHistory, record)
 	return record
 }
 

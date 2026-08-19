@@ -28,13 +28,15 @@ import (
 const cacheDropThresholdPts = 5.0
 
 // cacheTurn is one completion's cache-token counts: the session-scoped
-// counterpart of a usage.Record row for cache-rate purposes. A session runs
-// one model at a time, so model-switch tracking is not needed here.
+// counterpart of a usage.Record row for cache-rate purposes, tagged with the
+// producing agent and active goal so the view can section per agent/goal.
 type cacheTurn struct {
 	Num        int // turn number (1-based)
 	CacheRead  int
 	CacheWrite int
 	PromptN    int
+	AgentRole  string // ""/"main" for the primary agent, else the multiagent role
+	GoalID     string // active goal at turn time ("" = none)
 }
 
 const cacheMissDropTolerance = 1024
@@ -42,6 +44,7 @@ const cacheMissDropTolerance = 1024
 type cacheMissTurn struct {
 	num, full, partial int
 	missed             int
+	prev               int // cache-read of the previous turn (the prefix the miss is measured against)
 }
 
 // cacheDrop is one detected cache-rate fall between consecutive completions.
@@ -66,6 +69,8 @@ func cacheTurnsFromHistory(history []core.TurnRecord, current *core.TurnRecord) 
 			CacheRead:  t.TokenUsage.CacheRead,
 			CacheWrite: t.TokenUsage.CacheWrite,
 			PromptN:    t.TokenUsage.PromptN,
+			AgentRole:  t.AgentRole,
+			GoalID:     t.GoalID,
 		})
 	}
 	return out
@@ -100,25 +105,85 @@ func detectCacheDrops(turns []cacheTurn, thresholdPts float64) []cacheDrop {
 	return drops
 }
 
-// cacheChartBars caps the horizontal chart at the latest N completions.
-const cacheChartBars = 20
+// cacheChartBars caps the last-10 vertical chart at the latest N completions.
+const cacheChartBars = 10
 
-// cacheChartRows is the vertical resolution (block rows) of the horizontal
+// cacheChartRows is the vertical resolution (block rows) of the last-10
 // chart — each bar is scaled into this many row bands.
 const cacheChartRows = 8
 
-// writeCacheView renders the /stats:cache output: a horizontal bar chart of
-// the latest per-completion cache-hit rates plus the cache drop table.
-func writeCacheView(b *strings.Builder, turns []cacheTurn) {
-	writeCacheMisses(b, turns)
-	b.WriteString("Cache hit rate — latest completions (rightmost = newest)\n")
-	b.WriteString("# Cache usage per turn\n")
-	rates, colors := latestCacheRates(turns, cacheChartBars)
-	if len(rates) == 0 {
-		b.WriteString("No cache activity recorded yet.\n")
-		return
+// cacheLevelColor maps a cache-hit percentage onto the required band colors:
+// red <90%, orange <95%, green ≥95%. Shared by the last-10 chart, the
+// per-turn average bars, and the weighted session total so all sections
+// agree.
+func cacheLevelColor(pct float64) string {
+	const (
+		red    = "#f85149"
+		orange = "#d29922"
+		green  = "#3fb950"
+	)
+	switch {
+	case pct >= 95:
+		return ansi.Fg(green)
+	case pct >= 90:
+		return ansi.Fg(orange)
+	default:
+		return ansi.Fg(red)
 	}
-	writeHorizontalCacheChart(b, turns, rates, colors)
+}
+
+// cacheGroup is one agent/goal section of the cache view.
+type cacheGroup struct {
+	key   string // display label ("main", "companion", …)
+	turns []cacheTurn
+}
+
+// groupCacheTurns partitions the turn series by (AgentRole, GoalID) in
+// first-appearance order. Solo sessions collapse to a single unlabeled group
+// so the output keeps today's header-less look.
+func groupCacheTurns(turns []cacheTurn) []cacheGroup {
+	var groups []cacheGroup
+	index := map[string]int{}
+	for _, t := range turns {
+		key := t.AgentRole
+		if key == "" {
+			key = "main"
+		}
+		if t.GoalID != "" {
+			key += " · goal:" + t.GoalID
+		}
+		i, ok := index[key]
+		if !ok {
+			groups = append(groups, cacheGroup{key: key})
+			i = len(groups) - 1
+			index[key] = i
+		}
+		groups[i].turns = append(groups[i].turns, t)
+	}
+	return groups
+}
+
+// writeCacheView renders the /stats:cache output: per agent/goal group, the
+// last-10 cache-hit chart, the per-turn average bars, the weighted session
+// total, and the cache-miss list. A single group (the common solo session)
+// renders without a section header.
+func writeCacheView(b *strings.Builder, turns []cacheTurn) {
+	groups := groupCacheTurns(turns)
+	multi := len(groups) > 1
+	for _, g := range groups {
+		if multi {
+			fmt.Fprintf(b, "## %s\n", g.key)
+		}
+		writeCacheGroupSections(b, g.turns)
+	}
+}
+
+// writeCacheGroupSections renders the four required sections for one group.
+func writeCacheGroupSections(b *strings.Builder, turns []cacheTurn) {
+	writeCacheHitLast10(b, turns)
+	writeCacheAvgPerTurn(b, turns)
+	writeCacheSessionTotal(b, turns)
+	writeCacheMissList(b, turns)
 	writeCacheDrops(b, detectCacheDrops(turns, cacheDropThresholdPts))
 }
 
@@ -126,7 +191,7 @@ func cacheMisses(turns []cacheTurn) []cacheMissTurn {
 	out := make([]cacheMissTurn, 0, len(turns))
 	prev, established := 0, false
 	for _, t := range turns {
-		m := cacheMissTurn{num: t.Num}
+		m := cacheMissTurn{num: t.Num, prev: prev}
 		if t.CacheRead > 0 {
 			established = true
 		}
@@ -142,37 +207,137 @@ func cacheMisses(turns []cacheTurn) []cacheMissTurn {
 	return out
 }
 
-func writeCacheMisses(b *strings.Builder, turns []cacheTurn) {
-	b.WriteString("# Cache misses\n")
-	for _, m := range cacheMisses(turns) {
-		fullTokens, partialTokens := 0, 0
-		if m.full != 0 {
-			fullTokens = m.missed
+// writeCacheHitLast10 renders section 1: a vertical bar chart of the last
+// ≤10 cache-active completions, exact percentage centered under each bar,
+// colored by band (red <90, orange <95, green ≥95).
+func writeCacheHitLast10(b *strings.Builder, turns []cacheTurn) {
+	b.WriteString("# Cache hit — last completions (rightmost = newest)\n")
+	active := cacheActiveTurns(turns)
+	if len(active) == 0 {
+		b.WriteString("No cache activity recorded yet.\n")
+		return
+	}
+	if len(active) > cacheChartBars {
+		active = active[len(active)-cacheChartBars:]
+	}
+	rates := make([]float64, len(active))
+	for i, t := range active {
+		rates[i] = cacheTurnRate(t)
+	}
+	writeCacheChart(b, rates, cacheLevelColors(rates))
+}
+
+// cacheActiveTurns filters to turns with any cache activity (read or write).
+func cacheActiveTurns(turns []cacheTurn) []cacheTurn {
+	out := make([]cacheTurn, 0, len(turns))
+	for _, t := range turns {
+		if t.CacheRead > 0 || t.CacheWrite > 0 {
+			out = append(out, t)
 		}
-		if m.partial != 0 {
-			partialTokens = m.missed
+	}
+	return out
+}
+
+// cacheLevelColors maps each rate to its band color.
+func cacheLevelColors(rates []float64) []string {
+	colors := make([]string, len(rates))
+	for i, r := range rates {
+		colors[i] = cacheLevelColor(r)
+	}
+	return colors
+}
+
+// writeCacheAvgPerTurn renders section 2: one horizontal block bar per turn
+// (cache-active turns only), colored by the same band thresholds.
+func writeCacheAvgPerTurn(b *strings.Builder, turns []cacheTurn) {
+	b.WriteString("# Cache usage per turn\n")
+	active := cacheActiveTurns(turns)
+	if len(active) == 0 {
+		return
+	}
+	const barWidth = 20 // block columns at 100%
+	for _, t := range active {
+		r := cacheTurnRate(t)
+		filled := int(r*barWidth/100 + 0.5)
+		if filled > barWidth {
+			filled = barWidth
 		}
-		b.WriteString(fmt.Sprintf("T%d - CM: Full %d (%dt) / Partial %d (%dt)\n", m.num, m.full, fullTokens, m.partial, partialTokens))
+		fmt.Fprintf(b, "T%-4d %6.2f%% %s%s%s\n",
+			t.Num, r, cacheLevelColor(r), strings.Repeat("█", filled), ansi.Reset)
 	}
 }
 
-func writeHorizontalCacheChart(b *strings.Builder, turns []cacheTurn, rates []float64, colors []string) {
-	active := make([]cacheTurn, 0, len(turns))
-	for _, t := range turns {
-		if t.CacheRead > 0 || t.CacheWrite > 0 {
-			active = append(active, t)
+// writeCacheSessionTotal renders section 3: the token-weighted cache-hit
+// percentage across the group's turns.
+func writeCacheSessionTotal(b *strings.Builder, turns []cacheTurn) {
+	active := cacheActiveTurns(turns)
+	if len(active) == 0 {
+		return
+	}
+	var read, write, prompt int
+	for _, t := range active {
+		read += t.CacheRead
+		write += t.CacheWrite
+		prompt += t.PromptN
+	}
+	total := metrics.CacheHitPct(read, write, prompt)
+	fmt.Fprintf(b, "# Session total: %s%.2f%%%s cache hit (weighted over %d turns)\n",
+		cacheLevelColor(total), total, ansi.Reset, len(active))
+}
+
+// writeCacheMissList renders section 4: one line per cache miss with the
+// miss size in tokens and as a percentage of the previously-cached prefix
+// (full miss = 100% of the prefix recomputed).
+func writeCacheMissList(b *strings.Builder, turns []cacheTurn) {
+	misses := cacheMisses(turns)
+	var any bool
+	for _, m := range misses {
+		if m.full == 0 && m.partial == 0 {
+			continue
 		}
+		if !any {
+			b.WriteString("# Cache misses\n")
+			any = true
+		}
+		kind := "partial"
+		if m.full != 0 {
+			kind = "full"
+		}
+		pct := 100.0
+		if m.partial != 0 && m.prev > 0 {
+			pct = float64(m.missed) / float64(m.prev) * 100
+		}
+		fmt.Fprintf(b, "T%-4d %s miss — %.1f%% of prefix · %s tokens recomputed\n",
+			m.num, kind, pct, groupThousands(int64(m.missed)))
 	}
-	if len(active) > len(rates) {
-		active = active[len(active)-len(rates):]
+	if !any {
+		b.WriteString("# Cache misses\nNo cache misses detected.\n")
 	}
-	for i, r := range rates {
-		width := int(r * 24 / 100)
-		b.WriteString(fmt.Sprintf("T%d - CH: %.2f%% |", active[i].Num, r))
-		b.WriteString(colors[i])
-		b.WriteString(strings.Repeat("█", width))
-		b.WriteString(ansi.Reset + "\n")
+}
+
+// groupThousands renders n with comma thousands separators (8192 → "8,192")
+// for the miss-list token figure.
+func groupThousands(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
 	}
+	digits := fmt.Sprintf("%d", n)
+	var b strings.Builder
+	first := len(digits) % 3
+	if first > 0 {
+		b.WriteString(digits[:first])
+	}
+	for i := first; i < len(digits); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(digits[i : i+3])
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }
 
 // latestCacheRates extracts the per-completion cache-hit rate of the latest
