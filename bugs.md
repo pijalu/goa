@@ -28,9 +28,6 @@ per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
 
-## Cache-miss RCA conclusion disputed — misses WERE counted
-On the Cache-miss RCA — session 1787174084_qqrf2p5v (@docs/archive/bugs-20260819-cache-miss-1787174084.md) — the status bar shows CM:1|2·352,768 — so the "not counted as a CM bust" conclusion is very odd. Review again. The fresh-context boundary and/or sub-agent (companion/team) turns appear to be counted as cache busts when they should not be (a fresh goal context is a new conversation with its own cache key — a cold start is not a bust; a sub-agent's separate conversation likewise).
-
 ## Context compact prunes at hard ceiling instead of summarizing
 Error with context compact:
 ```
