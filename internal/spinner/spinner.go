@@ -120,13 +120,6 @@ func load() {
 			}
 		}
 	}
-
-	// pacman, goat and defender are generated programmatically (multi-cell
-	// frames cannot be expressed in the static spinners.json format): always
-	// register them, even when a user spinner.json replaces the builtin set.
-	registry["pacman"] = Pacman()
-	registry["goat"] = Goat()
-	registry["defender"] = Defender()
 }
 
 func fallback() map[string]Definition {
