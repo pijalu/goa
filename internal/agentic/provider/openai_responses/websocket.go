@@ -262,17 +262,20 @@ func parseResponsesWebSocket(body io.ReadCloser, stream *provider.AssistantMessa
 // parseResponsesWebSocketBaseline parses the WS event stream like
 // parseResponsesWebSocket but, on a successful response.completed, records the
 // session baseline (response id + added output items + the last input passed
-// in). A failed/errored/cancelled stream leaves the previous baseline intact
-// (recordWSBaseline is only reached on a clean completed parse). It also
-// captures the turn-state token from response.metadata events for sticky
-// routing within the turn.
+// in). The baseline is recorded the moment the response.completed chunk is
+// captured — which happens before handleResponsesCompleted calls stream.End()
+// — so a consumer that drains the stream and immediately issues the next
+// (chained) turn always observes the new baseline. A failed/errored/cancelled
+// stream never emits response.completed, so it leaves the previous baseline
+// intact. It also captures the turn-state token from response.metadata events
+// for sticky routing within the turn.
 func parseResponsesWebSocketBaseline(body io.ReadCloser, stream *provider.AssistantMessageEventStream, sessionKey string, lastInput []provider.Message, fingerprint requestFingerprint) {
 	defer body.Close()
 	cap := &baselineCapture{}
 	parseResponsesSSEWithHook(body, stream, func(rawChunk string, endedOK bool) {
-		// Capture the WS session baseline on response.completed.
-		cap.capture(rawChunk)
-		if endedOK && cap.ready() {
+		// Record the WS session baseline at the moment response.completed is
+		// captured, before the stream's End() unblocks the consumer.
+		if cap.capture(rawChunk) {
 			recordWSBaseline(sessionKey, lastInput, cap.responseID, cap.addedItems, fingerprint)
 		}
 		// Capture turn-state from response.metadata events (Codex WS path).

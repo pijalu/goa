@@ -465,17 +465,18 @@ func parseResponsesSSEWithHook(body io.ReadCloser, stream *provider.AssistantMes
 	}
 }
 
-// parseResponsesSSEWithBaseline behaves like parseResponsesSSE but, after a
-// successful response.completed (no decode/SSE error and the stream ended
-// normally), records the WS session baseline for sessionKey. lastInput is the
+// parseResponsesSSEWithBaseline behaves like parseResponsesSSE but, on a
+// response.completed event, records the WS session baseline for sessionKey.
+// The baseline is recorded the moment the completed chunk is captured — before
+// the handler calls stream.End() — so a consumer that drains and immediately
+// issues the next (chained) turn always observes it. lastInput is the
 // already-deep-copied request input captured at send time; fingerprint is the
 // property fingerprint of the request that opened the baseline. On any failure
 // the baseline is left untouched (a failed request never advances it).
 func parseResponsesSSEWithBaseline(body io.ReadCloser, stream *provider.AssistantMessageEventStream, sessionKey string, lastInput []provider.Message, fingerprint requestFingerprint) {
 	cap := &baselineCapture{}
 	parseResponsesSSEWithHook(body, stream, func(rawChunk string, endedOK bool) {
-		cap.capture(rawChunk)
-		if endedOK && cap.ready() {
+		if cap.capture(rawChunk) {
 			recordWSBaseline(sessionKey, lastInput, cap.responseID, cap.addedItems, fingerprint)
 		}
 	})
@@ -488,27 +489,25 @@ type baselineCapture struct {
 	addedItems []provider.Message
 }
 
-// capture folds one raw event chunk into the accumulator (no-op unless the
-// chunk is a response.completed with a parseable response payload).
-func (c *baselineCapture) capture(rawChunk string) {
+// capture folds one raw event chunk into the accumulator, returning true
+// when the chunk is a response.completed with a parseable response payload.
+func (c *baselineCapture) capture(rawChunk string) bool {
 	var event struct {
 		Type string `json:"type"`
 	}
 	if json.Unmarshal([]byte(rawChunk), &event) != nil || event.Type != "response.completed" {
-		return
+		return false
 	}
 	var resp struct {
 		Response completedResponse `json:"response"`
 	}
 	if json.Unmarshal([]byte(rawChunk), &resp) != nil {
-		return
+		return false
 	}
 	c.responseID = resp.Response.ID
 	c.addedItems = resp.Response.toAddedItems()
+	return true
 }
-
-// ready reports whether a completed response was captured.
-func (c *baselineCapture) ready() bool { return c.responseID != "" }
 
 // Azure OpenAI Responses
 func streamAzureResponses(model provider.Model, ctx provider.Context, opts provider.StreamOptions) (*provider.AssistantMessageEventStream, error) {
