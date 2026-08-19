@@ -103,17 +103,21 @@ func (a *Agent) compactOrdered(ctx context.Context, slot CompressionStrategy) er
 		return nil
 	}
 
-	// CX1: pre-compaction tool-result pruning runs AHEAD of summarize range
-	// selection (the micro dry-run below and summarizeHistory itself are the
-	// range consumers). It rewrites over-budget historical tool results in
-	// place to a bounded head + PruneMarker + tail — model-free, so when the
-	// re-measured estimate drops under the escalation level we skip the
-	// summarize LLM call entirely (the pruned history stays as-is).
-	skip, pruneBefore, pruneRes := a.pruneToolResultsPreCompact()
-	if skip {
-		a.emitCompactionResult("tool_result_pruning", pruneBefore, pruneRes, "pruning resolved context pressure; summarize skipped")
-		a.emitContextStats()
-		return nil
+	// CX1: pre-compaction tool-result pruning is OPT-IN (default off). When
+	// enabled it runs AHEAD of summarize range selection and rewrites
+	// over-budget historical tool results in place to a bounded head +
+	// PruneMarker + tail — model-free, so when the re-measured estimate drops
+	// under the escalation level we skip the summarize LLM call entirely (the
+	// pruned history stays as-is). Default off: at the hard ceiling the
+	// configured summarize runs directly. Pruning still serves as the
+	// summarize-overflow fallback below regardless of this flag.
+	if a.cfg.ContextCompression.ToolResultPruning.Enabled {
+		skip, pruneBefore, pruneRes := a.pruneToolResultsPreCompact()
+		if skip {
+			a.emitCompactionResult("tool_result_pruning", pruneBefore, pruneRes, "pruning resolved context pressure; summarize skipped")
+			a.emitContextStats()
+			return nil
+		}
 	}
 
 	// Micro compaction is an OPT-IN maintenance step, disabled by default so

@@ -27,15 +27,3 @@ Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
 # TODO
-
-## Context compact prunes at hard ceiling instead of summarizing
-Error with context compact:
-```
-⚡ Context compacted (tool_result_pruning): 95% → 49% pruning resolved context pressure; summarize skipped
-```
-At hard limit - it should be *summarize* - no pruning !!!
-Config confirms summarize is expected:
-```
-Hard ceiling %  95%
-Hard ceiling method  summarize (default)
-```

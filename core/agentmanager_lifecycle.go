@@ -402,11 +402,12 @@ func timeContextRefreshInterval(s string) time.Duration {
 }
 
 // buildToolResultPruningConfig maps the YAML tool-result pruner settings to
-// the SDK config. Zero fields inherit the SDK defaults (threshold 8192, head
-// 4096, tail 1024 Unicode code points); negative head/tail also reset to the
-// default so a misconfigured cascade cannot produce a zero-budget pass.
+// the SDK config. Enabled defaults OFF (nil = off): pre-compaction pruning
+// only runs when explicitly enabled; the character budgets inherit the SDK
+// defaults (threshold 8192, head 4096, tail 1024 code points) when zero.
 func buildToolResultPruningConfig(s config.ToolResultPruningSettings) agentic.ToolResultPruningConfig {
 	out := agentic.DefaultToolResultPruningConfig
+	out.Enabled = s.PruningEnabled()
 	if s.ThresholdChars > 0 {
 		out.ThresholdChars = s.ThresholdChars
 	}

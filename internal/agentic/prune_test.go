@@ -176,6 +176,67 @@ func TestPruneStaleToolOutput_Idempotent(t *testing.T) {
 	}
 }
 
+// TestAgent_CompactNoPrePruningByDefault is the bugs.md regression: with
+// pre-pruning at its default (off), a dump-heavy history at the hard ceiling
+// MUST summarize — no tool_result_pruning early-return, no in-place rewrite,
+// exactly one summarize LLM call. Pruning only ever serves as the
+// summarize-overflow fallback.
+func TestAgent_CompactNoPrePruningByDefault(t *testing.T) {
+	p := &gateProbeProvider{
+		api:        provider.Api(fmt.Sprintf("no-pre-prune-probe-%d", testProviderCounter.Add(1))),
+		toolRounds: 0,
+	}
+	provider.RegisterApiProvider(p)
+
+	agent := NewAgent(Config{
+		Model:        testModel(p.API()),
+		SystemPrompt: "sys",
+		Logger:       NewLogger(Error),
+		ContextCompression: ContextCompressionConfig{
+			MaxTokens: 10000,
+			Thresholds: CompressionThresholds{
+				SoftPercent: 50,
+				HardPercent: 95,
+			},
+			// ToolResultPruning zero value: Enabled=false — the default.
+		},
+	})
+
+	obs := &mockEventObserver{}
+	agent.AddObserver(obs)
+	go func() {
+		for range agent.Output {
+		}
+	}()
+
+	// Same dump-heavy shape as the opt-in skip test: 20000-rune tool result.
+	// With pre-pruning OFF this must NOT short-circuit the summarize.
+	agent.SetHistory([]Message{
+		{Type: Content, Role: User, Content: "go"},
+	})
+	bigToolPair(agent, "c1", 20000)
+
+	if err := agent.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact failed: %v", err)
+	}
+
+	if got := len(p.recorded()); got != 1 {
+		t.Errorf("summarize LLM call count = %d, want 1 (pre-pruning off by default)", got)
+	}
+	for _, e := range obs.Events() {
+		if e.Type == EventCompact && e.Compaction != nil && e.Compaction.Strategy == "tool_result_pruning" {
+			t.Error("tool_result_pruning compaction emitted with pre-pruning disabled")
+		}
+	}
+	// History must NOT carry the prune marker: the summarize replaced the
+	// history wholesale instead of pruning in place.
+	for _, m := range agent.GetHistory() {
+		if strings.Contains(m.Content, strings.TrimSpace(PruneMarker)) {
+			t.Error("history carries a prune marker though pre-pruning is disabled")
+		}
+	}
+}
+
 // TestAgent_CompactStalePruningSkipsSummarize is the P4 wiring acceptance:
 // a dump-heavy session triggers the stale pass inside the pre-compaction path;
 // when pruning resolves the pressure, Compact skips the summarize LLM call and
@@ -197,6 +258,7 @@ func TestAgent_CompactStalePruningSkipsSummarize(t *testing.T) {
 				SoftPercent: 50,
 				HardPercent: 95,
 			},
+			ToolResultPruning: ToolResultPruningConfig{Enabled: true},
 		},
 	})
 

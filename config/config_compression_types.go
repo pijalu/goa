@@ -151,6 +151,13 @@ func (cc ContextCompressionConfig) FreshWindowEnabled() bool {
 // Character budgets are in Unicode code points; zero fields inherit the
 // defaults (threshold 8192, head 4096, tail 1024).
 type ToolResultPruningSettings struct {
+	// Enabled gates the pre-compaction tool-result pruning pass. DEFAULT OFF
+	// (nil/absent = off): at the hard ceiling the configured summarize must
+	// run — pre-pruning rewrites historical tool results in place and, when it
+	// resolves pressure on its own, skips the summarize entirely. Pruning
+	// remains as the summarize-overflow fallback regardless of this flag.
+	// Set enabled: true to restore the legacy pre-prune behavior.
+	Enabled *bool `yaml:"enabled,omitempty"`
 	// ThresholdChars prunes a tool result when its content exceeds this many
 	// Unicode code points (default 8192).
 	ThresholdChars int `yaml:"threshold_chars,omitempty"`
@@ -160,6 +167,12 @@ type ToolResultPruningSettings struct {
 	// TailChars is the number of trailing Unicode code points retained
 	// (default 1024).
 	TailChars int `yaml:"tail_chars,omitempty"`
+}
+
+// PruningEnabled reports whether pre-compaction tool-result pruning is on.
+// Default off: absent at every cascade layer = off.
+func (s ToolResultPruningSettings) PruningEnabled() bool {
+	return s.Enabled != nil && *s.Enabled
 }
 
 // TelegramConfig controls the telegram talk style system prompt injection.

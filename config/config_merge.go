@@ -798,8 +798,12 @@ func mergeMicroCompaction(dst *MicroCompactionSettings, src MicroCompactionSetti
 }
 
 // mergeToolResultPruning overlays tool-result pruner settings field-wise so a
-// higher layer setting one key does not reset the others to zero.
+// higher layer setting one key does not reset the others to zero. Enabled is
+// tri-state: only an explicitly set pointer overrides the lower layer.
 func mergeToolResultPruning(dst *ToolResultPruningSettings, src ToolResultPruningSettings) {
+	if src.Enabled != nil {
+		dst.Enabled = src.Enabled
+	}
 	if src.ThresholdChars != 0 {
 		dst.ThresholdChars = src.ThresholdChars
 	}

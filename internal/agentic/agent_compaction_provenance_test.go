@@ -334,6 +334,7 @@ func TestAgent_Compact_PruneResolvedSkipsTransaction(t *testing.T) {
 				SoftPercent: 50,
 				HardPercent: 95,
 			},
+			ToolResultPruning: ToolResultPruningConfig{Enabled: true},
 		},
 	})
 	obs := &mockEventObserver{}
