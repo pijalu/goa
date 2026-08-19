@@ -55,8 +55,11 @@ type RequestFingerprint struct {
 // bodies: the previous messages must canonically prefix the current ones and
 // every non-message field must be canonically equal. A messages-prefix with a
 // changed field (tools, thinking, …) is param_change — cache-relevant but
-// distinct from a history rewrite. Non-JSON bodies (exotic transports) fall
-// back to the historical byte-level test.
+// distinct from a history rewrite. One sub-case is classified separately:
+// dropping the tools array while forcing tool_choice "none" (the intentional
+// final-step/recovery collapse) is tool_policy_transition, not an opaque
+// param_change. Non-JSON bodies (exotic transports) fall back to the
+// historical byte-level test.
 func BuildRequestFingerprint(providerName, model, sessionID string, previousRequest, request []byte, historyGeneration, compactionGeneration uint64, transport, turnID string, replacement bool) RequestFingerprint {
 	classification := classifyPrefix(previousRequest, request, replacement)
 	return RequestFingerprint{
@@ -71,8 +74,9 @@ func BuildRequestFingerprint(providerName, model, sessionID string, previousRequ
 
 // classifyPrefix derives the prefix classification for a request relative
 // to its predecessor. Precedence: exact_append (canonical messages-prefix +
-// identical params) > param_change (messages-prefix, params differ) >
-// replacement (flagged) > unexpected_divergence.
+// identical params) > tool_policy_transition (messages-prefix, intentional
+// tools → tool_choice "none" collapse) > param_change (messages-prefix,
+// params differ) > replacement (flagged) > unexpected_divergence.
 func classifyPrefix(previousRequest, request []byte, replacement bool) PrefixClassification {
 	if len(previousRequest) == 0 {
 		if replacement {

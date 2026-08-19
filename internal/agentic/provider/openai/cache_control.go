@@ -153,6 +153,7 @@ func promptCacheRetention(opts provider.StreamOptions, compat provider.OpenAICom
 	return "24h"
 }
 
+// isLocalProvider reports whether the endpoint is a local server (LM Studio
 // or Ollama) where prompt_cache_key improves cache affinity across slots.
 func isLocalProvider(prov provider.Provider, baseURL string) bool {
 	p := strings.ToLower(string(prov))

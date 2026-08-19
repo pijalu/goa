@@ -32,7 +32,7 @@ All reported items from this cycle were implemented or verified, tested, validat
 
 ## Kimi follow-up implementation
 
-Implemented on `feature/kimi`: Kimi/Moonshot provider catalog profiles now declare `SupportsPromptCache`; the generic compatibility-driven serializer retains `prompt_cache_key` even when cache retention is `none`, with wire regression coverage. Cache forensics now distinguishes intentional `tools` to `tool_choice=none` transitions as `tool_policy_transition` instead of generic `param_change`; attribution and agent logging preserve this cause. Existing compaction key-rotation and baseline-reset tests were reviewed and remain passing. See commits on this branch.
+Implemented on `feature/kimi`: Kimi/Moonshot provider catalog profiles now declare `SupportsPromptCache`, and the embedded variant profiles (`variants/kimi-code.json`, `variants/moonshot.json`) set `supports_prompt_cache: true` so the live protocol wire path resolves the flag; the generic compatibility-driven serializer retains `prompt_cache_key` even when cache retention is `none`, with wire regression coverage on the protocol path (key presence at default retention, stability across tool rounds and the final no-tools collapse, explicit-key precedence, and gating for unflagged providers). Cache forensics now distinguishes intentional `tools` to `tool_choice=none` transitions as `tool_policy_transition` instead of generic `param_change`; attribution and agent logging preserve this cause. Existing compaction key-rotation and baseline-reset tests were reviewed and remain passing. See commits on this branch.
 
 ## Kimi-code cache/compaction comparison follow-up
 

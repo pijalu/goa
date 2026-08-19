@@ -150,6 +150,22 @@ func TestLoadEmbeddedProfile_OllamaEnablesPromptCache(t *testing.T) {
 	assert.True(t, p.Compat.SupportsPromptCache, "Ollama should advertise prompt-cache support")
 }
 
+// TestLoadEmbeddedProfile_KimiEnablesPromptCache guards the wire path: the
+// protocol layer reads SupportsPromptCache from the variant profile (not the
+// catalog), so both Kimi profiles must advertise it here or real requests
+// silently omit prompt_cache_key at default (none) cache retention.
+func TestLoadEmbeddedProfile_KimiEnablesPromptCache(t *testing.T) {
+	p, err := LoadEmbeddedProfile("kimi-code")
+	require.NoError(t, err)
+	assert.Equal(t, "kimi-code", p.ID)
+	assert.True(t, p.Compat.SupportsPromptCache, "kimi-code should advertise prompt-cache support")
+
+	p, err = LoadEmbeddedProfile("moonshot")
+	require.NoError(t, err)
+	assert.Equal(t, "moonshot", p.ID)
+	assert.True(t, p.Compat.SupportsPromptCache, "moonshot should advertise prompt-cache support")
+}
+
 func TestLoadEmbeddedProfileNotFound(t *testing.T) {
 	_, err := LoadEmbeddedProfile("does-not-exist")
 	require.Error(t, err)
