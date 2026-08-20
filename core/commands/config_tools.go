@@ -32,6 +32,32 @@ func (c *configMenu) toggleWarnFileEdits() {
 	c.applySet("tools.bash.warn_file_edits", v)
 	c.settingBash()
 }
+func (c *configMenu) settingToolsMenu() {
+	c.current = c.settingToolsMenu
+	cfg := c.ctx.Config
+	items := []tui.SelectorItem{
+		{Value: "enabled_tools", Label: "Enabled/disabled tools", Description: toolsEnabledLabel(cfg)},
+		{Value: "tool_call_fixing", Label: "Tool call fixing", Description: boolLabel(cfg.Execution.AutoHealToolCalls)},
+	}
+	c.ctx.SelectOption("Tools settings:", items, "", func(s string, ok bool) {
+		if !ok {
+			c.back()
+			return
+		}
+		switch s {
+		case "enabled_tools":
+			c.open(c.settingTools)
+		case "tool_call_fixing":
+			v := "true"
+			if cfg.Execution.AutoHealToolCalls {
+				v = "false"
+			}
+			c.applySet("execution.auto_heal_tool_calls", v)
+			c.settingToolsMenu()
+		}
+	})
+}
+
 func (c *configMenu) settingTools() {
 	c.current = c.settingTools
 	c.ctx.SelectOption("Toggle optional tools:", buildToolItems(c.ctx.Config), "", c.toolToggleHandler)

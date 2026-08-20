@@ -125,6 +125,43 @@ func TestConfigMenu_SkillsRowIsSubmenuHint(t *testing.T) {
 	}
 }
 
+func TestConfigMenu_ToolsSubmenuAndToolCallFixing(t *testing.T) {
+	cfg := &config.Config{Execution: config.ExecutionConfig{AutoHealToolCalls: false}}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("tools", true)
+	if sr.title != "Tools settings:" {
+		t.Fatalf("title = %q, want Tools settings:", sr.title)
+	}
+	if len(sr.options) != 2 || sr.options[0].Value != "enabled_tools" || sr.options[1].Value != "tool_call_fixing" {
+		t.Fatalf("unexpected tools submenu options: %+v", sr.options)
+	}
+	if sr.options[1].Description != "off" {
+		t.Fatalf("tool fixing description = %q, want off", sr.options[1].Description)
+	}
+	sr.onSel("tool_call_fixing", true)
+	if !cfg.Execution.AutoHealToolCalls {
+		t.Fatal("tool call fixing was not enabled")
+	}
+	if sr.title != "Tools settings:" || sr.options[1].Description != "on" {
+		t.Fatalf("submenu did not refresh after toggle: title=%q options=%+v", sr.title, sr.options)
+	}
+
+}
+
+func TestConfigMenu_ToolSelectorIsNested(t *testing.T) {
+	cfg := &config.Config{}
+	ctx, sr, _, _ := newMenuTestContext(t, cfg)
+	menu := newConfigMenu(*ctx)
+	_ = menu.showRoot()
+	sr.onSel("tools", true)
+	sr.onSel("enabled_tools", true)
+	if sr.title != "Toggle optional tools:" {
+		t.Fatalf("title = %q, want Toggle optional tools:", sr.title)
+	}
+}
+
 func TestConfigMenu_ModeChangeSyncsMode(t *testing.T) {
 	cfg := &config.Config{Mode: config.ModeConfig{Default: internal.ModeState{Major: internal.MajorCoder}}}
 	ctx, sr, _, events := newMenuTestContext(t, cfg)

@@ -250,7 +250,7 @@ func (m *configMenu) openTheme()         { m.open(m.settingTheme) }
 func (m *configMenu) openSpinner()       { m.open(m.settingSpinner) }
 func (m *configMenu) openThinkingLevel() { m.open(m.settingThinkingLevel) }
 func (m *configMenu) openMultiAgent()    { m.open(m.settingMultiAgent) }
-func (m *configMenu) openTools()         { m.open(m.settingTools) }
+func (m *configMenu) openTools()         { m.open(m.settingToolsMenu) }
 func (m *configMenu) openBash()          { m.open(m.settingBash) }
 func (m *configMenu) openMCP()           { m.open(m.settingMCP) }
 func (m *configMenu) openLoopDetection() { m.open(m.settingLoopDetection) }
