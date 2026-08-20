@@ -121,6 +121,16 @@ func collectArtifacts(zb *ZipBuilder, ctx core.Context, opts BuildOptions) (pres
 
 	// Session events.
 	collector.addFile(resolveSessionPath(ctx, opts), "session/events.jsonl", nil)
+	// Sub-agent (pool) role sessions: the complete per-role exchange recorded
+	// by the orchestrator's RoleSessionRecorder (RC-6 — exports must contain
+	// the full multi-agent conversation, not only main). Optional: sessions
+	// without sub-agent activity have no agents dir, and absence is NOT a
+	// missing artifact.
+	if agentsDir := resolveRoleSessionsDir(ctx, opts); agentsDir != "" {
+		if info, err := os.Stat(agentsDir); err == nil && info.IsDir() {
+			collector.addDir(agentsDir, "session/agents")
+		}
+	}
 
 	// Subsystem-contributed artifacts (Open/Closed): each subsystem that owns
 	// diagnostics outside SessionStore (e.g. the orchestrator run log) registers
@@ -367,6 +377,20 @@ func resolveSessionPath(ctx core.Context, opts BuildOptions) string {
 		}
 	}
 	return filepath.Join(opts.ProjectDir, ".goa", "sessions", id+".jsonl")
+}
+
+// resolveRoleSessionsDir returns the directory holding per-role sub-agent
+// session files (<sessionsDir>/<sessionID>/agents), or "" when no session is
+// active. Mirrors the layout produced by multiagent.RoleSessionRecorder.
+func resolveRoleSessionsDir(ctx core.Context, opts BuildOptions) string {
+	id := resolveSessionID(ctx, opts)
+	if id == "" {
+		return ""
+	}
+	if p := resolveSessionPath(ctx, opts); p != "" {
+		return filepath.Join(filepath.Dir(p), id, "agents")
+	}
+	return filepath.Join(opts.ProjectDir, ".goa", "sessions", id, "agents")
 }
 
 // renderAgentLogRing formats the always-on in-memory agent log ring as text

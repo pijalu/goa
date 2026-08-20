@@ -183,6 +183,79 @@ func TestBuildBundle_IncludesAllArtifacts(t *testing.T) {
 	}
 }
 
+// TestBuildBundle_IncludesRoleAgentSessions verifies team UI bug RC-6 fix:
+// when sub-agents ran, their per-role session files under
+// .goa/sessions/<id>/agents/ are bundled as session/agents/<role>.jsonl so
+// the export contains the COMPLETE multi-agent exchange, not only main.
+func TestBuildBundle_IncludesRoleAgentSessions(t *testing.T) {
+	dir := t.TempDir()
+	setupTestProject(t, dir)
+
+	agentsDir := filepath.Join(dir, ".goa", "sessions", "test_session", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	plannerJSONL := `{"type":"content","role":"user","text":"design the schema"}` + "\n" +
+		`{"type":"tool_call","tool_name":"read_file"}` + "\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "planner.jsonl"), []byte(plannerJSONL), 0o644); err != nil {
+		t.Fatalf("write planner session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "companion.jsonl"), []byte(`{"type":"end"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write companion session: %v", err)
+	}
+
+	ctx := core.Context{
+		Config: &config.Config{
+			ConfigDir: filepath.Join(dir, ".goa"),
+		},
+		ProjectDir: dir,
+		SessionStore: &fakeSessionStore{
+			sessionID:   "test_session",
+			sessionPath: filepath.Join(dir, ".goa", "sessions", "test_session.jsonl"),
+		},
+	}
+
+	result, err := BuildBundle(ctx, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBundle failed: %v", err)
+	}
+
+	entries := readZipEntries(t, result.Path)
+	for _, want := range []string{"session/agents/planner.jsonl", "session/agents/companion.jsonl"} {
+		if !entries[want] {
+			t.Errorf("missing zip entry: %s (have: %v)", want, entries)
+		}
+	}
+	data, err := readZipFile(t, result.Path, "session/agents/planner.jsonl")
+	if err != nil {
+		t.Fatalf("read planner.jsonl: %v", err)
+	}
+	if string(data) != plannerJSONL {
+		t.Errorf("planner.jsonl = %q, want verbatim %q", data, plannerJSONL)
+	}
+
+	// Sessions without sub-agent activity must NOT report agents as missing.
+	dir2 := t.TempDir()
+	setupTestProject(t, dir2)
+	ctx2 := core.Context{
+		Config:     &config.Config{ConfigDir: filepath.Join(dir2, ".goa")},
+		ProjectDir: dir2,
+		SessionStore: &fakeSessionStore{
+			sessionID:   "test_session",
+			sessionPath: filepath.Join(dir2, ".goa", "sessions", "test_session.jsonl"),
+		},
+	}
+	result2, err := BuildBundle(ctx2, BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildBundle (no agents) failed: %v", err)
+	}
+	for _, m := range result2.Manifest.MissingFiles {
+		if strings.Contains(m, "agents") {
+			t.Errorf("agents dir reported missing for session without sub-agents: %v", m)
+		}
+	}
+}
+
 func TestBuildBundle_MissingFiles(t *testing.T) {
 	dir := t.TempDir()
 	ctx := core.Context{

@@ -175,6 +175,11 @@ type ForegroundOrchestrator struct {
 	// cacheGoalID resolves the goal bound to the current run ("" = none),
 	// consulted when a sub-agent's final token stats arrive.
 	cacheGoalID func() string
+
+	// roleRecorder, when set, persists every pool sub-agent's complete event
+	// exchange to per-role JSONL files (team UI bug RC-6 / logging gap:
+	// exports must contain the full multi-agent conversation, not only main).
+	roleRecorder *RoleSessionRecorder
 }
 
 // SubAgentCacheUsage carries one sub-agent turn's cache-relevant token
@@ -286,7 +291,28 @@ func (o *ForegroundOrchestrator) makeAgentCreatedHook() func(string, *agentic.Ag
 		agent.AddObserver(agentic.OutputObserverFunc(func(ev agentic.OutputEvent) {
 			handleAgentOutputEvent(o, role, state, ev)
 			o.forwardCacheStats(role, ev)
+			o.recordRoleEvent(role, ev)
 		}))
+	}
+}
+
+// SetRoleRecorder installs the per-role session recorder. Every event
+// observed from a pool sub-agent is appended to that role's JSONL file so
+// exports and post-mortems see the complete multi-agent exchange.
+func (o *ForegroundOrchestrator) SetRoleRecorder(rr *RoleSessionRecorder) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.roleRecorder = rr
+}
+
+// recordRoleEvent forwards one sub-agent event to the installed recorder
+// (nil-safe, cheap when unset).
+func (o *ForegroundOrchestrator) recordRoleEvent(role string, ev agentic.OutputEvent) {
+	o.mu.RLock()
+	rr := o.roleRecorder
+	o.mu.RUnlock()
+	if rr != nil {
+		rr.Record(role, ev)
 	}
 }
 

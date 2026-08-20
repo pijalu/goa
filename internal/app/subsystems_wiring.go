@@ -145,13 +145,26 @@ func configureRoleModels(pool *multiagent.AgentPool, cfg *config.Config, modeReg
 	}
 }
 
-func wireForegroundOrchestrator(pool *multiagent.AgentPool, promptReg *prompts.Registry, agentMgr *core.AgentManager, cfg *config.Config, workflowReg *multiagent.WorkflowRegistry) *multiagent.ForegroundOrchestrator {
+func wireForegroundOrchestrator(pool *multiagent.AgentPool, promptReg *prompts.Registry, agentMgr *core.AgentManager, cfg *config.Config, workflowReg *multiagent.WorkflowRegistry, sessionStore core.SessionStoreAPI) *multiagent.ForegroundOrchestrator {
 	orch := multiagent.NewForegroundOrchestrator(pool)
 	pool.SetOrchestrator(orch)
 	orch.SetPromptRegistry(promptReg)
 	orch.SetSteeringQueue(agentMgr.SteeringQueue())
 	orch.ModeSwitchCallback = makeModeSwitchCallback(agentMgr)
 	agentMgr.SetForegroundOrchestrator(orch)
+	// Record every pool sub-agent's complete event exchange next to the main
+	// session file (RC-6: exports must contain the full multi-agent
+	// conversation). The directory derives from the CURRENT session at record
+	// time so /new and session restore rotate it automatically.
+	if sessionStore != nil {
+		orch.SetRoleRecorder(multiagent.NewRoleSessionRecorder(func() string {
+			path := sessionStore.CurrentSessionPath()
+			if path == "" {
+				return ""
+			}
+			return filepath.Join(filepath.Dir(path), sessionStore.SessionID(), "agents")
+		}))
+	}
 	return orch
 }
 

@@ -362,7 +362,7 @@ func InitSubsystems(cfg *config.Config, loader *config.CascadeLoader, projectDir
 				agentBundle.stateSnapshot.MinorMode == "companion"
 			requestReviewTool, delegateTool = registerAgentDrivenTools(subs.toolRegistry, agentDrivenTools, cfg, companionActive)
 			agentPool = createAgentPool(mdl, subs.providerMgr, subs.toolRegistry, promptReg, cfg, modeRegistry, swarmState, taskBus, agentBundle.agentMgr, agentBundle.eventBus)
-			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg)
+			foregroundOrch = wireForegroundOrchestrator(agentPool, promptReg, agentBundle.agentMgr, cfg, workflowReg, agentBundle.sessionStore)
 			agentPool.SetOrchestrator(foregroundOrch)
 			wireCacheStatsIdentity(foregroundOrch, agentBundle.agentMgr, goalManager)
 			wireCompanionCreation(agentPool, agentBundle.agentMgr, agentBundle.stateSnapshot)
