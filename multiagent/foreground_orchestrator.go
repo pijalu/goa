@@ -369,11 +369,34 @@ func handleAgentOutputEvent(o *ForegroundOrchestrator, role string, state *agent
 		if ev.ToolName != "workflows_next" {
 			o.stageToolCount.Add(1)
 		}
+		// Surface sub-agent tool activity to the TUI: without this, companion
+		// sections show only thinking and the user never sees what the
+		// sub-agent actually does (team UI bug RC-2).
+		o.emitKind(role, "tool_call", ev.ToolName, "tool_call")
+	case agentic.EventToolResult:
+		// Companion/delegate tool results: forward a short preview so the
+		// role's section shows completion of the tool call. Full results stay
+		// in the sub-agent's history; the TUI line is a status marker only.
+		o.emitKind(role, "tool_result", toolResultPreview(ev.Text), "tool_result")
 	case agentic.EventContent:
 		handleAgentContentEvent(o, role, state, ev)
 	case agentic.EventEnd:
 		handleAgentEndEvent(o, role, state)
 	}
+}
+
+// toolResultPreview truncates a tool result to a single-line preview for the
+// TUI section tool marker.
+func toolResultPreview(text string) string {
+	text = strings.TrimSpace(text)
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	}
+	const maxPreview = 80
+	if len(text) > maxPreview {
+		text = text[:maxPreview] + "…"
+	}
+	return text
 }
 
 func handleAgentContentEvent(o *ForegroundOrchestrator, role string, state *agentOutputState, ev agentic.OutputEvent) {

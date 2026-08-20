@@ -13,11 +13,85 @@ import (
 	"github.com/pijalu/goa/tui"
 )
 
+// roleStreamState holds the TUI stream state for ONE sub-agent role: its own
+// companion section plus its own thinking/message buffers. Concurrent
+// delegates (planner + coder + companion) each get an isolated state — the
+// previous single shared state cross-wired chunks and stream_end between
+// roles, leaving sections stuck on "thinking..." (team UI bug RC-1).
+type roleStreamState struct {
+	section     *tui.CompanionSectionComponent
+	thinkingBuf strings.Builder
+	messageBuf  strings.Builder
+}
+
+// streamForwarder is the per-forwarder registry of role stream states plus
+// the footer active-role tracking (a set of currently-streaming roles; the
+// last element is the most recently started, shown in the status bar).
+type streamForwarder struct {
+	roles  map[string]*roleStreamState
+	cycles map[string]int
+	active []string
+}
+
+func newStreamForwarder() *streamForwarder {
+	return &streamForwarder{
+		roles:  make(map[string]*roleStreamState),
+		cycles: make(map[string]int),
+	}
+}
+
+// stateFor returns the stream state for role, creating it on first use.
+func (f *streamForwarder) stateFor(role string) *roleStreamState {
+	if role == "" {
+		role = "companion"
+	}
+	st, ok := f.roles[role]
+	if !ok {
+		st = &roleStreamState{}
+		f.roles[role] = st
+	}
+	return st
+}
+
+// markActive registers role as streaming (idempotent) and returns the role
+// whose identity the footer should show (the most recently started active one).
+func (f *streamForwarder) markActive(role string) string {
+	for _, r := range f.active {
+		if r == role {
+			return f.active[len(f.active)-1]
+		}
+	}
+	f.active = append(f.active, role)
+	return role
+}
+
+// markInactive removes role from the active set and returns the role the
+// footer should now show ("" when no role is streaming anymore).
+func (f *streamForwarder) markInactive(role string) string {
+	out := f.active[:0]
+	for _, r := range f.active {
+		if r != role {
+			out = append(out, r)
+		}
+	}
+	f.active = out
+	if len(f.active) == 0 {
+		return ""
+	}
+	return f.active[len(f.active)-1]
+}
+
+// anyActive reports whether any role is still streaming.
+func (f *streamForwarder) anyActive() bool { return len(f.active) > 0 }
+
+// nextCycle advances and returns the per-role cycle counter.
+func (f *streamForwarder) nextCycle(role string) int {
+	f.cycles[role]++
+	return f.cycles[role]
+}
+
 func (a *App) runOrchestratorEventForwarder(done chan struct{}) {
-	var section *tui.CompanionSectionComponent
-	var cycle int
-	var thinkingBuf strings.Builder
-	var messageBuf strings.Builder
+	fwd := newStreamForwarder()
 
 	for {
 		select {
@@ -31,7 +105,7 @@ func (a *App) runOrchestratorEventForwarder(done chan struct{}) {
 				continue
 			}
 			a.apply(func() {
-				if a.handleOrchestratorStreamMsg(m, &section, &cycle, &thinkingBuf, &messageBuf) {
+				if a.handleOrchestratorStreamMsg(m, fwd) {
 					return
 				}
 				a.handleOrchestratorProgressMsg()
@@ -62,10 +136,8 @@ func (a *App) forwardGateApproval(msg multiagent.OrchestratorMessage) {
 		return
 	}
 	select {
-	case a.subs.events.Control <- event.ControlEvent{GateApproval: &event.GateApproval{
-		StageID:   parts[0],
-		StageName: parts[1],
-		Prompt:    parts[2],
+	case a.subs.events.Chat <- event.ChatEvent{Flash: &event.Flash{
+		Text: fmt.Sprintf("Gate %q needs approval — /gate approve %s or /gate reject %s", parts[0], parts[1], parts[2]),
 	}}:
 	default:
 	}
@@ -94,13 +166,7 @@ func (a *App) forwardCompanionCycle() {
 	}
 }
 
-func (a *App) handleOrchestratorStreamMsg(
-	msg multiagent.OrchestratorMessage,
-	section **tui.CompanionSectionComponent,
-	cycle *int,
-	thinkingBuf *strings.Builder,
-	messageBuf *strings.Builder,
-) bool {
+func (a *App) handleOrchestratorStreamMsg(msg multiagent.OrchestratorMessage, fwd *streamForwarder) bool {
 	// T4: delegation streams (delegate_to / request_review) route by
 	// DelegationID into their own per-delegation AgentTranscripts via the
 	// registry — they no longer interleave into the shared chat through
@@ -112,63 +178,54 @@ func (a *App) handleOrchestratorStreamMsg(
 		}
 		return true
 	}
-	return a.handleCompanionStreamMsg(msg, section, cycle, thinkingBuf, messageBuf)
-}
 
-// ensureCompanionSection lazily opens a new companion cycle section in the
-// shared chat and flags the companion as busy in the footer.
-func (a *App) ensureCompanionSection(section **tui.CompanionSectionComponent, cycle *int) {
-	if a.subs.chat == nil {
-		return
-	}
-	if *section == nil || (*section).Done() {
-		*cycle++
-		*section = a.subs.chat.AddCompanionCycle(*cycle)
-		// Companion section started — mark companion as busy
+	role := msg.From
+	st := fwd.stateFor(role)
+
+	// ensureSection creates this role's section on first activity (or after
+	// the previous cycle closed). Every role gets its own cycle counter so
+	// titles read "planner · cycle 1", "coder · cycle 1", …
+	ensureSection := func() {
+		if a.subs.chat == nil {
+			return
+		}
+		if st.section != nil && !st.section.Done() {
+			return
+		}
+		st.section = a.subs.chat.AddCompanionCycle(fwd.nextCycle(role), role)
+		// Section created → the role is now streaming. Mark it active.
+		fwd.markActive(role)
 		a.subs.footer.SetCompanionBusy(true)
-		a.subs.footer.SetData(tui.FooterData{
-			CompanionActivity: "reviewing",
-		})
+		a.subs.footer.SetData(tui.FooterData{CompanionActivity: "reviewing"})
 		a.subs.tuiEngine.RequestRender()
 	}
-}
 
-// handleCompanionStreamMsg is the legacy companion interleave path for
-// non-delegation orchestrator stream messages. It returns true when the kind
-// was consumed; false lets the caller fall back to the InterAgent channel.
-func (a *App) handleCompanionStreamMsg(
-	msg multiagent.OrchestratorMessage,
-	section **tui.CompanionSectionComponent,
-	cycle *int,
-	thinkingBuf *strings.Builder,
-	messageBuf *strings.Builder,
-) bool {
 	switch msg.Kind {
 	case "content":
-		a.handleOrchestratorContentStream(msg, section, cycle, messageBuf)
+		a.handleRoleContentStream(msg, st, fwd, ensureSection)
 		return true
 	case "thinking_start":
-		a.ensureCompanionSection(section, cycle)
-		thinkingBuf.Reset()
-		// Show companion thinking activity
-		a.subs.footer.SetData(tui.FooterData{
-			CompanionActivity: "thinking",
-		})
+		ensureSection()
+		st.thinkingBuf.Reset()
+		a.subs.footer.SetData(tui.FooterData{CompanionActivity: "thinking"})
 		a.subs.tuiEngine.RequestRender()
 		return true
 	case "thinking_chunk":
-		a.ensureCompanionSection(section, cycle)
-		thinkingBuf.WriteString(msg.Content)
-		if *section != nil {
-			(*section).SetThinking(thinkingBuf.String())
+		ensureSection()
+		st.thinkingBuf.WriteString(msg.Content)
+		if st.section != nil {
+			st.section.SetThinking(st.thinkingBuf.String())
 			a.subs.tuiEngine.RequestRender()
 		}
 		return true
 	case "thinking_end":
-		if *section != nil {
-			(*section).SetThinking(thinkingBuf.String())
+		if st.section != nil {
+			st.section.SetThinking(st.thinkingBuf.String())
 			a.subs.tuiEngine.RequestRender()
 		}
+		return true
+	case "tool_call", "tool_result":
+		a.handleRoleToolEvent(msg, st, ensureSection)
 		return true
 	default:
 		select {
@@ -183,39 +240,58 @@ func (a *App) handleCompanionStreamMsg(
 	}
 }
 
-func (a *App) handleOrchestratorContentStream(
+// handleRoleToolEvent surfaces sub-agent tool activity in the role's section
+// ("⚙ name" on call, merged "⚙ name → ✓ preview" on result) so the user sees
+// real work, not just thinking (team UI bug RC-2).
+func (a *App) handleRoleToolEvent(msg multiagent.OrchestratorMessage, st *roleStreamState, ensureSection func()) {
+	ensureSection()
+	if st.section == nil {
+		return
+	}
+	if msg.Kind == "tool_call" {
+		st.section.AddToolLine(msg.Content, "")
+	} else {
+		st.section.AddToolLine("", msg.Content)
+	}
+	a.subs.tuiEngine.RequestRender()
+}
+
+func (a *App) handleRoleContentStream(
 	msg multiagent.OrchestratorMessage,
-	section **tui.CompanionSectionComponent,
-	cycle *int,
-	messageBuf *strings.Builder,
+	st *roleStreamState,
+	fwd *streamForwarder,
+	ensureSection func(),
 ) {
 	if a.subs.chat == nil {
 		return
 	}
 	switch msg.To {
 	case "stream_start":
-		a.ensureCompanionSection(section, cycle)
-		messageBuf.Reset()
-		if *section != nil {
-			(*section).SetMessage("")
+		ensureSection()
+		st.messageBuf.Reset()
+		if st.section != nil {
+			st.section.SetMessage("")
 		}
 	case "stream_chunk":
-		messageBuf.WriteString(msg.Content)
-		if *section != nil {
-			(*section).SetMessage(messageBuf.String())
+		st.messageBuf.WriteString(msg.Content)
+		if st.section != nil {
+			st.section.SetMessage(st.messageBuf.String())
 		}
 	case "stream_end":
-		if *section != nil {
-			(*section).SetMessage(messageBuf.String())
-			(*section).SetDone(messageBuf.String())
+		if st.section != nil {
+			st.section.SetMessage(st.messageBuf.String())
+			st.section.SetDone(st.messageBuf.String())
 		}
-		*section = nil
-		messageBuf.Reset()
-		// Companion finished — clear busy indicators
-		a.subs.footer.SetCompanionBusy(false)
-		a.subs.footer.SetData(tui.FooterData{
-			CompanionActivity: "",
-		})
+		st.section = nil
+		st.messageBuf.Reset()
+		st.thinkingBuf.Reset()
+		// This role finished — drop it from the active set. The footer clears
+		// busy only when NO role is streaming anymore (RC-1 footer fix).
+		fwd.markInactive(msg.From)
+		a.subs.footer.SetCompanionBusy(fwd.anyActive())
+		if !fwd.anyActive() {
+			a.subs.footer.SetData(tui.FooterData{CompanionActivity: ""})
+		}
 		// Force full render to avoid screen shrinking artifacts when the
 		// companion section collapses from many lines to 1.
 		a.subs.tuiEngine.RequestRender()

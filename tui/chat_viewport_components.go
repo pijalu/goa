@@ -331,6 +331,11 @@ type CompanionSectionComponent struct {
 	collapsibleComponent
 	thinking *thinkingBlock
 	message  string // final message text to show in collapsed header
+	role string // streaming agent role ("companion", "coder", …) for color
+	// toolLines records sub-agent tool activity ("⚙ read" / "✓ 76 matches") so
+	// the user sees what the sub-agent actually does — previously tool calls
+	// were invisible and sections looked frozen (team UI bug RC-2).
+	toolLines []string
 	// onChange marks the owning chat entry dirty so the viewport's render
 	// cache does not serve stale lines after a mutation (frozen-section bug:
 	// SetDone collapsed the component but the cached expanded lines stayed on
@@ -338,13 +343,17 @@ type CompanionSectionComponent struct {
 	onChange func()
 }
 
-func newCompanionSection(cycle int) *CompanionSectionComponent {
+func newCompanionSection(cycle int, role string) *CompanionSectionComponent {
+	if role == "" {
+		role = "companion"
+	}
 	c := &CompanionSectionComponent{
 		collapsibleComponent: collapsibleComponent{
-			title:    fmt.Sprintf("companion · cycle %d", cycle),
+			title:    fmt.Sprintf("%s · cycle %d", role, cycle),
 			expanded: true,
 		},
 		thinking: newCompanionThinkingBlock(""),
+		role:     role,
 	}
 	return c
 }
@@ -363,6 +372,24 @@ func (sc *CompanionSectionComponent) SetMessage(text string) {
 func (sc *CompanionSectionComponent) changed() {
 	if sc.onChange != nil {
 		sc.onChange()
+	}
+}
+
+// AddToolLine appends a tool-activity marker to the section. A non-empty
+// toolName records a call ("⚙ <name>"); a non-empty result records a
+// completion preview ("✓ <preview>"). The last call line is replaced by its
+// result when they arrive in order, keeping the list compact.
+func (sc *CompanionSectionComponent) AddToolLine(toolName, result string) {
+	switch {
+	case toolName != "":
+		sc.toolLines = append(sc.toolLines, "⚙ "+toolName)
+	case result != "":
+		line := "✓ " + result
+		if n := len(sc.toolLines); n > 0 && strings.HasPrefix(sc.toolLines[n-1], "⚙ ") {
+			sc.toolLines[n-1] = sc.toolLines[n-1] + " → " + line
+			return
+		}
+		sc.toolLines = append(sc.toolLines, line)
 	}
 }
 
@@ -386,6 +413,12 @@ func (sc *CompanionSectionComponent) SetDone(endMessage string) {
 	sc.changed()
 }
 
+// colorBar returns the color-coded first-column glyph ("▏") for this section's
+// role, so concurrent roles are visually distinguishable in the shared chat.
+func (sc *CompanionSectionComponent) colorBar() string {
+	return ansi.Fg(hashColor(sc.role)) + "▏" + ansi.Reset
+}
+
 func (sc *CompanionSectionComponent) Render(width int) []string {
 	if width <= 0 {
 		return nil
@@ -398,11 +431,19 @@ func (sc *CompanionSectionComponent) Render(width int) []string {
 	if sc.done {
 		suffix = ansi.Fg(TheTheme.ColorHex("tool_success")) + " [done]" + ansi.Reset
 	}
-	header := ansi.Fg(TheTheme.ColorHex("assistant_msg")) + "  " + glyph + " " + sc.title + ansi.Reset + suffix
+	bar := sc.colorBar()
+	header := bar + ansi.Fg(TheTheme.ColorHex("assistant_msg")) + " " + glyph + " " + sc.title + ansi.Reset + suffix
 	lines := []string{padToWidth(header, width)}
 	if sc.expanded {
-		// Render thinking block
-		lines = append(lines, sc.thinking.Render(width)...)
+		// Render thinking block, prefixed with the role-colored first column.
+		for _, line := range sc.thinking.Render(width) {
+			lines = append(lines, bar+line)
+		}
+		// Render tool-activity markers between thinking and message.
+		toolColor := ansi.Fg(TheTheme.ColorHex("tool_running"))
+		for _, line := range sc.toolLines {
+			lines = append(lines, padToWidth(bar+"  "+toolColor+line+ansi.Reset, width))
+		}
 		// Render message
 		if sc.message != "" {
 			renderer := NewMDStreamRenderer(width, TheTheme)
@@ -426,10 +467,10 @@ func (sc *CompanionSectionComponent) Invalidate() {}
 var currentCompanionSection *CompanionSectionComponent
 
 // AddCompanionCycle creates a new companion section for the given cycle.
-func (cv *ChatViewport) AddCompanionCycle(cycle int) *CompanionSectionComponent {
-	sc := newCompanionSection(cycle)
+func (cv *ChatViewport) AddCompanionCycle(cycle int, role ...string) *CompanionSectionComponent {
+	sc := newCompanionSection(cycle, strings.Join(role, ""))
 	currentCompanionSection = sc
-	id := cv.Append(MessageEntry{Data: MessageData{Type: ConsoleCompanionMessage, Meta: map[string]string{"cycle": fmt.Sprintf("%d", cycle)}}, View: sc})
+	id := cv.Append(MessageEntry{Data: MessageData{Type: ConsoleCompanionMessage, Meta: map[string]string{"cycle": fmt.Sprintf("%d", cycle), "agent": sc.role}}, View: sc})
 	// Mutations (thinking/message/SetDone) must invalidate the entry's cached
 	// render, or the viewport keeps showing the stale expanded section after
 	// the stream ends (frozen-section bug).

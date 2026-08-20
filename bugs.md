@@ -26,3 +26,8 @@ Commit at the end of each fix with a clear and descriptive commit message
 Describe the bug or feature request under `# To fix` below. Keep one section
 per item with a short title, the observed behavior, and the expected behavior.
 
+# TODO
+
+*(empty — the team UI bug cluster (RC-1..RC-7) is being ported to main;
+this entry is resolved by the port commits. See docs/archive/ for closed
+reports.)*

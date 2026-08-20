@@ -334,25 +334,22 @@ func TestHandleOrchestratorStreamMsg_CompanionSection(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
 
-	var section *tui.CompanionSectionComponent
-	var cycle int
-	var thinkingBuf strings.Builder
-	var messageBuf strings.Builder
+	fwd := newStreamForwarder()
 
-	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_start"}, &section, &cycle, &thinkingBuf, &messageBuf)
-	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_chunk", Content: "reasoning..."}, &section, &cycle, &thinkingBuf, &messageBuf)
-	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_end"}, &section, &cycle, &thinkingBuf, &messageBuf)
+	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_start"}, fwd)
+	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_chunk", Content: "reasoning..."}, fwd)
+	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_end"}, fwd)
 
 	rendered := strings.Join(app.subs.chat.Render(80), "\n")
 	if !strings.Contains(rendered, "reasoning...") {
 		t.Errorf("expected thinking text while expanded, got:\n%s", rendered)
 	}
 
-	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_start"}, &section, &cycle, &thinkingBuf, &messageBuf)
-	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_chunk", Content: "review"}, &section, &cycle, &thinkingBuf, &messageBuf)
-	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_end"}, &section, &cycle, &thinkingBuf, &messageBuf)
+	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_start"}, fwd)
+	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_chunk", Content: "review"}, fwd)
+	app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_end"}, fwd)
 
-	if section != nil {
+	if fwd.stateFor("companion").section != nil {
 		t.Error("expected section to be cleared after stream_end")
 	}
 
@@ -367,18 +364,15 @@ func TestHandleOrchestratorStreamMsg_TwoCyclesTwoSections(t *testing.T) {
 	app := New(testSubsystems())
 	app.subs.tuiEngine = tui.NewTUI(tui.NewProcessTerminal())
 
-	var section *tui.CompanionSectionComponent
-	var cycle int
-	var thinkingBuf strings.Builder
-	var messageBuf strings.Builder
+	fwd := newStreamForwarder()
 
 	runCycle := func(n int) {
-		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_start"}, &section, &cycle, &thinkingBuf, &messageBuf)
-		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_chunk", Content: fmt.Sprintf("think%d", n)}, &section, &cycle, &thinkingBuf, &messageBuf)
-		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_end"}, &section, &cycle, &thinkingBuf, &messageBuf)
-		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_start"}, &section, &cycle, &thinkingBuf, &messageBuf)
-		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_chunk", Content: fmt.Sprintf("msg%d", n)}, &section, &cycle, &thinkingBuf, &messageBuf)
-		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_end"}, &section, &cycle, &thinkingBuf, &messageBuf)
+		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_start"}, fwd)
+		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_chunk", Content: fmt.Sprintf("think%d", n)}, fwd)
+		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "thinking_end"}, fwd)
+		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_start"}, fwd)
+		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_chunk", Content: fmt.Sprintf("msg%d", n)}, fwd)
+		app.handleOrchestratorStreamMsg(multiagent.OrchestratorMessage{Kind: "content", To: "stream_end"}, fwd)
 	}
 
 	runCycle(1)

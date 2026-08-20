@@ -12,6 +12,7 @@ import (
 	"github.com/pijalu/goa/core/commands"
 	"github.com/pijalu/goa/core/team"
 	"github.com/pijalu/goa/internal"
+	agenticprovider "github.com/pijalu/goa/internal/agentic/provider"
 	"github.com/pijalu/goa/multiagent"
 	"github.com/pijalu/goa/skills"
 	"github.com/pijalu/goa/tui"
@@ -246,4 +247,72 @@ func assertFrameContains(t *testing.T, snap tui.Snapshot, substr string) {
 
 func joinComma(items []string) string {
 	return strings.Join(items, ", ")
+}
+
+// TestDelegateStream_FooterShowsActiveAgent_Filmstrip drives the delegate_to /
+// companion stream path through the app's orchestrator stream handlers and
+// verifies, via filmstrip, the two team-UI fixes:
+//   - Bug #3: while a sub-agent streams, the status bar shows that agent's
+//     real provider/model (not just the main model).
+//   - Optional: the streaming chat widget carries a color-coded first column
+//     matching the agent role, tied to the footer identity.
+func TestDelegateStream_FooterShowsActiveAgent_Filmstrip(t *testing.T) {
+	sc := newUIScenario(t, 110, 30)
+
+	// Wire a pool with a "coder" role resolved to a distinct provider/model so
+	// the footer can show the delegated agent's identity. Create the agent up
+	// front (production delegate_to calls GetOrCreate before streaming), so
+	// RoleModelInfo resolves the live agent's model.
+	coderModel := agenticprovider.Model{ID: "coder-llm", Provider: agenticprovider.ProviderLMStudio}
+	pool := multiagent.NewAgentPool(coderModel, agenticprovider.StreamOptions{}, nil)
+	if _, err := pool.GetOrCreate("coder"); err != nil {
+		t.Fatalf("GetOrCreate coder: %v", err)
+	}
+	sc.app.subs.agentPool = pool
+	// Main model context for the footer.
+	sc.engine.ApplySync(func() {
+		sc.footer.SetData(tui.FooterData{Workdir: "/test", Mode: "yolo", Model: "main-model"})
+	})
+	sc.engine.RenderNow()
+
+	// Drive a delegate stream: stream_start from the coder role.
+	fwd := newStreamForwarder()
+	start := multiagent.OrchestratorMessage{From: "coder", To: "stream_start", Kind: "content"}
+	sc.engine.ApplySync(func() {
+		sc.app.handleOrchestratorStreamMsg(start, fwd)
+	})
+	sc.engine.RenderNow()
+	snap := sc.film.Capture("delegate-coder-streaming", sc.engine.AgentFrame(), "")
+
+	// Footer now shows the delegated agent's model + role label.
+	if got := sc.footer.Data().ActiveAgentModel; got != "coder-llm" {
+		t.Errorf("ActiveAgentModel = %q, want coder-llm", got)
+	}
+	if got := sc.footer.Data().ActiveAgentRole; got != "coder" {
+		t.Errorf("ActiveAgentRole = %q, want coder", got)
+	}
+	assertFrameContains(t, snap, "coder-llm")
+	assertFrameContains(t, snap, "coder")
+	// Chat shows the color-coded first column for the coder role.
+	assertFrameContains(t, snap, "coder · cycle 1")
+
+	// Stream some content so the message body renders.
+	chunk := multiagent.OrchestratorMessage{From: "coder", To: "stream_chunk", Kind: "content", Content: "working on it"}
+	sc.engine.ApplySync(func() {
+		sc.app.handleOrchestratorStreamMsg(chunk, fwd)
+	})
+	sc.engine.RenderNow()
+	sc.film.Capture("delegate-coder-chunk", sc.engine.AgentFrame(), "")
+
+	// stream_end clears the active agent: footer reverts to the main model.
+	end := multiagent.OrchestratorMessage{From: "coder", To: "stream_end", Kind: "content", Content: "done"}
+	sc.engine.ApplySync(func() {
+		sc.app.handleOrchestratorStreamMsg(end, fwd)
+	})
+	sc.engine.RenderNow()
+	endSnap := sc.film.Capture("delegate-coder-done", sc.engine.AgentFrame(), "")
+	if got := sc.footer.Data().ActiveAgentModel; got != "" {
+		t.Errorf("ActiveAgentModel after stream_end = %q, want empty", got)
+	}
+	assertFrameContains(t, endSnap, "main-model")
 }
