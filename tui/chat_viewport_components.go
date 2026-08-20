@@ -331,6 +331,11 @@ type CompanionSectionComponent struct {
 	collapsibleComponent
 	thinking *thinkingBlock
 	message  string // final message text to show in collapsed header
+	// onChange marks the owning chat entry dirty so the viewport's render
+	// cache does not serve stale lines after a mutation (frozen-section bug:
+	// SetDone collapsed the component but the cached expanded lines stayed on
+	// screen). Wired by ChatViewport.AddCompanionCycle.
+	onChange func()
 }
 
 func newCompanionSection(cycle int) *CompanionSectionComponent {
@@ -346,10 +351,19 @@ func newCompanionSection(cycle int) *CompanionSectionComponent {
 
 func (sc *CompanionSectionComponent) SetThinking(text string) {
 	sc.thinking.SetText(text)
+	sc.changed()
 }
 
 func (sc *CompanionSectionComponent) SetMessage(text string) {
 	sc.message = text
+	sc.changed()
+}
+
+// changed notifies the owner (chat viewport) that the component mutated.
+func (sc *CompanionSectionComponent) changed() {
+	if sc.onChange != nil {
+		sc.onChange()
+	}
 }
 
 func (sc *CompanionSectionComponent) Done() bool {
@@ -369,6 +383,7 @@ func (sc *CompanionSectionComponent) SetDone(endMessage string) {
 		}
 		sc.title = "companion · " + endMessage
 	}
+	sc.changed()
 }
 
 func (sc *CompanionSectionComponent) Render(width int) []string {
@@ -414,7 +429,11 @@ var currentCompanionSection *CompanionSectionComponent
 func (cv *ChatViewport) AddCompanionCycle(cycle int) *CompanionSectionComponent {
 	sc := newCompanionSection(cycle)
 	currentCompanionSection = sc
-	cv.Append(MessageEntry{Data: MessageData{Type: ConsoleCompanionMessage, Meta: map[string]string{"cycle": fmt.Sprintf("%d", cycle)}}, View: sc})
+	id := cv.Append(MessageEntry{Data: MessageData{Type: ConsoleCompanionMessage, Meta: map[string]string{"cycle": fmt.Sprintf("%d", cycle)}}, View: sc})
+	// Mutations (thinking/message/SetDone) must invalidate the entry's cached
+	// render, or the viewport keeps showing the stale expanded section after
+	// the stream ends (frozen-section bug).
+	sc.onChange = func() { cv.MarkEntryDirty(id) }
 	return sc
 }
 

@@ -403,6 +403,20 @@ func (cv *ChatViewport) Append(e MessageEntry) int {
 	return cv.Conversation.Append(e)
 }
 
+// MarkEntryDirty flags the entry with the given conversation ID for
+// re-render on the next frame. Used by self-mutating components (e.g.
+// CompanionSectionComponent) whose owner is the viewport's render cache.
+// Unknown IDs are ignored (the entry may have been trimmed).
+func (cv *ChatViewport) MarkEntryDirty(id int) {
+	for i := range cv.entries {
+		if cv.entries[i].Data.ID == id {
+			cv.entries[i].dirty = true
+			cv.generation++
+			return
+		}
+	}
+}
+
 // UpdateLast applies fn to the most recent entry matching types and marks
 // that entry dirty so the next Render only re-renders the changed entry.
 func (cv *ChatViewport) UpdateLast(types []ConsoleItemType, fn func(*MessageEntry)) bool {
