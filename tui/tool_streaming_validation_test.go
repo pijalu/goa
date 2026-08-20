@@ -49,6 +49,8 @@ func TestToolStreaming_AllRenderersSupportPartialArgs(t *testing.T) {
 		{"schedule_create", map[string]any{"prompt": "commit", "after_seconds": float64(60)}, map[string]any{"prompt": "com"}, `{"id":"schedule-1","state":"scheduled"}`, nil},
 		{"schedule_delete", map[string]any{"id": "schedule-1"}, map[string]any{"id": "schedule"}, `{"id":"schedule-1","deleted":true}`, nil},
 		{"schedule_list", map[string]any{}, map[string]any{}, `[]`, nil},
+		{"delegate_to", map[string]any{"agent": "coder", "task": "Refactor the parser"}, map[string]any{"agent": "coder"}, `{"status":"delegated","agent":"coder","message":"Task delegated."}`, nil},
+		{"request_review", map[string]any{"content": "critique the diff"}, map[string]any{"content": "critique"}, `{"status":"review_complete"}`, nil},
 	}
 
 	for _, tc := range cases {
@@ -100,6 +102,7 @@ func TestToolStreaming_RegistryIsComplete(t *testing.T) {
 		"webfetch", "search", "smartsearch", "goal", "agent", "agent_swarm",
 		"plan", "task_outcome", "session_search", "session_event_read",
 		"schedule_create", "schedule_delete", "schedule_list",
+		"delegate_to", "request_review",
 	}
 	for _, name := range cases {
 		if _, ok := required[name]; !ok {
