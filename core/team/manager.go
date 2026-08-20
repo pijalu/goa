@@ -307,9 +307,13 @@ func (m *Manager) applyLocked(name string, overlay bool) error {
 	if err != nil {
 		return fmt.Errorf("snapshot: %w", err)
 	}
+	// Suppress model persistence for the team's duration (RC-5): the team's
+	// model switch must never be written back as the user's saved model.
+	m.setModelPersistenceSuppressedLocked(true)
 	if err := m.applyDefinitionLocked(def); err != nil {
 		// All-or-nothing: attempt to restore whatever was applied.
 		_ = m.restoreSnapshotLocked(snap)
+		m.setModelPersistenceSuppressedLocked(m.overlaySnapshot != nil || m.activeSnapshot != nil)
 		return fmt.Errorf("apply team %q: %w", name, err)
 	}
 	if overlay {
@@ -346,7 +350,27 @@ func (m *Manager) restoreLocked(reason *string) error {
 		*reason = "deactivated"
 	}
 	m.drifted = false
+	// Persistence guard follows the remaining team state: when nothing is
+	// active anymore the user's own model choices may be saved again (RC-5).
+	m.setModelPersistenceSuppressedLocked(m.overlaySnapshot != nil || m.activeSnapshot != nil)
 	return nil
+}
+
+// setModelPersistenceSuppressedLocked toggles model persistence on the
+// session controller when it supports the guard (team.Manager drives this so
+// the overlay model never leaks into the user's saved config, RC-5).
+// Lock held by caller.
+func (m *Manager) setModelPersistenceSuppressedLocked(suppressed bool) {
+	if g, ok := m.session.(ModelPersistenceGuard); ok {
+		g.SuppressModelPersistence(suppressed)
+	}
+}
+
+// ModelPersistenceGuard is an optional SessionController extension: while a
+// team governs the session model, saving active_provider/active_model must be
+// suppressed so the team's model is never persisted as the user's choice.
+type ModelPersistenceGuard interface {
+	SuppressModelPersistence(suppressed bool)
 }
 
 // snapshotLocked captures the pre-application session state, including the

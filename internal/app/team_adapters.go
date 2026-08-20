@@ -92,6 +92,16 @@ func (c *teamSessionController) CurrentThinkingLevel() string {
 	return string(c.cfg.GetThinkingLevel("main_agent"))
 }
 
+// SuppressModelPersistence implements team.ModelPersistenceGuard (RC-5):
+// while a team governs the session model, saving active_provider/active_model
+// to config files is gated so the team's model is never persisted as the
+// user's saved choice.
+func (c *teamSessionController) SuppressModelPersistence(suppressed bool) {
+	if c.am != nil {
+		c.am.SetModelPersistenceSuppressed(suppressed)
+	}
+}
+
 // modelByID reports whether a model ID exists in the config.
 func modelByID(cfg *config.Config, id string) (config.ModelConfig, bool) {
 	for _, m := range cfg.Models {

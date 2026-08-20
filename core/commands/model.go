@@ -106,9 +106,15 @@ func runModelCommand(host core.UIHost, pm core.ProviderManager, cfg *config.Conf
 		return nil
 	}
 	// One coupled unit: manager → config → persist → agent push → footer.
-	if err := applyCoupledSwitch(host, cfg, saver, np, selected); err != nil {
+	// A team governing the session model suppresses the persist step (RC-5):
+	// saving would leak the team's model as the user's choice.
+	team, sessionOnly := teamModelPersistenceSuppressed(host)
+	if err := applyCoupledSwitchPersisting(host, cfg, saver, np, selected, !sessionOnly); err != nil {
 		writeFmt(host, "Cannot switch to %s: %v\n", selected, err)
 		return nil
+	}
+	if sessionOnly {
+		writeFmt(host, "Team %q governs the session model — change is session-only (not saved).\n", team)
 	}
 	writeFmt(host, "Switched to model: %s\n", selected)
 	return nil
@@ -581,11 +587,37 @@ func applyModelSelection(host core.UIHost, cfg *config.Config, saver config.Conf
 		host.Flash(fmt.Sprintf("Provider %q is not configured. Run /config to add it.", np))
 		return
 	}
-	if err := applyCoupledSwitch(host, cfg, saver, np, selected); err != nil {
+	team, sessionOnly := teamModelPersistenceSuppressed(host)
+	if err := applyCoupledSwitchPersisting(host, cfg, saver, np, selected, !sessionOnly); err != nil {
 		host.Flash(err.Error())
 		return
 	}
+	if sessionOnly {
+		// RC-5: tell the user the change is deliberately not persisted.
+		host.Flash(fmt.Sprintf("Team %q governs the session model — change is session-only (not saved).", team))
+	}
 	host.Flash("Switched to model: " + selected)
+}
+
+// teamModelPersistenceSuppressed reports whether a team currently governs the
+// session model (session-level activation or goal overlay). While it does,
+// /model must not persist the chosen model: the value in effect may be the
+// TEAM's model, and saving it would leak into home/project config as the
+// user's choice (RC-5 — observed: project config ended up with the
+// companion's model). Returns the effective team name for the user message.
+func teamModelPersistenceSuppressed(host core.UIHost) (string, bool) {
+	ctx, ok := host.(core.Context)
+	if !ok {
+		return "", false
+	}
+	tm := teamManager(ctx)
+	if tm == nil {
+		return "", false
+	}
+	if effective := tm.EffectiveTeam(); effective != "" {
+		return effective, true
+	}
+	return "", false
 }
 
 // propagateModelSwitch pushes a config model/provider change into the
@@ -622,6 +654,15 @@ func propagateModelSwitch(host core.UIHost, cfg *config.Config) {
 // providerID "" means "keep the current provider" (custom-model switches);
 // modelID may be "" when a provider has no configured model yet.
 func applyCoupledSwitch(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID, modelID string) error {
+	return applyCoupledSwitchPersisting(host, cfg, saver, providerID, modelID, true)
+}
+
+// applyCoupledSwitchPersisting is applyCoupledSwitch with explicit control
+// over the persist step. When persist is false (a team governs the session
+// model — RC-5), every other surface still switches as one unit; only the
+// write to home/project config is skipped so the team's model never becomes
+// the user's saved choice.
+func applyCoupledSwitchPersisting(host core.UIHost, cfg *config.Config, saver config.ConfigSaver, providerID, modelID string, persist bool) error {
 	if providerID == "" {
 		providerID = cfg.ActiveProvider
 	}
@@ -634,9 +675,11 @@ func applyCoupledSwitch(host core.UIHost, cfg *config.Config, saver config.Confi
 	// 2. Commit to the config object.
 	cfg.ActiveProvider = providerID
 	cfg.ActiveModel = modelID
-	// 3. Persist.
-	if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
-		return err
+	// 3. Persist (unless suppressed — see RC-5 above).
+	if persist {
+		if err := saveHomeProvidersAndModels(cfg, saver); err != nil {
+			return err
+		}
 	}
 	// 4. Push into the live agent session and refresh the status bar.
 	if ctx, ok := host.(core.Context); ok {

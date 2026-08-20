@@ -25,6 +25,7 @@ type fakeSession struct {
 	thinkingLevel string
 	switchErr     error // injected failure
 	calls         []string
+	suppressed    bool // ModelPersistenceGuard state (RC-5)
 }
 
 func (f *fakeSession) SwitchModel(providerID, modelID string) error {
@@ -65,6 +66,19 @@ func (f *fakeSession) CurrentThinkingLevel() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.thinkingLevel
+}
+
+// SuppressModelPersistence implements ModelPersistenceGuard (RC-5).
+func (f *fakeSession) SuppressModelPersistence(suppressed bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.suppressed = suppressed
+}
+
+func (f *fakeSession) persistenceSuppressed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.suppressed
 }
 
 type fakePool struct {

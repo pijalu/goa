@@ -11,6 +11,7 @@ import (
 
 	"github.com/pijalu/goa/config"
 	"github.com/pijalu/goa/core"
+	"github.com/pijalu/goa/core/team"
 )
 
 // TestModelChange_PersistsAcrossRestart verifies that changing the model with
@@ -254,5 +255,103 @@ models:
 	projectData := readTestFile(t, projectPath)
 	if !strings.Contains(projectData, "active_provider: anthropic") {
 		t.Errorf("Project config should have active_provider: anthropic, got:\n%s", projectData)
+	}
+}
+
+// TestModelChange_NotPersistedWhileTeamActive is the regression test for team
+// UI bug RC-5: with a team governing the session (teams.active set, manager
+// activated), /model must apply the change session-only — NOTHING is written
+// to home or project config, and the user is told why. Observed bug: the
+// companion's model leaked into project.yaml as active_model.
+func TestModelChange_NotPersistedWhileTeamActive(t *testing.T) {
+	homeDir := t.TempDir()
+	projectDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	homePath := filepath.Join(homeDir, ".goa", "config.yaml")
+	projectPath := filepath.Join(projectDir, ".goa", "config.yaml")
+
+	// User config: active_model deepseek-v4-flash + auto_save_model (the exact
+	// setup from the bug report, where the companion's model leaked).
+	writeTestConfig(t, projectPath, `active_provider: deepseek
+active_model: deepseek-v4-flash
+execution:
+    auto_save_model: true
+providers:
+  - id: deepseek
+    endpoint: http://deepseek.example.com/v1
+models:
+  - id: deepseek-v4-flash
+    provider: deepseek
+    model: deepseek-chat
+  - id: m-team
+    provider: deepseek
+    model: m-team-remote
+  - id: m-rev
+    provider: deepseek
+    model: m-rev-remote
+teams:
+    definitions:
+        pair:
+            main:
+                model: m-team
+            companion:
+                model: m-rev
+            review: agent
+`)
+	writeTestConfig(t, homePath, ``)
+
+	loader := config.NewCascadeLoader(projectDir, "", nil)
+	cfg, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Activate the team through the manager (session-level governance).
+	sess := &stubSession{providerID: "deepseek", modelID: "deepseek-v4-flash"}
+	tm := team.NewManager(cfg, sess, nil, nil, nil, nil)
+	if err := tm.Activate("pair"); err != nil {
+		t.Fatalf("Activate team: %v", err)
+	}
+
+	var buf strings.Builder
+	ctx := core.Context{
+		OutputBuffer:    &buf,
+		Config:          cfg,
+		ConfigSaver:     loader,
+		ProviderManager: newTestProviderManager(),
+		TeamManager:     tm,
+	}
+
+	// User runs /model gemma while the team governs the session.
+	cmd := &ModelCommand{}
+	if err := cmd.Run(ctx, []string{"gemma"}); err != nil {
+		t.Fatalf("Run /model gemma failed: %v", err)
+	}
+
+	// Session-level change still applies (next turn uses gemma).
+	if cfg.ActiveModel != "gemma" {
+		t.Errorf("After /model gemma: ActiveModel = %q, want gemma", cfg.ActiveModel)
+	}
+
+	// The user is told the change is session-only.
+	if !strings.Contains(buf.String(), "governs the session model") {
+		t.Errorf("Output should explain team governance, got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Switched to model: gemma") {
+		t.Errorf("Output should confirm the switch, got %q", buf.String())
+	}
+
+	// Nothing was persisted: home and project configs keep the user's model.
+	projectData := readTestFile(t, projectPath)
+	if strings.Contains(projectData, "active_model: gemma") {
+		t.Errorf("Project config must NOT contain the session-only model, got:\n%s", projectData)
+	}
+	if !strings.Contains(projectData, "active_model: deepseek-v4-flash") {
+		t.Errorf("Project config should keep active_model: deepseek-v4-flash, got:\n%s", projectData)
+	}
+	homeData := readTestFile(t, homePath)
+	if strings.Contains(homeData, "gemma") {
+		t.Errorf("Home config must NOT contain the session-only model, got:\n%s", homeData)
 	}
 }

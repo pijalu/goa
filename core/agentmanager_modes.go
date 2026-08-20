@@ -141,7 +141,15 @@ func (am *AgentManager) saveModelThinkingLevel(level string) error {
 	am.mu.Lock()
 	cfg := am.cfg
 	saver := am.configSaver
+	suppressed := am.modelPersistenceSuppressed
 	am.mu.Unlock()
+	if suppressed {
+		// A team (session-level or goal overlay) currently governs the session
+		// model: persisting now would write the TEAM's model as the user's
+		// saved choice (RC-5 — observed: project config ended up with the
+		// companion's model). The session-level change still applies.
+		return nil
+	}
 	if cfg == nil || cfg.ActiveModel == "" {
 		return nil
 	}
@@ -181,3 +189,21 @@ func (am *AgentManager) applyPendingThinkingLevel() {
 	}
 }
 func (am *AgentManager) GetThinkingLevel() string { return am.modeMgr.GetThinkingLevel() }
+
+// SetModelPersistenceSuppressed gates saving active_provider/active_model
+// (and per-model thinking levels) to config files. The team manager enables
+// it for the duration of a team/overlay so the team's model is never
+// persisted as the user's saved choice (RC-5).
+func (am *AgentManager) SetModelPersistenceSuppressed(suppressed bool) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.modelPersistenceSuppressed = suppressed
+}
+
+// ModelPersistenceSuppressed reports whether model persistence is currently
+// gated (team governing the session model).
+func (am *AgentManager) ModelPersistenceSuppressed() bool {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.modelPersistenceSuppressed
+}

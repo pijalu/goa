@@ -604,6 +604,46 @@ func TestAgentManager_SetThinkingLevel_SavesAtModelLevel(t *testing.T) {
 	}
 }
 
+// TestAgentManager_SetThinkingLevel_PersistenceSuppressed verifies team UI
+// bug RC-5 fix: while a team governs the session model (guard set via
+// SetModelPersistenceSuppressed), changing the thinking level applies at
+// session level but writes NOTHING to home/project config — the team's model
+// must never leak into the user's saved configuration.
+func TestAgentManager_SetThinkingLevel_PersistenceSuppressed(t *testing.T) {
+	cfg := thinkingLevelTestConfig()
+	sessionState := NewSessionState(internal.ModeState{Major: internal.MajorCoder})
+	am := NewAgentManager(cfg, nil, nil, sessionState, event.MakeBus(10, 10, 10, 10), "")
+	saver := &recordingConfigSaver{}
+	am.SetConfigSaver(saver)
+
+	am.SetModelPersistenceSuppressed(true)
+	if !am.ModelPersistenceSuppressed() {
+		t.Fatal("ModelPersistenceSuppressed = false after SetModelPersistenceSuppressed(true)")
+	}
+
+	if err := am.SetThinkingLevel("high"); err != nil {
+		t.Fatalf("SetThinkingLevel: %v", err)
+	}
+	if got := am.GetThinkingLevel(); got != "high" {
+		t.Errorf("session level = %q, want high (session-level change must still apply)", got)
+	}
+	if saver.homeSaves != 0 || saver.projectSaves != 0 {
+		t.Errorf("saves while suppressed: home=%d project=%d, want 0/0", saver.homeSaves, saver.projectSaves)
+	}
+	if got := cfg.GetModelByID("deepseek").ThinkingLevel; got != "" {
+		t.Errorf("model config entry mutated while suppressed: thinking level = %q, want empty", got)
+	}
+
+	// Releasing the guard re-enables persistence.
+	am.SetModelPersistenceSuppressed(false)
+	if err := am.SetThinkingLevel("low"); err != nil {
+		t.Fatalf("SetThinkingLevel after release: %v", err)
+	}
+	if saver.homeSaves != 1 {
+		t.Errorf("home saves after release = %d, want 1", saver.homeSaves)
+	}
+}
+
 // TestAgentManager_SetThinkingLevel_SaveError verifies a persistence failure
 // is surfaced to the caller.
 func TestAgentManager_SetThinkingLevel_SaveError(t *testing.T) {

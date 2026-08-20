@@ -97,6 +97,11 @@ type AgentManager struct {
 	sessionStore   *SessionStore      // event recording store
 	stateStore     *StateStore        // persisted mode state store
 	configSaver    config.ConfigSaver // persists per-model thinking level to the home config
+	// modelPersistenceSuppressed gates saving active_provider/active_model
+	// (and thinking levels) to config files while a team governs the session
+	// model — the team's model must never be persisted as the user's choice
+	// (RC-5). Set by the team manager via SetModelPersistenceSuppressed.
+	modelPersistenceSuppressed bool
 	loopDetector   *LoopDetector
 	eventsOut      *event.Bus
 	logger         *agentic.Logger
